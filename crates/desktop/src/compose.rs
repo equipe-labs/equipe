@@ -465,10 +465,16 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
         Command::Submit { session, text, .. } | Command::SubmitLater { session, text, .. } => Some((*session, text.clone())),
         _ => None,
     });
-    if let Some((session, said)) = to
+    if let Some((session, said)) = to.clone()
         && let Some(raise) = crate::accept::raise(&model.squad, session, &said, &model.tickets)
     {
         out.commands.insert(0, raise);
+    }
+    // The first message of a new conversation makes it.
+    if let (Some((draft, project)), Some((session, _))) = (&model.draft_talk, &to)
+        && draft == session
+    {
+        out.commands.insert(0, Command::NewConversation { squad: model.squad.clone(), session: *draft, project: project.clone() });
     }
     out
 }
@@ -517,6 +523,11 @@ fn said(model: &Model, text: &str, later: bool) -> Plan {
         _ => (target, text),
     };
     let away = target.session != selected.session;
+    // Said in a conversation the person opened with the PM: to that conversation.
+    let to = match model.talk {
+        Some(talk) if !away => talk,
+        _ => target.session,
+    };
     // What is said to the one in view goes to its conversation about the
     // project in focus: at work there or in a lane, or free if the member is
     // at work in another project's — the daemon then opens a lane beside it.
@@ -527,24 +538,24 @@ fn said(model: &Model, text: &str, later: bool) -> Plan {
         // Both engines read a steer at their next step (Codex through its own
         // CLI's `turn/steer`); a daemon that can't steer one leaves a memo.
         Presence::Working if later || target.engine.is_none() => Plan {
-            commands: vec![Command::SubmitLater { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
+            commands: vec![Command::SubmitLater { session: to, text: text.to_owned(), about: Some(model.focus.clone()) }],
             // In sight, its waiting bubble says so already; to someone else, a line.
             flash: away.then(|| t!("compose.memo_left", name = target.name)),
             ..Plan::default()
         },
         // Steering: read at its next step, the work carrying on.
         Presence::Working => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
+            commands: vec![Command::Submit { session: to, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: away.then(|| t!("compose.steered", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready if !away && model.opens_lane() => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
+            commands: vec![Command::Submit { session: to, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: Some(t!("compose.answers_alongside", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
+            commands: vec![Command::Submit { session: to, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: away.then(|| t!("compose.sent_to", name = target.name)),
             ..Plan::default()
         },
@@ -1111,6 +1122,48 @@ mod tests {
         assert_eq!(history.sent_as("look [image: /up/1792073093606-paste.png]").map(|s| s.text.as_str()), Some("look"));
         assert_eq!(history.sent_as("plain").map(|s| s.attachments.len()), Some(0));
         assert!(history.sent_as("never sent").is_none());
+    }
+
+    #[test]
+    fn in_a_conversation_opened_with_the_pm_what_is_said_goes_there_and_the_pms_own_stays_its_own() {
+        let mut talk = session(50, "pm", SessionState::Ready);
+        talk.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("site".into()), kept: true });
+        talk.title = Some("login is broken".into());
+        let mut model = squad(vec![session(1, "pm", SessionState::Ready), talk, session(2, "frontend", SessionState::Ready)]);
+        assert_eq!(model.members.iter().map(|m| m.session).collect::<Vec<_>>(), [1, 2], "a conversation isn't a member");
+        assert_eq!(model.conversations().iter().map(|l| (l.session, l.title.as_deref())).collect::<Vec<_>>(), [(50, Some("login is broken"))]);
+        assert_eq!(model.viewed(), Some(1), "the PM's own shows until one is opened");
+
+        assert!(model.open(crate::state::Side::Conversation(50)));
+        assert_eq!((model.viewed(), model.side_open()), (Some(50), Some(crate::state::Side::Conversation(50))));
+        assert_eq!(plan(&model, "and the signup?").commands, vec![submit(50, "and the signup?")]);
+        assert_eq!(plan(&model, "@frontend the header").commands, vec![submit(2, "the header")], "someone named is still reached");
+
+        model.apply(Update::Event(Event::LaneMoved { session: 50, project: Some("app".into()) }), T0);
+        assert_eq!(model.talking().and_then(|l| l.project.as_deref()), Some("app"));
+        model.apply(Update::Event(Event::SessionClosed { session: 50 }), T0);
+        assert!(model.conversations().is_empty());
+        assert_eq!((model.viewed(), model.side_open()), (Some(1), Some(crate::state::Side::Pm)), "put away: back to the PM");
+        assert_eq!(plan(&model, "hi").commands, vec![submit(1, "hi")]);
+    }
+
+    #[test]
+    fn a_new_conversation_is_made_by_its_first_message_and_none_is_left_empty() {
+        let mut model = team();
+        model.draft_conversation(Some("site".into()));
+        let Some((id, _)) = model.draft_talk.clone() else { panic!("a draft") };
+        assert_eq!(model.viewed(), Some(id), "the empty conversation shows, not the PM's");
+        assert!(model.conversations().is_empty(), "nothing made yet");
+        assert_eq!(
+            plan(&model, "login is broken").commands,
+            vec![Command::NewConversation { squad: "acme".into(), session: id, project: Some("site".into()) }, submit(id, "login is broken")]
+        );
+        model.apply(Update::Event(Event::SessionStarted { session: id, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: id, of: 1, project: Some("site".into()), kept: true }), T0);
+        assert_eq!((model.draft_talk.clone(), model.viewed()), (None, Some(id)), "made, and still open");
+        assert_eq!(plan(&model, "and?").commands, vec![submit(id, "and?")]);
+        model.open(crate::state::Side::Pm);
+        assert_eq!(model.viewed(), Some(1));
     }
 
     #[test]

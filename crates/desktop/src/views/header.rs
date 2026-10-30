@@ -26,6 +26,11 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let member = model.selected_member();
     let open = shell.board.popover == Some(Popover::Members);
     let ticket = model.opened.and_then(|id| model.tickets.iter().find(|t| t.id == id));
+    let talk_title: Option<String> = match (&model.draft_talk, model.talking()) {
+        (Some(_), _) => Some(t!("sidebar.new_conversation").into()),
+        (None, Some(lane)) => Some(lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into())),
+        _ => None,
+    };
     let who = member.map(|m| {
         div()
             .relative()
@@ -35,7 +40,11 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     .when(open, |b| b.bg(p.wash))
                     .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_popover(Popover::Members, cx)))
-                    .child(title(p, m))
+                    .child(match talk_title.clone() {
+                        // A conversation with the PM: its own name.
+                        Some(name) => div().max_w(px(320.)).truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name).into_any_element(),
+                        None => title(p, m).into_any_element(),
+                    })
                     .children(m.engine.map(|e| super::switching::label(p, e)))
                     .children(ticket.map(|t| div().max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
                     .child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted)),
@@ -207,10 +216,12 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
     if names.is_empty() {
         return div().into_any_element();
     }
-    let focus = model.focus.clone();
+    // Over a conversation with the PM: the project it is about, which it moves to.
+    let talk = if place == "chat" { model.talk_project() } else { None };
+    let focus = talk.clone().unwrap_or_else(|| model.focus.clone());
     let at = focus.as_ref().and_then(|f| names.iter().position(|n| n == f));
     let open = shell.board.popover == Some(Popover::Projects) && shell.board.slice_place == place;
-    let label = focus.clone().unwrap_or_else(|| t!("header.all_projects").into());
+    let label = focus.clone().unwrap_or_else(|| if talk.is_some() { t!("header.squad_wide").into() } else { t!("header.all_projects").into() });
     // The same pill as the conversation's title beside it: one height, one edge.
     let button = pill(p, SharedString::from(format!("slice-{place}")))
         .text_size(px(13.))
@@ -259,7 +270,11 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .hover(move |s| s.bg(p.wash))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.board.popover = None;
-                this.focus_project(target.clone(), window, cx);
+                if this.board.slice_place == "chat" && this.model.talk_project().is_some() {
+                    this.move_conversation(target.clone(), cx);
+                } else {
+                    this.focus_project(target.clone(), window, cx);
+                }
                 cx.notify();
             }))
             .child(div().w(px(10.)).flex().justify_center().children(color.map(|c| dot(c, 7.))))
@@ -278,13 +293,16 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .children(key.map(|k| div().w(px(26.)).text_align(TextAlign::Right).text_size(px(11.)).text_color(p.muted).child(k)))
     };
     let keys = ["⌃1", "⌃2", "⌃3", "⌃4", "⌃5", "⌃6", "⌃7", "⌃8", "⌃9"];
-    let mut rows: Vec<AnyElement> = vec![row("slice-all".into(), None, t!("header.all_projects").into(), project_counts(model, None), Some("⌃0"), model.focus.is_none(), None, cx).into_any_element()];
+    let talk = if shell.board.slice_place == "chat" { model.talk_project() } else { None };
+    let current = talk.clone().unwrap_or_else(|| model.focus.clone());
+    let all = if talk.is_some() { t!("header.squad_wide") } else { t!("header.all_projects") };
+    let mut rows: Vec<AnyElement> = vec![row("slice-all".into(), None, all.into(), project_counts(model, None), Some("⌃0"), current.is_none(), None, cx).into_any_element()];
     for (i, name) in names.iter().enumerate() {
         if !typed.is_empty() && !name.to_lowercase().contains(&typed) {
             continue;
         }
         rows.push(
-            row(SharedString::from(format!("slice-{name}")), Some(project_color(p, i)), name.clone(), project_counts(model, Some(name)), keys.get(i).copied(), model.focus.as_deref() == Some(name.as_str()), Some(name.clone()), cx)
+            row(SharedString::from(format!("slice-{name}")), Some(project_color(p, i)), name.clone(), project_counts(model, Some(name)), keys.get(i).copied(), current.as_deref() == Some(name.as_str()), Some(name.clone()), cx)
                 .into_any_element(),
         );
     }

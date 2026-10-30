@@ -1633,7 +1633,7 @@
   "sidebar.language": "Idioma",
   "sidebar.more": "{n} más",
   "sidebar.needs_you": "Tu turno",
-  "sidebar.new_in_project": "Trabajo nuevo en este proyecto",
+  "sidebar.new_in_project": "Nueva conversación en este proyecto",
   "sidebar.new_message": "Mensaje nuevo",
   "sidebar.other_machine": "Conectar a otra máquina…",
   "sidebar.pm_talk": "PM",
@@ -1935,5 +1935,11 @@
   "connect.none_match": "Ninguna máquina coincide. Escribe user@host para conectarte directamente.",
   "connect.need_user": "Pon el nombre de usuario de esa máquina antes de la @.",
   "connect.did_you_mean": "¿Querías decir {name} ({ip})?",
-  "connect.use_suggestion": "Conectar a esta dirección"
+  "connect.use_suggestion": "Conectar a esta dirección",
+  "sidebar.new_conversation": "Nueva conversación",
+  "sidebar.put_away": "Guardar",
+  "sidebar.fewer": "Mostrar menos",
+  "sidebar.work_working": "{n} en curso",
+  "sidebar.work_needs_you": "{n} te necesitan",
+  "header.squad_wide": "Todo el equipo"
 }

@@ -159,7 +159,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let dim = matches!(model.conn, Conn::Down { had_snapshot: false, .. });
     let on_board = shell.screen == Screen::Board;
     let menu = ui.view.menu;
-    let pm_on = shell.screen == Screen::Chat && model.side_open() == Some(Side::Pm);
+    let pm_on = shell.screen == Screen::Chat && model.side_open() == Some(Side::Pm) && model.draft_talk.is_none();
+    let new_on = shell.screen == Screen::Chat && model.draft_talk.as_ref().is_some_and(|(_, project)| project.is_none());
     let needs = model.needs_you_count();
     let working = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && model.in_focus(t)).count();
 
@@ -189,12 +190,18 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     };
     let nav_rows = v_flex()
         .gap(px(1.))
-        .child(nav("nav-new", IconName::Plus, t!("sidebar.new_message").into(), 0, 0, false).on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))))
+        .child(
+            nav("nav-new", IconName::Plus, t!("sidebar.new_conversation").into(), 0, 0, new_on)
+                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child("⌘N"))
+                .on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))),
+        )
         .child(nav("nav-pm", IconName::Bot, t!("sidebar.pm_talk").into(), 0, 0, pm_on).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                 this.open_side(Side::Pm, window, cx);
             }
         })))
+        // The conversations about the whole squad, under the PM's own.
+        .children(conversation_rows(shell, None, cx))
         .child(nav("nav-inbox", IconName::Inbox, t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }), window, cx) {
                 this.open_side_menu(Menu::Inbox, cx);
@@ -252,9 +259,20 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     for (ix, g) in groups.iter().enumerate() {
         let folded = shell.remembered.folded.contains(&g.key());
         let gap = if ix == 0 { 2. } else if after_rows { 10. } else { 2. };
-        list.push(project_head(shell, g, folded, gap, cx));
-        after_rows = !folded && (!g.is_quiet() || leaving.iter().any(|l| l.key == g.key()));
+        // A project's own conversations with the PM (the squad's folder has none:
+        // those about the whole squad are under the PM).
+        let talks = g.name.as_ref().map(|name| conversation_rows(shell, Some(name.as_str()), cx)).unwrap_or_default();
+        list.push(project_head(shell, g, folded, gap, !talks.is_empty(), cx));
+        after_rows = !folded && (!g.is_quiet() || !talks.is_empty() || leaving.iter().any(|l| l.key == g.key()));
         if folded {
+            continue;
+        }
+        list.extend(talks);
+        // Its live work in one line; opened, the tickets themselves.
+        if !g.is_quiet() {
+            list.push(work_line(shell, g, cx));
+        }
+        if !shell.board.side_work_open.contains(&g.key()) {
             continue;
         }
         for (id, live) in &g.rows {
@@ -430,11 +448,12 @@ pub fn hq_badge(p: Palette) -> impl IntoElement {
         .child("HQ")
 }
 
-fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut Context<Shell>) -> AnyElement {
+fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let key = g.key();
     let group = SharedString::from(format!("head-{key}"));
-    let quiet = g.is_quiet();
+    // Nothing in it to fold: no live work, no conversation.
+    let quiet = g.is_quiet() && !talks;
     let focused = g.name.is_some() && shell.model.focus == g.name;
     let label = g.name.clone().unwrap_or_else(|| t!("board.squad_folder").into());
     let name_color = if focused { p.text } else if quiet { p.muted } else { p.text2 };
@@ -551,8 +570,7 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
             .child(icon(IconName::Plus, 13., p.muted))
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
-                this.focus_project(Some(project.clone()), window, cx);
-                this.new_message(window, cx);
+                this.start_conversation(Some(project.clone()), window, cx);
             }))
     });
     let drag = g.name.clone().map(|name| ProjectDrag { name, palette: p });
@@ -580,6 +598,124 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         .children(counts)
         .child(div().flex_1())
         .children(new_in)
+        .into_any_element()
+}
+
+/// The conversations with the PM about `project` (`None`: the whole squad),
+/// most lately used first — and, while one is being started there, it.
+fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+    let p = shell.palette;
+    let model = &shell.model;
+    let mut rows = Vec::new();
+    if let Some((draft, about)) = &model.draft_talk
+        && about.as_deref() == project
+        && project.is_some()
+    {
+        let on = shell.screen == Screen::Chat;
+        rows.push(
+            row_shell(p, ("conv-draft", *draft as usize), on)
+                .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Message, 13., p.text2)))
+                .child(fading_title(p, t!("sidebar.new_conversation").into(), on, true))
+                .into_any_element(),
+        );
+    }
+    let talks: Vec<&crate::state::Lane> = model.conversations().into_iter().filter(|l| l.project.as_deref() == project).collect();
+    let all = shell.board.side_talks_all.contains(project.unwrap_or(""));
+    let shown = if all { talks.len() } else { talks.len().min(TALKS_SHOWN) };
+    for lane in &talks[..shown] {
+        rows.push(conversation_row(shell, lane, cx));
+    }
+    if talks.len() > TALKS_SHOWN {
+        let key = project.unwrap_or("").to_owned();
+        let words = if all { t!("sidebar.fewer").to_owned() } else { t!("sidebar.more", n = talks.len() - TALKS_SHOWN) };
+        rows.push(
+            row_shell(p, SharedString::from(format!("talks-more-{key}")), false)
+                .h(px(26.))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.board.side_talks_all.remove(&key) {
+                        this.board.side_talks_all.insert(key.clone());
+                    }
+                    cx.notify();
+                }))
+                .child(div().w(px(MARK_BOX)).flex_none())
+                .child(div().text_size(px(12.)).text_color(p.muted).child(words))
+                .into_any_element(),
+        );
+    }
+    rows
+}
+
+/// A project's conversations with the PM shown at once; the rest behind "+N개 더".
+const TALKS_SHOWN: usize = 5;
+
+/// A conversation with the PM: a spinner while it answers, its first words,
+/// and on the pointer the way to put it away. ⌘-click: in a window of its own.
+fn conversation_row(shell: &Shell, lane: &crate::state::Lane, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let id = lane.session;
+    let on = shell.screen == Screen::Chat && shell.model.talk == Some(id) && shell.model.draft_talk.is_none();
+    let group = SharedString::from(format!("conv-{id}"));
+    let mark = if lane.presence == crate::state::Presence::Working {
+        mark_element(p, Mark::Spinner, shell.spin(cx))
+    } else {
+        div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Message, 13., if on { p.text } else { p.muted })).into_any_element()
+    };
+    let title = lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into());
+    row_shell(p, ("conv", id as usize), on)
+        .group(group.clone())
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Conversation(id), window, cx) {
+                this.open_side(Side::Conversation(id), window, cx);
+            }
+        }))
+        .child(mark)
+        .child(fading_title(p, title, on, false))
+        .child(
+            div()
+                .id(("conv-away", id as usize))
+                .size(px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .invisible()
+                .group_hover(group, |s| s.visible())
+                .hover(move |s| s.bg(p.side_hover))
+                .tip(p, t!("sidebar.put_away"), None)
+                .child(crate::icons::icon(crate::icons::Icon::X, 12., p.muted))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.put_away_conversation(id, cx);
+                })),
+        )
+        .into_any_element()
+}
+
+/// A project's live work in one line — "작업 중 3 · 확인 필요 1" — that opens
+/// to its tickets and closes again.
+fn work_line(shell: &Shell, g: &SideGroup, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let key = g.key();
+    let open = shell.board.side_work_open.contains(&key);
+    let toggle = key.clone();
+    row_shell(p, SharedString::from(format!("work-{key}")), false)
+        .h(px(26.))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if !this.board.side_work_open.remove(&toggle) {
+                this.board.side_work_open.insert(toggle.clone());
+            }
+            cx.notify();
+        }))
+        .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }, 11., p.muted)))
+        .child(
+            h_flex()
+                .gap(px(6.))
+                .text_size(px(12.))
+                .when(g.working > 0, |r| r.child(div().text_color(p.text2).child(t!("sidebar.work_working", n = g.working))))
+                .when(g.working > 0 && g.waiting > 0, |r| r.child(div().text_color(p.muted).child("·")))
+                .when(g.waiting > 0, |r| r.child(div().text_color(p.orange).font_weight(FontWeight::SEMIBOLD).child(t!("sidebar.work_needs_you", n = g.waiting)))),
+        )
         .into_any_element()
 }
 
@@ -1447,9 +1583,37 @@ impl Shell {
         (buttons_end(crate::zoom::factor(self.remembered.zoom.0)) + 8. - self.sidebar_on_screen(cx)).max(pad)
     }
 
-    /// ⌘N: a new message to the PM.
+    /// ⌘N: a new conversation with the PM, about the whole squad.
     pub fn new_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_side(Side::Pm, window, cx);
+        self.start_conversation(None, window, cx);
+    }
+
+    /// A new conversation with the PM about `project` (`None`: the whole
+    /// squad), empty until its first message makes it.
+    pub fn start_conversation(&mut self, project: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.model.draft_conversation(project);
+        self.screen = Screen::Chat;
+        self.refresh(window, cx);
+        self.composer.focus(window, cx);
+        cx.notify();
+    }
+
+    /// The open conversation with the PM moves to `project` — one not made
+    /// yet just changes where it will be.
+    pub fn move_conversation(&mut self, project: Option<String>, cx: &mut Context<Self>) {
+        if let Some((_, draft)) = self.model.draft_talk.as_mut() {
+            *draft = project;
+            self.model.revision += 1;
+        } else if let Some(session) = self.model.talk {
+            self.send_command(equipe_core::protocol::Command::MoveConversation { session, project });
+        }
+        cx.notify();
+    }
+
+    /// Put a conversation with the PM away: it leaves the list.
+    pub fn put_away_conversation(&mut self, session: SessionId, cx: &mut Context<Self>) {
+        self.send_command(equipe_core::protocol::Command::CloseConversation { session });
+        cx.notify();
     }
 
     /// ⌘K: find anything — 모든 일, its search box.

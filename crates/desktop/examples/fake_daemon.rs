@@ -841,6 +841,8 @@ struct Routes {
     thread: HashMap<SessionId, Option<String>>,
     /// `(lane session, member session, project)`.
     lanes: Vec<(SessionId, SessionId, Option<String>)>,
+    /// The conversations the person opened with the PM: said to as they are.
+    kept: std::collections::HashSet<SessionId>,
 }
 
 type Shared = Arc<Mutex<Routes>>;
@@ -1139,7 +1141,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 let mut r = routes.lock().await;
                                 // What the screen that sent it shows, else the focus.
                                 let wanted = about.clone().unwrap_or_else(|| r.focus.clone());
-                                let lane = r.lanes.iter().find(|(_, of, project)| *of == session && *project == wanted).map(|l| l.0);
+                                let lane = if r.kept.contains(&session) { Some(session) } else { r.lanes.iter().find(|(_, of, project)| *of == session && *project == wanted).map(|l| l.0) };
                                 let session = match lane {
                                     Some(lane) => lane,
                                     None => {
@@ -1149,7 +1151,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                             r.lanes.push((id, session, wanted.clone()));
                                             let role = ["pm", "frontend", "backend", "designer"][(session as usize - 1).min(3)];
                                             let _ = events.send(Event::SessionStarted { session: id, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: role.into(), name: role.into() }), squad: Some("demo".into()) });
-                                            let _ = events.send(Event::LaneOpened { session: id, of: session, project: wanted.clone() });
+                                            let _ = events.send(Event::LaneOpened { session: id, of: session, project: wanted.clone(), kept: false });
                                             id
                                         } else {
                                             if here != wanted {
@@ -1176,6 +1178,19 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     };
                                     turns.lock().await.insert(session, task);
                                 }
+                            }
+                            // Like the daemon: a conversation of the PM's of its own, kept.
+                            Command::NewConversation { session, project, .. } => {
+                                routes.lock().await.kept.insert(session);
+                                let _ = events.send(Event::SessionStarted { session, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some("demo".into()) });
+                                let _ = events.send(Event::LaneOpened { session, of: 1, project, kept: true });
+                            }
+                            Command::MoveConversation { session, project } => {
+                                let _ = events.send(Event::LaneMoved { session, project });
+                            }
+                            Command::CloseConversation { session } => {
+                                routes.lock().await.kept.remove(&session);
+                                let _ = events.send(Event::SessionClosed { session });
                             }
                             Command::SubmitLater { session, text, about } => {
                                 let project = match about { Some(about) => about, None => routes.lock().await.focus.clone() };

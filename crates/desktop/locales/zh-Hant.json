@@ -1589,7 +1589,7 @@
   "sidebar.language": "語言",
   "sidebar.more": "還有 {n} 項",
   "sidebar.needs_you": "輪到你",
-  "sidebar.new_in_project": "此專案中的新工作",
+  "sidebar.new_in_project": "在此專案中新增對話",
   "sidebar.new_message": "新訊息",
   "sidebar.other_machine": "連線至其他電腦…",
   "sidebar.pm_talk": "PM 對話",
@@ -1883,5 +1883,11 @@
   "connect.none_match": "沒有相符的機器。輸入 user@host 即可直接連線。",
   "connect.need_user": "請在 @ 前填入那台機器上的使用者名稱。",
   "connect.did_you_mean": "你是指 {name}（{ip}）嗎？",
-  "connect.use_suggestion": "連線到這個位址"
+  "connect.use_suggestion": "連線到這個位址",
+  "sidebar.new_conversation": "新對話",
+  "sidebar.put_away": "收起對話",
+  "sidebar.fewer": "收起",
+  "sidebar.work_working": "進行中 {n}",
+  "sidebar.work_needs_you": "待你確認 {n}",
+  "header.squad_wide": "整個小隊"
 }

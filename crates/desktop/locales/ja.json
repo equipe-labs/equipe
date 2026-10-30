@@ -1589,7 +1589,7 @@
   "sidebar.language": "言語",
   "sidebar.more": "ほか {n} 件",
   "sidebar.needs_you": "あなたの番",
-  "sidebar.new_in_project": "このプロジェクトに新しい作業",
+  "sidebar.new_in_project": "このプロジェクトで新しい会話",
   "sidebar.new_message": "新規メッセージ",
   "sidebar.other_machine": "別のマシンに接続…",
   "sidebar.pm_talk": "PM",
@@ -1883,5 +1883,11 @@
   "connect.none_match": "一致するマシンがありません。user@host と入力すると直接接続します。",
   "connect.need_user": "@ の前にそのマシンのユーザー名を入れてください。",
   "connect.did_you_mean": "{name}（{ip}）のことですか？",
-  "connect.use_suggestion": "このアドレスに接続"
+  "connect.use_suggestion": "このアドレスに接続",
+  "sidebar.new_conversation": "新しい会話",
+  "sidebar.put_away": "会話を片付ける",
+  "sidebar.fewer": "折りたたむ",
+  "sidebar.work_working": "作業中 {n}",
+  "sidebar.work_needs_you": "確認待ち {n}",
+  "header.squad_wide": "スクワッド全体"
 }

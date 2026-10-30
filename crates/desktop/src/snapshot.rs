@@ -103,6 +103,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "key" => shell.update(cx, |shell, cx| {
                     shell.on_approval_key(&arg, false, window, cx);
                 }),
+                // A new conversation with the PM (`newtalk` the squad's, `newtalk:<project>`).
+                "newtalk" => shell.update(cx, |shell, cx| shell.start_conversation((!arg.is_empty()).then(|| arg.clone()), window, cx)),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
                     shell.on_composer_key(&verb, &Modifiers::default(), window, cx);
