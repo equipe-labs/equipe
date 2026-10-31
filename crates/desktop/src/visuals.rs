@@ -530,6 +530,9 @@ pub type Drag = ((f32, f32), (f32, f32), bool);
 /// The steps `+` and `−` go through.
 pub const ZOOMS: [f32; 8] = [1., 1.5, 2., 3., 4., 6., 8., 12.];
 
+/// Under this when a pinch ends, the picture goes whole.
+pub const PINCH_SETTLE: f32 = 1.03;
+
 impl Zoom {
     /// Its scale for `path`: 1 for a picture it wasn't zoomed on.
     pub fn of(&self, path: &str) -> (f32, (f32, f32)) {
@@ -553,6 +556,19 @@ impl Zoom {
         let next = if inward { ZOOMS.iter().copied().find(|z| *z > now + 0.01) } else { ZOOMS.iter().rev().copied().find(|z| *z < now - 0.01) };
         if let Some(next) = next {
             self.set(path, next, at);
+        }
+    }
+
+    /// A pinch's share, as the trackpad sends one each frame: the scale grows
+    /// by `delta` of itself (0.1: a tenth bigger), the point `at` kept under
+    /// the fingers. Let go a hair past whole, it settles whole, so the bar
+    /// says Fit rather than 101%.
+    pub fn pinch(&mut self, path: &str, delta: f32, at: (f32, f32), ended: bool) {
+        let (now, _) = self.of(path);
+        let next = if delta.is_finite() { now * (1. + delta).max(0.05) } else { now };
+        self.set(path, next, at);
+        if ended && self.scale < PINCH_SETTLE {
+            self.set(path, 1., at);
         }
     }
 
@@ -674,6 +690,82 @@ mod tests {
         assert_eq!(z.of("a.png").0, 12.);
         // Another picture starts whole.
         assert_eq!(z.of("b.png"), (1., (0., 0.)));
+    }
+
+    /// Where the point `at` (px from the view's centre) is on the picture
+    /// itself, at scale 1: what must stay under the fingers.
+    fn on_picture(z: &Zoom, path: &str, at: (f32, f32)) -> (f32, f32) {
+        let (scale, pan) = z.of(path);
+        ((at.0 - pan.0) / scale, (at.1 - pan.1) / scale)
+    }
+
+    #[test]
+    fn a_pinch_zooms_frame_by_frame_keeping_what_is_under_the_fingers() {
+        let mut z = Zoom::default();
+        let (fit, room) = ((800., 500.), (1000., 600.));
+        let at = (150., -60.);
+        let under = on_picture(&z, "a.png", at);
+        // Twenty small frames in: smooth, every one a little further, none a step.
+        let mut last = 1.;
+        for _ in 0..20 {
+            z.pinch("a.png", 0.04, at, false);
+            let (scale, _) = z.of("a.png");
+            assert!(scale > last && scale - last < 0.1 * scale, "{last} → {scale}");
+            last = scale;
+            let now = on_picture(&z, "a.png", at);
+            assert!((now.0 - under.0).abs() < 0.01 && (now.1 - under.1).abs() < 0.01, "{under:?} drifted to {now:?} at {scale}");
+        }
+        assert!((last - 1.04f32.powi(20)).abs() < 0.01, "{last}");
+        // Kept over the view, it still holds where the picture is bigger than the view.
+        z.clamp(fit, room);
+        let under = on_picture(&z, "a.png", at);
+        z.pinch("a.png", 0.04, at, false);
+        z.clamp(fit, room);
+        let now = on_picture(&z, "a.png", at);
+        assert!((now.0 - under.0).abs() < 0.01 && (now.1 - under.1).abs() < 0.01, "{under:?} → {now:?}");
+        // And out again at another point: that one stays put instead.
+        let at = (-200., 100.);
+        let under = on_picture(&z, "a.png", at);
+        z.pinch("a.png", -0.1, at, false);
+        z.clamp(fit, room);
+        let now = on_picture(&z, "a.png", at);
+        assert!((now.0 - under.0).abs() < 0.01 && (now.1 - under.1).abs() < 0.01, "{under:?} → {now:?}");
+        // The + and − steps go on from wherever the pinch left it.
+        let (pinched, _) = z.of("a.png");
+        z.step("a.png", true, (0., 0.));
+        assert_eq!(z.of("a.png").0, ZOOMS.iter().copied().find(|s| *s > pinched).unwrap());
+    }
+
+    #[test]
+    fn a_pinch_stops_at_whole_and_at_the_most_and_settles_whole_when_let_go_near_it() {
+        let mut z = Zoom::default();
+        // Out past whole: whole, centred — the bar says Fit.
+        z.pinch("a.png", -0.5, (300., 200.), false);
+        assert_eq!(z.of("a.png"), (1., (0., 0.)));
+        // In past the most: the most.
+        for _ in 0..200 {
+            z.pinch("a.png", 0.2, (0., 0.), false);
+        }
+        assert_eq!(z.of("a.png").0, ZOOMS[ZOOMS.len() - 1]);
+        // A wild frame (a whole pinch's worth the other way) neither flips nor breaks it.
+        z.pinch("a.png", -5., (0., 0.), false);
+        assert_eq!(z.of("a.png"), (1., (0., 0.)));
+        z.pinch("a.png", f32::NAN, (0., 0.), false);
+        assert_eq!(z.of("a.png").0, 1.);
+        // Let go a hair past whole: whole; let go well in: kept as it is.
+        z.pinch("a.png", 0.02, (100., 0.), false);
+        z.pinch("a.png", 0., (100., 0.), true);
+        assert_eq!(z.of("a.png"), (1., (0., 0.)));
+        z.pinch("a.png", 0.3, (100., 0.), false);
+        z.pinch("a.png", 0., (100., 0.), true);
+        assert!((z.of("a.png").0 - 1.3).abs() < 0.001);
+        // Pinched out near the edge, the picture is kept over the view, not off it.
+        let (fit, room) = ((800., 500.), (1000., 600.));
+        z.set("a.png", 4., (0., 0.));
+        z.pinch("a.png", -0.5, (-450., 0.), false);
+        z.clamp(fit, room);
+        let (scale, pan) = z.of("a.png");
+        assert!(pan.0.abs() <= (fit.0 * scale - room.0) / 2. + 0.01, "{pan:?} at {scale}");
     }
     use equipe_core::protocol::decide::Choice;
 
