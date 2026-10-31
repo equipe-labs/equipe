@@ -151,10 +151,26 @@ pub fn button_at(start: Rect, end: Rect, size: (f32, f32), window: (f32, f32)) -
     (x, y)
 }
 
+/// Where the bar's selection is: as drawn now; gone (a press cleared it, the
+/// bar's own included), where it was last drawn — the bar doesn't jump from
+/// under the pointer; never drawn (a double-clicked word), where the button
+/// let go.
+pub fn place(now: Option<(Rect, Rect)>, before: Option<(Rect, Rect)>, released: Rect) -> (Rect, Rect) {
+    now.or(before).unwrap_or((released, released))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bar_stays_where_it_was_when_a_press_clears_the_selection() {
+        let r = |x: f32| Rect { x, y: 10., w: 1., h: 1. };
+        let drawn = (r(100.), r(300.));
+        assert_eq!(place(Some(drawn), None, r(5.)), drawn, "as drawn now");
+        assert_eq!(place(None, Some(drawn), r(5.)), drawn, "cleared by the press: where it was, not where the button let go");
+        assert_eq!(place(None, None, r(5.)), (r(5.), r(5.)), "never drawn: where the button let go");
+    }
 
     #[test]
     fn a_selection_is_trimmed_to_its_words() {

@@ -115,7 +115,7 @@ nothing: fill `brand.md` with the person first — who it is for, three to five 
 (this, not that), two or three references they admire and one thing it must not look like — then three genuinely \
 different directions, each a tokens file (`design/directions/a.tokens.json`, …) drawn with `equipe design specimen \
 --tokens <file> --png`: the style tiles, side by side in one comparison with your recommendation and why. Either \
-way: `brand.md` holds the voice — one register everywhere (해요체 or 합니다체, buttons and errors too), the words it \
+way: `brand.md` holds the voice — one register everywhere (formal or casual, buttons and errors too), the words it \
 uses and avoids, how numbers, money and dates are written, and sample lines for a primary button, an empty state, \
 an error, a success and a destructive confirm; tokens in layers (primitive values, then roles like \
 `color.action.primary` aliasing them, then components'); Korean set for Korean (a Korean-first family such as \
@@ -146,7 +146,7 @@ words, and what it says (denser or airier, quieter or louder, …) — read it b
 body and slightly negative in large headings, `font-variant-numeric: tabular-nums` wherever numbers line up. Money \
 and markets for Korean readers: red is up and blue is down — give them their own tokens (`color.change.up`, \
 `color.change.down`), apart from danger and info; always pair the colour with ▲▼ and a sign; units in the column \
-head (\"(단위: 억 원)\"), never ₩ and 원 together, changes of a rate in %p, and the date the numbers stand at on \
+head (\"(unit: 100M KRW)\"), never the ₩ sign and the written unit together, changes of a rate in %p, and the date the numbers stand at on \
 every screen of figures.\n\
 Your sources of truth are files: tokens, SVG and HTML mockups, markdown guidelines. Render each one and look at the \
 picture yourself before you show or hand it in; compute contrast ratios instead of judging by eye (WCAG AA at \
@@ -381,7 +381,7 @@ one on with `update_ticket` (status todo), fold it into another, or drop it (can
 Put to the person, with `propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a \
 production deploy or release, live data deleted or migrated, money or billing, security, permissions or accounts, what \
 customers or other people will see or receive — a brand or design direction, or anything they asked to see themselves; \
-tell them in one line what waits and why it's theirs. When the person asked for work to go live (\"배포해줘\"), that is their \
+tell them in one line what waits and why it's theirs. When the person asked for work to go live (\"ship it\"), that is their \
 word for it: accept it with `push` and see it through. Whatever the person must decide or do — approve something, give a \
 password, sign in — goes in front of them as a card (`propose_accept`, `ask_person`, `ask_decision`, `block_on_person`, \
 `show_my_browser`), never only asked in words and waited on.";
@@ -460,9 +460,9 @@ signing up, filing — is `action` (each outward step asks the person first). A 
 and any role can take one. equipe hands a ticket to its owner as soon as its \
 dependencies are done and the owner is free, so order the work with depends_on. Only the person accepts \
 finished work; tell them when something waits for review. When they say in words that they accept, merge or send back \
-work in review (\"전부 수락\", \"T-1이랑 T-3 수락해줘\", \"머지까지 해줘\", \"이건 반려\"), call `propose_accept` right \
-away: it puts a confirmation card in front of them. Don't lecture them about buttons or where to click — say in one line \
-that the card is up (\"확인 카드를 띄웠어요\"). Their words aren't the acceptance, and yours never are: only their click \
+work in review (\"accept them all\", \"accept T-1 and T-3\", \"merge it too\", \"reject this one\"), call `propose_accept` right \
+away: it puts a confirmation card in front of them. Don't lecture them about buttons or where to click — say in one line, \
+in their language, that the card is up (\"The card is up\"). Their words aren't the acceptance, and yours never are: only their click \
 on the card accepts, merges or sends back. Give each ticket to the member whose role fits; own one yourself only when \
 nobody on the team could do it — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
@@ -512,7 +512,7 @@ release, deploy or start anything else that ships, say too when it will be live 
 Questions that sharpen a vague ask are `ask_decision` questions too. \
 When a decision is the person's to make and comes down to a few distinct options — an approach, a scope, a provider, \
 a trade-off — put it to them with `ask_decision`: one to four questions, each with two to four options, the one you \
-recommend first, its label ending in \"(Recommended)\" written in the person's language (\"(추천)\" in Korean). It \
+recommend first, its label ending in \"(Recommended)\" written in the person's language. It \
 doesn't hold you up: end your turn, or go on with what doesn't depend on it; their answers come as their next \
 message. Don't ask what you can settle yourself, and don't use it for open-ended information or something only they \
 can do (that is `block_on_person`), for a yes before acting in their name (`ask_person`), or for permissions — those \
@@ -816,9 +816,9 @@ mod tests {
             assert!(text.contains(tool), "{tool}: {text}");
         }
         assert!(text.contains("(`/Users/x/.local/bin/equipe` if `equipe` isn't on your PATH)"), "{text}");
-        assert!(text.contains("this, not that") && text.contains("해요체"), "brand and voice first");
+        assert!(text.contains("this, not that") && text.contains("formal or casual"), "brand and voice first");
         assert!(!text.contains("{tools_at}"));
-        for rule in ["## Locked", "sceptical", "design/taste.md", "keep-all", "color.change.up", "(단위: 억 원)"] {
+        for rule in ["## Locked", "sceptical", "design/taste.md", "keep-all", "color.change.up", "(unit: 100M KRW)"] {
             assert!(text.contains(rule), "{rule}");
         }
         let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
@@ -1101,7 +1101,7 @@ mod tests {
         let member = charter(role("mobile").unwrap(), "mobile", &ctx(&team, &[], true));
         assert!(member.contains("tell the PM, who proposes it to the person") && !member.contains("`propose_team_change`"), "{member}");
         // Acceptance in words: the PM raises the card at once, without a lecture; the click decides.
-        for part in ["call `propose_accept` right away", "Don't lecture them about buttons", "확인 카드를 띄웠어요", "only their click on the card accepts"] {
+        for part in ["call `propose_accept` right away", "Don't lecture them about buttons", "The card is up", "only their click on the card accepts"] {
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(member.contains("never their words, nor yours") && member.contains("don't walk them through buttons") && !member.contains("`propose_accept`"), "{member}");

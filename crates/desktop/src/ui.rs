@@ -308,6 +308,29 @@ impl RenderOnce for Switch {
     }
 }
 
+/// Whether a press on the title bar's empty room is the double-click macOS
+/// gives a title bar (a third click of the same press is not another one).
+pub fn title_double_click(click_count: usize) -> bool {
+    click_count == 2
+}
+
+/// A strip of the window's own title bar: it drags the window, and a
+/// double-click does what macOS does with a title bar's — zoom, minimize or
+/// nothing, as System Settings › Desktop & Dock says (the platform reads it).
+pub fn title_bar(strip: Div) -> Div {
+    strip.window_control_area(WindowControlArea::Drag).on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, _| {
+        if title_double_click(event.click_count) {
+            window.titlebar_double_click();
+        }
+    })
+}
+
+/// The empty room of a title bar with controls in it: taking what is left
+/// beside them, so a double-click on a control stays the control's.
+pub fn title_gap() -> Div {
+    title_bar(div().flex_1().h_full().min_w(px(8.)))
+}
+
 /// Words that grow heavier when their control is the one in use, as wide
 /// either way: a hidden copy at the heavy weight holds the room, so picking
 /// a tab or a segment moves nothing beside it. `cut`: one line, an ellipsis
@@ -325,7 +348,14 @@ pub fn steady(label: impl Into<SharedString>, heavy: FontWeight, on: bool, cut: 
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, SWITCH_W, knob_left, track};
+    use super::{Kind, SWITCH_W, knob_left, title_double_click, track};
+
+    #[test]
+    fn the_title_bar_acts_on_a_double_click_only() {
+        assert!(!title_double_click(1), "one click drags or does nothing");
+        assert!(title_double_click(2), "a double-click: zoom, minimize or nothing, as macOS says");
+        assert!(!title_double_click(3), "a third click of the same press isn't another");
+    }
     use crate::theme::{Palette, contrast, mix};
     use gpui_kit::WindowAppearance;
 

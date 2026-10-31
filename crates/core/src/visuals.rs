@@ -404,10 +404,13 @@ fn scratch_folders() -> Vec<PathBuf> {
 /// by name is given from the squad's projects and those too.
 pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[PathBuf]) -> Result<ImageRead, String> {
     let mut shown = shown(home, &ask.squad);
-    if !shown.paths.contains(&ask.path) && !in_folder(&shown, &ask.path) {
+    // A line that embeds a picture by its name alone, read against another
+    // folder than the screen's: the same name said counts as said.
+    let named = file_name(&ask.path).is_some_and(|name| shown.said.iter().any(|s| file_name(s) == Some(name)));
+    if !shown.paths.contains(&ask.path) && !in_folder(&shown, &ask.path) && !named {
         return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
     }
-    if shown.said.contains(&ask.path) {
+    if shown.said.contains(&ask.path) || named {
         shown.roots.extend(shown.projects.iter().cloned());
         shown.roots.extend(scratch.iter().cloned());
     }
@@ -415,7 +418,11 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         (Some(max), Some(cap)) => Some(max.min(cap)),
         (max, cap) => max.or(cap),
     };
-    let path = Path::new(&ask.path);
+    let asked = Path::new(&ask.path);
+    // Not where it was read against (a member named a file it saved in a
+    // ticket's worktree): the newest picture of that name in the squad's folders.
+    let found = (std::fs::symlink_metadata(asked).is_err() && !shown.kept.contains_key(&ask.path)).then(|| by_name(&shown.roots, asked)).flatten();
+    let path = found.as_deref().unwrap_or(asked);
     match read(path, &shown.roots, max) {
         // Its worktree went with its acceptance: git still has it.
         Err(why) if std::fs::symlink_metadata(path).is_err() => match shown.kept.get(&ask.path) {
@@ -424,6 +431,47 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         },
         read => read,
     }
+}
+
+/// A path's last part, if it has one.
+fn file_name(path: &str) -> Option<&str> {
+    Path::new(path).file_name().and_then(|n| n.to_str())
+}
+
+/// How deep, and through how many entries, a picture is looked for by name.
+const BY_NAME_DEPTH: usize = 6;
+const BY_NAME_ENTRIES: usize = 20_000;
+
+/// The newest file named as `asked`'s last part under `roots` — never in
+/// hidden folders or build output — if any.
+fn by_name(roots: &[PathBuf], asked: &Path) -> Option<PathBuf> {
+    let name = asked.file_name()?;
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    let mut left = BY_NAME_ENTRIES;
+    let mut queue: std::collections::VecDeque<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0)).collect();
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            if left == 0 {
+                return best.map(|(_, p)| p);
+            }
+            left -= 1;
+            let Ok(kind) = entry.file_type() else { continue };
+            let entry_name = entry.file_name();
+            if kind.is_dir() {
+                let skip = entry_name.to_string_lossy().starts_with('.') || matches!(entry_name.to_str(), Some("target" | "node_modules" | ".git"));
+                if !skip && depth + 1 < BY_NAME_DEPTH {
+                    queue.push_back((entry.path(), depth + 1));
+                }
+            } else if kind.is_file() && entry_name == name {
+                let at = entry.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                if best.as_ref().is_none_or(|(b, _)| at > *b) {
+                    best = Some((at, entry.path()));
+                }
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// Answer a `list_images`: the pictures right in a folder the squad's
@@ -536,12 +584,9 @@ pub fn moved(images: &[String], from: &Path, to: &Path) -> Vec<String> {
 
 /// Words a question names something to look at by, in the languages the
 /// person may write in.
-const VISUAL_WORDS: [&str; 44] = [
-    "logo", "icon", "color", "colour", "palette", "mockup", "mock-up", "wireframe", "layout", "font", "typeface", "typography",
-    "illustration", "banner", "visual", "로고", "아이콘", "색상", "컬러", "배색", "시안", "목업", "와이어프레임", "레이아웃",
-    "폰트", "서체", "일러스트", "배너", "ロゴ", "アイコン", "配色", "フォント", "レイアウト", "图标", "標誌", "标志", "配色",
-    "字体", "字體", "布局", "版面", "farbe", "couleur", "police",
-];
+fn visual_words() -> &'static [&'static str] {
+    crate::i18n::every("match.visual_words")
+}
 
 /// The word a tool's answer adds when a question names something to look at
 /// — a logo, colours, a layout — yet shows no picture: the person would be
@@ -552,7 +597,7 @@ pub fn nudge(questions: &[Question]) -> Option<&'static str> {
     }
     let names_visuals = questions.iter().filter(|q| !q.options.is_empty()).any(|q| {
         let text = std::iter::once(q.question.as_str()).chain(std::iter::once(q.header.as_str())).chain(q.options.iter().flat_map(|c| [c.label.as_str(), c.description.as_str()])).collect::<Vec<_>>().join(" ").to_lowercase();
-        VISUAL_WORDS.iter().any(|w| text.contains(w))
+        visual_words().iter().any(|w| text.contains(w))
     });
     names_visuals.then_some(
         "This reads like a visual choice, yet no option shows a picture: the person is choosing blind. Render or mock up \
@@ -852,6 +897,54 @@ mod tests {
         assert!(serve(&project.join("docs/unsaid.png")).unwrap_err().contains("isn't a picture"));
         let outside = serve(&private.join("passport.png")).unwrap_err();
         assert_eq!(rpc::ImageWhy::of(&outside), rpc::ImageWhy::Outside, "{outside}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_picture_named_alone_but_saved_in_a_tickets_worktree_still_shows() {
+        let home = dir("byname");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let worktree = home.join("worktrees/acme.home/t194-6ae5d43d");
+        let outputs = worktree.join("outputs/T-194 배포");
+        std::fs::create_dir_all(&outputs).unwrap();
+        png(&outputs.join("live-en.png"), 40, 30, false);
+        let ticket = Ticket {
+            id: 0,
+            title: "배포".into(),
+            body: "".into(),
+            status: crate::protocol::TicketStatus::Review,
+            kind: crate::protocol::TicketKind::Task,
+            owner: Some("frontend".into()),
+            assignee: Some("frontend".into()),
+            project: None,
+            depends_on: vec![],
+            branch: None,
+            worktree: None,
+            merged: None,
+            off_main: None,
+            design_qa: None,
+            created_by: "pm".into(),
+            note: None,
+            asks: vec![],
+            remaining: vec![],
+            images: vec![],
+            priority: Default::default(),
+            rank: 0,
+            updated_at: None,
+        };
+        let id = journal.create_ticket(&ticket).unwrap();
+        journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(worktree.clone()), ..Default::default() }).unwrap();
+        // The PM speaks from the squad's folder and names the picture alone.
+        let desk = home.join("squads/acme/home");
+        std::fs::create_dir_all(&desk).unwrap();
+        conversation(&journal, 1, &desk, &[reply("라이브 화면이에요.\n![라이브 en](live-en.png)")]);
+        let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
+        assert_eq!(serve(&home, &ask(&desk.join("live-en.png")), None).unwrap().width, Some(40), "found in the ticket's outputs");
+        // A screen that read it against the project instead: the same name, said, shows too.
+        assert_eq!(serve(&home, &ask(&home.join("code/site/live-en.png")), None).unwrap().width, Some(40));
+        // A name never said gives nothing, though a file of it is there.
+        png(&outputs.join("secret.png"), 4, 4, false);
+        assert!(serve(&home, &ask(&desk.join("secret.png")), None).unwrap_err().contains("isn't a picture"));
         std::fs::remove_dir_all(home).unwrap();
     }
 

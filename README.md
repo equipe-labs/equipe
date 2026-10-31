@@ -104,6 +104,7 @@ CLAUDE CODE  your claude · signs itself in
 | `equipe login` | Pick an engine and sign in (`codex` / `claude`, `--again`, `--no-browser`) |
 | `equipe logout` | Forget equipe's Codex login (Claude Code keeps its own) |
 | `equipe status` | Which engines are ready, on which plan, with which models |
+| `equipe review` | An NVIDIA Nemotron model on Nebius Token Factory reviews this repository's changes — against `HEAD`, or `--base <ref>` — with only `NEBIUS_API_KEY` (see [Nemotron review](#nemotron-review-on-nebius-token-factory)). `--models` lists the account's Nemotron models |
 | `equipe roles` | The roles a squad can have, what each does and the model it gets |
 | `equipe squads` | Your squads and the projects each works on |
 | `equipe lang [code\|auto]` · `/lang` | The language equipe speaks to you — ko, en, ja, zh-Hans, zh-Hant, es, fr, de — one pick for the console, the app and what the daemon says in conversations (the app picks it in Settings, live). Nothing picked (`auto`): `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` in a terminal, then the system's preferred languages in order (on a Mac, the language set for equipe alone in System Settings › General › Language & Region › Applications included), else English. `EQUIPE_LANG` overrides everything. Members write to you in the language you write in |
@@ -151,9 +152,226 @@ says whether that's a subscription or per-token API billing.
 > squad on one subscription will reach them; plan to give Claude Code the roles that
 > need it most.
 
+**NVIDIA Nemotron on Nebius Token Factory — bring your key.** With neither plan, a Token
+Factory key and the free, open-source Codex CLI (no `codex login`) run every member on a
+Nemotron model, billed per token to your key — see
+[Run the whole squad on Nebius Token Factory](#run-the-whole-squad-on-nebius-token-factory).
+
+## Run the whole squad on Nebius Token Factory
+
+**What.** Every member — the PM, the engineers, QA — can run on an **NVIDIA Nemotron**
+model on **Nebius Token Factory**, with no Claude Code and no ChatGPT plan. The agent loop
+is the **Codex CLI**'s own (free and open source; *no* `codex login` is needed for this):
+Nemotron decides, and Codex's tools read files, run commands and tests, and change files,
+in the member's worktree and sandbox, as for any Codex member. equipe's board tools (take a
+ticket, hand it in, ask the person) reach the model like Codex's own.
+
+**The key, the easy way:** in the desktop app, **Settings → AI platforms → Nebius Token
+Factory**, paste the key and press **Connect** — or run `equipe login nebius` in a terminal.
+Either saves it on the daemon's machine (`~/.equipe/keys/nebius`, readable only by you); the
+daemon uses it from then on, no restart and no shell setup needed. The card shows where the key
+comes from and removes it again. Claude Code and Codex connect from the same page.
+
+Or from a shell, for this daemon only:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh  # Codex CLI, no Node needed (or: brew install codex)
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY    # paste the key; it isn't echoed or kept in history
+export EQUIPE_NEBIUS_MODEL=nvidia/…                 # optional: a model your account offers (see `equipe review --models`)
+equipe daemon stop; equipe daemon run               # from this shell, so the daemon has the key; Ctrl-C stops it
+```
+
+Then, in another terminal (with `NEBIUS_API_KEY` exported there too, so the first-run
+setup sees it), run `equipe` as usual — or open the desktop app. `equipe status` has a
+`nemotron` section that says whether the key and the codex CLI are there.
+
+**Which members go on it.**
+- **Nothing signed in** (no Claude Code, Codex not logged in) and a key in the daemon's
+  environment: every member starts on Nemotron — `EQUIPE_NEBIUS_MODEL`, else the account's
+  best Nemotron chat model (Super, then Ultra, then Nano, from `GET /models`). Each says so
+  when it joins: *"Runs on NVIDIA Nemotron (nvidia/…) through Nebius Token Factory…"*, and
+  its model shows as `nvidia/…` wherever models are shown.
+- **Claude Code or Codex signed in:** nothing changes. Move a Codex member over with
+  `/model <member> nvidia/…`, and back with an OpenAI model id.
+
+### Swap the model any time
+
+The agent (Codex's loop, its sandbox, equipe's board tools) stays; the **model** is
+whatever you point it at. Any id with an organization or a tag — `nvidia/…`, `Qwen/…`,
+`deepseek-ai/…`, `meta-llama/…`, `qwen3-coder:30b` — runs on the open provider; OpenAI
+and Anthropic ids (no `/`) stay on their own plans.
+
+- **Another model on Token Factory:** `/model <member> Qwen/Qwen3-Coder-480B-A35B-Instruct`
+  (or any id `equipe review --models` / your account lists), from the next turn on; or
+  `EQUIPE_NEBIUS_MODEL=…` for every member that starts.
+- **Another server entirely** — anything that speaks OpenAI's Chat Completions API
+  (OpenRouter, Together, Groq, Fireworks, vLLM, Ollama, LM Studio…):
+
+  ```bash
+  export EQUIPE_MODEL_BASE_URL=https://openrouter.ai/api/v1   # or http://localhost:11434/v1 for Ollama
+  read -rs EQUIPE_MODEL_API_KEY && export EQUIPE_MODEL_API_KEY  # a server on this machine needs none
+  export EQUIPE_MODEL=qwen/qwen3-coder                          # optional: else a Nemotron, or the first listed
+  equipe daemon stop; equipe daemon run
+  ```
+
+  Set, `EQUIPE_MODEL_BASE_URL` is used in place of Token Factory — for members' turns and
+  for reviews alike.
+
+How: Codex asks its provider in OpenAI's Responses API only. equipe's relay on the loopback
+(`crates/providers/src/relay.rs`, `crates/providers/src/chat_wire.rs`) says each request in
+**Chat Completions** — the API nearly every server speaks — and the server's streamed answer
+back in Responses events, tool calls included. `EQUIPE_MODEL_WIRE=responses` (or
+`EQUIPE_NEBIUS_WIRE`) sends Responses requests as they are, for a server that serves them.
+
+**How.** For a member whose model is `nvidia/…` (or any open model, above), equipe runs
+`codex app-server` with Token Factory as Codex's model provider (`-c model_provider="nebius"`,
+`model_providers.nebius.wire_api="responses"`, `env_key="NEBIUS_API_KEY"`, …), pointed at
+equipe's relay, which asks Token Factory in its OpenAI-compatible **Chat Completions API**
+(`POST /v1/chat/completions`, streamed, function tools). What such a provider can't serve is turned off for these turns (web
+search, image tools, subagents, OpenAI's remote compaction). Codex sends an MCP server's
+tools — equipe's board — grouped in a Responses `namespace`; a small relay on the loopback
+(`crates/providers/src/relay.rs`) passes each request on with them as plain function tools
+(`mcp__equipe__take_ticket`) and puts the model's calls back as Codex named them; Codex's own
+metadata for OpenAI (`client_metadata`, `x-codex-*` headers — the workspace's paths among it)
+stays on your machine. The key
+goes to the app-server in its environment only — never on a command line — Codex reads it
+there, the agent's own commands don't see it, and the relay passes the request's header on
+without reading, keeping or logging it. Code: `crates/core/src/nemotron.rs` (members on
+Token Factory), `crates/providers/src/codex_app.rs` (`Provider`, `provider_args`). Each
+member turn leaves one line in the daemon's log — `turn on Nemotron via Nebius Token Factory:
+model …, N request(s) [statuses], request ids […], … ms, tokens in … out …` — never the key
+or the text.
+
+**What is verified — against a mock, not yet against Token Factory.** The tests run the
+**real installed `codex` 0.154.0** through equipe against a stand-in Chat Completions
+server (another model's id, chunked answers) and a stand-in Responses API on
+localhost with a dummy key (`crates/providers/tests/nebius_codex.rs`,
+`crates/core/tests/nebius.rs`; skipped without `codex`): a function call runs a shell
+command in the member's worktree and the file lands on the member's branch; an MCP tool
+call reaches the MCP server and its answer goes back to the model; every request is
+`POST /v1/responses` with `Authorization: Bearer <the key>`, the `nvidia/…` model and
+function tools only; a refused key (401) ends the turn with *"Nebius Token Factory refused
+the key"*. **Real run (2026-10-30):** on the real Token Factory, `nvidia/Nemotron-3.5-Super-VL`
+drove Codex to write and run `hello.py` in 2 requests (both 200, 3.2 s, 9,820 tokens in / 196
+out), reviewed a change with an auth bypass correctly, and ran a whole squad (PM → ticket →
+member → tests → hand-in → review) with no other engine — see
+[verification.md](docs/hackathon/verification.md#real-runs-2026-10-30).
+
+**Limits.**
+- Files change through shell commands (`exec_command`): Codex 0.154 offers its
+  `apply_patch` tool only in a form a function-tool provider can't serve. Edits show as
+  `Bash` steps, not as diffs of their own (the branch's diff is still reviewed as usual).
+- No web search, image input or subagents on these turns. No plan usage to show — Token
+  Factory bills per token. The context is planned at 131,072 tokens (Codex compacts
+  before that). Effort levels Token Factory doesn't take (`max`, `ultra`) are left out.
+- For these turns, `shell_environment_policy.exclude` is `["NEBIUS_API_KEY"]` in place of
+  any list of your own in `~/.codex/config.toml`.
+- A refused key is retried by Codex a few times (seconds) before the turn fails.
+
+**Cost — no measured numbers.** An agent turn is not one request: every tool call is
+another round trip that resends the conversation (Codex's instructions alone are ≈17k
+characters), so one ticket can take many requests and hundreds of thousands of input
+tokens on a long task. Watch your Token Factory usage page while trying it, set a spending
+limit there, and stop a member with Esc. equipe shows each turn's tokens as Codex reports them.
+
+## Nemotron review on Nebius Token Factory
+
+**What.** When a member hands in a code ticket, an **NVIDIA Nemotron** model on
+**Nebius Token Factory** reads the branch's diff against the ticket and writes a
+short review: a verdict (*looks good* · *needs attention* · *risky*), a summary,
+up to five risks as `file:line — why`, and up to five tests the change is missing.
+It shows in the desktop app's ticket peek, under the hand-in, and is kept on the
+ticket's record. It is **advice only**: it never accepts, merges or sends work back —
+you (or the PM, if you let it accept) still decide.
+
+**Why.** The members that write the code (Claude Code, Codex) should not be the only
+ones who read it. A second model, from another vendor and with a narrow job —
+correctness bugs, security, data loss, acceptance criteria the diff doesn't meet —
+gives the person a place to start before they accept.
+
+**Where the call happens.** `crates/core/src/nemotron.rs` is the whole client:
+`POST <base>/chat/completions` (and `GET <base>/models` to pick a model), OpenAI-compatible,
+`Authorization: Bearer $NEBIUS_API_KEY`. The daemon calls it off its main loop when a
+code ticket is handed in (`runtime.rs`, `end_work` → `ask_for_review` → `on_reviewed`),
+stores the result in the squad's journal (`reviews` table) and sends
+`Event::CodeReviewed` to every screen. `equipe review` calls the same client from the
+command line.
+
+**Try it with only a Nebius key** — no squad, no Claude or ChatGPT plan needed:
+
+```bash
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY   # paste the key; it isn't echoed or kept in history
+cd your-repo
+equipe review --models          # the NVIDIA Nemotron models your account offers
+equipe review                   # your uncommitted changes (working tree + staged) against HEAD
+equipe review --base main       # what this branch changed since it left main
+equipe review --base main --goal "Refuse expired tokens with 401"   # and check it against what it should do
+```
+
+New files are reviewed once they're added (`git add -N` is enough). It prints the
+verdict, summary, risks, missing tests, the model id, the tokens used and Token
+Factory's request id.
+
+For the squad's automatic reviews, the **daemon** needs the key in *its*
+environment. A daemon started by a login service (`equipe daemon install`) does not see
+your shell's variables, so run it in a terminal instead:
+
+```bash
+equipe daemon stop
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY
+equipe daemon run               # in the foreground; Ctrl-C stops it
+```
+
+Without a key nothing is sent anywhere: the daemon logs once that reviews are off. equipe is open
+source and brings no key of its own: each person uses their own Token Factory key (hackathon
+participants can get Token Factory credits with the code `NEBIUS-DEVPOST-GLOBAL26`).
+
+| Variable | |
+|---|---|
+| `NEBIUS_API_KEY` | Your Token Factory API key. Read from the environment only — never written to disk, logged, or shown (`Debug` redacts it; error messages never include it or the auth header). |
+| `EQUIPE_NEBIUS_MODEL` | A model id to use. Unset: equipe lists `GET /models` and picks an NVIDIA Nemotron chat model (`nvidia/…` with `nemotron` in the id; Super, then Ultra, then Nano). No such model → a clear error, no fallback to another vendor's. |
+| `EQUIPE_NEBIUS_BASE_URL` | Another server with the same API (default `https://api.tokenfactory.nebius.com/v1/`). The tests point it at a local mock. |
+| `EQUIPE_NEBIUS_MAX_TOKENS` | The longest answer asked for (default 2048). |
+
+`.env.example` lists them; equipe itself doesn't read `.env` files.
+
+**Expected cost per review — an estimate, not a measurement.** No review has been
+measured against the real API yet. The diff is cut at 48,000 characters (≈12k tokens
+at ~4 characters per token) and the ticket at 6,000; with the instructions, the input
+is at most ≈14k tokens and usually far less (a 200-line change is ≈2–3k). The answer
+is capped at 2,048 tokens and is usually a few hundred. Cost ≈ input tokens × the
+model's input price + output tokens × its output price — look the prices up for the
+model you use on Token Factory's pricing page. With *hypothetical* prices of $0.10 per
+million input tokens and $0.40 per million output tokens, the largest possible review
+would be about 14,000 × 0.10/10⁶ + 2,048 × 0.40/10⁶ ≈ $0.0022. Each automatic review
+also makes one `GET /models` call unless `EQUIPE_NEBIUS_MODEL` is set.
+
+**Security notes.**
+- The diff and the ticket are sent to Nebius Token Factory. Don't enable it on code
+  you may not send to a third party; without `NEBIUS_API_KEY` nothing is sent.
+- The prompt tells the model that the diff and ticket are data, never instructions,
+  and fences them. What comes back is treated as untrusted: thinking blocks dropped,
+  only the first JSON object read, control characters and terminal escape sequences
+  removed, every field cut to a short length, at most five risks and five tests.
+  An answer that isn't a review is an error — a review is never made up.
+- The daemon's log records the model id, Token Factory's request id, token counts and
+  latency — never the key, the diff or the review's text.
+- Requests time out after 90 s (10 s to connect); a rate limit (429), a server error or
+  a timeout is tried again at most twice, with backoff (a `Retry-After` of up to 10 s is
+  honoured); 400/401/403 are not retried.
+
 ## Install
 
-macOS and Linux:
+**On a Mac, the app is all you need.** Download
+[equipe.dmg](https://github.com/equipe-labs/equipe/releases/latest/download/equipe.dmg), drag it
+to Applications and open it — no terminal. The first window gets you going in one page: it
+installs Apple's developer tools if git is missing (one click), lets you pick a project folder
+(or none) and name the squad, then opens **Settings → AI platforms**, where **Install** puts
+Claude Code or Codex on the Mac with its maker's own installer (no Node needed) and signs it
+in, or a pasted Nebius key connects Token Factory. The app starts the daemon itself as a login
+service and finds the tools it installs without a restart.
+
+From a terminal instead, macOS and Linux:
 
 ```bash
 curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh

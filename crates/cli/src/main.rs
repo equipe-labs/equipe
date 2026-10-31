@@ -18,6 +18,7 @@ mod i18n;
 mod lang;
 mod onboard;
 mod remote;
+mod review;
 mod settings;
 mod telegram;
 mod tui;
@@ -68,12 +69,24 @@ impl From<Engine> for protocol::Engine {
     }
 }
 
+/// What `equipe login` signs in to: an engine, or Nebius Token Factory with a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum SignIn {
+    /// Your installed Codex CLI on your ChatGPT plan, signed in by Codex itself
+    Codex,
+    /// Your installed Claude Code, signed in by Claude Code itself
+    Claude,
+    /// NVIDIA Nemotron on Nebius Token Factory: your API key, saved on this machine
+    Nebius,
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Sign in to an engine (asks which at a terminal)
+    /// Sign in to an engine (asks which at a terminal); `nebius` saves your
+    /// Nebius Token Factory API key for NVIDIA Nemotron
     Login {
         #[arg(value_enum)]
-        engine: Option<Engine>,
+        engine: Option<SignIn>,
         /// Minutes to wait for the browser (codex)
         #[arg(long, default_value_t = 10)]
         timeout: u64,
@@ -100,6 +113,20 @@ enum Command {
         /// Let the agent edit files — on a new branch, in an isolated worktree
         #[arg(long)]
         edit: bool,
+    },
+    /// Review this repository's changes with an NVIDIA Nemotron model on Nebius
+    /// Token Factory (needs only NEBIUS_API_KEY): the working tree and what is
+    /// staged against HEAD (new files once added), or `--base <ref>`'s commits
+    Review {
+        /// Review `<ref>...HEAD` instead: what the branch changed since it left `<ref>`
+        #[arg(long)]
+        base: Option<String>,
+        /// List the NVIDIA Nemotron models your Nebius account offers
+        #[arg(long)]
+        models: bool,
+        /// What the change should do — its acceptance criteria — for the review to check
+        #[arg(long)]
+        goal: Option<String>,
     },
     /// List the built-in squad roles
     Roles,
@@ -364,10 +391,25 @@ fn install_tls() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    install_tls();
+fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Before any thread: opened from Finder, the app's equipe (and the daemon
+    // it starts) has launchd's bare PATH, where no member's tool is found.
+    equipe_providers::tools_path::widen(runs_long(&cli));
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("start the async runtime").block_on(run(cli))
+}
+
+/// Whether this command is, or sets up, the daemon: worth asking the login
+/// shell for the person's PATH, which the daemon and its service keep.
+fn runs_long(cli: &Cli) -> bool {
+    matches!(
+        cli.command,
+        Some(Command::Daemon { action: DaemonAction::Run | DaemonAction::Start | DaemonAction::Restart { .. } | DaemonAction::Install })
+    )
+}
+
+async fn run(cli: Cli) -> ExitCode {
+    install_tls();
     // The helper's copy of equipe holds the person's desktop permissions: it
     // runs the helper and nothing else.
     if desktop::is_helper_copy() && !matches!(cli.command, Some(Command::Desktop { action: Some(DesktopAction::Serve { .. }) })) {
@@ -414,10 +456,15 @@ async fn main() -> ExitCode {
     };
 
     let outcome = match command {
-        Command::Login { engine, timeout, no_browser, again } => app.login(engine, timeout, no_browser, again).await,
+        Command::Login { engine: Some(SignIn::Nebius), .. } => login_nebius(),
+        Command::Login { engine, timeout, no_browser, again } => {
+            let engine = engine.map(|e| if e == SignIn::Claude { Engine::Claude } else { Engine::Codex });
+            app.login(engine, timeout, no_browser, again).await
+        }
         Command::Logout => app.logout(),
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
+        Command::Review { base, models, goal } => review::command(base, models, goal).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
@@ -1199,8 +1246,10 @@ impl App {
         let codex_ready = self.codex_section(&p).await;
         println!();
         let claude_ready = self.claude_section(&p).await;
+        println!();
+        let nebius_ready = nebius_section(&p);
 
-        let ready: Vec<_> = [(codex_ready, "codex"), (claude_ready, "claude")]
+        let ready: Vec<_> = [(codex_ready, "codex"), (claude_ready, "claude"), (nebius_ready, "nemotron")]
             .into_iter()
             .filter_map(|(ok, name)| ok.then_some(name))
             .collect();
@@ -1397,13 +1446,13 @@ impl App {
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
-                Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } => {}
+                Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::LaneMoved { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } => {}
                 Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
-                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::SignIn { .. } => {}
+                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineInstall { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });
@@ -1429,6 +1478,7 @@ impl App {
                 | Event::WorkStarted { .. }
                 | Event::WorkEnded { .. }
                 | Event::TicketChanged { .. }
+                | Event::CodeReviewed { .. }
                 | Event::TicketHistory { .. }
                 | Event::ModeChanged { .. }
                 | Event::ApprovalRequested { .. }
@@ -1475,6 +1525,58 @@ fn plan_label(status: &AuthStatus) -> String {
         t!("main.plan", plan = plan)
     } else {
         t!("main.billed_per_token").to_owned()
+    }
+}
+
+/// Prints the section on NVIDIA Nemotron through Nebius Token Factory: members
+/// on the Codex CLI's agent with only a Token Factory key — no sign-in. Read
+/// `equipe login nebius`: the person's Nebius Token Factory key, pasted (not
+/// shown) and saved on this machine, readable only by them — the daemon uses
+/// it when `NEBIUS_API_KEY` isn't in its environment.
+fn login_nebius() -> CmdResult {
+    let p = ui::out();
+    let home = equipe_providers::credentials::equipe_home();
+    println!("{}", p.note(0, t!("main.nebius_login_intro")));
+    let pasted = dialoguer::Password::new().with_prompt(t!("main.nebius_key_prompt")).interact().map_err(|err| Failure::new(err.to_string()))?;
+    if !equipe_core::nemotron::key_is_plausible(&pasted) {
+        return Err(Failure::new(t!("main.nebius_bad_key")));
+    }
+    equipe_core::nemotron::save_key(&home, &pasted).map_err(|err| Failure::new(err.to_string()))?;
+    println!("{}", p.ok_line(&t!("main.nebius_saved", path = equipe_core::nemotron::key_path(&home).display())));
+    if codex_app::find(codex_app::DEFAULT_BINARY).is_none() {
+        println!("{}", p.row("", &p.hint(equipe_core::engines::installer(protocol::Engine::Codex))));
+    }
+    println!("{}", p.note(2, t!("main.nebius_saved_next")));
+    Ok(())
+}
+
+/// off this shell's environment, which a daemon started from it has too.
+/// Whether it is ready. Nothing is asked of Token Factory.
+fn nebius_section(p: &ui::Painter) -> bool {
+    println!("{}", p.section("nemotron", t!("main.nebius_section")));
+    let cfg = equipe_core::nemotron::Config::from_env_or_saved(&equipe_providers::credentials::equipe_home()).ok();
+    if let Some(cfg) = &cfg {
+        let model = cfg.model.as_deref().map(|m| format!(" · {m}")).unwrap_or_default();
+        println!("{}", p.row(t!("main.row_provider"), &format!("{}{model}", cfg.provider_name)));
+    }
+    let key = cfg.is_some();
+    let codex = codex_app::find(codex_app::DEFAULT_BINARY).is_some();
+    match (key, codex) {
+        (true, true) => {
+            println!("{}", p.row(t!("main.row_key"), &p.ok(t!("main.nebius_ready"))));
+            println!("{}", p.row("", &p.hint("equipe daemon stop; equipe daemon run")));
+            true
+        }
+        (false, _) => {
+            println!("{}", p.row(t!("main.row_key"), &p.fail(t!("main.nebius_no_key"))));
+            println!("{}", p.row("", &p.hint("equipe login nebius")));
+            false
+        }
+        (true, false) => {
+            println!("{}", p.row(t!("main.row_key"), &p.fail(t!("main.nebius_needs_codex"))));
+            println!("{}", p.row("", &p.hint(equipe_core::engines::installer(protocol::Engine::Codex))));
+            false
+        }
     }
 }
 

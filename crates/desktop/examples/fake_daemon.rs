@@ -28,6 +28,7 @@
 //! (no such ticket), to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
 //! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
 //! the reply names T-4 too — its pictures and all, a card taller than a small window.
+//! `FAKE_REVIEW=1` gives T-42 and T-71 a made-up Nemotron review (canned, not a model's).
 //! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
 //! numbered list of its own words, as a member does that skips `ask_decision`.
 //!
@@ -55,6 +56,8 @@
 //!
 //! `FAKE_HISTORY=<n>`: the PM's history is a long day's, `n` lines of it
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
+//! `FAKE_READING=1`: it ends on a long Korean reply with every kind of text
+//! (`fake_daemon/reading.rs`), to compare how the conversation reads.
 //!
 //! `FAKE_TEAM=1`: the PM proposes one more frontend, for the person to
 //! approve on a card (`fake_daemon/team.rs`; `remove`, `elsewhere`).
@@ -233,6 +236,40 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 }
 
 type Branch = (&'static str, Vec<(&'static str, usize)>);
+
+/// `FAKE_REVIEW=1`: made-up Nemotron reviews of T-42 and T-71, to look at
+/// how the peek shows one — canned here, never a real model's answer.
+fn reviews() -> Vec<equipe_core::protocol::review::CodeReview> {
+    use equipe_core::protocol::review::{CodeReview, ReviewPoint, ReviewVerdict};
+    if std::env::var_os("FAKE_REVIEW").is_none() {
+        return Vec::new();
+    }
+    vec![
+        CodeReview {
+            ticket: 42,
+            model: "nvidia/fake-nemotron (FAKE_REVIEW)".into(),
+            verdict: ReviewVerdict::NeedsAttention,
+            summary: "결제 수단 선택은 되지만, 새로고침 후 선택이 남는다는 기준을 코드가 지키지 않아요.".into(),
+            risks: vec![
+                ReviewPoint { file: "src/checkout.tsx".into(), line: Some(31), why: "선택한 수단을 state에만 두어 새로고침하면 사라져요.".into() },
+                ReviewPoint { file: "src/api/pay.ts".into(), line: Some(12), why: "금액을 클라이언트 값 그대로 서버에 보내요.".into() },
+            ],
+            missing_tests: vec!["새로고침 후 선택 유지".into(), "모바일 너비 레이아웃".into()],
+            truncated: false,
+            at: unix(),
+        },
+        CodeReview {
+            ticket: 71,
+            model: "nvidia/fake-nemotron (FAKE_REVIEW)".into(),
+            verdict: ReviewVerdict::LooksGood,
+            summary: "토큰 버킷 제한과 남은 횟수 헤더가 기준대로 들어갔어요.".into(),
+            risks: Vec::new(),
+            missing_tests: Vec::new(),
+            truncated: false,
+            at: unix(),
+        },
+    ]
+}
 
 /// T-42's hand-in: a few lines, or (`FAKE_CARDS=long`) one long enough to scroll on its card.
 fn checkout_note() -> String {
@@ -477,7 +514,7 @@ fn live_subagents() -> &'static std::sync::Mutex<Vec<(SessionId, SubagentInfo, s
     LIVE.get_or_init(|| {
         // Backend's, at it since before anyone looked.
         let since = std::time::Instant::now() - Duration::from_secs(48);
-        std::sync::Mutex::new(vec![(3, SubagentInfo { id: "sub-b0".into(), what: "API 에러 로그에서 타임아웃 원인 찾기".into(), step: Some("Grep TimeoutError logs/".into()), secs: 0 }, since)])
+        std::sync::Mutex::new(vec![(3, SubagentInfo { id: "sub-b0".into(), what: "API 에러 로그에서 타임아웃 원인 찾기".into(), step: Some("Grep TimeoutError logs/".into()), secs: 0, ..Default::default() }, since)])
     })
 }
 
@@ -507,16 +544,33 @@ async fn subagents_play(events: broadcast::Sender<Event>) {
         for (n, (session, what, _)) in tasks.iter().enumerate() {
             let id = format!("sub-{round}-{n}");
             let _ = events.send(Event::ToolUse { session: *session, tool: "Agent".into(), target: Some((*what).into()), label: None, background: false });
-            live_subagents().lock().unwrap().push((*session, SubagentInfo { id: id.clone(), what: (*what).into(), step: None, secs: 0 }, std::time::Instant::now()));
-            let _ = events.send(Event::SubagentStarted { session: *session, id: id.clone(), what: (*what).into() });
+            let brief = format!("{what}.\n\n코드를 읽고 찾은 것을 파일 경로와 줄 번호로 정리해서 돌려줘요. 고치지는 말고, 근거만 모아요.");
+            live_subagents().lock().unwrap().push((*session, SubagentInfo { id: id.clone(), what: (*what).into(), step: None, secs: 0, brief: brief.clone(), ..Default::default() }, std::time::Instant::now()));
+            let _ = events.send(Event::SubagentStarted { session: *session, id: id.clone(), what: (*what).into(), brief });
             started.push((*session, id, n));
             tokio::time::sleep(beat).await;
             // Everyone at work takes a step.
             for (s, id, task) in &started {
                 let steps = tasks[*task].2;
                 let step = steps[(round as usize + n + task) % steps.len()];
+                // Its last step done (with what it printed), now and then a word, then the next step.
+                let (tool, target) = step.split_once(' ').unwrap_or((step, ""));
+                let done = Entry::Tool {
+                    tool: tool.into(),
+                    target: Some(target.into()),
+                    outcome: Some(Box::new(equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(400 + 137 * (*task as u64 + 1)), output: format!("{target}\n  12 | const size = 240;\n  13 | const ratio = 4 / 3;"), skipped: 0, diff: None })),
+                    label: None,
+                    background: false,
+                };
+                let said = (n % 2 == 0).then(|| Entry::Reply { text: format!("`{target}`을 봤어요. 다음은 관련 테스트를 확인할게요.") });
                 if let Some(entry) = live_subagents().lock().unwrap().iter_mut().find(|(_, info, _)| info.id == *id) {
                     entry.1.step = Some(step.into());
+                    entry.1.entries.push(done.clone());
+                    entry.1.entries.extend(said.clone());
+                }
+                let _ = events.send(Event::SubagentEntry { session: *s, id: id.clone(), entry: done });
+                if let Some(said) = said {
+                    let _ = events.send(Event::SubagentEntry { session: *s, id: id.clone(), entry: said });
                 }
                 let _ = events.send(Event::SubagentStep { session: *s, id: id.clone(), step: step.into() });
             }
@@ -548,8 +602,9 @@ fn end_subagent(events: &broadcast::Sender<Event>, session: SessionId, id: &str)
         what
     };
     let outcome = equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(9_000), output: String::new(), skipped: 0, diff: None };
-    let _ = events.send(Event::ToolResult { session, tool: "Agent".into(), target: what, outcome });
-    let _ = events.send(Event::SubagentEnded { session, id: id.into() });
+    let _ = events.send(Event::ToolResult { session, tool: "Agent".into(), target: what.clone(), outcome });
+    let result = what.as_ref().map(|w| format!("**{w}** — 정리했어요.\n\n- `src/gallery.tsx:12` 썸네일 240px 고정\n- `src/thumb.tsx:13` 비율 4:3"));
+    let _ = events.send(Event::SubagentEnded { session, id: id.into(), result, failed: false });
 }
 
 /// `FAKE_TURN`: T-117 waits for the person (`1`), and is answered elsewhere (`elsewhere`).
@@ -812,6 +867,8 @@ mod browser;
 mod torture;
 #[path = "fake_daemon/history.rs"]
 mod history;
+#[path = "fake_daemon/reading.rs"]
+mod reading;
 
 #[path = "fake_daemon/pictures.rs"]
 mod pictures;
@@ -855,6 +912,8 @@ struct Routes {
     thread: HashMap<SessionId, Option<String>>,
     /// `(lane session, member session, project)`.
     lanes: Vec<(SessionId, SessionId, Option<String>)>,
+    /// The conversations the person opened with the PM: said to as they are.
+    kept: std::collections::HashSet<SessionId>,
 }
 
 type Shared = Arc<Mutex<Routes>>;
@@ -895,7 +954,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                 match (message.method.as_deref(), message.id) {
                     (Some(rpc::SQUADS), Some(id)) => {
                         let squads = rpc::Squads {
-                            squads: ["demo", "side"].map(|name| rpc::SquadEntry { name: name.into(), projects: vec!["/tmp/fake/site".into()], home: format!("/tmp/fake/{name}-home").into() }).to_vec(),
+                            // `FAKE_NO_SQUADS=1`: a first run, nothing made yet.
+                            squads: if std::env::var("FAKE_NO_SQUADS").is_ok_and(|v| v == "1") {
+                                Vec::new()
+                            } else {
+                                ["demo", "side"].map(|name| rpc::SquadEntry { name: name.into(), projects: vec!["/tmp/fake/site".into()], home: format!("/tmp/fake/{name}-home").into() }).to_vec()
+                            },
                             last: Some("demo".into()),
                         };
                         if writer.write_all(Message::response(id, squads).to_line().as_bytes()).await.is_err() {
@@ -930,6 +994,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
                             history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None, label: None, background: false });
                             history.push(Entry::Reply { text: ASKLIST.into() });
+                        }
+                        if reading::on() {
+                            history.push(Entry::User { text: reading::ASKED.into() });
+                            history.push(Entry::Reply { text: reading::REPLY.into() });
                         }
                         if pictures::on() {
                             history.push(Entry::Note { text: pictures::NEWS.into() });
@@ -1095,6 +1163,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             disk: disk::status(),
+                            reviews: reviews(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1184,7 +1253,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 let mut r = routes.lock().await;
                                 // What the screen that sent it shows, else the focus.
                                 let wanted = about.clone().unwrap_or_else(|| r.focus.clone());
-                                let lane = r.lanes.iter().find(|(_, of, project)| *of == session && *project == wanted).map(|l| l.0);
+                                let lane = if r.kept.contains(&session) { Some(session) } else { r.lanes.iter().find(|(_, of, project)| *of == session && *project == wanted).map(|l| l.0) };
                                 let session = match lane {
                                     Some(lane) => lane,
                                     None => {
@@ -1194,7 +1263,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                             r.lanes.push((id, session, wanted.clone()));
                                             let role = ["pm", "frontend", "backend", "designer"][(session as usize - 1).min(3)];
                                             let _ = events.send(Event::SessionStarted { session: id, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: role.into(), name: role.into() }), squad: Some("demo".into()) });
-                                            let _ = events.send(Event::LaneOpened { session: id, of: session, project: wanted.clone() });
+                                            let _ = events.send(Event::LaneOpened { session: id, of: session, project: wanted.clone(), kept: false });
                                             id
                                         } else {
                                             if here != wanted {
@@ -1221,6 +1290,19 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     };
                                     turns.lock().await.insert(session, task);
                                 }
+                            }
+                            // Like the daemon: a conversation of the PM's of its own, kept.
+                            Command::NewConversation { session, project, .. } => {
+                                routes.lock().await.kept.insert(session);
+                                let _ = events.send(Event::SessionStarted { session, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some("demo".into()) });
+                                let _ = events.send(Event::LaneOpened { session, of: 1, project, kept: true });
+                            }
+                            Command::MoveConversation { session, project } => {
+                                let _ = events.send(Event::LaneMoved { session, project });
+                            }
+                            Command::CloseConversation { session } => {
+                                routes.lock().await.kept.remove(&session);
+                                let _ = events.send(Event::SessionClosed { session });
                             }
                             Command::SubmitLater { session, text, about } => {
                                 let project = match about { Some(about) => about, None => routes.lock().await.focus.clone() };
@@ -1272,6 +1354,16 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::Focus { project, .. } => {
                                 routes.lock().await.focus = project;
+                            }
+                            // Off the squad: the list without it, as the daemon sends it.
+                            Command::RemoveProject { squad, path } => {
+                                eprintln!("remove project {}", path.display());
+                                let projects = [repo("web"), repo("app"), repo("api")].into_iter().filter(|p| *p != path).collect();
+                                let _ = events.send(Event::ProjectsChanged { squad, projects, hq: None });
+                            }
+                            Command::AddProject { squad, path } => {
+                                eprintln!("add project {path:?}");
+                                let _ = events.send(Event::ProjectsChanged { squad, projects: vec![repo("web"), repo("app"), repo("api")], hq: None });
                             }
                             Command::SaveSecret { squad, id, values } => {
                                 eprintln!("secret {id}: {} values {values:?}", values.len());

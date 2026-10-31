@@ -1,13 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# Patched copies of two GPUI crates (see [patch.crates-io]), not ours to lint.
+# Patched copies of three GPUI crates (see [patch.crates-io]), not ours to lint.
 exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.86.4"
+version = "0.96.0"
 
 [profile.release]
 lto = "thin"
@@ -20,7 +20,7 @@ panic = "abort"
 [profile.dev.package."*"]
 opt-level = 2
 
-# Two GPUI crates, patched where they offer no way in (each change is marked
+# Three GPUI crates, patched where they offer no way in (each change is marked
 # `equipe:` in the source; take them again on a gpui-kit upgrade):
 # - gpui-pre: Korean wraps at spaces, as CSS `word-break: keep-all` — it broke
 #   words between any two syllables (`LineWrapper::is_word_char`).
@@ -31,6 +31,8 @@ opt-level = 2
 # - gpui-pre: a cached view is drawn again when an entity it read while drawn
 #   is notified between frames, not only itself (`Window::notified_entities`,
 #   `view.rs`; the desktop's panes, docs/PERF-2026-10.md 6).
+# - gpui-component: dictation may use the platform's servers when the person
+#   agreed (`SystemRecognizer::servers`; macOS on-device otherwise).
 # - gpui-base: a text view's link underline and the room between list items
 #   are the style's to set (`TextViewStyle`).
 # - gpui-base: where the window's selection ends are drawn, for what floats
@@ -41,3 +43,4 @@ opt-level = 2
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-base = { path = "vendor/gpui-base" }
+gpui-component = { path = "vendor/gpui-component" }

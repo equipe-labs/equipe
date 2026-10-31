@@ -46,6 +46,15 @@ pub fn no_room_for_tests() {
 /// How long conversations are kept before they are pruned to the record.
 pub const DEFAULT_RETENTION_DAYS: u64 = 90;
 
+/// A conversation with the PM the person opened ([`Journal::record_conversation`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationRecord {
+    pub id: SessionId,
+    pub project: Option<String>,
+    pub engine_session: Option<String>,
+    pub title: Option<String>,
+}
+
 /// A session as the journal keeps it — enough to resume it after a restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
@@ -347,12 +356,27 @@ impl Journal {
                rule TEXT PRIMARY KEY,
                by TEXT NOT NULL,
                added_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS reviews (
+               ticket INTEGER PRIMARY KEY,
+               body TEXT
+             );
+             CREATE TABLE IF NOT EXISTS conversations (
+               id INTEGER PRIMARY KEY,
+               project TEXT,
+               engine_session TEXT,
+               title TEXT,
+               open INTEGER NOT NULL DEFAULT 1,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL,
+               cwd TEXT
              );",
         )?;
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT", []);
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN off_main TEXT", []);
         // The person's say on how soon and in which order: normal and by number
         // for tickets from before.
@@ -877,6 +901,30 @@ impl Journal {
         Ok(())
     }
 
+    /// Keep Nemotron's review of its ticket, in place of one before.
+    pub fn save_review(&self, review: &equipe_protocol::review::CodeReview) -> Result<()> {
+        let body = serde_json::to_string(review).map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute("INSERT OR REPLACE INTO reviews (ticket, body) VALUES (?1, ?2)", params![review.ticket, body])?;
+        Ok(())
+    }
+
+    /// Forget `ticket`'s review: its work changed since.
+    pub fn forget_review(&self, ticket: TicketId) -> Result<()> {
+        self.conn.execute("DELETE FROM reviews WHERE ticket = ?1", [ticket])?;
+        Ok(())
+    }
+
+    /// The reviews of `tickets` that were kept, in their order.
+    pub fn reviews(&self, tickets: &[TicketId]) -> Result<Vec<equipe_protocol::review::CodeReview>> {
+        let mut stmt = self.conn.prepare("SELECT body FROM reviews WHERE ticket = ?1")?;
+        let mut found = Vec::new();
+        for id in tickets {
+            let body: Option<String> = stmt.query_row([id], |r| r.get(0)).optional()?;
+            found.extend(body.and_then(|b| serde_json::from_str(&b).ok()));
+        }
+        Ok(found)
+    }
+
     /// How long tickets took, from first being assigned to first being handed
     /// in (or put down for the person): `(member, kind, seconds)`, newest first.
     pub fn ticket_times(&self) -> Result<Vec<(String, TicketKind, u64)>> {
@@ -963,6 +1011,7 @@ impl Journal {
     }
 
     pub fn set_engine_session(&self, id: SessionId, engine_session: &str) -> Result<()> {
+        self.touch_conversation(id, "engine_session", engine_session)?;
         self.touch(id, "engine_session", engine_session)
     }
 
@@ -973,15 +1022,51 @@ impl Journal {
 
     /// Forget the engine's conversation: the next turn starts a fresh one.
     pub fn clear_engine_session(&self, id: SessionId) -> Result<()> {
+        self.touch_conversation(id, "engine_session", None::<String>)?;
         self.touch(id, "engine_session", None::<String>)
+    }
+
+    fn touch_conversation(&self, id: SessionId, set: &str, value: impl rusqlite::ToSql) -> Result<()> {
+        self.conn.execute(&format!("UPDATE conversations SET {set} = ?1, updated_at = ?2 WHERE id = ?3"), params![value, now(), id as i64])?;
+        Ok(())
+    }
+
+    /// A conversation the person opened with the PM, about `project`
+    /// (`None`: the whole squad). Its lines are kept as any session's.
+    /// A conversation with the PM, held where the PM works (`cwd`), which
+    /// its replies' pictures are read from.
+    pub fn record_conversation(&self, id: SessionId, project: Option<&str>, cwd: &Path) -> Result<()> {
+        let t = now();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO conversations (id, project, open, created_at, updated_at, cwd) VALUES (?1, ?2, 1, ?3, ?3, ?4)",
+            params![id as i64, project, t, cwd.to_string_lossy()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_conversation_project(&self, id: SessionId, project: Option<&str>) -> Result<()> {
+        self.touch_conversation(id, "project", project)
+    }
+
+    /// Put away: it leaves the list; its lines stay as long as any.
+    pub fn close_conversation(&self, id: SessionId) -> Result<()> {
+        self.touch_conversation(id, "open", false)
+    }
+
+    /// The conversations with the PM still open, oldest first.
+    pub fn conversations(&self) -> Result<Vec<ConversationRecord>> {
+        let mut stmt = self.conn.prepare("SELECT id, project, engine_session, title FROM conversations WHERE open = 1 ORDER BY created_at, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ConversationRecord { id: r.get::<_, i64>(0)? as u64, project: r.get(1)?, engine_session: r.get(2)?, title: r.get(3)? })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// The first message names the session; later ones don't.
     pub fn set_title_if_empty(&self, id: SessionId, title: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET title = ?1 WHERE id = ?2 AND title IS NULL",
-            params![title, id as i64],
-        )?;
+        for table in ["sessions", "conversations"] {
+            self.conn.execute(&format!("UPDATE {table} SET title = ?1 WHERE id = ?2 AND title IS NULL"), params![title, id as i64])?;
+        }
         Ok(())
     }
 
@@ -1054,14 +1139,17 @@ impl Journal {
 
     /// The latest `limit` lines of the squad's conversations that name a path
     /// (a `/` in them), newest first, each with where its session works — what
-    /// a reply's pictures and folders are read from (`crate::visuals`).
+    /// a reply's pictures and folders are read from (`crate::visuals`). The
+    /// person's conversations with the PM count, from where the PM works (one
+    /// opened before that was kept: where the open PM works now).
     pub fn said_with_paths(&self, limit: u64) -> Result<Vec<(PathBuf, Entry)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.cwd, e.body FROM entries e JOIN sessions s ON s.id = e.session
-             WHERE e.body LIKE '%/%' ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
+            "SELECT COALESCE(s.cwd, c.cwd, (SELECT p.cwd FROM sessions p WHERE p.role = 'pm' AND p.open = 1 ORDER BY p.id LIMIT 1)), e.body
+             FROM entries e LEFT JOIN sessions s ON s.id = e.session LEFT JOIN conversations c ON c.id = e.session
+             WHERE (e.body LIKE '%/%' OR e.body LIKE '%![%') AND (s.id IS NOT NULL OR c.id IS NOT NULL) ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd), serde_json::from_str(&body).ok()?))).collect())
+        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd?), serde_json::from_str(&body).ok()?))).collect())
     }
 
     pub fn open_sessions(&self) -> Result<Vec<SessionRecord>> {
@@ -1183,6 +1271,24 @@ mod tests {
             tokens: 0,
             open: true,
         }
+    }
+
+    #[test]
+    fn what_a_conversation_with_the_pm_says_is_read_from_where_the_pm_works() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        let pm = SessionRecord { cwd: "/squad/pm".into(), member: Some(Member { role: "pm".into(), name: "pm".into() }), ..record(1) };
+        j.record_session(&pm).unwrap();
+        j.record_conversation(50, Some("web"), Path::new("/squad/pm")).unwrap();
+        j.append(50, &Entry::Reply { text: "![shot](shots/home.png)".into() }).unwrap();
+        // One kept before conversations knew where they were held.
+        j.record_conversation(51, None, Path::new("/elsewhere")).unwrap();
+        j.conn.execute("UPDATE conversations SET cwd = NULL WHERE id = 51", []).unwrap();
+        j.append(51, &Entry::Reply { text: "see /tmp/a.png".into() }).unwrap();
+        // A line of nothing known is left out.
+        j.append(99, &Entry::Reply { text: "/nowhere".into() }).unwrap();
+        let said = j.said_with_paths(10).unwrap();
+        let cwds: Vec<_> = said.iter().map(|(cwd, _)| cwd.to_string_lossy().into_owned()).collect();
+        assert_eq!(cwds, ["/squad/pm", "/squad/pm"], "{said:?}");
     }
 
     #[test]

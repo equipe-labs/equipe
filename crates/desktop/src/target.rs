@@ -133,7 +133,8 @@ impl Endpoint {
     /// `local` / `this` / `이 맥`, or an SSH destination.
     pub fn parse(text: &str) -> Result<Self, String> {
         match text.trim() {
-            "local" | "this" | "이 맥" => Ok(Self::this_mac()),
+            "local" | "this" => Ok(Self::this_mac()),
+            other if crate::i18n::every("match.this_mac").contains(&other) => Ok(Self::this_mac()),
             other if other == t!("target.this_mac") => Ok(Self::this_mac()),
             other => SshHost::parse(other).map(Self::Ssh),
         }
@@ -157,6 +158,9 @@ pub struct KeptView {
 pub struct Remembered {
     pub last: Option<Endpoint>,
     pub recent: Vec<SshHost>,
+    /// Hosts of `~/.ssh/config` the person hid from the chooser (the file is
+    /// theirs: hidden here, not edited there).
+    pub hidden_hosts: Vec<String>,
     /// How tall the board's list was left, in px (the divider the person dragged).
     pub board_split: Option<f32>,
     /// How wide the browser panel was left, in px.
@@ -179,9 +183,19 @@ pub struct Remembered {
     pub views: Vec<KeptView>,
     /// How wide the sidebar was left (px).
     pub sidebar_width: Option<f32>,
+    /// How tall the sidebar's usage and team areas were dragged (px; none:
+    /// their own height) — `side_split.rs`.
+    pub side_usage: Option<f32>,
+    pub side_team: Option<f32>,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
+    /// The language dictation listens for, if the person picked one (`ko`, …):
+    /// else the first this Mac can hear (`dictation.rs`).
+    pub dictation: Option<String>,
+    /// The person agreed that dictation may use Apple's servers (better in
+    /// Korean and mixed speech; the sound leaves this Mac). Off until then.
+    pub dictation_servers: bool,
     /// Light or dark, or as the Mac is.
     pub appearance: Appearance,
     /// What the window opens on.
@@ -404,10 +418,18 @@ impl Remembered {
                 if let (Some(pinned), Some(group), Some(name), Some(query)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
                     out.views.push(KeptView { name: name.to_owned(), query: query.to_owned(), group: group.to_owned(), pinned: pinned == "1" });
                 }
+            } else if let Some(rest) = line.strip_prefix("side-usage ") {
+                out.side_usage = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if let Some(rest) = line.strip_prefix("side-team ") {
+                out.side_team = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("lang ") {
                 out.lang = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
+            } else if line.trim() == "dictation-servers on" {
+                out.dictation_servers = true;
+            } else if let Some(rest) = line.strip_prefix("dictation ") {
+                out.dictation = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
             } else if let Some(rest) = line.strip_prefix("appearance ") {
                 out.appearance = Appearance::parse(rest.trim()).unwrap_or_default();
             } else if let Some(rest) = line.strip_prefix("start ") {
@@ -451,6 +473,11 @@ impl Remembered {
                 && !out.recent.contains(&host)
             {
                 out.recent.push(host);
+            } else if let Some(rest) = line.strip_prefix("hide ssh ")
+                && !rest.trim().is_empty()
+                && !out.hidden_hosts.iter().any(|h| h == rest.trim())
+            {
+                out.hidden_hosts.push(rest.trim().to_owned());
             }
         }
         out.recent.truncate(RECENT);
@@ -464,6 +491,9 @@ impl Remembered {
         }
         for host in &self.recent {
             text.push_str(&format!("recent ssh {}\n", host.spec()));
+        }
+        for host in &self.hidden_hosts {
+            text.push_str(&format!("hide ssh {host}\n"));
         }
         if let Some(split) = self.board_split {
             text.push_str(&format!("board-split {split:.0}\n"));
@@ -492,8 +522,20 @@ impl Remembered {
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar-width {width:.0}\n"));
         }
+        if let Some(height) = self.side_usage {
+            text.push_str(&format!("side-usage {height:.0}\n"));
+        }
+        if let Some(height) = self.side_team {
+            text.push_str(&format!("side-team {height:.0}\n"));
+        }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
+        }
+        if let Some(lang) = &self.dictation {
+            text.push_str(&format!("dictation {lang}\n"));
+        }
+        if self.dictation_servers {
+            text.push_str("dictation-servers on\n");
         }
         if self.appearance != Appearance::System {
             text.push_str(&format!("appearance {}\n", self.appearance.code()));
@@ -555,6 +597,19 @@ impl Remembered {
             self.recent.retain(|h| h != host);
             self.recent.insert(0, host.clone());
             self.recent.truncate(RECENT);
+        }
+    }
+
+    /// Take a host off the recent ones (one typed wrong, one gone).
+    pub fn forget(&mut self, host: &SshHost) {
+        self.recent.retain(|h| h != host);
+    }
+
+    /// Hide a host of `~/.ssh/config` from the chooser, or show it again.
+    pub fn hide_host(&mut self, name: &str, hidden: bool) {
+        self.hidden_hosts.retain(|h| h != name);
+        if hidden {
+            self.hidden_hosts.push(name.to_owned());
         }
     }
 
@@ -670,7 +725,11 @@ mod tests {
         remembered.board_split = Some(212.4);
         remembered.peek_width = Some(560.);
         remembered.sidebar_width = Some(301.6);
+        remembered.side_usage = Some(96.);
+        remembered.side_team = Some(240.4);
         remembered.lang = Some("ko".into());
+        remembered.dictation = Some("ja".into());
+        remembered.dictation_servers = true;
         remembered.set_merge_way("my site", "merge");
         remembered.set_merge_way("app", "push");
         remembered.set_merge_way("app", "branch");
@@ -679,6 +738,9 @@ mod tests {
 
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
+        assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
+        assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
+        assert!(loaded.dictation_servers, "the person's yes to Apple's servers is kept");
         assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");
         assert_eq!(loaded.merge_way("app"), Some("branch"), "the last word wins");
         assert_eq!(loaded.merge_way("web"), None);
@@ -693,6 +755,25 @@ mod tests {
         local.save(&dir);
         assert_eq!(Remembered::load(&dir).last, Some(Endpoint::this_mac()));
         assert_eq!(Remembered::load(&dir).recent.len(), 2, "this Mac isn't a host to remember");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_recent_host_is_forgotten_and_a_config_host_hidden_across_launches() {
+        let dir = std::env::temp_dir().join(format!("eq-target-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut remembered = Remembered::default();
+        remembered.use_endpoint(&Endpoint::Ssh(host("atinumai@110.66.18.3")));
+        remembered.use_endpoint(&Endpoint::Ssh(host("atinumai@100.66.18.3")));
+        remembered.forget(&host("atinumai@110.66.18.3"));
+        remembered.hide_host("ironact-prod", true);
+        remembered.hide_host("vision", true);
+        remembered.hide_host("vision", false);
+        remembered.save(&dir);
+
+        let loaded = Remembered::load(&dir);
+        assert_eq!(loaded.recent, vec![host("atinumai@100.66.18.3")], "the one typed wrong is gone");
+        assert_eq!(loaded.hidden_hosts, vec!["ironact-prod".to_owned()], "hidden stays hidden; shown again is shown");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

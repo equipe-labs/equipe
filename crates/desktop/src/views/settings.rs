@@ -43,6 +43,7 @@ const PAGE: f32 = 720.;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pop {
     Language,
+    Dictation,
     Squad,
     Model(SessionId),
     Effort(SessionId),
@@ -53,6 +54,7 @@ pub enum Pop {
 #[derive(Debug, Clone)]
 enum Act {
     Language(Option<Lang>),
+    Dictation(Option<Lang>),
     Squad(String),
     Model(SessionId, String),
     Effort(SessionId, Option<String>),
@@ -74,6 +76,13 @@ pub struct SettingsUi {
     pub engine_keys: Vec<FocusHandle>,
     /// 계정's form and second clicks.
     pub accounts: super::accounts::AccountsUi,
+    /// The Nebius card's key box (masked; emptied once sent), what's wrong
+    /// with what was pasted, and the second click to remove the key.
+    pub nebius_key: Entity<InputState>,
+    pub nebius_problem: Option<String>,
+    pub nebius_forgetting: bool,
+    /// Apple's servers for dictation, asked about: what goes where, and a yes.
+    pub dictation_consent: bool,
 }
 
 impl SettingsUi {
@@ -88,6 +97,10 @@ impl SettingsUi {
             scroll: ScrollHandle::new(),
             engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             accounts: super::accounts::AccountsUi::new(window, cx),
+            nebius_key: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("engines.nebius_key_placeholder"))),
+            nebius_problem: None,
+            nebius_forgetting: false,
+            dictation_consent: false,
         }
     }
 
@@ -363,6 +376,42 @@ pub fn rule_words(rule: &str) -> String {
     }
 }
 
+/// The look's rows, with dictation's and — while it is asked about, or on —
+/// the say about Apple's servers.
+fn dictation_rows(shell: &Shell, language: Line, dictation: Line, appearance: Line, zoom: Line, cx: &mut Context<Shell>) -> Vec<Line> {
+    let p = shell.palette;
+    let on = shell.remembered.dictation_servers;
+    let servers = Line::new(t!("settings.dictation_servers"), if on { t!("settings.dictation_servers_on") } else { t!("settings.dictation_servers_desc") })
+        .words("dictation voice speech apple server accuracy korean")
+        .control(switch(shell, "dictation-servers", on || shell.settings.dictation_consent, true, |this, on, window, cx| {
+            if on {
+                this.settings.dictation_consent = true;
+                cx.notify();
+            } else {
+                this.settings.dictation_consent = false;
+                this.set_dictation_servers(false, window, cx);
+            }
+        }, cx));
+    let mut rows = vec![language, dictation, servers];
+    // Asked before it is on: what leaves the Mac, and the person's yes.
+    if shell.settings.dictation_consent && !on {
+        let buttons = h_flex()
+            .gap_2()
+            .child(ui::button(p, "dictation-servers-no", Kind::Ghost, t!("settings.dictation_servers_cancel")).on_click(cx.listener(|this, _, _, cx| {
+                this.settings.dictation_consent = false;
+                cx.notify();
+            })))
+            .child(ui::button(p, "dictation-servers-yes", Kind::Primary, t!("settings.dictation_servers_agree")).on_click(cx.listener(|this, _, window, cx| {
+                this.settings.dictation_consent = false;
+                this.set_dictation_servers(true, window, cx);
+            })))
+            .into_any_element();
+        rows.push(Line::new(t!("settings.dictation_servers_ask"), t!("settings.dictation_servers_ask_desc")).words("dictation apple server privacy").control(buttons));
+    }
+    rows.extend([appearance, zoom]);
+    rows
+}
+
 fn language_label(shell: &Shell) -> String {
     match shell.board.language {
         Some(lang) => lang.native_name().to_owned(),
@@ -377,10 +426,28 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let mut language = Line::new(t!("sidebar.language"), t!("settings.language_desc"))
         .words(Lang::ALL.iter().map(|l| l.native_name()).collect::<Vec<_>>().join(" ") + " language");
     language.control = Some(picker(shell, Pop::Language, language_label(shell), 0., cx));
+    // Dictation's language, apart from the app's: what this Mac can hear on the device.
+    let listening = shell.composer.listening;
+    let dictation_label = match shell.remembered.dictation.as_deref().and_then(Lang::parse) {
+        Some(lang) => lang.native_name().to_owned(),
+        None => t!("settings.dictation_auto", lang = listening.native_name()),
+    };
+    let heard = shell.remembered.dictation_servers || crate::dictation::heard_here(listening);
+    let mut dictation = Line::new(t!("settings.dictation"), if heard { t!("settings.dictation_desc").to_owned() } else { t!("settings.dictation_missing_desc", lang = listening.native_name()) })
+        .warn(!heard)
+        .words("dictation voice speech microphone mic language");
+    dictation.control = Some(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(ui::button(p, "dictation-add", Kind::Ghost, t!("settings.dictation_add")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(crate::dictation::SETTINGS_URL)))
+            .child(picker(shell, Pop::Dictation, dictation_label, 0., cx))
+            .into_any_element(),
+    );
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
     let appearance = Line::new(t!("settings.appearance"), t!("settings.appearance_desc")).words("appearance theme dark light").control(segmented(shell, "appearance", looks, shell.remembered.appearance, |this, a, window, cx| this.set_appearance(a, window, cx), cx));
     let link_places = vec![(false, t!("settings.links_mac").to_owned()), (true, t!("settings.links_app").to_owned())];
-    let links = Line::new(t!("settings.links"), t!("settings.links_desc")).words("link url browser open 링크 브라우저").control(segmented(shell, "links", link_places, shell.remembered.links_in_app, |this, on, _, _| this.set_links_in_app(on), cx));
+    let links = Line::new(t!("settings.links"), t!("settings.links_desc")).words(t!("settings.links_words")).control(segmented(shell, "links", link_places, shell.remembered.links_in_app, |this, on, _, _| this.set_links_in_app(on), cx));
     let zoom = Line::new(t!("settings.zoom"), t!("settings.zoom_desc")).words("zoom size scale text font larger smaller bigger").control(zoom_stepper(shell, cx));
     let starts = Start::ALL.into_iter().map(|s| (s, start_word(s).to_owned())).collect();
     let start = Line::new(t!("settings.start"), t!("settings.start_desc")).words("launch").control(segmented(shell, "start", starts, shell.remembered.start, |this, s, _, _| this.set_start(s), cx));
@@ -421,7 +488,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .control(switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx)),
     ];
     vec![
-        Section::new(t!("settings.section_look"), vec![language, appearance, zoom]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
+        Section::new(t!("settings.section_look"), dictation_rows(shell, language, dictation, appearance, zoom, cx)).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
         Section::new(t!("settings.section_conversation"), vec![follow, links]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
@@ -477,7 +544,7 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let disk_desc = short.and_then(|s| equipe_core::i18n::label::disk_line(crate::i18n::lang(), s)).unwrap_or_else(|| t!("settings.disk_desc").to_owned());
     let disk = Line::new(t!("settings.disk"), disk_desc)
         .warn(short.is_some_and(|s| s.level.holds_builds()))
-        .words("disk space storage clean target build 디스크 용량 정리 /disk")
+        .words(t!("settings.disk_words"))
         .control(ui::button(p, "open-disk", Kind::Secondary, t!("settings.disk_open")).icon(Icon::Server).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_disk(window, cx))));
 
     let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").control(switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx));
@@ -494,7 +561,7 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
 /// when it was last there and "연결 끊기" — asked twice.
 fn phones(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;
-    let words = "phone iphone android mobile app pair qr device equipe 휴대폰 아이폰 기기 앱";
+    let words = t!("settings.phone_words");
     let pair = Line::new(t!("pair.settings_pair"), t!("pair.settings_pair_desc", host = shell.endpoint.label()))
         .words(words)
         .control(ui::button(p, "pair-phone", Kind::Secondary, t!("pair.menu_item")).icon(Icon::Phone).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_pairing(window, cx))));
@@ -573,14 +640,14 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let lines = if lines.is_empty() { vec![Line::new(t!("settings.no_members"), t!("settings.no_members_desc"))] } else { lines };
     // Who accepts the team's work: the PM (only what needs the person comes to them), or the person, all of it.
     let pm_accepts = Line::new(t!("settings.pm_accepts"), t!("settings.pm_accepts_desc"))
-        .words("accept review approve 수락 검토 승인 pm")
+        .words(t!("settings.accept_words"))
         .control(switch(shell, "pm-accepts", model.pm_accepts, connected, |this, on, _, _| {
             let squad = this.model.squad.clone();
             this.send_command(equipe_core::protocol::Command::SetPmAccepts { squad, on });
         }, cx));
     // An empty board wakes the PM after a day to look for what comes next; off, it waits for the person.
     let idle_wake = Line::new(t!("settings.idle_wake"), t!("settings.idle_wake_desc"))
-        .words("idle wake empty board pm 빈 보드 깨우기 쉬는")
+        .words("idle wake empty board pm quiet")
         .control(switch(shell, "idle-wake", model.idle_wake_hours > 0, connected, |this, on, _, _| {
             let squad = this.model.squad.clone();
             let hours = if on { equipe_core::protocol::routines::IDLE_WAKE_HOURS } else { 0 };
@@ -898,7 +965,7 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
         .font_family(SANS)
         .border_r_1()
         .border_color(p.hair)
-        .child(div().h(px(super::sidebar::STRIP)).flex_none().w_full().window_control_area(WindowControlArea::Drag))
+        .child(ui::title_bar(div().h(px(super::sidebar::STRIP)).flex_none().w_full()))
         .child(back)
         .child(search)
         .child(v_flex().flex_1().min_h_0().gap(px(1.)).children(items))
@@ -985,7 +1052,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .min_w_0()
         .h_full()
         .bg(p.bg)
-        .child(div().h(px(super::sidebar::STRIP)).flex_none().w_full().window_control_area(WindowControlArea::Drag))
+        .child(ui::title_bar(div().h(px(super::sidebar::STRIP)).flex_none().w_full()))
         .child(div().id("settings-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&shell.settings.scroll).child(div().w_full().flex().justify_center().px_8().pt_2().pb(px(48.)).child(column)));
     h_flex().size_full().font_family(SANS).text_color(p.text).child(nav(shell, &found, searching, cx)).child(main).children(pop_menu(shell, cx)).into_any_element()
 }
@@ -1000,6 +1067,16 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             let mut rows = vec![(t!("settings.language_system", lang = Lang::resolve_auto(Front::App).native_name()), String::new(), now.is_none(), Act::Language(None))];
             rows.extend(Lang::ALL.into_iter().map(|l| (l.native_name().to_owned(), String::new(), now == Some(l), Act::Language(Some(l)))));
             (240., rows)
+        }
+        Pop::Dictation => {
+            let now = shell.remembered.dictation.as_deref().and_then(Lang::parse);
+            let mut rows = vec![(t!("settings.dictation_auto", lang = shell.composer.listening.native_name()), String::new(), now.is_none(), Act::Dictation(None))];
+            // Each language, and whether this Mac has its model yet.
+            rows.extend(Lang::ALL.into_iter().map(|l| {
+                let note = if shell.remembered.dictation_servers || crate::dictation::heard_here(l) { String::new() } else { t!("settings.dictation_not_here").to_owned() };
+                (l.native_name().to_owned(), note, now == Some(l), Act::Dictation(Some(l)))
+            }));
+            (280., rows)
         }
         Pop::Squad => (240., shell.squads.iter().map(|s| (s.clone(), String::new(), *s == model.squad, Act::Squad(s.clone()))).collect()),
         Pop::Model(session) => {
@@ -1078,6 +1155,7 @@ fn pop_number(pop: Pop) -> u64 {
     match pop {
         Pop::Language => 1,
         Pop::Squad => 2,
+        Pop::Dictation => 6,
         Pop::Model(s) => 3 + s * 8,
         Pop::Effort(s) => 4 + s * 8,
         Pop::Mode(s) => 5 + s * 8,
@@ -1183,7 +1261,11 @@ impl Shell {
     fn run_pop(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.pop = None;
         match act {
-            Act::Language(lang) => self.set_language(lang, cx),
+            Act::Language(lang) => {
+                self.set_language(lang, cx);
+                self.refresh_dictation(window, cx);
+            }
+            Act::Dictation(lang) => self.set_dictation(lang, window, cx),
             Act::Squad(name) => self.select_squad(&name, window, cx),
             Act::Model(session, model) => {
                 if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session) {

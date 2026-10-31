@@ -90,11 +90,11 @@ pub enum Reply {
     Text(String),
     /// Done (a thing to do, ticked off).
     Done,
-    /// Handed back: the member does it itself ("대신 해 줘").
+    /// Handed back: the member does it itself ("do it for me").
     Yours,
     /// Not now: the member goes on without it, and it stays open on the ticket.
     Later,
-    /// The member's call ("네가 정해 줘").
+    /// The member's call ("you decide").
     YourCall,
     /// The person doesn't know: the member finds another way, or asks differently.
     DontKnow,
@@ -179,10 +179,10 @@ fn said(reply: &Reply) -> String {
 ///
 /// ```text
 /// Answers to what you asked for:
-/// 1) 심사 연락처를 알려 주세요 → +82 10 1234 5678
-/// 2) EU DSA 상태를 trader로 바꿔 주세요 → do it yourself — the person handed this back to you
-///    Note: 2FA 코드는 제 폰으로 와요
-/// From the person: 이건 너가 직접 해
+/// 1) Tell me the review contact → +82 10 1234 5678
+/// 2) Set the EU DSA status to trader → do it yourself — the person handed this back to you
+///    Note: the 2FA code comes to my phone
+/// From the person: do this one yourself
 /// ```
 ///
 /// With nothing asked, their words alone.
@@ -354,28 +354,22 @@ pub enum Want {
 }
 
 /// Words that ask for a look and an OK, in the languages equipe speaks.
-const CONFIRMS: &[&str] = &[
-    "괜찮", "확인해", "확인 부탁", "검토해", "맞는지", "봐 주세요", "봐주세요", "confirm", "looks good", "look over", "check that", "check the",
-    "review the", "is it ok", "ok?", "approve", "確認", "确认", "確認して", "問題な", "没问题", "沒問題", "bestätig", "prüf", "passt", "vérifi",
-    "confirme", "valide", "c'est bon", "revisa", "comprueba", "está bien", "de acuerdo",
-];
+fn confirm_words() -> &'static [&'static str] {
+    crate::words::every("match.confirms")
+}
 
 /// Words that ask for words back.
-const ANSWERS: &[&str] = &[
-    "알려", "정해", "골라", "선택해", "적어", "답해", "말해", "보내 주", "주세요:", "무엇", "어떤", "언제", "누가", "어디", "얼마", "?", "？", "tell me",
-    "let me know", "which", "what ", "when ", "who ", "where ", "how many", "how much", "decide", "choose", "pick", "provide", "share", "send me",
-    "give me", "name the", "教え", "決め", "選ん", "どの", "いつ", "誰", "告诉", "告訴", "决定", "決定", "选择", "選擇", "提供", "哪", "什么", "什麼",
-    "teile", "nenne", "sag mir", "gib mir", "entscheide", "wähle", "welche", "wann", "wer ", "dites", "indiquez", "choisissez", "donnez", "quel",
-    "quand", "dime", "indica", "elige", "decide", "cuál", "cuándo", "quién",
-];
+fn answer_words() -> &'static [&'static str] {
+    crate::words::every("match.answers")
+}
 
 /// What `ask` wants back: an OK when it asks for a look (and says what an OK
 /// would be), words when it asks something, else a thing to do.
 pub fn want_of(ask: &str) -> Want {
     // A link's `?` and words aren't the ask's: `…/new?plan=free` asks nothing.
     let lower: String = ask.to_lowercase().split_whitespace().filter(|w| !w.contains("://")).collect::<Vec<_>>().join(" ");
-    // A Korean word counts at a word's start only: `설정해 주세요` is a thing
-    // to do, not `정해 주세요`.
+    // A Korean word counts at a word's start only: "set it up, please" ends
+    // in the word for "decide, please" and is a thing to do, not an answer.
     let has = |words: &[&str]| {
         words.iter().any(|w| {
             let hangul = |c: char| ('\u{AC00}'..='\u{D7A3}').contains(&c);
@@ -385,9 +379,9 @@ pub fn want_of(ask: &str) -> Want {
             lower.match_indices(w).any(|(at, _)| !lower[..at].chars().next_back().is_some_and(hangul))
         })
     };
-    if has(CONFIRMS) {
+    if has(confirm_words()) {
         Want::Confirm
-    } else if has(ANSWERS) {
+    } else if has(answer_words()) {
         Want::Answer
     } else {
         Want::Do
@@ -399,15 +393,15 @@ pub fn want_of(ask: &str) -> Want {
 /// One of an ask's quiet choices beside its box or tick — one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pick {
-    /// 했음: a thing to do, done.
+    /// Done: a thing to do, done.
     Done,
-    /// 대신 해 줘: handed back, the member does it.
+    /// Do it for me: handed back, the member does it.
     Yours,
-    /// 나중에: the member goes on without it; it stays open.
+    /// Later: the member goes on without it; it stays open.
     Later,
-    /// 네가 정해 줘: the member decides.
+    /// You decide: the member decides.
     YourCall,
-    /// 모르겠어요: the member finds another way.
+    /// Don't know: the member finds another way.
     DontKnow,
 }
 

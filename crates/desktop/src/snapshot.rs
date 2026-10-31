@@ -10,7 +10,7 @@
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<missing|confirm|installing|signedout|waiting|ready|create|failed>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
@@ -103,6 +103,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "key" => shell.update(cx, |shell, cx| {
                     shell.on_approval_key(&arg, false, window, cx);
                 }),
+                // A new conversation with the PM (`newtalk` the squad's, `newtalk:<project>`).
+                "newtalk" => shell.update(cx, |shell, cx| shell.start_conversation((!arg.is_empty()).then(|| arg.clone()), window, cx)),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
                     shell.on_composer_key(&verb, &Modifiers::default(), window, cx);
@@ -201,7 +203,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 "pastelong" => shell.update(cx, |shell, cx| {
                     let lines = arg.parse::<usize>().unwrap_or(60);
-                    let text: String = (1..=lines).map(|n| format!("{n}번째 줄: 로그 내용이 여기에 있습니다\n")).collect();
+                    let text: String = (1..=lines).map(|n| format!("line {n}: the log goes on here\n")).collect();
                     let taken = shell.paste_item(&ClipboardItem::new_string(text), cx);
                     eprintln!("pastelong: taken = {taken}");
                 }),
@@ -222,28 +224,6 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
-                // The first run's steps, held at a state: `missing` · `confirm` · `installing` · `signedout` · `waiting` · `ready` · `failed`.
-                "setup" => shell.update(cx, |shell, cx| {
-                    use crate::setup::{Claude, Doing};
-                    let s = &mut shell.setup;
-                    s.probed = true;
-                    (s.claude, s.codex, s.doing, s.confirm_install, s.failed) = (Some(Claude::Missing), Some(false), Doing::Idle, false, None);
-                    match arg.as_str() {
-                        "confirm" => s.confirm_install = true,
-                        "installing" => s.doing = Doing::Installing,
-                        "signedout" => s.claude = Some(Claude::SignedOut),
-                        "waiting" => (s.claude, s.doing) = (Some(Claude::SignedOut), Doing::ClaudeLogin),
-                        "ready" => (s.claude, s.codex) = (Some(Claude::SignedIn), Some(true)),
-                        // Really make the squad, as the button does (an engine is taken as ready).
-                        "create" => {
-                            s.codex = Some(true);
-                            shell.setup_do(Doing::Creating, cx);
-                        }
-                        "failed" => s.failed = Some((Doing::Installing, "curl: (6) Could not resolve host: claude.ai — the connection to https://claude.ai/install.sh could not be made, check the network and try once more later".into())),
-                        _ => {}
-                    }
-                    cx.notify();
-                }),
                 // 디자인 시스템: the screen at a section, another system, its draft, what changed, an asset big.
                 // 현황; `overview:<project>` marks that project the HQ here first (no daemon asked).
                 "overview" => shell.update(cx, |shell, cx| {
@@ -258,8 +238,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     use equipe_core::protocol::routines::{Routine, Schedule};
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                     shell.model.routines = vec![
-                        Routine { id: 1, title: "주간 리포트".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: Some(now - 6 * 86_400), next_run: Some(now + 86_400) },
-                        Routine { id: 2, title: "의존성 점검".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 5, hour: 16, minute: 0 }, on: false, last_run: None, next_run: Some(now + 4 * 86_400) },
+                        Routine { id: 1, title: "Weekly report".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: Some(now - 6 * 86_400), next_run: Some(now + 86_400) },
+                        Routine { id: 2, title: "Dependency check".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 5, hour: 16, minute: 0 }, on: false, last_run: None, next_run: Some(now + 4 * 86_400) },
                     ];
                     cx.notify();
                 }),
@@ -384,6 +364,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let typed = shell.read(cx).turn.fields.get(&(ticket, n)).map(|f| f.read(cx).value().to_string()).unwrap_or_default();
                     eprintln!("akeys typed: {typed:?}");
                 }
+                // `nebiuskey:<file>`: the Nebius card's box holds the key that file
+                // keeps, as if pasted — never on the script's line, never logged.
+                "nebiuskey" => shell.update(cx, |shell, cx| {
+                    if let Ok(key) = std::fs::read_to_string(&arg) {
+                        let input = shell.settings.nebius_key.clone();
+                        input.update(cx, |s, cx| s.set_value(key.trim().to_owned(), window, cx));
+                    }
+                }),
                 // `keys:words` presses each key as the keyboard would, into what has the keyboard.
                 "keys" => {
                     for ch in arg.chars() {

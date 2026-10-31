@@ -42,7 +42,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let now = now_secs();
     let cards = portfolio::cards(&shell.model, now);
     let totals = portfolio::totals(&cards);
-    let header = h_flex()
+    // Nothing to press in it: the whole bar is the title bar's.
+    let header = crate::ui::title_bar(h_flex())
         .h(px(super::header::HEIGHT))
         .flex_none()
         .pr_4()
@@ -51,7 +52,6 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .items_center()
         .border_b_1()
         .border_color(p.hair)
-        .window_control_area(WindowControlArea::Drag)
         .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("overview.title")))
         .child(div().min_w_0().truncate().text_size(px(SMALL)).text_color(p.muted).child(t!("overview.subtitle")));
     let tile = |n: usize, label: String, hot: bool| {

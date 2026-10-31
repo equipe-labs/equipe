@@ -227,18 +227,8 @@ over the same control connection; quote every path with single quotes
 | Menu bar, ⌘⇧P, `/usage`, `/help` | every menu item is a command line (`menu_commands!` in `main.rs`); ⌘⇧P puts `/` in the box with completions open (⌘K stays the search over everything) | the same; usage and plan limits come from `hello`/events |
 | Copy to clipboard | the laptop's clipboard | the same — never the daemon's. |
 
-**First run on this Mac** (`setup.rs`, `views/setup.rs`; T-193). With no squad yet the
-window shows a setup screen instead of the "run `equipe` in a terminal" guide (a far
-machine still gets that guide). No daemon session exists, so it talks to the tools
-directly: `claude auth status`, `codex login status` for where each stands; the install
-is Anthropic's own line (`curl -fsSL https://claude.ai/install.sh | bash`), shown and
-run by the app after a yes; sign-ins are `claude auth login` and `equipe login codex`
-(each opens the browser by itself; cancel ends the child); the squad is `equipe squad
-new <name>`, then the connection is retried and the squad opens with its starting team.
-ChatGPT (equipe's own login — answers, plans, reviews) is shown first as the easiest
-way, Claude Code as the one that edits files; the plan needed is said up front. The
-service's PATH now carries `~/.local/bin` and Homebrew's, so the daemon finds a
-`claude` installed after it started. `EQUIPE_SCRIPT=setup:<state>` holds a state.
+The service's PATH carries `~/.local/bin` and Homebrew's, so a daemon started from
+Finder finds a `claude` or `codex` installed after it started (T-193).
 
 **Trying it.** `cargo run -p equipe-desktop --example remote_probe -- user@host[:port]
 [--trust]` runs the same link without a window and prints what it says (a password from

@@ -38,7 +38,7 @@ they decide. Write the title and the prompt in the person's language; the prompt
         "inputSchema": {
             "type": "object",
             "properties": {
-                "title": { "type": "string", "description": "A short name: \"주간 점검\"." },
+                "title": { "type": "string", "description": "A short name, in the person's language: \"Weekly check-in\"." },
                 "prompt": { "type": "string", "description": "What you are asked each time it runs, in the person's language." },
                 "every": { "type": "string", "enum": ["daily", "weekly"] },
                 "weekday": { "type": "integer", "minimum": 1, "maximum": 7, "description": "weekly: 1 Monday … 7 Sunday." },

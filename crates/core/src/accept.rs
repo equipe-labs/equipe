@@ -1,5 +1,5 @@
 //! Handed-in work the person says in words they accept, merge or send back —
-//! "전부 수락", "T-1이랑 T-3 수락해줘", "머지까지 해줘", "이건 반려" — put in
+//! "accept them all", "accept T-1 and T-3", "merge it too", "reject this one" — put in
 //! front of them as a card to confirm (`propose_accept`): the PM's tool, and
 //! what a call (or a screen reading the person's words) is checked against.
 //! Plain functions, tested without an engine. A proposal only ever waits for
@@ -34,7 +34,7 @@ right, send it back to its member with `comment` and what to change.",
             "properties": {
                 "tickets": { "type": "array", "items": { "type": "integer" }, "description": "The handed-in tickets you accept." },
                 "checked": { "type": "string", "description": "What you checked and found, in a line — kept on each ticket for the person." },
-                "push": { "type": "boolean", "description": "Push main once merged, so the work goes live where the project deploys from main — when the person asked for it to go live (\"배포해줘\"), or the project always ships what is on main." },
+                "push": { "type": "boolean", "description": "Push main once merged, so the work goes live where the project deploys from main — when the person asked for it to go live (\"ship it\"), or the project always ships what is on main." },
             },
             "required": ["tickets", "checked"],
         },
@@ -50,10 +50,10 @@ pub fn tool() -> Value {
         "name": PROPOSE_ACCEPT,
         "description": "Put handed-in work in front of the person to confirm on a card with one click: accepting it, \
 accepting and merging it, or sending it back with what to change. Call it right away whenever the person says in words \
-that they accept, approve, merge or reject work in review (\"accept them all\", \"전부 수락\", \"T-1이랑 T-3 수락해줘\", \
-\"머지까지 해줘\", \"이건 반려\"). Their words are not the acceptance, and neither is yours: only their click on the card \
-accepts, merges or sends back. Don't explain buttons or ask them to click anything — say in one line that the card is \
-up (\"확인 카드를 띄웠어요\" in Korean).",
+that they accept, approve, merge or reject work in review (\"accept them all\", \"accept T-1 and T-3\", \
+\"merge it too\", \"reject this one\"). Their words are not the acceptance, and neither is yours: only their click on the card \
+accepts, merges or sends back. Don't explain buttons or ask them to click anything — say in one line, in their language, that the card \
+is up (\"The card is up\").",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -259,7 +259,7 @@ pub fn proposed_reply(checked: &Checked, tickets: &[Ticket]) -> String {
     };
     format!(
         "Proposed — the person confirms on a card: {what}.{next}{} Tell them in one line, in their language, that the card is \
-up (\"확인 카드를 띄웠어요\"). {DON_T}",
+up (\"The card is up\"). {DON_T}",
         dropped_line(&checked.dropped)
     )
 }
@@ -268,7 +268,7 @@ up (\"확인 카드를 띄웠어요\"). {DON_T}",
 pub fn already_reply(waiting: &[TicketId], dropped: &[(TicketId, String)]) -> String {
     format!(
         "Already on a card in front of the person: {} — equipe raised it from their words. Nothing more to propose: say in \
-one line, in their language, that the card is up (\"확인 카드를 띄웠어요\").{} {DON_T}",
+one line, in their language, that the card is up (\"The card is up\").{} {DON_T}",
         ids(waiting),
         dropped_line(dropped)
     )
@@ -363,12 +363,12 @@ mod tests {
         let c = proposed(json!({ "verdict": "accept", "tickets": [1, 3, 2] }));
         let said = proposed_reply(&c, &board());
         assert!(said.starts_with("Proposed — the person confirms on a card: accepting T-1, T-3. Confirmed, T-4 can start."), "{said}");
-        assert!(said.contains("Left out: T-2 is in progress, not handed in yet.") && said.contains("확인 카드를 띄웠어요") && said.contains("Don't explain buttons"), "{said}");
+        assert!(said.contains("Left out: T-2 is in progress, not handed in yet.") && said.contains("The card is up") && said.contains("Don't explain buttons"), "{said}");
         assert!(said.contains("only their click on the card does it"), "{said}");
         let back = proposed(json!({ "verdict": "changes", "tickets": [3], "note": "헤더" }));
         assert!(proposed_reply(&back, &board()).contains("sending T-3 back: 헤더.") && !proposed_reply(&back, &board()).contains("can start"));
         let already = already_reply(&[1, 3], &[]);
-        assert!(already.starts_with("Already on a card in front of the person: T-1, T-3") && already.contains("확인 카드를 띄웠어요"), "{already}");
+        assert!(already.starts_with("Already on a card in front of the person: T-1, T-3") && already.contains("The card is up"), "{already}");
         assert_eq!(starts_after(&board(), &[1]), Vec::<TicketId>::new(), "T-4 still waits on T-3, T-8 on T-2");
         assert_eq!(starts_after(&board(), &[1, 3]), [4]);
         assert_eq!(tool()["name"], PROPOSE_ACCEPT);
