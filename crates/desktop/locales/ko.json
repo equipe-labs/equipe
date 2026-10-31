@@ -2154,5 +2154,12 @@
   "disk.auto_cleaned": "끝난 작업의 빌드 결과물 등 {size}를 자동으로 정리했어요",
   "chat.declined_note": "오류가 아니에요. 스쿼드 규칙상 멤버가 할 수 없는 일이라 equipe가 막았고, 멤버는 다른 방법을 찾아요.",
   "secrets.open": "입력",
-  "secrets.folded": "값 {count}개 입력 요청"
+  "secrets.folded": "값 {count}개 입력 요청",
+  "settings.dictation": "음성 입력 언어",
+  "settings.dictation_desc": "마이크로 말할 언어예요. 앱 언어와 따로 정할 수 있고, 소리는 이 맥 밖으로 나가지 않아요.",
+  "settings.dictation_missing_desc": "이 맥에 {lang} 받아쓰기 모델이 없어요. '언어 추가'에서 받거나 다른 언어를 고르세요.",
+  "settings.dictation_auto": "자동 ({lang})",
+  "settings.dictation_not_here": "이 맥에 없음",
+  "settings.dictation_add": "언어 추가",
+  "composer.dictation_no_model": "이 맥에 {lang} 받아쓰기 모델이 없어요. 설정 › 일반 › 음성 입력 언어에서 추가하거나 바꿔 주세요."
 }

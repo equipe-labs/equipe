@@ -25,6 +25,7 @@ mod daemon;
 mod disk;
 mod doc;
 mod design;
+mod dictation;
 mod failure;
 mod help;
 mod install;
@@ -335,7 +336,7 @@ impl Shell {
             squads: Vec::new(),
             screen: Screen::Chat,
             chat: Chat::new(cx),
-            composer: Composer::new(window, cx),
+            composer: Composer::new(window, cx, dictation::choose(remembered.dictation.as_deref().and_then(equipe_core::i18n::Lang::parse), crate::i18n::lang(), &equipe_core::i18n::preferred(), dictation::heard_here)),
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),

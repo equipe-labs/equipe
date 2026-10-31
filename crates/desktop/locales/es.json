@@ -2207,5 +2207,12 @@
   "chat.declined_note": "No es un error: las reglas del squad no permiten esto a un miembro, así que equipe dijo que no y el miembro busca otro camino.",
   "secrets.open": "Introducir",
   "secrets.folded": "pide {count} valores",
-  "secrets.folded.one": "pide 1 valor"
+  "secrets.folded.one": "pide 1 valor",
+  "settings.dictation": "Idioma del dictado",
+  "settings.dictation_desc": "El idioma que hablas al micrófono, aparte del de la app. El sonido nunca sale de este Mac.",
+  "settings.dictation_missing_desc": "Este Mac no tiene el modelo de dictado en {lang}. Consíguelo en Añadir idioma o elige otro.",
+  "settings.dictation_auto": "Automático ({lang})",
+  "settings.dictation_not_here": "No está en este Mac",
+  "settings.dictation_add": "Añadir idioma",
+  "composer.dictation_no_model": "Este Mac no tiene el modelo de dictado en {lang}. Añádelo o cambia de idioma en Ajustes › General › Idioma del dictado."
 }

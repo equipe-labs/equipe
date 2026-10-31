@@ -2207,5 +2207,12 @@
   "chat.declined_note": "Kein Fehler: Die Regeln der Squad erlauben das einem Mitglied nicht, also hat equipe abgelehnt – das Mitglied geht einen anderen Weg.",
   "secrets.open": "Eingeben",
   "secrets.folded": "bittet um {count} Werte",
-  "secrets.folded.one": "bittet um 1 Wert"
+  "secrets.folded.one": "bittet um 1 Wert",
+  "settings.dictation": "Diktiersprache",
+  "settings.dictation_desc": "Die Sprache, die du ins Mikrofon sprichst – unabhängig von der App-Sprache. Der Ton verlässt diesen Mac nie.",
+  "settings.dictation_missing_desc": "Auf diesem Mac fehlt das Diktiermodell für {lang}. Hole es über „Sprache hinzufügen“ oder wähle eine andere.",
+  "settings.dictation_auto": "Automatisch ({lang})",
+  "settings.dictation_not_here": "Nicht auf diesem Mac",
+  "settings.dictation_add": "Sprache hinzufügen",
+  "composer.dictation_no_model": "Auf diesem Mac fehlt das Diktiermodell für {lang}. Füge es hinzu oder wähle eine andere unter Einstellungen › Allgemein › Diktiersprache."
 }
