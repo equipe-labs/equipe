@@ -200,6 +200,9 @@ pub fn picture(shots: &Shots, id: u64, path: &str, look: Look, w: f32, h: f32, r
         Look::Ready(shot) => {
             let (iw, ih) = ((w - 2. * pad).max(1.), (h - 2. * pad).max(1.));
             let image = img(shot.image.clone()).absolute().top(px(pad)).left(px(pad)).w(px(iw)).h(px(ih)).object_fit(ObjectFit::Contain);
+            // Rounded itself where it reaches the corners: overflow clips square.
+            let inner = px((radius - pad).max(0.));
+            let image = if top_only { image.rounded_t(inner) } else { image.rounded(inner) };
             if !shots.reduce && shot.at.elapsed() < FADE * 2 {
                 motion::fade(image, ElementId::NamedInteger("shot-in".into(), id), FADE).into_any_element()
             } else {
@@ -585,7 +588,7 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 .rounded(px(10.))
                 .overflow_hidden()
                 .children(board)
-                .child(img(shot.image.clone()).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Contain))
+                .child(img(shot.image.clone()).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Contain).rounded(px(10.)))
                 // The whole picture still coming: a turning mark in its corner.
                 .when(matches!(whole, Look::Loading), |d| d.child(div().absolute().right(px(10.)).bottom(px(10.)).child(motion::spinner(14., rgba(0x00000080)))))
                 .into_any_element()

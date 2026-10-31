@@ -153,7 +153,8 @@ fn placeholder(p: Palette, id: ElementId, reduce: bool) -> AnyElement {
 fn picture(p: Palette, n: u64, size: (f32, f32), tag: &Tag, shown: Option<&Shown>, cover: bool, reduce: bool, click: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>) -> AnyElement {
     let face: AnyElement = match shown {
         Some(Shown::Picture(picture)) => {
-            let image = img(picture.thumb.clone()).size_full().object_fit(if cover { ObjectFit::Cover } else { ObjectFit::Contain });
+            // Rounded itself, inside the border: the frame's overflow clips square, not to its corners.
+            let image = img(picture.thumb.clone()).size_full().object_fit(if cover { ObjectFit::Cover } else { ObjectFit::Contain }).rounded(px(R_LG - 1.));
             if !reduce && picture.at.elapsed() < FADE * 2 {
                 motion::fade(div().size_full().child(image), ElementId::NamedInteger("sent-in".into(), n), FADE).into_any_element()
             } else {

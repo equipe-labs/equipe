@@ -421,7 +421,11 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
     let asked = Path::new(&ask.path);
     // Not where it was read against (a member named a file it saved in a
     // ticket's worktree): the newest picture of that name in the squad's folders.
-    let found = (std::fs::symlink_metadata(asked).is_err() && !shown.kept.contains_key(&ask.path)).then(|| by_name(&shown.roots, asked)).flatten();
+    // Said in a ticket's worktree that went with its acceptance: the same place
+    // in the repository it was merged into, before any search by name.
+    let found = (std::fs::symlink_metadata(asked).is_err() && !shown.kept.contains_key(&ask.path))
+        .then(|| merged_copy(home, &ask.squad, &shown.projects, asked).or_else(|| by_name(&shown.roots, asked)))
+        .flatten();
     let path = found.as_deref().unwrap_or(asked);
     match read(path, &shown.roots, max) {
         // Its worktree went with its acceptance: git still has it.
@@ -431,6 +435,17 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         },
         read => read,
     }
+}
+
+/// Where a picture said in a ticket's worktree is, now the worktree is gone:
+/// the same place in the repository it was cut from — the squad's folder or a
+/// project — once its work was merged there.
+fn merged_copy(home: &Path, squad: &str, projects: &[PathBuf], asked: &Path) -> Option<PathBuf> {
+    let image = asked.to_str()?;
+    std::iter::once(crate::squad_home::path(home, squad))
+        .chain(projects.iter().cloned())
+        .find_map(|repo| in_worktree(image, &repo, home).map(|rel| repo.join(rel)))
+        .filter(|path| path.is_file())
 }
 
 /// A path's last part, if it has one.
@@ -945,6 +960,27 @@ mod tests {
         // A name never said gives nothing, though a file of it is there.
         png(&outputs.join("secret.png"), 4, 4, false);
         assert!(serve(&home, &ask(&desk.join("secret.png")), None).unwrap_err().contains("isn't a picture"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_picture_said_in_a_worktree_that_went_shows_from_where_it_was_merged() {
+        let home = dir("merged-copy");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        // The ticket's worktree is gone with its acceptance; its outputs were merged into the squad's folder.
+        let gone = home.join("worktrees/acme.home/t243-6ae63965/outputs/T-243 첫 화면 wow 3안/storyboard-A-ko.png");
+        let desk = crate::squad_home::path(&home, "acme");
+        let merged = desk.join("outputs/T-243 첫 화면 wow 3안");
+        std::fs::create_dir_all(&merged).unwrap();
+        png(&merged.join("storyboard-A-ko.png"), 40, 30, false);
+        // Another file of that name, newer, elsewhere: a search by name alone would pick it.
+        let other = desk.join("outputs/T-9 old");
+        std::fs::create_dir_all(&other).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        png(&other.join("storyboard-A-ko.png"), 8, 8, false);
+        conversation(&journal, 1, &desk, &[reply(&format!("3안이에요.\n![A안]({})", gone.display()))]);
+        let ask = ReadImage { squad: "acme".into(), path: gone.to_string_lossy().into_owned(), max: Some(64) };
+        assert_eq!(serve(&home, &ask, None).unwrap().width, Some(40), "the merged copy at the same place, not the newest of its name");
         std::fs::remove_dir_all(home).unwrap();
     }
 
