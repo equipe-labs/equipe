@@ -2206,6 +2206,6 @@
   "disk.auto_cleaned": "Se liberaron {size} solos: resultados de compilación de trabajo terminado y similares",
   "chat.declined_note": "No es un error: las reglas del squad no permiten esto a un miembro, así que equipe dijo que no y el miembro busca otro camino.",
   "secrets.open": "Introducir",
-  "secrets.folded": "pide {count} valores",
+  "secrets.folded.other": "pide {count} valores",
   "secrets.folded.one": "pide 1 valor"
 }

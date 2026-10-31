@@ -2206,6 +2206,6 @@
   "disk.auto_cleaned": "{size} von selbst freigegeben: Build-Ausgaben abgeschlossener Arbeit u. Ä.",
   "chat.declined_note": "Kein Fehler: Die Regeln der Squad erlauben das einem Mitglied nicht, also hat equipe abgelehnt – das Mitglied geht einen anderen Weg.",
   "secrets.open": "Eingeben",
-  "secrets.folded": "bittet um {count} Werte",
+  "secrets.folded.other": "bittet um {count} Werte",
   "secrets.folded.one": "bittet um 1 Wert"
 }

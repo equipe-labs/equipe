@@ -2206,6 +2206,6 @@
   "disk.auto_cleaned": "Gave back {size} on its own: finished work’s build output and the like",
   "chat.declined_note": "Not an error: the squad’s rules don’t let a member do this, so equipe said no and the member takes another way.",
   "secrets.open": "Enter",
-  "secrets.folded": "asks for {count} values",
+  "secrets.folded.other": "asks for {count} values",
   "secrets.folded.one": "asks for 1 value"
 }

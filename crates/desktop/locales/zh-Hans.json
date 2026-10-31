@@ -2154,5 +2154,5 @@
   "disk.auto_cleaned": "已自动清理 {size}：已完成工作的构建产物等",
   "chat.declined_note": "这不是错误：按小队规则成员不能这样做，所以 equipe 拒绝了，成员会换个方式。",
   "secrets.open": "填写",
-  "secrets.folded": "请求填写 {count} 个值"
+  "secrets.folded.other": "请求填写 {count} 个值"
 }

@@ -2206,6 +2206,6 @@
   "disk.auto_cleaned": "{size} libérés automatiquement : sorties de build du travail terminé, etc.",
   "chat.declined_note": "Ce n’est pas une erreur : les règles de la squad ne le permettent pas à un membre, equipe a donc refusé et le membre prend une autre voie.",
   "secrets.open": "Saisir",
-  "secrets.folded": "demande {count} valeurs",
+  "secrets.folded.other": "demande {count} valeurs",
   "secrets.folded.one": "demande 1 valeur"
 }

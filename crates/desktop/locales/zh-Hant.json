@@ -2154,5 +2154,5 @@
   "disk.auto_cleaned": "已自動清理 {size}：已完成工作的建置產物等",
   "chat.declined_note": "這不是錯誤：依小隊規則成員不能這樣做，所以 equipe 拒絕了，成員會換個方式。",
   "secrets.open": "填寫",
-  "secrets.folded": "請求填寫 {count} 個值"
+  "secrets.folded.other": "請求填寫 {count} 個值"
 }
