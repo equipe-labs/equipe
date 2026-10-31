@@ -2207,5 +2207,12 @@
   "chat.declined_note": "Not an error: the squad’s rules don’t let a member do this, so equipe said no and the member takes another way.",
   "secrets.open": "Enter",
   "secrets.folded.other": "asks for {count} values",
-  "secrets.folded.one": "asks for 1 value"
+  "secrets.folded.one": "asks for 1 value",
+  "settings.dictation": "Dictation language",
+  "settings.dictation_desc": "The language you speak into the mic, apart from the app’s. The sound never leaves this Mac.",
+  "settings.dictation_missing_desc": "This Mac has no {lang} dictation model. Get it under Add language, or pick another.",
+  "settings.dictation_auto": "Automatic ({lang})",
+  "settings.dictation_not_here": "Not on this Mac",
+  "settings.dictation_add": "Add language",
+  "composer.dictation_no_model": "This Mac has no {lang} dictation model. Add it, or pick another, in Settings › General › Dictation language."
 }

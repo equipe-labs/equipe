@@ -24,6 +24,24 @@ pub fn patience(length: Option<f64>) -> Duration {
     Duration::from_secs_f64((length * 1.5).clamp(60., 3. * 3600.) + 30.)
 }
 
+/// Whether this Mac can recognize `locale` on the device (no audio leaves it).
+pub fn on_device(locale: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::AnyThread as _;
+        use objc2_foundation::{NSLocale, NSString};
+        use objc2_speech::SFSpeechRecognizer;
+        let locale = NSLocale::initWithLocaleIdentifier(NSLocale::alloc(), &NSString::from_str(locale));
+        // SAFETY: a valid locale; nil for one with no recognizer; plain property reads.
+        unsafe { SFSpeechRecognizer::initWithLocale(SFSpeechRecognizer::alloc(), &locale) }.is_some_and(|r| unsafe { r.supportsOnDeviceRecognition() })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = locale;
+        false
+    }
+}
+
 /// What was said in the recording at `path`, in `locale` ("ko-KR"). Blocks
 /// until the recognizer is through: call it off the main thread.
 pub fn transcribe(path: &Path, locale: &str, length: Option<f64>) -> Result<String, Failure> {

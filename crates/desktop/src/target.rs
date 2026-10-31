@@ -186,6 +186,9 @@ pub struct Remembered {
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
+    /// The language dictation listens for, if the person picked one (`ko`, …):
+    /// else the first this Mac can hear (`dictation.rs`).
+    pub dictation: Option<String>,
     /// Light or dark, or as the Mac is.
     pub appearance: Appearance,
     /// What the window opens on.
@@ -412,6 +415,8 @@ impl Remembered {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("lang ") {
                 out.lang = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
+            } else if let Some(rest) = line.strip_prefix("dictation ") {
+                out.dictation = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
             } else if let Some(rest) = line.strip_prefix("appearance ") {
                 out.appearance = Appearance::parse(rest.trim()).unwrap_or_default();
             } else if let Some(rest) = line.strip_prefix("start ") {
@@ -506,6 +511,9 @@ impl Remembered {
         }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
+        }
+        if let Some(lang) = &self.dictation {
+            text.push_str(&format!("dictation {lang}\n"));
         }
         if self.appearance != Appearance::System {
             text.push_str(&format!("appearance {}\n", self.appearance.code()));
@@ -696,6 +704,7 @@ mod tests {
         remembered.peek_width = Some(560.);
         remembered.sidebar_width = Some(301.6);
         remembered.lang = Some("ko".into());
+        remembered.dictation = Some("ja".into());
         remembered.set_merge_way("my site", "merge");
         remembered.set_merge_way("app", "push");
         remembered.set_merge_way("app", "branch");
@@ -704,6 +713,7 @@ mod tests {
 
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
+        assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
         assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");
         assert_eq!(loaded.merge_way("app"), Some("branch"), "the last word wins");
         assert_eq!(loaded.merge_way("web"), None);

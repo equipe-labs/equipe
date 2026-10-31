@@ -281,8 +281,9 @@ pub struct Composer {
     save_task: Option<Task<()>>,
     /// Writes the draft down as the app quits.
     _quit: Subscription,
-    /// Dictation: on-device speech recognition in the app's language.
+    /// Dictation: on-device speech recognition, in `listening`.
     pub speech: Entity<SpeechState>,
+    pub listening: equipe_core::i18n::Lang,
     /// What is being said, while it is (shown dimmed under the box; Esc drops it).
     dictating: Option<String>,
     _speech: Subscription,
@@ -291,11 +292,9 @@ pub struct Composer {
 }
 
 impl Composer {
-    pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Shell>, listening: equipe_core::i18n::Lang) -> Self {
         let placeholder = t!("composer.placeholder").to_owned();
-        let locale = speech_locale(crate::i18n::lang());
-        let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(locale)));
-        let heard = cx.subscribe_in(&speech, window, |shell: &mut Shell, _, event: &SpeechEvent, window, cx| shell.on_speech(event, window, cx));
+        let (speech, heard) = listener(listening, window, cx);
         let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(placeholder.clone()));
         Self {
             state,
@@ -333,6 +332,7 @@ impl Composer {
                 async {}
             }),
             speech,
+            listening,
             dictating: None,
             _speech: heard,
             inbox_watch: None,
@@ -433,19 +433,11 @@ impl Composer {
     }
 }
 
-/// The language dictation listens for: the app's.
-fn speech_locale(lang: equipe_core::i18n::Lang) -> &'static str {
-    use equipe_core::i18n::Lang as L;
-    match lang {
-        L::Ko => "ko-KR",
-        L::En => "en-US",
-        L::Ja => "ja-JP",
-        L::ZhHans => "zh-CN",
-        L::ZhHant => "zh-TW",
-        L::Es => "es-ES",
-        L::Fr => "fr-FR",
-        L::De => "de-DE",
-    }
+/// Dictation listening for `lang`, and what it hears going to the composer.
+fn listener(lang: equipe_core::i18n::Lang, window: &mut Window, cx: &mut Context<Shell>) -> (Entity<SpeechState>, Subscription) {
+    let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(crate::dictation::locale(lang))));
+    let heard = cx.subscribe_in(&speech, window, |shell: &mut Shell, _, event: &SpeechEvent, window, cx| shell.on_speech(event, window, cx));
+    (speech, heard)
 }
 
 /// What the empty box says: who it is for.
@@ -637,6 +629,27 @@ impl Shell {
     // ── dictation ──
 
     /// The mic button: start listening, or stop and keep what was said.
+    /// The language dictation listens for, again: the one picked in settings
+    /// (`None`: the first this Mac can hear), at once — no restart.
+    pub fn set_dictation(&mut self, choice: Option<equipe_core::i18n::Lang>, window: &mut Window, cx: &mut Context<Self>) {
+        self.remembered.dictation = choice.map(|l| l.code().to_owned());
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.refresh_dictation(window, cx);
+    }
+
+    /// Listen for what [`crate::dictation::choose`] says now, if that changed.
+    pub fn refresh_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = self.remembered.dictation.as_deref().and_then(equipe_core::i18n::Lang::parse);
+        let lang = crate::dictation::choose(picked, crate::i18n::lang(), &equipe_core::i18n::preferred(), crate::dictation::heard_here);
+        if lang == self.composer.listening {
+            return;
+        }
+        self.composer.speech.update(cx, |s, cx| s.cancel(cx));
+        let (speech, heard) = listener(lang, window, cx);
+        (self.composer.speech, self.composer._speech, self.composer.listening) = (speech, heard, lang);
+        cx.notify();
+    }
+
     fn toggle_dictation(&mut self, cx: &mut Context<Self>) {
         self.composer.speech.update(cx, |s, cx| s.toggle(cx));
         cx.notify();
@@ -665,7 +678,8 @@ impl Shell {
                 self.composer.flash = Some(match error {
                     SpeechError::PermissionDenied => t!("composer.dictation_denied").to_owned(),
                     SpeechError::NoInputDevice => t!("composer.dictation_no_mic").to_owned(),
-                    SpeechError::Unsupported => t!("composer.dictation_unsupported").to_owned(),
+                    // No model for it on this Mac: which language, and where to add it or pick another.
+                    SpeechError::Unsupported => t!("composer.dictation_no_model", lang = self.composer.listening.native_name()),
                     other => t!("composer.dictation_failed", why = other),
                 });
             }
@@ -891,7 +905,7 @@ impl Shell {
     /// what was said, on this Mac's daemon or a far one alike.
     fn write_down(&mut self, id: u64, path: PathBuf, cx: &mut Context<Self>) {
         self.composer.strip.writing(id, true);
-        let locale = speech_locale(crate::i18n::lang());
+        let locale = crate::dictation::locale(self.composer.listening);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let from = path.clone();
         // Minutes for a long one: its own thread, not one of the pool's.

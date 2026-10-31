@@ -2207,5 +2207,12 @@
   "chat.declined_note": "Ce n’est pas une erreur : les règles de la squad ne le permettent pas à un membre, equipe a donc refusé et le membre prend une autre voie.",
   "secrets.open": "Saisir",
   "secrets.folded.other": "demande {count} valeurs",
-  "secrets.folded.one": "demande 1 valeur"
+  "secrets.folded.one": "demande 1 valeur",
+  "settings.dictation": "Langue de dictée",
+  "settings.dictation_desc": "La langue que vous parlez au micro, distincte de celle de l’app. Le son ne quitte jamais ce Mac.",
+  "settings.dictation_missing_desc": "Ce Mac n’a pas de modèle de dictée en {lang}. Obtenez-le via Ajouter une langue, ou choisissez-en une autre.",
+  "settings.dictation_auto": "Automatique ({lang})",
+  "settings.dictation_not_here": "Absent de ce Mac",
+  "settings.dictation_add": "Ajouter une langue",
+  "composer.dictation_no_model": "Ce Mac n’a pas de modèle de dictée en {lang}. Ajoutez-le ou changez de langue dans Réglages › Général › Langue de dictée."
 }

@@ -2154,5 +2154,12 @@
   "disk.auto_cleaned": "終わった作業のビルド成果物など {size} を自動で整理しました",
   "chat.declined_note": "エラーではありません。スクワッドのルール上メンバーにはできないため equipe が止め、メンバーは別の方法を取ります。",
   "secrets.open": "入力",
-  "secrets.folded.other": "{count} 件の値の入力を依頼"
+  "secrets.folded.other": "{count} 件の値の入力を依頼",
+  "settings.dictation": "音声入力の言語",
+  "settings.dictation_desc": "マイクで話す言語です。アプリの言語とは別に選べます。音声はこの Mac の外に出ません。",
+  "settings.dictation_missing_desc": "この Mac には {lang} の音声入力モデルがありません。「言語を追加」で入れるか、別の言語を選んでください。",
+  "settings.dictation_auto": "自動（{lang}）",
+  "settings.dictation_not_here": "この Mac になし",
+  "settings.dictation_add": "言語を追加",
+  "composer.dictation_no_model": "この Mac には {lang} の音声入力モデルがありません。設定 › 一般 › 音声入力の言語で追加するか変更してください。"
 }

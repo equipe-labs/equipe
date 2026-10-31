@@ -43,6 +43,7 @@ const PAGE: f32 = 720.;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pop {
     Language,
+    Dictation,
     Squad,
     Model(SessionId),
     Effort(SessionId),
@@ -53,6 +54,7 @@ pub enum Pop {
 #[derive(Debug, Clone)]
 enum Act {
     Language(Option<Lang>),
+    Dictation(Option<Lang>),
     Squad(String),
     Model(SessionId, String),
     Effort(SessionId, Option<String>),
@@ -385,6 +387,24 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let mut language = Line::new(t!("sidebar.language"), t!("settings.language_desc"))
         .words(Lang::ALL.iter().map(|l| l.native_name()).collect::<Vec<_>>().join(" ") + " language");
     language.control = Some(picker(shell, Pop::Language, language_label(shell), 0., cx));
+    // Dictation's language, apart from the app's: what this Mac can hear on the device.
+    let listening = shell.composer.listening;
+    let dictation_label = match shell.remembered.dictation.as_deref().and_then(Lang::parse) {
+        Some(lang) => lang.native_name().to_owned(),
+        None => t!("settings.dictation_auto", lang = listening.native_name()),
+    };
+    let heard = crate::dictation::heard_here(listening);
+    let mut dictation = Line::new(t!("settings.dictation"), if heard { t!("settings.dictation_desc").to_owned() } else { t!("settings.dictation_missing_desc", lang = listening.native_name()) })
+        .warn(!heard)
+        .words("dictation voice speech microphone mic language");
+    dictation.control = Some(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(ui::button(p, "dictation-add", Kind::Ghost, t!("settings.dictation_add")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(crate::dictation::SETTINGS_URL)))
+            .child(picker(shell, Pop::Dictation, dictation_label, 0., cx))
+            .into_any_element(),
+    );
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
     let appearance = Line::new(t!("settings.appearance"), t!("settings.appearance_desc")).words("appearance theme dark light").control(segmented(shell, "appearance", looks, shell.remembered.appearance, |this, a, window, cx| this.set_appearance(a, window, cx), cx));
     let link_places = vec![(false, t!("settings.links_mac").to_owned()), (true, t!("settings.links_app").to_owned())];
@@ -429,7 +449,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .control(switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx)),
     ];
     vec![
-        Section::new(t!("settings.section_look"), vec![language, appearance, zoom]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
+        Section::new(t!("settings.section_look"), vec![language, dictation, appearance, zoom]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
         Section::new(t!("settings.section_conversation"), vec![follow, links]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
@@ -999,6 +1019,16 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             rows.extend(Lang::ALL.into_iter().map(|l| (l.native_name().to_owned(), String::new(), now == Some(l), Act::Language(Some(l)))));
             (240., rows)
         }
+        Pop::Dictation => {
+            let now = shell.remembered.dictation.as_deref().and_then(Lang::parse);
+            let mut rows = vec![(t!("settings.dictation_auto", lang = shell.composer.listening.native_name()), String::new(), now.is_none(), Act::Dictation(None))];
+            // Each language, and whether this Mac has its model yet.
+            rows.extend(Lang::ALL.into_iter().map(|l| {
+                let note = if crate::dictation::heard_here(l) { String::new() } else { t!("settings.dictation_not_here").to_owned() };
+                (l.native_name().to_owned(), note, now == Some(l), Act::Dictation(Some(l)))
+            }));
+            (280., rows)
+        }
         Pop::Squad => (240., shell.squads.iter().map(|s| (s.clone(), String::new(), *s == model.squad, Act::Squad(s.clone()))).collect()),
         Pop::Model(session) => {
             let Some(m) = member(session) else { return (0., Vec::new()) };
@@ -1076,6 +1106,7 @@ fn pop_number(pop: Pop) -> u64 {
     match pop {
         Pop::Language => 1,
         Pop::Squad => 2,
+        Pop::Dictation => 6,
         Pop::Model(s) => 3 + s * 8,
         Pop::Effort(s) => 4 + s * 8,
         Pop::Mode(s) => 5 + s * 8,
@@ -1181,7 +1212,11 @@ impl Shell {
     fn run_pop(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.pop = None;
         match act {
-            Act::Language(lang) => self.set_language(lang, cx),
+            Act::Language(lang) => {
+                self.set_language(lang, cx);
+                self.refresh_dictation(window, cx);
+            }
+            Act::Dictation(lang) => self.set_dictation(lang, window, cx),
             Act::Squad(name) => self.select_squad(&name, window, cx),
             Act::Model(session, model) => {
                 if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session) {
