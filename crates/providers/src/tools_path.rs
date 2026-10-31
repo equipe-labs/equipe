@@ -73,10 +73,11 @@ fn login_shell_path() -> Option<OsString> {
 pub fn widen(ask_shell: bool) {
     let Some(home) = dirs::home_dir() else { return };
     let mut more = Vec::new();
-    if ask_shell && std::env::var_os(WIDENED).is_none() {
-        if let Some(shell) = login_shell_path() {
-            more.extend(std::env::split_paths(&shell));
-        }
+    if ask_shell
+        && std::env::var_os(WIDENED).is_none()
+        && let Some(shell) = login_shell_path()
+    {
+        more.extend(std::env::split_paths(&shell));
     }
     more.extend(usual_dirs(&home));
     let path = widened(std::env::var_os("PATH").as_deref(), &more);
