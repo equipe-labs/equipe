@@ -74,3 +74,38 @@ fn no_korean_is_written_into_the_code() {
     }
     assert!(found.is_empty(), "Korean in the code — move it to the crate's locales/:\n{}", found.join("\n"));
 }
+
+/// Files built into equipe and handed to people as they are (a design
+/// folder's `brand.md`, a browser script): one text in every language, so
+/// none of it in Korean.
+#[test]
+fn no_korean_is_built_in_with_the_assets() {
+    fn files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()) {
+            if entry.is_dir() {
+                files(&entry, out);
+            } else {
+                out.push(entry);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let mut all = Vec::new();
+    for krate in std::fs::read_dir(root.join("crates")).unwrap().map(|e| e.unwrap().path()) {
+        if krate.join("assets").is_dir() {
+            files(&krate.join("assets"), &mut all);
+        }
+    }
+    let mut found = Vec::new();
+    for path in all {
+        // Pictures and fonts aren't text.
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        for (n, line) in text.lines().enumerate() {
+            if line.chars().any(hangul) {
+                found.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "Korean in a built-in file — write it in English, or put the words in locales/:\n{}", found.join("\n"));
+}

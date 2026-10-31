@@ -265,7 +265,7 @@ fn is_indigo(c: Color) -> bool {
 fn files(dir: &Path, out: &mut Vec<Finding>) {
     let brand = std::fs::read_to_string(dir.join("brand.md")).unwrap_or_default();
     if brand.trim().is_empty() {
-        out.push(Finding::new(Level::Warn, "brand", "No brand.md: who it is for, the brand in three to five words (this, not that), and its voice — with Korean lines for buttons, errors and empty states."));
+        out.push(Finding::new(Level::Warn, "brand", "No brand.md: who it is for, the brand in three to five words (this, not that), and its voice — with sample lines for buttons, errors and empty states."));
     } else {
         let lower = brand.to_lowercase();
         let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));

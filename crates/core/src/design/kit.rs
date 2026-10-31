@@ -359,7 +359,7 @@ mod tests {
         assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
         assert!(parsed.tokens.iter().any(|t| t.name.starts_with("color.text.") && t.alias.is_some()), "roles alias the palette");
         assert!(parsed.modes.iter().any(|m| m == "dark"));
-        assert!(BRAND.contains("해요체") && BRAND.contains("this, not that"), "the brand file asks for the voice");
+        assert!(BRAND.contains("Register") && BRAND.contains("this, not that"), "the brand file asks for the voice");
     }
 
     #[test]
