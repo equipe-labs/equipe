@@ -353,5 +353,7 @@
   "squad_home.readme_edit": "You may edit or drop files here yourself. equipe remembers every change, so any of them can be taken back (`/home undo`).",
   "squad_memory.index_title": "The squad's memory",
   "squad_memory.index_intro": "What the squad knows together: one fact per file. equipe makes this list from the files; edit or delete one and every member has it from their next turn. What you write wins.",
-  "error.project_not_removed": "The project wasn't removed: {why}"
+  "error.project_not_removed": "The project wasn't removed: {why}",
+  "error.push_conflicts.one": "Merged into {branch}, but not pushed. The remote {branch} has commits this computer doesn't, and {count} file conflicts: {files}. Ask the PM to resolve it.",
+  "error.push_conflicts.other": "Merged into {branch}, but not pushed. The remote {branch} has commits this computer doesn't, and {count} files conflict: {files}. Ask the PM to resolve them."
 }

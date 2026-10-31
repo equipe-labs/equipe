@@ -353,5 +353,7 @@
   "squad_home.readme_edit": "Vous pouvez modifier ou déposer des fichiers ici vous-même. equipe garde chaque modification en mémoire, chacune peut être annulée (`/home undo`).",
   "squad_memory.index_title": "La mémoire de l'équipe",
   "squad_memory.index_intro": "Ce que l'équipe sait ensemble : un fait par fichier. equipe dresse cette liste à partir des fichiers ; modifiez-en ou supprimez-en un et chaque membre l'a dès son prochain tour. Ce que vous écrivez l'emporte.",
-  "error.project_not_removed": "Le projet n'a pas été retiré : {why}"
+  "error.project_not_removed": "Le projet n'a pas été retiré : {why}",
+  "error.push_conflicts.one": "Fusionné dans {branch}, mais pas poussé. Le {branch} distant a des commits absents de cet ordinateur, et {count} fichier est en conflit : {files}. Demandez au PM de le résoudre.",
+  "error.push_conflicts.other": "Fusionné dans {branch}, mais pas poussé. Le {branch} distant a des commits absents de cet ordinateur, et {count} fichiers sont en conflit : {files}. Demandez au PM de les résoudre."
 }

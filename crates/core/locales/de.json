@@ -353,5 +353,7 @@
   "squad_home.readme_edit": "Du kannst hier selbst Dateien bearbeiten oder ablegen. equipe merkt sich jede Änderung, jede lässt sich zurücknehmen (`/home undo`).",
   "squad_memory.index_title": "Das Gedächtnis der Squad",
   "squad_memory.index_intro": "Was die Squad gemeinsam weiß: ein Fakt pro Datei. equipe erstellt diese Liste aus den Dateien; bearbeite oder lösche eine, und jedes Mitglied hat es ab seinem nächsten Zug. Was du schreibst, gilt.",
-  "error.project_not_removed": "Das Projekt wurde nicht entfernt: {why}"
+  "error.project_not_removed": "Das Projekt wurde nicht entfernt: {why}",
+  "error.push_conflicts.one": "In {branch} zusammengeführt, aber nicht gepusht. Das entfernte {branch} hat Commits, die auf diesem Computer fehlen, und {count} Datei steht im Konflikt: {files}. Bitte den PM, ihn aufzulösen.",
+  "error.push_conflicts.other": "In {branch} zusammengeführt, aber nicht gepusht. Das entfernte {branch} hat Commits, die auf diesem Computer fehlen, und {count} Dateien stehen im Konflikt: {files}. Bitte den PM, sie aufzulösen."
 }

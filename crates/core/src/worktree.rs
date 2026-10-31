@@ -357,15 +357,47 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
     Ok(main)
 }
 
-/// Push the main branch to `origin`.
+/// Push the main branch to `origin`. When origin's main has moved on — pushed
+/// from another checkout — its work comes in first with a merge commit (never a
+/// rebase) if it merges cleanly, and the push goes again; if it conflicts,
+/// nothing changes on either side and the error names the files
+/// ([`conflicts_with_origin`]).
 pub fn push_main(repo: &Path) -> Result<String> {
     off_the_loop("push_main");
     if !has_origin(repo) {
         return Err(NO_ORIGIN.into());
     }
     let main = main_branch(repo)?;
-    git_within(repo, &["push", "-q", "origin", &main], PUSH_TIMEOUT)?;
+    let push = || git_within(repo, &["push", "-q", "origin", &main], PUSH_TIMEOUT).map_err(|err| without_hints(&err));
+    match push() {
+        Ok(_) => return Ok(main),
+        Err(err) if !err.contains("[rejected]") => return Err(err),
+        Err(_) => {}
+    }
+    let theirs = format!("refs/remotes/origin/{main}");
+    git_within(repo, &["fetch", "-q", "origin", &format!("+refs/heads/{main}:{theirs}")], PUSH_TIMEOUT).map_err(|err| without_hints(&err))?;
+    let conflict = format!("{theirs} conflicts with {main} in ");
+    merge_into_main(repo, &theirs, &format!("Merge origin/{main} into {main}")).map_err(|err| match err.strip_prefix(&conflict).and_then(|rest| rest.strip_suffix(" — nothing was merged")) {
+        Some(files) => format!("{BEHIND}{files}"),
+        None => err,
+    })?;
+    push()?;
     Ok(main)
+}
+
+/// How `push_main`'s error begins when origin's main has commits this one
+/// lacks and they conflict; the files follow, comma-separated.
+const BEHIND: &str = "origin's main has commits this one doesn't, and they conflict in ";
+
+/// The files a push failed on because origin's main conflicts with this one.
+pub fn conflicts_with_origin(err: &str) -> Option<Vec<&str>> {
+    err.strip_prefix(BEHIND).map(|files| files.split(", ").collect())
+}
+
+/// Git's error without its "hint:" lines, which tell a terminal user what to
+/// type next and only crowd a message in the app.
+fn without_hints(err: &str) -> String {
+    err.lines().filter(|line| !line.trim_start().starts_with("hint:")).collect::<Vec<_>>().join("\n")
 }
 
 /// What `push_main` says when the repository has nowhere to push to: a
@@ -918,5 +950,55 @@ mod tests {
         merge_into_main(&repo, &one, "merge").unwrap();
         push_main(&repo).unwrap();
         assert_eq!(git(&remote, &["rev-parse", "main"]).unwrap(), git(&repo, &["rev-parse", "main"]).unwrap());
+    }
+
+    /// A repository pushed to a bare origin, and a second clone of that origin
+    /// that has pushed `file` (holding `text`) since — as a release pushed from
+    /// another checkout moves origin's main on.
+    fn behind_origin(file: &str, text: &str) -> (PathBuf, PathBuf) {
+        let repo = repo();
+        let remote = scratch("remote");
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        git(&repo, &["remote", "add", "origin", &remote.to_string_lossy()]).unwrap();
+        push_main(&repo).unwrap();
+        let other = scratch("other");
+        git(&other, &["clone", "-q", &remote.to_string_lossy(), "."]).unwrap();
+        git(&other, &["config", "user.name", "Other"]).unwrap();
+        git(&other, &["config", "user.email", "other@example.com"]).unwrap();
+        std::fs::write(other.join(file), text).unwrap();
+        git(&other, &["add", "-A"]).unwrap();
+        git(&other, &["commit", "-q", "-m", "elsewhere"]).unwrap();
+        git(&other, &["push", "-q", "origin", "main"]).unwrap();
+        (repo, remote)
+    }
+
+    #[test]
+    fn main_behind_origin_takes_origins_work_in_with_a_merge_and_is_pushed() {
+        let (repo, remote) = behind_origin("THEIRS.md", "theirs\n");
+        let theirs = git(&remote, &["rev-parse", "main"]).unwrap();
+        let one = finished(&repo, &scratch("home"), "t1", "ONE.md", "one\n");
+        let main = merge_into_main(&repo, &one, "merge").unwrap();
+        let ours = git(&repo, &["rev-parse", &main]).unwrap();
+        push_main(&repo).unwrap();
+        let now = git(&repo, &["rev-parse", "main"]).unwrap();
+        assert_eq!(git(&remote, &["rev-parse", "main"]).unwrap(), now);
+        // A merge commit over both, never a rebase: our commits keep their ids.
+        let parents = git(&repo, &["rev-list", "--parents", "-n", "1", &now]).unwrap();
+        assert!(parents.contains(&ours) && parents.contains(&theirs), "{parents}");
+        assert_eq!(git(&repo, &["show", "main:THEIRS.md"]).unwrap(), "theirs");
+    }
+
+    #[test]
+    fn main_that_conflicts_with_origin_stays_here_and_names_the_files() {
+        let (repo, remote) = behind_origin("README.md", "theirs\n");
+        let theirs = git(&remote, &["rev-parse", "main"]).unwrap();
+        let one = finished(&repo, &scratch("home"), "t1", "README.md", "ours\n");
+        merge_into_main(&repo, &one, "merge").unwrap();
+        let ours = git(&repo, &["rev-parse", "main"]).unwrap();
+        let err = push_main(&repo).unwrap_err();
+        assert_eq!(conflicts_with_origin(&err), Some(vec!["README.md"]), "{err}");
+        assert!(!err.contains("hint:"), "{err}");
+        assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), ours, "nothing changes here");
+        assert_eq!(git(&remote, &["rev-parse", "main"]).unwrap(), theirs, "nor there");
     }
 }
