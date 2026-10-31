@@ -206,7 +206,7 @@ async fn without_a_key_nothing_signed_in_says_so_and_how() {
     let (handle, mut events) = runtime::start(config(&codex, &scratch("home"), None));
     let failed = add(&handle, &mut events, 1, plain(&scratch("cwd"), Access::ReadOnly)).await;
     let Some(Event::Error { message, .. }) = failed.last() else { panic!("{failed:#?}") };
-    assert!(message.contains("No engine is ready") && message.contains("NEBIUS_API_KEY"), "{message}");
+    assert!(message.contains("No AI is ready") && message.contains("Nebius key") && message.contains("Settings › AI platforms"), "{message}");
     // On Codex by name, signed out, still: how to sign in.
     let spec = SessionSpec { engine: Some(Engine::Codex), ..plain(&scratch("cwd"), Access::ReadOnly) };
     let failed = add(&handle, &mut events, 2, spec).await;

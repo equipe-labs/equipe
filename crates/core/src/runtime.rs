@@ -2209,7 +2209,8 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                     None => {
                         let message = say!(self, "error.no_engine");
-                        return fail(self, message, None);
+                        // A terminal's way; a screen says Settings › AI platforms in the message.
+                        return fail(self, message, Some("equipe login"));
                     }
                 }
             }
