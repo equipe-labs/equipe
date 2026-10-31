@@ -809,6 +809,10 @@ impl Shell {
                         // The disk: the banner's and the panel's, never the model's.
                         if let daemon::Update::Event(event @ (Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. })) = &update {
                             changed |= this.disk.on_event(event);
+                            // Given back on equipe's own: said in a line, once.
+                            if let Some(freed) = this.disk.take_auto() {
+                                this.composer.flash = Some(t!("disk.auto_cleaned", size = equipe_core::disk::size(freed)));
+                            }
                             continue;
                         }
                         // The engines: settings' AI platforms, never the model's.

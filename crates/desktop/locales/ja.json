@@ -2144,5 +2144,15 @@
   "welcome.start": "はじめる",
   "welcome.starting": "作成中…",
   "welcome.next": "次の画面で AI を接続します: Claude Code、Codex、または Nebius のキー。",
-  "welcome.made": "スクワッド {name} を作成しました"
+  "welcome.made": "スクワッド {name} を作成しました",
+  "disk.run": "整理…",
+  "disk.run_title": "{name} を整理しますか？",
+  "disk.run_text": "{kind} は equipe のものではないため、承認すると下のコマンドをこの Mac で実行します。消したものは戻せません。",
+  "disk.run_yes": "実行",
+  "disk.fix_run": "{name} を整理",
+  "disk.fix_run_desc": "{kind} · 承認すると equipe が整理します",
+  "disk.auto_cleaned": "終わった作業のビルド成果物など {size} を自動で整理しました",
+  "chat.declined_note": "エラーではありません。スクワッドのルール上メンバーにはできないため equipe が止め、メンバーは別の方法を取ります。",
+  "secrets.open": "入力",
+  "secrets.folded": "{count} 件の値の入力を依頼"
 }

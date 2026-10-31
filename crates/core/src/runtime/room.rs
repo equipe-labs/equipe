@@ -14,6 +14,9 @@ use crate::disk::{self, DiskCleaned, DiskLevel, DiskReport, DiskStatus};
 const NO_ROOM_HOLD: Duration = Duration::from_secs(5 * 60);
 /// The build caches are trimmed on a short disk at most this often.
 const TRIM_EVERY: Duration = Duration::from_secs(10 * 60);
+/// With room to spare, what's certain to be unneeded is given back this often
+/// (kept across restarts by a stamp's time, `cache/auto-clean`).
+const AUTO_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// What the daemon knows of its disk.
 #[derive(Default)]
@@ -30,6 +33,8 @@ pub(super) struct DiskWatch {
     pub publish: bool,
     /// A clean under way.
     pub cleaning: bool,
+    /// When equipe last gave back, on its own, what it was sure of.
+    pub auto_cleaned: Option<std::time::Instant>,
     /// A trim of the build caches under way, and when the last began.
     pub trimming: bool,
     pub trimmed: Option<std::time::Instant>,
@@ -90,6 +95,50 @@ impl Runtime {
             self.disk_level_changed(before);
         }
         self.trim_if_short();
+        self.clean_certain_if_due();
+    }
+
+    /// What equipe is sure nobody needs ([`disk::certain`]: a finished
+    /// ticket's work, stale build folders, old logs) goes on its own: at once
+    /// when the disk runs short, else every few hours. Off the loop; logged and
+    /// told to the screens. The rest waits for the person's yes.
+    fn clean_certain_if_due(&mut self) {
+        let every = if self.disk.status.level.is_warning() { TRIM_EVERY } else { AUTO_EVERY };
+        let stamp = self.config.home.join("cache").join("auto-clean");
+        let last = std::fs::metadata(&stamp).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok());
+        let due = self.disk.auto_cleaned.is_none_or(|at| at.elapsed() >= every) && last.is_none_or(|ago| ago >= every);
+        if self.disk.cleaning || !due {
+            return;
+        }
+        self.disk.cleaning = true;
+        self.disk.auto_cleaned = Some(std::time::Instant::now());
+        let (known, paths, internal) = (self.disk_known(), self.disk_paths(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let _ = std::fs::create_dir_all(stamp.parent().expect("the stamp has a folder"));
+            let _ = std::fs::write(&stamp, b"");
+            let cleaned = disk::clean_certain(&known);
+            let asked = std::time::Instant::now();
+            let status = disk::probe(&paths);
+            let _ = internal.send(Internal::DiskCleaned(Box::new(cleaned), status, asked, None));
+        });
+    }
+
+    /// Clear one of what isn't equipe's (a cache of the Mac's, a project's
+    /// build output) with the command a fresh look lists for it, as the
+    /// person said yes to. Answered like a clean.
+    pub(super) fn disk_run(&mut self, id: String) {
+        if self.disk.cleaning {
+            return;
+        }
+        self.disk.cleaning = true;
+        let (known, paths, internal) = (self.disk_known(), self.disk_paths(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let cleaned = disk::clear_other(&known, &id);
+            crate::daemon_log!("equipe: the person cleared {id} with its command");
+            let asked = std::time::Instant::now();
+            let status = disk::probe(&paths);
+            let _ = internal.send(Internal::DiskCleaned(Box::new(cleaned), status, asked, None));
+        });
     }
 
     /// Short of room: what no build needs between builds goes at once, off the
@@ -308,6 +357,15 @@ impl Runtime {
             self.disk_measured(status, asked);
         }
         cleaned.status = self.disk.status.clone();
+        if cleaned.auto {
+            // Nothing it was sure of: nothing to say.
+            if cleaned.removed.is_empty() {
+                return;
+            }
+            crate::daemon_log!("equipe: gave back on its own what nobody needs: {} ({} items)", disk::size(cleaned.freed), cleaned.removed.len());
+            self.publish(Event::DiskCleaned { cleaned });
+            return;
+        }
         crate::daemon_log!("equipe: the person gave back {} ({} items)", disk::size(cleaned.freed), cleaned.removed.len());
         match reply {
             Some(reply) => {

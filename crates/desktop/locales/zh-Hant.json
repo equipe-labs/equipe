@@ -2144,5 +2144,15 @@
   "welcome.start": "開始",
   "welcome.starting": "正在建立…",
   "welcome.next": "下一步連接 AI：Claude Code、Codex 或 Nebius 金鑰。",
-  "welcome.made": "已建立小隊 {name}"
+  "welcome.made": "已建立小隊 {name}",
+  "disk.run": "清理…",
+  "disk.run_title": "清理 {name}？",
+  "disk.run_text": "{kind} 不屬於 equipe，你同意後 equipe 會在這台 Mac 上執行下面的指令。刪除後無法復原。",
+  "disk.run_yes": "執行",
+  "disk.fix_run": "清理 {name}",
+  "disk.fix_run_desc": "{kind} · 你同意後由 equipe 清理",
+  "disk.auto_cleaned": "已自動清理 {size}：已完成工作的建置產物等",
+  "chat.declined_note": "這不是錯誤：依小隊規則成員不能這樣做，所以 equipe 拒絕了，成員會換個方式。",
+  "secrets.open": "填寫",
+  "secrets.folded": "請求填寫 {count} 個值"
 }

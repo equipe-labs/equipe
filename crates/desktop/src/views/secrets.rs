@@ -2,7 +2,8 @@
 //! value — hidden where it is a password, a key or a token — where it will be
 //! saved, and Save / Not now. What is typed goes to the daemon's machine, into
 //! that file, and nowhere else: never into a conversation, never to a member.
-//! Over the composer in the conversation, and in 나에게.
+//! Over the composer in the conversation — folded to one line until the
+//! person opens it, so the work on screen isn't pushed aside — and in 나에게.
 
 use std::collections::HashMap;
 
@@ -23,6 +24,8 @@ use crate::{Screen, Shell};
 /// The cards' boxes, by ask and field.
 #[derive(Default)]
 pub struct SecretsUi {
+    /// The asks the person opened over the composer; the rest stay one line.
+    pub open: std::collections::HashSet<u64>,
     inputs: HashMap<(u64, usize), Entity<InputState>>,
     subscriptions: HashMap<(u64, usize), Subscription>,
 }
@@ -39,6 +42,7 @@ impl Shell {
     pub fn secrets_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let asks = self.model.secret_asks.clone();
         self.secrets.inputs.retain(|(id, _), _| asks.iter().any(|a| a.id == *id));
+        self.secrets.open.retain(|id| asks.iter().any(|a| a.id == *id));
         self.secrets.subscriptions.retain(|(id, _), _| asks.iter().any(|a| a.id == *id));
         for ask in asks {
             for (n, field) in ask.fields.iter().enumerate() {
@@ -78,6 +82,15 @@ impl Shell {
         self.send_command(Command::SaveSecret { squad, id, values: values.into_iter().map(SecretValue).collect() });
         self.model.secret_asks.retain(|a| a.id != id);
         self.model.revision += 1;
+        cx.notify();
+    }
+
+    /// "입력": the folded ask opens over the composer, its first box ready.
+    pub fn open_secret_card(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.secrets.open.insert(id);
+        if let Some(first) = self.secrets.inputs.get(&(id, 0)) {
+            first.update(cx, |s, cx| s.focus(window, cx));
+        }
         cx.notify();
     }
 
@@ -163,8 +176,28 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if shell.screen != Screen::Chat {
         return None;
     }
-    let id = shell.model.secret_asks.first()?.id;
+    let ask = shell.model.secret_asks.first()?.clone();
+    let id = ask.id;
     let p = shell.palette;
+    // Folded: who asks, for how many values, and why — in one line, with 입력 and 나중에.
+    if !shell.secrets.open.contains(&id) {
+        let (name, color) = who(shell, &ask);
+        let open = ui::button(p, ("secret-open", id), Kind::Secondary, t!("secrets.open")).icon(Icon::Lock).on_click(cx.listener(move |this, _, window, cx| this.open_secret_card(id, window, cx)));
+        let later = ui::button(p, ("secret-later-folded", id), Kind::Ghost, t!("secrets.not_now")).on_click(cx.listener(move |this, _, _, cx| this.dismiss_secret_card(id, cx)));
+        let line = h_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .items_center()
+            .text_size(px(13.))
+            .child(icon(Icon::Lock, 13., p.accent))
+            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(color).child(name))
+            .children(ask.ticket.map(|t| div().flex_none().text_color(p.muted).child(format!("T-{t}"))))
+            .child(div().flex_none().text_color(p.text2).child(t!("secrets.folded", count = ask.fields.len())))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.muted).child(ask.why.clone()))
+            .child(h_flex().flex_none().gap_1().child(later).child(open));
+        return Some(motion::rise(div().w_full().mb_2().px_3().py_2().rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).child(line), ("secret-folded-in", id)).into_any_element());
+    }
     let body = card(shell, id, cx)?;
     Some(motion::rise(div().w_full().mb_3().p_3().rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).shadow_sm().child(body), ("secret-in", id)).into_any_element())
 }

@@ -2196,5 +2196,16 @@
   "welcome.start": "Starten",
   "welcome.starting": "Wird erstellt …",
   "welcome.next": "Als Nächstes verbindest du eine KI: Claude Code, Codex oder einen Nebius-Schlüssel.",
-  "welcome.made": "Squad {name} erstellt"
+  "welcome.made": "Squad {name} erstellt",
+  "disk.run": "Aufräumen …",
+  "disk.run_title": "{name} aufräumen?",
+  "disk.run_text": "{kind} gehört nicht equipe – nach deinem Ja führt equipe den Befehl unten auf diesem Mac aus. Was er löscht, ist nicht wiederherstellbar.",
+  "disk.run_yes": "Ausführen",
+  "disk.fix_run": "{name} aufräumen",
+  "disk.fix_run_desc": "{kind} · equipe räumt es nach deinem Ja auf",
+  "disk.auto_cleaned": "{size} von selbst freigegeben: Build-Ausgaben abgeschlossener Arbeit u. Ä.",
+  "chat.declined_note": "Kein Fehler: Die Regeln der Squad erlauben das einem Mitglied nicht, also hat equipe abgelehnt – das Mitglied geht einen anderen Weg.",
+  "secrets.open": "Eingeben",
+  "secrets.folded": "bittet um {count} Werte",
+  "secrets.folded.one": "bittet um 1 Wert"
 }

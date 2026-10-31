@@ -2196,5 +2196,16 @@
   "welcome.start": "Démarrer",
   "welcome.starting": "Création…",
   "welcome.next": "Ensuite, connectez une IA : Claude Code, Codex ou une clé Nebius.",
-  "welcome.made": "Squad {name} créée"
+  "welcome.made": "Squad {name} créée",
+  "disk.run": "Nettoyer…",
+  "disk.run_title": "Nettoyer {name} ?",
+  "disk.run_text": "{kind} n’appartient pas à equipe : sur votre accord, equipe lance la commande ci-dessous sur ce Mac. Ce qu’elle supprime ne peut pas être récupéré.",
+  "disk.run_yes": "Lancer",
+  "disk.fix_run": "Nettoyer {name}",
+  "disk.fix_run_desc": "{kind} · equipe le nettoie sur votre accord",
+  "disk.auto_cleaned": "{size} libérés automatiquement : sorties de build du travail terminé, etc.",
+  "chat.declined_note": "Ce n’est pas une erreur : les règles de la squad ne le permettent pas à un membre, equipe a donc refusé et le membre prend une autre voie.",
+  "secrets.open": "Saisir",
+  "secrets.folded": "demande {count} valeurs",
+  "secrets.folded.one": "demande 1 valeur"
 }

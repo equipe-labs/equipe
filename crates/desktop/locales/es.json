@@ -2196,5 +2196,16 @@
   "welcome.start": "Empezar",
   "welcome.starting": "Creando…",
   "welcome.next": "Después conectarás una IA: Claude Code, Codex o una clave de Nebius.",
-  "welcome.made": "Squad {name} creado"
+  "welcome.made": "Squad {name} creado",
+  "disk.run": "Limpiar…",
+  "disk.run_title": "¿Limpiar {name}?",
+  "disk.run_text": "{kind} no es de equipe: con tu sí, equipe ejecuta el comando de abajo en este Mac. Lo que borre no se puede recuperar.",
+  "disk.run_yes": "Ejecutar",
+  "disk.fix_run": "Limpiar {name}",
+  "disk.fix_run_desc": "{kind} · equipe lo limpia con tu sí",
+  "disk.auto_cleaned": "Se liberaron {size} solos: resultados de compilación de trabajo terminado y similares",
+  "chat.declined_note": "No es un error: las reglas del squad no permiten esto a un miembro, así que equipe dijo que no y el miembro busca otro camino.",
+  "secrets.open": "Introducir",
+  "secrets.folded": "pide {count} valores",
+  "secrets.folded.one": "pide 1 valor"
 }
