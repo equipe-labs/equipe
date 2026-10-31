@@ -1047,5 +1047,6 @@
   "review.verdict.needs_attention": "需要留意",
   "review.verdict.risky": "有风险",
   "review.what_base": "自 {base} 以来的改动",
-  "review.what_worktree": "相对 HEAD 的改动"
+  "review.what_worktree": "相对 HEAD 的改动",
+  "role.security": "定期检查代码、依赖和这台机器是否安全"
 }

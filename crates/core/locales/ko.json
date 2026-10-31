@@ -361,5 +361,7 @@
   "card.signal_off": "{project}의 신호 {name}을 꺼요",
   "news.signal_failing": "신호 실패 · {name} ({project}) · {note}",
   "news.signal_recovered": "신호 다시 정상 · {name} ({project})",
-  "news.signal_changed": "신호 값 {pct} 변화 · {name} ({project}) · {from} → {to}"
+  "news.signal_changed": "신호 값 {pct} 변화 · {name} ({project}) · {from} → {to}",
+  "routine.weekly_security.title": "주간 보안 점검",
+  "routine.weekly_security.prompt": "주간 보안 점검입니다. security 멤버에게 점검 티켓을 맡겨 주세요.\n1. 지난 점검 이후 바뀐 코드와 새 의존성부터 봐 주세요.\n2. 알려진 취약점, 유출된 비밀 키, 밖으로 열린 설정, 이 기기의 기본 보안 설정을 확인해 주세요.\n3. 찾은 것은 심각도 순으로 정리하고, 고칠 것은 엔지니어 티켓으로 제안해 주세요. 심각한 문제는 바로 알려 주세요.\n4. 보고서는 스쿼드 폴더의 security/에 날짜별로 남겨 주세요."
 }

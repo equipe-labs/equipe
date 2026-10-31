@@ -1070,5 +1070,6 @@
   "review.verdict.needs_attention": "Genauer ansehen",
   "review.verdict.risky": "Riskant",
   "review.what_base": "die Änderungen seit {base}",
-  "review.what_worktree": "deine Änderungen gegenüber HEAD"
+  "review.what_worktree": "deine Änderungen gegenüber HEAD",
+  "role.security": "prüft regelmäßig, ob Code, Abhängigkeiten und dieser Rechner sicher sind"
 }

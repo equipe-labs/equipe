@@ -1047,5 +1047,6 @@
   "review.verdict.needs_attention": "살펴볼 게 있어요",
   "review.verdict.risky": "위험해요",
   "review.what_base": "{base} 이후의 변경",
-  "review.what_worktree": "HEAD 이후의 변경"
+  "review.what_worktree": "HEAD 이후의 변경",
+  "role.security": "코드, 의존성, 이 기기가 안전한지 정기적으로 점검해요"
 }

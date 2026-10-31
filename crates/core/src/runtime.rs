@@ -1991,6 +1991,29 @@ runbooks and reports live there, and work across the projects or on running them
         self.publish(Event::RoutinesChanged { squad: squad.to_owned(), routines });
     }
 
+    /// A security engineer joining brings the weekly security check — once:
+    /// the person changes or deletes it like any routine, and it stays so.
+    fn add_security_check(&mut self, squad: &str) {
+        let Some(journal) = self.journal(squad) else { return };
+        if journal.security_check_added() {
+            return;
+        }
+        let mut all = journal.routines();
+        if all.len() >= MAX_ROUTINES {
+            crate::daemon_log!("equipe: {squad}: no room for the weekly security check ({MAX_ROUTINES} routines)");
+            return;
+        }
+        let id = all.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        let lang = crate::i18n::Lang::resolve_in(&self.config.home, crate::i18n::Front::App);
+        let mut check = crate::heartbeat::weekly_security_check(lang, id);
+        check.next_run = Some(routines::next_run(check.when, now_secs(), &routines::Local));
+        all.push(check);
+        if let Err(err) = journal.set_security_check_added() {
+            crate::daemon_log!("equipe: {squad}: the security check wasn't marked added: {err}");
+        }
+        self.keep_routines(squad, all);
+    }
+
     /// The person makes or changes a routine: numbered if new, its next run worked out.
     fn save_routine(&mut self, squad: &str, mut routine: Routine) {
         routine.title = routine.title.trim().to_owned();
@@ -2406,6 +2429,12 @@ runbooks and reports live there, and work across the projects or on running them
             (Some(squad), Some(m)) => Some(journal::member_memory_dir(&self.config.home, squad, &m.role)),
             _ => None,
         };
+        if self.config.persist
+            && let Some(squad) = &squad
+            && role.is_some_and(|r| r.id == roles::SECURITY)
+        {
+            self.add_security_check(squad);
+        }
 
         if self.config.persist
             && let Some(squad) = &squad

@@ -727,6 +727,15 @@ impl Journal {
         self.set_meta("active_at", &at.to_string())
     }
 
+    /// Whether the weekly security check was ever added (it comes once).
+    pub fn security_check_added(&self) -> bool {
+        self.meta("security_check_added").is_some()
+    }
+
+    pub fn set_security_check_added(&self) -> Result<()> {
+        self.set_meta("security_check_added", "1")
+    }
+
     /// When the PM was last woken over an empty board, in unix seconds.
     pub fn idle_woken_at(&self) -> Option<u64> {
         self.meta("idle_woken_at").and_then(|at| at.parse().ok())

@@ -34,6 +34,10 @@ pub struct Role {
 
 pub const PM: &str = "pm";
 
+/// The security engineer: reviews the squad's code, dependencies and machine
+/// on a schedule, and reports; it never changes a project's files.
+pub const SECURITY: &str = "security";
+
 /// What the person's answers to a `block_on_person` mean, item by item — told
 /// to a member whose ticket comes back with them.
 pub const ANSWERS_GUIDE: &str = "The person's answers come item by item. Words are the answer; \"done ✓\": they \
@@ -46,8 +50,8 @@ it yourself and say what you chose. \"the person doesn't know\": find it out ano
 note under an item and their own words at the end (\"From the person:\") come first: follow them.";
 
 /// The roles a new squad may start with, besides the PM, and which are ticked.
-pub const STARTERS: [(&str, bool); 5] =
-    [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("data", false)];
+pub const STARTERS: [(&str, bool); 6] =
+    [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("security", false), ("data", false)];
 
 /// The team a squad started from a screen begins with: the PM, then the
 /// starters ticked by default.
@@ -55,7 +59,7 @@ pub fn starting_team() -> Vec<String> {
     std::iter::once(PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
 }
 
-pub const ROLES: [Role; 7] = [
+pub const ROLES: [Role; 8] = [
     Role {
         id: PM,
         title: "product manager (PM)",
@@ -203,6 +207,47 @@ change their files.",
         tier: Tier::Mid,
     },
     Role {
+        id: SECURITY,
+        title: "security engineer",
+        summary: "checks that the code, the dependencies and this machine stay safe",
+        duties: "You keep the squad's work safe: its projects' code, their dependencies and build pipelines, the \
+secrets they use, the AI members' own guard rails, and the machine the squad runs on. In the projects you read, run \
+checks and report; you don't change their files — a fix is a ticket for an engineer, proposed through the PM.\n\
+What you look at, as a security review asks for it:\n\
+- Code: authentication and authorization, input handling and injection (SQL, shell, template, path traversal), \
+SSRF, unsafe deserialization, cryptography misused (home-made crypto, weak hashes for passwords, keys in code, missing \
+TLS checks), and what an error or a log gives away — the OWASP Top 10 and the CWEs behind them. Read recent changes \
+first (`git log`, the tickets handed in), then the places that guard money, accounts and data.\n\
+- Dependencies and the supply chain: known vulnerabilities with the project's own auditor where it exists \
+(`cargo audit`, `npm audit`, `pnpm audit`, `pip-audit`, `osv-scanner`; a one-off `npx`/`uvx` run is fine), new \
+packages and where they come from (a lookalike name, a fresh publisher, an install script), lockfiles kept, and CI: \
+workflow permissions, `pull_request_target`, third-party actions not pinned, tokens wider than the job needs.\n\
+- Secrets: keys, tokens and passwords in the code, in git history, in logs, in `.env` files that are committed, in \
+CI settings; a scanner such as `gitleaks` or `trufflehog` if installed, else your own search for their shapes. Never \
+show, copy or keep a secret's value anywhere — not in a report, a ticket, a message or a file: name where it is and \
+its first four characters at most, and say it must be rotated.\n\
+- What is exposed: servers listening on every address rather than localhost, CORS, cookies and headers, TLS, \
+files and folders others can read (keys and credentials should be 0600), Docker and cloud settings you can read.\n\
+- The AI squad itself: whether a member would follow instructions written in a web page, an issue, a file or a \
+tool's output (prompt injection), whether any path lets work skip the person's approval, and whether permission \
+rules and tools (MCP servers, browser, shell) are wider than the work needs.\n\
+- This machine, read only: FileVault, the firewall, SIP, automatic updates, remote login and sharing services \
+(`fdesetup status`, `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`, `csrutil status`, \
+`softwareupdate --schedule`, `systemsetup -getremotelogin` where allowed). Report what you find; changing a setting \
+is the person's.\n\
+How you report: each finding with its severity (Critical, High, Medium, Low — by what an attacker could actually do, \
+not by how it looks), where it is (file and line, or the setting), the evidence, what could happen, and the fix, \
+smallest first. Say what you checked and found clean, and what you could not check, so silence is never read as \
+safety. Keep each review as `security/<date>.md` in the squad's folder, and say what changed since the last one. \
+Propose the fixes to the PM as tickets for the engineers, the most severe first; anything Critical — a live secret \
+exposed, an open hole in production — you tell the PM and the person at once.\n\
+Your limits: you check only what the squad owns — its projects, their own services, this machine. Never scan, \
+probe or attack another host or service, and never use a hole beyond showing it is there, locally, on a copy. \
+Never turn a protection off, change a setting, or send anything found to anyone outside the squad.",
+        edits: false,
+        tier: Tier::Top,
+    },
+    Role {
         id: "data",
         title: "data analyst",
         summary: "defines metrics and answers questions with numbers",
@@ -241,23 +286,32 @@ pub fn role_or_custom(id: &str) -> &'static Role {
 /// Codex reviews what Claude's engineers wrote — the other engine from the
 /// author's. A line here changes a default; the person's own choice of engine
 /// and usage-based switching come on top.
-pub const DEFAULT_ENGINES: [(&str, Engine); 7] = [
+pub const DEFAULT_ENGINES: [(&str, Engine); 8] = [
     (PM, Engine::Claude),
     ("designer", Engine::Claude),
     ("frontend", Engine::Claude),
     ("backend", Engine::Claude),
     ("mobile", Engine::Claude),
     ("qa", Engine::Codex),
+    (SECURITY, Engine::Codex),
     ("data", Engine::Codex),
 ];
 
 /// The Claude Code model each built-in role is recommended: Opus for judgment,
 /// design, hard building and review; Sonnet for everyday building and numbers.
-pub const CLAUDE_MODELS: [(&str, &str); 7] =
-    [(PM, "opus"), ("designer", "opus"), ("frontend", "sonnet"), ("backend", "opus"), ("mobile", "opus"), ("qa", "opus"), ("data", "sonnet")];
+pub const CLAUDE_MODELS: [(&str, &str); 8] = [
+    (PM, "opus"),
+    ("designer", "opus"),
+    ("frontend", "sonnet"),
+    ("backend", "opus"),
+    ("mobile", "opus"),
+    ("qa", "opus"),
+    (SECURITY, "opus"),
+    ("data", "sonnet"),
+];
 
 /// The roles that review someone else's work: on Codex they get no less than Sol.
-pub const REVIEWERS: [&str; 1] = ["qa"];
+pub const REVIEWERS: [&str; 2] = ["qa", SECURITY];
 
 /// The other engine.
 pub fn other_engine(engine: Engine) -> Engine {

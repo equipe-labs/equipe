@@ -365,5 +365,7 @@
   "card.signal_off": "Desactivar la señal {name} de {project}",
   "news.signal_failing": "Señal fallando · {name} ({project}) · {note}",
   "news.signal_recovered": "Señal correcta de nuevo · {name} ({project})",
-  "news.signal_changed": "La señal cambió {pct} · {name} ({project}) · {from} → {to}"
+  "news.signal_changed": "La señal cambió {pct} · {name} ({project}) · {from} → {to}",
+  "routine.weekly_security.title": "Revisión de seguridad semanal",
+  "routine.weekly_security.prompt": "Revisión de seguridad semanal. Encarga la revisión al miembro security como ticket.\n1. Empieza por el código y las dependencias que cambiaron desde la última revisión.\n2. Revisa vulnerabilidades conocidas, secretos filtrados, ajustes expuestos al exterior y los ajustes de seguridad básicos de esta máquina.\n3. Ordena lo que encuentres por gravedad y propone las correcciones como tickets para los ingenieros. Avísame enseguida de lo grave.\n4. Guarda el informe en la carpeta de la squad, en security/, por fecha."
 }

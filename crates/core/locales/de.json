@@ -365,5 +365,7 @@
   "card.signal_off": "Signal {name} von {project} ausschalten",
   "news.signal_failing": "Signal schlägt fehl · {name} ({project}) · {note}",
   "news.signal_recovered": "Signal wieder in Ordnung · {name} ({project})",
-  "news.signal_changed": "Signal um {pct} verändert · {name} ({project}) · {from} → {to}"
+  "news.signal_changed": "Signal um {pct} verändert · {name} ({project}) · {from} → {to}",
+  "routine.weekly_security.title": "Wöchentliche Sicherheitsprüfung",
+  "routine.weekly_security.prompt": "Wöchentliche Sicherheitsprüfung. Gib die Prüfung als Ticket an das Mitglied security.\n1. Beginne mit dem Code und den Abhängigkeiten, die sich seit der letzten Prüfung geändert haben.\n2. Prüfe bekannte Schwachstellen, offengelegte Geheimnisse, nach außen offene Einstellungen und die grundlegenden Sicherheitseinstellungen dieses Rechners.\n3. Ordne die Funde nach Schweregrad und schlage die Korrekturen als Tickets für die Entwickler vor. Sag mir Schwerwiegendes sofort.\n4. Lege den Bericht im Ordner der Squad unter security/ nach Datum ab."
 }

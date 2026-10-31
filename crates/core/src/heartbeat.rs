@@ -27,6 +27,21 @@ pub fn weekly_check_in(lang: Lang) -> Routine {
     }
 }
 
+/// The weekly security check a squad gets when a security engineer joins it:
+/// Thursdays at 10:00, on, handed to the PM like any routine, who gives the
+/// review to the security member. Added once; gone if the person deletes it.
+pub fn weekly_security_check(lang: Lang, id: u32) -> Routine {
+    Routine {
+        id,
+        title: core(lang).get("routine.weekly_security.title").to_owned(),
+        prompt: core(lang).get("routine.weekly_security.prompt").to_owned(),
+        when: Schedule::Weekly { weekday: 4, hour: 10, minute: 0 },
+        on: true,
+        last_run: None,
+        next_run: None,
+    }
+}
+
 /// The PM's tool, as an MCP tool definition.
 pub fn tool() -> Value {
     json!({

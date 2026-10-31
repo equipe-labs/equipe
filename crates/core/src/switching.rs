@@ -325,18 +325,18 @@ impl Reach {
 /// engine. Off Claude: backend, then mobile and frontend…; off Codex: data and
 /// qa first. The PM always last. A role of the person's own sits before the designer.
 pub fn rank(to: Engine, role: &str) -> usize {
-    const TO_CODEX: [&str; 7] = ["backend", "mobile", "frontend", "data", "qa", "designer", "pm"];
-    const TO_CLAUDE: [&str; 7] = ["data", "qa", "backend", "mobile", "frontend", "designer", "pm"];
+    const TO_CODEX: [&str; 8] = ["backend", "mobile", "frontend", "data", "qa", "security", "designer", "pm"];
+    const TO_CLAUDE: [&str; 8] = ["data", "qa", "security", "backend", "mobile", "frontend", "designer", "pm"];
     let order = if to == Engine::Codex { TO_CODEX } else { TO_CLAUDE };
     let designer = order.iter().position(|r| *r == "designer").unwrap_or(0);
     order.iter().position(|r| *r == role).map_or(designer * 2 - 1, |at| at * 2)
 }
 
-/// The roles a Shift moves: the implementation roles off Claude, data and qa off Codex.
+/// The roles a Shift moves: the implementation roles off Claude, the reviewers and data off Codex.
 fn shifts(to: Engine, role: &str) -> bool {
     match to {
         Engine::Codex => matches!(role, "backend" | "mobile" | "frontend"),
-        Engine::Claude => matches!(role, "data" | "qa"),
+        Engine::Claude => matches!(role, "data" | "qa" | "security"),
     }
 }
 
@@ -565,7 +565,7 @@ pub fn seat(role: &str) -> Option<Seat> {
     match role {
         "pm" | "designer" | "backend" | "mobile" => s(Engine::Claude, "opus"),
         "frontend" => s(Engine::Claude, "sonnet"),
-        "qa" | "data" => s(Engine::Codex, "gpt-6.1-sol"),
+        "qa" | "security" | "data" => s(Engine::Codex, "gpt-6.1-sol"),
         _ => None,
     }
 }

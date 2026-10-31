@@ -365,5 +365,7 @@
   "card.signal_off": "Turn off the signal {name} of {project}",
   "news.signal_failing": "Signal failing · {name} ({project}) · {note}",
   "news.signal_recovered": "Signal passing again · {name} ({project})",
-  "news.signal_changed": "Signal moved {pct} · {name} ({project}) · {from} → {to}"
+  "news.signal_changed": "Signal moved {pct} · {name} ({project}) · {from} → {to}",
+  "routine.weekly_security.title": "Weekly security check",
+  "routine.weekly_security.prompt": "Weekly security check. Give the review to the security member as a ticket.\n1. Start with the code and the dependencies that changed since the last check.\n2. Check known vulnerabilities, leaked secrets, settings exposed to the outside, and this machine's basic security settings.\n3. List what you find by severity and propose the fixes as tickets for the engineers. Tell me at once about anything severe.\n4. Keep the report in the squad's folder under security/, by date."
 }

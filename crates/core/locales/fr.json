@@ -365,5 +365,7 @@
   "card.signal_off": "Désactiver le signal {name} de {project}",
   "news.signal_failing": "Signal en échec · {name} ({project}) · {note}",
   "news.signal_recovered": "Signal de nouveau bon · {name} ({project})",
-  "news.signal_changed": "Signal en mouvement de {pct} · {name} ({project}) · {from} → {to}"
+  "news.signal_changed": "Signal en mouvement de {pct} · {name} ({project}) · {from} → {to}",
+  "routine.weekly_security.title": "Contrôle de sécurité hebdomadaire",
+  "routine.weekly_security.prompt": "Contrôle de sécurité hebdomadaire. Confie la revue au membre security sous forme de ticket.\n1. Commence par le code et les dépendances qui ont changé depuis le dernier contrôle.\n2. Vérifie les vulnérabilités connues, les secrets exposés, les réglages ouverts vers l'extérieur et les réglages de sécurité de base de cette machine.\n3. Classe ce que tu trouves par gravité et propose les corrections en tickets pour les ingénieurs. Préviens-moi tout de suite de ce qui est grave.\n4. Garde le rapport dans le dossier de la squad, sous security/, par date."
 }

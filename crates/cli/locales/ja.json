@@ -1047,5 +1047,6 @@
   "review.verdict.needs_attention": "要確認",
   "review.verdict.risky": "リスクあり",
   "review.what_base": "{base} からの変更",
-  "review.what_worktree": "HEAD からの変更"
+  "review.what_worktree": "HEAD からの変更",
+  "role.security": "コード、依存関係、このマシンが安全かを定期的に点検します"
 }

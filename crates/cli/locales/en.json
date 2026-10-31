@@ -1070,5 +1070,6 @@
   "review.verdict.needs_attention": "Needs attention",
   "review.verdict.risky": "Risky",
   "review.what_base": "the changes since {base}",
-  "review.what_worktree": "your changes against HEAD"
+  "review.what_worktree": "your changes against HEAD",
+  "role.security": "checks that the code, the dependencies and this machine stay safe"
 }

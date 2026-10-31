@@ -361,5 +361,7 @@
   "card.signal_off": "{project} のシグナル {name} をオフにします",
   "news.signal_failing": "シグナル失敗 · {name} ({project}) · {note}",
   "news.signal_recovered": "シグナル回復 · {name} ({project})",
-  "news.signal_changed": "シグナルが {pct} 変化 · {name} ({project}) · {from} → {to}"
+  "news.signal_changed": "シグナルが {pct} 変化 · {name} ({project}) · {from} → {to}",
+  "routine.weekly_security.title": "週次セキュリティ点検",
+  "routine.weekly_security.prompt": "週次セキュリティ点検です。security メンバーに点検チケットを任せてください。\n1. 前回の点検以降に変わったコードと新しい依存関係から見てください。\n2. 既知の脆弱性、漏れた秘密鍵、外部に開いた設定、このマシンの基本的なセキュリティ設定を確認してください。\n3. 見つけたものは深刻度順にまとめ、修正はエンジニア向けのチケットとして提案してください。深刻な問題はすぐに知らせてください。\n4. レポートはスクワッドのフォルダの security/ に日付ごとに残してください。"
 }
