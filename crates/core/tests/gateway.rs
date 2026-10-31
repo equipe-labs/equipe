@@ -430,6 +430,37 @@ async fn the_socket_is_private() {
 }
 
 #[tokio::test]
+async fn a_screen_reads_and_sets_the_persons_telemetry_answer() {
+    use equipe_core::protocol::rpc::{self, Message};
+    use equipe_core::protocol::telemetry::{Consent, TelemetryStatus};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut ask = async |id: u64, method: &str, params: serde_json::Value| -> Message {
+        writer.write_all(Message::request(id, method, params).to_line().as_bytes()).await.unwrap();
+        loop {
+            let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if message.id == Some(id) {
+                return message;
+            }
+        }
+    };
+    let first = ask(1, rpc::TELEMETRY, serde_json::Value::Null).await.result_as::<TelemetryStatus>().unwrap();
+    assert_eq!((first.consent, first.sending), (Consent::Unset, false), "never asked: nothing goes out");
+    let on = ask(2, rpc::TELEMETRY_SET, serde_json::json!({ "on": true })).await.result_as::<TelemetryStatus>().unwrap();
+    assert_eq!(on.consent, Consent::On);
+    let off = ask(3, rpc::TELEMETRY_SET, serde_json::json!({ "on": false })).await.result_as::<TelemetryStatus>().unwrap();
+    assert_eq!((off.consent, off.sending), (Consent::Off, false));
+    assert_eq!(equipe_core::telemetry::status(&home).consent, Consent::Off, "kept where the daemon reads it");
+    assert!(ask(4, rpc::TELEMETRY_SET, serde_json::json!({})).await.error.is_some());
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
 async fn the_daemon_says_who_is_mid_turn() {
     let (home, project) = squad();
     let claude = fake_claude(&slow_answer("1"));

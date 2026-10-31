@@ -20,6 +20,7 @@ mod onboard;
 mod remote;
 mod settings;
 mod telegram;
+mod telemetry;
 mod tui;
 mod ui;
 
@@ -231,6 +232,12 @@ enum Command {
         /// A language's code, or `auto`
         lang: Option<String>,
     },
+    /// Anonymous usage events, only with your yes: `on`, `off`, or `status`
+    /// (what is sent: docs/TELEMETRY.md)
+    Telemetry {
+        /// `on`, `off` or `status`
+        action: Option<String>,
+    },
     /// How much room the disk has, what uses it, and what to do about it:
     /// `clean` gives back what equipe may remove, after your yes; `debug
     /// lines|off|full` sets how lean members' Rust builds are
@@ -423,6 +430,15 @@ async fn main() -> ExitCode {
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                Ok(())
+            }
+            Err(why) => Err(Failure::new(why)),
+        },
+        Command::Telemetry { action } => match telemetry::command(&equipe_providers::credentials::equipe_home(), action.as_deref()) {
             Ok(lines) => {
                 for line in lines {
                     println!("{line}");

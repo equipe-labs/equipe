@@ -28,6 +28,10 @@
 //!   folder a reply points at; only after `hello`, for the squad followed
 //! - `browser_stream` (request): the connection becomes the browser panel's
 //!   picture stream ([`crate::stream`])
+//! - `telemetry` (request): → [`crate::telemetry::TelemetryStatus`], whether
+//!   anonymous usage events are sent (docs/TELEMETRY.md)
+//! - `telemetry_set` (request): [`crate::telemetry::SetTelemetry`] →
+//!   [`crate::telemetry::TelemetryStatus`], the person's yes or no
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
 //!   the first line a screen reads through the bridge, before anything the
 //!   daemon says
@@ -49,6 +53,8 @@ pub const UPLOAD: &str = "upload";
 pub const READ_UPLOAD: &str = "read_upload";
 pub const READ_IMAGE: &str = "read_image";
 pub const LIST_IMAGES: &str = "list_images";
+pub const TELEMETRY: &str = "telemetry";
+pub const TELEMETRY_SET: &str = "telemetry_set";
 
 /// The wire's version: bumped when a change would break a screen built
 /// against the one before (a method or a field it relies on removed or
