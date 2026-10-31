@@ -916,7 +916,7 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
         .font_family(SANS)
         .border_r_1()
         .border_color(p.hair)
-        .child(div().h(px(super::sidebar::STRIP)).flex_none().w_full().window_control_area(WindowControlArea::Drag))
+        .child(ui::title_bar(div().h(px(super::sidebar::STRIP)).flex_none().w_full()))
         .child(back)
         .child(search)
         .child(v_flex().flex_1().min_h_0().gap(px(1.)).children(items))
@@ -1003,7 +1003,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .min_w_0()
         .h_full()
         .bg(p.bg)
-        .child(div().h(px(super::sidebar::STRIP)).flex_none().w_full().window_control_area(WindowControlArea::Drag))
+        .child(ui::title_bar(div().h(px(super::sidebar::STRIP)).flex_none().w_full()))
         .child(div().id("settings-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&shell.settings.scroll).child(div().w_full().flex().justify_center().px_8().pt_2().pb(px(48.)).child(column)));
     h_flex().size_full().font_family(SANS).text_color(p.text).child(nav(shell, &found, searching, cx)).child(main).children(pop_menu(shell, cx)).into_any_element()
 }

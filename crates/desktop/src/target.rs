@@ -183,6 +183,10 @@ pub struct Remembered {
     pub views: Vec<KeptView>,
     /// How wide the sidebar was left (px).
     pub sidebar_width: Option<f32>,
+    /// How tall the sidebar's usage and team areas were dragged (px; none:
+    /// their own height) — `side_split.rs`.
+    pub side_usage: Option<f32>,
+    pub side_team: Option<f32>,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
@@ -411,6 +415,10 @@ impl Remembered {
                 if let (Some(pinned), Some(group), Some(name), Some(query)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
                     out.views.push(KeptView { name: name.to_owned(), query: query.to_owned(), group: group.to_owned(), pinned: pinned == "1" });
                 }
+            } else if let Some(rest) = line.strip_prefix("side-usage ") {
+                out.side_usage = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if let Some(rest) = line.strip_prefix("side-team ") {
+                out.side_team = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("lang ") {
@@ -508,6 +516,12 @@ impl Remembered {
         }
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar-width {width:.0}\n"));
+        }
+        if let Some(height) = self.side_usage {
+            text.push_str(&format!("side-usage {height:.0}\n"));
+        }
+        if let Some(height) = self.side_team {
+            text.push_str(&format!("side-team {height:.0}\n"));
         }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
@@ -703,6 +717,8 @@ mod tests {
         remembered.board_split = Some(212.4);
         remembered.peek_width = Some(560.);
         remembered.sidebar_width = Some(301.6);
+        remembered.side_usage = Some(96.);
+        remembered.side_team = Some(240.4);
         remembered.lang = Some("ko".into());
         remembered.dictation = Some("ja".into());
         remembered.set_merge_way("my site", "merge");
@@ -713,6 +729,7 @@ mod tests {
 
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
+        assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
         assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
         assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");
         assert_eq!(loaded.merge_way("app"), Some("branch"), "the last word wins");
