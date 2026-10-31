@@ -470,20 +470,32 @@ fn attachments(text: &str) -> (String, Vec<&'static str>) {
 /// The answer to what was attached; `alone`, when nothing was said with it.
 fn attached_reply(attached: &[&str], ko: bool, alone: bool) -> String {
     let n = attached.len();
-    let one = |kind: &str| attached.iter().all(|k| *k == kind);
-    let (en, ko_what) = if one("image") {
-        (if n == 1 { "your photo".to_owned() } else { format!("your {n} photos") }, if n == 1 { "사진".to_owned() } else { format!("사진 {n}장") })
-    } else if one("video") {
-        (if n == 1 { "your video".to_owned() } else { format!("your {n} videos") }, if n == 1 { "영상".to_owned() } else { format!("영상 {n}개") })
+    let kind = if attached.iter().all(|k| *k == "image") {
+        "photo"
+    } else if attached.iter().all(|k| *k == "video") {
+        "video"
     } else {
-        (if n == 1 { "your file".to_owned() } else { format!("your {n} files") }, if n == 1 { "파일".to_owned() } else { format!("파일 {n}개") })
+        "file"
     };
-    match (ko, alone) {
-        (true, true) => format!("{ko_what}을 받았어요. frontend에게 넘겨서 랜딩 페이지(T-3)에 참고하게 할게요. 어떻게 쓰면 좋을지 한마디 덧붙여 주셔도 좋아요."),
-        (true, false) => format!("{ko_what}을 받았어요."),
-        (false, true) => format!("Got {en} — thanks. I'll pass it to frontend to use on the landing page (T-3). Tell me if you want it used somewhere else."),
-        (false, false) => format!("Got {en}."),
+    let got = match (ko, kind, n) {
+        (true, "photo", 1) => "사진 잘 받았어요.".to_owned(),
+        (true, "photo", _) => format!("사진 {n}장 잘 받았어요."),
+        (true, "video", 1) => "영상 잘 받았어요.".to_owned(),
+        (true, "video", _) => format!("영상 {n}개 잘 받았어요."),
+        (true, _, 1) => "파일 잘 받았어요.".to_owned(),
+        (true, _, _) => format!("파일 {n}개 잘 받았어요."),
+        (false, kind, 1) => format!("Got your {kind}."),
+        (false, kind, _) => format!("Got your {n} {kind}s."),
+    };
+    if !alone {
+        return got;
     }
+    let then = if ko {
+        "frontend에게 넘겨서 랜딩 페이지(T-3)에 참고하게 할게요. 다른 데 쓰고 싶으시면 말씀해 주세요."
+    } else {
+        "I'll pass it to frontend for the landing page (T-3). Tell me if you'd like it used somewhere else."
+    };
+    format!("{got} {then}")
 }
 
 fn member_reply(member: &str, ko: bool) -> String {
@@ -615,7 +627,7 @@ mod tests {
         assert!(alone.contains("Got your photo") && alone.contains("T-3"), "{alone}");
         // Asked for work with a picture: the ticket's title is the words, not the path.
         let both = said(&mut demo, "[image: /u/1-a.png] [image: /u/2-b.png] 이걸로 FAQ 페이지 만들어줘", 40_000);
-        assert!(both.starts_with("사진 2장을 받았어요.") && both.contains("T-7"), "{both}");
+        assert!(both.starts_with("사진 2장 잘 받았어요.") && both.contains("T-7"), "{both}");
         assert_eq!(demo.scenes["a"].tickets.iter().find(|t| t.id == 7).map(|t| t.title.as_str()), Some("이걸로 FAQ 페이지 만들어줘"));
         let file = said(&mut demo, "[pdf: /u/spec.pdf · 3 pages]", 80_000);
         assert!(file.contains("Got your file"), "{file}");
