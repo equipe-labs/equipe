@@ -1,8 +1,7 @@
-//! The first run, before any squad: connect an AI and start the first squad,
-//! all from the window (`crate::setup` has the rules). It stands in for the
-//! "no squad yet — run `equipe` in a terminal" guide on this Mac.
-
-use std::time::Duration;
+//! The first run, before any squad: connect an AI, then make the first squad
+//! (`views/welcome.rs`'s form), all from the window (`crate::setup` has the
+//! rules). It stands in for the "no squad yet — run `equipe` in a terminal"
+//! guide on this Mac.
 
 use equipe_core::protocol::Engine;
 use equipe_core::t;
@@ -17,9 +16,6 @@ use crate::setup::{self, Claude, Doing};
 use crate::theme::{BODY, ICON_SM, MONO, Palette, R_LG, R_MD, SMALL};
 use crate::ui::{self, Kind};
 use crate::{Shell, motion};
-
-/// How long the squad may take to be picked up before the screen says so.
-const JOIN_WAIT: Duration = Duration::from_secs(25);
 
 impl Shell {
     /// Whether the window is on this Mac with no squad to open: the first run.
@@ -54,15 +50,10 @@ impl Shell {
         self.setup.failed = None;
         self.setup.cancelled = false;
         self.setup.confirm_install = false;
-        // The squad opens with its team (the PM, then the starters), as one made from the terminal does.
-        if doing == Doing::Creating {
-            self.pending_team = Some(equipe_core::roles::starting_team());
-        }
         let pid = self.setup.pid.clone();
-        let squad = setup::suggest_squad();
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(setup::job(doing, &squad, &pid));
+            let _ = tx.send(setup::job(doing, &pid));
         });
         cx.spawn(async move |this, cx| {
             let done = rx.await.unwrap_or_else(|_| Err("stopped".into()));
@@ -76,21 +67,6 @@ impl Shell {
         let cancelled = std::mem::take(&mut self.setup.cancelled);
         self.setup.doing = Doing::Idle;
         match done {
-            Ok(()) if doing == Doing::Creating => {
-                self.setup.doing = Doing::Joining;
-                self.retry(cx);
-                cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(JOIN_WAIT).await;
-                    let _ = this.update(cx, |this, cx| {
-                        if this.setup.doing == Doing::Joining {
-                            this.setup.doing = Doing::Idle;
-                            this.setup.failed = Some((Doing::Joining, String::new()));
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
-            }
             Ok(()) => self.setup_probe(cx),
             // The person ended it themselves: not a failure.
             Err(_) if cancelled => self.setup_probe(cx),
@@ -140,6 +116,9 @@ fn cancel(shell: &Shell, id: &'static str, cx: &mut Context<Shell>) -> ui::Butto
 }
 
 pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    if shell.setup.squad_step && shell.setup.ready() {
+        return super::welcome::welcome_screen(shell, cx);
+    }
     let p = shell.palette;
     let s = &shell.setup;
     let busy = s.doing != Doing::Idle;
@@ -192,8 +171,6 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         let words = match doing {
             Doing::Installing => t!("setup.failed_install"),
             Doing::ClaudeLogin | Doing::CodexLogin => t!("setup.failed_login"),
-            Doing::Creating => t!("setup.failed_create"),
-            Doing::Joining => t!("setup.failed_join"),
             Doing::Idle => "",
         };
         v_flex()
@@ -204,15 +181,11 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .when(*doing == Doing::Installing, |c| c.child(h_flex().child(ui::button(p, "setup-guide", Kind::Ghost, t!("setup.open_guide")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(setup::CLAUDE_GUIDE)))))
     });
 
-    // The squad: opens once an AI is connected.
-    let name = setup::suggest_squad();
-    let squad = card(p)
-        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("setup.squad_title")))
-        .child(desc(p, if s.ready() { t!("setup.squad_text", name = name) } else { t!("setup.squad_locked").to_owned() }))
-        .child(h_flex().pt_1().w_full().min_w_0().child(match s.doing {
-            Doing::Creating | Doing::Joining => waiting(p, t!("setup.joining")).into_any_element(),
-            _ => ui::button(p, "setup-create", Kind::Primary, t!("setup.squad_create")).disabled(busy || !s.ready()).on_click(cx.listener(|this, _, _, cx| this.setup_do(Doing::Creating, cx))).into_any_element(),
-        }));
+    // Next: the squad form, once an AI is connected.
+    let next = h_flex().pt_1().child(ui::button(p, "setup-next", Kind::Primary, t!("setup.next")).disabled(busy || !s.ready()).on_click(cx.listener(|this, _, _, cx| {
+        this.setup.squad_step = true;
+        cx.notify();
+    })));
 
     v_flex()
         .id("setup")
@@ -232,7 +205,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .child(chatgpt)
                 .child(claude)
                 .children(failed)
-                .child(squad)
+                .child(next)
                 .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(t!("setup.foot"))),
             "setup-in",
         ))

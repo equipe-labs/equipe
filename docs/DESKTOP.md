@@ -227,18 +227,26 @@ over the same control connection; quote every path with single quotes
 | Menu bar, ⌘⇧P, `/usage`, `/help` | every menu item is a command line (`menu_commands!` in `main.rs`); ⌘⇧P puts `/` in the box with completions open (⌘K stays the search over everything) | the same; usage and plan limits come from `hello`/events |
 | Copy to clipboard | the laptop's clipboard | the same — never the daemon's. |
 
-**First run on this Mac** (`setup.rs`, `views/setup.rs`; T-193). With no squad yet the
-window shows a setup screen instead of the "run `equipe` in a terminal" guide (a far
-machine still gets that guide). No daemon session exists, so it talks to the tools
-directly: `claude auth status`, `codex login status` for where each stands; the install
-is Anthropic's own line (`curl -fsSL https://claude.ai/install.sh | bash`), shown and
-run by the app after a yes; sign-ins are `claude auth login` and `equipe login codex`
-(each opens the browser by itself; cancel ends the child); the squad is `equipe squad
-new <name>`, then the connection is retried and the squad opens with its starting team.
-ChatGPT (equipe's own login — answers, plans, reviews) is shown first as the easiest
-way, Claude Code as the one that edits files; the plan needed is said up front. The
-service's PATH now carries `~/.local/bin` and Homebrew's, so the daemon finds a
-`claude` installed after it started. `EQUIPE_SCRIPT=setup:<state>` holds a state.
+**First run on this Mac** (`setup.rs`, `views/setup.rs`, `views/welcome.rs`; T-193 + T-192, joined in
+T-232). With no squad yet the window shows one first-run flow instead of the "run `equipe`
+in a terminal" guide (a far machine still gets that guide); it sits in the one
+`Conn::Down { NoSquads }` place. Step 1, the AI (`views/setup.rs`): no daemon session exists,
+so it talks to the tools directly — `claude auth status`, `codex login status` for where each
+stands; the install is Anthropic's own line (`curl -fsSL https://claude.ai/install.sh | bash`),
+shown and run by the app after a yes; sign-ins are `claude auth login` and `equipe login
+codex` (each opens the browser by itself; cancel ends the child). ChatGPT (equipe's own login —
+answers, plans, reviews) is shown first as the easiest way, Claude Code as the one that edits
+files; the plan needed is said up front. "Next" opens once one AI is connected. Step 2, the
+squad (`views/welcome.rs`): the form asks the name, the team (the PM is always on it), how
+much it does alone, and an optional folder — the terminal's first-run questions, with the
+same calls (`squads::create_without_project`, `set_mode`, `add_folder`) and no `equipe squad
+new`. Then "creating…" while the connection attaches the new squad, and the board opens with
+the chosen team joining (the PM greets first). A failure stays on the form with its words
+(and after 25 s without a board, it says the squad is made but not connected yet); "AI
+connection" goes back to step 1. The service's PATH now carries `~/.local/bin` and Homebrew's,
+so the daemon finds a `claude` installed after it started. `EQUIPE_SCRIPT=setup:<state>` holds
+a state: `missing · confirm · installing · signedout · waiting · ready · failed` (step 1),
+`squad · creating · error` (step 2).
 
 **Trying it.** `cargo run -p equipe-desktop --example remote_probe -- user@host[:port]
 [--trust]` runs the same link without a window and prints what it says (a password from
