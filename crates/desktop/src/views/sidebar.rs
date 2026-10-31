@@ -3,7 +3,7 @@
 //! PM 대화, 나에게 (a badge), 작업 중 (a count), 모든 일 — and the live work as
 //! Claude lists sessions: under a header per project, one line each for what
 //! a member is at now (a spinner) and what waits on the person (an orange
-//! dot), the title fading out at the edge, five at most and "+N개 더". A
+//! dot), the title cut with an ellipsis, five at most and "+N개 더". A
 //! project with nothing live is its header alone; its name switches the
 //! project slice, its chevron folds it. Finished work is one line at the
 //! list's foot. The team is pinned under the list, always in reach, then the
@@ -633,7 +633,7 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
         .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(ident))
         .child(div().flex_1().min_w_0().truncate().text_color(name_color).font_weight(if g.waiting > 0 || focused { FontWeight::MEDIUM } else { FontWeight::NORMAL }).child(label))
         .when(hq, |r| r.child(hq_badge(p)))
-        .child(meta)
+        .when(head_counts(folded), |r| r.child(meta))
         .children(actions);
     row.into_any_element()
 }
@@ -644,7 +644,7 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
     let p = shell.palette;
     let model = &shell.model;
     // Inside a project, under its colour: one step in.
-    let indent = if project.is_some() { CHILD_INDENT } else { 0. };
+    let indent = inset(SideRow::Talk { in_project: project.is_some() });
     let mut rows = Vec::new();
     if let Some((draft, about)) = &model.draft_talk
         && about.as_deref() == project
@@ -655,7 +655,7 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
             row_shell(p, ("conv-draft", *draft as usize), on)
                 .pl(px(8. + indent))
                 .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Message, 13., p.text2)))
-                .child(fading_title(p, t!("sidebar.new_conversation").into(), on, true))
+                .child(row_title(p, t!("sidebar.new_conversation").into(), on, true))
                 .into_any_element(),
         );
     }
@@ -711,7 +711,7 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
             }
         }))
         .child(mark)
-        .child(fading_title(p, title, on, false))
+        .child(row_title(p, title, on, false))
         .child(
             div()
                 .id(("conv-away", id as usize))
@@ -743,8 +743,7 @@ fn work_line(shell: &Shell, g: &SideGroup, cx: &mut Context<Shell>) -> AnyElemen
     let toggle = key.clone();
     let mark = if g.waiting > 0 { dot(p.orange, 7.).into_any_element() } else { icon(IconName::LoaderCircle, 12., p.muted).into_any_element() };
     row_shell(p, SharedString::from(format!("work-{key}")), false)
-        .h(px(28.))
-        .pl(px(8. + CHILD_INDENT))
+        .pl(px(8. + inset(SideRow::Work)))
         .on_click(cx.listener(move |this, _, _, cx| {
             if !this.board.side_work_open.remove(&toggle) {
                 this.board.side_work_open.insert(toggle.clone());
@@ -965,6 +964,34 @@ pub fn shown_projects(busy: &[bool], all: bool, cap: usize) -> (Vec<usize>, usiz
 const PROJECTS_SHOWN: usize = 6;
 /// How far a project's own rows sit in from its header: under its name.
 const CHILD_INDENT: f32 = MARK_BOX + 8.;
+
+/// A row under a project's header (or the PM's), as far as where it sits goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SideRow {
+    /// Its live work in one line.
+    Work,
+    /// A live ticket of it, or one leaving.
+    Ticket,
+    /// "+N개 더" after its tickets.
+    More,
+    /// A conversation with the PM: about a project, or the whole squad.
+    Talk { in_project: bool },
+}
+
+/// How far in from its header a row starts: every row of a project one step,
+/// its mark under the project's dot and its title under the project's name.
+pub fn inset(row: SideRow) -> f32 {
+    match row {
+        SideRow::Talk { in_project: false } => 0.,
+        SideRow::Work | SideRow::Ticket | SideRow::More | SideRow::Talk { in_project: true } => CHILD_INDENT,
+    }
+}
+
+/// Whether a project's header shows its counts (at work, waiting on the
+/// person): only folded — open, the line under it says them.
+pub fn head_counts(folded: bool) -> bool {
+    folded
+}
 /// How long "뺐어요 · 되돌리기" stays.
 const REMOVED_SHOWN: std::time::Duration = std::time::Duration::from_secs(8);
 
@@ -987,19 +1014,9 @@ fn row_shell(p: Palette, id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
         .when(!on, |r| r.hover(move |s| s.bg(p.side_hover)))
 }
 
-/// A title that fades out at the right edge instead of an ellipsis.
-fn fading_title(p: Palette, title: String, on: bool, dim: bool) -> Div {
-    let fade_to = if on { p.side_sel } else { p.side };
-    let clear: Hsla = Rgba { a: 0., ..fade_to }.into();
-    div()
-        .flex_1()
-        .min_w_0()
-        .relative()
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_color(if dim { p.muted } else if on { p.text } else { p.text2 })
-        .child(title)
-        .child(div().absolute().top_0().bottom_0().right_0().w(px(28.)).bg(linear_gradient(90., linear_color_stop(clear, 0.), linear_color_stop(Hsla::from(fade_to), 1.))))
+/// A row's title on one line, cut with an ellipsis before what follows it.
+fn row_title(p: Palette, title: String, on: bool, dim: bool) -> Div {
+    div().flex_1().min_w_0().truncate().text_color(if dim { p.muted } else if on { p.text } else { p.text2 }).child(title)
 }
 
 /// The small mark before a row's text, in a box of one size.
@@ -1024,7 +1041,7 @@ fn arrive(row: Stateful<Div>, id: ElementId, arrives: bool) -> AnyElement {
 }
 
 /// A live ticket, as a session: its mark (a spinner, or the orange dot for
-/// the person's turn), its title fading out, how long it has been so — and,
+/// the person's turn), its title (an ellipsis where it is cut), how long it has been so — and,
 /// on the pointer, a quick yes for what waits. The number, the whole title,
 /// where it stands and who is on it are on its card (`ticket_card`).
 fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx: &mut Context<Shell>) -> AnyElement {
@@ -1040,7 +1057,7 @@ fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx
     };
     // Its card on the pointer, beside the sidebar: the number, where it
     // stands, who is on it, what it asks.
-    let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on), id, super::ticket_card::Side::Right)
+    let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on).pl(px(8. + inset(SideRow::Ticket))), id, super::ticket_card::Side::Right)
         .group(group.clone())
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
             let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: Some(id) });
@@ -1049,7 +1066,7 @@ fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx
             }
         }))
         .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
-        .child(fading_title(p, t.title.clone(), on, false))
+        .child(row_title(p, t.title.clone(), on, false))
         .children(time.map(|time| div().flex_none().text_size(px(11.)).text_color(p.muted).when(yes, |d| d.group_hover(group.clone(), |s| s.invisible())).child(time)))
         .when(yes, |r| {
             r.child(
@@ -1090,9 +1107,10 @@ fn leaving_row(p: Palette, gone: &Leaving) -> AnyElement {
         Live::YourTurn => Mark::Waits,
     };
     row_shell(p, ("leaving", gone.id as usize), false)
+        .pl(px(8. + inset(SideRow::Ticket)))
         .cursor_default()
         .child(mark_element(p, mark, 0.))
-        .child(fading_title(p, gone.title.clone(), false, true))
+        .child(row_title(p, gone.title.clone(), false, true))
         .with_animation(ElementId::NamedInteger("side-out".into(), u64::from(gone.id)), Animation::new(motion::BASE).with_easing(motion::ease_out), |el, t| el.h(px(ROW * (1. - t))).opacity(1. - t))
         .into_any_element()
 }
@@ -1102,6 +1120,7 @@ fn more_row(p: Palette, g: &SideGroup, cx: &mut Context<Shell>) -> AnyElement {
     let words = g.name.as_ref().map(|n| format!("project:{n}")).unwrap_or_default();
     row_shell(p, SharedString::from(format!("more-{}", g.key())), false)
         .h(px(26.))
+        .pl(px(8. + inset(SideRow::More)))
         .on_click(cx.listener(move |this, _, _, cx| this.board_find(&words, cx)))
         .child(div().w(px(MARK_BOX)).flex_none())
         .child(div().text_size(px(12.)).text_color(p.muted).child(t!("sidebar.more", n = g.more)))
@@ -1224,7 +1243,7 @@ pub fn subs_cap(members: usize, counts: &[usize]) -> usize {
 }
 
 /// A subagent at work, under its member: a small spinner, what it was
-/// handed (fading out), how long it has been at it; its latest step on the
+/// handed (cut with an ellipsis), how long it has been at it; its latest step on the
 /// pointer. A click opens the member's conversation at the step that
 /// handed it the work.
 fn sub_row(shell: &Shell, member: SessionId, session: SessionId, sub: &Sub, arrives: bool, cx: &mut Context<Shell>) -> AnyElement {
@@ -1237,7 +1256,7 @@ fn sub_row(shell: &Shell, member: SessionId, session: SessionId, sub: &Sub, arri
         .tip_at(p, sub.what.clone(), Some(&step), gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.open_subagent(member, session, &id, window, cx)))
         .child(sub_mark(p, shell.spin(cx)))
-        .child(fading_title(p, sub.what.clone(), false, false).text_size(px(12.)))
+        .child(row_title(p, sub.what.clone(), false, false).text_size(px(12.)))
         .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child(shell.counting(sub.since.elapsed(), cx)));
     if arrives {
         let key = ElementId::Name(SharedString::from(format!("sub-in-{}", sub.id)));
@@ -1273,7 +1292,7 @@ fn sub_mark(p: Palette, turn: f32) -> AnyElement {
 fn sub_leaving_row(p: Palette, gone: &SubLeaving) -> AnyElement {
     sub_shell(p, SharedString::from(format!("sub-gone-{}", gone.id)))
         .child(div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(icon(IconName::Check, 10., p.muted)))
-        .child(fading_title(p, gone.what.clone(), false, true).text_size(px(12.)))
+        .child(row_title(p, gone.what.clone(), false, true).text_size(px(12.)))
         .with_animation(ElementId::Name(SharedString::from(format!("sub-out-{}", gone.id))), Animation::new(motion::BASE).with_easing(motion::ease_out), |el, t| el.h(px(SUB_ROW * (1. - t))).opacity(1. - t))
         .into_any_element()
 }
@@ -2026,7 +2045,7 @@ pub struct Place {
 
 #[cfg(test)]
 mod tests {
-    use super::{Leaving, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, remove_ask, settle, shown_projects, sub_rows, subs_cap, team_height};
+    use super::{CHILD_INDENT, Leaving, MARK_BOX, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SideRow, head_counts, inset, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, remove_ask, settle, shown_projects, sub_rows, subs_cap, team_height};
     use crate::board::Live;
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
@@ -2056,6 +2075,23 @@ mod tests {
         assert!(ask.destructive(), "its yes is red, and Enter doesn't say it");
         assert!(matches!(&ask.then, crate::sheet::Then::Send(c) if matches!(c[..], [equipe_core::protocol::Command::RemoveProject { .. }])));
         assert_eq!(remove_ask(&model, "app", "/code/app".into()).body.len(), 1, "nothing at work: no second line");
+    }
+
+    #[test]
+    fn a_projects_rows_sit_on_one_grid_under_its_name() {
+        // Its summary line, its tickets (live, leaving, "+N"), its conversations:
+        // one step in, each mark under the project's dot, each title under its name.
+        let children = [SideRow::Work, SideRow::Ticket, SideRow::More, SideRow::Talk { in_project: true }];
+        assert!(children.iter().all(|&row| inset(row) == CHILD_INDENT), "{:?}", children.map(inset));
+        assert_eq!(CHILD_INDENT, MARK_BOX + 8., "one step: the chevron's box and the gap after it");
+        assert_eq!(inset(SideRow::Talk { in_project: false }), 0., "the squad's own talks sit under the PM, not in a project");
+    }
+
+    #[test]
+    fn a_projects_counts_show_once() {
+        // Open, its summary line under it says them; folded, its header does.
+        assert!(!head_counts(false));
+        assert!(head_counts(true));
     }
 
     #[test]
