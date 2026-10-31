@@ -918,7 +918,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                 match (message.method.as_deref(), message.id) {
                     (Some(rpc::SQUADS), Some(id)) => {
                         let squads = rpc::Squads {
-                            squads: ["demo", "side"].map(|name| rpc::SquadEntry { name: name.into(), projects: vec!["/tmp/fake/site".into()], home: format!("/tmp/fake/{name}-home").into() }).to_vec(),
+                            // `FAKE_NO_SQUADS=1`: a first run, nothing made yet.
+                            squads: if std::env::var("FAKE_NO_SQUADS").is_ok_and(|v| v == "1") {
+                                Vec::new()
+                            } else {
+                                ["demo", "side"].map(|name| rpc::SquadEntry { name: name.into(), projects: vec!["/tmp/fake/site".into()], home: format!("/tmp/fake/{name}-home").into() }).to_vec()
+                            },
                             last: Some("demo".into()),
                         };
                         if writer.write_all(Message::response(id, squads).to_line().as_bytes()).await.is_err() {

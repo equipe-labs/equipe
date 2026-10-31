@@ -95,7 +95,7 @@ pub fn welcome_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .when(w.folder.is_some(), |r| {
             r.child(ui::button(p, "welcome-folder-clear", Kind::Ghost, t!("welcome.folder_clear")).on_click(cx.listener(|this, _, window, cx| this.welcome_folder(None, window, cx))))
         })
-        .child(ui::button(p, "welcome-folder", Kind::Secondary, t!("welcome.folder_pick")).icon(Icon::Folder).on_click(cx.listener(|this, _, _, cx| this.welcome_pick_folder(cx))))
+        .child(ui::button(p, "welcome-folder", Kind::Secondary, t!("welcome.folder_pick")).icon(Icon::Folder).on_click(cx.listener(|this, _, window, cx| this.welcome_pick_folder(window, cx))))
         .into_any_element();
 
     // 3. Its name, then 시작.
@@ -179,7 +179,9 @@ impl Shell {
     /// and the name field given its first name.
     pub fn welcome_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.welcome.state.git.is_none() {
-            self.welcome.state.git = Some(crate::install::git_ready(std::env::var_os("PATH").as_deref()));
+            // Snapshots draw a new Mac's page on any Mac (`FAKE_NO_GIT=1`).
+            let no_git = cfg!(feature = "snapshot") && std::env::var("FAKE_NO_GIT").is_ok_and(|v| v == "1");
+            self.welcome.state.git = Some(!no_git && crate::install::git_ready(std::env::var_os("PATH").as_deref()));
             self.welcome_rename(window, cx);
         }
     }
@@ -223,20 +225,13 @@ impl Shell {
         cx.notify();
     }
 
-    pub fn welcome_pick_folder(&mut self, cx: &mut Context<Self>) {
+    pub fn welcome_pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(t!("welcome.folder_prompt").into()) });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await
                 && let Some(path) = paths.into_iter().next()
             {
-                cx.update(|cx| {
-                    if let Some(window) = cx.active_window() {
-                        let _ = window.update(cx, |_, window, cx| {
-                            let _ = this.update(cx, |this, cx| this.welcome_folder(Some(path), window, cx));
-                        });
-                    }
-                })
-                .ok();
+                let _ = this.update_in(cx, |this, window, cx| this.welcome_folder(Some(path), window, cx));
             }
         })
         .detach();

@@ -142,6 +142,8 @@ pub struct Effect {
     pub changed: bool,
     /// Open this page in this Mac's browser (the code's page, for the screen that asked).
     pub open: Option<String>,
+    /// Installed as this screen asked: its sign-in starts at once.
+    pub sign_in: Option<Engine>,
 }
 
 #[derive(Debug, Default)]
@@ -161,6 +163,8 @@ pub struct Engines {
     pub nebius: Option<equipe_core::protocol::NebiusStatus>,
     /// Engines whose tool is being installed, or whose install failed.
     installs: HashMap<Engine, Install>,
+    /// Installs this screen asked for: signed in next, once done.
+    asked_installs: std::collections::HashSet<Engine>,
 }
 
 /// An engine's tool being installed on the daemon's machine.
@@ -217,6 +221,7 @@ impl Engines {
             return vec![];
         }
         self.installs.insert(engine, Install::Running);
+        self.asked_installs.insert(engine);
         self.turn += 1;
         vec![Command::InstallEngine { engine }]
     }
@@ -269,21 +274,30 @@ impl Engines {
                         self.terminal = None;
                     }
                 }
-                Effect { changed: true, open: None }
+                Effect { changed: true, ..Effect::default() }
             }
             Event::EngineInstall { engine, step } => {
+                let mut sign_in = None;
                 match step {
-                    InstallStep::Running => self.installs.insert(*engine, Install::Running),
-                    InstallStep::Done => self.installs.remove(engine),
-                    InstallStep::Failed { detail } => self.installs.insert(*engine, Install::Failed(detail.clone())),
-                };
+                    InstallStep::Running => {
+                        self.installs.insert(*engine, Install::Running);
+                    }
+                    InstallStep::Done => {
+                        self.installs.remove(engine);
+                        sign_in = self.asked_installs.remove(engine).then_some(*engine);
+                    }
+                    InstallStep::Failed { detail } => {
+                        self.installs.insert(*engine, Install::Failed(detail.clone()));
+                        self.asked_installs.remove(engine);
+                    }
+                }
                 self.turn += 1;
-                Effect { changed: true, open: None }
+                Effect { changed: true, sign_in, ..Effect::default() }
             }
             Event::Nebius { status } => {
                 self.nebius = Some(status.clone());
                 self.turn += 1;
-                Effect { changed: true, open: None }
+                Effect { changed: true, ..Effect::default() }
             }
             Event::SignIn { engine, step } => {
                 let engine = *engine;
@@ -313,7 +327,7 @@ impl Engines {
                         self.set(engine, Card::Failed { problem: Problem::Daemon(*why), detail: detail.clone() });
                     }
                 }
-                Effect { changed: true, open }
+                Effect { changed: true, open, ..Effect::default() }
             }
             _ => Effect::default(),
         }
@@ -430,8 +444,11 @@ mod tests {
         assert!(e.on_event(&failed).changed);
         assert_eq!(e.installing(Engine::Codex), Some(&Install::Failed("curl: (6) Could not resolve host".into())));
         assert_eq!(e.install(Engine::Codex).len(), 1, "tried again");
-        e.on_event(&Event::EngineInstall { engine: Engine::Codex, step: InstallStep::Done });
-        assert_eq!(e.installing(Engine::Codex), None, "installed: the card offers its sign-in");
+        let done = Event::EngineInstall { engine: Engine::Codex, step: InstallStep::Done };
+        assert_eq!(e.on_event(&done).sign_in, Some(Engine::Codex), "installed as asked here: its sign-in next");
+        assert_eq!(e.installing(Engine::Codex), None);
+        // Another screen's install: told, never signed in from here.
+        assert_eq!(e.on_event(&Event::EngineInstall { engine: Engine::Claude, step: InstallStep::Done }).sign_in, None);
     }
 
     #[test]
