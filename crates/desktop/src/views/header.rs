@@ -92,7 +92,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .window_control_area(WindowControlArea::Drag)
         .children(who)
         .child(slice_control(shell, "chat", cx))
-        .child(div().flex_1())
+        .child(crate::ui::title_gap())
         .children(screen)
         .children(context)
         .child(terminal_button(shell, cx))

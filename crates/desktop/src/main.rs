@@ -39,6 +39,7 @@ mod portfolio;
 mod queue;
 mod quote;
 mod sheet;
+mod side_split;
 mod sidecar;
 mod ssh;
 mod sshkey;
@@ -1430,7 +1431,7 @@ impl Shell {
     /// A strip to drag the window by, over a screen with no header of its
     /// own: the title bar's height and hairline (its buttons float above).
     fn drag_strip(&self) -> impl IntoElement + use<> {
-        div().h(px(views::sidebar::STRIP)).flex_none().w_full().border_b_1().border_color(self.palette.hair).window_control_area(WindowControlArea::Drag)
+        ui::title_bar(div().h(px(views::sidebar::STRIP)).flex_none().w_full().border_b_1().border_color(self.palette.hair))
     }
 
     /// The sidebar, sliding in or out for a moment after ⌘\ — its width read
@@ -1683,6 +1684,14 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
             .on_action(cx.listener(|this, _: &PairPhone, window, cx| this.open_pairing(window, cx)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                // A hairline between the sidebar's areas, held.
+                if this.board.side_split_drag.is_some() {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.side_split_dragged(f32::from(e.position.y), cx);
+                    } else {
+                        this.side_split_released(cx);
+                    }
+                }
                 if this.board.sidebar_drag.is_some() {
                     if e.pressed_button == Some(MouseButton::Left) {
                         this.sidebar_dragged(f32::from(e.position.x), cx);
@@ -1720,6 +1729,7 @@ impl Render for Shell {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 this.sidebar_released(cx);
+                this.side_split_released(cx);
                 this.side_released(cx);
                 if this.board.peek_drag.take().is_some() {
                     this.remembered.save(&equipe_providers::credentials::equipe_home());

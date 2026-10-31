@@ -97,6 +97,11 @@ pub struct BoardUi {
     pub sidebar_hidden: bool,
     pub sidebar_width: f32,
     pub sidebar_drag: Option<(f32, f32)>,
+    /// A hairline between the sidebar's areas held: which, where the pointer
+    /// was, and the areas as drawn then (`side_split.rs`).
+    pub side_split_drag: Option<(crate::side_split::Divider, f32, crate::side_split::Drawn)>,
+    /// The sidebar's areas as last drawn: projects, usage (0: none), team.
+    pub side_drawn: std::rc::Rc<std::cell::Cell<[f32; 3]>>,
     /// When the sidebar last came or went, to slide it.
     pub sidebar_shown_at: Option<Instant>,
     /// The sidebar's live rows as last drawn, to ease them in and out.
@@ -189,6 +194,8 @@ impl BoardUi {
             sidebar_hidden: false,
             sidebar_width: super::sidebar::WIDTH,
             sidebar_drag: None,
+            side_split_drag: None,
+            side_drawn: Default::default(),
             sidebar_shown_at: None,
             side_motion: Default::default(),
             side_work_open: Default::default(),

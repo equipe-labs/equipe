@@ -26,6 +26,7 @@ use super::board::dot;
 use super::header::project_color;
 use crate::board::{HeadClick, Live, Menu, SideGroup, recent_done_view, side_groups};
 use crate::state::{Conn, Member, Model, Need, Side, Status, short_span};
+use crate::side_split::Divider;
 use crate::theme::{Palette, SANS, UI};
 use crate::{Screen, Shell, motion};
 
@@ -183,7 +184,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .border_b_1()
         .border_color(p.hair)
         .window_control_area(WindowControlArea::Drag)
-        .child(icon_button(p, "search", IconName::Search, true, Some(t!("sidebar.search_tip").into())).on_click(cx.listener(|this, _, window, cx| this.search_everything(window, cx))));
+        .child(icon_button(p, "search", IconName::Search, true, Some(t!("sidebar.search_tip").into())).on_click(cx.listener(|this, _, window, cx| this.search_everything(window, cx))))
+        .child(crate::ui::title_gap());
 
     // A badge for what waits on the person; a quiet count for the rest.
     let nav = |id: &'static str, name: IconName, label: String, badge: usize, count: usize, on: bool| {
@@ -304,6 +306,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     list.extend(removed_row(shell, cx));
     list.push(done_row(shell, after_rows, cx));
 
+    // The three areas: what each was drawn as goes to the hairlines' drags.
+    let drawn = shell.board.side_drawn.clone();
+    let measured = drawn.get();
+    let room = measured.iter().sum::<f32>();
+    let (usage_h, team_h) = if room > 0. { crate::side_split::fit(shell.remembered.side_usage, shell.remembered.side_team, room) } else { (shell.remembered.side_usage, shell.remembered.side_team) };
+    let seen = drawn.clone();
     let body = v_flex()
         .id("side")
         .flex_1()
@@ -313,7 +321,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .pb_3()
         .when(dim, |l| l.opacity(0.8))
         .child(nav_rows)
-        .children(list);
+        .children(list)
+        .on_prepaint(move |b, _, _| seen.set([f32::from(b.size.height), seen.get()[1], seen.get()[2]]));
+    let usage = super::switching::meters(shell, cx).map(|meters| split_area(shell, Divider::Usage, usage_h, meters, cx));
+    if usage.is_none() {
+        drawn.set([measured[0], 0., measured[2]]);
+    }
+    let team = team_block(shell, team_h, cx).map(|team| split_area(shell, Divider::Team, None, team, cx));
 
     v_flex()
         .w(px(ui.sidebar_width))
@@ -325,8 +339,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .text_color(p.text)
         .child(strip)
         .child(body)
-        .children(super::switching::meters(shell, cx))
-        .children(team_block(shell, cx))
+        .children(usage)
+        .children(team)
         .children(relaunch(p, shell, cx))
         .child(footer(p, shell, cx))
         .children(popup(p, shell, cx))
@@ -1152,7 +1166,7 @@ fn done_row(shell: &Shell, after_rows: bool, cx: &mut Context<Shell>) -> AnyElem
 /// they start and out as they hand back (`SubMotion`); three at most, then
 /// "+N개 더" — fewer when the block would outgrow its height, the members'
 /// rows staying in sight.
-fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
     let members: Vec<&Member> = model.team().into_iter().filter_map(|s| model.members.iter().find(|m| m.session == s)).collect();
@@ -1188,13 +1202,18 @@ fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             rows.push(sub_more_row(p, m.session, subs.len() - cap, cx));
         }
     }
+    // Dragged to a height: the list takes what the heading leaves, scrolling.
+    let list = v_flex().id("team-list").overflow_y_scroll().children(rows);
+    let list = match height {
+        Some(_) => list.flex_1().min_h_0(),
+        None => list.max_h(px(team_height(members.len(), child_rows))),
+    };
     Some(
         v_flex()
             .flex_none()
+            .when_some(height, |b, h| b.h(px(h)))
             .pt(px(6.))
             .pb_1()
-            .border_t_1()
-            .border_color(p.hair)
             .child(
                 h_flex()
                     .h(px(22.))
@@ -1209,9 +1228,72 @@ fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .child(t!("sidebar.team"))
                     .child(div().text_color(p.muted).font_weight(FontWeight::NORMAL).child(members.len().to_string())),
             )
-            .child(v_flex().id("team-list").max_h(px(team_height(members.len(), child_rows))).overflow_y_scroll().children(rows))
+            .child(list)
             .into_any_element(),
     )
+}
+
+/// One of the sidebar's lower areas (usage, the team) under its hairline:
+/// held and dragged, the room moves between it and the area above
+/// (`side_split.rs`); double-clicked, the areas take their own heights again.
+/// `height`: what it was dragged to, the area scrolling inside — none, its own.
+fn split_area(shell: &Shell, held: Divider, height: Option<f32>, area: AnyElement, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let dragging = shell.board.side_split_drag.is_some_and(|(d, ..)| d == held);
+    let seen = shell.board.side_drawn.clone();
+    let at = if held == Divider::Usage { 1 } else { 2 };
+    let id = if held == Divider::Usage { "side-split-usage" } else { "side-split-team" };
+    let content = match height {
+        Some(h) => v_flex().id(id).h(px(h)).overflow_y_scroll().child(area).into_any_element(),
+        None => area,
+    };
+    let group = SharedString::from(format!("{id}-line"));
+    v_flex()
+        .flex_none()
+        .relative()
+        .child(content)
+        .on_prepaint(move |b, _, _| {
+            let mut now = seen.get();
+            now[at] = f32::from(b.size.height);
+            seen.set(now);
+        })
+        // The hairline, lit under the pointer and while held; easy to catch.
+        .child(
+            div()
+                .id(SharedString::from(format!("{id}-grip")))
+                .group(group.clone())
+                .absolute()
+                .top(px(-4.))
+                .left_0()
+                .right_0()
+                .h(px(9.))
+                .cursor_row_resize()
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(4.))
+                        .left_0()
+                        .right_0()
+                        .h(px(if dragging { 2. } else { 1. }))
+                        .bg(if dragging { p.accent } else { p.hair })
+                        .group_hover(group, move |s| s.h(px(2.)).bg(p.accent).opacity(0.8)),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        if e.click_count >= 2 {
+                            this.side_split_reset(cx);
+                            return;
+                        }
+                        let [projects, usage, team] = this.board.side_drawn.get();
+                        let drawn = crate::side_split::Drawn { projects, usage: (usage > 0.).then_some(usage), team };
+                        this.board.side_split_drag = Some((held, f32::from(e.position.y), drawn));
+                        cx.notify();
+                    }),
+                ),
+        )
+        .into_any_element()
 }
 
 /// How tall the team's list may be: a row each, six members at most in
@@ -1958,6 +2040,33 @@ impl Shell {
                 self.remembered.save(&equipe_providers::credentials::equipe_home());
             }
         }
+        cx.notify();
+    }
+
+    /// Dragging a hairline between the sidebar's areas.
+    pub fn side_split_dragged(&mut self, y: f32, cx: &mut Context<Self>) {
+        let Some((held, y0, at)) = self.board.side_split_drag else { return };
+        let (usage, team) = crate::side_split::dragged(held, at, y - y0);
+        self.remembered.side_usage = usage.or(self.remembered.side_usage);
+        // The team as drawn stays its own height until a drag moves it.
+        if held == Divider::Team || team != at.team {
+            self.remembered.side_team = Some(team);
+        }
+        cx.notify();
+    }
+
+    pub fn side_split_released(&mut self, cx: &mut Context<Self>) {
+        if self.board.side_split_drag.take().is_some() {
+            self.remembered.save(&equipe_providers::credentials::equipe_home());
+            cx.notify();
+        }
+    }
+
+    /// A hairline double-clicked: usage and the team take their own heights again.
+    pub fn side_split_reset(&mut self, cx: &mut Context<Self>) {
+        self.board.side_split_drag = None;
+        (self.remembered.side_usage, self.remembered.side_team) = (None, None);
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
         cx.notify();
     }
 
