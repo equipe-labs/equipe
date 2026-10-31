@@ -1,6 +1,7 @@
 //! `FAKE_ROUTINE=1`: the PM proposes a weekly report — every Monday at 09:00
 //! — and the proposal waits for the person's card; `FAKE_ROUTINE=daily`
-//! proposes a daily check at 18:30 too. Turned on, it joins the squad's
+//! proposes a daily check at 18:30 too; `FAKE_ROUTINE=long`: one with a long
+//! title and prompt. Turned on, it joins the squad's
 //! routines as the daemon would save it, and the PM's conversation says so;
 //! declined, it says that. `SetIdleWake` is answered as the daemon does.
 
@@ -70,6 +71,15 @@ fn waiting() -> &'static std::sync::Mutex<Vec<RoutineProposal>> {
                     ..weekly
                 },
             ],
+            // A title and a prompt long enough to wrap and clamp.
+            Some("long") => vec![RoutineProposal {
+                routine: Routine {
+                    title: "매주 월요일 아침 지표·피드백·다음 할 일 한 번에 정리하는 주간 점검".into(),
+                    prompt: format!("{} 스토어 리뷰와 GitHub 이슈, PostHog 대시보드의 지난주 숫자도 함께 보고, 달라진 점이 있으면 원인을 짧게 적어 주세요. 다음 할 일은 목표(North Star·OKR)에 맞춰 많아야 세 개만 제안 티켓으로 올리고, 제가 정해야 할 것은 카드 하나로 묶어 주세요.", weekly.routine.prompt),
+                    ..weekly.routine.clone()
+                },
+                ..weekly
+            }],
             Some(_) => vec![weekly],
         };
         std::sync::Mutex::new(out)

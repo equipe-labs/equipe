@@ -587,7 +587,9 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             this.send_command(equipe_core::protocol::Command::SetIdleWake { squad, hours });
         }, cx));
     vec![
-        Section::new(t!("settings.section_work"), vec![pm_accepts, idle_wake]).foot(t!("settings.pm_accepts_foot")),
+        Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
+        // Its own card, so the footnote above reads as the PM's accepting alone.
+        Section::new("", vec![idle_wake]),
         Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
     ]
 }
