@@ -44,14 +44,15 @@ pub fn on_device(locale: &str) -> bool {
 
 /// What was said in the recording at `path`, in `locale` ("ko-KR"). Blocks
 /// until the recognizer is through: call it off the main thread.
-pub fn transcribe(path: &Path, locale: &str, length: Option<f64>) -> Result<String, Failure> {
+/// With `servers`, Apple's servers may recognize it too (the person agreed).
+pub fn transcribe(path: &Path, locale: &str, length: Option<f64>, servers: bool) -> Result<String, Failure> {
     #[cfg(target_os = "macos")]
     {
-        sf::transcribe(path, locale, patience(length))
+        sf::transcribe(path, locale, patience(length), servers)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (path, locale, length);
+        let _ = (path, locale, length, servers);
         Err(Failure::Unsupported)
     }
 }
@@ -156,12 +157,12 @@ mod sf {
         if status == Status::Authorized { Ok(()) } else { Err(Failure::Denied) }
     }
 
-    pub fn transcribe(path: &Path, locale: &str, patience: Duration) -> Result<String, Failure> {
+    pub fn transcribe(path: &Path, locale: &str, patience: Duration, servers: bool) -> Result<String, Failure> {
         allowed()?;
         let locale = NSLocale::initWithLocaleIdentifier(NSLocale::alloc(), &NSString::from_str(locale));
         let recognizer = unsafe { SFSpeechRecognizer::initWithLocale(SFSpeechRecognizer::alloc(), &locale) }.ok_or(Failure::Unsupported)?;
-        // Never sent to Apple's servers, as dictation isn't.
-        if !unsafe { recognizer.isAvailable() && recognizer.supportsOnDeviceRecognition() } {
+        // On this Mac only, unless the person agreed to Apple's servers.
+        if !unsafe { recognizer.isAvailable() && (servers || recognizer.supportsOnDeviceRecognition()) } {
             return Err(Failure::Unsupported);
         }
         let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().ok_or_else(|| Failure::Failed(equipe_core::t!("media.unreadable").into()))?));
@@ -169,7 +170,7 @@ mod sf {
             let request = SFSpeechURLRecognitionRequest::initWithURL(SFSpeechURLRecognitionRequest::alloc(), &url);
             // Partial results show where an utterance ends, so a long one is kept whole.
             request.setShouldReportPartialResults(true);
-            request.setRequiresOnDeviceRecognition(true);
+            request.setRequiresOnDeviceRecognition(!servers);
             if request.respondsToSelector(sel!(setAddsPunctuation:)) {
                 request.setAddsPunctuation(true);
             }

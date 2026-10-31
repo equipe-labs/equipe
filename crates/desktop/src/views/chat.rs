@@ -461,7 +461,10 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let p = shell.palette;
     let model = &shell.model;
     let body = match model.selected_member() {
-        None => empty(p, t!("chat.no_member_title"), t!("chat.no_member_text")).into_any_element(),
+        // Nobody yet: an AI to connect, and the PM starts on its own once one is.
+        None => empty(p, t!("chat.no_member_title"), t!("chat.no_member_text"))
+            .child(crate::ui::button(p, "connect-ai", crate::ui::Kind::Primary, t!("chat.connect_ai")).icon(Icon::Plug).on_click(cx.listener(|this, _, window, cx| this.open_settings(Some(crate::settings::Category::Engines), window, cx))))
+            .into_any_element(),
         Some(member) if shell.chat.blocks.is_empty() => {
             let (title, text) = hello(model, member.role.as_str(), member.name.as_str(), member.presence);
             empty(p, title, text).into_any_element()
@@ -585,7 +588,7 @@ fn hello(model: &Model, role: &str, name: &str, presence: Presence) -> (&'static
     }
 }
 
-fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> impl IntoElement {
+fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> Div {
     v_flex()
         .flex_1()
         .min_h_0()
@@ -1288,13 +1291,14 @@ fn card(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mut
         .rounded(px(R_LG))
         .border_1()
         .border_color(p.hair)
-        .children(lines.iter().enumerate().map(|(at, line)| call_row(rows, key, at as u32, line, at > 0, window, cx)))
+        .children(lines.iter().enumerate().map(|(at, line)| call_row(rows, key, at as u32, line, at > 0, at + 1 == lines.len(), window, cx)))
         .into_any_element()
 }
 
 /// A call in an open group: its verb phrase, what it acted on, how long it
 /// took; opening it shows the rest.
-fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+#[allow(clippy::too_many_arguments)]
+fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, last: bool, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let t = rows.tones;
     let more = activity::has_more(line);
@@ -1303,10 +1307,15 @@ fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window:
     let part = PART_ROW + at;
     let open = more && rows.is_open(key, part, failed);
     let progress = motion::openness(("call-open", key << 8 | at as u64), open, window, cx);
+    // Its hover fill keeps inside the card's rounded edge: the first row's
+    // top corners, the last closed row's bottom ones, inside the hairline.
+    let inner = px(R_LG - 1.);
     let head = disclosure_head(rows, ("call", key << 8 | at as u64), part, key, true, window, cx)
         .h(px(32.))
         .px_3()
         .gap_2()
+        .when(at == 0, |h| h.rounded_t(inner))
+        .when(last && progress == 0., |h| h.rounded_b(inner))
         .when(!more, |h| h.cursor_default())
         .children(running.then(|| motion::spinner(11., p.muted)))
         .children(failed.then(|| icon(Icon::Alert, 12., t.danger)))

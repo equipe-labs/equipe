@@ -336,7 +336,12 @@ impl Shell {
             squads: Vec::new(),
             screen: Screen::Chat,
             chat: Chat::new(cx),
-            composer: Composer::new(window, cx, dictation::choose(remembered.dictation.as_deref().and_then(equipe_core::i18n::Lang::parse), crate::i18n::lang(), &equipe_core::i18n::preferred(), dictation::heard_here)),
+            composer: Composer::new(
+                window,
+                cx,
+                dictation::choose(remembered.dictation.as_deref().and_then(equipe_core::i18n::Lang::parse), crate::i18n::lang(), &equipe_core::i18n::preferred(), |l| remembered.dictation_servers || dictation::heard_here(l)),
+                remembered.dictation_servers,
+            ),
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),
@@ -820,6 +825,12 @@ impl Shell {
                         if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineInstall { .. })) = &update {
                             let effect = this.engines.on_event(event);
                             changed |= effect.changed;
+                            // The first engine ready: a squad that had none starts its team now.
+                            if this.engines.became_ready() && this.model.attached() {
+                                // What said no AI was ready is said no longer.
+                                this.composer.problem = None;
+                                this.start_team();
+                            }
                             // The code's page, in this Mac's browser, for the screen that asked.
                             if let Some(url) = effect.open
                                 && !cfg!(feature = "snapshot")

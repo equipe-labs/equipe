@@ -81,6 +81,8 @@ pub struct SettingsUi {
     pub nebius_key: Entity<InputState>,
     pub nebius_problem: Option<String>,
     pub nebius_forgetting: bool,
+    /// Apple's servers for dictation, asked about: what goes where, and a yes.
+    pub dictation_consent: bool,
 }
 
 impl SettingsUi {
@@ -98,6 +100,7 @@ impl SettingsUi {
             nebius_key: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("engines.nebius_key_placeholder"))),
             nebius_problem: None,
             nebius_forgetting: false,
+            dictation_consent: false,
         }
     }
 
@@ -373,6 +376,42 @@ pub fn rule_words(rule: &str) -> String {
     }
 }
 
+/// The look's rows, with dictation's and — while it is asked about, or on —
+/// the say about Apple's servers.
+fn dictation_rows(shell: &Shell, language: Line, dictation: Line, appearance: Line, zoom: Line, cx: &mut Context<Shell>) -> Vec<Line> {
+    let p = shell.palette;
+    let on = shell.remembered.dictation_servers;
+    let servers = Line::new(t!("settings.dictation_servers"), if on { t!("settings.dictation_servers_on") } else { t!("settings.dictation_servers_desc") })
+        .words("dictation voice speech apple server accuracy korean")
+        .control(switch(shell, "dictation-servers", on || shell.settings.dictation_consent, true, |this, on, window, cx| {
+            if on {
+                this.settings.dictation_consent = true;
+                cx.notify();
+            } else {
+                this.settings.dictation_consent = false;
+                this.set_dictation_servers(false, window, cx);
+            }
+        }, cx));
+    let mut rows = vec![language, dictation, servers];
+    // Asked before it is on: what leaves the Mac, and the person's yes.
+    if shell.settings.dictation_consent && !on {
+        let buttons = h_flex()
+            .gap_2()
+            .child(ui::button(p, "dictation-servers-no", Kind::Ghost, t!("settings.dictation_servers_cancel")).on_click(cx.listener(|this, _, _, cx| {
+                this.settings.dictation_consent = false;
+                cx.notify();
+            })))
+            .child(ui::button(p, "dictation-servers-yes", Kind::Primary, t!("settings.dictation_servers_agree")).on_click(cx.listener(|this, _, window, cx| {
+                this.settings.dictation_consent = false;
+                this.set_dictation_servers(true, window, cx);
+            })))
+            .into_any_element();
+        rows.push(Line::new(t!("settings.dictation_servers_ask"), t!("settings.dictation_servers_ask_desc")).words("dictation apple server privacy").control(buttons));
+    }
+    rows.extend([appearance, zoom]);
+    rows
+}
+
 fn language_label(shell: &Shell) -> String {
     match shell.board.language {
         Some(lang) => lang.native_name().to_owned(),
@@ -393,7 +432,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         Some(lang) => lang.native_name().to_owned(),
         None => t!("settings.dictation_auto", lang = listening.native_name()),
     };
-    let heard = crate::dictation::heard_here(listening);
+    let heard = shell.remembered.dictation_servers || crate::dictation::heard_here(listening);
     let mut dictation = Line::new(t!("settings.dictation"), if heard { t!("settings.dictation_desc").to_owned() } else { t!("settings.dictation_missing_desc", lang = listening.native_name()) })
         .warn(!heard)
         .words("dictation voice speech microphone mic language");
@@ -449,7 +488,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .control(switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx)),
     ];
     vec![
-        Section::new(t!("settings.section_look"), vec![language, dictation, appearance, zoom]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
+        Section::new(t!("settings.section_look"), dictation_rows(shell, language, dictation, appearance, zoom, cx)).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
         Section::new(t!("settings.section_conversation"), vec![follow, links]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
@@ -1024,7 +1063,7 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             let mut rows = vec![(t!("settings.dictation_auto", lang = shell.composer.listening.native_name()), String::new(), now.is_none(), Act::Dictation(None))];
             // Each language, and whether this Mac has its model yet.
             rows.extend(Lang::ALL.into_iter().map(|l| {
-                let note = if crate::dictation::heard_here(l) { String::new() } else { t!("settings.dictation_not_here").to_owned() };
+                let note = if shell.remembered.dictation_servers || crate::dictation::heard_here(l) { String::new() } else { t!("settings.dictation_not_here").to_owned() };
                 (l.native_name().to_owned(), note, now == Some(l), Act::Dictation(Some(l)))
             }));
             (280., rows)

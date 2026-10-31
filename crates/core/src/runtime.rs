@@ -447,7 +447,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let mut config = config;
     let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
     if config.persist && config.nemotron.is_none() {
-        crate::daemon_log!("equipe: no NEBIUS_API_KEY in the daemon's environment: handed-in work isn't reviewed by Nemotron");
+        crate::daemon_log!("equipe: no Nebius key yet (Settings › AI platforms, or `equipe login nebius`): handed-in work isn't reviewed by Nemotron");
     }
     // The logins: their passwords in the Keychain (in memory for tests).
     let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { Box::new(vault::Keychain) };
@@ -2209,7 +2209,7 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                     None => {
                         let message = say!(self, "error.no_engine");
-                        return fail(self, message, Some("equipe login"));
+                        return fail(self, message, None);
                     }
                 }
             }
@@ -2240,7 +2240,7 @@ runbooks and reports live there, and work across the projects or on running them
                 }
                 if on_nebius {
                     let Some(cfg) = self.config.nemotron.clone() else {
-                        return fail(self, say!(self, "error.nebius_no_key"), Some("export NEBIUS_API_KEY=…; equipe daemon stop; equipe daemon run"));
+                        return fail(self, say!(self, "error.nebius_no_key"), Some("equipe login nebius"));
                     };
                     if !model.as_deref().is_some_and(crate::nemotron::is_agent_model) {
                         let picked = match tokio::time::timeout(SERVER_WAIT, crate::nemotron::agent_model(&cfg)).await {
@@ -3196,7 +3196,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         effort = crate::nemotron::agent_effort(effort.as_deref()).map(str::to_owned);
                         Some(cfg.codex_provider())
                     }
-                    (None, true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("export NEBIUS_API_KEY=…; equipe daemon stop; equipe daemon run")),
+                    (None, true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
                     (_, false) => None,
                 };
                 // equipe's servers only, as Claude Code gets them: the board's tools
