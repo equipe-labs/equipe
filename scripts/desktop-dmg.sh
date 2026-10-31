@@ -36,6 +36,19 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
+
+# Stapling fetches the notarization ticket from Apple's CloudKit, whose
+# connection drops now and then ("The network connection was lost", error 68)
+# with nothing wrong: try again a few times, waiting longer each time.
+staple_retry() {
+  for try in 1 2 3 4 5; do
+    xcrun stapler "$@" && return 0
+    say "stapler $1 failed (try $try), trying again"
+    sleep $((try * 15))
+  done
+  echo "error: stapler $* failed five times" >&2
+  return 1
+}
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [ "$(uname -s)" = Darwin ] || die "the desktop app is packaged on macOS"
@@ -270,8 +283,8 @@ if [ -n "$notarize" ]; then
   ditto -c -k --keepParent "$app" "$work/equipe-app.zip"
   notarize_file "$work/equipe-app.zip"
   rm "$work/equipe-app.zip"
-  xcrun stapler staple "$app"
-  xcrun stapler validate "$app"
+  staple_retry staple "$app"
+  staple_retry validate "$app"
   spctl --assess --type exec -vv "$app"
 fi
 
@@ -300,7 +313,7 @@ done
 if [ -n "$notarize" ]; then
   say "notarizing equipe.dmg (this waits for Apple)"
   notarize_file "$dmg"
-  xcrun stapler staple "$dmg"
+  staple_retry staple "$dmg"
   spctl --assess --type open --context context:primary-signature -v "$dmg"
 fi
 
