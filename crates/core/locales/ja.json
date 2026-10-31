@@ -276,5 +276,11 @@
   "status.proposed": "提案",
   "status.review": "レビュー",
   "status.todo": "未着手",
-  "status.waiting": "あなたの番"
+  "status.waiting": "あなたの番",
+  "card.signal_on": "{project} のシグナル {name} をオンにします: {every}ごとに `{command}` を実行 — 期待 {expect}",
+  "card.signal_change": "{project} のシグナル {name} を変更します: {every}ごとに `{command}` を実行 — 期待 {expect}",
+  "card.signal_off": "{project} のシグナル {name} をオフにします",
+  "news.signal_failing": "シグナル失敗 · {name} ({project}) · {note}",
+  "news.signal_recovered": "シグナル回復 · {name} ({project})",
+  "news.signal_changed": "シグナルが {pct} 変化 · {name} ({project}) · {from} → {to}"
 }

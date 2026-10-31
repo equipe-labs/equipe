@@ -665,6 +665,24 @@ impl Journal {
         self.set_meta("routines", &serde_json::to_string(routines).unwrap_or_else(|_| "[]".into()))
     }
 
+    /// The squad's signals (`crate::signals`), in the order turned on.
+    pub fn signals(&self) -> Vec<crate::signals::Signal> {
+        self.meta("signals").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_signals(&self, signals: &[crate::signals::Signal]) -> Result<()> {
+        self.set_meta("signals", &serde_json::to_string(signals).unwrap_or_else(|_| "[]".into()))
+    }
+
+    /// Each signal's readings and whether its failing was told, by its key.
+    pub fn signal_states(&self) -> std::collections::BTreeMap<String, crate::signals::State> {
+        self.meta("signal_states").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_signal_states(&self, states: &std::collections::BTreeMap<String, crate::signals::State>) -> Result<()> {
+        self.set_meta("signal_states", &serde_json::to_string(states).unwrap_or_else(|_| "{}".into()))
+    }
+
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub fn idle_wake_hours(&self) -> u32 {
         self.meta("idle_wake_hours").and_then(|h| h.parse().ok()).unwrap_or(crate::protocol::routines::IDLE_WAKE_HOURS)

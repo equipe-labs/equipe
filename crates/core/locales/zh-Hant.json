@@ -276,5 +276,11 @@
   "status.proposed": "提案",
   "status.review": "審查",
   "status.todo": "待辦",
-  "status.waiting": "輪到你"
+  "status.waiting": "輪到你",
+  "card.signal_on": "開啟 {project} 的訊號 {name}：每 {every} 執行 `{command}` — 期望 {expect}",
+  "card.signal_change": "變更 {project} 的訊號 {name}：每 {every} 執行 `{command}` — 期望 {expect}",
+  "card.signal_off": "關閉 {project} 的訊號 {name}",
+  "news.signal_failing": "訊號失敗 · {name}（{project}）· {note}",
+  "news.signal_recovered": "訊號恢復正常 · {name}（{project}）",
+  "news.signal_changed": "訊號變化 {pct} · {name}（{project}）· {from} → {to}"
 }

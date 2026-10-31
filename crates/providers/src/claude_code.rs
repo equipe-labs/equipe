@@ -732,6 +732,7 @@ fn board_target(name: &str, input: Option<&Value>) -> Option<String> {
         }
         "propose_team_change" => [text("change"), text("name").or_else(|| text("role"))].into_iter().flatten().collect(),
         "propose_routine" => [text("title"), text("every")].into_iter().flatten().collect(),
+        "propose_signal" | "signals" => [text("name"), text("project")].into_iter().flatten().collect(),
         "propose_accept" => {
             let tickets = input.get("tickets").and_then(Value::as_array).map(|items| {
                 items.iter().filter_map(|v| v.as_u64().map(|n| format!("T-{n}")).or_else(|| v.as_str().map(str::to_owned))).collect::<Vec<_>>().join(", ")

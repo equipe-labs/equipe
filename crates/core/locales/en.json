@@ -280,5 +280,11 @@
   "status.proposed": "proposed",
   "status.review": "review",
   "status.todo": "todo",
-  "status.waiting": "waiting"
+  "status.waiting": "waiting",
+  "card.signal_on": "Turn on the signal {name} for {project}: every {every}, run `{command}` — expect {expect}",
+  "card.signal_change": "Change the signal {name} of {project}: every {every}, run `{command}` — expect {expect}",
+  "card.signal_off": "Turn off the signal {name} of {project}",
+  "news.signal_failing": "Signal failing · {name} ({project}) · {note}",
+  "news.signal_recovered": "Signal passing again · {name} ({project})",
+  "news.signal_changed": "Signal moved {pct} · {name} ({project}) · {from} → {to}"
 }

@@ -276,5 +276,11 @@
   "status.proposed": "제안",
   "status.review": "검토",
   "status.todo": "할 일",
-  "status.waiting": "내 차례"
+  "status.waiting": "내 차례",
+  "card.signal_on": "{project}의 신호 {name}을 켜요: {every}마다 `{command}` 실행 — 기대 {expect}",
+  "card.signal_change": "{project}의 신호 {name}을 바꿔요: {every}마다 `{command}` 실행 — 기대 {expect}",
+  "card.signal_off": "{project}의 신호 {name}을 꺼요",
+  "news.signal_failing": "신호 실패 · {name} ({project}) · {note}",
+  "news.signal_recovered": "신호 다시 정상 · {name} ({project})",
+  "news.signal_changed": "신호 값 {pct} 변화 · {name} ({project}) · {from} → {to}"
 }

@@ -280,5 +280,11 @@
   "status.proposed": "proposé",
   "status.review": "en revue",
   "status.todo": "à faire",
-  "status.waiting": "en attente de vous"
+  "status.waiting": "en attente de vous",
+  "card.signal_on": "Activer le signal {name} pour {project} : toutes les {every}, lancer `{command}` — attendu {expect}",
+  "card.signal_change": "Modifier le signal {name} de {project} : toutes les {every}, lancer `{command}` — attendu {expect}",
+  "card.signal_off": "Désactiver le signal {name} de {project}",
+  "news.signal_failing": "Signal en échec · {name} ({project}) · {note}",
+  "news.signal_recovered": "Signal de nouveau bon · {name} ({project})",
+  "news.signal_changed": "Signal en mouvement de {pct} · {name} ({project}) · {from} → {to}"
 }
