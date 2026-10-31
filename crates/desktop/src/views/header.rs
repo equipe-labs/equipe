@@ -36,11 +36,11 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let who = member.map(|m| {
         div()
             .relative()
-            .flex_shrink()
+            .flex_shrink(1.)
             .min_w_0()
             .child(
                 pill(p, "conversation-title")
-                    .flex_shrink()
+                    .flex_shrink(1.)
                     .min_w_0()
                     .max_w_full()
                     .when(open, |b| b.bg(p.wash))
@@ -48,11 +48,11 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_popover(Popover::Members, cx)))
                     .child(match talk_title.clone() {
                         // A conversation with the PM: its own name.
-                        Some(name) => div().min_w_0().flex_shrink().max_w(px(320.)).truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name).into_any_element(),
+                        Some(name) => div().min_w_0().flex_shrink(1.).max_w(px(320.)).truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name).into_any_element(),
                         None => title(p, m).into_any_element(),
                     })
                     .children(m.engine.map(|e| super::switching::label(p, e)))
-                    .children(ticket.map(|t| div().min_w_0().flex_shrink().max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
+                    .children(ticket.map(|t| div().min_w_0().flex_shrink(1.).max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
                     .child(div().flex_none().child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted))),
             )
             .children(open.then(|| members(shell, cx)))
@@ -231,6 +231,9 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
     let label = focus.clone().unwrap_or_else(|| if talk.is_some() { t!("header.squad_wide").into() } else { t!("header.all_projects").into() });
     // The same pill as the conversation's title beside it: one height, one edge.
     let button = pill(p, SharedString::from(format!("slice-{place}")))
+        .flex_shrink(1.)
+        .min_w_0()
+        .max_w_full()
         .text_size(px(13.))
         .when(open, |b| b.bg(p.wash))
         .hover(move |s| s.bg(p.wash))
@@ -250,9 +253,10 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
             cx.notify();
         }))
         .when_some(at, |b, at| b.child(dot(project_color(p, at), 7.)))
-        .child(div().max_w(px(160.)).truncate().text_color(if focus.is_some() { p.text } else { p.text2 }).child(label))
-        .child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted));
-    div().relative().flex_none().child(button).children(open.then(|| list(shell, cx))).into_any_element()
+        .child(div().min_w_0().flex_shrink(1.).max_w(px(160.)).truncate().text_color(if focus.is_some() { p.text } else { p.text2 }).child(label))
+        .child(div().flex_none().child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted)));
+    // It gives way too, after the title has: the title's words matter more.
+    div().relative().flex_shrink(0.4).min_w(px(64.)).child(button).children(open.then(|| list(shell, cx))).into_any_element()
 }
 
 fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
