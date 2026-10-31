@@ -31,23 +31,29 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         (None, Some(lane)) => Some(lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into())),
         _ => None,
     };
+    // The title gives way when the bar is narrow (a panel open beside it):
+    // its words end in "…", the engine and the ⌄ stay whole.
     let who = member.map(|m| {
         div()
             .relative()
-            .flex_none()
+            .flex_shrink()
+            .min_w_0()
             .child(
                 pill(p, "conversation-title")
+                    .flex_shrink()
+                    .min_w_0()
+                    .max_w_full()
                     .when(open, |b| b.bg(p.wash))
                     .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_popover(Popover::Members, cx)))
                     .child(match talk_title.clone() {
                         // A conversation with the PM: its own name.
-                        Some(name) => div().max_w(px(320.)).truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name).into_any_element(),
+                        Some(name) => div().min_w_0().flex_shrink().max_w(px(320.)).truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name).into_any_element(),
                         None => title(p, m).into_any_element(),
                     })
                     .children(m.engine.map(|e| super::switching::label(p, e)))
-                    .children(ticket.map(|t| div().max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
-                    .child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted)),
+                    .children(ticket.map(|t| div().min_w_0().flex_shrink().max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
+                    .child(div().flex_none().child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted))),
             )
             .children(open.then(|| members(shell, cx)))
     });
@@ -81,6 +87,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .items_center()
         .border_b_1()
         .border_color(p.hair)
+        .overflow_hidden()
         .font_family(SANS)
         .window_control_area(WindowControlArea::Drag)
         .children(who)

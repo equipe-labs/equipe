@@ -1099,7 +1099,7 @@ impl Journal {
         let mut stmt = self.conn.prepare(
             "SELECT COALESCE(s.cwd, c.cwd, (SELECT p.cwd FROM sessions p WHERE p.role = 'pm' AND p.open = 1 ORDER BY p.id LIMIT 1)), e.body
              FROM entries e LEFT JOIN sessions s ON s.id = e.session LEFT JOIN conversations c ON c.id = e.session
-             WHERE e.body LIKE '%/%' AND (s.id IS NOT NULL OR c.id IS NOT NULL) ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
+             WHERE (e.body LIKE '%/%' OR e.body LIKE '%![%') AND (s.id IS NOT NULL OR c.id IS NOT NULL) ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))?;
         Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd?), serde_json::from_str(&body).ok()?))).collect())
