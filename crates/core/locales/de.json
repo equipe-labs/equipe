@@ -280,5 +280,11 @@
   "status.proposed": "vorgeschlagen",
   "status.review": "im Review",
   "status.todo": "offen",
-  "status.waiting": "wartet auf dich"
+  "status.waiting": "wartet auf dich",
+  "card.signal_on": "Signal {name} für {project} einschalten: alle {every} `{command}` ausführen — erwartet {expect}",
+  "card.signal_change": "Signal {name} von {project} ändern: alle {every} `{command}` ausführen — erwartet {expect}",
+  "card.signal_off": "Signal {name} von {project} ausschalten",
+  "news.signal_failing": "Signal schlägt fehl · {name} ({project}) · {note}",
+  "news.signal_recovered": "Signal wieder in Ordnung · {name} ({project})",
+  "news.signal_changed": "Signal um {pct} verändert · {name} ({project}) · {from} → {to}"
 }

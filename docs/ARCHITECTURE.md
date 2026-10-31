@@ -757,6 +757,74 @@ Either message comes to the PM as the person's would, after its turn if one
 runs. What it brings back are proposed tickets and one bundled ask — nothing
 starts until the person takes it on.
 
+### Signals
+
+A squad can't see what it doesn't measure, nor notice when the measuring
+breaks: in October 2026 the site went 17 days without its analytics tag and the
+traffic workflow failed 18 times in a row, and nobody knew. A **signal** is a
+project's check of something the squad measures or ships — a shell command, an
+expectation and a schedule (`crates/core/src/signals.rs`,
+`runtime/signals.rs`). Shell commands only; reading PostHog or App Store
+Connect directly is later work.
+
+**Where they live.** In the squad's journal (`meta` key `signals`), each tied
+to one of the squad's projects by name — not in a file in the project, so no
+member's commit can change what the daemon runs. Each signal:
+
+| field | |
+|---|---|
+| `project` | the project's name, as the board names it; the command runs in its folder |
+| `name` | short, letters, digits and dashes: `site-analytics` |
+| `command` | run with `/bin/sh -c`, stopped after 60 s |
+| `expect` | `exit0` (the default), `at_least`/`at_most` a number (the first number printed: `grep -c` printing 0 with exit 1 counts as 0), `equals`/`contains` a text |
+| `change_pct` | also tell the PM when the number moves this many percent from the reading before |
+| `every` | `30m`, `6h`, `1d` — between 5 minutes and 7 days; 6h by default |
+
+For this squad, the three of T-197:
+
+```text
+site-analytics    equipe-site  curl -s https://equipe.im/ | grep -c analytics-config          at_least 1
+traffic-workflow  equipe-site  gh run list -R equipe-labs/equipe-site -L1 --json conclusion \
+                                 --jq '.[0].conclusion'                                        equals success
+stars             equipe       gh api repos/equipe-labs/equipe --jq .stargazers_count          at_least 0, change_pct 20, every 1d
+```
+
+**Turned on by the person.** The PM's `propose_signal` (and `remove: true` to
+turn one off) is checked — a name, a project of the squad's, never a command
+of the [blocked](#permission-modes) floor — and put to the person on a confirm
+card, as `ask_person` is, showing the exact command, its expectation and its
+schedule; the PM's call waits for the answer. Only a yes keeps it, and it runs
+at once.
+
+**Run and kept.** Each minute the daemon runs the signals that are due, off
+the loop. A run's reading — when, passing or not, what it printed (trimmed, one
+line, 200 characters at most) and why it failed — is kept with the last 90 of
+that signal (`meta` key `signal_states`).
+
+**Told to the PM.** A signal failing — and not told before — wakes the PM
+with a `[Signal · name · failing]` message (after its turn if one runs): what
+broke, the command, what was expected and got, and to act now — a ticket to
+fix it, or what the person must do (a token, a setting) on a card
+(`block_on_person`, `ask_secret`, `ask_person`), never only words. It isn't
+told again until the signal has passed once; then the recovery, and any big
+move (`change_pct`), go with its next message. With no PM in the squad, a
+failure waits to be told at the next reading. The PM reads them with
+`signals` (last value, trend over the last ten, `name` for all 90, `check` to
+run them now); a routine's message reminds it the squad keeps signals, so the
+weekly check-in reads them.
+
+**Security.** A signal's command runs inside a macOS `sandbox-exec` fence the
+daemon builds for it: it writes nowhere but a scratch folder of its own
+(`TMPDIR`), reads none of what no member's fenced command reads — the person's
+browser sign-ins, equipe's logins, the desktop helper's keys, other squads'
+folders — and is stopped after 60 seconds. The network is open and `gh`,
+`curl` and the project's tools run as the person signed them in: the person
+saw that exact command on the card, as they see a member's command that runs
+outside its fence. Where there is no such fence (not macOS), signals don't
+run. A reading keeps what the command prints, so a signal must never print a
+secret; what looks like one — a long unbroken token, a known key prefix
+(`ghp_`, `sk-`, `phc_`…) — is blanked before it is kept or shown.
+
 ### A conversation being compacted
 
 A member's conversation is sometimes summarized to make room, and every screen

@@ -71,6 +71,7 @@ mod secrets;
 mod design_qa;
 mod team;
 mod heartbeat;
+mod signals;
 mod tickets;
 mod compact;
 
@@ -491,6 +492,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         questions: HashMap::new(),
         team_changes: HashMap::new(),
         routine_proposals: HashMap::new(),
+        signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
@@ -766,6 +768,8 @@ enum Internal {
     Wake { session: SessionId, prompt: String },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
+    /// A signal's command ran off the loop: its reading.
+    SignalRead { squad: String, key: String, reading: crate::signals::Reading },
     /// Where the engines stand, as just looked at off the loop.
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
@@ -883,6 +887,8 @@ struct Runtime {
     team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
     /// Routines the PM proposed, waiting for the person, by squad (`heartbeat`).
     routine_proposals: HashMap<String, Vec<equipe_protocol::routines::RoutineProposal>>,
+    /// Signals whose command runs now, by squad and key (`signals`).
+    signals_running: std::collections::HashSet<(String, String)>,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
     accepts: HashMap<String, Vec<equipe_protocol::accept::AcceptProposal>>,
     /// Cards the person said no to lately, by squad: not put up again soon.
@@ -968,6 +974,7 @@ impl Wake {
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
+            Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
@@ -1134,6 +1141,7 @@ impl Runtime {
                 Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
+                Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::Dispatch => {
                     let squads: Vec<String> = self.journals.keys().cloned().collect();
@@ -1180,6 +1188,8 @@ impl Runtime {
                 self.run_due_routines().await;
                 pulse.step("minute tick: idle boards");
                 self.wake_idle_pms().await;
+                pulse.step("minute tick: signals");
+                self.run_due_signals();
                 pulse.step("minute tick: engines");
                 self.engines_tick().await;
                 // Work that reached main outside equipe: every ten minutes is soon
@@ -1896,7 +1906,11 @@ runbooks and reports live there, and work across the projects or on running them
         };
         crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
         let about = self.hq(squad).map(|hq| board::project_name(&hq));
-        let text = routines::message(&routine);
+        let mut text = routines::message(&routine);
+        let signals = self.journal(squad).map_or(0, |j| j.signals().len());
+        if signals > 0 {
+            text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
+        }
         self.said_about = Some(about);
         match self.sessions.get(&pm) {
             Some(s) if s.is_working() => self.leave_memo(pm, text),
@@ -4512,6 +4526,9 @@ them with `propose_accept`. Then carry on with what else waits.]"
         if call.name == board::ASK_PERSON {
             return self.ask_person(call, reply);
         }
+        if call.name == crate::signals::PROPOSE_SIGNAL {
+            return self.propose_signal(call, reply);
+        }
         if call.name == board::SIGN_IN {
             return self.ask_sign_in(call, reply);
         }
@@ -4808,7 +4825,11 @@ there, end your turn, and carry on when they say they're done."
         if let Some(preview) = &approval.preview {
             let _ = std::fs::remove_file(preview);
         }
-        let _ = reply.send(if approval.tool == desktop_gate::SEND {
+        // A signal the PM proposed: kept on a yes, and the PM told so.
+        let signal = if approval.tool == CONFIRM { self.signal_answered(&squad, &input, decision != Decision::Deny) } else { None };
+        let _ = reply.send(if let Some(text) = signal {
+            ToolResult { text, is_error: false, image: None }
+        } else if approval.tool == desktop_gate::SEND {
             // The desktop tool waits on this: nothing reaches the screen on a no.
             match decision {
                 Decision::Allow | Decision::Always => ToolResult { text: String::new(), is_error: false, image: None },
@@ -5672,6 +5693,7 @@ it back there once they have done it.{again} End your turn now with a short line
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),
+            crate::signals::SIGNALS => self.read_signals(&squad, id, &args),
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
