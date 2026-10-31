@@ -40,7 +40,10 @@ opt-level = 2
 # - gpui-base: `ElementExt::on_prepaint` reports the element's own bounds —
 #   its canvas pinned to the top-left, not flowed under the element's
 #   children (`element_ext.rs`; the ticket card's place, `views/ticket_card.rs`).
+# - gpui-pre-macos: `EQUIPE_SNAPSHOT_SCALE=2` forces the window's scale factor
+#   (`get_scale_factor`), so a snapshot is drawn 2x on a screen that is not.
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-base = { path = "vendor/gpui-base" }
 gpui-component = { path = "vendor/gpui-component" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
