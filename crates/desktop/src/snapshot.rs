@@ -10,14 +10,14 @@
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) · `dview:<n>` (option n's picture of the card on show, big) · `tview:<ticket>,<n>` (a hand-in's nth picture, big; then `press:right`, `press:enter`) · `rview:<n>` (the nth picture the latest reply showing pictures embeds, big) · `tpick:<id>` (a change to the team in 나에게, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) · `rpick:<id>` (a routine the PM proposed in 나에게, peeking) · `ryes` / `rno` (turn on or decline the oldest) · `cpick:<id>` (a card to confirm in 나에게, peeking; `cpick` alone: the oldest) · `ctick:<ticket>` (tick or untick a ticket on the oldest card) · `cyes` / `cno` (confirm or decline the oldest card) · `eyes` / `eno` / `eundo` (the engine card: its yes, its no, undo) · `engines:<off|suggest|auto>` (the squad's engine switching) ·
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
-//! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
 //! `EQUIPE_SNAPSHOT_SCALE=2` draws the window — and so every `shot` — at that scale, whatever
@@ -80,6 +80,34 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }
                 continue;
             }
+            // `pinch:<x>,<y>,<n>,<delta>`: a trackpad's pinch at `x,y` (the
+            // screen's points, as `wheel:`), n frames apart, each growing the
+            // zoom by `delta` of itself (negative: out) — begun, then ended.
+            if verb == "pinch" {
+                let n: Vec<f32> = arg.split(',').map(|v| v.trim().parse().unwrap_or(f32::NAN)).collect();
+                let at = match &n[..] {
+                    [x, y, ..] if x.is_finite() && y.is_finite() => Some(point(px(*x), px(*y))),
+                    _ => None,
+                };
+                let frames = n.get(2).filter(|n| n.is_finite()).map_or(20, |n| *n as usize);
+                let delta = n.get(3).copied().filter(|d| d.is_finite()).unwrap_or(0.05);
+                for frame in 0..frames + 2 {
+                    let (phase, delta) = match frame {
+                        0 => (TouchPhase::Started, 0.),
+                        f if f == frames + 1 => (TouchPhase::Ended, 0.),
+                        _ => (TouchPhase::Moved, delta),
+                    };
+                    let _ = cx.update_window(handle, |_, window, cx| {
+                        let size = window.viewport_size();
+                        let at = at.unwrap_or_else(|| point(size.width * 0.5, size.height * 0.5));
+                        let pinch = PinchEvent { position: at, delta, modifiers: Modifiers::default(), phase };
+                        let pinch = window.input_from_platform(PlatformInput::Pinch(pinch));
+                        window.dispatch_event(pinch, cx);
+                    });
+                    cx.background_executor().timer(Duration::from_millis(16)).await;
+                }
+                continue;
+            }
             let shell = shell.clone();
             let verb = verb.to_owned();
             let started = std::time::Instant::now();
@@ -107,6 +135,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "key" => shell.update(cx, |shell, cx| {
                     shell.on_approval_key(&arg, false, window, cx);
                 }),
+                // A new conversation with the PM (`newtalk` the squad's, `newtalk:<project>`).
+                "newtalk" => shell.update(cx, |shell, cx| shell.start_conversation((!arg.is_empty()).then(|| arg.clone()), window, cx)),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
                     shell.on_composer_key(&verb, &Modifiers::default(), window, cx);
@@ -205,7 +235,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 "pastelong" => shell.update(cx, |shell, cx| {
                     let lines = arg.parse::<usize>().unwrap_or(60);
-                    let text: String = (1..=lines).map(|n| format!("{n}번째 줄: 로그 내용이 여기에 있습니다\n")).collect();
+                    let text: String = (1..=lines).map(|n| format!("line {n}: the log goes on here\n")).collect();
                     let taken = shell.paste_item(&ClipboardItem::new_string(text), cx);
                     eprintln!("pastelong: taken = {taken}");
                 }),
@@ -234,8 +264,10 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     // No daemon runs here: hold the screen's place, as a Mac with no squad has it.
                     shell.model.conn = crate::state::Conn::Down { reason: crate::failure::Failure::NoSquads, since: crate::state::Clock::now(), had_snapshot: false };
                     let s = &mut shell.setup;
-                    (s.claude, s.codex, s.doing, s.confirm_install, s.failed, s.squad_step) = (Some(Claude::Missing), Some(false), Doing::Idle, false, None, false);
+                    (s.claude, s.codex, s.doing, s.confirm_install, s.failed, s.squad_step, s.git, s.git_asked) = (Some(Claude::Missing), Some(false), Doing::Idle, false, None, false, Some(true), false);
                     match arg.as_str() {
+                        "nogit" => s.git = Some(false),
+                        "gitasked" => (s.git, s.git_asked) = (Some(false), true),
                         "confirm" => s.confirm_install = true,
                         "installing" => s.doing = Doing::Installing,
                         "signedout" => s.claude = Some(Claude::SignedOut),
@@ -265,8 +297,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     use equipe_core::protocol::routines::{Routine, Schedule};
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                     shell.model.routines = vec![
-                        Routine { id: 1, title: "주간 리포트".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: Some(now - 6 * 86_400), next_run: Some(now + 86_400) },
-                        Routine { id: 2, title: "의존성 점검".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 5, hour: 16, minute: 0 }, on: false, last_run: None, next_run: Some(now + 4 * 86_400) },
+                        Routine { id: 1, title: "Weekly report".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: Some(now - 6 * 86_400), next_run: Some(now + 86_400) },
+                        Routine { id: 2, title: "Dependency check".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 5, hour: 16, minute: 0 }, on: false, last_run: None, next_run: Some(now + 4 * 86_400) },
                     ];
                     cx.notify();
                 }),
@@ -391,6 +423,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let typed = shell.read(cx).turn.fields.get(&(ticket, n)).map(|f| f.read(cx).value().to_string()).unwrap_or_default();
                     eprintln!("akeys typed: {typed:?}");
                 }
+                // `nebiuskey:<file>`: the Nebius card's box holds the key that file
+                // keeps, as if pasted — never on the script's line, never logged.
+                "nebiuskey" => shell.update(cx, |shell, cx| {
+                    if let Ok(key) = std::fs::read_to_string(&arg) {
+                        let input = shell.settings.nebius_key.clone();
+                        input.update(cx, |s, cx| s.set_value(key.trim().to_owned(), window, cx));
+                    }
+                }),
                 // `keys:words` presses each key as the keyboard would, into what has the keyboard.
                 "keys" => {
                     for ch in arg.chars() {

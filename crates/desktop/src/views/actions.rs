@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use equipe_core::t;
 use gpui_kit::*;
 
 use crate::compose::{self, Effect};
@@ -96,18 +97,18 @@ impl Shell {
         let dir = self.squad_folder();
         if !self.endpoint.is_remote() {
             let _ = std::process::Command::new("open").arg(&dir).spawn();
-            self.composer.flash = Some(format!("스쿼드 폴더: {} · /home changes · /home undo [n]", dir.display()));
+            self.composer.flash = Some(t!("actions.home_flash", path = dir.display()));
             return;
         }
         self.sheet = Some(Sheet {
-            title: "스쿼드 폴더".into(),
-            lead: Some(format!("{} 의 {}", self.endpoint.label(), dir.display())),
+            title: t!("actions.home_title").into(),
+            lead: Some(t!("actions.home_where", machine = self.endpoint.label(), path = dir.display())),
             rows: Vec::new(),
             buttons: vec![
-                Button::Copy("경로 복사".into(), dir.display().to_string()),
-                Button::Run("변경 보기".into(), "/home changes".into()),
+                Button::Copy(t!("actions.copy_path").into(), dir.display().to_string()),
+                Button::Run(t!("actions.see_changes").into(), "/home changes".into()),
             ],
-            foot: Some("이 폴더는 다른 기계에 있어 여기서 열 수 없습니다. 무엇이 바뀌었는지는 변경 보기, 되돌리기는 /home undo로 여기서 할 수 있고, 파일을 직접 보려면 그 기계에 ssh로 들어가거나 화면 공유를 쓰세요.".into()),
+            foot: Some(t!("actions.home_remote").into()),
         });
     }
 
@@ -141,9 +142,9 @@ impl Shell {
                 if memory {
                     let dir = equipe_core::squad_memory::dir(&self.squad_folder());
                     sheet.buttons.push(if self.endpoint.is_remote() {
-                        Button::Copy("경로 복사".into(), dir.display().to_string())
+                        Button::Copy(t!("actions.copy_path").into(), dir.display().to_string())
                     } else {
-                        Button::Open("폴더 열기".into(), dir)
+                        Button::Open(t!("actions.open_folder").into(), dir)
                     });
                 }
                 self.confirm = None;
@@ -192,7 +193,15 @@ impl Shell {
         let Some(Ask { then, .. }) = self.confirm.take() else { return };
         if yes {
             match then {
-                Then::Send(commands) => commands.into_iter().for_each(|c| self.send_command(c)),
+                Then::Send(commands) => {
+                    for command in commands {
+                        // Taken off the squad: said under the projects, with the way back.
+                        if let equipe_core::protocol::Command::RemoveProject { path, .. } = &command {
+                            self.board.removed_project = Some(super::sidebar::Removed { name: equipe_core::board::project_name(path), path: path.clone(), at: std::time::Instant::now() });
+                        }
+                        self.send_command(command);
+                    }
+                }
                 Then::Job(job, after) => self.run_job(job, after, cx),
             }
         }
@@ -218,20 +227,20 @@ impl Shell {
     /// The conversation on screen as a Markdown file on this Mac, opened.
     fn export_conversation(&mut self) {
         let Some(member) = self.model.selected_member().map(|m| m.name.clone()) else {
-            self.composer.flash = Some("내보낼 대화가 없습니다".into());
+            self.composer.flash = Some(t!("actions.nothing_to_export").into());
             return;
         };
         let Some(convo) = self.model.viewed().and_then(|id| self.model.convos.get(&id)) else {
-            self.composer.flash = Some("내보낼 대화가 없습니다".into());
+            self.composer.flash = Some(t!("actions.nothing_to_export").into());
             return;
         };
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         self.composer.flash = Some(match export::save(&export::folder(&home), &self.model.squad, &member, convo.transcript.entries()) {
             Ok(path) => {
                 let _ = std::process::Command::new("open").arg(&path).spawn();
-                format!("{} 에 저장했습니다", path.display())
+                t!("actions.exported", path = path.display())
             }
-            Err(err) => format!("내보내지 못했습니다: {err}"),
+            Err(err) => t!("actions.export_failed", err = err),
         });
     }
 }

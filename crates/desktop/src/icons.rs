@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Undo2, Users, X
+        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Minus, Paperclip, Pencil, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Undo2, Users, X
     ]
 );
 
@@ -47,6 +47,12 @@ pub enum Icon {
     Mic,
     Paperclip,
     Plus,
+    /// Zoom out; `Plus` zooms in.
+    Minus,
+    /// A video, to play.
+    Play,
+    /// A permission waiting on the person.
+    Flag,
     Reload,
     Retry,
     Search,
@@ -106,7 +112,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 56] = [
+    pub const ALL: [Icon; 59] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -131,6 +137,9 @@ impl Icon {
         Icon::Mic,
         Icon::Paperclip,
         Icon::Plus,
+        Icon::Minus,
+        Icon::Play,
+        Icon::Flag,
         Icon::Reload,
         Icon::Retry,
         Icon::Search,
@@ -191,6 +200,9 @@ impl Icon {
             Icon::Mic => "icons/mic.svg",
             Icon::Paperclip => "icons/paperclip.svg",
             Icon::Plus => "icons/plus.svg",
+            Icon::Minus => "icons/minus.svg",
+            Icon::Play => "icons/play.svg",
+            Icon::Flag => "icons/flag.svg",
             Icon::Reload => "icons/rotate-cw.svg",
             Icon::Retry => "icons/rotate-ccw.svg",
             Icon::Search => "icons/search.svg",

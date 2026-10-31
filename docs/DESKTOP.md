@@ -230,7 +230,9 @@ over the same control connection; quote every path with single quotes
 **First run on this Mac** (`setup.rs`, `views/setup.rs`, `views/welcome.rs`; T-193 + T-192, joined in
 T-232). With no squad yet the window shows one first-run flow instead of the "run `equipe`
 in a terminal" guide (a far machine still gets that guide); it sits in the one
-`Conn::Down { NoSquads }` place. Step 1, the AI (`views/setup.rs`): no daemon session exists,
+`Conn::Down { NoSquads }` place. Step 0, git, shows only on a Mac without Apple's developer
+tools (git is the stub until they're installed): "Install" asks macOS (`xcode-select
+--install`) and the window watches until git runs; "Next" waits for it. Step 1, the AI (`views/setup.rs`): no daemon session exists,
 so it talks to the tools directly — `claude auth status`, `codex login status` for where each
 stands; the install is Anthropic's own line (`curl -fsSL https://claude.ai/install.sh | bash`),
 shown and run by the app after a yes; sign-ins are `claude auth login` and `equipe login
@@ -245,7 +247,7 @@ the chosen team joining (the PM greets first). A failure stays on the form with 
 (and after 25 s without a board, it says the squad is made but not connected yet); "AI
 connection" goes back to step 1. The service's PATH now carries `~/.local/bin` and Homebrew's,
 so the daemon finds a `claude` installed after it started. `EQUIPE_SCRIPT=setup:<state>` holds
-a state: `missing · confirm · installing · signedout · waiting · ready · failed` (step 1),
+a state: `nogit · gitasked · missing · confirm · installing · signedout · waiting · ready · failed` (step 1),
 `squad · creating · error` (step 2).
 
 **Trying it.** `cargo run -p equipe-desktop --example remote_probe -- user@host[:port]

@@ -56,6 +56,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::Ko,
+        nemotron: None,
     }
 }
 
@@ -228,5 +229,23 @@ async fn open_work_or_the_idle_wake_off_leaves_the_pm_alone() {
     handle.send(Command::SetIdleWake { squad: "acme".into(), hours: 24 });
     let seen = until(&mut events, |e| matches!(e, Event::IdleWakeChanged { hours: 24, .. })).await;
     assert_eq!(idle_wakes(&seen), 0, "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_security_engineer_joining_brings_a_weekly_security_check_once() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&busy_claude(), &home));
+    start(&handle, &mut events, 2, "security", &project).await;
+    let routines = handle.snapshot("acme").await.routines;
+    assert_eq!(routines.len(), 2, "{routines:?}");
+    let check = &routines[1];
+    assert_eq!((check.id, check.when, check.on), (2, Schedule::Weekly { weekday: 4, hour: 10, minute: 0 }, true));
+    assert!(check.next_run.is_some_and(|at| at > now() && at <= now() + 7 * DAY), "{check:?}");
+    // Deleted by the person, it stays deleted, even when security joins again.
+    handle.send(Command::DeleteRoutine { squad: "acme".into(), id: 2 });
+    until(&mut events, |e| matches!(e, Event::RoutinesChanged { routines, .. } if routines.len() == 1)).await;
+    start(&handle, &mut events, 3, "security", &project).await;
+    assert_eq!(handle.snapshot("acme").await.routines.len(), 1);
     handle.shutdown().await;
 }

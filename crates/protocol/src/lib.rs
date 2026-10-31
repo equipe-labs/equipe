@@ -31,6 +31,8 @@ pub mod telemetry;
 pub mod team;
 pub mod transcript;
 pub mod vault;
+pub mod review;
+pub mod words;
 
 pub use transcript::Transcript;
 
@@ -123,6 +125,11 @@ pub struct Lane {
     /// The member's own session.
     pub of: SessionId,
     pub project: Option<String>,
+    /// A conversation the person opened with the PM ([`Command::NewConversation`]):
+    /// listed, kept through restarts, put away only by the person. Else one
+    /// the PM runs beside its work, folded back when idle.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept: bool,
 }
 
 /// A squad's name: lowercase letters, digits and dashes.
@@ -711,10 +718,23 @@ pub enum Command {
     /// The project the person is looking at, by name — new work goes there
     /// unless they say otherwise; `None`: all of the squad's projects.
     Focus { squad: SquadName, project: Option<String> },
+    /// The person opens a new conversation with the squad's PM — its own,
+    /// beside the PM's others — about `project` (`None`: the whole squad).
+    /// `session` names it, as for [`Command::Start`]. Answered with
+    /// [`Event::LaneOpened`], `kept`.
+    NewConversation { squad: SquadName, session: SessionId, project: Option<String> },
+    /// A conversation with the PM moves to another project (`None`: the
+    /// whole squad): what is said there from now on is about it.
+    MoveConversation { session: SessionId, project: Option<String> },
+    /// A conversation with the PM is put away: it leaves the list.
+    CloseConversation { session: SessionId },
     /// The person adds a project to the squad: a folder on the daemon's
     /// machine (a git repository; one with no history yet is started as one).
     /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
     AddProject { squad: SquadName, path: PathBuf },
+    /// The person takes a project off the squad: its folder, tickets and
+    /// branches stay where they are. Answered with [`Event::ProjectsChanged`].
+    RemoveProject { squad: SquadName, path: PathBuf },
     /// The person makes one of the squad's projects its HQ — where the
     /// operations across its products live — or none (`None`). Answered with
     /// [`Event::ProjectsChanged`].
@@ -844,6 +864,11 @@ pub enum Command {
     /// `id`s): only the ones it may remove, looked at again first. Answered by
     /// [`Event::DiskCleaned`], then a fresh [`Event::DiskReport`].
     DiskClean { ids: Vec<String> },
+    /// Clear one item of the daemon's last look that isn't equipe's (a cache
+    /// of the Mac's, a project's build output) with the command that look
+    /// lists for it — never a command the screen sends — as the person said
+    /// yes to. Answered by [`Event::DiskCleaned`], then a fresh report.
+    DiskRun { id: String },
     /// Where each engine stands on the daemon's machine: answered, to every
     /// screen, by [`Event::Engines`].
     Engines,
@@ -861,6 +886,18 @@ pub enum Command {
     },
     /// Stop the sign-in under way: answered by [`SignInStep::Cancelled`].
     SignInCancel { engine: Engine },
+    /// Install `engine`'s command-line tool on the daemon's machine with its
+    /// maker's own installer (no Node needed), as the person asked from a
+    /// screen. Answered, to every screen, by [`Event::EngineInstall`], then
+    /// [`Event::Engines`].
+    InstallEngine { engine: Engine },
+    /// Save the person's Nebius Token Factory key on the daemon's machine
+    /// (`None`: forget it), for members and reviews to use from now on.
+    /// Answered, to every screen, by [`Event::Nebius`] — never with the key.
+    SetNebiusKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
     /// Sign `engine` out with its own tool (`codex logout`). Claude Code's
     /// login is the person's own: equipe never touches it. Answered by
     /// [`Event::Engines`].
@@ -896,6 +933,33 @@ pub enum Command {
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
     Design { squad: SquadName },
+}
+
+/// Where the daemon's Nebius Token Factory key comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NebiusKey {
+    /// None: members can't run on Nebius, nor reviews.
+    #[default]
+    None,
+    /// `NEBIUS_API_KEY` in the daemon's environment.
+    Environment,
+    /// Saved on the daemon's machine from a screen or `equipe login nebius`.
+    Saved,
+}
+
+/// Nebius Token Factory on the daemon's machine ([`Event::Nebius`]): never the key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NebiusStatus {
+    pub key: NebiusKey,
+    /// The Codex CLI is installed: the agent members on Nebius run on.
+    pub codex: bool,
+    /// The model members start on, when set (`EQUIPE_NEBIUS_MODEL`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The provider's name: `Nebius Token Factory`, or another server's host.
+    #[serde(default)]
+    pub provider: String,
 }
 
 /// Where an engine stands on the daemon's machine ([`Event::Engines`]).
@@ -969,6 +1033,21 @@ pub enum SignInStep {
     },
     /// Stopped before it finished.
     Cancelled,
+}
+
+/// How installing an engine's tool goes ([`Event::EngineInstall`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InstallStep {
+    /// The installer runs.
+    Running,
+    /// Installed: the engine is there to sign in.
+    Done,
+    Failed {
+        /// The installer's last words, when it said any.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
+    },
 }
 
 /// Why a sign-in didn't finish.
@@ -1275,7 +1354,16 @@ pub enum Event {
     /// The session just started is a lane of member `of`: its conversation
     /// about `project` (`None`: the whole squad's), running beside the member's
     /// others — one turn at a time in each, any number of them at once.
-    LaneOpened { session: SessionId, of: SessionId, project: Option<String> },
+    LaneOpened {
+        session: SessionId,
+        of: SessionId,
+        project: Option<String>,
+        /// A conversation the person opened ([`Lane::kept`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kept: bool,
+    },
+    /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
+    LaneMoved { session: SessionId, project: Option<String> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
     /// in `workspace` when it edits.
     WorkStarted {
@@ -1290,6 +1378,9 @@ pub enum Event {
     WorkEnded { session: SessionId, ticket: TicketId },
     /// A ticket was created or changed. Carries the whole ticket.
     TicketChanged { squad: SquadName, ticket: Ticket },
+    /// An NVIDIA Nemotron model on Nebius Token Factory read a handed-in
+    /// ticket's diff ([`review::CodeReview`]): what to look at before accepting.
+    CodeReviewed { squad: SquadName, review: review::CodeReview },
     /// A ticket's record, oldest first ([`Command::TicketHistory`]).
     TicketHistory { squad: SquadName, ticket: TicketId, entries: Vec<TicketEntry> },
     /// The squad's default mode, or one member's, changed. `mode: None`: the
@@ -1455,12 +1546,30 @@ pub enum Event {
     /// refused for it — `action` `close`: the screen offers to let it, at
     /// one click (closing the tab), or keep using it.
     BrowserWants { squad: Option<SquadName>, lane: String, page: u64, action: String },
-    /// The member handed `what` to a subagent, which works alongside it.
-    SubagentStarted { session: SessionId, id: String, what: String },
+    /// The member handed `what` to a subagent, which works alongside it;
+    /// `brief`, the whole of what it was asked (an older daemon: empty).
+    SubagentStarted {
+        session: SessionId,
+        id: String,
+        what: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        brief: String,
+    },
     /// A subagent's latest step.
     SubagentStep { session: SessionId, id: String, step: String },
-    /// A subagent handed back what it found.
-    SubagentEnded { session: SessionId, id: String },
+    /// A step of a subagent's, done — a tool use with its outcome — or what
+    /// it said between them: for a screen to look inside it. Never part of the
+    /// member's conversation.
+    SubagentEntry { session: SessionId, id: String, entry: Entry },
+    /// A subagent handed back what it found (`result`), or `failed`.
+    SubagentEnded {
+        session: SessionId,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failed: bool,
+    },
     /// What follows in the conversation is about `project` (`None`: the whole
     /// squad) — a message of the person's sent looking at it, news of its
     /// ticket, or a ticket's work. See [`transcript::scope`].
@@ -1582,6 +1691,11 @@ pub enum Event {
     },
     /// A sign-in to `engine` moved on ([`Command::SignIn`]).
     SignIn { engine: Engine, step: SignInStep },
+    /// Installing `engine`'s tool moved on ([`Command::InstallEngine`]).
+    EngineInstall { engine: Engine, step: InstallStep },
+    /// Nebius Token Factory on the daemon's machine: sent with
+    /// [`Event::Engines`], and when its key is saved or forgotten.
+    Nebius { status: NebiusStatus },
     /// Moves between engines equipe proposes — or made on its own and tells
     /// of (`applied`), for the person to keep or undo.
     EngineProposed { squad: SquadName, proposal: engines::Proposal },
@@ -1644,6 +1758,7 @@ impl Event {
     pub fn squad(&self) -> Option<&str> {
         match self {
             Event::TicketChanged { squad, .. }
+            | Event::CodeReviewed { squad, .. }
             | Event::TicketHistory { squad, .. }
             | Event::ModeChanged { squad, .. }
             | Event::ApprovalRequested { squad, .. }
@@ -1691,6 +1806,7 @@ impl Event {
             | Event::Suggestion { session, .. }
             | Event::SteerQueued { session, .. }
             | Event::LaneOpened { session, .. }
+            | Event::LaneMoved { session, .. }
             | Event::Steered { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
@@ -1699,6 +1815,7 @@ impl Event {
             | Event::CompactFailed { session, .. }
             | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
+            | Event::SubagentEntry { session, .. }
             | Event::SubagentEnded { session, .. }
             | Event::TurnEnded { session, .. }
             | Event::BranchLanded { session, .. }
@@ -1709,6 +1826,7 @@ impl Event {
             | Event::Output { session, .. } => Some(*session),
             Event::Error { session, .. } => *session,
             Event::TicketChanged { .. }
+            | Event::CodeReviewed { .. }
             | Event::TicketHistory { .. }
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
@@ -1754,7 +1872,9 @@ impl Event {
             | Event::DiskCleaned { .. } => None,
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
-            | Event::SignIn { .. } => None,
+            | Event::Nebius { .. }
+            | Event::SignIn { .. }
+            | Event::EngineInstall { .. } => None,
         }
     }
 
@@ -1768,7 +1888,9 @@ impl Event {
                 | Event::DiskReport { .. }
                 | Event::DiskCleaned { .. }
                 | Event::Engines { .. }
+                | Event::Nebius { .. }
                 | Event::SignIn { .. }
+                | Event::EngineInstall { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
@@ -1942,7 +2064,7 @@ pub struct SessionInfo {
 }
 
 /// A subagent at work for a member, for a screen that attaches mid-turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentInfo {
     /// As its events name it.
     pub id: String,
@@ -1954,6 +2076,12 @@ pub struct SubagentInfo {
     /// How long it had been at it when the snapshot was taken, in seconds.
     #[serde(default)]
     pub secs: u64,
+    /// The whole of what it was asked.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub brief: String,
+    /// Its latest steps and words ([`Event::SubagentEntry`]), oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<Entry>,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -2046,6 +2174,9 @@ pub struct Snapshot {
     /// The disk's room, when it is short ([`disk::DiskLevel::Low`] or worse).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<disk::DiskStatus>,
+    /// Nemotron's reviews of the tickets in review ([`Event::CodeReviewed`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<review::CodeReview>,
 }
 
 #[cfg(test)]
@@ -2317,6 +2448,16 @@ mod tests {
             hq: Some("/repo".into()),
             routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
+            reviews: vec![review::CodeReview {
+                ticket: 1,
+                model: "nvidia/nemotron-test".into(),
+                verdict: review::ReviewVerdict::Risky,
+                summary: "The check is skipped on error.".into(),
+                risks: vec![review::ReviewPoint { file: "src/auth.rs".into(), line: Some(42), why: "An error lets the request through.".into() }],
+                missing_tests: vec!["A failed lookup is refused.".into()],
+                truncated: true,
+                at: 3,
+            }],
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
             questions: vec![decide::QuestionSet {
@@ -2401,7 +2542,7 @@ mod tests {
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
                 effort: Some("high".into()),
-                subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42 }],
+                subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42, ..Default::default() }],
                 compacting: None,
             }],
             allowed: vec!["Bash(npm install:*)".into()],
@@ -2553,7 +2694,7 @@ mod tests {
         let mut info: SessionInfo = serde_json::from_str(old).unwrap();
         assert!(info.subagents.is_empty(), "an older daemon's session has none");
         assert!(serde_json::to_value(&info).unwrap().get("subagents").is_none(), "none: the wire as before");
-        info.subagents.push(SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: None, secs: 3 });
+        info.subagents.push(SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: None, secs: 3, ..Default::default() });
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["subagents"], json!([{ "id": "toolu_1", "what": "Read the logs", "secs": 3 }]));
         assert_eq!(serde_json::from_value::<SessionInfo>(json).unwrap(), info);

@@ -36,10 +36,10 @@ pub(super) fn section(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -
             this.send_command(Command::SetSignalOn { squad, project: project.clone(), name: name.clone(), on });
         }, cx);
         let control = h_flex().gap_3().items_center().child(h_flex().w(px(TREND_W)).flex_none().justify_end().items_center().children(trend(p, s))).child(flip);
-        lines.push(Line::new(s.name.clone(), "").label_el(label(p, s, now)).words(format!("{} {} {} signal metric 신호 지표", s.project, s.what, s.expect)).control(control));
+        lines.push(Line::new(s.name.clone(), "").label_el(label(p, s, now)).words(format!("{} {} {} signal metric", s.project, s.what, s.expect)).control(control));
     }
     if lines.is_empty() {
-        lines.push(Line::new(t!("settings.no_signals"), t!("settings.no_signals_desc")).words("signal metric posthog app store 신호 지표"));
+        lines.push(Line::new(t!("settings.no_signals"), t!("settings.no_signals_desc")).words("signal metric posthog app store"));
     }
     Section::new(t!("settings.section_signals"), lines).foot(t!("settings.signals_foot"))
 }

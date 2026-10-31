@@ -30,14 +30,14 @@ never have the person run a command to type it. A website sign-in is `sign_in`, 
         "inputSchema": {
             "type": "object",
             "properties": {
-                "why": { "type": "string", "description": "What it is for, in a line in the person's language: \"NAS 매일 자동 수집에 쓸 NAS 로그인\"." },
+                "why": { "type": "string", "description": "What it is for, in a line in the person's language: \"NAS login for the daily automatic import from the NAS\"." },
                 "fields": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
                             "key": { "type": "string", "description": "The key it is saved under: NAS_USER (uppercase, digits, _)." },
-                            "label": { "type": "string", "description": "How the card names it, in the person's language: \"NAS 아이디\"." },
+                            "label": { "type": "string", "description": "How the card names it, in the person's language: \"NAS username\"." },
                             "secret": { "type": "boolean", "description": "Typed hidden: a password, key or token. False for a username." },
                         },
                         "required": ["key", "label"],

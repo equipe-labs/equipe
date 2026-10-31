@@ -19,6 +19,8 @@ pub enum Stage {
     List,
     /// "These go": the items picked, before the person says yes.
     Confirm,
+    /// One that isn't equipe's, cleared by its command once the person says yes.
+    ConfirmRun(String),
     /// The daemon is giving them back.
     Cleaning,
     /// What it gave back.
@@ -63,6 +65,8 @@ pub struct DiskUi {
     pub dismissed: Option<DiskLevel>,
     /// The command just copied, and when ("복사됨" for a moment).
     pub copied: Option<(String, Instant)>,
+    /// What equipe just gave back on its own, to say once.
+    pub auto: Option<u64>,
 }
 
 impl DiskUi {
@@ -83,6 +87,12 @@ impl DiskUi {
                 // What was picked and is still there stays picked.
                 self.picked.retain(|id| report.items.iter().any(|i| i.safe && &i.id == id));
                 self.report = Some(report.clone());
+                true
+            }
+            // Given back on equipe's own: said once, the panel left as it is.
+            Event::DiskCleaned { cleaned } if cleaned.auto => {
+                self.status = Some(cleaned.status.clone());
+                self.auto = Some(cleaned.freed);
                 true
             }
             Event::DiskCleaned { cleaned } => {
@@ -146,6 +156,27 @@ impl DiskUi {
     pub fn ask_all(&mut self) {
         let ids: Vec<String> = self.report.iter().flat_map(|r| r.items.iter().filter(|i| i.safe).map(|i| i.id.clone())).collect();
         self.ask(&ids);
+    }
+
+    /// "정리…" on one that isn't equipe's: its command, asked first.
+    pub fn ask_run(&mut self, id: &str) {
+        let listed = self.report.as_ref().is_some_and(|r| r.items.iter().any(|i| i.id == id && i.command.is_some()));
+        if listed {
+            self.stage = Stage::ConfirmRun(id.to_owned());
+        }
+    }
+
+    /// Yes to its command: the daemon runs the one its look lists.
+    pub fn confirm_run(&mut self) -> Vec<Command> {
+        let Stage::ConfirmRun(id) = &self.stage else { return Vec::new() };
+        let id = id.clone();
+        self.stage = Stage::Cleaning;
+        vec![Command::DiskRun { id }]
+    }
+
+    /// What equipe gave back on its own, once.
+    pub fn take_auto(&mut self) -> Option<u64> {
+        self.auto.take().filter(|freed| *freed > 0)
     }
 
     /// Back from the sheet, or from what was given back.
@@ -255,6 +286,32 @@ mod tests {
     }
 
     #[test]
+    fn what_isnt_equipes_runs_its_listed_command_only_after_a_yes() {
+        let mut ui = DiskUi::default();
+        let mut npm = DiskItem { id: "npm".into(), group: DiskGroup::Caches, kind: DiskKind::Npm, label: "~/.npm/_cacache".into(), path: "/u/.npm/_cacache".into(), bytes: 3_000_000_000, partial: false, safe: false, why: DiskWhy::NotEquipes, squad: None, ticket: None, command: Some("npm cache clean --force".into()) };
+        let shot = DiskItem { id: "shots".into(), command: None, ..npm.clone() };
+        npm.id = "npm".into();
+        ui.report = Some(DiskReport { items: vec![npm, shot], ..Default::default() });
+        ui.ask_run("shots");
+        assert_eq!(ui.stage, Stage::List, "no command listed: nothing to run");
+        assert!(ui.confirm_run().is_empty(), "never without the sheet's yes");
+        ui.ask_run("npm");
+        assert_eq!(ui.stage, Stage::ConfirmRun("npm".into()));
+        assert_eq!(ui.confirm_run(), vec![Command::DiskRun { id: "npm".into() }]);
+        assert_eq!(ui.stage, Stage::Cleaning);
+    }
+
+    #[test]
+    fn what_equipe_gave_back_on_its_own_is_said_once_and_the_panel_left_alone() {
+        let mut ui = DiskUi { stage: Stage::Confirm, ..Default::default() };
+        let auto = DiskCleaned { freed: 18_000_000_000, removed: vec!["w".into()], auto: true, ..Default::default() };
+        assert!(ui.on_event(&Event::DiskCleaned { cleaned: auto }));
+        assert_eq!(ui.stage, Stage::Confirm, "the person's own sheet stays");
+        assert_eq!(ui.take_auto(), Some(18_000_000_000));
+        assert_eq!(ui.take_auto(), None);
+    }
+
+    #[test]
     fn fixes_come_most_room_first_equipes_before_the_persons() {
         let fixes = fixes(&report());
         let kinds: Vec<FixKind> = fixes.iter().map(|f| f.kind).collect();
@@ -278,7 +335,7 @@ mod tests {
         assert_eq!(total, 9_000_000_000);
         assert_eq!(ui.confirm(), vec![Command::DiskClean { ids: vec!["wt-build".into()] }]);
         assert_eq!(ui.stage, Stage::Cleaning);
-        let cleaned = DiskCleaned { freed: 9_000_000_000, removed: vec!["wt-build".into()], skipped: vec![], status: DiskStatus { level: DiskLevel::Low, free: 13_200_000_000, ..Default::default() } };
+        let cleaned = DiskCleaned { freed: 9_000_000_000, removed: vec!["wt-build".into()], skipped: vec![], status: DiskStatus { level: DiskLevel::Low, free: 13_200_000_000, ..Default::default() }, auto: false };
         ui.on_event(&Event::DiskCleaned { cleaned: cleaned.clone() });
         assert_eq!(ui.stage, Stage::Done(cleaned));
         assert_eq!(ui.status.as_ref().map(|s| s.level), Some(DiskLevel::Low));

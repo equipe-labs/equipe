@@ -31,9 +31,9 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
@@ -99,7 +99,7 @@ jobs:
     concurrency:
       group: release-desktop-bin-${{ matrix.arch }}
       cancel-in-progress: true
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       matrix:
         arch: [aarch64, x86_64]
@@ -140,7 +140,7 @@ jobs:
       group: release-desktop-dmg
       cancel-in-progress: true
     needs: desktop-bin
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
       MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -207,9 +207,10 @@ jobs:
           "$mount/equipe.app/Contents/Helpers/equipe" --version
           codesign --verify --deep --strict "$mount/equipe.app"
           if [ -n "$APPLE_API_KEY" ] && [ -n "$MACOS_CERTIFICATE" ]; then
-            xcrun stapler validate "$mount/equipe.app"
+            # Apple's ticket service drops a connection now and then: a few tries.
+            for try in 1 2 3 4 5; do xcrun stapler validate "$mount/equipe.app" && break; [ "$try" = 5 ] && exit 1; sleep $((try * 15)); done
             spctl -a -vv -t exec "$mount/equipe.app"
-            xcrun stapler validate dist/equipe.dmg
+            for try in 1 2 3 4 5; do xcrun stapler validate dist/equipe.dmg && break; [ "$try" = 5 ] && exit 1; sleep $((try * 15)); done
           fi
           test -L "$mount/Applications"
           hdiutil detach "$mount"
@@ -225,7 +226,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
           - os: ubuntu-24.04
     runs-on: ${{ matrix.os }}
     steps:

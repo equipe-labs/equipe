@@ -25,7 +25,7 @@ use super::icons;
 use crate::board::{self as rules, Menu, Tab};
 use crate::motion;
 use crate::state::{Need, short_span, status_word};
-use crate::theme::{GAP, MONO, Palette, R_MD, SMALL, look};
+use crate::theme::{GAP, ICON_SM, MONO, Palette, R_MD, SMALL, look};
 use crate::tickets::{self, Column, Drop, Layout, Sheet, Why};
 use crate::tips::TipExt as _;
 use crate::Shell;
@@ -1189,7 +1189,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                 .rounded(px(3.))
                 .border_1()
                 .border_color(if chosen { p.accent } else { p.hair })
-                .when(chosen, |c| c.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓"))
+                .when(chosen, |c| c.bg(p.accent).child(crate::icons::icon(crate::icons::Icon::Check, 10., p.on_accent)))
                 .when(!chosen, |c| c.invisible().group_hover(group.clone(), |s| s.visible()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
@@ -1303,7 +1303,7 @@ pub fn triage_banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                 .cursor_pointer()
                 .hover(move |s| s.bg(p.wash))
                 .on_click(cx.listener(|this, _, _, cx| this.set_triage(false, cx)))
-                .child("←")
+                .child(crate::icons::icon(crate::icons::Icon::ArrowLeft, ICON_SM, p.text2))
                 .child(t!("tickets.triage_back"))
                 .child(div().flex_1())
                 .child(kbd(p, "A"))
@@ -1335,7 +1335,7 @@ pub fn triage_banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(t!("tickets.triage_banner", n = n)))
             .child(div().text_color(p.text2).child(t!("tickets.triage_banner_hint")))
             .child(div().flex_1())
-            .child(div().text_color(p.accent).child("→"))
+            .child(crate::icons::icon(crate::icons::Icon::ArrowRight, ICON_SM, p.accent))
             .into_any_element()
     })
 }
@@ -1830,7 +1830,7 @@ pub fn edit_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                         .child(div().truncate().text_color(p.text).child(label))
                         .children(hint.map(|h| div().text_size(px(11.5)).line_height(px(15.)).text_color(p.muted).child(h))),
                 )
-                .child(div().w(px(14.)).flex_none().text_color(p.accent).child(if on { "✓" } else { "" }))
+                .child(div().w(px(14.)).flex_none().flex().items_center().children(on.then(|| crate::icons::icon(crate::icons::Icon::Check, 12., p.accent))))
                 .children(number.map(|n| div().w(px(14.)).flex_none().text_size(px(11.)).text_color(p.muted).child(n.to_string())))
                 .into_any_element()
         })
@@ -1978,7 +1978,7 @@ pub fn views_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> 
             .text_size(px(SMALL))
             .cursor_pointer()
             .hover(move |s| s.bg(p.wash))
-            .child(div().w(px(12.)).text_color(p.accent).child(if on { "✓" } else { "" }))
+            .child(div().w(px(12.)).flex_none().flex().items_center().children(on.then(|| crate::icons::icon(crate::icons::Icon::Check, 12., p.accent))))
             .child(div().flex_1().truncate().child(label))
     };
     let mut rows: Vec<AnyElement> = vec![item("view-all".into(), t!("tickets.all_tickets").into(), menu == Menu::All)
@@ -1998,19 +1998,14 @@ pub fn views_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> 
                 }))
                 .when(kept, |r| {
                     r.child(
-                        div()
-                            .id(SharedString::from(format!("view-forget-{at}")))
-                            .px_1()
-                            .rounded(px(4.))
-                            .text_color(p.muted)
+                        crate::ui::x_box(SharedString::from(format!("view-forget-{at}")), p.muted)
                             .invisible()
                             .group_hover(group.clone(), |s| s.visible())
                             .hover(move |s| s.bg(p.hair))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.board_forget_view(at, cx);
-                            }))
-                            .child("×"),
+                            })),
                     )
                 })
                 .into_any_element(),
@@ -2132,11 +2127,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .child(div().size(px(13.)).flex_none().rounded(px(3.)).border_1().border_color(p.muted))
                 .child(div().flex_1().min_w_0().truncate().text_color(p.text).child(c.clone()))
                 .child(
-                    div()
-                        .id(("criterion-x", i))
-                        .px_1()
-                        .rounded(px(4.))
-                        .text_color(p.muted)
+                    crate::ui::x_box(("criterion-x", i), p.muted)
                         .cursor_pointer()
                         .invisible()
                         .group_hover(SharedString::from(format!("criterion-{i}")), |s| s.visible())
@@ -2148,8 +2139,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                                 s.criteria.remove(i);
                             }
                             cx.notify();
-                        }))
-                        .child("×"),
+                        })),
                 )
                 .into_any_element()
         })
@@ -2345,11 +2335,7 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
             .child(div().flex_1().min_w_0().truncate().text_color(p.text2).child(found.map(|d| d.title.clone()).unwrap_or_default()))
             .when(removable && can, |r| {
                 r.child(
-                    div()
-                        .id(SharedString::from(format!("prop-unlink-{id}-{dep}")))
-                        .px_1()
-                        .rounded(px(4.))
-                        .text_color(p.muted)
+                    crate::ui::x_box(SharedString::from(format!("prop-unlink-{id}-{dep}")), p.muted)
                         .invisible()
                         .group_hover(SharedString::from(format!("prop-link-{dep}")), |s| s.visible())
                         .hover(move |s| s.bg(p.hair))
@@ -2358,8 +2344,7 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
                             let Some(t) = this.model.tickets.iter().find(|t| t.id == id) else { return };
                             let deps: Vec<TicketId> = t.depends_on.iter().copied().filter(|d| *d != dep).collect();
                             this.tickets_edit(vec![id], TicketEdit { depends_on: Some(deps), ..Default::default() }, cx);
-                        }))
-                        .child("×"),
+                        })),
                 )
             })
             .into_any_element()

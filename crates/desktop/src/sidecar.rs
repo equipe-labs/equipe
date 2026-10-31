@@ -103,18 +103,18 @@ fn strip_ansi(line: &str) -> String {
 /// Why it failed, as the last thing it said.
 fn reason(job: &Job, output: &str, code: i32) -> String {
     if code == 127 {
-        return "그 기계에서 equipe를 찾지 못했습니다 — 설치하거나 `equipe update` 하세요".into();
+        return equipe_core::t!("sidecar.no_equipe_there").into();
     }
     let said = lines(output);
     // An `equipe` that predates the command.
     if said.iter().any(|l| l.contains("unrecognized subcommand") || l.contains("unexpected argument")) {
-        return format!("그 기계의 equipe가 오래되어 `{}`을 모릅니다 — `equipe update` 후 `equipe daemon restart`", job.name());
+        return equipe_core::t!("sidecar.too_old", command = job.name());
     }
     said.iter()
         .rev()
         .find(|l| !l.starts_with("Usage:") && !l.starts_with("For more information") && !l.starts_with("tip:"))
         .map(|l| l.trim_start_matches('✗').trim().to_owned())
-        .unwrap_or_else(|| format!("{} 종료 코드 {code}", job.name()))
+        .unwrap_or_else(|| equipe_core::t!("sidecar.exit_code", command = job.name(), code = code))
 }
 
 /// Run `job` on the daemon's machine: its lines, or why not. Blocks — run it off the UI thread.
@@ -123,13 +123,13 @@ pub fn run(endpoint: &Endpoint, job: &Job) -> Result<Vec<String>, String> {
     let (output, code) = match endpoint {
         Endpoint::Local { .. } => {
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-            let cli = install::find_cli(&home, std::env::var_os("PATH").as_deref()).ok_or("이 맥에서 equipe를 찾지 못했습니다")?;
+            let cli = install::find_cli(&home, std::env::var_os("PATH").as_deref()).ok_or_else(|| equipe_core::t!("sidecar.no_equipe_here").to_owned())?;
             let out = std::process::Command::new(cli)
                 .args(&args)
                 .env("EQUIPE_NO_OPEN", "1")
                 .stdin(std::process::Stdio::null())
                 .output()
-                .map_err(|e| format!("{}을 실행하지 못했습니다: {e}", job.name()))?;
+                .map_err(|e| equipe_core::t!("sidecar.couldnt_run", command = job.name(), err = e))?;
             let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
             (text, out.status.code().unwrap_or(1))
         }
@@ -182,7 +182,7 @@ mod tests {
         let job = Job::Home { squad: "a".into(), words: vec![] };
         assert_eq!(reason(&job, "  The squad's folder isn't made yet\n", 1), "The squad's folder isn't made yet");
         assert_eq!(reason(&job, "\n✗ shop doesn't work on nope\n", 1), "shop doesn't work on nope");
-        assert!(reason(&job, "", 127).contains("찾지 못했습니다"));
+        assert!(reason(&job, "", 127).contains("찾지 못했어요"));
         assert!(reason(&job, "error: unrecognized subcommand 'squad'\n\nUsage: equipe\n", 2).contains("equipe update"));
         assert_eq!(reason(&job, "", 3), "equipe home 종료 코드 3");
     }

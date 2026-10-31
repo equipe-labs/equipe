@@ -100,24 +100,9 @@ pub fn profile_of(lane: &str) -> Option<&str> {
 
 /// Titles that say nothing of the page: a wall before it, or a page on its
 /// way. The tab reads as its site instead.
-const NOTHING_TITLES: &[&str] = &[
-    "just a moment",
-    "잠시만 기다리십시오",
-    "잠시만 기다려 주십시오",
-    "잠시만 기다려주세요",
-    "un instant",
-    "einen moment",
-    "un momento",
-    "しばらくお待ちください",
-    "请稍候",
-    "請稍候",
-    "attention required! | cloudflare",
-    "loading",
-    "redirecting",
-    "please wait",
-    "untitled",
-    "about:blank",
-];
+fn nothing_titles() -> impl Iterator<Item = &'static &'static str> {
+    ["attention required! | cloudflare", "untitled", "about:blank"].iter().chain(crate::i18n::every("match.nothing_titles"))
+}
 
 /// What a tab reads as: its title, or its site where the title says nothing
 /// (none yet, an address, a wall's "Just a moment…").
@@ -128,7 +113,7 @@ pub fn tab_title(page: &BrowserPage) -> String {
         || title.starts_with("http://")
         || title.starts_with("https://")
         || page.check == Some(HumanCheck::Challenge)
-        || (bare.chars().count() <= 40 && NOTHING_TITLES.iter().any(|t| bare.starts_with(t)));
+        || (bare.chars().count() <= 40 && nothing_titles().any(|t| bare.starts_with(t)));
     if says_nothing { site(&page.url).unwrap_or_default() } else { title.to_owned() }
 }
 
