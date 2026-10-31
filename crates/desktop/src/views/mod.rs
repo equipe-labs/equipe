@@ -40,4 +40,5 @@ pub mod terminal;
 pub mod ticket_card;
 pub mod tickets;
 pub mod visuals;
+pub mod welcome;
 pub mod yourturn;
