@@ -382,8 +382,8 @@
   "chat.news_count.one": "{count} nouvelle",
   "chat.news_count.other": "{count} nouvelles",
   "chat.news_disk_clean": "Nettoyer",
-  "chat.no_member_text": "Lancez `equipe` dans un terminal pour démarrer une escouade.",
-  "chat.no_member_title": "Aucun membre à qui parler pour l'instant",
+  "chat.no_member_text": "Connectez une IA et le PM se met au travail tout de suite.",
+  "chat.no_member_title": "Personne ne travaille encore",
   "chat.open_ticket": "Ouvrir à côté",
   "chat.output_before.one": "… {count} ligne précédente",
   "chat.output_before.other": "… {count} lignes précédentes",
@@ -2214,5 +2214,6 @@
   "settings.dictation_auto": "Automatique ({lang})",
   "settings.dictation_not_here": "Absent de ce Mac",
   "settings.dictation_add": "Ajouter une langue",
-  "composer.dictation_no_model": "Ce Mac n’a pas de modèle de dictée en {lang}. Ajoutez-le ou changez de langue dans Réglages › Général › Langue de dictée."
+  "composer.dictation_no_model": "Ce Mac n’a pas de modèle de dictée en {lang}. Ajoutez-le ou changez de langue dans Réglages › Général › Langue de dictée.",
+  "chat.connect_ai": "Connecter une IA"
 }

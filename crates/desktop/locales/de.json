@@ -382,8 +382,8 @@
   "chat.news_count.one": "{count} Neuigkeit",
   "chat.news_count.other": "{count} Neuigkeiten",
   "chat.news_disk_clean": "Aufräumen",
-  "chat.no_member_text": "Führe `equipe` in einem Terminal aus, um einen Squad zu starten.",
-  "chat.no_member_title": "Noch kein Mitglied zum Sprechen",
+  "chat.no_member_text": "Verbinde eine KI, und der PM legt sofort los.",
+  "chat.no_member_title": "Noch arbeitet niemand",
   "chat.open_ticket": "Daneben öffnen",
   "chat.output_before.one": "… {count} frühere Zeile",
   "chat.output_before.other": "… {count} frühere Zeilen",
@@ -2214,5 +2214,6 @@
   "settings.dictation_auto": "Automatisch ({lang})",
   "settings.dictation_not_here": "Nicht auf diesem Mac",
   "settings.dictation_add": "Sprache hinzufügen",
-  "composer.dictation_no_model": "Auf diesem Mac fehlt das Diktiermodell für {lang}. Füge es hinzu oder wähle eine andere unter Einstellungen › Allgemein › Diktiersprache."
+  "composer.dictation_no_model": "Auf diesem Mac fehlt das Diktiermodell für {lang}. Füge es hinzu oder wähle eine andere unter Einstellungen › Allgemein › Diktiersprache.",
+  "chat.connect_ai": "KI verbinden"
 }

@@ -382,8 +382,8 @@
   "chat.news_count.one": "{count} update",
   "chat.news_count.other": "{count} updates",
   "chat.news_disk_clean": "Clean up",
-  "chat.no_member_text": "Run `equipe` in a terminal to start a squad.",
-  "chat.no_member_title": "No member to talk to yet",
+  "chat.no_member_text": "Connect an AI and the PM starts right away.",
+  "chat.no_member_title": "No one is working yet",
   "chat.open_ticket": "Open beside",
   "chat.output_before.one": "… {count} earlier line",
   "chat.output_before.other": "… {count} earlier lines",
@@ -2214,5 +2214,6 @@
   "settings.dictation_auto": "Automatic ({lang})",
   "settings.dictation_not_here": "Not on this Mac",
   "settings.dictation_add": "Add language",
-  "composer.dictation_no_model": "This Mac has no {lang} dictation model. Add it, or pick another, in Settings › General › Dictation language."
+  "composer.dictation_no_model": "This Mac has no {lang} dictation model. Add it, or pick another, in Settings › General › Dictation language.",
+  "chat.connect_ai": "Connect an AI"
 }

@@ -371,8 +371,8 @@
   "chat.member_title": "직접 말을 걸 수 있어요",
   "chat.news_count.other": "소식 {count}개",
   "chat.news_disk_clean": "정리하기",
-  "chat.no_member_text": "터미널에서 `equipe`를 실행해 스쿼드를 시작하세요.",
-  "chat.no_member_title": "대화할 멤버가 아직 없어요",
+  "chat.no_member_text": "AI를 하나 연결하면 PM이 바로 일을 시작해요.",
+  "chat.no_member_title": "아직 일하는 멤버가 없어요",
   "chat.open_ticket": "옆에 열기",
   "chat.output_before.other": "… 앞의 {count}줄 생략",
   "chat.output_less": "접기",
@@ -2161,5 +2161,6 @@
   "settings.dictation_auto": "자동 ({lang})",
   "settings.dictation_not_here": "이 맥에 없음",
   "settings.dictation_add": "언어 추가",
-  "composer.dictation_no_model": "이 맥에 {lang} 받아쓰기 모델이 없어요. 설정 › 일반 › 음성 입력 언어에서 추가하거나 바꿔 주세요."
+  "composer.dictation_no_model": "이 맥에 {lang} 받아쓰기 모델이 없어요. 설정 › 일반 › 음성 입력 언어에서 추가하거나 바꿔 주세요.",
+  "chat.connect_ai": "AI 연결하기"
 }

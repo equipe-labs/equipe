@@ -461,7 +461,10 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let p = shell.palette;
     let model = &shell.model;
     let body = match model.selected_member() {
-        None => empty(p, t!("chat.no_member_title"), t!("chat.no_member_text")).into_any_element(),
+        // Nobody yet: an AI to connect, and the PM starts on its own once one is.
+        None => empty(p, t!("chat.no_member_title"), t!("chat.no_member_text"))
+            .child(crate::ui::button(p, "connect-ai", crate::ui::Kind::Primary, t!("chat.connect_ai")).icon(Icon::Plug).on_click(cx.listener(|this, _, window, cx| this.open_settings(Some(crate::settings::Category::Engines), window, cx))))
+            .into_any_element(),
         Some(member) if shell.chat.blocks.is_empty() => {
             let (title, text) = hello(model, member.role.as_str(), member.name.as_str(), member.presence);
             empty(p, title, text).into_any_element()
@@ -585,7 +588,7 @@ fn hello(model: &Model, role: &str, name: &str, presence: Presence) -> (&'static
     }
 }
 
-fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> impl IntoElement {
+fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> Div {
     v_flex()
         .flex_1()
         .min_h_0()

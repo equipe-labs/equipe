@@ -371,8 +371,8 @@
   "chat.member_title": "このメンバーと直接話せます",
   "chat.news_count.other": "お知らせ{count}件",
   "chat.news_disk_clean": "片付ける",
-  "chat.no_member_text": "ターミナルで `equipe` を実行してスクワッドを始めてください。",
-  "chat.no_member_title": "まだ話せるメンバーがいません",
+  "chat.no_member_text": "AI をひとつ接続すれば、PM がすぐに仕事を始めます。",
+  "chat.no_member_title": "まだ働いているメンバーがいません",
   "chat.open_ticket": "横に開く",
   "chat.output_before.other": "… 前の{count}行",
   "chat.output_less": "折りたたむ",
@@ -2161,5 +2161,6 @@
   "settings.dictation_auto": "自動（{lang}）",
   "settings.dictation_not_here": "この Mac になし",
   "settings.dictation_add": "言語を追加",
-  "composer.dictation_no_model": "この Mac には {lang} の音声入力モデルがありません。設定 › 一般 › 音声入力の言語で追加するか変更してください。"
+  "composer.dictation_no_model": "この Mac には {lang} の音声入力モデルがありません。設定 › 一般 › 音声入力の言語で追加するか変更してください。",
+  "chat.connect_ai": "AI を接続"
 }

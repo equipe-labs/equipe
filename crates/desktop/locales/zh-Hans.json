@@ -371,8 +371,8 @@
   "chat.member_title": "你可以直接与此成员对话",
   "chat.news_count.other": "{count} 条动态",
   "chat.news_disk_clean": "清理",
-  "chat.no_member_text": "在终端中运行 `equipe` 以启动小队。",
-  "chat.no_member_title": "还没有可对话的成员",
+  "chat.no_member_text": "连接一个 AI，PM 就会马上开始工作。",
+  "chat.no_member_title": "还没有成员在工作",
   "chat.open_ticket": "在旁边打开",
   "chat.output_before.other": "… 前面 {count} 行",
   "chat.output_less": "收起",
@@ -2161,5 +2161,6 @@
   "settings.dictation_auto": "自动（{lang}）",
   "settings.dictation_not_here": "本机没有",
   "settings.dictation_add": "添加语言",
-  "composer.dictation_no_model": "这台 Mac 没有 {lang} 听写模型。请在 设置 › 通用 › 语音输入语言 中添加或更换。"
+  "composer.dictation_no_model": "这台 Mac 没有 {lang} 听写模型。请在 设置 › 通用 › 语音输入语言 中添加或更换。",
+  "chat.connect_ai": "连接 AI"
 }

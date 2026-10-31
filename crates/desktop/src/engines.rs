@@ -163,6 +163,8 @@ pub struct Engines {
     pub nebius: Option<equipe_core::protocol::NebiusStatus>,
     /// Engines whose tool is being installed, or whose install failed.
     installs: HashMap<Engine, Install>,
+    /// Whether some engine was ready when last told.
+    was_ready: bool,
     /// Installs this screen asked for: signed in next, once done.
     asked_installs: std::collections::HashSet<Engine>,
 }
@@ -224,6 +226,21 @@ impl Engines {
         self.asked_installs.insert(engine);
         self.turn += 1;
         vec![Command::InstallEngine { engine }]
+    }
+
+    /// Whether members can run now: an engine signed in, or a Nebius key with Codex's agent.
+    pub fn any_ready(&self) -> bool {
+        let signed_in = self.statuses.iter().flatten().any(|s| s.state == EngineState::SignedIn);
+        let nebius = self.nebius.as_ref().is_some_and(|n| n.key != equipe_core::protocol::NebiusKey::None && n.codex);
+        signed_in || nebius
+    }
+
+    /// Ready now, and not when last asked: the squad waiting for one starts.
+    pub fn became_ready(&mut self) -> bool {
+        let ready = self.any_ready();
+        let became = ready && !self.was_ready;
+        self.was_ready = ready;
+        became
     }
 
     pub fn installing(&self, engine: Engine) -> Option<&Install> {
@@ -432,6 +449,19 @@ mod tests {
 
     fn status(engine: Engine, state: EngineState) -> EngineStatus {
         EngineStatus::new(engine, state)
+    }
+
+    #[test]
+    fn the_first_engine_ready_is_told_once() {
+        use equipe_core::protocol::{NebiusKey, NebiusStatus};
+        let mut e = Engines::default();
+        e.on_event(&Event::Engines { engines: vec![status(Engine::Codex, EngineState::SignedOut)] });
+        assert!(!e.became_ready());
+        e.on_event(&Event::Nebius { status: NebiusStatus { key: NebiusKey::Saved, codex: true, model: None, provider: "Nebius".into() } });
+        assert!(e.became_ready(), "a key and Codex's agent: members can run");
+        assert!(!e.became_ready(), "once");
+        e.on_event(&Event::Engines { engines: vec![status(Engine::Codex, EngineState::SignedIn)] });
+        assert!(!e.became_ready(), "still ready: nothing new");
     }
 
     #[test]

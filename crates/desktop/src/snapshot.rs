@@ -364,6 +364,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let typed = shell.read(cx).turn.fields.get(&(ticket, n)).map(|f| f.read(cx).value().to_string()).unwrap_or_default();
                     eprintln!("akeys typed: {typed:?}");
                 }
+                // `nebiuskey:<file>`: the Nebius card's box holds the key that file
+                // keeps, as if pasted — never on the script's line, never logged.
+                "nebiuskey" => shell.update(cx, |shell, cx| {
+                    if let Ok(key) = std::fs::read_to_string(&arg) {
+                        let input = shell.settings.nebius_key.clone();
+                        input.update(cx, |s, cx| s.set_value(key.trim().to_owned(), window, cx));
+                    }
+                }),
                 // `keys:words` presses each key as the keyboard would, into what has the keyboard.
                 "keys" => {
                     for ch in arg.chars() {
