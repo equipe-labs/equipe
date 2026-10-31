@@ -721,6 +721,8 @@ once they have done what it needed. Work in progress and done work are the perso
         }));
         // The team is the person's to change: the PM only proposes.
         tools.push(crate::team::tool());
+        // Routines are the person's to turn on: the PM only proposes.
+        tools.push(crate::heartbeat::tool());
         // Accepting is the person's: the PM only puts it to them on a card.
         tools.push(crate::accept::tool());
         tools.push(crate::accept::accept_work_tool());

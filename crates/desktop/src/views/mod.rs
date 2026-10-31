@@ -30,6 +30,7 @@ pub mod quote;
 pub mod settings;
 pub mod roadmap;
 pub mod secrets;
+pub mod routine;
 pub mod routines;
 pub mod sheet;
 pub mod sidebar;

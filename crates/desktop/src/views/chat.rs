@@ -533,6 +533,7 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         super::decide::docked(shell, cx),
         super::accept::docked(shell, cx),
         super::team::docked(shell, cx),
+        super::routine::docked(shell, cx),
         super::switching::docked(shell, cx),
     ]
     .into_iter()

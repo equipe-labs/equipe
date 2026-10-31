@@ -30,6 +30,7 @@ mod accept;
 mod decide;
 mod engines;
 mod team;
+mod routine;
 mod turn;
 
 /// How many columns `text` takes on screen — a Korean letter takes two.
@@ -442,6 +443,9 @@ fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     }
     if asking.is_empty() {
         asking = team::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
+    if asking.is_empty() {
+        asking = routine::lines(app, theme, area.width.saturating_sub(2) as usize);
     }
     if asking.is_empty() {
         asking = engines::lines(app, theme, area.width.saturating_sub(2) as usize);

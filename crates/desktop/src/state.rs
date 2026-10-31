@@ -182,6 +182,8 @@ pub enum Need {
     Questions(u64),
     /// A change to the team the PM proposed (`crate::team`), by its id.
     Team(u64),
+    /// A routine the PM proposed (`crate::routine`), by its id.
+    Routine(u64),
     /// Handed-in work the person said in words to accept, on a card to
     /// confirm (`crate::accept`), by its id.
     Accept(u64),
@@ -292,6 +294,8 @@ pub struct Model {
     /// The PM accepts the team's handed-in work itself: the person's inbox
     /// keeps only what is theirs.
     pub pm_accepts: bool,
+    /// Hours an empty board waits before the PM is woken; 0: never.
+    pub idle_wake_hours: u32,
     /// Secrets members asked the person to type, oldest first.
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
     /// The browser profiles besides the main one (other people's accounts).
@@ -314,6 +318,8 @@ pub struct Model {
     pub asked: crate::decide::Asked,
     /// Changes to the team the PM proposed, waiting for the person, oldest first.
     pub team: crate::team::Proposals,
+    /// Routines the PM proposed, waiting for the person, oldest first.
+    pub routine_asks: crate::routine::Proposals,
     /// Handed-in work put to the person to confirm, oldest first.
     pub accepts: crate::accept::Cards,
     /// Both engines' plans, the squad's switching and its cards (`engines`).
@@ -439,6 +445,7 @@ impl Model {
             routines: Vec::new(),
             logins: Vec::new(),
             pm_accepts: false,
+            idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
             secret_asks: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
@@ -450,6 +457,7 @@ impl Model {
             approvals: Queue::default(),
             asked: Default::default(),
             team: Default::default(),
+            routine_asks: Default::default(),
             accepts: Default::default(),
             engines: Default::default(),
             alerts: Vec::new(),
@@ -733,6 +741,7 @@ impl Model {
                 self.approvals.forget_answers();
                 self.asked.forget_sent();
                 self.team.forget_sent();
+                self.routine_asks.forget_sent();
                 self.accepts.forget_sent();
                 self.engines.forget_sent();
                 let next = match &self.conn {
@@ -815,6 +824,8 @@ impl Model {
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
         self.pm_accepts = snapshot.pm_accepts;
+        // An older daemon says nothing: it wakes nobody, but the setting shows its default.
+        self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
         self.secret_asks = snapshot.secret_asks.clone();
         self.routines = snapshot.routines.clone();
         self.order_projects();
@@ -830,6 +841,7 @@ impl Model {
         self.approvals.load(snapshot.approvals.clone());
         self.asked.load(snapshot.questions.clone());
         self.team.load(snapshot.team_changes.clone());
+        self.routine_asks.load(snapshot.routine_proposals.clone());
         self.accepts.load(snapshot.accepts.clone());
         // An older daemon: the banner over the conversation says so, with its button.
         self.daemon_version = version;
@@ -921,6 +933,10 @@ impl Model {
             }
             Event::PmAcceptsChanged { squad, on } if *squad == self.squad => {
                 self.pm_accepts = *on;
+                self.revision += 1;
+            }
+            Event::IdleWakeChanged { squad, hours } if *squad == self.squad => {
+                self.idle_wake_hours = *hours;
                 self.revision += 1;
             }
             Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
@@ -1022,6 +1038,15 @@ impl Model {
                 }
             }
             Event::TeamChangeClosed { squad, id, .. } if squad == self.squad => self.team.close(id),
+            // A routine proposed waits for the person: announced as a decision is.
+            Event::RoutineProposed { squad, proposal } if squad == self.squad => {
+                let session = self.members.iter().find(|m| m.name == proposal.by).map_or(proposal.session, |m| m.session);
+                let member = proposal.by.clone();
+                if self.routine_asks.push(proposal) {
+                    self.alerts.push(Alert::Decision { session, member, count: 1 });
+                }
+            }
+            Event::RoutineProposalClosed { squad, id, .. } if squad == self.squad => self.routine_asks.close(id),
             // Work to confirm: announced as a decision is — unless the person's own words raised it.
             Event::AcceptProposed { squad, proposal } if squad == self.squad => {
                 let (session, member, words) = (proposal.session, proposal.by.clone(), proposal.from_words());
@@ -1251,7 +1276,7 @@ impl Model {
     /// What the cards above the composer show, for change detection.
     fn card_hint(&self) -> CardHint {
         (
-            self.approvals.ids().into_iter().chain(self.asked.ids()).chain(self.team.ids()).chain(self.accepts.ids()).collect(),
+            self.approvals.ids().into_iter().chain(self.asked.ids()).chain(self.team.ids()).chain(self.routine_asks.ids()).chain(self.accepts.ids()).collect(),
             self.for_you_here().iter().map(|t| (t.id, t.status, t.note.clone())).collect(),
             self.flash.clone(),
         )
@@ -1388,6 +1413,7 @@ impl Model {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
         out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
+        out.extend(self.routine_asks.open().map(|r| (Section::Decide, Need::Routine(r.id))));
         out.extend(self.accepts.open().map(|c| (Section::Decide, Need::Accept(c.id))));
         // A secret a member waits for: theirs to type.
         out.extend(self.secret_asks.iter().map(|a| (Section::Waiting, Need::Secret(a.id))));
@@ -2455,6 +2481,45 @@ mod tests {
         model.team.forget_sent();
         assert!(model.apply(Update::Event(Event::TeamChangeClosed { squad: "acme".into(), id: 70, approved: true, members: vec!["mobile-2".into()] }), T0));
         assert!(model.team.ids().is_empty());
+    }
+
+    #[test]
+    fn a_routine_proposed_waits_to_be_turned_on_and_goes_once_decided_anywhere() {
+        use equipe_core::protocol::routines::{Routine, RoutineProposal, Schedule};
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        model.take_alerts();
+        let proposal = RoutineProposal {
+            id: 9,
+            routine: Routine { id: 0, title: "주간 보고".into(), prompt: "정리해 주세요".into(), when: Schedule::Daily { hour: 18, minute: 30 }, on: true, last_run: None, next_run: None },
+            reason: String::new(),
+            by: "pm".into(),
+            session: 1,
+            proposed_at: 1,
+        };
+        assert!(model.apply(Update::Event(Event::RoutineProposed { squad: "acme".into(), proposal: proposal.clone() }), T0), "the card shows: a redraw");
+        assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 1, member: "pm".into(), count: 1 }]);
+        model.apply(Update::Event(Event::RoutineProposed { squad: "other".into(), proposal: RoutineProposal { id: 10, ..proposal.clone() } }), T0);
+        model.apply(Update::Event(Event::RoutineProposed { squad: "acme".into(), proposal: proposal.clone() }), T0);
+        assert!(model.take_alerts().is_empty(), "another squad's, or the same again: nothing");
+        let decide: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Decide).map(|(_, n)| n).collect();
+        assert_eq!(decide, [Need::Routine(9)], "결정 필요");
+        assert_eq!(model.routine_asks.decide("acme", 9, true), Some(Command::ApproveRoutine { squad: "acme".into(), id: 9 }));
+        assert!(!model.needs_you().iter().any(|(_, n)| *n == Need::Routine(9)));
+        model.routine_asks.forget_sent();
+        assert!(model.apply(Update::Event(Event::RoutineProposalClosed { squad: "acme".into(), id: 9, approved: true }), T0));
+        assert!(model.routine_asks.ids().is_empty());
+    }
+
+    #[test]
+    fn an_empty_board_wakes_the_pm_after_a_day_unless_turned_off() {
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.idle_wake_hours, 24, "an older daemon says nothing: the default");
+        assert!(model.apply(Update::Event(Event::IdleWakeChanged { squad: "acme".into(), hours: 0 }), T0));
+        assert_eq!(model.idle_wake_hours, 0);
+        model.apply(Update::Event(Event::IdleWakeChanged { squad: "other".into(), hours: 24 }), T0);
+        assert_eq!(model.idle_wake_hours, 0, "another squad's");
     }
 
     #[test]

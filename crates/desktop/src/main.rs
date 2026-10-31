@@ -47,6 +47,7 @@ mod state;
 mod stream;
 mod target;
 mod theme;
+mod routine;
 mod team;
 mod term;
 mod tickets;
@@ -579,6 +580,11 @@ impl Shell {
                 return;
             }
             if this.update(cx, |shell, cx| shell.on_team_key(key, &modifiers, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
+            // A routine the PM proposed: ⌘⏎ turns it on, above an empty composer or in the peek.
+            if this.update(cx, |shell, cx| shell.on_routine_key(key, &modifiers, cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
             }

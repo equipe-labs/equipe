@@ -178,6 +178,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::DismissQuestions { .. }
         | Command::ApproveTeamChange { .. }
         | Command::DeclineTeamChange { .. }
+        | Command::ApproveRoutine { .. }
+        | Command::DeclineRoutine { .. }
         | Command::DeclineAccept { .. }
         | Command::ApplyEngineProposal { .. }
         | Command::DismissEngineProposal { .. }
@@ -205,6 +207,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::DismissQuestions { squad, .. }
         | Command::ApproveTeamChange { squad, .. }
         | Command::DeclineTeamChange { squad, .. }
+        | Command::ApproveRoutine { squad, .. }
+        | Command::DeclineRoutine { squad, .. }
         | Command::ProposeAccept { squad, .. }
         | Command::ConfirmAccept { squad, .. }
         | Command::DeclineAccept { squad, .. }
@@ -743,6 +747,14 @@ impl Core {
                 };
                 (title, squad.to_owned(), "team", format!("team-{}", change.id), Event::TeamChangeProposed { squad: squad.to_owned(), change: short })
             }
+            Event::RoutineProposed { proposal, .. } => {
+                let mut short = proposal.clone();
+                short.reason = short.reason.chars().take(PUSH_ACTION).collect();
+                short.routine.prompt = short.routine.prompt.chars().take(PUSH_ACTION).collect();
+                // Its title is content: it travels sealed, the lock screen says who.
+                let title = t!("remote.push_routine", member = proposal.by);
+                (title, squad.to_owned(), "routine", format!("routine-{}", proposal.id), Event::RoutineProposed { squad: squad.to_owned(), proposal: short })
+            }
             Event::AcceptProposed { proposal, .. } => {
                 use equipe_core::protocol::accept::Verdict;
                 let mut short = proposal.clone();
@@ -1085,6 +1097,14 @@ pub(crate) mod tests {
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineTeamChange { .. }, .. }]));
         let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "zeta", "id": 6 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
+        // A routine the PM proposed: the person's to turn on or decline from a phone too.
+        let approve = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_routine", "squad": "acme", "id": 7 } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), approve, now), now);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ApproveRoutine { squad: "acme".into(), id: 7 } }]);
+        let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_routine", "squad": "acme", "id": 7 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineRoutine { .. }, .. }]));
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_routine", "squad": "zeta", "id": 7 } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
         // Handed-in work on a card: the person's to confirm or decline from a phone — accepted, never merged.
         let confirm = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "confirm_accept", "squad": "acme", "id": 8, "tickets": [{ "ticket": 1, "merge": "push" }, { "ticket": 3 }] } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), confirm, now), now);
@@ -1207,6 +1227,15 @@ pub(crate) mod tests {
         let questions = &opened["rpc"]["params"]["questions"]["questions"];
         assert_eq!(questions[0]["question"].as_str().unwrap().chars().count(), 200);
         assert_eq!((questions[0]["options"][0]["label"].as_str(), questions[0]["options"][0].get("description")), (Some("Postgres"), None));
+        // A routine the PM proposed: who — its title and prompt travel sealed.
+        use equipe_core::protocol::routines::{Routine, RoutineProposal, Schedule};
+        let routine = Routine { id: 0, title: "Weekly check-in".into(), prompt: "Sum up the week".into(), when: Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: None };
+        let proposal = RoutineProposal { id: 12, routine, reason: "asked thrice".into(), by: "pm".into(), session: 1, proposed_at: 1 };
+        let out = core.on_squad_event("acme", &Event::RoutineProposed { squad: "acme".into(), proposal });
+        let Action::Relay(push) = &out[0] else { panic!("{out:?}") };
+        assert_eq!((push["title"].as_str(), push["category"].as_str()), (Some("pm proposes a routine"), Some("routine")));
+        assert!(!push.to_string().contains("Weekly check-in"), "its title travels sealed only");
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["params"]["proposal"]["routine"]["title"].as_str(), Some("Weekly check-in"));
         // A member hands the person its browser: who, and that it's the Mac's app to do it in — what for travels sealed.
         let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
         let handed = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: Some(why.into()), check: None };

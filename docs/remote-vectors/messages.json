@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 37,
+        "seq": 39,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 36,
+        "seq": 38,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -83,7 +83,7 @@
             "type": "accept"
           }
         },
-        "seq": 25,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -207,7 +207,35 @@
             "type": "apply_engine_proposal"
           }
         },
-        "seq": 22,
+        "seq": 24,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "approve routine": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 9000001,
+            "squad": "acme",
+            "type": "approve_routine"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 9000001,
+            "squad": "acme",
+            "type": "approve_routine"
+          }
+        },
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -273,7 +301,7 @@
             "type": "confirm_accept"
           }
         },
-        "seq": 19,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -312,7 +340,7 @@
             "type": "confirm_accept"
           }
         },
-        "seq": 20,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -430,7 +458,35 @@
             "type": "decline_accept"
           }
         },
-        "seq": 21,
+        "seq": 23,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "decline routine": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 9000001,
+            "squad": "acme",
+            "type": "decline_routine"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 9000001,
+            "squad": "acme",
+            "type": "decline_routine"
+          }
+        },
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -528,7 +584,7 @@
             "type": "dismiss_engine_proposal"
           }
         },
-        "seq": 23,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -572,7 +628,7 @@
             "type": "sign_in"
           }
         },
-        "seq": 33,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -588,7 +644,7 @@
             "type": "sign_out"
           }
         },
-        "seq": 34,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -612,7 +668,7 @@
             "type": "engines"
           }
         },
-        "seq": 32,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -648,7 +704,7 @@
             "type": "accept_closed"
           }
         },
-        "seq": 27,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -665,7 +721,7 @@
             "type": "accept_closed"
           }
         },
-        "seq": 28,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -691,7 +747,7 @@
             "type": "accept_proposed"
           }
         },
-        "seq": 26,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -750,7 +806,7 @@
             "type": "branch_landed"
           }
         },
-        "seq": 56,
+        "seq": 59,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -769,7 +825,7 @@
             "type": "compact_failed"
           }
         },
-        "seq": 61,
+        "seq": 64,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -788,7 +844,7 @@
             "type": "compacted"
           }
         },
-        "seq": 59,
+        "seq": 62,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -808,7 +864,7 @@
             "type": "compacting"
           }
         },
-        "seq": 58,
+        "seq": 61,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -827,7 +883,7 @@
             "type": "compacting"
           }
         },
-        "seq": 60,
+        "seq": 63,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1036,7 +1092,7 @@
             "type": "disk_level"
           }
         },
-        "seq": 54,
+        "seq": 57,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1077,7 +1133,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 31,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1117,7 +1173,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 30,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1134,7 +1190,7 @@
             "type": "engine_proposal_closed"
           }
         },
-        "seq": 32,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1150,7 +1206,7 @@
             "type": "engine_switching_changed"
           }
         },
-        "seq": 33,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1187,7 +1243,7 @@
             "type": "engines"
           }
         },
-        "seq": 55,
+        "seq": 58,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1204,7 +1260,7 @@
             "type": "error"
           }
         },
-        "seq": 47,
+        "seq": 50,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1221,7 +1277,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 36,
+        "seq": 39,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1237,7 +1293,7 @@
             "type": "model_known"
           }
         },
-        "seq": 52,
+        "seq": 55,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1252,7 +1308,7 @@
             "type": "nothing_changed"
           }
         },
-        "seq": 57,
+        "seq": 60,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1268,7 +1324,7 @@
             "type": "notice"
           }
         },
-        "seq": 46,
+        "seq": 49,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1293,7 +1349,7 @@
             }
           }
         },
-        "seq": 29,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1318,7 +1374,7 @@
             }
           }
         },
-        "seq": 44,
+        "seq": 47,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1340,7 +1396,7 @@
             }
           }
         },
-        "seq": 45,
+        "seq": 48,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1459,7 +1515,75 @@
             "type": "queue_sent"
           }
         },
-        "seq": 53,
+        "seq": 56,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: routine approved": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approved": true,
+            "id": 9000001,
+            "squad": "acme",
+            "type": "routine_proposal_closed"
+          }
+        },
+        "seq": 27,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: routine declined": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approved": false,
+            "id": 9000001,
+            "squad": "acme",
+            "type": "routine_proposal_closed"
+          }
+        },
+        "seq": 28,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: routine proposed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "proposal": {
+              "by": "pm",
+              "id": 9000001,
+              "proposed_at": 1760000000,
+              "reason": "3주째 월요일마다 요약을 부탁하셨어요",
+              "routine": {
+                "id": 0,
+                "on": true,
+                "prompt": "지난주 요약과 다음 일 1~3개를 제안 티켓으로 올려 주세요.",
+                "title": "주간 점검",
+                "when": {
+                  "every": "weekly",
+                  "hour": 9,
+                  "minute": 0,
+                  "weekday": 1
+                }
+              },
+              "session": 1001
+            },
+            "squad": "acme",
+            "type": "routine_proposed"
+          }
+        },
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1476,7 +1600,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 48,
+        "seq": 51,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1492,7 +1616,7 @@
             "type": "steered"
           }
         },
-        "seq": 49,
+        "seq": 52,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1508,7 +1632,7 @@
             "type": "subagent_ended"
           }
         },
-        "seq": 41,
+        "seq": 44,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1525,7 +1649,7 @@
             "what": "Compare the two login flows"
           }
         },
-        "seq": 39,
+        "seq": 42,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1542,7 +1666,7 @@
             "type": "subagent_step"
           }
         },
-        "seq": 40,
+        "seq": 43,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1622,7 +1746,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 37,
+        "seq": 40,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1638,7 +1762,7 @@
             "type": "thread"
           }
         },
-        "seq": 50,
+        "seq": 53,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1654,7 +1778,7 @@
             "type": "thread"
           }
         },
-        "seq": 51,
+        "seq": 54,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1685,7 +1809,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 34,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1768,7 +1892,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 38,
+        "seq": 41,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1788,7 +1912,7 @@
             }
           }
         },
-        "seq": 42,
+        "seq": 45,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1805,7 +1929,7 @@
             "usage": null
           }
         },
-        "seq": 43,
+        "seq": 46,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1821,7 +1945,7 @@
             "type": "user_message"
           }
         },
-        "seq": 35,
+        "seq": 38,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1940,6 +2064,7 @@
                     "window": "five_hour"
                   }
                 ],
+                "idle_wake_hours": 24,
                 "mode": "auto",
                 "plan": {
                   "five_hour": {
@@ -2027,6 +2152,27 @@
                     ],
                     "session": 4242,
                     "ticket": 38
+                  }
+                ],
+                "routine_proposals": [
+                  {
+                    "by": "pm",
+                    "id": 9000001,
+                    "proposed_at": 1760000000,
+                    "reason": "3주째 월요일마다 요약을 부탁하셨어요",
+                    "routine": {
+                      "id": 0,
+                      "on": true,
+                      "prompt": "지난주 요약과 다음 일 1~3개를 제안 티켓으로 올려 주세요.",
+                      "title": "주간 점검",
+                      "when": {
+                        "every": "weekly",
+                        "hour": 9,
+                        "minute": 0,
+                        "weekday": 1
+                      }
+                    },
+                    "session": 1001
                   }
                 ],
                 "scale": 0,
@@ -2275,7 +2421,7 @@
             "type": "interrupt"
           }
         },
-        "seq": 28,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2381,7 +2527,7 @@
             "type": "merge"
           }
         },
-        "seq": 35,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2633,6 +2779,49 @@
         "ts": 1760000000000
       }
     },
+    "push: routine": {
+      "daemon_sends": {
+        "body": "acme",
+        "category": "routine",
+        "collapse": "routine-9000001",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "pm proposes a routine",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "proposal": {
+              "by": "pm",
+              "id": 9000001,
+              "proposed_at": 1760000000,
+              "reason": "3주째 월요일마다 요약을 부탁하셨어요",
+              "routine": {
+                "id": 0,
+                "on": true,
+                "prompt": "지난주 요약과 다음 일 1~3개를 제안 티켓으로 올려 주세요.",
+                "title": "주간 점검",
+                "when": {
+                  "every": "weekly",
+                  "hour": 9,
+                  "minute": 0,
+                  "weekday": 1
+                }
+              },
+              "session": 1001
+            },
+            "squad": "acme",
+            "type": "routine_proposed"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "push: team change": {
       "daemon_sends": {
         "body": "acme",
@@ -2824,7 +3013,7 @@
             "type": "reopen"
           }
         },
-        "seq": 26,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2858,7 +3047,7 @@
             "type": "send_now"
           }
         },
-        "seq": 31,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2920,7 +3109,7 @@
             "type": "submit"
           }
         },
-        "seq": 27,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2950,7 +3139,7 @@
             "type": "submit"
           }
         },
-        "seq": 29,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2980,7 +3169,7 @@
             "type": "submit"
           }
         },
-        "seq": 30,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -3008,7 +3197,7 @@
             "type": "undo_engine_proposal"
           }
         },
-        "seq": 24,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
