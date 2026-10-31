@@ -283,7 +283,18 @@ cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 dmg="$out/equipe.dmg"
 rm -f "$dmg"
-hdiutil create -quiet -volname "equipe $version" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"
+# hdiutil fails now and then on CI runners ("Resource busy") with nothing
+# wrong: try again a few times before giving up.
+made=""
+for try in 1 2 3 4; do
+  if hdiutil create -volname "equipe $version" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"; then
+    made=1
+    break
+  fi
+  say "hdiutil create failed (try $try), trying again"
+  sleep $((try * 5))
+done
+[ -n "$made" ] || { echo "error: hdiutil create failed four times" >&2; exit 1; }
 [ -n "$identity" ] && codesign --force --timestamp --sign "$identity" "$dmg"
 
 if [ -n "$notarize" ]; then

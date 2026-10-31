@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Command, Engine, EngineState, EngineStatus, Event, PlanUsage, SignInFailure, SignInStep};
+use equipe_core::protocol::{Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, SignInFailure, SignInStep};
 use equipe_core::t;
 
 use crate::icons::Icon;
@@ -39,8 +39,8 @@ pub struct Platform {
     /// Its command-line tool, as the person types it.
     pub tool: &'static str,
     pub signs_in: SignsIn,
-    /// The line that installs the tool, and where its own guide is.
-    pub install: &'static str,
+    /// Where the tool's own guide is (the line that installs it is
+    /// [`equipe_core::engines::installer`]).
     pub guide: &'static str,
     /// Whose plan it draws on and who signs it in, in a line.
     pub who: fn() -> &'static str,
@@ -68,7 +68,6 @@ pub static PLATFORMS: [Platform; 2] = [
         tint: 0xD97757,
         tool: "claude",
         signs_in: SignsIn::InTerminal { command: "claude auth login" },
-        install: "curl -fsSL https://claude.ai/install.sh | bash",
         guide: "https://code.claude.com/docs/en/setup",
         who: || t!("engines.who_claude"),
         pitch: || t!("engines.pitch_claude"),
@@ -81,7 +80,6 @@ pub static PLATFORMS: [Platform; 2] = [
         tint: 0x0D0D0D,
         tool: "codex",
         signs_in: SignsIn::FromApp,
-        install: "npm install -g @openai/codex",
         guide: "https://developers.openai.com/codex/cli",
         who: || t!("engines.who_codex"),
         pitch: || t!("engines.pitch_codex"),
@@ -144,6 +142,8 @@ pub struct Effect {
     pub changed: bool,
     /// Open this page in this Mac's browser (the code's page, for the screen that asked).
     pub open: Option<String>,
+    /// Installed as this screen asked: its sign-in starts at once.
+    pub sign_in: Option<Engine>,
 }
 
 #[derive(Debug, Default)]
@@ -159,6 +159,22 @@ pub struct Engines {
     pub terminal: Option<Instant>,
     /// Bumped on each card's change, for its animation.
     pub turn: u64,
+    /// Nebius Token Factory on the daemon's machine, as it last said.
+    pub nebius: Option<equipe_core::protocol::NebiusStatus>,
+    /// Engines whose tool is being installed, or whose install failed.
+    installs: HashMap<Engine, Install>,
+    /// Whether some engine was ready when last told.
+    was_ready: bool,
+    /// Installs this screen asked for: signed in next, once done.
+    asked_installs: std::collections::HashSet<Engine>,
+}
+
+/// An engine's tool being installed on the daemon's machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Install {
+    Running,
+    /// Failed, in the installer's last words.
+    Failed(String),
 }
 
 impl Engines {
@@ -199,6 +215,36 @@ impl Engines {
         }
         self.set(engine, Card::Starting { since: now });
         vec![Command::SignIn { engine, device: remote }]
+    }
+
+    /// "설치": the daemon runs the tool's own installer.
+    pub fn install(&mut self, engine: Engine) -> Vec<Command> {
+        if self.installs.get(&engine) == Some(&Install::Running) {
+            return vec![];
+        }
+        self.installs.insert(engine, Install::Running);
+        self.asked_installs.insert(engine);
+        self.turn += 1;
+        vec![Command::InstallEngine { engine }]
+    }
+
+    /// Whether members can run now: an engine signed in, or a Nebius key with Codex's agent.
+    pub fn any_ready(&self) -> bool {
+        let signed_in = self.statuses.iter().flatten().any(|s| s.state == EngineState::SignedIn);
+        let nebius = self.nebius.as_ref().is_some_and(|n| n.key != equipe_core::protocol::NebiusKey::None && n.codex);
+        signed_in || nebius
+    }
+
+    /// Ready now, and not when last asked: the squad waiting for one starts.
+    pub fn became_ready(&mut self) -> bool {
+        let ready = self.any_ready();
+        let became = ready && !self.was_ready;
+        self.was_ready = ready;
+        became
+    }
+
+    pub fn installing(&self, engine: Engine) -> Option<&Install> {
+        self.installs.get(&engine)
     }
 
     /// "취소": the daemon stops the tool.
@@ -245,7 +291,30 @@ impl Engines {
                         self.terminal = None;
                     }
                 }
-                Effect { changed: true, open: None }
+                Effect { changed: true, ..Effect::default() }
+            }
+            Event::EngineInstall { engine, step } => {
+                let mut sign_in = None;
+                match step {
+                    InstallStep::Running => {
+                        self.installs.insert(*engine, Install::Running);
+                    }
+                    InstallStep::Done => {
+                        self.installs.remove(engine);
+                        sign_in = self.asked_installs.remove(engine).then_some(*engine);
+                    }
+                    InstallStep::Failed { detail } => {
+                        self.installs.insert(*engine, Install::Failed(detail.clone()));
+                        self.asked_installs.remove(engine);
+                    }
+                }
+                self.turn += 1;
+                Effect { changed: true, sign_in, ..Effect::default() }
+            }
+            Event::Nebius { status } => {
+                self.nebius = Some(status.clone());
+                self.turn += 1;
+                Effect { changed: true, ..Effect::default() }
             }
             Event::SignIn { engine, step } => {
                 let engine = *engine;
@@ -275,7 +344,7 @@ impl Engines {
                         self.set(engine, Card::Failed { problem: Problem::Daemon(*why), detail: detail.clone() });
                     }
                 }
-                Effect { changed: true, open }
+                Effect { changed: true, open, ..Effect::default() }
             }
             _ => Effect::default(),
         }
@@ -383,12 +452,42 @@ mod tests {
     }
 
     #[test]
+    fn the_first_engine_ready_is_told_once() {
+        use equipe_core::protocol::{NebiusKey, NebiusStatus};
+        let mut e = Engines::default();
+        e.on_event(&Event::Engines { engines: vec![status(Engine::Codex, EngineState::SignedOut)] });
+        assert!(!e.became_ready());
+        e.on_event(&Event::Nebius { status: NebiusStatus { key: NebiusKey::Saved, codex: true, model: None, provider: "Nebius".into() } });
+        assert!(e.became_ready(), "a key and Codex's agent: members can run");
+        assert!(!e.became_ready(), "once");
+        e.on_event(&Event::Engines { engines: vec![status(Engine::Codex, EngineState::SignedIn)] });
+        assert!(!e.became_ready(), "still ready: nothing new");
+    }
+
+    #[test]
+    fn an_engine_not_on_this_mac_installs_from_its_card() {
+        let mut e = Engines::default();
+        assert_eq!(e.install(Engine::Codex), vec![Command::InstallEngine { engine: Engine::Codex }]);
+        assert_eq!(e.installing(Engine::Codex), Some(&Install::Running));
+        assert!(e.install(Engine::Codex).is_empty(), "once at a time");
+        let failed = Event::EngineInstall { engine: Engine::Codex, step: InstallStep::Failed { detail: "curl: (6) Could not resolve host".into() } };
+        assert!(e.on_event(&failed).changed);
+        assert_eq!(e.installing(Engine::Codex), Some(&Install::Failed("curl: (6) Could not resolve host".into())));
+        assert_eq!(e.install(Engine::Codex).len(), 1, "tried again");
+        let done = Event::EngineInstall { engine: Engine::Codex, step: InstallStep::Done };
+        assert_eq!(e.on_event(&done).sign_in, Some(Engine::Codex), "installed as asked here: its sign-in next");
+        assert_eq!(e.installing(Engine::Codex), None);
+        // Another screen's install: told, never signed in from here.
+        assert_eq!(e.on_event(&Event::EngineInstall { engine: Engine::Claude, step: InstallStep::Done }).sign_in, None);
+    }
+
+    #[test]
     fn every_engine_has_one_platform_entry_with_words_of_its_own() {
         for engine in [Engine::Claude, Engine::Codex] {
             assert_eq!(PLATFORMS.iter().filter(|p| p.engine == engine).count(), 1, "{engine:?}");
         }
         for p in &PLATFORMS {
-            assert!(!(p.who)().is_empty() && !(p.pitch)().is_empty() && !p.install.is_empty() && p.guide.starts_with("https://"));
+            assert!(!(p.who)().is_empty() && !(p.pitch)().is_empty() && p.guide.starts_with("https://"));
         }
         assert_eq!(platform(Engine::Codex).signs_in, SignsIn::FromApp);
         assert_eq!(platform(Engine::Claude).signs_in, SignsIn::InTerminal { command: "claude auth login" }, "Claude Code is the person's own login");
@@ -505,4 +604,15 @@ mod tests {
         assert!(rows[0].0.contains("42%") && rows[0].0.contains("1시간 10분"), "{rows:?}");
         assert_eq!(rows[1].1, 100, "a bar never runs past full");
     }
+
+    #[test]
+    fn nebius_as_the_daemon_says_it() {
+        use equipe_core::protocol::{NebiusKey, NebiusStatus};
+        let mut e = Engines::default();
+        assert!(e.nebius.is_none(), "nothing said yet: still checking");
+        let status = NebiusStatus { key: NebiusKey::Saved, codex: true, model: None, provider: "Nebius Token Factory".into() };
+        assert!(e.on_event(&Event::Nebius { status: status.clone() }).changed);
+        assert_eq!(e.nebius, Some(status));
+    }
+
 }

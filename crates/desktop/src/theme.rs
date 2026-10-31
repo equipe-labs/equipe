@@ -93,11 +93,12 @@ impl Palette {
         let dark = matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark);
         let caret: gpui_kit::Hsla = self.text.into();
         let mut selection: gpui_kit::Hsla = self.accent.into();
-        selection.a = if dark { 0.38 } else { 0.28 };
+        selection.a = if dark { 0.30 } else { 0.22 };
         Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
         Theme::update(cx, |theme| {
             theme.colors.caret = caret;
             theme.colors.selection = selection;
+            theme.mono_font_family = MONO.into();
         });
     }
 
@@ -110,57 +111,65 @@ impl Palette {
 
     fn dark() -> Self {
         Self {
-            bg: rgb(0x0A0A0C),
-            side: rgb(0x0E0E11),
-            side_hover: rgb(0x19191D),
-            side_sel: rgb(0x222227),
-            wash: rgba(0xFFFFFF0E),
-            text: rgb(0xEFEDE7),
-            prose: rgb(0xE4E2DC),
-            text2: rgb(0xCFCCC4),
+            // One warm neutral (the brand's Bone) throughout. The reading
+            // surface sits a step off black — the brand's Void glares under
+            // long text and leaves no room for layers — and the sidebar a
+            // step behind it.
+            bg: rgb(0x151513),
+            side: rgb(0x100F0E),
+            side_hover: rgb(0x1C1C1A),
+            side_sel: rgb(0x272624),
+            wash: rgba(0xFFFFFF12),
+            text: rgb(0xF3F0E9),
+            prose: rgb(0xE5E2DB),
+            text2: rgb(0xCCC8C2),
             // At least 4.5:1 (WCAG AA, small text) on every surface it sits
             // on, the selected sidebar row and the popover included.
-            muted: rgb(0x8A8C93),
-            hair: rgba(0xE9E6DF24),
-            accent: rgb(0xB4CDE6),
-            accent_bg: rgba(0xB4CDE61A),
-            code_bg: rgb(0x111114),
-            raised: rgb(0x141417),
-            primary: rgb(0x2F4256),
-            on_primary: rgb(0xEFEDE7),
-            on_accent: rgb(0x0A0A0C),
-            amber: rgb(0xE2B865),
-            orange: rgb(0xEC9A62),
-            red: rgb(0xEE7B74),
-            members: [0xE8BE78, 0xEC96BE, 0x78BEF0, 0x8CD096, 0xB6A2F2, 0x6ED4C8, 0xF0A06E, 0xCDD478].map(rgb),
+            muted: rgb(0xA2A09A),
+            hair: rgba(0xFFFFFF1A),
+            // The one colour, the cool rim: deep enough to stand apart from
+            // the words, not a pastel that reads as faded text.
+            accent: rgb(0x7EB8F3),
+            accent_bg: rgba(0x7EB8F31F),
+            code_bg: rgb(0x1B1A19),
+            raised: rgb(0x1F1E1C),
+            primary: rgb(0x2B3F54),
+            on_primary: rgb(0xF3F0E9),
+            on_accent: rgb(0x151513),
+            amber: rgb(0xEABA67),
+            orange: rgb(0xF19B65),
+            red: rgb(0xF2857D),
+            // One lightness and chroma (OKLCH 0.80, 0.11), so no member is louder.
+            members: [0xE3B667, 0xF4A0C8, 0x7FC5FF, 0x89D298, 0xC3B0FD, 0x5AD5CB, 0xF7A97C, 0xBBC671].map(rgb),
         }
     }
 
     fn light() -> Self {
         Self {
-            bg: rgb(0xF6F5F1),
-            side: rgb(0xEFEEE9),
-            side_hover: rgb(0xE6E5DF),
-            side_sel: rgb(0xDDDCD5),
-            wash: rgba(0x0000000B),
-            text: rgb(0x15161A),
-            prose: rgb(0x1F2024),
-            text2: rgb(0x3A3C42),
-            muted: rgb(0x5E6068),
-            hair: rgba(0x14141424),
-            accent: rgb(0x2E5C8A),
-            accent_bg: rgba(0x2E5C8A17),
-            code_bg: rgb(0xECEBE6),
+            bg: rgb(0xFAF9F6),
+            side: rgb(0xF3F2EF),
+            side_hover: rgb(0xEEEDE8),
+            side_sel: rgb(0xE7E6E1),
+            wash: rgba(0x0000000C),
+            text: rgb(0x181713),
+            prose: rgb(0x24231F),
+            text2: rgb(0x45443E),
+            muted: rgb(0x62605A),
+            hair: rgba(0x0000001A),
+            accent: rgb(0x2160AB),
+            accent_bg: rgba(0x2160AB14),
+            code_bg: rgb(0xF2F1ED),
             raised: rgb(0xFFFFFF),
-            primary: rgb(0x15161A),
-            on_primary: rgb(0xF6F5F1),
-            on_accent: rgb(0xF6F5F1),
+            primary: rgb(0x181713),
+            on_primary: rgb(0xFAF9F6),
+            on_accent: rgb(0xFAF9F6),
             // Darker than the dark appearance's, to be read as words (a
             // status in the sidebar) at 4.5:1 on any surface.
-            amber: rgb(0x825600),
-            orange: rgb(0xA04610),
-            red: rgb(0xAD2E27),
-            members: [0xA06814, 0xB0326E, 0x1E68AA, 0x28803C, 0x6446BE, 0x14807A, 0xB4501E, 0x6E7814].map(rgb),
+            amber: rgb(0x865901),
+            orange: rgb(0x9E4507),
+            red: rgb(0xAA2A27),
+            // OKLCH 0.49, 0.12: 4.5:1 even on the selected sidebar row.
+            members: [0x835600, 0x943C6B, 0x0065A4, 0x0D7435, 0x674EA1, 0x006F68, 0x984500, 0x5F6700].map(rgb),
         }
     }
 
@@ -179,6 +188,7 @@ pub fn look(role: &str, name: &str) -> (&'static str, usize) {
         "qa" => ("◎", 4),
         "data" => ("▲", 5),
         "mobile" => ("◈", 6),
+        "security" => ("⬢", 7),
         _ => {
             const MARKS: [&str; 4] = ["◇", "★", "▼", "✚"];
             let h = name.bytes().fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
@@ -187,7 +197,49 @@ pub fn look(role: &str, name: &str) -> (&'static str, usize) {
     }
 }
 
-pub const SANS: &str = "Helvetica Neue";
+/// The Mac's own interface face (SF): drawn for the screen at every size, in
+/// every weight. Helvetica Neue, the brand's, stays with the brand's moments.
+pub const SANS: &str = ".SystemUIFont";
+
+/// The Mac's faces for what SF doesn't draw — Korean, Japanese, Chinese —
+/// the app's language's first: Han characters are shared, and each language
+/// wants its own shapes for them. All come with every Mac, in every weight.
+pub fn fallbacks(lang: equipe_core::i18n::Lang) -> FontFallbacks {
+    use equipe_core::i18n::Lang;
+    static BY_LANG: std::sync::OnceLock<Vec<(Lang, FontFallbacks)>> = std::sync::OnceLock::new();
+    const KO: &str = "Apple SD Gothic Neo";
+    const JA: &str = "Hiragino Sans";
+    const SC: &str = "PingFang SC";
+    const TC: &str = "PingFang TC";
+    let all = BY_LANG.get_or_init(|| {
+        Lang::ALL
+            .iter()
+            .map(|&lang| {
+                let first = match lang {
+                    Lang::Ja => JA,
+                    Lang::ZhHans => SC,
+                    Lang::ZhHant => TC,
+                    _ => KO,
+                };
+                let faces = std::iter::once(first).chain([KO, JA, SC, TC].into_iter().filter(|f| *f != first)).map(str::to_owned).collect();
+                (lang, FontFallbacks::from_fonts(faces))
+            })
+            .collect()
+    });
+    all.iter().find(|(l, _)| *l == lang).map_or_else(|| all[0].1.clone(), |(_, f)| f.clone())
+}
+
+/// The interface's face, and the faces for the scripts it lacks.
+pub trait Sans: Styled + Sized {
+    fn sans(mut self) -> Self {
+        let style = self.text_style();
+        style.font_family = Some(SANS.into());
+        style.font_fallbacks = Some(fallbacks(crate::i18n::lang()));
+        self
+    }
+}
+
+impl<E: Styled> Sans for E {}
 
 // ── type ──
 //
@@ -216,16 +268,17 @@ pub const COLUMN: f32 = 720.;
 pub const MEASURE: f32 = 600.;
 /// Between paragraphs: 0.7 of the body size.
 pub const PARAGRAPH_GAP: f32 = 11.;
-/// Between a list's items: tighter than paragraphs, so a list reads as one.
-pub const LIST_GAP: f32 = 4.;
+/// Between a list's items: tighter than paragraphs, so a list reads as one,
+/// and still a seam between items that wrap.
+pub const LIST_GAP: f32 = 6.;
 /// A heading's room: more above (beyond the paragraph gap) than below, so it
 /// belongs to what follows.
 pub const HEADING_ABOVE: f32 = 8.;
 pub const HEADING_BELOW: f32 = 4.;
-/// A link's underline: a hairline (one device pixel on a Retina screen), in
-/// the link's colour at this opacity.
-pub const LINK_UNDERLINE: f32 = 0.5;
-pub const LINK_UNDERLINE_ALPHA: f32 = 0.5;
+/// A link's underline: a point, in the link's colour held well back, so it
+/// marks the link without striking through the line.
+pub const LINK_UNDERLINE: f32 = 1.;
+pub const LINK_UNDERLINE_ALPHA: f32 = 0.35;
 /// The room under the conversation's last line, over the composer.
 pub const TAIL_ROOM: f32 = 20.;
 
@@ -233,7 +286,7 @@ pub const TAIL_ROOM: f32 = 20.;
 /// blue, violet, teal, pink, green: never the amber of work under way or the
 /// orange of what waits on the person, which a project's dot would be read as.
 pub const PROJECT_HUES: [usize; 5] = [2, 4, 5, 1, 3];
-pub const MONO: &str = "Menlo";
+pub const MONO: &str = ".AppleSystemUIFontMonospaced";
 
 // ── one scale for everything ──
 //
@@ -262,6 +315,13 @@ pub const ICON_SM: f32 = 14.;
 /// Popovers and tooltips sit this far from what opened them.
 pub const GAP: f32 = 6.;
 
+/// For a shortcut beside words (⌘N, ⇧A, +): the face's case-sensitive forms,
+/// which lift +, −, × and the like from the lowercase middle to the capitals',
+/// so a key sits level with the words — Korean ones too — as in the Mac's menus.
+pub fn key_face() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("case".into(), 1)]))
+}
+
 impl Palette {
     pub fn is_dark(&self) -> bool {
         self.bg.r < 0.5
@@ -269,41 +329,41 @@ impl Palette {
 
     /// What floats over the window: menus, popovers, the jump button.
     pub fn popover(&self) -> Rgba {
-        if self.is_dark() { rgb(0x1B1B1F) } else { rgb(0xFFFFFF) }
+        if self.is_dark() { rgb(0x252422) } else { rgb(0xFFFFFF) }
     }
 
     /// A tooltip: a small dark chip in either appearance.
     pub fn tip_bg(&self) -> Rgba {
-        if self.is_dark() { rgb(0x2E2E33) } else { rgb(0x232428) }
+        if self.is_dark() { rgb(0x2F2E2C) } else { rgb(0x232220) }
     }
 
     pub fn tip_text(&self) -> Rgba {
-        rgb(0xF3F2EE)
+        rgb(0xF3F0E9)
     }
 
     pub fn tip_muted(&self) -> Rgba {
-        rgb(0xA3A4AB)
+        rgb(0xA9A7A1)
     }
 
-    /// What went wrong.
+    /// What went wrong: the status red, one red for both.
     pub fn danger(&self) -> Rgba {
-        if self.is_dark() { rgb(0xF0918A) } else { rgb(0xB3261E) }
+        self.red
     }
 
     pub fn danger_bg(&self) -> Rgba {
-        if self.is_dark() { rgba(0xF0918A1F) } else { rgba(0xB3261E14) }
+        Rgba { a: if self.is_dark() { 0.12 } else { 0.08 }, ..self.red }
     }
 
     // ── controls ──
 
     /// The main button under the pointer: a step lighter (dark) or softer (light).
     pub fn primary_hover(&self) -> Rgba {
-        if self.is_dark() { rgb(0x384D63) } else { rgb(0x2C2E34) }
+        if self.is_dark() { rgb(0x334A62) } else { rgb(0x2C2B27) }
     }
 
     /// The main button held down: a step deeper.
     pub fn primary_press(&self) -> Rgba {
-        if self.is_dark() { rgb(0x283849) } else { rgb(0x050506) }
+        if self.is_dark() { rgb(0x233447) } else { rgb(0x050504) }
     }
 
     /// A key hint inside the main button (⌘↵): the label's colour, held back.
@@ -318,17 +378,17 @@ impl Palette {
 
     /// A switch that is on: the accent, deep enough to carry a white knob.
     pub fn switch_on(&self) -> Rgba {
-        if self.is_dark() { rgb(0x4A76A0) } else { self.accent }
+        if self.is_dark() { rgb(0x4378AD) } else { self.accent }
     }
 
     /// A switch that is off: a neutral track, a step off the card.
     pub fn switch_off(&self) -> Rgba {
-        if self.is_dark() { rgb(0x3A3A40) } else { rgb(0xD9D8D2) }
+        if self.is_dark() { rgb(0x42413E) } else { rgb(0xC9C7C2) }
     }
 
     /// The switch's knob, in either state.
     pub fn knob(&self) -> Rgba {
-        if self.is_dark() { rgb(0xF3F2EE) } else { rgb(0xFFFFFF) }
+        if self.is_dark() { rgb(0xF3F0E9) } else { rgb(0xFFFFFF) }
     }
 }
 
@@ -373,6 +433,78 @@ mod tests {
             assert!(contrast(p.on_primary, p.primary) >= 4.5);
             // Reading text is softer than titles, and still far past AAA (7:1).
             assert!(contrast(p.prose, p.bg) < contrast(p.text, p.bg) && contrast(p.prose, p.bg) >= 7.);
+        }
+    }
+
+    /// Lightness (CIE L*, 0–100) of a colour.
+    fn lightness(c: gpui_kit::Rgba) -> f32 {
+        let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let y = 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+        if y > 216. / 24389. { 116. * y.cbrt() - 16. } else { y * 24389. / 27. }
+    }
+
+    /// The dark reading surface is lifted off black, so the cards, code and
+    /// popovers above it read as layers; the sidebar sits behind it, darker
+    /// in either appearance.
+    #[test]
+    fn surfaces_step_up_from_a_sidebar_behind_the_conversation() {
+        let p = Palette::new(WindowAppearance::Dark);
+        assert!((5. ..=10.).contains(&lightness(p.bg)), "dark bg L* {}", lightness(p.bg));
+        let steps = [p.side, p.bg, p.code_bg, p.raised, p.popover()];
+        for pair in steps.windows(2) {
+            assert!(lightness(pair[1]) - lightness(pair[0]) >= 1.5, "{} then {}", lightness(pair[0]), lightness(pair[1]));
+        }
+        assert!(lightness(p.side) < lightness(p.side_hover) && lightness(p.side_hover) < lightness(p.side_sel));
+        let p = Palette::new(WindowAppearance::Light);
+        assert!(lightness(p.side) < lightness(p.bg) && lightness(p.bg) < lightness(p.raised));
+        assert!(lightness(p.side_sel) < lightness(p.side_hover) && lightness(p.side_hover) < lightness(p.side));
+    }
+
+    /// Every neutral, surface or ink, leans the same warm way (the brand's
+    /// Bone), never the cool blue-grey some of them had.
+    #[test]
+    fn the_neutrals_share_one_warm_hue() {
+        for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
+            let p = Palette::new(appearance);
+            let neutrals = [("bg", p.bg), ("side", p.side), ("side_hover", p.side_hover), ("side_sel", p.side_sel), ("raised", p.raised), ("code_bg", p.code_bg), ("text", p.text), ("prose", p.prose), ("text2", p.text2), ("muted", p.muted), ("tip_bg", p.tip_bg()), ("tip_muted", p.tip_muted()), ("switch_off", p.switch_off())];
+            for (name, c) in neutrals {
+                let hsla = gpui_kit::Hsla::from(c);
+                if hsla.s > 0.01 && c != gpui_kit::rgb(0xFFFFFF) {
+                    let hue = hsla.h * 360.;
+                    assert!((20. ..=100.).contains(&hue), "{name} ({appearance:?}) leans {hue:.0}°");
+                }
+            }
+        }
+    }
+
+    /// Ink comes in even steps — titles, reading text, secondary, muted — and
+    /// muted (times, counts) is still easy to read; a link stands apart from
+    /// the words around it rather than reading as faded text.
+    #[test]
+    fn ink_steps_down_evenly_and_links_stand_apart() {
+        for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
+            let p = Palette::new(appearance);
+            let on = |c| contrast(c, p.bg);
+            assert!(on(p.text) > on(p.prose) && on(p.prose) > on(p.text2) && on(p.text2) > on(p.muted));
+            assert!(on(p.muted) >= 5.8, "muted on bg ({appearance:?}): {:.2}", on(p.muted));
+            assert!(contrast(p.accent, p.prose) >= 1.5, "link against the words ({appearance:?}): {:.2}", contrast(p.accent, p.prose));
+        }
+    }
+
+    /// Every language gets every CJK face, its own first: Japanese Han in
+    /// Hiragino's shapes, Chinese in PingFang's, Hangul (and Latin UIs) in
+    /// Apple SD Gothic Neo's.
+    #[test]
+    fn each_language_draws_cjk_in_its_own_faces_first() {
+        use equipe_core::i18n::Lang;
+        for (lang, first) in [(Lang::Ko, "Apple SD Gothic Neo"), (Lang::Ja, "Hiragino Sans"), (Lang::ZhHans, "PingFang SC"), (Lang::ZhHant, "PingFang TC"), (Lang::En, "Apple SD Gothic Neo"), (Lang::De, "Apple SD Gothic Neo")] {
+            let faces = super::fallbacks(lang);
+            let faces = faces.fallback_list();
+            assert_eq!(faces[0], first, "{lang:?}");
+            assert_eq!(faces.len(), 4, "{lang:?}: {faces:?}");
+            for face in ["Apple SD Gothic Neo", "Hiragino Sans", "PingFang SC", "PingFang TC"] {
+                assert!(faces.iter().any(|f| f == face), "{lang:?} lacks {face}");
+            }
         }
     }
 

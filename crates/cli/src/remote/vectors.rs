@@ -849,6 +849,21 @@ fn ticket(status: TicketStatus) -> Ticket {
     }
 }
 
+/// Nemotron's review of the ticket handed in.
+fn code_review() -> equipe_core::protocol::review::CodeReview {
+    use equipe_core::protocol::review::{CodeReview, ReviewPoint, ReviewVerdict};
+    CodeReview {
+        ticket: 38,
+        model: "nvidia/nemotron-example".into(),
+        verdict: ReviewVerdict::NeedsAttention,
+        summary: "A wrong password still gets a session when the lookup fails.".into(),
+        risks: vec![ReviewPoint { file: "src/auth.rs".into(), line: Some(42), why: "The error branch returns Ok: the request goes through.".into() }],
+        missing_tests: vec!["A failed user lookup answers 401.".into()],
+        truncated: false,
+        at: NOW / 1000,
+    }
+}
+
 fn disk_status() -> equipe_core::protocol::disk::DiskStatus {
     use equipe_core::protocol::disk::{DiskLevel, DiskStatus};
     DiskStatus { level: DiskLevel::Critical, free: 4_200_000_000, total: 494_384_795_648, path: "/Users/abel/.equipe".into(), container_free: None }
@@ -923,7 +938,7 @@ fn snapshot() -> Snapshot {
                 mode: None,
                 effort: None,
                 // Handed side work, still at it: a screen attaching now lists it under its member.
-                subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48 }],
+                subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48, ..Default::default() }],
                 // Its conversation being summarized: a screen attaching now says so, timed from `started_at`.
                 compacting: Some(CompactingInfo { trigger: CompactTrigger::Auto, started_at: NOW - 20_000, estimate_ms: 95_000 }),
             },
@@ -949,6 +964,7 @@ fn snapshot() -> Snapshot {
         allowed: vec![],
         browsers_shown: false,
         disk: Some(disk_status()),
+        reviews: vec![code_review()],
     }
 }
 
@@ -1002,6 +1018,7 @@ fn message_vectors() -> Value {
 
     // The board.
     tell(&mut core, &mut examples, "event: ticket changed", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Review) });
+    tell(&mut core, &mut examples, "event: code reviewed", Event::CodeReviewed { squad: SQUAD.into(), review: code_review() });
 
     // Approvals.
     tell(&mut core, &mut examples, "event: approval requested", Event::ApprovalRequested { squad: SQUAD.into(), approval: approval() });
@@ -1099,9 +1116,9 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: text delta", Event::TextDelta { session: pm, text: "보드를 보면".into() });
     tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None, label: None, background: false });
     // Side work handed to a subagent: it starts, takes steps, hands back (the snapshot lists those still at it).
-    tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into() });
+    tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into(), brief: String::new() });
     tell(&mut core, &mut examples, "event: subagent step", Event::SubagentStep { session: pm, id: "toolu_02".into(), step: "Read src/login.tsx".into() });
-    tell(&mut core, &mut examples, "event: subagent ended", Event::SubagentEnded { session: pm, id: "toolu_02".into() });
+    tell(&mut core, &mut examples, "event: subagent ended", Event::SubagentEnded { session: pm, id: "toolu_02".into(), result: None, failed: false });
     tell(&mut core, &mut examples, "event: turn ended", Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(340), ..Usage::default() }) });
     tell(&mut core, &mut examples, "event: turn interrupted", Event::TurnEnded { session: pm, outcome: TurnOutcome::Interrupted, usage: None });
     // Each engine's plan usage, for every screen; a phone that knows no `engine` reads Claude's.

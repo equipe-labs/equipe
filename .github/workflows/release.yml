@@ -31,9 +31,9 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
@@ -99,7 +99,7 @@ jobs:
     concurrency:
       group: release-desktop-bin-${{ matrix.arch }}
       cancel-in-progress: true
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       matrix:
         arch: [aarch64, x86_64]
@@ -140,7 +140,7 @@ jobs:
       group: release-desktop-dmg
       cancel-in-progress: true
     needs: desktop-bin
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
       MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -225,7 +225,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
           - os: ubuntu-24.04
     runs-on: ${{ matrix.os }}
     steps:

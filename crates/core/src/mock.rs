@@ -72,7 +72,7 @@ fn line(agent: &str, seq: u64) -> (LogKind, String) {
         "Reading the ticket spec and acceptance criteria",
         "The board query needs an index on (status, updated_at)",
         "Running tests: 42 passed, 0 failed",
-        "티켓 상태를 review로 옮기고 QA에게 넘깁니다",
+        "Moving the ticket to review and handing it to QA",
         "Refactoring the paging logic so only visible rows are loaded",
         "Checking memory budget: footprint within limits",
     ];

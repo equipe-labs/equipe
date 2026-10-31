@@ -450,6 +450,7 @@ pub fn hint(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .border_1()
                     .border_color(p.hair)
                     .font_family(MONO)
+                    .font_features(crate::theme::key_face())
                     .text_size(px(SMALL - 1.))
                     .text_color(p.muted)
                     .child("⏎"),

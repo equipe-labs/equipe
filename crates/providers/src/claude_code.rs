@@ -287,6 +287,8 @@ struct Pending {
 
 /// Past this many lines a diff carried with a tool's outcome is cut.
 const DIFF_LINES: usize = 400;
+/// What a subagent was asked, and what it handed back, kept up to this many characters.
+const SUBAGENT_WORDS: usize = 4000;
 
 /// Folds Claude Code's `stream-json` lines into one turn.
 #[derive(Default)]
@@ -304,6 +306,8 @@ pub struct TurnCollector {
     result: Option<Result<TurnResult>>,
     /// Subagents handed work this turn and not yet back.
     subagents: std::collections::HashSet<String>,
+    /// Subagents' tool uses not answered yet, by call: whose, and the call.
+    sub_pending: std::collections::HashMap<String, (String, Pending)>,
     /// Commands running on in the background, by their call: done when their task says.
     background: std::collections::HashMap<String, Pending>,
     /// The person's messages Claude Code has read so far — the prompt first.
@@ -395,7 +399,9 @@ impl TurnCollector {
                     (Some("task_notification"), Some(id)) => {
                         let id = id.to_owned();
                         self.subagents.remove(&id);
-                        vec![Activity::SubagentEnded { id }]
+                        let failed = event.get("status").and_then(Value::as_str).is_some_and(|s| s != "completed");
+                        let result = event.get("summary").and_then(Value::as_str).filter(|s| !s.is_empty()).map(|s| s.chars().take(SUBAGENT_WORDS).collect());
+                        vec![Activity::SubagentEnded { id, result, failed }]
                     }
                     _ => Vec::new(),
                 }
@@ -445,17 +451,25 @@ impl TurnCollector {
                         n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens") + n("output_tokens"),
                     );
                 }
-                // Inside a subagent: its steps, as the subagent's.
+                // Inside a subagent: its words and steps, as the subagent's —
+                // each call waiting for its answer, timed from now.
                 if let Some(id) = parent(event) {
-                    return tool_uses(event)
-                        .into_iter()
-                        .filter_map(|a| match a {
-                            Activity::Tool { name, target, .. } => {
-                                Some(Activity::SubagentStep { id: id.to_owned(), step: format!("{name} {}", target.unwrap_or_default()).trim().to_owned() })
-                            }
-                            _ => None,
-                        })
-                        .collect();
+                    let id = id.to_owned();
+                    let now = std::time::Instant::now();
+                    for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
+                        if let (Some(call), Some(name)) = (block.get("id").and_then(Value::as_str), block.get("name").and_then(Value::as_str)) {
+                            let input = block.get("input");
+                            let pending = Pending { name: name.to_owned(), target: tool_target(name, input), since: now, background: false, diff: input.and_then(|i| input_diff(name, i)) };
+                            self.sub_pending.insert(call.to_owned(), (id.clone(), pending));
+                        }
+                    }
+                    let text = message_text(event);
+                    let said = (!text.trim().is_empty()).then(|| Activity::SubagentText { id: id.clone(), text });
+                    let steps = tool_uses(event).into_iter().filter_map(|a| match a {
+                        Activity::Tool { name, target, .. } => Some(Activity::SubagentStep { id: id.clone(), step: format!("{name} {}", target.unwrap_or_default()).trim().to_owned() }),
+                        _ => None,
+                    });
+                    return said.into_iter().chain(steps).collect();
                 }
                 let text = message_text(event);
                 if !text.is_empty() {
@@ -479,9 +493,11 @@ impl TurnCollector {
                         block.get("id").and_then(Value::as_str),
                     ) && matches!(name, "Agent" | "Task")
                     {
-                        let what = block.get("input").and_then(|i| i.get("description")).and_then(Value::as_str).unwrap_or("a subagent");
+                        let input = block.get("input");
+                        let what = input.and_then(|i| i.get("description")).and_then(Value::as_str).unwrap_or("a subagent");
+                        let brief = input.and_then(|i| i.get("prompt")).and_then(Value::as_str).unwrap_or_default().chars().take(SUBAGENT_WORDS).collect();
                         self.subagents.insert(id.to_owned());
-                        out.push(Activity::SubagentStarted { id: id.to_owned(), what: what.chars().take(80).collect() });
+                        out.push(Activity::SubagentStarted { id: id.to_owned(), what: what.chars().take(80).collect(), brief });
                     }
                 }
                 out
@@ -505,6 +521,11 @@ impl TurnCollector {
                 for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
                     let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
                     let text = result_text(block);
+                    // A subagent's call answered: its step, done.
+                    if let Some((sub, pending)) = self.sub_pending.remove(id) {
+                        out.push(Activity::SubagentTool { id: sub, done: tool_done(pending, block, &text, None) });
+                        continue;
+                    }
                     match self.pending.remove(id) {
                         // Started in the background: it answers at once, and runs on.
                         Some(pending) if pending.background && block.get("is_error").and_then(Value::as_bool) != Some(true) => {
@@ -514,7 +535,9 @@ impl TurnCollector {
                         None => {}
                     }
                     if !text.starts_with(LAUNCHED_IN_BACKGROUND) && self.subagents.remove(id) {
-                        out.push(Activity::SubagentEnded { id: id.to_owned() });
+                        let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
+                        let result = (!text.trim().is_empty()).then(|| text.chars().take(SUBAGENT_WORDS).collect());
+                        out.push(Activity::SubagentEnded { id: id.to_owned(), result, failed });
                     }
                 }
                 out
@@ -1225,8 +1248,8 @@ mod tests {
         assert_eq!(started, vec![
             Activity::Tool { name: "Agent".into(), target: Some("Run the iOS tests".into()), label: None, background: false },
             Activity::Tool { name: "Task".into(), target: Some("Read the logs".into()), label: None, background: false },
-            Activity::SubagentStarted { id: "toolu_1".into(), what: "Run the iOS tests".into() },
-            Activity::SubagentStarted { id: "toolu_2".into(), what: "Read the logs".into() },
+            Activity::SubagentStarted { id: "toolu_1".into(), what: "Run the iOS tests".into(), brief: "…".into() },
+            Activity::SubagentStarted { id: "toolu_2".into(), what: "Read the logs".into(), brief: "…".into() },
         ]);
         // A subagent's own steps are its, not the member's.
         let step = collector.on_event(&json!({ "type": "assistant", "parent_tool_use_id": "toolu_1", "message": { "content": [
@@ -1240,7 +1263,7 @@ mod tests {
             { "type": "tool_result", "tool_use_id": "toolu_1", "content": "12 passed" },
         ]}}));
         let ended: Vec<Activity> = ended.into_iter().filter(|a| !matches!(a, Activity::ToolDone(_))).collect();
-        assert_eq!(ended, vec![Activity::SubagentEnded { id: "toolu_1".into() }]);
+        assert_eq!(ended, vec![Activity::SubagentEnded { id: "toolu_1".into(), result: Some("12 passed".into()), failed: false }]);
 
         // One run in the background answers at once, and hands back later.
         let launched = collector.on_event(&json!({ "type": "user", "message": { "content": [
@@ -1251,8 +1274,41 @@ mod tests {
         let progress = collector.on_event(&json!({ "type": "system", "subtype": "task_progress", "tool_use_id": "toolu_2", "description": "Reading build.log" }));
         assert_eq!(progress, vec![Activity::SubagentStep { id: "toolu_2".into(), step: "Reading build.log".into() }]);
         let done = collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "toolu_2", "status": "completed" }));
-        assert_eq!(done, vec![Activity::SubagentEnded { id: "toolu_2".into() }]);
+        assert_eq!(done, vec![Activity::SubagentEnded { id: "toolu_2".into(), result: None, failed: false }]);
         assert!(collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "toolu_2" })).is_empty(), "once");
+    }
+
+    #[test]
+    fn a_subagents_brief_words_steps_and_result_are_kept_for_a_look_inside() {
+        let mut collector = TurnCollector::new();
+        let started = collector.on_event(&json!({ "type": "assistant", "parent_tool_use_id": null, "message": { "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "Agent", "input": { "description": "Capture 3 landings", "prompt": "Open linear.app, vercel.com and arc.net; capture each hero." } },
+        ]}}));
+        assert!(started.contains(&Activity::SubagentStarted { id: "toolu_1".into(), what: "Capture 3 landings".into(), brief: "Open linear.app, vercel.com and arc.net; capture each hero.".into() }));
+        // Its words and a step, as its own.
+        let said = collector.on_event(&json!({ "type": "assistant", "parent_tool_use_id": "toolu_1", "message": { "content": [
+            { "type": "text", "text": "Starting with linear.app." },
+            { "type": "tool_use", "id": "toolu_9", "name": "Bash", "input": { "command": "ls shots" } },
+        ]}}));
+        assert_eq!(said, vec![
+            Activity::SubagentText { id: "toolu_1".into(), text: "Starting with linear.app.".into() },
+            Activity::SubagentStep { id: "toolu_1".into(), step: "Bash ls shots".into() },
+        ]);
+        // Its call answered: the subagent's, never the member's.
+        let answered = collector.on_event(&json!({ "type": "user", "parent_tool_use_id": "toolu_1", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_9", "content": "linear.png" },
+        ]}}));
+        match answered.as_slice() {
+            [Activity::SubagentTool { id, done }] => {
+                assert_eq!((id.as_str(), done.name.as_str(), done.target.as_deref(), done.ok, done.output.as_str()), ("toolu_1", "Bash", Some("ls shots"), true, "linear.png"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // It hands back: what it found, or that it failed.
+        let back = collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": "couldn't reach arc.net" },
+        ]}}));
+        assert!(back.contains(&Activity::SubagentEnded { id: "toolu_1".into(), result: Some("couldn't reach arc.net".into()), failed: true }), "{back:?}");
     }
 
     #[test]

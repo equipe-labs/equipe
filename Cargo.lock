@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.86.4"
+version = "0.99.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2229,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.86.4"
+version = "0.99.0"
 dependencies = [
  "base64 0.23.1",
  "equipe-desktop-control",
@@ -2251,7 +2251,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.86.4"
+version = "0.99.0"
 dependencies = [
  "alacritty_terminal",
  "base64 0.23.1",
@@ -2283,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop-control"
-version = "0.86.4"
+version = "0.99.0"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.86.4"
+version = "0.99.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.86.4"
+version = "0.99.0"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",
@@ -3020,8 +3020,6 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc8b7def8e74b0d822d3e96f6b28fb5a2c20eb7a83d30d22fa59ca8088d1159b"
 dependencies = [
  "anyhow",
  "block2 0.6.2",

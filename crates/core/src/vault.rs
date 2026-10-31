@@ -207,6 +207,19 @@ impl Vault {
     }
 }
 
+/// What marks a field as the username one, in any language: the locale
+/// files' words, as a regular expression's alternatives.
+fn login_fields() -> String {
+    let escape = |w: &str| w.chars().fold(String::new(), |mut out, c| {
+        if "\\^$.*+?()[]{}|/-".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+        out
+    });
+    crate::i18n::every("match.login_fields").iter().map(|w| escape(w)).collect::<Vec<_>>().join("|")
+}
+
 /// What equipe runs in a member's page (Playwright's `browser_evaluate`) to
 /// sign in: fills the username and password fields it finds — the password
 /// one, and the username one before it, or one marked as a username or email
@@ -217,6 +230,7 @@ impl Vault {
 pub fn fill_script(username: &str, password: &str) -> String {
     let u = serde_json::to_string(username).unwrap_or_default();
     let p = serde_json::to_string(password).unwrap_or_default();
+    let field = serde_json::to_string(&login_fields()).unwrap_or_default();
     format!(
         r#"() => {{
   const U = {u}, P = {p};
@@ -230,7 +244,7 @@ pub fn fill_script(username: &str, password: &str) -> String {
   const inputs = Array.from(document.querySelectorAll('input')).filter(shown);
   const pass = inputs.find((i) => i.type === 'password');
   const textual = (i) => ['text', 'email', 'tel', ''].includes(i.type) || i.type === undefined;
-  const named = inputs.find((i) => textual(i) && /user|login|email|account|id|아이디|이메일/i.test([i.autocomplete, i.name, i.id, i.placeholder, i.getAttribute('aria-label')].join(' ')));
+  const named = inputs.find((i) => textual(i) && new RegExp({field}, 'i').test([i.autocomplete, i.name, i.id, i.placeholder, i.getAttribute('aria-label')].join(' ')));
   let user = named;
   if (pass && !user) {{ const before = inputs.slice(0, inputs.indexOf(pass)).filter(textual); user = before[before.length - 1]; }}
   if (!pass && !user) return JSON.stringify({{ filled: [], submitted: false }});

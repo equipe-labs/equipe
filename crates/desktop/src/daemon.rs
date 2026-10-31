@@ -52,7 +52,8 @@ impl Target {
 }
 
 /// What the link tells the window.
-// The snapshot is the big one, and comes once a connection: not worth a box.
+// The hello is the big one, and there is one per connection; boxing it would
+// spare the events that follow a few hundred bytes each, in a channel.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Update {

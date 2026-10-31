@@ -1209,7 +1209,7 @@ impl Paragraph {
                 let mut highlight = mark_highlight(style, node_cx, cx);
                 if let Some(link_mark) = style.link.clone() {
                     highlight.style.color = Some(node_cx.style.link());
-                    highlight.style.underline = Some(node_cx.style.link_underline()); // equipe: the style's underline
+                    highlight.style.underline = node_cx.style.link_underline_for(&link_mark.url); // equipe: the style's underline
                     links.push((inner_range.clone(), link_mark));
                 }
                 node_highlights.push((inner_range, highlight));
@@ -2123,7 +2123,7 @@ impl PartialEq for NodeContext {
 fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHighlight {
     let mut highlight = HighlightStyle::default();
     if mark.bold {
-        highlight.font_weight = Some(FontWeight::BOLD);
+        highlight.font_weight = Some(node_cx.style.strong_weight()); // equipe: the style's weight
     }
     if mark.italic {
         highlight.font_style = Some(FontStyle::Italic);
@@ -2327,7 +2327,7 @@ impl Paragraph {
 
                     if let Some(mut link_mark) = style.link.clone() {
                         highlight.style.color = Some(node_cx.style.link());
-                        highlight.style.underline = Some(node_cx.style.link_underline()); // equipe: the style's underline
+                        highlight.style.underline = node_cx.style.link_underline_for(&link_mark.url); // equipe: the style's underline
 
                         // convert link references, replace link
                         if let Some(identifier) = link_mark.identifier.as_ref() {
@@ -2443,7 +2443,7 @@ impl Paragraph {
                                 .clone(),
                         );
                         object_style.color = Some(node_cx.style.link());
-                        object_style.underline = Some(node_cx.style.link_underline()); // equipe: the style's underline
+                        object_style.underline = node_cx.style.link_underline_for(&link.url); // equipe: the style's underline
                     }
                 }
                 let rendered_node = node.clone();
@@ -2509,7 +2509,7 @@ impl Paragraph {
 
                     if let Some(mut link_mark) = style.link.clone() {
                         highlight.style.color = Some(node_cx.style.link());
-                        highlight.style.underline = Some(node_cx.style.link_underline()); // equipe: the style's underline
+                        highlight.style.underline = node_cx.style.link_underline_for(&link_mark.url); // equipe: the style's underline
 
                         if let Some(identifier) = link_mark.identifier.as_ref()
                             && let Some(mark) = node_cx.link_refs.get(identifier)
@@ -2919,6 +2919,13 @@ impl BlockNode {
     }
 }
 
+/// equipe: how wide a list's marker gutter is — a bullet's, or a number's
+/// (room for `10.`) — and so how far its items' text, and lists under them,
+/// sit in.
+fn list_gutter(ordered: bool) -> Rems {
+    if ordered { rems(1.625) } else { rems(1.375) }
+}
+
 impl BlockNode {
     fn render_list_item_row(
         content: AnyElement,
@@ -2934,13 +2941,23 @@ impl BlockNode {
             .relative()
             .items_start()
             .content_start()
+            // equipe: the marker in a gutter of its own width, in the marker's
+            // colour, so every item's text starts on one line — a wrapped line,
+            // `9.` and `10.`, a sub-list under its item's words — and the marker
+            // sits back from them. Set right, the same room from every marker
+            // to its words, and a list's numbers keep their dots in a column.
             .when(!options.todo && checked.is_none(), |this| {
-                this.child(list_item_prefix(
-                    ix,
-                    options.list_start,
-                    options.ordered,
-                    options.depth,
-                ))
+                let marker = list_item_prefix(ix, options.list_start, options.ordered, options.depth);
+                this.child(
+                    div()
+                        .flex_none()
+                        .w(list_gutter(options.ordered))
+                        .text_color(style.list_marker())
+                        .flex()
+                        .justify_end()
+                        .pr(rems(0.4375))
+                        .child(marker),
+                )
             })
             .when_some(checked, |this, checked| {
                 // Todo list checkbox
@@ -3028,7 +3045,7 @@ impl BlockNode {
                                             div().child(preceding_row).child(
                                                 div()
                                                     .w_full()
-                                                    .pl(rems(1.))
+                                                    .pl(list_gutter(options.ordered)) // equipe: under the item's words
                                                     .overflow_hidden()
                                                     .child(text),
                                             ),
@@ -3047,7 +3064,7 @@ impl BlockNode {
                                 ));
                             }
                             BlockNode::List { .. } => {
-                                items.push(div().ml(rems(1.)).child(child.render_block(
+                                items.push(div().ml(list_gutter(options.ordered)).child(child.render_block( // equipe: under the item's words
                                     NodeRenderOptions {
                                         depth: options.depth + 1,
                                         todo: checked.is_some(),
@@ -3095,7 +3112,7 @@ impl BlockNode {
                                         div()
                                             .w_full()
                                             .min_w_0()
-                                            .pl(rems(1.))
+                                            .pl(list_gutter(options.ordered)) // equipe: under the item's words
                                             .overflow_hidden()
                                             .child(block),
                                     );

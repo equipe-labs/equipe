@@ -156,6 +156,9 @@ pub struct Config {
     /// The language equipe speaks to the person in until a screen says
     /// otherwise: notices, errors. What it tells the models stays English.
     pub lang: crate::i18n::Lang,
+    /// An NVIDIA Nemotron model on Nebius Token Factory reviews each code
+    /// ticket handed in (`nemotron`); `None`: no `NEBIUS_API_KEY`, no review.
+    pub nemotron: Option<crate::nemotron::Config>,
 }
 
 impl Config {
@@ -176,6 +179,7 @@ impl Config {
             browser_host: cfg!(target_os = "macos"),
             person_home: None,
             lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
+            nemotron: crate::nemotron::Config::from_env_or_saved(&equipe_home()).ok(),
         }
     }
 
@@ -445,6 +449,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let (host_tx, host_rx) = mpsc::unbounded_channel();
     let mut config = config;
     let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
+    if config.persist && config.nemotron.is_none() {
+        crate::daemon_log!("equipe: no Nebius key yet (Settings › AI platforms, or `equipe login nebius`): handed-in work isn't reviewed by Nemotron");
+    }
     // The logins: their passwords in the Keychain (in memory for tests).
     let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { Box::new(vault::Keychain) };
     let vault = vault::Vault::open(&config.home, secrets);
@@ -505,6 +512,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
+        installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
         design_watch: HashMap::new(),
@@ -642,9 +650,8 @@ struct Session {
     /// engine as — each part with its project — in place of the message.
     send_now_prompt: Option<String>,
     /// The subagents it handed work to this turn and that haven't handed
-    /// back — its id, what it was handed, its latest step, since when — for a
-    /// screen that attaches now.
-    subagents: Vec<(String, String, Option<String>, std::time::Instant)>,
+    /// back, for a screen that attaches now.
+    subagents: Vec<SubRun>,
     /// Its conversation being compacted now: as the screens were told, the
     /// key its time is kept under, and since when.
     compacting: Option<(equipe_protocol::CompactingInfo, String, std::time::Instant)>,
@@ -662,6 +669,9 @@ struct Session {
     /// is about (`None`: the whole squad's). A lane runs that conversation's
     /// turns beside the member's others; it is never a member of its own.
     lane: Option<(SessionId, Option<String>)>,
+    /// A lane that is a conversation the person opened with the PM: listed,
+    /// kept through restarts, never folded away.
+    kept: bool,
     /// When it expects its work done, and what it ships live, as it said.
     estimate: Option<Estimate>,
     /// When its turn running now began (unix seconds).
@@ -776,11 +786,15 @@ enum Internal {
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
     SignInEnded(Engine, u64),
+    /// Installing an engine's tool ended.
+    InstallEnded(Engine),
     /// Whether Claude is signed in, as just looked at off the loop.
     ClaudeReady(bool),
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
+    /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
+    Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -913,6 +927,8 @@ struct Runtime {
     /// Sign-ins under way on this machine, by engine: which one, and its task.
     sign_ins: HashMap<Engine, (u64, JoinHandle<()>)>,
     next_sign_in: u64,
+    /// Engines whose tool is being installed on this machine.
+    installs: std::collections::HashSet<Engine>,
     /// The `codex` the person's Codex sign-in runs.
     codex_binary: String,
     /// Both engines' plans, and members moving between them (`engines`).
@@ -984,8 +1000,10 @@ impl Wake {
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
+            Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
+            Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -1156,6 +1174,10 @@ impl Runtime {
                 }
                 Internal::Engines(engines) => self.publish_engines(engines),
                 Internal::ClaudeReady(ok) => self.claude_ready(ok),
+                Internal::InstallEnded(engine) => {
+                    self.installs.remove(&engine);
+                    self.publish_nebius();
+                }
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
                         self.sign_ins.remove(&engine);
@@ -1167,6 +1189,7 @@ impl Runtime {
                     }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
+                Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -1270,13 +1293,25 @@ impl Runtime {
                         }
                     }
                 }
-                Event::SubagentStarted { id, what, .. } => session.subagents.push((id.clone(), what.clone(), None, std::time::Instant::now())),
+                Event::SubagentStarted { id, what, brief, .. } => session.subagents.push(SubRun {
+                    id: id.clone(),
+                    what: what.clone(),
+                    brief: brief.clone(),
+                    step: None,
+                    since: std::time::Instant::now(),
+                    entries: std::collections::VecDeque::new(),
+                }),
                 Event::SubagentStep { id, step, .. } => {
-                    if let Some(sub) = session.subagents.iter_mut().find(|s| s.0 == *id) {
-                        sub.2 = Some(step.clone());
+                    if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
+                        sub.step = Some(step.clone());
                     }
                 }
-                Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.0 != *id),
+                Event::SubagentEntry { id, entry, .. } => {
+                    if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
+                        sub.keep(entry.clone());
+                    }
+                }
+                Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.id != *id),
                 Event::TurnEnded { usage, .. } => {
                     // Whatever didn't hand back ended with the turn.
                     session.subagents.clear();
@@ -1335,7 +1370,7 @@ impl Runtime {
         if self.codex_reading || self.codex_read.is_some_and(|at| at.elapsed() < CODEX_USAGE_EVERY) {
             return;
         }
-        let members = self.sessions.values().any(|s| s.engine == Engine::Codex && has_tools(s));
+        let members = self.sessions.values().any(|s| s.engine == Engine::Codex && has_tools(s) && !s.model.as_deref().is_some_and(crate::nemotron::is_agent_model));
         if !(members || asked) || codex_app::find(&self.config.codex_binary).is_none() {
             return;
         }
@@ -1363,6 +1398,25 @@ impl Runtime {
             self.plan_types.insert(Engine::Codex, plan.clone());
         }
         self.publish(Event::PlanUsage { usage: codex_plan(&limits), engine: Engine::Codex });
+    }
+
+    /// Whether members can run on Nemotron through Token Factory: a key in the
+    /// daemon's environment, and the Codex CLI to run them on.
+    /// A key saved since the daemon started (`equipe login nebius`), taken up
+    /// when there was none.
+    fn refresh_nemotron(&mut self) {
+        if self.config.nemotron.is_none() && crate::nemotron::saved_key(&self.config.home).is_some() {
+            self.config.nemotron = crate::nemotron::Config::from_env_or_saved(&self.config.home).ok();
+        }
+    }
+
+    fn nebius_ready(&self) -> bool {
+        self.config.nemotron.is_some() && codex_app::find(&self.config.codex_binary).is_some()
+    }
+
+    /// Whether no engine is signed in: neither Claude Code nor Codex.
+    async fn nothing_signed_in(&mut self) -> bool {
+        first_ready_engine(&[Engine::Claude, Engine::Codex], &self.config.store, &self.config.claude_binary, &self.config.codex_binary).await.is_none()
     }
 
     /// The models the person's Codex CLI offers, its default first; kept a while.
@@ -1436,14 +1490,15 @@ impl Runtime {
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
             Command::Submit { session, text, about } => {
-                self.said_about = about;
+                // A conversation the person opened is about its own project, whatever the screen shows.
+                self.said_about = self.conversation_about(session).or(about);
                 let session = self.route(session);
                 self.note_person_active(session);
                 self.submit(session, text).await;
                 self.said_about = None;
             }
             Command::SubmitLater { session, text, about } => {
-                self.said_about = about;
+                self.said_about = self.conversation_about(session).or(about);
                 let session = self.route(session);
                 self.note_person_active(session);
                 match self.sessions.get(&session) {
@@ -1564,6 +1619,7 @@ impl Runtime {
                 }
             }
             Command::AddProject { squad, path } => self.add_project(squad, path),
+            Command::RemoveProject { squad, path } => self.remove_project(&squad, &path),
             Command::SetHq { squad, path } => self.set_hq(&squad, path),
             Command::SaveLogin { draft } => self.with_vault(move |vault| vault.save(draft, now_secs()).map(|_| ())),
             Command::DeleteLogin { id } => self.with_vault(move |vault| vault.delete(id)),
@@ -1601,6 +1657,9 @@ impl Runtime {
             Command::DeclineRoutine { squad, id } => self.decline_routine(&squad, id),
             Command::SetIdleWake { squad, hours } => self.set_idle_wake(&squad, hours).await,
             Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
+            Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
+            Command::MoveConversation { session, project } => self.move_conversation(session, project),
+            Command::CloseConversation { session } => self.close_conversation(session).await,
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -1644,7 +1703,13 @@ impl Runtime {
             Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
             Command::DiskScan => self.disk_report(None, true),
             Command::DiskClean { ids } => self.disk_clean(ids, None),
-            Command::Engines => self.look_at_engines(),
+            Command::DiskRun { id } => self.disk_run(id),
+            Command::Engines => {
+                self.refresh_nemotron();
+                self.look_at_engines();
+                self.publish_nebius();
+            }
+            Command::SetNebiusKey { key } => self.set_nebius_key(key),
             Command::SignIn { engine, device } => self.sign_in(engine, device),
             Command::SignInCancel { engine } => {
                 if let Some((_, task)) = self.sign_ins.remove(&engine) {
@@ -1654,6 +1719,7 @@ impl Runtime {
                 }
             }
             Command::SignOut { engine } => self.sign_out(engine),
+            Command::InstallEngine { engine } => self.install_engine(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
             Command::SetPmAccepts { squad, on } => {
                 if let Some(journal) = self.journal(&squad) {
@@ -1680,6 +1746,36 @@ impl Runtime {
             let engines = crate::engines::statuses(&claude, &codex, &store).await;
             let _ = internal.send(Internal::Engines(engines));
         });
+    }
+
+    /// Nebius Token Factory as it stands, for every screen: where the key
+    /// comes from, whether Codex's agent is here — never the key.
+    fn publish_nebius(&mut self) {
+        let cfg = self.config.nemotron.as_ref();
+        let status = equipe_protocol::NebiusStatus {
+            key: if cfg.is_some() { crate::nemotron::key_source(&self.config.home) } else { equipe_protocol::NebiusKey::None },
+            codex: codex_app::find(&self.config.codex_binary).is_some(),
+            model: cfg.and_then(|c| c.model.clone()),
+            provider: cfg.map(|c| c.provider_name.clone()).unwrap_or_else(|| crate::nemotron::PROVIDER_NAME.to_owned()),
+        };
+        self.publish(Event::Nebius { status });
+    }
+
+    /// Save the person's Nebius key here (or forget it), and use it from now
+    /// on: members starting on Nebius and reviews. The environment's key, when
+    /// set, still comes first.
+    fn set_nebius_key(&mut self, key: Option<String>) {
+        let home = self.config.home.clone();
+        let done = match key {
+            Some(key) if !crate::nemotron::key_is_plausible(&key) => Err(say!(self, "error.nebius_key_invalid")),
+            Some(key) => crate::nemotron::save_key(&home, &key).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
+            None => crate::nemotron::forget_key(&home).map(|_| ()).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
+        };
+        if let Err(why) = done {
+            self.error(None, why, None);
+        }
+        self.config.nemotron = crate::nemotron::Config::from_env_or_saved(&home).ok();
+        self.publish_nebius();
     }
 
     /// The engines as just looked at, with who is on each and the sign-ins
@@ -1718,6 +1814,23 @@ impl Runtime {
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
         });
         self.sign_ins.insert(engine, (id, task));
+    }
+
+    /// Install `engine`'s tool here with its maker's installer, off the loop
+    /// (once at a time), then look at the engines again.
+    fn install_engine(&mut self, engine: Engine) {
+        use equipe_protocol::InstallStep;
+        if !self.installs.insert(engine) {
+            return;
+        }
+        self.publish(Event::EngineInstall { engine, step: InstallStep::Running });
+        let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        tokio::spawn(async move {
+            let step = crate::engines::install(engine).await;
+            let _ = internal.send(Internal::Event(Box::new(Event::EngineInstall { engine, step })));
+            let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
+            let _ = internal.send(Internal::InstallEnded(engine));
+        });
     }
 
     /// What was read of the Codex account's plan, forgotten: signed out, or
@@ -1777,6 +1890,28 @@ impl Runtime {
             let result = crate::squads::add_folder(&home, &squad, &path.to_string_lossy(), user_home.as_deref());
             let _ = internal.send(Internal::ProjectAdded { squad, result });
         });
+    }
+
+    /// A project taken off the squad: its folder, tickets and branches stay;
+    /// every screen has the list again, and the PM knows.
+    fn remove_project(&mut self, squad: &str, path: &Path) {
+        let removed = match self.journal(squad) {
+            Some(journal) if journal.projects().unwrap_or_default().iter().any(|p| p == path) => journal.remove_project(path).map_err(|e| e.to_string()),
+            Some(_) => Err(path.display().to_string()),
+            None => return,
+        };
+        match removed {
+            Ok(()) => {
+                let name = crate::board::project_name(path);
+                crate::daemon_log!("equipe: {squad} no longer works on {name} ({})", path.display());
+                self.publish_projects(squad);
+                self.brief_pm(squad, format!("The person took {name} ({}) off the squad's projects; its folder, tickets and branches stay.", path.display()), None);
+            }
+            Err(why) => {
+                let message = say!(self, "error.project_not_removed", why = why);
+                self.squad_error(squad, message);
+            }
+        }
     }
 
     /// A project added: every screen of the squad has the list again, and the
@@ -1870,6 +2005,29 @@ runbooks and reports live there, and work across the projects or on running them
             crate::daemon_log!("equipe: {squad}: the routines weren't kept: {err}");
         }
         self.publish(Event::RoutinesChanged { squad: squad.to_owned(), routines });
+    }
+
+    /// A security engineer joining brings the weekly security check — once:
+    /// the person changes or deletes it like any routine, and it stays so.
+    fn add_security_check(&mut self, squad: &str) {
+        let lang = crate::i18n::Lang::resolve_in(&self.config.home, crate::i18n::Front::App);
+        let Some(journal) = self.journal(squad) else { return };
+        if journal.security_check_added() {
+            return;
+        }
+        let mut all = journal.routines();
+        if all.len() >= MAX_ROUTINES {
+            crate::daemon_log!("equipe: {squad}: no room for the weekly security check ({MAX_ROUTINES} routines)");
+            return;
+        }
+        let id = all.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        let mut check = crate::heartbeat::weekly_security_check(lang, id);
+        check.next_run = Some(routines::next_run(check.when, now_secs(), &routines::Local));
+        all.push(check);
+        if let Err(err) = journal.set_security_check_added() {
+            crate::daemon_log!("equipe: {squad}: the security check wasn't marked added: {err}");
+        }
+        self.keep_routines(squad, all);
     }
 
     /// The person makes or changes a routine: numbered if new, its next run worked out.
@@ -2033,7 +2191,8 @@ runbooks and reports live there, and work across the projects or on running them
     /// It is about the project of the ticket it names (none named: the whole
     /// squad); a turn under way about another goes on about its own after it.
     fn show_news(&mut self, pm: SessionId, text: String) {
-        let at = self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
+        // Not into a conversation the person opened: those are theirs.
+        let at = self.sessions.iter().find(|(_, s)| !s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
         let desk = self.sessions.get(&at).filter(|s| s.work.is_none()).map(|s| (scope::current(s.transcript.entries()).flatten(), s.is_working(), s.squad.clone()));
         let Some((now, working, Some(squad))) = desk else {
             return self.publish(Event::Notice { session: at, text });
@@ -2090,6 +2249,7 @@ runbooks and reports live there, and work across the projects or on running them
     // ── sessions ──
 
     async fn start(&mut self, id: SessionId, spec: SessionSpec) {
+        self.refresh_nemotron();
         if self.sessions.contains_key(&id) {
             return self.error(Some(id), say!(self, "error.already_open", id = id), None);
         }
@@ -2111,8 +2271,16 @@ runbooks and reports live there, and work across the projects or on running them
             (None, None) => {}
         }
 
+        // NVIDIA's models on Nebius Token Factory run on Codex's agent (`nemotron`).
+        let mut on_nebius = spec.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
         let engine = match spec.engine {
+            // Named, but nothing at all is signed in: Nemotron, rather than failing.
+            Some(_) if !on_nebius && self.nebius_ready() && self.nothing_signed_in().await => {
+                on_nebius = true;
+                Engine::Codex
+            }
             Some(engine) => engine,
+            None if on_nebius => Engine::Codex,
             None => {
                 let preference = match (role, edits) {
                     (Some(_), Some(true)) => [Engine::Claude, Engine::Codex],
@@ -2123,8 +2291,14 @@ runbooks and reports live there, and work across the projects or on running them
                 };
                 match first_ready_engine(&preference, &self.config.store, &self.config.claude_binary, &self.config.codex_binary).await {
                     Some(engine) => engine,
+                    // Nothing signed in, but a Token Factory key: Nemotron, on Codex's agent.
+                    None if self.nebius_ready() => {
+                        on_nebius = true;
+                        Engine::Codex
+                    }
                     None => {
                         let message = say!(self, "error.no_engine");
+                        // A terminal's way; a screen says Settings › AI platforms in the message.
                         return fail(self, message, Some("equipe login"));
                     }
                 }
@@ -2133,6 +2307,10 @@ runbooks and reports live there, and work across the projects or on running them
         // The person's own Codex CLI runs an agent with tools; without it, Codex
         // is equipe's own sign-in, which only answers.
         let codex_cli = engine == Engine::Codex && codex_app::find(&self.config.codex_binary).is_some();
+        on_nebius &= engine == Engine::Codex;
+        if on_nebius && !codex_cli {
+            return fail(self, say!(self, "error.nebius_needs_codex"), Some(crate::engines::installer(Engine::Codex)));
+        }
         if spec.access == Access::EditFiles && engine == Engine::Codex && !codex_cli {
             return fail(self, say!(self, "error.codex_edits"), Some("codex login"));
         }
@@ -2141,12 +2319,30 @@ runbooks and reports live there, and work across the projects or on running them
         let mut codex_cred = None;
         match engine {
             Engine::Codex if codex_cli => {
-                match codex_app::login_status(&self.config.codex_binary).await {
-                    Ok(Some(sign_in)) if sign_in.signed_in() => {}
-                    Ok(_) => return fail(self, say!(self, "error.codex_cli_signed_out"), Some("equipe login codex")),
-                    Err(err) => return fail(self, err.to_string(), Some("equipe status")),
+                if !on_nebius {
+                    match codex_app::login_status(&self.config.codex_binary).await {
+                        Ok(Some(sign_in)) if sign_in.signed_in() => {}
+                        // Signed out, nothing else signed in, and a Token Factory key: Nemotron instead of failing.
+                        Ok(_) if self.config.nemotron.is_some() && self.nothing_signed_in().await => on_nebius = true,
+                        Ok(_) => return fail(self, say!(self, "error.codex_cli_signed_out"), Some("equipe login codex")),
+                        Err(err) => return fail(self, err.to_string(), Some("equipe status")),
+                    }
                 }
-                if model.is_none() {
+                if on_nebius {
+                    let Some(cfg) = self.config.nemotron.clone() else {
+                        return fail(self, say!(self, "error.nebius_no_key"), Some("equipe login nebius"));
+                    };
+                    if !model.as_deref().is_some_and(crate::nemotron::is_agent_model) {
+                        let picked = match tokio::time::timeout(SERVER_WAIT, crate::nemotron::agent_model(&cfg)).await {
+                            Ok(picked) => picked,
+                            Err(_) => Err(crate::nemotron::ReviewError::Timeout),
+                        };
+                        match picked {
+                            Ok(picked) => model = Some(picked),
+                            Err(why) => return fail(self, say!(self, "error.nebius_no_model", why = why.why(self.config.lang)), Some("EQUIPE_NEBIUS_MODEL")),
+                        }
+                    }
+                } else if model.is_none() {
                     // What this account offers, as its own Codex lists it — no id hardcoded.
                     let catalog = match self.codex_catalog().await {
                         Ok(catalog) => catalog,
@@ -2249,6 +2445,12 @@ runbooks and reports live there, and work across the projects or on running them
             (Some(squad), Some(m)) => Some(journal::member_memory_dir(&self.config.home, squad, &m.role)),
             _ => None,
         };
+        if self.config.persist
+            && let Some(squad) = &squad
+            && role.is_some_and(|r| r.id == roles::SECURITY)
+        {
+            self.add_security_check(squad);
+        }
 
         if self.config.persist
             && let Some(squad) = &squad
@@ -2317,11 +2519,22 @@ runbooks and reports live there, and work across the projects or on running them
                 thread: None,
                 threads: HashMap::new(),
                 lane: None,
+                kept: false,
                 estimate: None,
                 turn_began: None,
             },
         );
-        self.publish(Event::SessionStarted { session: id, project, engine, model, workspace, member, squad: squad.clone() });
+        self.publish(Event::SessionStarted { session: id, project, engine, model: model.clone(), workspace, member, squad: squad.clone() });
+        if on_nebius {
+            let model = model.unwrap_or_default();
+            let text = match &self.config.nemotron {
+                // Token Factory and one of NVIDIA's: Nemotron, said as such.
+                Some(cfg) if cfg.provider == crate::nemotron::CODEX_PROVIDER && model.to_ascii_lowercase().starts_with("nvidia/") => say!(self, "notice.on_nebius", model = model),
+                Some(cfg) => say!(self, "notice.on_open_model", model = model, provider = cfg.provider_name.clone()),
+                None => say!(self, "notice.on_nebius", model = model),
+            };
+            self.publish(Event::Notice { session: id, text });
+        }
         // A new member may be just who a waiting ticket needs.
         if let Some(squad) = squad {
             self.dispatch(&squad).await;
@@ -2716,7 +2929,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         if session.lane.is_some() || !session.is_pm() {
             return id;
         }
-        if let Some((&lane, _)) = self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id)) {
+        // Said to the PM itself: its own conversation, not one the person opened beside it.
+        if let Some((&lane, _)) = self.sessions.iter().find(|(_, s)| !s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == id)) {
             return lane;
         }
         if session.work.is_none() {
@@ -2740,51 +2954,13 @@ for one project goes to it as tickets for its owners, with that project — and 
             m.threads.remove(&project).unwrap_or_default()
         };
         let id = equipe_protocol::new_session_id();
-        let lane = Session {
-            squad: m.squad.clone(),
-            project: m.project.clone(),
-            member: m.member.clone(),
-            joined: m.joined,
-            engine: m.engine,
-            model: m.model.clone(),
-            access: m.access,
-            cwd: m.cwd.clone(),
-            sandbox: None,
-            codex: m.codex.clone(),
-            history: thread.history,
-            claude_session: thread.claude_session,
-            work: None,
-            prompts: Vec::new(),
-            title: None,
-            tokens: 0,
-            context: thread.desk_context,
-            desk_context: thread.desk_context,
-            last_turn: None,
-            refresh: None,
-            transcript: Transcript::default(),
-            turn: None,
-            queued: Vec::new(),
-            memo_threads: Vec::new(),
-            memo_thread: None,
-            steer: None,
-            steering: Vec::new(),
-            steer_threads: Vec::new(),
-            stop: None,
-            taken_back: Vec::new(),
-            send_now_prompt: None,
-            subagents: Vec::new(),
-            compacting: None,
-            answers_person: false,
-            effort: None,
-            briefing: Vec::new(),
-            memory: m.memory.clone(),
-            mode: m.mode,
-            thread: project.clone(),
-            threads: HashMap::new(),
-            estimate: None,
-            turn_began: None,
-            lane: Some((main, project.clone())),
-        };
+        let lane = lane_of(main, m, project.clone(), thread, false);
+        self.publish_lane(id, lane, main, project, false);
+        Some(id)
+    }
+
+    /// The new lane `id` of `main`, told to the screens.
+    fn publish_lane(&mut self, id: SessionId, lane: Session, main: SessionId, project: Option<String>, kept: bool) {
         let started = Event::SessionStarted {
             session: id,
             project: lane.project.clone(),
@@ -2796,8 +2972,58 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         self.sessions.insert(id, lane);
         self.publish(started);
-        self.publish(Event::LaneOpened { session: id, of: main, project });
-        Some(id)
+        self.publish(Event::LaneOpened { session: id, of: main, project, kept });
+    }
+
+    /// The person opens a conversation of their own with the squad's PM,
+    /// about `project` (`None`: the whole squad): a fresh one, kept.
+    fn new_conversation(&mut self, squad: &str, id: SessionId, project: Option<String>) {
+        if self.sessions.contains_key(&id) {
+            return self.error(None, say!(self, "error.already_open", id = id), None);
+        }
+        let Some(pm) = self.pm_of(squad) else {
+            return self.squad_error(squad, say!(self, "error.no_member", name = roles::PM));
+        };
+        let Some(m) = self.sessions.get(&pm) else { return };
+        let lane = lane_of(pm, m, project.clone(), DeskThread::default(), true);
+        if self.config.persist
+            && let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad)
+        {
+            let _ = journal.record_conversation(id, project.as_deref(), &lane.cwd);
+        }
+        self.publish_lane(id, lane, pm, project, true);
+    }
+
+    /// A conversation with the PM moves to another project.
+    fn move_conversation(&mut self, id: SessionId, project: Option<String>) {
+        let Some(s) = self.sessions.get_mut(&id).filter(|s| s.kept) else { return };
+        if let Some((_, about)) = s.lane.as_mut() {
+            *about = project.clone();
+        }
+        s.thread = project.clone();
+        let squad = s.squad.clone();
+        if self.config.persist
+            && let Some(journal) = squad.as_deref().and_then(|q| journal_for(&mut self.journals, &self.config.home, q))
+        {
+            let _ = journal.set_conversation_project(id, project.as_deref());
+        }
+        self.publish(Event::LaneMoved { session: id, project });
+    }
+
+    /// A conversation with the PM put away: its turn stops, it leaves the list.
+    async fn close_conversation(&mut self, id: SessionId) {
+        let Some(squad) = self.sessions.get(&id).filter(|s| s.kept).map(|s| s.squad.clone()) else { return };
+        if self.config.persist
+            && let Some(journal) = squad.as_deref().and_then(|q| journal_for(&mut self.journals, &self.config.home, q))
+        {
+            let _ = journal.close_conversation(id);
+        }
+        self.close(id).await;
+    }
+
+    /// The project a conversation the person opened is about, if `id` is one.
+    fn conversation_about(&self, id: SessionId) -> Option<Option<String>> {
+        self.sessions.get(&id).filter(|s| s.kept).and_then(|s| s.lane.as_ref()).map(|(_, project)| project.clone())
     }
 
     /// Lanes left with nothing to do for a while go back into their members.
@@ -2805,7 +3031,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let idle: Vec<SessionId> = self
             .sessions
             .iter()
-            .filter(|(_, s)| s.lane.is_some() && !s.is_working() && s.queued.is_empty())
+            .filter(|(_, s)| s.lane.is_some() && !s.kept && !s.is_working() && s.queued.is_empty())
             .filter(|(_, s)| s.last_turn.is_none_or(|t| t.elapsed() > LANE_IDLE))
             .map(|(&id, _)| id)
             .collect();
@@ -2848,7 +3074,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             .iter()
             .filter_map(|(project, t)| Some((project.clone().unwrap_or_default(), t.claude_session.clone()?)))
             .collect();
-        for s in self.sessions.values().filter(|s| s.lane.as_ref().is_some_and(|(of, _)| *of == main)) {
+        for s in self.sessions.values().filter(|s| !s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == main)) {
             if let (Some((_, project)), Some(claude)) = (&s.lane, &s.claude_session) {
                 others.insert(project.clone().unwrap_or_default(), claude.clone());
             }
@@ -3058,7 +3284,18 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let binary = self.config.codex_binary.clone();
                 let lang = self.config.lang;
                 let model = session.model.clone();
-                let effort = session.effort.clone();
+                let mut effort = session.effort.clone();
+                // NVIDIA's models: Codex's agent with Token Factory as its provider.
+                let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+                let provider = match (&self.config.nemotron, nebius) {
+                    (Some(cfg), true) => {
+                        env.push(cfg.codex_env());
+                        effort = crate::nemotron::agent_effort(effort.as_deref()).map(str::to_owned);
+                        Some(cfg.codex_provider())
+                    }
+                    (None, true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                    (_, false) => None,
+                };
                 // equipe's servers only, as Claude Code gets them: the board's tools
                 // never ask; the browser's and the desktop's ask unless the mode lets them.
                 let servers = match (&squad, &session.member, &self.config.equipe_binary) {
@@ -3127,6 +3364,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         mcp_servers: servers.as_ref(),
                         writable: &writable,
                         env: &env,
+                        provider: provider.as_ref(),
                     };
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
@@ -3136,6 +3374,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                             streamed = true;
                         }
                         match activity {
+                            // Token Factory bills per token: no plan, no limits to show.
+                            Activity::Limits(_) if nebius => {}
                             Activity::Limits(limits) => {
                                 let _ = internal.send(Internal::CodexLimits(Some(limits)));
                             }
@@ -3147,12 +3387,16 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }
                     })
                     .await;
+                    // On Token Factory: what was asked of it, for the log — never the key or the text.
+                    if let (true, Ok(turn)) = (nebius, &outcome) {
+                        crate::daemon_log!("{}", nebius_log(model.as_deref().unwrap_or_default(), turn));
+                    }
                     // Stopped: the turn's end was said already, and what follows it done.
                     if outcome.as_ref().is_ok_and(|turn| turn.result.status == "interrupted") {
                         return;
                     }
                     let thread = outcome.as_ref().ok().and_then(|turn| turn.thread_id.clone());
-                    let result = outcome.map(|turn| turn.result).map_err(|err| codex_cli_failure(err, lang));
+                    let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, lang) } else { codex_cli_failure(err, lang) });
                     let reply = finish_turn(&emit, id, result, streamed);
                     let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session: thread, ticket }));
                 })
@@ -3919,6 +4163,13 @@ todo); or drop it if it's no longer wanted.]"
             }
             ticket.worktree = kept_worktree.clone();
         }
+        // Code handed in, committed on its branch: Nemotron reads its diff, off the loop.
+        if how == WorkEnd::HandedIn
+            && !ticket.kind.in_home()
+            && let Some(sandbox) = &work.sandbox
+        {
+            self.ask_for_review(&squad, &ticket, sandbox.clone(), id);
+        }
         let handed_in = match (&how, &summary) {
             (WorkEnd::HandedIn, Some(summary)) if ticket.kind.in_home() => Some(self.home_hand_in(&squad, &ticket, work.sandbox.as_ref(), summary)),
             _ => summary.clone(),
@@ -4062,6 +4313,73 @@ todo); or drop it if it's no longer wanted.]"
 them with `propose_accept`. Then carry on with what else waits.]"
                 );
                 let _ = self.internal.send(Internal::Wake { session: pm, prompt });
+            }
+        }
+    }
+
+    /// An NVIDIA Nemotron model on Nebius Token Factory reads `ticket`'s
+    /// branch against it, off the loop — git, then the network: the review
+    /// comes back as [`Internal::Reviewed`]. Nothing without a key.
+    fn ask_for_review(&mut self, squad: &str, ticket: &Ticket, sandbox: Sandbox, member: SessionId) {
+        // A review of the work handed in before is of other work now.
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.forget_review(ticket.id);
+        }
+        let Some(cfg) = self.config.nemotron.clone() else {
+            return;
+        };
+        // The language the person writes in, else their screen's.
+        let language = self.journal(squad).and_then(Journal::language).unwrap_or_else(|| self.config.lang.english_name().to_owned());
+        let mut input = crate::nemotron::ReviewInput { ticket: ticket.id, title: ticket.title.clone(), body: ticket.body.clone(), language, ..Default::default() };
+        let (internal, squad, id) = (self.internal.clone(), squad.to_owned(), ticket.id);
+        crate::daemon_log!("equipe: asking Nemotron on Nebius Token Factory to review T-{} of {squad}", ticket.id);
+        tokio::spawn(async move {
+            let diff = tokio::task::spawn_blocking(move || sandbox.diff()).await;
+            let result = match diff {
+                Ok(Ok(diff)) => {
+                    input.diff = diff;
+                    crate::nemotron::review_detailed(&cfg, input).await.map(Box::new)
+                }
+                Ok(Err(why)) => Err(crate::nemotron::ReviewError::Diff(why)),
+                Err(err) => Err(crate::nemotron::ReviewError::Diff(err.to_string())),
+            };
+            let _ = internal.send(Internal::Reviewed { squad, ticket: id, member, result });
+        });
+    }
+
+    /// A review back: kept, on the ticket's record, and on every screen of the
+    /// squad. None: the log says which error (never the key or the diff), and
+    /// the ticket and the member's conversation why.
+    fn on_reviewed(&mut self, squad: &str, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError>) {
+        match result {
+            Ok(reviewed) => {
+                let review = reviewed.review;
+                let usage = reviewed.usage.map_or_else(|| "no usage reported".to_owned(), |u| format!("{} prompt + {} completion tokens", u.prompt, u.completion));
+                crate::daemon_log!(
+                    "equipe: Nemotron reviewed T-{ticket} of {squad}: {:?}, model {}, request {}, {usage}, {} ms{}",
+                    review.verdict,
+                    review.model,
+                    reviewed.request_id.as_deref().unwrap_or("-"),
+                    reviewed.latency.as_millis(),
+                    if review.truncated { ", diff cut short" } else { "" },
+                );
+                if let Some(journal) = self.journal(squad) {
+                    let _ = journal.save_review(&review);
+                    let _ = journal.ticket_event(ticket, "nemotron", "reviewed", &review.summary);
+                }
+                self.publish(Event::CodeReviewed { squad: squad.to_owned(), review });
+            }
+            Err(err) => {
+                crate::daemon_log!("equipe: Nemotron couldn't review T-{ticket} of {squad}: {}", err.kind());
+                let text = say!(self, "review.couldnt_run", id = ticket, why = err.why(self.config.lang));
+                if let Some(journal) = self.journal(squad) {
+                    let _ = journal.ticket_event(ticket, "nemotron", "review failed", &text);
+                }
+                // In the conversation of the member who handed it in, else the PM's.
+                let session = Some(member).filter(|id| self.sessions.contains_key(id)).or_else(|| self.pm_of(squad));
+                if let Some(session) = session {
+                    self.publish(Event::Notice { session, text });
+                }
             }
         }
     }
@@ -4331,7 +4649,16 @@ them with `propose_accept`. Then carry on with what else waits.]"
                 news = "news.merged_local";
             }
             Some(Err(err)) => {
-                let message = say!(self, "error.not_pushed", branch = main, err = err);
+                let message = match worktree::conflicts_with_origin(&err) {
+                    // Origin's main moved on elsewhere and the two conflict: said
+                    // plainly, and the PM hears which files, to have them merged by hand.
+                    Some(files) => {
+                        let (count, files) = (files.len(), files.join(", "));
+                        line.push_str(&format!(", but it wasn't pushed: origin's {main} has commits this one doesn't, and they conflict in {files} — someone has to merge origin's {main} in by hand"));
+                        say!(self, "error.push_conflicts", branch = main, count = count, files = files)
+                    }
+                    None => say!(self, "error.not_pushed", branch = main, err = err),
+                };
                 self.squad_error(squad, message);
             }
             None => {}
@@ -5816,7 +6143,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
                     steering_in: s.steer_threads.clone(),
-                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project }),
+                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept }),
                     estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {
                         ticket: w.ticket,
@@ -5828,7 +6155,14 @@ it back there once they have done it.{again} End your turn now with a short line
                     subagents: s
                         .subagents
                         .iter()
-                        .map(|(id, what, step, since)| equipe_protocol::SubagentInfo { id: id.clone(), what: what.clone(), step: step.clone(), secs: since.elapsed().as_secs() })
+                        .map(|s| equipe_protocol::SubagentInfo {
+                            id: s.id.clone(),
+                            what: s.what.clone(),
+                            step: s.step.clone(),
+                            secs: s.since.elapsed().as_secs(),
+                            brief: s.brief.clone(),
+                            entries: s.entries.iter().cloned().collect(),
+                        })
                         .collect(),
                     compacting: s.compacting.as_ref().map(|(info, ..)| info.clone()),
                 }
@@ -5855,8 +6189,12 @@ it back there once they have done it.{again} End your turn now with a short line
         let routine_proposals = self.routine_proposals(squad).clone();
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
         let signals = self.signal_views(squad);
+        // Nemotron's reviews of the tickets shown.
+        let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
+        let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
         Snapshot {
             signals,
+            reviews,
             routines,
             routine_proposals,
             idle_wake_hours,
@@ -6028,10 +6366,23 @@ it back there once they have done it.{again} End your turn now with a short line
                         turn_began: None,
                         threads,
                         lane: None,
+                        kept: false,
                         answers_person: false,
                         effort: None,
                     },
                 );
+            }
+            // The conversations the person opened with the PM, as they were left.
+            let pm = self.sessions.iter().find(|(_, s)| s.squad.as_deref() == Some(squad.as_str()) && s.lane.is_none() && s.is_pm()).map(|(&id, _)| id);
+            if let Some(pm) = pm {
+                for c in journal.conversations().unwrap_or_default() {
+                    let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
+                    let mut lane = lane_of(pm, &self.sessions[&pm], c.project, thread, true);
+                    let lines = journal.conversation(c.id).unwrap_or_default();
+                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { text.lines().next().map(str::to_owned) } else { None }));
+                    lane.transcript = Transcript::from_entries(lines);
+                    self.sessions.insert(c.id, lane);
+                }
             }
             self.journals.insert(squad, journal);
         }
@@ -6661,6 +7012,57 @@ fn journal_for<'a>(journals: &'a mut HashMap<String, Journal>, home: &Path, squa
 }
 
 /// Write what an event made final, and what it changed about the session.
+/// A lane of member `m`: its conversation about `project`, picked up from
+/// `thread`, run beside its others; `kept` for one the person opened.
+fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskThread, kept: bool) -> Session {
+    Session {
+        squad: m.squad.clone(),
+        project: m.project.clone(),
+        member: m.member.clone(),
+        joined: m.joined,
+        engine: m.engine,
+        model: m.model.clone(),
+        access: m.access,
+        cwd: m.cwd.clone(),
+        sandbox: None,
+        codex: m.codex.clone(),
+        history: thread.history,
+        claude_session: thread.claude_session,
+        work: None,
+        prompts: Vec::new(),
+        title: None,
+        tokens: 0,
+        context: thread.desk_context,
+        desk_context: thread.desk_context,
+        last_turn: None,
+        refresh: None,
+        transcript: Transcript::default(),
+        turn: None,
+        queued: Vec::new(),
+        memo_threads: Vec::new(),
+        memo_thread: None,
+        steer: None,
+        steering: Vec::new(),
+        steer_threads: Vec::new(),
+        stop: None,
+        taken_back: Vec::new(),
+        send_now_prompt: None,
+        subagents: Vec::new(),
+        compacting: None,
+        answers_person: false,
+        effort: None,
+        briefing: Vec::new(),
+        memory: m.memory.clone(),
+        mode: m.mode,
+        thread: project.clone(),
+        threads: HashMap::new(),
+        estimate: None,
+        turn_began: None,
+        lane: Some((main, project)),
+        kept,
+    }
+}
+
 /// `false` when the disk had no room for it. Nothing else stops for a write
 /// that failed: the screens still get the event.
 fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], title: Option<&str>) -> bool {
@@ -6766,6 +7168,40 @@ fn has_tools(session: &Session) -> bool {
     session.engine == Engine::Claude || session.codex.is_none()
 }
 
+/// A subagent at work for a member: what it was handed, its latest step,
+/// since when, and its latest steps and words, kept for a screen that
+/// attaches while it works.
+struct SubRun {
+    id: String,
+    what: String,
+    brief: String,
+    step: Option<String>,
+    since: std::time::Instant,
+    entries: std::collections::VecDeque<Entry>,
+}
+
+impl SubRun {
+    /// One more step or word: the oldest goes past [`SUBAGENT_KEPT`].
+    fn keep(&mut self, entry: Entry) {
+        if self.entries.len() == SUBAGENT_KEPT {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(entry);
+    }
+}
+
+/// How much of a subagent's tool output goes to the screens, from its end.
+const SUBAGENT_OUTPUT: usize = 4000;
+/// How many of a subagent's latest steps and words the daemon keeps for a
+/// screen that attaches while it works.
+const SUBAGENT_KEPT: usize = 40;
+
+/// `text`'s last `most` characters.
+fn tail_chars(text: &str, most: usize) -> String {
+    let n = text.chars().count();
+    if n <= most { text.to_owned() } else { text.chars().skip(n - most).collect() }
+}
+
 /// What an engine's activity shows on the screens, as an event of session `id`.
 /// Codex's plan limits are not one of its own: [`Internal::CodexLimits`].
 fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
@@ -6780,9 +7216,17 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         Activity::Thinking(text) => Event::Thinking { session: id, text },
         Activity::Model(model) => Event::ModelKnown { session: id, model },
         Activity::Output(tokens) => Event::Output { session: id, tokens },
-        Activity::SubagentStarted { id: sub, what } => Event::SubagentStarted { session: id, id: sub, what },
+        Activity::SubagentStarted { id: sub, what, brief } => Event::SubagentStarted { session: id, id: sub, what, brief },
         Activity::SubagentStep { id: sub, step } => Event::SubagentStep { session: id, id: sub, step },
-        Activity::SubagentEnded { id: sub } => Event::SubagentEnded { session: id, id: sub },
+        Activity::SubagentTool { id: sub, done } => {
+            // A subagent's outcome travels lighter than the member's own: a look inside, not its record.
+            let (output, skipped) = equipe_protocol::ToolOutcome::tail(&tail_chars(&done.output, SUBAGENT_OUTPUT));
+            let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };
+            let entry = Entry::Tool { tool: done.name, target: done.target, outcome: Some(Box::new(outcome)), label: None, background: false };
+            Event::SubagentEntry { session: id, id: sub, entry }
+        }
+        Activity::SubagentText { id: sub, text } => Event::SubagentEntry { session: id, id: sub, entry: Entry::Reply { text } },
+        Activity::SubagentEnded { id: sub, result, failed } => Event::SubagentEnded { session: id, id: sub, result, failed },
         Activity::Steered(text) => Event::Steered { session: id, text },
         // Filled in on the loop, which knows who it is and how long the last ones took.
         Activity::Compacting => {
@@ -6820,6 +7264,39 @@ fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (
         equipe_providers::Error::Login(_) => (err.to_string(), Some("equipe status")),
         _ => (err.to_string(), None),
     }
+}
+
+/// A member's turn on Token Factory, for the daemon's log: the model, each
+/// request's status and Token Factory's id for it, the time, the tokens.
+fn nebius_log(model: &str, turn: &codex_app::Turn) -> String {
+    let requests = &turn.provider_requests;
+    let statuses: Vec<String> = requests.iter().map(|r| r.status.to_string()).collect();
+    let ids: Vec<&str> = requests.iter().filter_map(|r| r.request_id.as_deref()).collect();
+    let ms: u64 = requests.iter().map(|r| r.ms).sum();
+    let usage = turn.result.usage.as_ref();
+    let tokens = |n: Option<u64>| n.map_or_else(|| "?".to_owned(), |n| n.to_string());
+    format!(
+        "equipe: turn on Nemotron via Nebius Token Factory: model {model}, {} request(s) [{}], request ids [{}], {ms} ms on requests, tokens in {} (cached {}) out {}, {}",
+        requests.len(),
+        statuses.join(" "),
+        ids.join(" "),
+        tokens(usage.and_then(|u| u.input_tokens)),
+        tokens(usage.and_then(|u| u.cache_tokens)),
+        tokens(usage.and_then(|u| u.output_tokens)),
+        turn.result.status,
+    )
+}
+
+/// A turn on Token Factory that failed: a refused key is Token Factory's, not Codex's sign-in.
+fn nebius_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
+    let words = crate::i18n::core(lang);
+    let message = err.to_string();
+    let lower = message.to_ascii_lowercase();
+    let refused = matches!(err, equipe_providers::Error::CodexSignedOut) || lower.contains("401") || lower.contains("403") || lower.contains("unauthorized");
+    if refused {
+        return (words.get("error.nebius_unauthorized").to_owned(), Some("https://tokenfactory.nebius.com"));
+    }
+    codex_cli_failure(err, lang)
 }
 
 fn codex_failure(err: equipe_providers::Error) -> (String, Option<&'static str>) {
@@ -6955,6 +7432,34 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_on_token_factory_logs_its_requests_never_its_text() {
+        let turn = codex_app::Turn {
+            result: TurnResult { text: "secret answer".into(), status: "completed".into(), usage: Some(equipe_providers::turn::TurnUsage { input_tokens: Some(1200), output_tokens: Some(40), cache_tokens: None, context_tokens: None, context_window: None }) },
+            thread_id: None,
+            provider_requests: vec![
+                equipe_providers::relay::Exchange { path: "/responses".into(), status: 200, request_id: Some("req-1".into()), ms: 900 },
+                equipe_providers::relay::Exchange { path: "/responses".into(), status: 200, request_id: Some("req-2".into()), ms: 600 },
+            ],
+        };
+        let line = nebius_log("nvidia/x", &turn);
+        assert_eq!(line, "equipe: turn on Nemotron via Nebius Token Factory: model nvidia/x, 2 request(s) [200 200], request ids [req-1 req-2], 1500 ms on requests, tokens in 1200 (cached ?) out 40, completed");
+        assert!(!line.contains("secret"));
+    }
+
+    #[test]
+    fn a_turn_on_token_factory_with_its_key_refused_says_whose_key() {
+        let lang = crate::i18n::Lang::En;
+        // As codex 0.154 reports a 401 from the provider (mock-verified).
+        let refused = equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
+        let (said, next) = nebius_failure(refused, lang);
+        assert!(said.contains("Nebius Token Factory refused the key"), "{said}");
+        assert_eq!(next, Some("https://tokenfactory.nebius.com"));
+        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, lang).0.contains("NEBIUS_API_KEY"));
+        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), lang);
+        assert_eq!(other, ("stream ended".to_owned(), None));
+    }
 
     #[cfg(debug_assertions)]
     #[tokio::test]

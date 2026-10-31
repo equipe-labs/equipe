@@ -25,6 +25,7 @@ mod daemon;
 mod disk;
 mod doc;
 mod design;
+mod dictation;
 mod failure;
 mod help;
 mod install;
@@ -39,6 +40,7 @@ mod queue;
 mod quote;
 mod setup;
 mod sheet;
+mod side_split;
 mod sidecar;
 mod ssh;
 mod sshkey;
@@ -51,6 +53,7 @@ mod theme;
 mod routine;
 mod team;
 mod term;
+mod tailnet;
 mod tickets;
 mod tips;
 mod transcribe;
@@ -59,6 +62,7 @@ mod i18n;
 mod icons;
 mod motion;
 mod relaunch;
+use relaunch::DaemonUpdate;
 mod roadmap;
 mod sent;
 mod render;
@@ -87,13 +91,12 @@ use daemon::{Backoff, Link, Spawned, Target};
 use target::{Endpoint, Remembered};
 use equipe_core::protocol::{Command, Event, SessionId};
 use state::{Clock, Conn, Model};
-use theme::{BODY, Palette, SANS, SMALL};
+use theme::{BODY, Palette, SMALL, Sans};
 use views::board::BoardUi;
 use views::browser::{BrowserPanel, PanelEvent};
 use views::chat::Chat;
 use views::composer::Composer;
 use views::connect::{AskUi, ConnectUi};
-use tips::TipExt as _;
 
 actions!(
     equipe,
@@ -229,11 +232,12 @@ pub struct Shell {
     /// The daemon's machine being brought up to this app's release.
     pub(crate) daemon_update: Option<DaemonUpdate>,
     /// The person closed the banner: not again this launch.
-    daemon_update_hidden: bool,
+    /// The daemon's update was asked for with the app's: the app restarts once it is in.
+    relaunch_after_daemon: bool,
     /// 현황's releases, as last found.
     pub overview: views::overview::OverviewUi,
     /// The banner's "restart now" asked once: the next click restarts.
-    daemon_restart_armed: bool,
+    pub(crate) daemon_restart_armed: bool,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
@@ -253,7 +257,7 @@ pub struct Shell {
     pub pairing: pair::Pairing,
     /// The AI platforms, as settings shows them.
     pub engines: engines::Engines,
-    /// The first run's engine and squad steps, while no squad exists.
+    /// The first run's git, engine and squad steps, while no squad exists.
     pub setup: setup::Setup,
     /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
     pub forgetting: Option<String>,
@@ -294,6 +298,8 @@ pub struct Shell {
 
 impl Shell {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Started again on the way to the newest release: keep at it.
+        relaunch::begin_chain();
         // Sparkle skips a first launch and then waits its whole hour: look now,
         // and again whenever the window comes back after a while.
         relaunch::check_quietly(cx, std::time::Duration::ZERO);
@@ -337,7 +343,12 @@ impl Shell {
             squads: Vec::new(),
             screen: Screen::Chat,
             chat: Chat::new(cx),
-            composer: Composer::new(window, cx),
+            composer: Composer::new(
+                window,
+                cx,
+                dictation::choose(remembered.dictation.as_deref().and_then(equipe_core::i18n::Lang::parse), crate::i18n::lang(), &equipe_core::i18n::preferred(), |l| remembered.dictation_servers || dictation::heard_here(l)),
+                remembered.dictation_servers,
+            ),
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),
@@ -360,7 +371,7 @@ impl Shell {
             side_drag: None,
             term_drag: None,
             daemon_update: None,
-            daemon_update_hidden: false,
+            relaunch_after_daemon: false,
             overview: Default::default(),
             daemon_restart_armed: false,
             board_ticket: None,
@@ -423,6 +434,13 @@ impl Shell {
             while updates.changed().await.is_ok() {
                 let state = updates.borrow_and_update().clone();
                 if this.update_in(cx, |this, window, cx| {
+                    // On the way to the newest: the person already said restart — it goes in at once.
+                    if state.ready().is_some() && relaunch::chaining() {
+                        relaunch::log("the newest is downloaded: putting it in now, as the restart asked");
+                        if relaunch::now() {
+                            return;
+                        }
+                    }
                     // Found and downloaded: each told once (and remembered across launches).
                     if let Some(alert) = notify::update_alert(&state, &mut this.remembered.update_told) {
                         this.remembered.save(&equipe_home());
@@ -466,11 +484,14 @@ impl Shell {
         let board_subscriptions = shell.board_subscriptions(window, cx);
         shell._subscriptions.extend(board_subscriptions);
         let (connect_input, ask_input) = (shell.connect.input.clone(), shell.ask.input.clone());
-        shell._subscriptions.push(cx.subscribe_in(&connect_input, window, |this, input, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                let text = input.read(cx).value().to_string();
-                this.connect_typed(&text, window, cx);
+        shell._subscriptions.push(cx.subscribe_in(&connect_input, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.choose_first(window, cx),
+            // The list narrows as it is typed; a refusal goes with the text that earned it.
+            InputEvent::Change => {
+                this.connect.error = None;
+                cx.notify();
             }
+            _ => {}
         }));
         shell._subscriptions.push(cx.subscribe_in(&ask_input, window, |this, _, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -515,7 +536,7 @@ impl Shell {
                 if key == "escape" {
                     this.update(cx, |shell, cx| shell.escape_overlay(window, cx)).ok();
                     cx.stop_propagation();
-                } else if key == "enter" && this.update(cx, |shell, _| shell.confirm.is_some() && shell.ask.queue.is_empty()).unwrap_or(false) {
+                } else if key == "enter" && this.update(cx, |shell, _| shell.confirm.as_ref().is_some_and(|a| !a.destructive()) && shell.ask.queue.is_empty()).unwrap_or(false) {
                     this.update(cx, |shell, cx| shell.answer_question(true, window, cx)).ok();
                     cx.stop_propagation();
                 }
@@ -628,6 +649,7 @@ impl Shell {
                 cx.set_global(render::ShellRef(cx.entity().downgrade()));
             }
         }));
+        shell.load_peers(cx);
         shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
         shell.composer.focus(window, cx);
         // One more window: the first takes what other apps share and
@@ -813,17 +835,37 @@ impl Shell {
                         // The disk: the banner's and the panel's, never the model's.
                         if let daemon::Update::Event(event @ (Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. })) = &update {
                             changed |= this.disk.on_event(event);
+                            // Given back on equipe's own: said in a line, once.
+                            if let Some(freed) = this.disk.take_auto() {
+                                this.composer.flash = Some(t!("disk.auto_cleaned", size = equipe_core::disk::size(freed)));
+                            }
                             continue;
                         }
                         // The engines: settings' AI platforms, never the model's.
-                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::SignIn { .. })) = &update {
+                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineInstall { .. })) = &update {
                             let effect = this.engines.on_event(event);
                             changed |= effect.changed;
+                            // The first engine ready: a squad that had none starts its team now.
+                            if this.engines.became_ready() && this.model.attached() {
+                                // What said no AI was ready is said no longer.
+                                this.composer.problem = None;
+                                this.start_team();
+                            }
                             // The code's page, in this Mac's browser, for the screen that asked.
                             if let Some(url) = effect.open
                                 && !cfg!(feature = "snapshot")
                             {
                                 cx.open_url(&url);
+                            }
+                            // Installed as the person asked: straight on to its sign-in.
+                            if let Some(engine) = effect.sign_in
+                                && !cfg!(feature = "snapshot")
+                            {
+                                match engines::platform(engine).signs_in {
+                                    engines::SignsIn::FromApp => this.engine_sign_in(engine, cx),
+                                    engines::SignsIn::InTerminal { .. } if !this.endpoint.is_remote() => this.engine_terminal(engine, cx),
+                                    engines::SignsIn::InTerminal { .. } => {}
+                                }
                             }
                             continue;
                         }
@@ -956,6 +998,8 @@ impl Shell {
         }
         self.connect.open = true;
         self.connect.error = None;
+        self.connect.show_hidden = false;
+        self.probe_hosts(cx);
         let input = self.connect.input.clone();
         input.update(cx, |s, cx| {
             s.set_value(String::new(), window, cx);
@@ -1303,6 +1347,8 @@ impl Shell {
     /// A notification was clicked: bring the window forward, on what it was about.
     /// "다시 시작해 업데이트": the downloaded update goes in, and the app starts again.
     pub fn relaunch_to_update(&mut self, cx: &mut Context<Self>) {
+        // A newer release than the downloaded one: on to it after this restart.
+        relaunch::chain_if_newer();
         if !relaunch::now() {
             self.composer.flash = Some(t!("main.update_on_quit").into());
             cx.notify();
@@ -1379,7 +1425,7 @@ impl Shell {
                     Screen::Overview => views::overview::render(self, cx),
                     Screen::Roadmap => views::roadmap::render(self, cx),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(self.update_banner(cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
         }
     }
@@ -1387,7 +1433,7 @@ impl Shell {
     /// A strip to drag the window by, over a screen with no header of its
     /// own: the title bar's height and hairline (its buttons float above).
     fn drag_strip(&self) -> impl IntoElement + use<> {
-        div().h(px(views::sidebar::STRIP)).flex_none().w_full().border_b_1().border_color(self.palette.hair).window_control_area(WindowControlArea::Drag)
+        ui::title_bar(div().h(px(views::sidebar::STRIP)).flex_none().w_full().border_b_1().border_color(self.palette.hair))
     }
 
     /// The sidebar, sliding in or out for a moment after ⌘\ — its width read
@@ -1425,23 +1471,12 @@ impl Shell {
                 .border_b_1()
                 .border_color(p.hair)
                 .text_size(px(SMALL))
-                .child(div().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child("✗"))
+                .child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text))
                 .child(div().text_color(p.text).child(format!("{} · {since}", guide.short)))
                 .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
                 .child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx)))),
         )
     }
-}
-
-/// Bringing the daemon's machine up to this app's release.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DaemonUpdate {
-    Running,
-    /// Installed: the daemon starts again on it once its members are idle.
-    Done,
-    /// The person asked for it now, not once the members are idle.
-    Restarting,
-    Failed(String),
 }
 
 /// What runs on the daemon's machine: the latest equipe over the one there
@@ -1465,76 +1500,34 @@ nohup equipe daemon restart >/dev/null 2>&1 &
 "#;
 
 impl Shell {
-    /// The daemon is older than this app: a line over the conversation, with
-    /// the button that updates it where it runs (this Mac, or over SSH).
-    fn update_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let p = self.palette;
-        let stale = notify::stale_daemon(&self.model.daemon_version, env!("CARGO_PKG_VERSION")).is_some();
-        if !stale && self.daemon_update.is_none() || self.daemon_update_hidden || !matches!(self.model.conn, Conn::Connected { .. }) {
-            return None;
+    /// The daemon as the update pill needs it: where it runs — a Tailscale
+    /// device by its name (`tinums-mac-mini`), not its address — its release,
+    /// and where its own update stands.
+    pub(crate) fn daemon_view(&self) -> relaunch::Daemon {
+        let place = match &self.endpoint {
+            Endpoint::Ssh(host) => tailnet::peer_for(&self.connect.peers, &host.host).map(|peer| peer.short().to_owned()),
+            Endpoint::Local { .. } => None,
         }
-        let theirs = self.model.daemon_version.split('+').next().unwrap_or_default().to_owned();
-        let place = self.endpoint.label();
-        // One line, cut short if it must; the whole of it on the pointer.
-        let (words, tone, whole) = match &self.daemon_update {
-            None => (
-                t!("main.update_daemon_short", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION")),
-                p.text,
-                Some(t!("main.update_daemon_line", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION"))),
-            ),
-            Some(DaemonUpdate::Running) => (t!("main.update_daemon_running", place = place), p.text2, None),
-            Some(DaemonUpdate::Done) => (t!("main.update_daemon_done_short").to_owned(), p.text2, Some(t!("main.update_daemon_done").to_owned())),
-            Some(DaemonUpdate::Failed(why)) => {
-                let all = t!("main.update_daemon_failed", why = why);
-                (all.clone(), p.text, Some(all))
-            }
-            Some(DaemonUpdate::Restarting) => (t!("main.update_daemon_restarting").to_owned(), p.text2, None),
-        };
-        let done = matches!(self.daemon_update, Some(DaemonUpdate::Done));
-        let armed = self.daemon_restart_armed;
-        // Members at work stop mid-turn: the first click says so, the second restarts.
-        let (now_label, now_kind) = if armed { (t!("main.update_daemon_now_sure"), ui::Kind::Danger) } else { (t!("main.update_daemon_now"), ui::Kind::Secondary) };
-        let can = matches!(self.daemon_update, None | Some(DaemonUpdate::Failed(_)));
-        Some(
-            h_flex()
-                .h(px(40.))
-                .flex_none()
-                .px_4()
-                .gap_3()
-                .items_center()
-                .bg(p.accent_bg)
-                .border_b_1()
-                .border_color(p.hair)
-                .text_size(px(SMALL))
-                .child(icons::icon(icons::Icon::ArrowUp, 14., p.accent))
-                .child({
-                    let line = div().id("update-daemon-words").flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(tone).child(words);
-                    match whole {
-                        Some(whole) => line.tip(p, whole, None).into_any_element(),
-                        None => line.into_any_element(),
-                    }
-                })
-                .when(matches!(self.daemon_update, Some(DaemonUpdate::Running | DaemonUpdate::Restarting)), |b| b.child(motion::spinner(13., p.muted)))
-                .when(done, |b| {
-                    b.child(ui::button(p, "restart-daemon-now", now_kind, now_label).on_click(cx.listener(move |this, _, _, cx| {
-                        if armed {
-                            this.restart_daemon_now(cx);
-                        } else {
-                            this.daemon_restart_armed = true;
-                            cx.notify();
-                        }
-                    })))
-                })
-                .when(can, |b| b.child(ui::button(p, "update-daemon", ui::Kind::Primary, t!("main.update_daemon")).on_click(cx.listener(|this, _, _, cx| this.update_daemon(cx)))))
-                .child(ui::icon_button(p, "update-daemon-hide", icons::Icon::X, t!("main.update_daemon_hide"), None).on_click(cx.listener(|this, _, _, cx| {
-                    this.daemon_update_hidden = true;
-                    cx.notify();
-                }))),
-        )
+        .unwrap_or_else(|| self.endpoint.label());
+        let connected = matches!(self.model.conn, Conn::Connected { .. });
+        relaunch::Daemon {
+            place,
+            theirs: self.model.daemon_version.split('+').next().unwrap_or_default().to_owned(),
+            older: connected && notify::stale_daemon(&self.model.daemon_version, env!("CARGO_PKG_VERSION")).is_some(),
+            remote: self.endpoint.is_remote(),
+            update: self.daemon_update.clone(),
+            armed: self.daemon_restart_armed,
+        }
+    }
+
+    /// The daemon's machine first, then the app into its waiting version.
+    pub(crate) fn update_both(&mut self, cx: &mut Context<Self>) {
+        self.relaunch_after_daemon = true;
+        self.update_daemon(cx);
     }
 
     /// Update the daemon's machine, off the main thread.
-    fn update_daemon(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn update_daemon(&mut self, cx: &mut Context<Self>) {
         self.daemon_update = Some(DaemonUpdate::Running);
         self.daemon_restart_armed = false;
         self.on_daemon_machine(UPDATE_SCRIPT, DaemonUpdate::Done, cx);
@@ -1542,7 +1535,7 @@ impl Shell {
 
     /// The person's second click: the daemon starts again on the new
     /// release now, members mid-turn or not; the app reconnects on its own.
-    fn restart_daemon_now(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn restart_daemon_now(&mut self, cx: &mut Context<Self>) {
         self.daemon_update = Some(DaemonUpdate::Restarting);
         self.daemon_restart_armed = false;
         self.on_daemon_machine(RESTART_NOW_SCRIPT, DaemonUpdate::Restarting, cx);
@@ -1574,10 +1567,15 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let done = rx.await.unwrap_or_else(|_| Err("stopped".into()));
             let _ = this.update(cx, |this, cx| {
+                let installed = done.is_ok() && then == DaemonUpdate::Done;
                 this.daemon_update = Some(match done {
                     Ok(()) => then,
                     Err(why) => DaemonUpdate::Failed(if why.is_empty() { t!("main.update_daemon_unknown").into() } else { why }),
                 });
+                // Both asked for: the daemon is on the new release, now the app.
+                if std::mem::take(&mut this.relaunch_after_daemon) && installed {
+                    this.relaunch_to_update(cx);
+                }
                 cx.notify();
             });
         })
@@ -1614,7 +1612,7 @@ fn install_screen(p: Palette) -> AnyElement {
                 .bg(p.code_bg)
                 .border_1()
                 .border_color(p.hair)
-                .font_family("Menlo")
+                .font_family(theme::MONO)
                 .text_size(px(SMALL))
                 .text_color(p.text2)
                 .child(install::INSTALL_COMMAND),
@@ -1678,7 +1676,7 @@ impl Render for Shell {
         let root = v_flex()
             .size_full()
             .bg(p.bg)
-            .font_family(SANS)
+            .sans()
             .text_color(p.text)
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
@@ -1692,6 +1690,14 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
             .on_action(cx.listener(|this, _: &PairPhone, window, cx| this.open_pairing(window, cx)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                // A hairline between the sidebar's areas, held.
+                if this.board.side_split_drag.is_some() {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.side_split_dragged(f32::from(e.position.y), cx);
+                    } else {
+                        this.side_split_released(cx);
+                    }
+                }
                 if this.board.sidebar_drag.is_some() {
                     if e.pressed_button == Some(MouseButton::Left) {
                         this.sidebar_dragged(f32::from(e.position.x), cx);
@@ -1729,6 +1735,7 @@ impl Render for Shell {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 this.sidebar_released(cx);
+                this.side_split_released(cx);
                 this.side_released(cx);
                 if this.board.peek_drag.take().is_some() {
                     this.remembered.save(&equipe_providers::credentials::equipe_home());
@@ -1889,10 +1896,10 @@ fn view_menu() -> Menu {
         MenuItem::action(t!("main.menu_zoom_out"), ZoomOut),
         MenuItem::action(t!("main.menu_actual_size"), ActualSize),
         MenuItem::separator(),
-        MenuItem::action("명령 팔레트…", CommandPalette),
-        MenuItem::action("보드 / 대화 전환", ToggleBoard),
-        MenuItem::action("모든 프로젝트", AllProjects),
-        MenuItem::action("도구 단계 펼치기/접기", ToggleFolds),
+        MenuItem::action(t!("menu.palette"), CommandPalette),
+        MenuItem::action(t!("menu.toggle_board"), ToggleBoard),
+        MenuItem::action(t!("menu.all_projects"), AllProjects),
+        MenuItem::action(t!("menu.toggle_folds"), ToggleFolds),
     ])
 }
 
@@ -1953,56 +1960,56 @@ fn edit_menu() -> Menu {
     ])
 }
 
-/// The 스쿼드 menu: its items are command lines.
+/// The Squad menu: its items are command lines.
 fn squad_menu() -> Menu {
-    Menu::new("스쿼드").items([
-        MenuItem::action("스쿼드 전환…", SwitchSquad),
-        MenuItem::action("새 스쿼드…", NewSquad),
-        MenuItem::action("폴더 추가…", AddFolder),
-        MenuItem::action("폴더 빼기…", RemoveFolder),
+    Menu::new(t!("menu.squad")).items([
+        MenuItem::action(t!("menu.switch_squad"), SwitchSquad),
+        MenuItem::action(t!("menu.new_squad"), NewSquad),
+        MenuItem::action(t!("menu.add_folder"), AddFolder),
+        MenuItem::action(t!("menu.remove_folder"), RemoveFolder),
         MenuItem::separator(),
-        MenuItem::action("스쿼드 폴더 열기", OpenSquadFolder),
-        MenuItem::action("폴더 변경 보기", HomeChanges),
-        MenuItem::action("마지막 변경 되돌리기…", HomeUndo),
+        MenuItem::action(t!("menu.open_squad_folder"), OpenSquadFolder),
+        MenuItem::action(t!("menu.home_changes"), HomeChanges),
+        MenuItem::action(t!("menu.home_undo"), HomeUndo),
         MenuItem::separator(),
-        MenuItem::action("스쿼드의 기억 열기", OpenSquadMemory),
-        MenuItem::action("기억 변경 보기", MemoryChanges),
+        MenuItem::action(t!("menu.open_memory"), OpenSquadMemory),
+        MenuItem::action(t!("menu.memory_changes"), MemoryChanges),
         MenuItem::separator(),
-        MenuItem::action("대화 내보내기…", ExportConversation),
-        MenuItem::action("보드 정리 요청…", TidyBoard),
+        MenuItem::action(t!("menu.export"), ExportConversation),
+        MenuItem::action(t!("menu.tidy"), TidyBoard),
     ])
 }
 
-/// The 멤버 menu: its items are command lines.
+/// The Member menu: its items are command lines.
 fn member_menu() -> Menu {
-    Menu::new("멤버").items([
-        MenuItem::action("멤버 추가…", AddMembers),
-        MenuItem::action("모델…", SetModel),
-        MenuItem::action("모드…", SetMode),
+    Menu::new(t!("menu.member")).items([
+        MenuItem::action(t!("menu.add_members"), AddMembers),
+        MenuItem::action(t!("menu.model"), SetModel),
+        MenuItem::action(t!("menu.mode"), SetMode),
         MenuItem::separator(),
-        MenuItem::action("새 대화로 요약해 이어가기", CompactMember),
-        MenuItem::action("새 대화 시작…", ClearMember),
-        MenuItem::action("스쿼드에서 내보내기…", CloseMember),
+        MenuItem::action(t!("menu.compact"), CompactMember),
+        MenuItem::action(t!("menu.clear"), ClearMember),
+        MenuItem::action(t!("menu.close_member"), CloseMember),
         MenuItem::separator(),
-        MenuItem::action("사용량", ShowUsage),
+        MenuItem::action(t!("menu.usage"), ShowUsage),
         MenuItem::separator(),
-        MenuItem::action("브라우저 로그인…", BrowserSignin),
-        MenuItem::action("브라우저 화면에 보이기", BrowserShow),
-        MenuItem::action("브라우저 숨기기", BrowserHide),
-        MenuItem::action("브라우저 동시 개수…", BrowserMax),
-        MenuItem::action("전송 확인 앱…", SendApps),
+        MenuItem::action(t!("menu.browser_signin"), BrowserSignin),
+        MenuItem::action(t!("menu.browser_show"), BrowserShow),
+        MenuItem::action(t!("menu.browser_hide"), BrowserHide),
+        MenuItem::action(t!("menu.browser_max"), BrowserMax),
+        MenuItem::action(t!("menu.send_apps"), SendApps),
         MenuItem::separator(),
-        MenuItem::action("맥 화면 되찾기", ScreenBack),
-        MenuItem::action("맥 화면 다시 열기", ScreenOpen),
+        MenuItem::action(t!("menu.screen_back"), ScreenBack),
+        MenuItem::action(t!("menu.screen_open"), ScreenOpen),
         MenuItem::separator(),
-        MenuItem::action("다음 말 추측 켜기", SuggestOn),
-        MenuItem::action("다음 말 추측 끄기", SuggestOff),
+        MenuItem::action(t!("menu.suggest_on"), SuggestOn),
+        MenuItem::action(t!("menu.suggest_off"), SuggestOff),
     ])
 }
 
-/// The 도움말 menu: its items are command lines.
+/// The Help menu: its items are command lines.
 fn help_menu() -> Menu {
-    Menu::new("도움말").items([MenuItem::action("단축키와 명령", ShowHelp)])
+    Menu::new(t!("menu.help")).items([MenuItem::action(t!("menu.shortcuts"), ShowHelp)])
 }
 
 

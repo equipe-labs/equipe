@@ -73,6 +73,7 @@ fn role_words(id: &str) -> (&'static str, &'static str) {
         "frontend" => (t!("welcome.role_frontend"), t!("welcome.role_frontend_desc")),
         "backend" => (t!("welcome.role_backend"), t!("welcome.role_backend_desc")),
         "qa" => (t!("welcome.role_qa"), t!("welcome.role_qa_desc")),
+        "security" => (t!("welcome.role_security"), t!("welcome.role_security_desc")),
         _ => (t!("welcome.role_data"), t!("welcome.role_data_desc")),
     }
 }

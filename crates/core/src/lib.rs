@@ -29,6 +29,7 @@ pub mod language;
 pub mod mcp;
 pub mod permissions;
 pub mod mock;
+pub mod nemotron;
 pub mod pairing;
 pub mod roles;
 pub mod routines;
