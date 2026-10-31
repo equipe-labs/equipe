@@ -242,6 +242,8 @@ pub struct Shell {
     pub endpoint: Endpoint,
     pub remembered: Remembered,
     pub connect: ConnectUi,
+    /// The first run's form (`views/welcome.rs`).
+    pub welcome: views::welcome::WelcomeUi,
     pub ask: AskUi,
     /// A password just typed with "don't ask again" on: the key goes there once connected.
     ssh_key_wanted: bool,
@@ -317,6 +319,7 @@ impl Shell {
             .unwrap_or_else(Endpoint::this_mac);
         let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
         let ask = AskUi::new(window, cx);
+        let welcome = views::welcome::WelcomeUi::new(window, cx);
         // Light or dark as the person picked, else as the Mac is.
         remembered.appearance.apply();
         let appearance = remembered.appearance.resolve(window.appearance());
@@ -362,6 +365,7 @@ impl Shell {
             endpoint: endpoint.clone(),
             remembered,
             connect,
+            welcome,
             ask,
             ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
@@ -1344,6 +1348,7 @@ impl Shell {
             Conn::Down { had_snapshot: false, .. } | Conn::Connecting if remote && self.connecting_shown && (self.connecting.retrying || self.model.conn == Conn::Connecting) => {
                 v_flex().flex_1().child(self.drag_strip()).child(views::connect::connecting_screen(self, cx)).into_any_element()
             }
+            Conn::Down { reason: crate::failure::Failure::NoSquads, had_snapshot: false, .. } if !remote => v_flex().flex_1().child(self.drag_strip()).child(views::welcome::welcome_screen(self, cx)).into_any_element(),
             Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide_at(&self.endpoint, self.connecting.door.as_deref()), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()
