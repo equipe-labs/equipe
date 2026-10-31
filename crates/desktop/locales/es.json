@@ -2170,5 +2170,10 @@
   "peek.review_needs_attention": "Requiere atención",
   "peek.review_risks": "Riesgos",
   "peek.review_risky": "Arriesgado",
-  "peek.review_truncated": "El diff era largo: solo se revisó el principio."
+  "peek.review_truncated": "El diff era largo: solo se revisó el principio.",
+  "engines.install": "Instalar",
+  "engines.installing": "Instalando…",
+  "engines.install_by_hand": "Un clic lo instala en {host}. Para hacerlo tú, pega esta línea en Terminal.",
+  "engines.install_failed": "No se pudo instalar",
+  "engines.install_failed_desc": "Revisa la conexión a internet de {host} y vuelve a intentarlo."
 }

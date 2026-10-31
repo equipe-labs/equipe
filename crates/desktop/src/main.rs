@@ -68,6 +68,7 @@ mod update;
 mod usage;
 mod views;
 mod visuals;
+mod welcome;
 mod wire;
 mod yourturn;
 mod zoom;
@@ -243,6 +244,8 @@ pub struct Shell {
     pub endpoint: Endpoint,
     pub remembered: Remembered,
     pub connect: ConnectUi,
+    /// The first run's page: no squad yet on this Mac (`welcome.rs`).
+    pub welcome: views::welcome::WelcomeUi,
     pub ask: AskUi,
     /// A password just typed with "don't ask again" on: the key goes there once connected.
     ssh_key_wanted: bool,
@@ -891,6 +894,14 @@ impl Shell {
                                 this.ask_engines(cx);
                             }
                         }
+                        // No squad yet: the first-run page looks at git and names one.
+                        if !this.endpoint.is_remote() && matches!(this.model.conn, Conn::Down { reason: Failure::NoSquads, .. }) {
+                            this.welcome_shown(window, cx);
+                        }
+                        // Just made on the first-run page: an engine next.
+                        if attached && this.welcome.state.take_then_engines() {
+                            this.open_settings(Some(settings::Category::Engines), window, cx);
+                        }
                         if attached {
                             this.start_team();
                             // A new connection: the design system is asked for again, if on screen.
@@ -1350,6 +1361,8 @@ impl Shell {
             Conn::Down { had_snapshot: false, .. } | Conn::Connecting if remote && self.connecting_shown && (self.connecting.retrying || self.model.conn == Conn::Connecting) => {
                 v_flex().flex_1().child(self.drag_strip()).child(views::connect::connecting_screen(self, cx)).into_any_element()
             }
+            // No squad yet on this Mac: the window starts one, rather than a terminal.
+            Conn::Down { reason: Failure::NoSquads, had_snapshot: false, .. } if !remote => v_flex().flex_1().child(self.drag_strip()).child(views::welcome::welcome_screen(self, cx)).into_any_element(),
             Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide_at(&self.endpoint, self.connecting.door.as_deref()), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()

@@ -175,7 +175,7 @@ comes from and removes it again. Claude Code and Codex connect from the same pag
 Or from a shell, for this daemon only:
 
 ```bash
-npm install -g @openai/codex                        # or: brew install codex
+curl -fsSL https://chatgpt.com/codex/install.sh | sh  # Codex CLI, no Node needed (or: brew install codex)
 read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY    # paste the key; it isn't echoed or kept in history
 export EQUIPE_NEBIUS_MODEL=nvidia/…                 # optional: a model your account offers (see `equipe review --models`)
 equipe daemon stop; equipe daemon run               # from this shell, so the daemon has the key; Ctrl-C stops it

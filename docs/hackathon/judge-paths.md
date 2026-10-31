@@ -8,8 +8,8 @@ on Token Factory too. This table says exactly what each part needs, so nobody is
 Legend: **TF key** = a Nebius Token Factory API key in `NEBIUS_API_KEY` (a judge's own, or one
 the owner provides — see [judge-access.md](judge-access.md); not decided yet).
 **Engine** = Claude Code signed in with a Claude plan, or Codex with a ChatGPT plan.
-**codex CLI** = OpenAI's open-source Codex CLI installed (`npm install -g @openai/codex` or
-`brew install codex`), free, **not** signed in — equipe uses it as the agent loop only.
+**codex CLI** = OpenAI's open-source Codex CLI installed (the app's **Install** button, or
+`curl -fsSL https://chatgpt.com/codex/install.sh | sh`), free, **not** signed in — equipe uses it as the agent loop only.
 
 | What | Needs an engine (Claude/Codex)? | Needs a TF key? | Calls NVIDIA Nemotron on Nebius? | Notes |
 |---|---|---|---|---|

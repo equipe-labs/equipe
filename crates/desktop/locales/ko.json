@@ -2118,5 +2118,10 @@
   "peek.review_needs_attention": "살펴볼 게 있어요",
   "peek.review_risks": "위험",
   "peek.review_risky": "위험해요",
-  "peek.review_truncated": "diff가 길어서 앞부분만 리뷰했어요."
+  "peek.review_truncated": "diff가 길어서 앞부분만 리뷰했어요.",
+  "engines.install": "설치",
+  "engines.installing": "설치하는 중…",
+  "engines.install_by_hand": "버튼 하나로 {host}에 설치돼요. 직접 하려면 터미널에 붙여 넣으세요.",
+  "engines.install_failed": "설치하지 못했어요",
+  "engines.install_failed_desc": "{host}의 인터넷 연결을 확인하고 다시 눌러 주세요."
 }

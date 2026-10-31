@@ -2118,5 +2118,10 @@
   "peek.review_needs_attention": "需要留意",
   "peek.review_risks": "风险",
   "peek.review_risky": "有风险",
-  "peek.review_truncated": "diff 较长：只审查了开头部分。"
+  "peek.review_truncated": "diff 较长：只审查了开头部分。",
+  "engines.install": "安装",
+  "engines.installing": "正在安装…",
+  "engines.install_by_hand": "点一下即可安装到 {host}。也可以把这行粘贴到终端自行安装。",
+  "engines.install_failed": "未能安装",
+  "engines.install_failed_desc": "请检查 {host} 的网络连接后重试。"
 }

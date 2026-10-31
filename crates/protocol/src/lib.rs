@@ -865,6 +865,11 @@ pub enum Command {
     },
     /// Stop the sign-in under way: answered by [`SignInStep::Cancelled`].
     SignInCancel { engine: Engine },
+    /// Install `engine`'s command-line tool on the daemon's machine with its
+    /// maker's own installer (no Node needed), as the person asked from a
+    /// screen. Answered, to every screen, by [`Event::EngineInstall`], then
+    /// [`Event::Engines`].
+    InstallEngine { engine: Engine },
     /// Save the person's Nebius Token Factory key on the daemon's machine
     /// (`None`: forget it), for members and reviews to use from now on.
     /// Answered, to every screen, by [`Event::Nebius`] — never with the key.
@@ -1007,6 +1012,21 @@ pub enum SignInStep {
     },
     /// Stopped before it finished.
     Cancelled,
+}
+
+/// How installing an engine's tool goes ([`Event::EngineInstall`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InstallStep {
+    /// The installer runs.
+    Running,
+    /// Installed: the engine is there to sign in.
+    Done,
+    Failed {
+        /// The installer's last words, when it said any.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
+    },
 }
 
 /// Why a sign-in didn't finish.
@@ -1572,6 +1592,8 @@ pub enum Event {
     },
     /// A sign-in to `engine` moved on ([`Command::SignIn`]).
     SignIn { engine: Engine, step: SignInStep },
+    /// Installing `engine`'s tool moved on ([`Command::InstallEngine`]).
+    EngineInstall { engine: Engine, step: InstallStep },
     /// Nebius Token Factory on the daemon's machine: sent with
     /// [`Event::Engines`], and when its key is saved or forgotten.
     Nebius { status: NebiusStatus },
@@ -1729,7 +1751,8 @@ impl Event {
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
             | Event::Nebius { .. }
-            | Event::SignIn { .. } => None,
+            | Event::SignIn { .. }
+            | Event::EngineInstall { .. } => None,
         }
     }
 
@@ -1745,6 +1768,7 @@ impl Event {
                 | Event::Engines { .. }
                 | Event::Nebius { .. }
                 | Event::SignIn { .. }
+                | Event::EngineInstall { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }

@@ -2118,5 +2118,10 @@
   "peek.review_needs_attention": "需要留意",
   "peek.review_risks": "風險",
   "peek.review_risky": "有風險",
-  "peek.review_truncated": "diff 較長：只審查了開頭部分。"
+  "peek.review_truncated": "diff 較長：只審查了開頭部分。",
+  "engines.install": "安裝",
+  "engines.installing": "正在安裝…",
+  "engines.install_by_hand": "按一下即可安裝到 {host}。也可以把這行貼到終端機自行安裝。",
+  "engines.install_failed": "無法安裝",
+  "engines.install_failed_desc": "請檢查 {host} 的網路連線後再試一次。"
 }

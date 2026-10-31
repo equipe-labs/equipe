@@ -2170,5 +2170,10 @@
   "peek.review_needs_attention": "Needs attention",
   "peek.review_risks": "Risks",
   "peek.review_risky": "Risky",
-  "peek.review_truncated": "The diff was long: only its start was reviewed."
+  "peek.review_truncated": "The diff was long: only its start was reviewed.",
+  "engines.install": "Install",
+  "engines.installing": "Installing…",
+  "engines.install_by_hand": "One click installs it on {host}. To do it yourself, paste this into Terminal.",
+  "engines.install_failed": "Couldn’t install",
+  "engines.install_failed_desc": "Check {host}’s internet connection and try again."
 }

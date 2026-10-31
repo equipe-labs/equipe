@@ -216,7 +216,7 @@ passed, 0 failed — the tests above included, with the real `codex`. Mock only.
 ### 3.2 The owner's real run (not done)
 
 Needs: a Token Factory key, a **budget decision** (an agent turn is many requests; none is
-approved yet), the codex CLI (`npm install -g @openai/codex` or `brew install codex`; no
+approved yet), the codex CLI (the app's **Install** button or `curl -fsSL https://chatgpt.com/codex/install.sh | sh`; no
 `codex login`), and a build of this branch. Claude Code and Codex may stay signed out — that
 is the point. The key never goes on a command line or in a file.
 

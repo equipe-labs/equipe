@@ -163,7 +163,7 @@ own Nebius Token Factory key (hackathon participants can get Token Factory credi
 `NEBIUS-DEVPOST-GLOBAL26`, per the Resources page). The key is read from the environment only.
 
 The full squad (agents writing code, then the automatic review of each hand-in) runs on the same
-key with the free, open-source Codex CLI (`npm install -g @openai/codex`; no ChatGPT sign-in):
+key with the free, open-source Codex CLI (`curl -fsSL https://chatgpt.com/codex/install.sh | sh`, or the **Install** button in the app; no ChatGPT sign-in):
 
 ```bash
 equipe daemon stop; equipe daemon run   # in the shell with NEBIUS_API_KEY exported

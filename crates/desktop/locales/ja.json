@@ -2118,5 +2118,10 @@
   "peek.review_needs_attention": "要確認",
   "peek.review_risks": "リスク",
   "peek.review_risky": "リスクあり",
-  "peek.review_truncated": "diff が長いため、先頭だけをレビューしました。"
+  "peek.review_truncated": "diff が長いため、先頭だけをレビューしました。",
+  "engines.install": "インストール",
+  "engines.installing": "インストール中…",
+  "engines.install_by_hand": "ボタン一つで{host}にインストールされます。手動の場合はターミナルに貼り付けてください。",
+  "engines.install_failed": "インストールできませんでした",
+  "engines.install_failed_desc": "{host}のインターネット接続を確認して、もう一度お試しください。"
 }

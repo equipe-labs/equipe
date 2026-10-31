@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Command, Engine, EngineState, EngineStatus, Event, PlanUsage, SignInFailure, SignInStep};
+use equipe_core::protocol::{Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, SignInFailure, SignInStep};
 use equipe_core::t;
 
 use crate::icons::Icon;
@@ -39,8 +39,8 @@ pub struct Platform {
     /// Its command-line tool, as the person types it.
     pub tool: &'static str,
     pub signs_in: SignsIn,
-    /// The line that installs the tool, and where its own guide is.
-    pub install: &'static str,
+    /// Where the tool's own guide is (the line that installs it is
+    /// [`equipe_core::engines::installer`]).
     pub guide: &'static str,
     /// Whose plan it draws on and who signs it in, in a line.
     pub who: fn() -> &'static str,
@@ -68,7 +68,6 @@ pub static PLATFORMS: [Platform; 2] = [
         tint: 0xD97757,
         tool: "claude",
         signs_in: SignsIn::InTerminal { command: "claude auth login" },
-        install: "curl -fsSL https://claude.ai/install.sh | bash",
         guide: "https://code.claude.com/docs/en/setup",
         who: || t!("engines.who_claude"),
         pitch: || t!("engines.pitch_claude"),
@@ -81,7 +80,6 @@ pub static PLATFORMS: [Platform; 2] = [
         tint: 0x0D0D0D,
         tool: "codex",
         signs_in: SignsIn::FromApp,
-        install: "npm install -g @openai/codex",
         guide: "https://developers.openai.com/codex/cli",
         who: || t!("engines.who_codex"),
         pitch: || t!("engines.pitch_codex"),
@@ -161,6 +159,16 @@ pub struct Engines {
     pub turn: u64,
     /// Nebius Token Factory on the daemon's machine, as it last said.
     pub nebius: Option<equipe_core::protocol::NebiusStatus>,
+    /// Engines whose tool is being installed, or whose install failed.
+    installs: HashMap<Engine, Install>,
+}
+
+/// An engine's tool being installed on the daemon's machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Install {
+    Running,
+    /// Failed, in the installer's last words.
+    Failed(String),
 }
 
 impl Engines {
@@ -201,6 +209,20 @@ impl Engines {
         }
         self.set(engine, Card::Starting { since: now });
         vec![Command::SignIn { engine, device: remote }]
+    }
+
+    /// "설치": the daemon runs the tool's own installer.
+    pub fn install(&mut self, engine: Engine) -> Vec<Command> {
+        if self.installs.get(&engine) == Some(&Install::Running) {
+            return vec![];
+        }
+        self.installs.insert(engine, Install::Running);
+        self.turn += 1;
+        vec![Command::InstallEngine { engine }]
+    }
+
+    pub fn installing(&self, engine: Engine) -> Option<&Install> {
+        self.installs.get(&engine)
     }
 
     /// "취소": the daemon stops the tool.
@@ -247,6 +269,15 @@ impl Engines {
                         self.terminal = None;
                     }
                 }
+                Effect { changed: true, open: None }
+            }
+            Event::EngineInstall { engine, step } => {
+                match step {
+                    InstallStep::Running => self.installs.insert(*engine, Install::Running),
+                    InstallStep::Done => self.installs.remove(engine),
+                    InstallStep::Failed { detail } => self.installs.insert(*engine, Install::Failed(detail.clone())),
+                };
+                self.turn += 1;
                 Effect { changed: true, open: None }
             }
             Event::Nebius { status } => {
@@ -390,12 +421,26 @@ mod tests {
     }
 
     #[test]
+    fn an_engine_not_on_this_mac_installs_from_its_card() {
+        let mut e = Engines::default();
+        assert_eq!(e.install(Engine::Codex), vec![Command::InstallEngine { engine: Engine::Codex }]);
+        assert_eq!(e.installing(Engine::Codex), Some(&Install::Running));
+        assert!(e.install(Engine::Codex).is_empty(), "once at a time");
+        let failed = Event::EngineInstall { engine: Engine::Codex, step: InstallStep::Failed { detail: "curl: (6) Could not resolve host".into() } };
+        assert!(e.on_event(&failed).changed);
+        assert_eq!(e.installing(Engine::Codex), Some(&Install::Failed("curl: (6) Could not resolve host".into())));
+        assert_eq!(e.install(Engine::Codex).len(), 1, "tried again");
+        e.on_event(&Event::EngineInstall { engine: Engine::Codex, step: InstallStep::Done });
+        assert_eq!(e.installing(Engine::Codex), None, "installed: the card offers its sign-in");
+    }
+
+    #[test]
     fn every_engine_has_one_platform_entry_with_words_of_its_own() {
         for engine in [Engine::Claude, Engine::Codex] {
             assert_eq!(PLATFORMS.iter().filter(|p| p.engine == engine).count(), 1, "{engine:?}");
         }
         for p in &PLATFORMS {
-            assert!(!(p.who)().is_empty() && !(p.pitch)().is_empty() && !p.install.is_empty() && p.guide.starts_with("https://"));
+            assert!(!(p.who)().is_empty() && !(p.pitch)().is_empty() && p.guide.starts_with("https://"));
         }
         assert_eq!(platform(Engine::Codex).signs_in, SignsIn::FromApp);
         assert_eq!(platform(Engine::Claude).signs_in, SignsIn::InTerminal { command: "claude auth login" }, "Claude Code is the person's own login");
