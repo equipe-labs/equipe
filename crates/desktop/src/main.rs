@@ -293,6 +293,8 @@ pub struct Shell {
 
 impl Shell {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Started again on the way to the newest release: keep at it.
+        relaunch::begin_chain();
         // Sparkle skips a first launch and then waits its whole hour: look now,
         // and again whenever the window comes back after a while.
         relaunch::check_quietly(cx, std::time::Duration::ZERO);
@@ -421,6 +423,13 @@ impl Shell {
             while updates.changed().await.is_ok() {
                 let state = updates.borrow_and_update().clone();
                 if this.update_in(cx, |this, window, cx| {
+                    // On the way to the newest: the person already said restart — it goes in at once.
+                    if state.ready().is_some() && relaunch::chaining() {
+                        relaunch::log("the newest is downloaded: putting it in now, as the restart asked");
+                        if relaunch::now() {
+                            return;
+                        }
+                    }
                     // Found and downloaded: each told once (and remembered across launches).
                     if let Some(alert) = notify::update_alert(&state, &mut this.remembered.update_told) {
                         this.remembered.save(&equipe_home());
@@ -1323,6 +1332,8 @@ impl Shell {
     /// A notification was clicked: bring the window forward, on what it was about.
     /// "다시 시작해 업데이트": the downloaded update goes in, and the app starts again.
     pub fn relaunch_to_update(&mut self, cx: &mut Context<Self>) {
+        // A newer release than the downloaded one: on to it after this restart.
+        relaunch::chain_if_newer();
         if !relaunch::now() {
             self.composer.flash = Some(t!("main.update_on_quit").into());
             cx.notify();

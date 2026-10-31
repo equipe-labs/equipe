@@ -63,6 +63,9 @@ pub enum Step {
     Cancelled,
     /// An error, by Sparkle's code (SUErrors.h).
     Failed { code: i64 },
+    /// The feed names this release, read while an update waits: a restart
+    /// lands on it when it is newer than the one downloaded ([`chain`]).
+    Newest(String),
 }
 
 /// Why an update failed, in words the person can act on.
@@ -117,6 +120,9 @@ pub fn next(now: &Update, step: Step) -> Update {
     };
     match (now, step) {
         (_, Step::Ready(v)) => Update::Ready(v),
+        // A newer release than the waiting one: the restart lands there, so the pill says it.
+        (Update::Ready(v), Step::Newest(newest)) if newer(&newest, v) => Update::Ready(newest),
+        (_, Step::Newest(_)) => now.clone(),
         (Update::Ready(_), Step::Failed { code }) if (4000..5000).contains(&code) => match Why::from_code(code) {
             Some(why) => Update::Failed { version: version(), why },
             None => now.clone(),
@@ -139,6 +145,183 @@ pub fn may_check_quietly(now: &Update, session_in_progress: bool) -> bool {
     !session_in_progress && !matches!(now, Update::Found(_) | Update::Downloading(_) | Update::Ready(_))
 }
 
+// ── the newest, in one restart ──
+//
+// Sparkle commits to an update once it has downloaded and staged it: every
+// later check resumes that installer and reads no feed (SPUUpdater.m,
+// `installerIsRunning` → `resumeInstallingUpdate`), and it goes in when the
+// app quits whatever happens. So with releases out since, a restart would
+// land on the staged one and need a second for the newest. Instead: while one
+// waits, the app reads the feed itself and the pill names the newest; the
+// restart leaves a note (`update-chain`), puts the staged one in, and the app
+// starting again on it fetches the newest and puts it in at once — the person
+// pressed once and lands on the newest.
+
+/// Whether release `a` is newer than `b` (`0.94.0` > `0.93.10` > `0.93.0`).
+pub fn newer(a: &str, b: &str) -> bool {
+    let parts = |v: &str| v.trim().trim_start_matches('v').split(['.', '-', '+']).map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<u64>>();
+    let (a, b) = (parts(a), parts(b));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// The newest release an appcast names: each item's `sparkle:shortVersionString`,
+/// else its `sparkle:version`.
+pub fn feed_version(xml: &str) -> Option<String> {
+    let mut newest: Option<String> = None;
+    for item in xml.split("<item>").skip(1) {
+        let tag = |name: &str| {
+            let open = format!("<{name}>");
+            let start = item.find(&open)? + open.len();
+            let end = item[start..].find("</")? + start;
+            Some(item[start..end].trim().to_owned()).filter(|v| !v.is_empty())
+        };
+        if let Some(v) = tag("sparkle:shortVersionString").or_else(|| tag("sparkle:version"))
+            && newest.as_deref().is_none_or(|n| newer(&v, n))
+        {
+            newest = Some(v);
+        }
+    }
+    newest
+}
+
+/// The feed the app's Info.plist names (`SUFeedURL`).
+pub fn feed_url(plist: &str) -> Option<String> {
+    let after = &plist[plist.find("<key>SUFeedURL</key>")? + "<key>SUFeedURL</key>".len()..];
+    let start = after.find("<string>")? + "<string>".len();
+    let end = after[start..].find("</string>")? + start;
+    Some(after[start..end].trim().to_owned()).filter(|u| u.starts_with("https://"))
+}
+
+/// The note a restart into the newest leaves for the app starting again:
+/// the release to land on, and when it was asked (Unix seconds).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chain {
+    pub target: String,
+    pub since: u64,
+}
+
+/// How long the app starting again keeps at it before giving up.
+pub const CHAIN_FOR: u64 = 15 * 60;
+
+/// What the app starting again does with the note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainStep {
+    /// Not there yet: fetch the newest and put it in at once.
+    Go,
+    /// Landed (or past it): the note goes.
+    Done,
+    /// Kept at it too long, or a note from the future: it goes, nothing more.
+    GiveUp,
+}
+
+pub fn chain_step(running: &str, chain: &Chain, now: u64) -> ChainStep {
+    if !newer(&chain.target, running) {
+        ChainStep::Done
+    } else if now < chain.since || now - chain.since > CHAIN_FOR {
+        ChainStep::GiveUp
+    } else {
+        ChainStep::Go
+    }
+}
+
+impl Chain {
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut words = text.split_whitespace();
+        let target = words.next()?.to_owned();
+        let since = words.next()?.parse().ok()?;
+        Some(Self { target, since })
+    }
+
+    pub fn text(&self) -> String {
+        format!("{} {}\n", self.target, self.since)
+    }
+}
+
+/// Whether a restart should go on to `shown` (the pill's) past `staged` (the
+/// one Sparkle downloaded): a note to leave, or none.
+pub fn chain_for(shown: &str, staged: &str, now: u64) -> Option<Chain> {
+    newer(shown, staged).then(|| Chain { target: shown.to_owned(), since: now })
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn chain_path() -> PathBuf {
+    equipe_providers::credentials::equipe_home().join("update-chain")
+}
+
+/// The version Sparkle downloaded and will put in (the pill may name a newer one).
+fn staged() -> &'static std::sync::Mutex<Option<String>> {
+    static STAGED: OnceLock<std::sync::Mutex<Option<String>>> = OnceLock::new();
+    STAGED.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// The app starting again on its way to the newest: what Sparkle downloads next goes in at once.
+static CHAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn chaining() -> bool {
+    CHAINING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// At launch: a note from a restart into the newest — keep at it, or let it go.
+pub fn begin_chain() {
+    let Some(chain) = std::fs::read_to_string(chain_path()).ok().and_then(|t| Chain::parse(&t)) else { return };
+    match chain_step(env!("CARGO_PKG_VERSION"), &chain, unix_now()) {
+        ChainStep::Go => {
+            log(&format!("on the way to {}: fetching it to put in at once", chain.target));
+            CHAINING.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        step => {
+            log(&format!("update chain to {}: {step:?}", chain.target));
+            let _ = std::fs::remove_file(chain_path());
+        }
+    }
+}
+
+/// "다시 시작해 업데이트" with a newer release than the one downloaded: leave
+/// the note for the app starting again.
+pub fn chain_if_newer() {
+    let shown = current().ready().map(str::to_owned);
+    let staged = staged().lock().ok().and_then(|s| s.clone());
+    if let (Some(shown), Some(staged)) = (shown, staged)
+        && let Some(chain) = chain_for(&shown, &staged, unix_now())
+    {
+        log(&format!("restart puts in {staged}, then goes on to {shown}"));
+        let _ = std::fs::write(chain_path(), chain.text());
+    }
+}
+
+/// While an update waits, read the feed (off the main thread, at most every
+/// [`LOOK_AGAIN_AFTER`]): a newer release becomes the pill's.
+pub fn look_at_feed() {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    if current().ready().is_none() {
+        return;
+    }
+    {
+        let Ok(mut last) = LAST.lock() else { return };
+        if last.is_some_and(|at| at.elapsed() < LOOK_AGAIN_AFTER) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let Some(plist) = bundle().and_then(|b| std::fs::read_to_string(b.join("Contents/Info.plist")).ok()) else { return };
+    let Some(url) = feed_url(&plist) else { return };
+    std::thread::spawn(move || {
+        let out = std::process::Command::new("/usr/bin/curl").args(["-fsSL", "--max-time", "20", &url]).output();
+        if let Some(newest) = out.ok().filter(|o| o.status.success()).and_then(|o| feed_version(&String::from_utf8_lossy(&o.stdout))) {
+            step(Step::Newest(newest));
+        }
+    });
+}
+
 fn channel() -> &'static watch::Sender<Update> {
     static STATE: OnceLock<watch::Sender<Update>> = OnceLock::new();
     STATE.get_or_init(|| watch::channel(Update::Idle).0)
@@ -156,6 +339,12 @@ pub fn current() -> Update {
 /// What Sparkle said, into the state (and the log).
 pub fn step(step: Step) {
     log(&format!("{step:?}"));
+    // What Sparkle downloaded: what a restart puts in, whatever the pill names.
+    if let Step::Ready(v) = &step
+        && let Ok(mut staged) = staged().lock()
+    {
+        *staged = Some(v.clone());
+    }
     channel().send_if_modified(|now| {
         let new = next(now, step);
         let changed = *now != new;
@@ -421,6 +610,8 @@ pub fn check_now(cx: &gpui_kit::App) {
 pub const LOOK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 pub fn check_quietly(cx: &gpui_kit::App, stale: std::time::Duration) {
+    // An update waits: Sparkle won't look again, so the app reads the feed itself.
+    look_at_feed();
     #[cfg(target_os = "macos")]
     if let Some(updater) = cx.try_global::<crate::update::Updates>().and_then(|u| u.0.clone()) {
         updater.check_quietly(stale);
@@ -459,6 +650,43 @@ mod tests {
         assert_eq!(both(&ready, &d, "0.87.0").map(|p| p.1), Some(Act::Relaunch));
         d.update = Some(DaemonUpdate::Failed("no route".into()));
         assert_eq!(both(&Update::Idle, &d, "0.87.0").map(|p| p.1), Some(Act::UpdateDaemon), "failed: a press tries again");
+    }
+
+    #[test]
+    fn releases_compare_as_numbers() {
+        assert!(newer("0.94.0", "0.93.0") && newer("0.93.10", "0.93.9") && newer("1.0.0", "0.99.9") && newer("v0.94.1", "0.94.0"));
+        assert!(!newer("0.93.0", "0.93.0") && !newer("0.92.9", "0.93.0") && !newer("0.93", "0.93.0"));
+    }
+
+    #[test]
+    fn the_feed_names_its_newest_release_and_the_app_where_its_feed_is() {
+        let item = |v: &str| format!("<item><title>equipe {v}</title><sparkle:version>{v}</sparkle:version><sparkle:shortVersionString>{v}</sparkle:shortVersionString></item>");
+        let xml = format!("<rss><channel>{}{}</channel></rss>", item("0.93.0"), item("0.94.0"));
+        assert_eq!(feed_version(&xml).as_deref(), Some("0.94.0"));
+        assert_eq!(feed_version("<rss><channel><item><sparkle:version>0.94.0</sparkle:version></item></channel></rss>").as_deref(), Some("0.94.0"), "no short version: the version");
+        assert_eq!(feed_version("<rss></rss>"), None);
+        let plist = "<dict>\n\t<key>SUFeedURL</key>\n\t<string>https://github.com/equipe-labs/equipe/releases/latest/download/appcast.xml</string>\n</dict>";
+        assert_eq!(feed_url(plist).as_deref(), Some("https://github.com/equipe-labs/equipe/releases/latest/download/appcast.xml"));
+        assert_eq!(feed_url("<key>SUFeedURL</key><string>http://plain</string>"), None, "only https");
+    }
+
+    #[test]
+    fn a_newer_release_while_one_waits_becomes_where_the_restart_lands() {
+        let ready = Update::Ready("0.93.0".into());
+        let newest = next(&ready, Step::Newest("0.94.0".into()));
+        assert_eq!(newest.ready(), Some("0.94.0"), "the pill names the newest");
+        assert_eq!(next(&ready, Step::Newest("0.93.0".into())), ready, "the same: nothing changes");
+        assert_eq!(next(&Update::Idle, Step::Newest("0.94.0".into())), Update::Idle, "nothing waits: Sparkle's own check finds it");
+        // The restart: Sparkle's staged one goes in, then on to the newest.
+        let chain = chain_for("0.94.0", "0.93.0", 1_000).unwrap();
+        assert_eq!(Chain::parse(&chain.text()), Some(chain.clone()));
+        assert_eq!(chain_for("0.93.0", "0.93.0", 1_000), None, "the staged one is the newest: no note");
+        // The app starting again on 0.93.0: goes on; on 0.94.0: done; too long after: gives up.
+        assert_eq!(chain_step("0.93.0", &chain, 1_060), ChainStep::Go);
+        assert_eq!(chain_step("0.94.0", &chain, 1_060), ChainStep::Done);
+        assert_eq!(chain_step("0.95.0", &chain, 1_060), ChainStep::Done, "past it");
+        assert_eq!(chain_step("0.93.0", &chain, 1_000 + CHAIN_FOR + 1), ChainStep::GiveUp, "never in a loop");
+        assert_eq!(chain_step("0.93.0", &chain, 10), ChainStep::GiveUp, "a clock gone back");
     }
 
     #[test]
