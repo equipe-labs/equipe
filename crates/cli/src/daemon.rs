@@ -266,6 +266,17 @@ pub mod service {
         )
     }
 
+    /// The PATH the service runs with: the one it was installed from, and where
+    /// the AI tools put themselves (Claude Code's installer: `~/.local/bin`,
+    /// Homebrew's) — a daemon the app starts from Finder has only the system's,
+    /// and could not find `claude` or `codex` the person installs afterwards.
+    pub fn service_path(path: String, home: Option<PathBuf>) -> String {
+        let usual = home.iter().map(|h| h.join(".local/bin")).chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+        let have: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        let missing: Vec<PathBuf> = usual.filter(|dir| !have.contains(dir)).collect();
+        std::env::join_paths(missing.into_iter().chain(have)).map(|p| p.to_string_lossy().into_owned()).unwrap_or(path)
+    }
+
     fn run(program: &str, args: &[&str]) -> bool {
         // Nothing on our standard output: `equipe attach --stdio` carries the protocol there.
         Command::new(program).args(args).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
@@ -280,7 +291,7 @@ pub mod service {
     /// Write the service and start it. The running daemon must be stopped first.
     pub fn install(exe: &Path, log: &Path) -> io::Result<()> {
         let exe = stable_exe(exe);
-        let path = std::env::var("PATH").unwrap_or_default();
+        let path = service_path(std::env::var("PATH").unwrap_or_default(), dirs::home_dir());
         if cfg!(target_os = "macos") {
             let file = plist_path();
             std::fs::create_dir_all(file.parent().expect("LaunchAgents has a parent"))?;
@@ -341,6 +352,14 @@ pub mod service {
         fn the_service_runs_a_path_that_survives_updates() {
             assert_eq!(stable_exe(Path::new("/opt/homebrew/Cellar/equipe/0.2.0/bin/equipe")), Path::new("/opt/homebrew/bin/equipe"));
             assert_eq!(stable_exe(Path::new("/Users/me/.local/bin/equipe")), Path::new("/Users/me/.local/bin/equipe"));
+        }
+
+        #[test]
+        fn the_service_finds_tools_installed_after_it_started() {
+            let path = service_path("/usr/bin:/bin".into(), Some(PathBuf::from("/Users/me")));
+            assert_eq!(path, "/Users/me/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
+            // Already there: not added twice.
+            assert_eq!(service_path(path.clone(), Some(PathBuf::from("/Users/me"))), path);
         }
 
         #[test]
