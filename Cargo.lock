@@ -3018,8 +3018,6 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc8b7def8e74b0d822d3e96f6b28fb5a2c20eb7a83d30d22fa59ca8088d1159b"
 dependencies = [
  "anyhow",
  "block2 0.6.2",

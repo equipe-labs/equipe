@@ -2209,11 +2209,18 @@
   "secrets.folded.other": "asks for {count} values",
   "secrets.folded.one": "asks for 1 value",
   "settings.dictation": "Dictation language",
-  "settings.dictation_desc": "The language you speak into the mic, apart from the app’s. The sound never leaves this Mac.",
+  "settings.dictation_desc": "The language you speak into the mic. On Automatic it follows the keyboard you're typing with (a Korean keyboard for Korean, ABC for English).",
   "settings.dictation_missing_desc": "This Mac has no {lang} dictation model. Get it under Add language, or pick another.",
   "settings.dictation_auto": "Automatic ({lang})",
   "settings.dictation_not_here": "Not on this Mac",
   "settings.dictation_add": "Add language",
   "composer.dictation_no_model": "This Mac has no {lang} dictation model. Add it, or pick another, in Settings › General › Dictation language.",
-  "chat.connect_ai": "Connect an AI"
+  "chat.connect_ai": "Connect an AI",
+  "settings.dictation_servers": "More accurate recognition (Apple's servers)",
+  "settings.dictation_servers_desc": "Off. Speech is recognized on this Mac only.",
+  "settings.dictation_servers_on": "On. What you say is sent to Apple's servers to be recognized.",
+  "settings.dictation_servers_ask": "Recognize with Apple's servers?",
+  "settings.dictation_servers_ask_desc": "What you say into the mic is sent to Apple's servers and turned into text. It understands Korean, mixed Korean–English speech and languages this Mac has no model for better. Apple's privacy policy applies; equipe doesn't keep the sound or send it anywhere else. You can turn it off any time.",
+  "settings.dictation_servers_agree": "Agree and turn on",
+  "settings.dictation_servers_cancel": "Cancel"
 }

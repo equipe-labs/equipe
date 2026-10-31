@@ -2209,11 +2209,18 @@
   "secrets.folded.other": "bittet um {count} Werte",
   "secrets.folded.one": "bittet um 1 Wert",
   "settings.dictation": "Diktiersprache",
-  "settings.dictation_desc": "Die Sprache, die du ins Mikrofon sprichst – unabhängig von der App-Sprache. Der Ton verlässt diesen Mac nie.",
+  "settings.dictation_desc": "Die Sprache, die du ins Mikrofon sprichst. Auf „Automatisch“ folgt sie der Tastatur, mit der du gerade tippst (koreanische Tastatur für Koreanisch, ABC für Englisch).",
   "settings.dictation_missing_desc": "Auf diesem Mac fehlt das Diktiermodell für {lang}. Hole es über „Sprache hinzufügen“ oder wähle eine andere.",
   "settings.dictation_auto": "Automatisch ({lang})",
   "settings.dictation_not_here": "Nicht auf diesem Mac",
   "settings.dictation_add": "Sprache hinzufügen",
   "composer.dictation_no_model": "Auf diesem Mac fehlt das Diktiermodell für {lang}. Füge es hinzu oder wähle eine andere unter Einstellungen › Allgemein › Diktiersprache.",
-  "chat.connect_ai": "KI verbinden"
+  "chat.connect_ai": "KI verbinden",
+  "settings.dictation_servers": "Genauere Erkennung (Apples Server)",
+  "settings.dictation_servers_desc": "Aus. Sprache wird nur auf diesem Mac erkannt.",
+  "settings.dictation_servers_on": "An. Was du sagst, wird zur Erkennung an Apples Server gesendet.",
+  "settings.dictation_servers_ask": "Mit Apples Servern erkennen?",
+  "settings.dictation_servers_ask_desc": "Was du ins Mikrofon sagst, wird an Apples Server gesendet und in Text umgewandelt. Koreanisch, gemischtes Koreanisch–Englisch und Sprachen ohne Modell auf diesem Mac werden besser verstanden. Es gilt Apples Datenschutzrichtlinie; equipe speichert den Ton nicht und sendet ihn nirgendwo sonst hin. Du kannst es jederzeit ausschalten.",
+  "settings.dictation_servers_agree": "Zustimmen und einschalten",
+  "settings.dictation_servers_cancel": "Abbrechen"
 }

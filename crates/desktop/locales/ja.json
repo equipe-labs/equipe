@@ -2156,11 +2156,18 @@
   "secrets.open": "入力",
   "secrets.folded.other": "{count} 件の値の入力を依頼",
   "settings.dictation": "音声入力の言語",
-  "settings.dictation_desc": "マイクで話す言語です。アプリの言語とは別に選べます。音声はこの Mac の外に出ません。",
+  "settings.dictation_desc": "マイクで話す言語です。自動なら今使っているキーボードに合わせます（韓国語キーボードなら韓国語、ABCなら英語）。",
   "settings.dictation_missing_desc": "この Mac には {lang} の音声入力モデルがありません。「言語を追加」で入れるか、別の言語を選んでください。",
   "settings.dictation_auto": "自動（{lang}）",
   "settings.dictation_not_here": "この Mac になし",
   "settings.dictation_add": "言語を追加",
   "composer.dictation_no_model": "この Mac には {lang} の音声入力モデルがありません。設定 › 一般 › 音声入力の言語で追加するか変更してください。",
-  "chat.connect_ai": "AI を接続"
+  "chat.connect_ai": "AI を接続",
+  "settings.dictation_servers": "より正確な認識（Apple のサーバ）",
+  "settings.dictation_servers_desc": "オフです。音声はこの Mac の中だけで認識されます。",
+  "settings.dictation_servers_on": "オンです。話した音声を Apple のサーバに送って認識します。",
+  "settings.dictation_servers_ask": "Apple のサーバで認識しますか？",
+  "settings.dictation_servers_ask_desc": "マイクで話した音声が Apple のサーバに送られ、文字に変換されます。韓国語や韓英まじりの話し方、この Mac にモデルがない言語もより正確に聞き取ります。Apple のプライバシーポリシーが適用され、equipe は音声を保存したり他へ送ったりしません。いつでもオフにできます。",
+  "settings.dictation_servers_agree": "同意してオンにする",
+  "settings.dictation_servers_cancel": "キャンセル"
 }

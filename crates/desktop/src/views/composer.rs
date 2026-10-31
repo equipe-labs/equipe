@@ -281,9 +281,11 @@ pub struct Composer {
     save_task: Option<Task<()>>,
     /// Writes the draft down as the app quits.
     _quit: Subscription,
-    /// Dictation: on-device speech recognition, in `listening`.
+    /// Dictation: speech recognition in `listening` — on this Mac, or with
+    /// Apple's servers too when the person agreed (`servers`).
     pub speech: Entity<SpeechState>,
     pub listening: equipe_core::i18n::Lang,
+    pub servers: bool,
     /// What is being said, while it is (shown dimmed under the box; Esc drops it).
     dictating: Option<String>,
     _speech: Subscription,
@@ -292,9 +294,9 @@ pub struct Composer {
 }
 
 impl Composer {
-    pub fn new(window: &mut Window, cx: &mut Context<Shell>, listening: equipe_core::i18n::Lang) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Shell>, listening: equipe_core::i18n::Lang, servers: bool) -> Self {
         let placeholder = t!("composer.placeholder").to_owned();
-        let (speech, heard) = listener(listening, window, cx);
+        let (speech, heard) = listener(listening, servers, window, cx);
         let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(placeholder.clone()));
         Self {
             state,
@@ -333,6 +335,7 @@ impl Composer {
             }),
             speech,
             listening,
+            servers,
             dictating: None,
             _speech: heard,
             inbox_watch: None,
@@ -433,9 +436,10 @@ impl Composer {
     }
 }
 
-/// Dictation listening for `lang`, and what it hears going to the composer.
-fn listener(lang: equipe_core::i18n::Lang, window: &mut Window, cx: &mut Context<Shell>) -> (Entity<SpeechState>, Subscription) {
-    let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(crate::dictation::locale(lang))));
+/// Dictation listening for `lang` (with Apple's servers if `servers`), and
+/// what it hears going to the composer.
+fn listener(lang: equipe_core::i18n::Lang, servers: bool, window: &mut Window, cx: &mut Context<Shell>) -> (Entity<SpeechState>, Subscription) {
+    let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(crate::dictation::locale(lang)).servers(servers)));
     let heard = cx.subscribe_in(&speech, window, |shell: &mut Shell, _, event: &SpeechEvent, window, cx| shell.on_speech(event, window, cx));
     (speech, heard)
 }
@@ -637,20 +641,42 @@ impl Shell {
         self.refresh_dictation(window, cx);
     }
 
-    /// Listen for what [`crate::dictation::choose`] says now, if that changed.
-    pub fn refresh_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Apple's servers for dictation: on only after the person's yes on
+    /// settings' sheet; off at once.
+    pub fn set_dictation_servers(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.remembered.dictation_servers = on;
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.refresh_dictation(window, cx);
+    }
+
+    /// The language to listen for now: the one picked; else the keyboard's
+    /// (한글 typed, Korean spoken) when this Mac can hear it; else the first
+    /// [`crate::dictation::choose`] finds.
+    fn dictation_lang(&self) -> equipe_core::i18n::Lang {
+        let servers = self.remembered.dictation_servers;
+        let heard = |l: equipe_core::i18n::Lang| servers || crate::dictation::heard_here(l);
         let picked = self.remembered.dictation.as_deref().and_then(equipe_core::i18n::Lang::parse);
-        let lang = crate::dictation::choose(picked, crate::i18n::lang(), &equipe_core::i18n::preferred(), crate::dictation::heard_here);
-        if lang == self.composer.listening {
+        let typing = if picked.is_none() { crate::dictation::typing_lang() } else { None };
+        crate::dictation::choose(picked.or(typing.filter(|l| heard(*l))), crate::i18n::lang(), &equipe_core::i18n::preferred(), heard)
+    }
+
+    /// Listen for what [`Self::dictation_lang`] says now, if that changed.
+    pub fn refresh_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (lang, servers) = (self.dictation_lang(), self.remembered.dictation_servers);
+        if lang == self.composer.listening && servers == self.composer.servers {
             return;
         }
         self.composer.speech.update(cx, |s, cx| s.cancel(cx));
-        let (speech, heard) = listener(lang, window, cx);
-        (self.composer.speech, self.composer._speech, self.composer.listening) = (speech, heard, lang);
+        let (speech, heard) = listener(lang, servers, window, cx);
+        (self.composer.speech, self.composer._speech, self.composer.listening, self.composer.servers) = (speech, heard, lang, servers);
         cx.notify();
     }
 
-    fn toggle_dictation(&mut self, cx: &mut Context<Self>) {
+    fn toggle_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // About to listen: in the language being typed now, if it changed.
+        if self.composer.dictating.is_none() {
+            self.refresh_dictation(window, cx);
+        }
         self.composer.speech.update(cx, |s, cx| s.toggle(cx));
         cx.notify();
     }
@@ -905,11 +931,11 @@ impl Shell {
     /// what was said, on this Mac's daemon or a far one alike.
     fn write_down(&mut self, id: u64, path: PathBuf, cx: &mut Context<Self>) {
         self.composer.strip.writing(id, true);
-        let locale = crate::dictation::locale(self.composer.listening);
+        let (locale, servers) = (crate::dictation::locale(self.composer.listening), self.composer.servers);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let from = path.clone();
         // Minutes for a long one: its own thread, not one of the pool's.
-        std::thread::spawn(move || drop(tx.send(crate::transcribe::transcribe(&from, locale, media::audio_duration(&from)))));
+        std::thread::spawn(move || drop(tx.send(crate::transcribe::transcribe(&from, locale, media::audio_duration(&from), servers))));
         cx.spawn(async move |this, cx| {
             let heard = rx.await.unwrap_or_else(|_| Err(Failure::Failed("stopped".into())));
             let _ = this.update(cx, |this, cx| {
@@ -1992,7 +2018,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let mic = composer.speech.read(cx).is_available(cx).then(|| {
         let label = if listening { t!("composer.tip_mic_stop") } else { t!("composer.tip_mic") };
         let b = tip(
-            button("mic", label, |this, _, cx| this.toggle_dictation(cx), cx)
+            button("mic", label, |this, window, cx| this.toggle_dictation(window, cx), cx)
                 .size(px(CONTROL))
                 .flex_none()
                 .flex()

@@ -2156,11 +2156,18 @@
   "secrets.open": "填寫",
   "secrets.folded.other": "請求填寫 {count} 個值",
   "settings.dictation": "語音輸入語言",
-  "settings.dictation_desc": "對著麥克風說的語言，可與 App 語言分開設定。聲音不會離開這台 Mac。",
+  "settings.dictation_desc": "對著麥克風說的語言。選「自動」時跟隨目前使用的鍵盤（韓文鍵盤為韓語，ABC為英語）。",
   "settings.dictation_missing_desc": "這台 Mac 沒有 {lang} 聽寫模型。請在「加入語言」中取得，或選擇其他語言。",
   "settings.dictation_auto": "自動（{lang}）",
   "settings.dictation_not_here": "本機沒有",
   "settings.dictation_add": "加入語言",
   "composer.dictation_no_model": "這台 Mac 沒有 {lang} 聽寫模型。請在 設定 › 一般 › 語音輸入語言 中加入或更換。",
-  "chat.connect_ai": "連接 AI"
+  "chat.connect_ai": "連接 AI",
+  "settings.dictation_servers": "更準確的辨識（Apple 伺服器）",
+  "settings.dictation_servers_desc": "已關閉。語音只在這台 Mac 上辨識。",
+  "settings.dictation_servers_on": "已開啟。說話的聲音會傳送到 Apple 伺服器辨識。",
+  "settings.dictation_servers_ask": "使用 Apple 伺服器辨識嗎？",
+  "settings.dictation_servers_ask_desc": "對著麥克風說的聲音會傳送到 Apple 伺服器並轉成文字。韓語、韓英混說以及這台 Mac 沒有模型的語言都能辨識得更好。適用 Apple 的隱私權政策，equipe 不會保存聲音或傳送到別處。隨時可以關閉。",
+  "settings.dictation_servers_agree": "同意並開啟",
+  "settings.dictation_servers_cancel": "取消"
 }
