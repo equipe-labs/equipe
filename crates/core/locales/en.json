@@ -148,6 +148,7 @@
   "error.routine_invalid": "A routine needs a name, what to do and a valid time",
   "error.routines_full": "A squad keeps up to {max} routines",
   "error.secret_not_saved": "Couldn't save to {path}: {why}",
+  "error.signal_missing": "{project} has no signal \"{name}\" any more.",
   "error.still_worked_on": "T-{id} is still being worked on — talk to {name} directly.",
   "error.stuck": "The daemon isn't answering: it has been on {doing} since {since}. Try `equipe daemon restart`.",
   "error.ticket_name_project": "Pick the project — the squad has several: {names}.",

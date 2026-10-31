@@ -148,6 +148,7 @@
   "error.routine_invalid": "Una rutina necesita un nombre, una tarea y una hora válida",
   "error.routines_full": "Un equipo guarda hasta {max} rutinas",
   "error.secret_not_saved": "No se pudo guardar en {path}: {why}",
+  "error.signal_missing": "{project} ya no tiene la señal «{name}».",
   "error.still_worked_on": "T-{id} todavía está en curso: habla directamente con {name}.",
   "error.stuck": "El daemon no responde: lleva en {doing} desde las {since}. Prueba `equipe daemon restart`.",
   "error.ticket_name_project": "Elige el proyecto: el equipo tiene varios: {names}.",

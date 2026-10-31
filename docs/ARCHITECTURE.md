@@ -762,10 +762,9 @@ starts until the person takes it on.
 A squad can't see what it doesn't measure, nor notice when the measuring
 breaks: in October 2026 the site went 17 days without its analytics tag and the
 traffic workflow failed 18 times in a row, and nobody knew. A **signal** is a
-project's check of something the squad measures or ships — a shell command, an
-expectation and a schedule (`crates/core/src/signals.rs`,
-`runtime/signals.rs`). Shell commands only; reading PostHog or App Store
-Connect directly is later work.
+project's check of something the squad measures or ships — a shell command or
+a product's number read straight from its API, an expectation and a schedule
+(`crates/core/src/signals.rs`, `signal_sources.rs`, `runtime/signals.rs`).
 
 **Where they live.** In the squad's journal (`meta` key `signals`), each tied
 to one of the squad's projects by name — not in a file in the project, so no
@@ -779,6 +778,36 @@ member's commit can change what the daemon runs. Each signal:
 | `expect` | `exit0` (the default), `at_least`/`at_most` a number (the first number printed: `grep -c` printing 0 with exit 1 counts as 0), `equals`/`contains` a text |
 | `change_pct` | also tell the PM when the number moves this many percent from the reading before |
 | `every` | `30m`, `6h`, `1d` — between 5 minutes and 7 days; 6h by default |
+| `source` | `command` (the default), `posthog` or `app_store` — see below |
+| `on` | false when the person paused it from a screen: kept, not run |
+
+**API sources.** Product numbers are awkward to get from a shell and a key in
+a command would show on the card and in readings, so two sources are read by
+the daemon itself (`signal_sources.rs`), outside any fence, with keys from a
+file the person saved on an `ask_secret` card (`keys`, `~/…`, checked as
+`ask_secret` checks where it saves):
+
+| source | fields | keys' file | value |
+|---|---|---|---|
+| `posthog` | `posthog_project`, `event` (all events when left out), `days` 1–90 | `POSTHOG_PERSONAL_API_KEY` (personal key, query read); `POSTHOG_HOST` (default `https://us.posthog.com`) | a HogQL `count()` of the events in the last `days` days, via `POST /api/projects/<id>/query/` |
+| `app_store` | `app_id` (Apple ID), `days` 1–31 | `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_VENDOR_NUMBER`, `ASC_KEY_FILE` (the `.p8`) or `ASC_PRIVATE_KEY`; `ASC_API_URL` (default Apple's) | first downloads (product types 1, 1F, 1T, F1, 1E…) of the app in the daily `SALES/SUMMARY` reports of `days` days ending the day before yesterday (UTC); a day with no report (404) counts 0. The key needs the Sales role. |
+
+The host a key is sent to comes from the keys' file only — never from what
+the PM proposed — so a proposal can't send the person's key elsewhere. The card
+shows what is read and from which file (`PostHog 700951 · $pageview · 1d (keys:
+~/.config/equipe-site/analytics.env)`); a key never appears in the signal, a
+reading, an error (an API's refusal is kept as its status and own words,
+blanked) or on a screen. Unless the PM says otherwise an API signal expects
+`at_least 0`: it fails only when the number can't be read. Tested against
+stand-in APIs in `crates/core/tests/signal_sources.rs`.
+
+**On screens.** Every screen gets the squad's signals with their last 30
+readings (`Snapshot.signals`, `Event::SignalsChanged` on each reading or
+change; `protocol::signals::SignalView`). The desktop lists them under
+Settings, with status, last value and trend, and the person pauses one or
+starts it again there (`Command::SetSignalOn`; started, it runs at once). Only
+the person sends it; turning a signal on or changing its command still goes
+through the PM's card.
 
 For this squad, the three of T-197:
 

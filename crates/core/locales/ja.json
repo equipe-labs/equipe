@@ -145,6 +145,7 @@
   "error.routine_invalid": "定期業務には名前・やること・正しい時刻が必要です",
   "error.routines_full": "定期業務はスクワッドごとに {max} 件までです",
   "error.secret_not_saved": "{path} に保存できませんでした: {why}",
+  "error.signal_missing": "{project} にはもうシグナル「{name}」がありません。",
   "error.still_worked_on": "T-{id} はまだ作業中です — {name} に直接話してください。",
   "error.stuck": "デーモンが応答しません。{since} から {doing} の処理で止まっています。`equipe daemon restart` を試してください。",
   "error.ticket_name_project": "プロジェクトを選んでください。スクワッドには複数あります: {names}。",

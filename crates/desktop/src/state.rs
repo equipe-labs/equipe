@@ -296,6 +296,8 @@ pub struct Model {
     pub pm_accepts: bool,
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub idle_wake_hours: u32,
+    /// The squad's signals, each with its latest readings.
+    pub signals: Vec<equipe_core::protocol::signals::SignalView>,
     /// Secrets members asked the person to type, oldest first.
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
     /// The browser profiles besides the main one (other people's accounts).
@@ -446,6 +448,7 @@ impl Model {
             logins: Vec::new(),
             pm_accepts: false,
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
+            signals: Vec::new(),
             secret_asks: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
@@ -826,6 +829,7 @@ impl Model {
         self.pm_accepts = snapshot.pm_accepts;
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
+        self.signals = snapshot.signals.clone();
         self.secret_asks = snapshot.secret_asks.clone();
         self.routines = snapshot.routines.clone();
         self.order_projects();
@@ -937,6 +941,10 @@ impl Model {
             }
             Event::IdleWakeChanged { squad, hours } if *squad == self.squad => {
                 self.idle_wake_hours = *hours;
+                self.revision += 1;
+            }
+            Event::SignalsChanged { squad, signals } if *squad == self.squad => {
+                self.signals = signals.clone();
                 self.revision += 1;
             }
             Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
@@ -2520,6 +2528,31 @@ mod tests {
         assert_eq!(model.idle_wake_hours, 0);
         model.apply(Update::Event(Event::IdleWakeChanged { squad: "other".into(), hours: 24 }), T0);
         assert_eq!(model.idle_wake_hours, 0, "another squad's");
+    }
+
+    #[test]
+    fn the_squads_signals_come_with_the_snapshot_and_are_replaced_when_they_change() {
+        use equipe_core::protocol::signals::{SignalReading, SignalSource, SignalView};
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert!(model.signals.is_empty(), "an older daemon says nothing: none");
+        let signal = SignalView {
+            project: "site".into(),
+            name: "pageviews".into(),
+            source: SignalSource::Posthog,
+            what: "PostHog 1 · $pageview · 1d".into(),
+            expect: "≥ 1".into(),
+            every: 3600,
+            on: true,
+            readings: vec![SignalReading { at: 1, ok: true, value: Some("12".into()), note: None }],
+        };
+        assert!(model.apply(Update::Event(Event::SignalsChanged { squad: "acme".into(), signals: vec![signal.clone()] }), T0));
+        assert_eq!(model.signals, vec![signal.clone()]);
+        model.apply(Update::Event(Event::SignalsChanged { squad: "other".into(), signals: Vec::new() }), T0);
+        assert_eq!(model.signals.len(), 1, "another squad's");
+        let paused = SignalView { on: false, ..signal };
+        model.apply(Update::Event(Event::SignalsChanged { squad: "acme".into(), signals: vec![paused.clone()] }), T0);
+        assert_eq!(model.signals, vec![paused], "the whole list replaces");
     }
 
     #[test]
