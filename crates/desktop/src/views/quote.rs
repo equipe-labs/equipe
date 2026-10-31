@@ -1,7 +1,7 @@
 //! Asking about words in the conversation, as Claude's apps do: select a
 //! stretch of a reply (a call's output, a message of your own) and, the
 //! moment the button lets go, a small bar floats over the selection —
-//! "Ask about this" and "Copy". Asking (a click, ⏎, ⌘⇧R) quotes the words
+//! "Ask about this" and "Copy", each acting on the press. Asking (a press, ⏎, ⌘⇧R) quotes the words
 //! into the composer, over its box, and puts the keys there: the person
 //! writes the question as any message — their draft and attachments kept,
 //! several quotes at once — and it goes with the quotes first, a Markdown
@@ -129,9 +129,9 @@ impl Shell {
         let offer = self.quote.offer.as_ref().filter(|o| self.screen == Screen::Chat && Some(o.session) == self.model.viewed())?;
         // Copied, it stays a moment to say so.
         if !offer.copied {
-            // Where the selection is drawn now; where the button let go when
-            // it doesn't say (a double-clicked word).
-            offer.ends.set(Some(ends(window, cx).unwrap_or((offer.released, offer.released))));
+            // Where the selection is drawn now; cleared (a press, on the bar
+            // too, clears it), where it was; never drawn, where the button let go.
+            offer.ends.set(Some(rules::place(ends(window, cx), offer.ends.get(), offer.released)));
         }
         Some(offer)
     }
@@ -291,9 +291,9 @@ pub fn layer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     Some(deferred(anchored().position(point(px(x), px(y))).child(bar(shell.palette, offer.copied, cx))).with_priority(2).into_any_element())
 }
 
-/// The bar: ask about the words, or copy them.
+/// The bar: ask about the words, or copy them — on the press itself: the
+/// window's text selection clears on a press, before any click could land.
 fn bar(p: Palette, copied: bool, cx: &mut Context<Shell>) -> impl IntoElement + Styled + use<> {
-    let key = |k: &'static str| div().px(px(4.)).rounded(px(3.)).bg(p.wash).text_size(px(10.5)).text_color(p.muted).child(k);
     let item = |id: &'static str, glyph: Icon, words: &'static str| {
         h_flex()
             .id(id)
@@ -308,8 +308,20 @@ fn bar(p: Palette, copied: bool, cx: &mut Context<Shell>) -> impl IntoElement + 
             .child(icon(glyph, 13., p.text2))
             .child(words)
     };
-    let ask = tip(item("quote-ask", Icon::Message, t!("quote.ask")).child(key("⌘⇧R")), p, t!("quote.ask_tip"), Some("⌘⇧R")).on_click(cx.listener(|shell, _, window, cx| shell.quote_open(window, cx)));
-    let copy = if copied { item("quote-copy", Icon::Check, t!("quote.copied")) } else { item("quote-copy", Icon::Copy, t!("chat.copy")) }.on_click(cx.listener(|shell, _, _, cx| shell.quote_copy(cx)));
+    let ask = tip(item("quote-ask", Icon::Message, t!("quote.ask")), p, t!("quote.ask_tip"), None).on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|shell, _, window, cx| {
+            cx.stop_propagation();
+            shell.quote_open(window, cx);
+        }),
+    );
+    let copy = if copied { item("quote-copy", Icon::Check, t!("quote.copied")) } else { item("quote-copy", Icon::Copy, t!("chat.copy")) }.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|shell, _, _, cx| {
+            cx.stop_propagation();
+            shell.quote_copy(cx);
+        }),
+    );
     h_flex()
         .id("quote-bar")
         .occlude()
