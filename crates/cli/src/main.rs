@@ -391,10 +391,25 @@ fn install_tls() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    install_tls();
+fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Before any thread: opened from Finder, the app's equipe (and the daemon
+    // it starts) has launchd's bare PATH, where no member's tool is found.
+    equipe_providers::tools_path::widen(runs_long(&cli));
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("start the async runtime").block_on(run(cli))
+}
+
+/// Whether this command is, or sets up, the daemon: worth asking the login
+/// shell for the person's PATH, which the daemon and its service keep.
+fn runs_long(cli: &Cli) -> bool {
+    matches!(
+        cli.command,
+        Some(Command::Daemon { action: DaemonAction::Run | DaemonAction::Start | DaemonAction::Restart { .. } | DaemonAction::Install })
+    )
+}
+
+async fn run(cli: Cli) -> ExitCode {
+    install_tls();
     // The helper's copy of equipe holds the person's desktop permissions: it
     // runs the helper and nothing else.
     if desktop::is_helper_copy() && !matches!(cli.command, Some(Command::Desktop { action: Some(DesktopAction::Serve { .. }) })) {
@@ -1436,7 +1451,7 @@ impl App {
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
-                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } => {}
+                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineInstall { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });
@@ -1525,7 +1540,7 @@ fn login_nebius() -> CmdResult {
     equipe_core::nemotron::save_key(&home, &pasted).map_err(|err| Failure::new(err.to_string()))?;
     println!("{}", p.ok_line(&t!("main.nebius_saved", path = equipe_core::nemotron::key_path(&home).display())));
     if codex_app::find(codex_app::DEFAULT_BINARY).is_none() {
-        println!("{}", p.row("", &p.hint("npm install -g @openai/codex")));
+        println!("{}", p.row("", &p.hint(equipe_core::engines::installer(protocol::Engine::Codex))));
     }
     println!("{}", p.note(2, t!("main.nebius_saved_next")));
     Ok(())
@@ -1555,7 +1570,7 @@ fn nebius_section(p: &ui::Painter) -> bool {
         }
         (true, false) => {
             println!("{}", p.row(t!("main.row_key"), &p.fail(t!("main.nebius_needs_codex"))));
-            println!("{}", p.row("", &p.hint("npm install -g @openai/codex")));
+            println!("{}", p.row("", &p.hint(equipe_core::engines::installer(protocol::Engine::Codex))));
             false
         }
     }

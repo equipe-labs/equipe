@@ -504,6 +504,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
+        installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
         design_watch: HashMap::new(),
@@ -773,6 +774,8 @@ enum Internal {
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
     SignInEnded(Engine, u64),
+    /// Installing an engine's tool ended.
+    InstallEnded(Engine),
     /// Whether Claude is signed in, as just looked at off the loop.
     ClaudeReady(bool),
     /// A squad's design systems looked at off the loop: their stamp, and —
@@ -903,6 +906,8 @@ struct Runtime {
     /// Sign-ins under way on this machine, by engine: which one, and its task.
     sign_ins: HashMap<Engine, (u64, JoinHandle<()>)>,
     next_sign_in: u64,
+    /// Engines whose tool is being installed on this machine.
+    installs: std::collections::HashSet<Engine>,
     /// The `codex` the person's Codex sign-in runs.
     codex_binary: String,
     /// Both engines' plans, and members moving between them (`engines`).
@@ -973,6 +978,7 @@ impl Wake {
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
+            Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
@@ -1144,6 +1150,10 @@ impl Runtime {
                 }
                 Internal::Engines(engines) => self.publish_engines(engines),
                 Internal::ClaudeReady(ok) => self.claude_ready(ok),
+                Internal::InstallEnded(engine) => {
+                    self.installs.remove(&engine);
+                    self.publish_nebius();
+                }
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
                         self.sign_ins.remove(&engine);
@@ -1656,6 +1666,7 @@ impl Runtime {
                 }
             }
             Command::SignOut { engine } => self.sign_out(engine),
+            Command::InstallEngine { engine } => self.install_engine(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
             Command::SetPmAccepts { squad, on } => {
                 if let Some(journal) = self.journal(&squad) {
@@ -1750,6 +1761,23 @@ impl Runtime {
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
         });
         self.sign_ins.insert(engine, (id, task));
+    }
+
+    /// Install `engine`'s tool here with its maker's installer, off the loop
+    /// (once at a time), then look at the engines again.
+    fn install_engine(&mut self, engine: Engine) {
+        use equipe_protocol::InstallStep;
+        if !self.installs.insert(engine) {
+            return;
+        }
+        self.publish(Event::EngineInstall { engine, step: InstallStep::Running });
+        let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        tokio::spawn(async move {
+            let step = crate::engines::install(engine).await;
+            let _ = internal.send(Internal::Event(Box::new(Event::EngineInstall { engine, step })));
+            let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
+            let _ = internal.send(Internal::InstallEnded(engine));
+        });
     }
 
     /// What was read of the Codex account's plan, forgotten: signed out, or
@@ -2190,7 +2218,7 @@ runbooks and reports live there, and work across the projects or on running them
         let codex_cli = engine == Engine::Codex && codex_app::find(&self.config.codex_binary).is_some();
         on_nebius &= engine == Engine::Codex;
         if on_nebius && !codex_cli {
-            return fail(self, say!(self, "error.nebius_needs_codex"), Some("npm install -g @openai/codex"));
+            return fail(self, say!(self, "error.nebius_needs_codex"), Some(crate::engines::installer(Engine::Codex)));
         }
         if spec.access == Access::EditFiles && engine == Engine::Codex && !codex_cli {
             return fail(self, say!(self, "error.codex_edits"), Some("codex login"));

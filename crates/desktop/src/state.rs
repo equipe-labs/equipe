@@ -1122,7 +1122,12 @@ impl Model {
                 }
             }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
-            Event::Error { session: None, message, .. } => {
+            // The squad's, or a member's start that failed before it began (no
+            // engine, none installed): with no conversation to show it in, it
+            // would be lost, and the person would see nothing happen.
+            Event::Error { session, message, .. }
+                if session.is_none_or(|id| !self.convos.contains_key(&id) && !self.members.iter().any(|m| m.session == id)) =>
+            {
                 self.problem = Some(message);
                 self.squad_errors += 1;
                 self.board_rev += 1;
@@ -1727,6 +1732,15 @@ mod tests {
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
     const T1: Clock = Clock { hour: 14, minute: 3, second: 12 };
+
+    #[test]
+    fn a_member_that_never_started_says_why_rather_than_nothing() {
+        let mut model = Model::new("acme");
+        let failed = Event::Error { session: Some(7), message: "No engine is ready.".into(), next: Some("equipe login".into()) };
+        model.apply(Update::Event(failed), T0);
+        assert_eq!(model.take_problem().as_deref(), Some("No engine is ready."), "no conversation to show it in: the squad's problem");
+        assert_eq!(model.squad_errors, 1);
+    }
 
     #[test]
     fn projects_keep_the_order_they_were_dragged_into() {

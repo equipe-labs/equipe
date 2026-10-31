@@ -68,6 +68,7 @@ mod update;
 mod usage;
 mod views;
 mod visuals;
+mod welcome;
 mod wire;
 mod yourturn;
 mod zoom;
@@ -243,6 +244,8 @@ pub struct Shell {
     pub endpoint: Endpoint,
     pub remembered: Remembered,
     pub connect: ConnectUi,
+    /// The first run's page: no squad yet on this Mac (`welcome.rs`).
+    pub welcome: views::welcome::WelcomeUi,
     pub ask: AskUi,
     /// A password just typed with "don't ask again" on: the key goes there once connected.
     ssh_key_wanted: bool,
@@ -318,6 +321,7 @@ impl Shell {
             .unwrap_or_else(Endpoint::this_mac);
         let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
         let ask = AskUi::new(window, cx);
+        let welcome = views::welcome::WelcomeUi::new(window, cx);
         // Light or dark as the person picked, else as the Mac is.
         remembered.appearance.apply();
         let appearance = remembered.appearance.resolve(window.appearance());
@@ -363,6 +367,7 @@ impl Shell {
             endpoint: endpoint.clone(),
             remembered,
             connect,
+            welcome,
             ask,
             ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
@@ -807,7 +812,7 @@ impl Shell {
                             continue;
                         }
                         // The engines: settings' AI platforms, never the model's.
-                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. })) = &update {
+                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineInstall { .. })) = &update {
                             let effect = this.engines.on_event(event);
                             changed |= effect.changed;
                             // The code's page, in this Mac's browser, for the screen that asked.
@@ -815,6 +820,16 @@ impl Shell {
                                 && !cfg!(feature = "snapshot")
                             {
                                 cx.open_url(&url);
+                            }
+                            // Installed as the person asked: straight on to its sign-in.
+                            if let Some(engine) = effect.sign_in
+                                && !cfg!(feature = "snapshot")
+                            {
+                                match engines::platform(engine).signs_in {
+                                    engines::SignsIn::FromApp => this.engine_sign_in(engine, cx),
+                                    engines::SignsIn::InTerminal { .. } if !this.endpoint.is_remote() => this.engine_terminal(engine, cx),
+                                    engines::SignsIn::InTerminal { .. } => {}
+                                }
                             }
                             continue;
                         }
@@ -890,6 +905,14 @@ impl Shell {
                             if this.settings.category == settings::Category::Engines {
                                 this.ask_engines(cx);
                             }
+                        }
+                        // No squad yet: the first-run page looks at git and names one.
+                        if !this.endpoint.is_remote() && matches!(this.model.conn, Conn::Down { reason: failure::Failure::NoSquads, .. }) {
+                            this.welcome_shown(window, cx);
+                        }
+                        // Just made on the first-run page: an engine next.
+                        if attached && this.welcome.state.take_then_engines() {
+                            this.open_settings(Some(settings::Category::Engines), window, cx);
                         }
                         if attached {
                             this.start_team();
@@ -1350,6 +1373,8 @@ impl Shell {
             Conn::Down { had_snapshot: false, .. } | Conn::Connecting if remote && self.connecting_shown && (self.connecting.retrying || self.model.conn == Conn::Connecting) => {
                 v_flex().flex_1().child(self.drag_strip()).child(views::connect::connecting_screen(self, cx)).into_any_element()
             }
+            // No squad yet on this Mac: the window starts one, rather than a terminal.
+            Conn::Down { reason: failure::Failure::NoSquads, had_snapshot: false, .. } if !remote => v_flex().flex_1().child(self.drag_strip()).child(views::welcome::welcome_screen(self, cx)).into_any_element(),
             Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide_at(&self.endpoint, self.connecting.door.as_deref()), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()

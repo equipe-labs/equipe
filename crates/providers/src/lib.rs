@@ -11,6 +11,7 @@ pub mod error;
 pub mod openai;
 pub mod pkce;
 pub mod relay;
+pub mod tools_path;
 pub mod turn;
 
 pub use credentials::{AuthMethod, CredentialStore, Credentials};

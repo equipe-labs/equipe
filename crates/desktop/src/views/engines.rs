@@ -111,8 +111,16 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
     let head = h_flex().gap_3().items_center().child(mark(platform)).child(
         h_flex().gap_2().items_center().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(platform.name)).child(pill(p, tone, said.clone())),
     );
+    let installing = shell.engines.installing(engine) == Some(&engines::Install::Running);
     let action: Option<AnyElement> = match (&card, status.map(|s| s.state), platform.signs_in) {
-        (Card::Idle, Some(EngineState::NotInstalled), _) => Some(button(shell, at, 0, "engine-guide", Kind::Secondary, t!("engines.install_guide")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(platform.guide)).into_any_element()),
+        (Card::Idle, Some(EngineState::NotInstalled), _) if installing => Some(h_flex().gap_2().items_center().child(crate::motion::spinner(14., p.text2)).child(value(p, t!("engines.installing"))).into_any_element()),
+        (Card::Idle, Some(EngineState::NotInstalled), _) => Some(
+            button(shell, at, 0, "engine-install", Kind::Primary, t!("engines.install"))
+                .icon(Icon::ArrowDown)
+                .disabled(!connected)
+                .on_click(cx.listener(move |this, _, _, cx| this.engine_install(engine, cx)))
+                .into_any_element(),
+        ),
         (Card::Idle, Some(EngineState::SignedIn), SignsIn::FromApp) => Some(
             button(shell, at, 0, "engine-sign-out", Kind::Secondary, t!("engines.sign_out"))
                 .disabled(!connected)
@@ -159,6 +167,12 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
         );
     }
 
+    // An install that failed, in the installer's words.
+    if let Some(engines::Install::Failed(detail)) = shell.engines.installing(engine).filter(|_| !installed) {
+        let said = if detail.is_empty() { t!("engines.install_failed_desc", host = host(shell)).to_owned() } else { detail.clone() };
+        lines.push(Line::new(t!("engines.install_failed"), said).warn(true).words(words.clone()));
+    }
+
     // A sign-in on its way, or how it ended.
     if let Some(line) = progress(shell, at, platform, &card, cx) {
         lines.push(line.words(words.clone()));
@@ -168,7 +182,10 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
     if card == Card::Idle && status.is_some() && !signed_in {
         let mut pitch = Line::new((platform.pitch)(), "").words(words.clone());
         if !installed {
-            pitch = Line::new((platform.pitch)(), t!("engines.install_desc", host = host(shell))).words(words.clone()).below(h_flex().child(command_chip(p, SharedString::from(format!("engine-install-{at}")), platform.install)));
+            let guide = button(shell, at, 1, "engine-guide", Kind::Ghost, t!("engines.install_guide")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(platform.guide));
+            pitch = Line::new((platform.pitch)(), t!("engines.install_by_hand", host = host(shell)))
+                .words(words.clone())
+                .below(h_flex().gap_3().items_center().child(command_chip(p, SharedString::from(format!("engine-install-{at}")), equipe_core::engines::installer(engine))).child(guide));
         } else if let SignsIn::InTerminal { command } = platform.signs_in {
             let desc = if shell.endpoint.is_remote() { t!("engines.terminal_remote", host = host(shell), command = command) } else { t!("engines.terminal_desc", tool = platform.tool) };
             pitch = Line::new((platform.pitch)(), desc).words(words.clone()).when_remote(shell.endpoint.is_remote(), |l| l.control(command_chip(p, SharedString::from(format!("engine-login-{at}")), command)));
@@ -280,10 +297,28 @@ fn nebius(shell: &Shell, cx: &mut Context<Shell>) -> Section {
 
     // Its agent: the Codex CLI, free and with no sign-in.
     if status.as_ref().is_some_and(|s| !s.codex) {
+        let control: AnyElement = match shell.engines.installing(Engine::Codex) {
+            Some(engines::Install::Running) => h_flex().gap_2().items_center().child(crate::motion::spinner(14., p.text2)).child(value(p, t!("engines.installing"))).into_any_element(),
+            _ => button(shell, 9, 0, "nebius-codex-install-button", Kind::Secondary, t!("engines.install"))
+                .icon(Icon::ArrowDown)
+                .disabled(!matches!(shell.model.conn, Conn::Connected { .. }))
+                .on_click(cx.listener(|this, _, _, cx| this.engine_install(Engine::Codex, cx)))
+                .into_any_element(),
+        };
+        let failed = match shell.engines.installing(Engine::Codex) {
+            Some(engines::Install::Failed(detail)) => Some(if detail.is_empty() { t!("engines.install_failed_desc", host = host(shell)).to_owned() } else { detail.clone() }),
+            _ => None,
+        };
         lines.push(
-            Line::new(t!("engines.nebius_needs_codex"), t!("engines.install_desc", host = host(shell)))
+            Line::new(t!("engines.nebius_needs_codex"), t!("engines.install_by_hand", host = host(shell)))
                 .words(format!("{words} codex install"))
-                .below(h_flex().child(command_chip(p, SharedString::from("nebius-codex-install"), "npm install -g @openai/codex"))),
+                .control(control)
+                .below(
+                    v_flex()
+                        .gap_1p5()
+                        .children(failed.map(|why| div().text_size(px(12.)).text_color(p.danger()).child(why)))
+                        .child(h_flex().child(command_chip(p, SharedString::from("nebius-codex-install"), equipe_core::engines::installer(Engine::Codex)))),
+                ),
         );
     }
     if let Some(model) = status.as_ref().and_then(|s| s.model.clone()) {
@@ -471,6 +506,13 @@ impl Shell {
             self.send_command(command);
         }
         self.engines_later(engines::NO_ANSWER, cx);
+        cx.notify();
+    }
+
+    pub fn engine_install(&mut self, engine: Engine, cx: &mut Context<Self>) {
+        for command in self.engines.install(engine) {
+            self.send_command(command);
+        }
         cx.notify();
     }
 

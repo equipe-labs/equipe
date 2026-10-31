@@ -1187,6 +1187,11 @@ async fn work_sent_back_returns_to_its_member_on_the_same_branch_and_conversatio
     let review =
         until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
     let branch = ticket_changed(&review).pop().unwrap().branch;
+    // Its turn ends (and its conversation is kept) before the person sends it
+    // back: else the reopen can come first and find nothing yet to resume.
+    if !review.iter().any(|e| matches!(e, Event::TurnEnded { session: 2, .. })) {
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    }
 
     handle.send(Command::Reopen { squad: "acme".into(), ticket: 1, note: "make the button blue".into() });
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;

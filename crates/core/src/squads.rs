@@ -88,14 +88,21 @@ fn start(home: &Path, name: &str, project: Option<&Path>) -> Result<(), String> 
     if !valid_name(name) {
         return Err(format!("'{name}' isn't a squad name — use lowercase letters, digits and dashes"));
     }
-    if squad_dir(home, name).join("squad.db").exists() {
+    let dir = squad_dir(home, name);
+    if dir.join("squad.db").exists() {
         return Err(format!("there is already a squad called {name}"));
     }
-    match project {
-        Some(project) => add_project(home, name, project)?,
-        None => drop(Journal::for_squad(home, name).map_err(|err| err.to_string())?),
+    let new = !dir.exists();
+    let made = match project {
+        Some(project) => add_project(home, name, project),
+        None => Journal::for_squad(home, name).map(drop).map_err(|err| err.to_string()),
     }
-    crate::squad_home::ensure(home, name, None).map(|_| ())
+    .and_then(|()| crate::squad_home::ensure(home, name, None).map(|_| ()));
+    // Not half made (git missing on a new Mac, say): the name stays free to try again.
+    if made.is_err() && new {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    made
 }
 
 /// The squad to open where no project says which: the one opened last, else

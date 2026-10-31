@@ -175,7 +175,7 @@ comes from and removes it again. Claude Code and Codex connect from the same pag
 Or from a shell, for this daemon only:
 
 ```bash
-npm install -g @openai/codex                        # or: brew install codex
+curl -fsSL https://chatgpt.com/codex/install.sh | sh  # Codex CLI, no Node needed (or: brew install codex)
 read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY    # paste the key; it isn't echoed or kept in history
 export EQUIPE_NEBIUS_MODEL=nvidia/…                 # optional: a model your account offers (see `equipe review --models`)
 equipe daemon stop; equipe daemon run               # from this shell, so the daemon has the key; Ctrl-C stops it
@@ -362,7 +362,16 @@ also makes one `GET /models` call unless `EQUIPE_NEBIUS_MODEL` is set.
 
 ## Install
 
-macOS and Linux:
+**On a Mac, the app is all you need.** Download
+[equipe.dmg](https://github.com/equipe-labs/equipe/releases/latest/download/equipe.dmg), drag it
+to Applications and open it — no terminal. The first window gets you going in one page: it
+installs Apple's developer tools if git is missing (one click), lets you pick a project folder
+(or none) and name the squad, then opens **Settings → AI platforms**, where **Install** puts
+Claude Code or Codex on the Mac with its maker's own installer (no Node needed) and signs it
+in, or a pasted Nebius key connects Token Factory. The app starts the daemon itself as a login
+service and finds the tools it installs without a restart.
+
+From a terminal instead, macOS and Linux:
 
 ```bash
 curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh

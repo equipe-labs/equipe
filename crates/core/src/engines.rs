@@ -24,6 +24,44 @@ use tokio::process::Command;
 /// How long a sign-in may wait for the person (`codex login --device-auth`'s
 /// own code lasts as long).
 pub const SIGN_IN_WAIT: Duration = Duration::from_secs(15 * 60);
+/// How long an engine's installer may take.
+pub const INSTALL_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// The line that installs `engine`'s tool: its maker's own installer, which
+/// needs no Node (a new Mac has none) and puts it in `~/.local/bin`.
+pub fn installer(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
+        Engine::Codex => "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+    }
+}
+
+/// Install `engine`'s tool here with [`installer`], as the person asked.
+pub async fn install(engine: Engine) -> equipe_protocol::InstallStep {
+    install_with(installer(engine), INSTALL_WAIT).await
+}
+
+/// Run `line` in `sh`: done when it exits well, else failed with its last
+/// words (or the wait run out).
+pub async fn install_with(line: &str, wait: Duration) -> equipe_protocol::InstallStep {
+    use equipe_protocol::InstallStep;
+    let run = Command::new("/bin/sh").args(["-c", line]).stdin(Stdio::null()).kill_on_drop(true).output();
+    match tokio::time::timeout(wait, run).await {
+        Ok(Ok(out)) if out.status.success() => InstallStep::Done,
+        Ok(Ok(out)) => {
+            let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            InstallStep::Failed { detail: last_words(&said) }
+        }
+        Ok(Err(err)) => InstallStep::Failed { detail: err.to_string() },
+        Err(_) => InstallStep::Failed { detail: String::new() },
+    }
+}
+
+/// The last few lines of what a tool said, for a screen.
+fn last_words(said: &str) -> String {
+    let lines: Vec<&str> = said.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(4)..].join("\n")
+}
 /// How long `codex login status` and `codex logout` may take.
 const ASK_WAIT: Duration = Duration::from_secs(20);
 
@@ -251,6 +289,23 @@ pub async fn codex_logout(binary: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_installer_that_works_is_done_and_one_that_fails_says_its_last_words() {
+        use equipe_protocol::InstallStep;
+        assert_eq!(install_with("true", Duration::from_secs(5)).await, InstallStep::Done);
+        let failed = install_with("echo one; echo two; echo 'no curl here' >&2; exit 3", Duration::from_secs(5)).await;
+        assert_eq!(failed, InstallStep::Failed { detail: "one\ntwo\nno curl here".into() });
+        assert!(matches!(install_with("sleep 5", Duration::from_millis(100)).await, InstallStep::Failed { .. }), "the wait runs out");
+    }
+
+    #[test]
+    fn engines_install_with_their_makers_installers_never_npm() {
+        for engine in [Engine::Claude, Engine::Codex] {
+            assert!(installer(engine).starts_with("curl -fsSL https://"), "{}", installer(engine));
+            assert!(!installer(engine).contains("npm"));
+        }
+    }
 
     /// What `codex login --device-auth` 0.154 prints, colours and all.
     const DEVICE: &str = "\nWelcome to Codex [v\u{1b}[90m0.154.0\u{1b}[0m]\n\u{1b}[90mOpenAI's command-line coding agent\u{1b}[0m\n\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \u{1b}[94mhttps://auth.openai.com/codex/device\u{1b}[0m\n\n2. Enter this one-time code \u{1b}[90m(expires in 15 minutes)\u{1b}[0m\n   \u{1b}[94mABCD-EFGH2\u{1b}[0m\n\n\u{1b}[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\u{1b}[0m\n";
