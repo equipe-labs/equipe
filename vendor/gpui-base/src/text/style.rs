@@ -32,6 +32,8 @@ pub struct TextViewStyle {
     // equipe: links whose address starts with this draw no underline, and
     // the weight `**bold**` draws in (700 makes long Korean replies heavy).
     strong_weight: FontWeight,
+    // equipe: the colour of a list's bullets and numbers (the text's, unless set).
+    list_marker: Option<Hsla>,
     plain_links: Option<SharedString>,
     /// The table body background, or the theme surface when `None`. Only
     /// [`Self::on_text_color`] sets it, to let a table on an inverted surface
@@ -60,6 +62,7 @@ impl PartialEq for TextViewStyle {
             && self.list_item_gap == other.list_item_gap
             && self.plain_links == other.plain_links
             && self.strong_weight == other.strong_weight
+            && self.list_marker == other.list_marker
             && self.is_dark == other.is_dark
     }
 }
@@ -110,6 +113,7 @@ impl TextViewStyle {
             list_item_gap: rems(0.),
             plain_links: None,
             strong_weight: FontWeight::BOLD,
+            list_marker: None,
             is_dark,
         }
     }
@@ -268,6 +272,17 @@ impl TextViewStyle {
     /// How links are underlined.
     pub fn link_underline(&self) -> UnderlineStyle {
         self.link_underline
+    }
+
+    /// Sets the colour of a list's bullets and numbers. Defaults to the text's.
+    pub fn with_list_marker(mut self, color: Hsla) -> Self {
+        self.list_marker = Some(color);
+        self
+    }
+
+    /// The colour of a list's bullets and numbers.
+    pub fn list_marker(&self) -> Hsla {
+        self.list_marker.unwrap_or(self.foreground)
     }
 
     /// Sets the weight strong text draws in. Defaults to bold.

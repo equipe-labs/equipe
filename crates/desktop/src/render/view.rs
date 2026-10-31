@@ -35,6 +35,8 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
     let to_hsla = |c: Rgba| -> Hsla { c.into() };
     let size = look.size;
     let heading = if look.color == p.prose { p.text } else { look.color };
+    // A list's bullets and numbers a step behind the words they mark.
+    let marker = if look.color == p.prose { p.text2 } else { look.color };
     // Borderless, a quiet fill; room above the code for its header (language, copy).
     let code_block = StyleRefinement::default().bg(to_hsla(p.code_bg)).rounded(px(10.)).pt(px(30.)).text_size(px(12.5)).line_height(px(19.));
     let mut table = StyleRefinement::default().bg(to_hsla(p.code_bg)).border_color(to_hsla(p.hair)).text_color(to_hsla(p.text)).rounded(px(8.));
@@ -52,6 +54,7 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
         .with_foreground(to_hsla(look.color))
         .with_paragraph_gap(em(PARAGRAPH_GAP))
         .with_list_item_gap(em(LIST_GAP))
+        .with_list_marker(to_hsla(marker))
         .with_link_underline(link_underline)
         .with_muted_foreground(to_hsla(p.muted))
         .with_link(to_hsla(p.accent))
@@ -252,6 +255,8 @@ mod tests {
             assert!(s.link_underline_for("ticket:3").is_none());
             assert!(s.link_underline_for("https://example.com").is_some());
             assert_eq!(s.strong_weight(), gpui_kit::FontWeight::SEMIBOLD);
+            // Bullets and numbers sit a step behind the words.
+            assert_eq!(s.list_marker(), text2);
             // A heading in a reply is the titles' colour, a step brighter
             // than the words.
             let title: Hsla = p.text.into();

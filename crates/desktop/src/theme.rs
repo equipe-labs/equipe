@@ -267,8 +267,9 @@ pub const COLUMN: f32 = 720.;
 pub const MEASURE: f32 = 600.;
 /// Between paragraphs: 0.7 of the body size.
 pub const PARAGRAPH_GAP: f32 = 11.;
-/// Between a list's items: tighter than paragraphs, so a list reads as one.
-pub const LIST_GAP: f32 = 4.;
+/// Between a list's items: tighter than paragraphs, so a list reads as one,
+/// and still a seam between items that wrap.
+pub const LIST_GAP: f32 = 6.;
 /// A heading's room: more above (beyond the paragraph gap) than below, so it
 /// belongs to what follows.
 pub const HEADING_ABOVE: f32 = 8.;
