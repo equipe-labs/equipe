@@ -2169,5 +2169,19 @@
   "settings.dictation_servers_ask": "Apple のサーバで認識しますか？",
   "settings.dictation_servers_ask_desc": "マイクで話した音声が Apple のサーバに送られ、文字に変換されます。韓国語や韓英まじりの話し方、この Mac にモデルがない言語もより正確に聞き取ります。Apple のプライバシーポリシーが適用され、equipe は音声を保存したり他へ送ったりしません。いつでもオフにできます。",
   "settings.dictation_servers_agree": "同意してオンにする",
-  "settings.dictation_servers_cancel": "キャンセル"
+  "settings.dictation_servers_cancel": "キャンセル",
+  "subagent.brief": "任されたこと",
+  "subagent.steps": "やったこと",
+  "subagent.result": "返した結果",
+  "subagent.working": "作業中 · {time}",
+  "subagent.done": "完了 · {time}",
+  "subagent.failed": "失敗 · {time}",
+  "subagent.stopped": "ターンの終了とともに停止 · {time}",
+  "subagent.now": "いま: {step}",
+  "subagent.no_steps": "まだ何もしていません。",
+  "subagent.no_steps_kept": "このウインドウが接続する前の作業は残っていません。",
+  "subagent.kept": "最新の {n} ステップだけ表示しています。",
+  "subagent.prev": "前のサブエージェント",
+  "subagent.next": "次のサブエージェント",
+  "subagent.close": "閉じる (Esc)"
 }

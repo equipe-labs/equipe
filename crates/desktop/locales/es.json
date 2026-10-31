@@ -2222,5 +2222,19 @@
   "settings.dictation_servers_ask": "¿Reconocer con los servidores de Apple?",
   "settings.dictation_servers_ask_desc": "Lo que dices al micrófono se envía a los servidores de Apple y se convierte en texto. Entiende mejor el coreano, el habla que mezcla coreano e inglés y los idiomas sin modelo en este Mac. Se aplica la política de privacidad de Apple; equipe no guarda el sonido ni lo envía a ningún otro sitio. Puedes desactivarlo cuando quieras.",
   "settings.dictation_servers_agree": "Aceptar y activar",
-  "settings.dictation_servers_cancel": "Cancelar"
+  "settings.dictation_servers_cancel": "Cancelar",
+  "subagent.brief": "Lo que se le pidió",
+  "subagent.steps": "Lo que hizo",
+  "subagent.result": "Lo que devolvió",
+  "subagent.working": "Trabajando · {time}",
+  "subagent.done": "Terminado · {time}",
+  "subagent.failed": "Falló · {time}",
+  "subagent.stopped": "Se detuvo con el turno · {time}",
+  "subagent.now": "Ahora: {step}",
+  "subagent.no_steps": "Aún no ha hecho nada.",
+  "subagent.no_steps_kept": "Lo que hizo antes de que esta ventana se conectara no se guarda.",
+  "subagent.kept": "Solo se muestran los últimos {n} pasos.",
+  "subagent.prev": "Subagente anterior",
+  "subagent.next": "Subagente siguiente",
+  "subagent.close": "Cerrar (Esc)"
 }

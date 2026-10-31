@@ -4124,7 +4124,7 @@ mod tests {
     fn a_members_subagents_show_under_it_while_they_work() {
         let (mut app, pm) = working();
         for (sub, what) in [("t1", "Run the iOS tests"), ("t2", "Read the logs"), ("t3", "Survey the API")] {
-            app.on_event(Event::SubagentStarted { session: pm, id: sub.into(), what: what.into() });
+            app.on_event(Event::SubagentStarted { session: pm, id: sub.into(), what: what.into(), brief: String::new() });
         }
         app.on_event(Event::SubagentStep { session: pm, id: "t1".into(), step: "Bash xcodebuild test".into() });
         app.squad_width = Some(50);
@@ -4136,7 +4136,7 @@ mod tests {
         let pm_row = shot.lines().position(|l| l.contains("pm    haiku")).unwrap() as u16;
         assert!(laid.hits.iter().any(|h| h.2 == pm_row && h.3 == Hit::Side(Side::Pm)));
         // Done, gone; the turn's end takes the rest.
-        app.on_event(Event::SubagentEnded { session: pm, id: "t2".into() });
+        app.on_event(Event::SubagentEnded { session: pm, id: "t2".into(), result: None, failed: false });
         assert!(!screen(&app, 140, 30).contains("Read the logs"));
         app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
         assert!(!screen(&app, 140, 30).contains("↳"));

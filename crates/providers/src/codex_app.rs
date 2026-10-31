@@ -769,7 +769,7 @@ impl TurnCollector {
                         .filter(|r| self.subagents.insert(r.clone()))
                         .map(|id| {
                             let what = item.get("prompt").and_then(Value::as_str).unwrap_or("a subagent");
-                            Activity::SubagentStarted { id, what: what.lines().next().unwrap_or("").chars().take(80).collect() }
+                            Activity::SubagentStarted { id, what: what.lines().next().unwrap_or("").chars().take(80).collect(), brief: what.chars().take(4000).collect() }
                         })
                         .collect(),
                     Some(_) => {
@@ -782,7 +782,7 @@ impl TurnCollector {
                                     || item.get("tool").and_then(Value::as_str) == Some("closeAgent")
                             })
                             .filter(|r| self.subagents.remove(r))
-                            .map(|id| Activity::SubagentEnded { id })
+                            .map(|id| Activity::SubagentEnded { id, result: None, failed: false })
                             .collect()
                     }
                     None => Vec::new(),

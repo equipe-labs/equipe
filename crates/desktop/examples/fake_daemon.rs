@@ -500,7 +500,7 @@ fn live_subagents() -> &'static std::sync::Mutex<Vec<(SessionId, SubagentInfo, s
     LIVE.get_or_init(|| {
         // Backend's, at it since before anyone looked.
         let since = std::time::Instant::now() - Duration::from_secs(48);
-        std::sync::Mutex::new(vec![(3, SubagentInfo { id: "sub-b0".into(), what: "API 에러 로그에서 타임아웃 원인 찾기".into(), step: Some("Grep TimeoutError logs/".into()), secs: 0 }, since)])
+        std::sync::Mutex::new(vec![(3, SubagentInfo { id: "sub-b0".into(), what: "API 에러 로그에서 타임아웃 원인 찾기".into(), step: Some("Grep TimeoutError logs/".into()), secs: 0, ..Default::default() }, since)])
     })
 }
 
@@ -530,16 +530,33 @@ async fn subagents_play(events: broadcast::Sender<Event>) {
         for (n, (session, what, _)) in tasks.iter().enumerate() {
             let id = format!("sub-{round}-{n}");
             let _ = events.send(Event::ToolUse { session: *session, tool: "Agent".into(), target: Some((*what).into()), label: None, background: false });
-            live_subagents().lock().unwrap().push((*session, SubagentInfo { id: id.clone(), what: (*what).into(), step: None, secs: 0 }, std::time::Instant::now()));
-            let _ = events.send(Event::SubagentStarted { session: *session, id: id.clone(), what: (*what).into() });
+            let brief = format!("{what}.\n\n코드를 읽고 찾은 것을 파일 경로와 줄 번호로 정리해서 돌려줘요. 고치지는 말고, 근거만 모아요.");
+            live_subagents().lock().unwrap().push((*session, SubagentInfo { id: id.clone(), what: (*what).into(), step: None, secs: 0, brief: brief.clone(), ..Default::default() }, std::time::Instant::now()));
+            let _ = events.send(Event::SubagentStarted { session: *session, id: id.clone(), what: (*what).into(), brief });
             started.push((*session, id, n));
             tokio::time::sleep(beat).await;
             // Everyone at work takes a step.
             for (s, id, task) in &started {
                 let steps = tasks[*task].2;
                 let step = steps[(round as usize + n + task) % steps.len()];
+                // Its last step done (with what it printed), now and then a word, then the next step.
+                let (tool, target) = step.split_once(' ').unwrap_or((step, ""));
+                let done = Entry::Tool {
+                    tool: tool.into(),
+                    target: Some(target.into()),
+                    outcome: Some(Box::new(equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(400 + 137 * (*task as u64 + 1)), output: format!("{target}\n  12 | const size = 240;\n  13 | const ratio = 4 / 3;"), skipped: 0, diff: None })),
+                    label: None,
+                    background: false,
+                };
+                let said = (n % 2 == 0).then(|| Entry::Reply { text: format!("`{target}`을 봤어요. 다음은 관련 테스트를 확인할게요.") });
                 if let Some(entry) = live_subagents().lock().unwrap().iter_mut().find(|(_, info, _)| info.id == *id) {
                     entry.1.step = Some(step.into());
+                    entry.1.entries.push(done.clone());
+                    entry.1.entries.extend(said.clone());
+                }
+                let _ = events.send(Event::SubagentEntry { session: *s, id: id.clone(), entry: done });
+                if let Some(said) = said {
+                    let _ = events.send(Event::SubagentEntry { session: *s, id: id.clone(), entry: said });
                 }
                 let _ = events.send(Event::SubagentStep { session: *s, id: id.clone(), step: step.into() });
             }
@@ -571,8 +588,9 @@ fn end_subagent(events: &broadcast::Sender<Event>, session: SessionId, id: &str)
         what
     };
     let outcome = equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(9_000), output: String::new(), skipped: 0, diff: None };
-    let _ = events.send(Event::ToolResult { session, tool: "Agent".into(), target: what, outcome });
-    let _ = events.send(Event::SubagentEnded { session, id: id.into() });
+    let _ = events.send(Event::ToolResult { session, tool: "Agent".into(), target: what.clone(), outcome });
+    let result = what.as_ref().map(|w| format!("**{w}** — 정리했어요.\n\n- `src/gallery.tsx:12` 썸네일 240px 고정\n- `src/thumb.tsx:13` 비율 4:3"));
+    let _ = events.send(Event::SubagentEnded { session, id: id.into(), result, failed: false });
 }
 
 /// `FAKE_TURN`: T-117 waits for the person (`1`), and is answered elsewhere (`elsewhere`).

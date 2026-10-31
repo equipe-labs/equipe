@@ -916,7 +916,7 @@ fn snapshot() -> Snapshot {
                 mode: None,
                 effort: None,
                 // Handed side work, still at it: a screen attaching now lists it under its member.
-                subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48 }],
+                subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48, ..Default::default() }],
             },
         ],
         tickets: vec![ticket(TicketStatus::InProgress)],
@@ -1084,9 +1084,9 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: text delta", Event::TextDelta { session: pm, text: "보드를 보면".into() });
     tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None, label: None, background: false });
     // Side work handed to a subagent: it starts, takes steps, hands back (the snapshot lists those still at it).
-    tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into() });
+    tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into(), brief: String::new() });
     tell(&mut core, &mut examples, "event: subagent step", Event::SubagentStep { session: pm, id: "toolu_02".into(), step: "Read src/login.tsx".into() });
-    tell(&mut core, &mut examples, "event: subagent ended", Event::SubagentEnded { session: pm, id: "toolu_02".into() });
+    tell(&mut core, &mut examples, "event: subagent ended", Event::SubagentEnded { session: pm, id: "toolu_02".into(), result: None, failed: false });
     tell(&mut core, &mut examples, "event: turn ended", Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(340), ..Usage::default() }) });
     tell(&mut core, &mut examples, "event: turn interrupted", Event::TurnEnded { session: pm, outcome: TurnOutcome::Interrupted, usage: None });
     // Each engine's plan usage, for every screen; a phone that knows no `engine` reads Claude's.

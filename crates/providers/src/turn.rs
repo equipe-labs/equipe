@@ -54,12 +54,17 @@ pub enum Activity {
     Limits(Limits),
     /// Output the turn has produced so far, in tokens.
     Output(u64),
-    /// The member handed `what` to a subagent (Claude Code's Agent tool).
-    SubagentStarted { id: String, what: String },
+    /// The member handed `what` to a subagent (Claude Code's Agent tool);
+    /// `brief`, the whole of what it was asked.
+    SubagentStarted { id: String, what: String, brief: String },
     /// A subagent's latest step: a tool and what it acts on.
     SubagentStep { id: String, step: String },
-    /// A subagent finished and handed back what it found.
-    SubagentEnded { id: String },
+    /// A subagent's tool use came back.
+    SubagentTool { id: String, done: ToolDone },
+    /// What a subagent said between its steps.
+    SubagentText { id: String, text: String },
+    /// A subagent finished and handed back what it found (`result`), or failed.
+    SubagentEnded { id: String, result: Option<String>, failed: bool },
     /// A message sent while the turn ran was read, at this point of it.
     Steered(String),
 }

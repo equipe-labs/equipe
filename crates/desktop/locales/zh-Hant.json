@@ -2169,5 +2169,19 @@
   "settings.dictation_servers_ask": "使用 Apple 伺服器辨識嗎？",
   "settings.dictation_servers_ask_desc": "對著麥克風說的聲音會傳送到 Apple 伺服器並轉成文字。韓語、韓英混說以及這台 Mac 沒有模型的語言都能辨識得更好。適用 Apple 的隱私權政策，equipe 不會保存聲音或傳送到別處。隨時可以關閉。",
   "settings.dictation_servers_agree": "同意並開啟",
-  "settings.dictation_servers_cancel": "取消"
+  "settings.dictation_servers_cancel": "取消",
+  "subagent.brief": "接到的任務",
+  "subagent.steps": "做了什麼",
+  "subagent.result": "交回的結果",
+  "subagent.working": "工作中 · {time}",
+  "subagent.done": "已完成 · {time}",
+  "subagent.failed": "失敗 · {time}",
+  "subagent.stopped": "隨本輪結束而停止 · {time}",
+  "subagent.now": "現在：{step}",
+  "subagent.no_steps": "還沒有做任何事。",
+  "subagent.no_steps_kept": "此視窗連線之前做的事沒有保留。",
+  "subagent.kept": "只顯示最近 {n} 個步驟。",
+  "subagent.prev": "上一個子代理",
+  "subagent.next": "下一個子代理",
+  "subagent.close": "關閉 (Esc)"
 }

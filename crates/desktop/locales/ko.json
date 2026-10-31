@@ -2169,5 +2169,19 @@
   "settings.dictation_servers_ask": "Apple 서버로 인식할까요?",
   "settings.dictation_servers_ask_desc": "마이크로 말한 소리가 Apple 서버로 전송돼 글자로 바뀌어요. 한국어나 한·영이 섞인 말, 이 맥에 모델이 없는 언어도 더 잘 알아들어요. Apple의 개인정보 처리방침을 따르고, equipe는 소리를 저장하거나 다른 곳에 보내지 않아요. 언제든 끌 수 있어요.",
   "settings.dictation_servers_agree": "동의하고 켜기",
-  "settings.dictation_servers_cancel": "취소"
+  "settings.dictation_servers_cancel": "취소",
+  "subagent.brief": "맡은 일",
+  "subagent.steps": "한 일",
+  "subagent.result": "돌려준 결과",
+  "subagent.working": "일하는 중 · {time}",
+  "subagent.done": "끝냄 · {time}",
+  "subagent.failed": "실패 · {time}",
+  "subagent.stopped": "턴이 끝나며 함께 멈춤 · {time}",
+  "subagent.now": "지금: {step}",
+  "subagent.no_steps": "아직 한 일이 없어요.",
+  "subagent.no_steps_kept": "이 창이 연결되기 전에 한 일은 남아 있지 않아요.",
+  "subagent.kept": "최근 {n}개 단계만 보여요.",
+  "subagent.prev": "이전 서브에이전트",
+  "subagent.next": "다음 서브에이전트",
+  "subagent.close": "닫기 (Esc)"
 }

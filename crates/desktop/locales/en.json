@@ -2222,5 +2222,19 @@
   "settings.dictation_servers_ask": "Recognize with Apple's servers?",
   "settings.dictation_servers_ask_desc": "What you say into the mic is sent to Apple's servers and turned into text. It understands Korean, mixed Korean–English speech and languages this Mac has no model for better. Apple's privacy policy applies; equipe doesn't keep the sound or send it anywhere else. You can turn it off any time.",
   "settings.dictation_servers_agree": "Agree and turn on",
-  "settings.dictation_servers_cancel": "Cancel"
+  "settings.dictation_servers_cancel": "Cancel",
+  "subagent.brief": "What it was asked",
+  "subagent.steps": "What it did",
+  "subagent.result": "What it handed back",
+  "subagent.working": "Working · {time}",
+  "subagent.done": "Done · {time}",
+  "subagent.failed": "Failed · {time}",
+  "subagent.stopped": "Stopped with the turn · {time}",
+  "subagent.now": "Now: {step}",
+  "subagent.no_steps": "Nothing done yet.",
+  "subagent.no_steps_kept": "What it did before this window connected isn't kept.",
+  "subagent.kept": "Only the latest {n} steps show.",
+  "subagent.prev": "Previous subagent",
+  "subagent.next": "Next subagent",
+  "subagent.close": "Close (Esc)"
 }

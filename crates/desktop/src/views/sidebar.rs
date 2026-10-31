@@ -1900,7 +1900,8 @@ impl Shell {
         if let Some(row) = sub.and_then(|s| self.chat.open_delegation(&s, cx)) {
             self.chat.scroll_to(row, cx);
         }
-        cx.notify();
+        // And a look inside it, beside the conversation.
+        self.open_subagent_panel(member, session, id, window, cx);
     }
 
     /// ⌘\: the sidebar away, or back.

@@ -642,9 +642,8 @@ struct Session {
     /// engine as — each part with its project — in place of the message.
     send_now_prompt: Option<String>,
     /// The subagents it handed work to this turn and that haven't handed
-    /// back — its id, what it was handed, its latest step, since when — for a
-    /// screen that attaches now.
-    subagents: Vec<(String, String, Option<String>, std::time::Instant)>,
+    /// back, for a screen that attaches now.
+    subagents: Vec<SubRun>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
     /// turn on every exchange.
@@ -1259,13 +1258,25 @@ impl Runtime {
                         }
                     }
                 }
-                Event::SubagentStarted { id, what, .. } => session.subagents.push((id.clone(), what.clone(), None, std::time::Instant::now())),
+                Event::SubagentStarted { id, what, brief, .. } => session.subagents.push(SubRun {
+                    id: id.clone(),
+                    what: what.clone(),
+                    brief: brief.clone(),
+                    step: None,
+                    since: std::time::Instant::now(),
+                    entries: std::collections::VecDeque::new(),
+                }),
                 Event::SubagentStep { id, step, .. } => {
-                    if let Some(sub) = session.subagents.iter_mut().find(|s| s.0 == *id) {
-                        sub.2 = Some(step.clone());
+                    if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
+                        sub.step = Some(step.clone());
                     }
                 }
-                Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.0 != *id),
+                Event::SubagentEntry { id, entry, .. } => {
+                    if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
+                        sub.keep(entry.clone());
+                    }
+                }
+                Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.id != *id),
                 Event::TurnEnded { usage, .. } => {
                     // Whatever didn't hand back ended with the turn.
                     session.subagents.clear();
@@ -6035,7 +6046,14 @@ it back there once they have done it.{again} End your turn now with a short line
                     subagents: s
                         .subagents
                         .iter()
-                        .map(|(id, what, step, since)| equipe_protocol::SubagentInfo { id: id.clone(), what: what.clone(), step: step.clone(), secs: since.elapsed().as_secs() })
+                        .map(|s| equipe_protocol::SubagentInfo {
+                            id: s.id.clone(),
+                            what: s.what.clone(),
+                            step: s.step.clone(),
+                            secs: s.since.elapsed().as_secs(),
+                            brief: s.brief.clone(),
+                            entries: s.entries.iter().cloned().collect(),
+                        })
                         .collect(),
                 }
             })
@@ -7023,6 +7041,40 @@ fn has_tools(session: &Session) -> bool {
     session.engine == Engine::Claude || session.codex.is_none()
 }
 
+/// A subagent at work for a member: what it was handed, its latest step,
+/// since when, and its latest steps and words, kept for a screen that
+/// attaches while it works.
+struct SubRun {
+    id: String,
+    what: String,
+    brief: String,
+    step: Option<String>,
+    since: std::time::Instant,
+    entries: std::collections::VecDeque<Entry>,
+}
+
+impl SubRun {
+    /// One more step or word: the oldest goes past [`SUBAGENT_KEPT`].
+    fn keep(&mut self, entry: Entry) {
+        if self.entries.len() == SUBAGENT_KEPT {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(entry);
+    }
+}
+
+/// How much of a subagent's tool output goes to the screens, from its end.
+const SUBAGENT_OUTPUT: usize = 4000;
+/// How many of a subagent's latest steps and words the daemon keeps for a
+/// screen that attaches while it works.
+const SUBAGENT_KEPT: usize = 40;
+
+/// `text`'s last `most` characters.
+fn tail_chars(text: &str, most: usize) -> String {
+    let n = text.chars().count();
+    if n <= most { text.to_owned() } else { text.chars().skip(n - most).collect() }
+}
+
 /// What an engine's activity shows on the screens, as an event of session `id`.
 /// Codex's plan limits are not one of its own: [`Internal::CodexLimits`].
 fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
@@ -7037,9 +7089,17 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         Activity::Thinking(text) => Event::Thinking { session: id, text },
         Activity::Model(model) => Event::ModelKnown { session: id, model },
         Activity::Output(tokens) => Event::Output { session: id, tokens },
-        Activity::SubagentStarted { id: sub, what } => Event::SubagentStarted { session: id, id: sub, what },
+        Activity::SubagentStarted { id: sub, what, brief } => Event::SubagentStarted { session: id, id: sub, what, brief },
         Activity::SubagentStep { id: sub, step } => Event::SubagentStep { session: id, id: sub, step },
-        Activity::SubagentEnded { id: sub } => Event::SubagentEnded { session: id, id: sub },
+        Activity::SubagentTool { id: sub, done } => {
+            // A subagent's outcome travels lighter than the member's own: a look inside, not its record.
+            let (output, skipped) = equipe_protocol::ToolOutcome::tail(&tail_chars(&done.output, SUBAGENT_OUTPUT));
+            let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };
+            let entry = Entry::Tool { tool: done.name, target: done.target, outcome: Some(Box::new(outcome)), label: None, background: false };
+            Event::SubagentEntry { session: id, id: sub, entry }
+        }
+        Activity::SubagentText { id: sub, text } => Event::SubagentEntry { session: id, id: sub, entry: Entry::Reply { text } },
+        Activity::SubagentEnded { id: sub, result, failed } => Event::SubagentEnded { session: id, id: sub, result, failed },
         Activity::Steered(text) => Event::Steered { session: id, text },
         Activity::Plan { five_hour, seven_day } => {
             let window = |w: Option<(f64, i64)>| {
