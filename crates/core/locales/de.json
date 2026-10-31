@@ -148,6 +148,7 @@
   "error.routine_invalid": "Eine Routine braucht einen Namen, eine Aufgabe und eine gültige Zeit",
   "error.routines_full": "Ein Squad hat höchstens {max} Routinen",
   "error.secret_not_saved": "Konnte nicht in {path} speichern: {why}",
+  "error.signal_missing": "{project} hat kein Signal „{name}“ mehr.",
   "error.still_worked_on": "An T-{id} wird noch gearbeitet – sprich direkt mit {name}.",
   "error.stuck": "Der Daemon antwortet nicht: Er hängt seit {since} an {doing}. Versuche `equipe daemon restart`.",
   "error.ticket_name_project": "Wähle das Projekt – der Squad hat mehrere: {names}.",

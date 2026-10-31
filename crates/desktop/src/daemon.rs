@@ -52,6 +52,8 @@ impl Target {
 }
 
 /// What the link tells the window.
+// The snapshot is the big one, and comes once a connection: not worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Update {
     /// The squads on the daemon's machine; before each `Attached`.

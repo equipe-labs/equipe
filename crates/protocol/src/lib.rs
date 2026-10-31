@@ -20,6 +20,7 @@ pub mod engines;
 pub mod design;
 pub mod routines;
 pub mod secrets;
+pub mod signals;
 
 /// How a ticket that couldn't start says why, in its note.
 pub const COULD_NOT_START: &str = "Couldn't start: ";
@@ -731,6 +732,9 @@ pub enum Command {
     ApproveRoutine { squad: SquadName, id: u64 },
     /// The person says no to it: nothing is saved, and the PM is told.
     DeclineRoutine { squad: SquadName, id: u64 },
+    /// The person pauses one of the squad's signals (`on` false) or starts it
+    /// again. Only ever the person's. Answered by [`Event::SignalsChanged`].
+    SetSignalOn { squad: SquadName, project: String, name: String, on: bool },
     /// How long the board may lie empty — nothing to do, under way or
     /// waiting — before the PM is woken to propose what's next, in hours;
     /// 0 turns it off. Answered by [`Event::IdleWakeChanged`].
@@ -1612,6 +1616,9 @@ pub enum Event {
     /// How long an empty board waits before the PM is woken now
     /// ([`Command::SetIdleWake`]); 0: never.
     IdleWakeChanged { squad: SquadName, hours: u32 },
+    /// The squad's signals now, each with its latest readings: on a new
+    /// reading, one turned on or off, or paused.
+    SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
     ProjectsChanged {
         squad: SquadName,
         projects: Vec<PathBuf>,
@@ -1659,6 +1666,7 @@ impl Event {
             | Event::RoutineProposed { squad, .. }
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
+            | Event::SignalsChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1723,6 +1731,7 @@ impl Event {
             | Event::RoutineProposed { .. }
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
+            | Event::SignalsChanged { .. }
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
@@ -1995,6 +2004,9 @@ pub struct Snapshot {
     /// 0: never. `None` from a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_wake_hours: Option<u32>,
+    /// The squad's signals, each with its latest readings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<signals::SignalView>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -2356,6 +2368,7 @@ mod tests {
                 proposed_at: 3,
             }],
             idle_wake_hours: Some(24),
+            signals: Vec::new(),
             scale: Some(2),
             suggestions_off: false,
             plan: None,

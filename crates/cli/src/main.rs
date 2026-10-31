@@ -1463,6 +1463,7 @@ impl App {
                 | Event::RoutineProposed { .. }
                 | Event::RoutineProposalClosed { .. }
                 | Event::IdleWakeChanged { .. }
+                | Event::SignalsChanged { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }

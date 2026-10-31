@@ -1600,6 +1600,7 @@ impl Runtime {
             Command::ApproveRoutine { squad, id } => self.approve_routine(&squad, id),
             Command::DeclineRoutine { squad, id } => self.decline_routine(&squad, id),
             Command::SetIdleWake { squad, hours } => self.set_idle_wake(&squad, hours).await,
+            Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -5853,7 +5854,9 @@ it back there once they have done it.{again} End your turn now with a short line
         let routines = self.routines(squad);
         let routine_proposals = self.routine_proposals(squad).clone();
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
+        let signals = self.signal_views(squad);
         Snapshot {
+            signals,
             routines,
             routine_proposals,
             idle_wake_hours,

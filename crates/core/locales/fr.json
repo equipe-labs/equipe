@@ -148,6 +148,7 @@
   "error.routine_invalid": "Une routine demande un nom, une tâche et une heure valide",
   "error.routines_full": "Une équipe garde au plus {max} routines",
   "error.secret_not_saved": "Impossible d’enregistrer dans {path} : {why}",
+  "error.signal_missing": "{project} n’a plus de signal « {name} ».",
   "error.still_worked_on": "T-{id} est encore en cours : parlez directement à {name}.",
   "error.stuck": "Le démon ne répond pas : il est sur {doing} depuis {since}. Essayez `equipe daemon restart`.",
   "error.ticket_name_project": "Choisissez le projet — l'équipe en a plusieurs : {names}.",
