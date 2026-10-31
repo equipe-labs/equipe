@@ -1,120 +1,205 @@
-//! The first run on this Mac, drawn: no squad yet, so the window starts one
-//! (`welcome.rs`) — git, a project folder, a name — instead of sending the
-//! person to a terminal.
+//! The first run: a Mac with no squad yet. Name it, pick who is on it, say how
+//! much it does alone, and (if you like) give it a folder — the same four
+//! questions the terminal asks on first run (`crates/cli/src/onboard.rs`), and
+//! the same calls, without opening one. It is the second step of the first run
+//! (the AI is connected first: `views/setup.rs`).
 
-use equipe_core::t;
 use std::path::PathBuf;
+use std::time::Duration;
 
+use equipe_core::protocol::Mode;
+use equipe_core::roles::{PM, STARTERS};
+use equipe_core::{squads, t};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::component::*;
 use gpui_kit::*;
 
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, CONTROL, ICON_SM, R_MD, R_XL, S3, SMALL};
+use crate::theme::{BODY, FIELD, ICON_SM, Palette, R_MD, S3, SMALL, UI};
 use crate::ui::{self, Kind};
-use crate::welcome::{GIT_POLL, Welcome};
 use crate::Shell;
 
-/// The first-run page's state: the model and the name's field.
 pub struct WelcomeUi {
-    pub state: Welcome,
     pub name: Entity<InputState>,
-    /// The name last put in the field: once the person types another, a
-    /// picked folder no longer renames it.
-    pub suggested: String,
-    pub _watch: Option<Task<()>>,
+    /// Which of `STARTERS` are on the team; the PM always is.
+    pub team: [bool; STARTERS.len()],
+    pub mode: Mode,
+    pub folder: Option<PathBuf>,
+    /// The name isn't allowed.
+    pub error: Option<String>,
+    /// Making the squad (or joining it) didn't go through.
+    pub failed: Option<String>,
+    /// The squad is being made, then joined.
+    pub busy: bool,
+    /// Tab stops, in the order the keys visit them: the team, the modes, then the buttons.
+    team_focus: [FocusHandle; STARTERS.len()],
+    mode_focus: [FocusHandle; Mode::ALL.len()],
+    pick_focus: FocusHandle,
+    clear_focus: FocusHandle,
+    create_focus: FocusHandle,
 }
 
 impl WelcomeUi {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(t!("welcome.name_placeholder")));
-        Self { state: Welcome::default(), name, suggested: String::new(), _watch: None }
+        let mut team = [false; STARTERS.len()];
+        for (on, (_, default)) in team.iter_mut().zip(STARTERS) {
+            *on = default;
+        }
+        let stop = |cx: &mut Context<Shell>| cx.focus_handle().tab_stop(true);
+        Self {
+            name,
+            team,
+            mode: Mode::Auto,
+            folder: None,
+            error: None,
+            failed: None,
+            busy: false,
+            team_focus: std::array::from_fn(|_| stop(cx)),
+            mode_focus: std::array::from_fn(|_| stop(cx)),
+            pick_focus: stop(cx),
+            clear_focus: stop(cx),
+            create_focus: stop(cx),
+        }
     }
 }
 
-/// One step's row: its number or ✓, its title and words, and what it does.
-fn step(shell: &Shell, n: usize, done: bool, title: String, text: String, control: Option<AnyElement>, below: Option<AnyElement>) -> impl IntoElement {
-    let p = shell.palette;
-    let mark = div()
-        .size(px(24.))
-        .flex_none()
-        .rounded_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(12.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .when(done, |d| d.bg(p.accent_bg).child(icon(Icon::Check, 14., p.accent)))
-        .when(!done, |d| d.border_1().border_color(p.hair).text_color(p.muted).child(n.to_string()));
+fn role_words(id: &str) -> (&'static str, &'static str) {
+    match id {
+        "pm" => (t!("welcome.role_pm"), t!("welcome.role_pm_desc")),
+        "designer" => (t!("welcome.role_designer"), t!("welcome.role_designer_desc")),
+        "frontend" => (t!("welcome.role_frontend"), t!("welcome.role_frontend_desc")),
+        "backend" => (t!("welcome.role_backend"), t!("welcome.role_backend_desc")),
+        "qa" => (t!("welcome.role_qa"), t!("welcome.role_qa_desc")),
+        "security" => (t!("welcome.role_security"), t!("welcome.role_security_desc")),
+        _ => (t!("welcome.role_data"), t!("welcome.role_data_desc")),
+    }
+}
+
+fn label(p: Palette, text: &'static str) -> impl IntoElement {
+    div().pt_3().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(text)
+}
+
+fn hint(p: Palette, text: impl Into<SharedString>) -> Div {
+    div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(text.into())
+}
+
+/// What a line to pick shows before its words: a square for one of several,
+/// a circle for the one of a few — filled when chosen, drawn empty when not.
+fn mark(p: Palette, round: bool, on: bool) -> Div {
+    let b = div().size(px(18.)).flex_none().flex().items_center().justify_center().border_1().border_color(if on { p.accent } else { p.muted });
+    if round {
+        b.rounded_full().when(on, |m| m.child(div().size(px(8.)).rounded_full().bg(p.accent)))
+    } else {
+        b.rounded(px(4.)).when(on, |m| m.bg(p.accent).child(icon(Icon::Check, 12., p.on_primary)))
+    }
+}
+
+/// A line to pick: a mark, a title, a sentence under it. Reached by Tab
+/// (`focus`) and pressed with Space or Return, as a button is.
+fn choice(p: Palette, id: impl Into<ElementId>, round: bool, on: bool, title: String, desc: &'static str, focus: Option<&FocusHandle>) -> Stateful<Div> {
+    let ring = Rgba { a: 0.55, ..p.accent };
     h_flex()
-        .w_full()
+        .id(id)
         .gap_3()
         .items_start()
-        .py(px(S3))
-        .child(mark)
+        .px(px(S3))
+        .py_2()
+        .rounded(px(R_MD))
+        .border_1()
+        .border_color(if on { p.accent } else { p.hair })
+        .when(focus.is_some(), |r| r.cursor_pointer().hover(move |s| s.bg(p.wash)))
+        .when_some(focus, |r, f| r.track_focus(f).focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }])))
+        .child(div().pt(px(2.)).child(mark(p, round, on)))
         .child(
             v_flex()
                 .flex_1()
                 .min_w_0()
-                .gap_1()
-                .child(div().text_size(px(BODY)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
-                .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(text))
-                .children(below),
+                .child(div().text_size(px(UI)).line_height(px(22.)).text_color(p.text).child(title))
+                .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(desc)),
         )
-        .children(control.map(|c| div().flex_none().child(c)))
 }
+
+/// Space or Return does `act`; Tab moves on, Shift-Tab back.
+fn keys(act: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static {
+    let shell = cx.entity().downgrade();
+    move |event, window, cx| {
+        let k = &event.keystroke;
+        match k.key.as_str() {
+            "space" | "enter" if !k.modifiers.modified() => {
+                shell.update(cx, |this, cx| act(this, window, cx)).ok();
+            }
+            "tab" if k.modifiers.shift => window.focus_prev(cx),
+            "tab" => window.focus_next(cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+}
+
+/// How long the squad may take to be picked up before the form says so.
+const JOIN_WAIT: Duration = Duration::from_secs(25);
 
 pub fn welcome_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let w = &shell.welcome.state;
-    let git = w.git == Some(true);
-    let name = shell.welcome.name.read(cx).value().to_string();
+    let w = &shell.welcome;
+    let lang = crate::i18n::lang();
 
-    // 1. git, with Apple's developer tools.
-    let git_control: Option<AnyElement> = match w.git {
-        Some(true) => None,
-        None => Some(motion::spinner(14., p.text2)),
-        Some(false) if w.git_asked => Some(h_flex().gap_2().items_center().child(motion::spinner(14., p.text2)).child(div().text_size(px(SMALL)).text_color(p.text2).child(t!("welcome.git_installing"))).into_any_element()),
-        Some(false) => Some(ui::button(p, "welcome-git", Kind::Primary, t!("welcome.git_install")).icon(Icon::ArrowDown).on_click(cx.listener(|this, _, _, cx| this.welcome_install_git(cx))).into_any_element()),
+    let team = std::iter::once(PM).chain(STARTERS.iter().map(|(id, _)| *id)).enumerate().map(|(i, id)| {
+        let (title, desc) = role_words(id);
+        let on = i == 0 || w.team[i - 1];
+        if i == 0 {
+            return choice(p, ("role", i), false, on, title.to_owned(), desc, None).into_any_element();
+        }
+        let flip = move |this: &mut Shell, _: &mut Window, cx: &mut Context<Shell>| {
+            this.welcome.team[i - 1] = !this.welcome.team[i - 1];
+            cx.notify();
+        };
+        let focus = w.team_focus[i - 1].clone();
+        choice(p, ("role", i), false, on, title.to_owned(), desc, Some(&focus))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.welcome.team_focus[i - 1].clone().focus(window, cx);
+                flip(this, window, cx);
+            }))
+            .on_key_down(keys(flip, cx))
+            .into_any_element()
+    }).collect::<Vec<_>>();
+    let modes = Mode::ALL.into_iter().map(|m| {
+        let recommended = if m == Mode::Auto { format!("{} · ", t!("welcome.recommended")) } else { String::new() };
+        let title = format!("{recommended}{}", equipe_core::i18n::label::mode(lang, m));
+        let pick = move |this: &mut Shell, _: &mut Window, cx: &mut Context<Shell>| {
+            this.welcome.mode = m;
+            cx.notify();
+        };
+        let ix = Mode::ALL.iter().position(|x| *x == m).unwrap_or(0);
+        let focus = w.mode_focus[ix].clone();
+        choice(p, ("mode", ix), true, w.mode == m, title, equipe_core::i18n::label::mode_short(lang, m), Some(&focus))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.welcome.mode_focus[ix].clone().focus(window, cx);
+                pick(this, window, cx);
+            }))
+            .on_key_down(keys(pick, cx))
+    }).collect::<Vec<_>>();
+    let folder = match &w.folder {
+        Some(path) => h_flex()
+            .gap_2()
+            .items_center()
+            .child(icon(Icon::Folder, 16., p.text2))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(UI)).text_color(p.text).child(path.display().to_string()))
+            .child(ui::button(p, "folder-clear", Kind::Ghost, t!("welcome.folder_clear")).field().focus(&w.clear_focus).on_click(cx.listener(|this, _, _, cx| {
+                this.welcome.folder = None;
+                cx.notify();
+            })))
+            .into_any_element(),
+        None => h_flex()
+            .gap_3()
+            .items_center()
+            .child(ui::button(p, "folder-pick", Kind::Secondary, t!("welcome.folder_pick")).icon(Icon::Folder).field().focus(&w.pick_focus).on_click(cx.listener(|this, _, _, cx| this.pick_welcome_folder(cx))))
+            .child(div().flex_1().min_w_0().child(hint(p, t!("welcome.folder_none"))))
+            .into_any_element(),
     };
-    let git_text = match (w.git, w.git_asked) {
-        (Some(true), _) => t!("welcome.git_ready"),
-        (Some(false), true) => t!("welcome.git_asked"),
-        _ => t!("welcome.git_text"),
-    };
-
-    // 2. The project: a folder of the person's, or none.
-    let folder_text = match &w.folder {
-        Some(folder) => folder.display().to_string(),
-        None => t!("welcome.folder_text").to_owned(),
-    };
-    let folder_control = h_flex()
-        .gap_2()
-        .when(w.folder.is_some(), |r| {
-            r.child(ui::button(p, "welcome-folder-clear", Kind::Ghost, t!("welcome.folder_clear")).on_click(cx.listener(|this, _, window, cx| this.welcome_folder(None, window, cx))))
-        })
-        .child(ui::button(p, "welcome-folder", Kind::Secondary, t!("welcome.folder_pick")).icon(Icon::Folder).on_click(cx.listener(|this, _, window, cx| this.welcome_pick_folder(window, cx))))
-        .into_any_element();
-
-    // 3. Its name, then 시작.
-    let field = div()
-        .w_full()
-        .h(px(CONTROL + 4.))
-        .px_3()
-        .flex()
-        .items_center()
-        .rounded(px(R_MD))
-        .border_1()
-        .border_color(p.hair)
-        .bg(p.code_bg)
-        .text_size(px(13.))
-        .child(Input::new(&shell.welcome.name).appearance(false).bordered(false));
-    let start = ui::button(p, "welcome-start", Kind::Primary, if w.creating { t!("welcome.starting") } else { t!("welcome.start") })
-        .field()
-        .disabled(!w.can_start(&name))
-        .on_click(cx.listener(|this, _, window, cx| this.welcome_start(window, cx)));
 
     v_flex()
         .id("welcome")
@@ -129,127 +214,130 @@ pub fn welcome_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .max_w(px(560.))
                 .px_4()
                 .gap_2()
+                .child(h_flex().child(ui::button(p, "welcome-back", Kind::Ghost, t!("welcome.back")).icon(Icon::ArrowLeft).disabled(w.busy).on_click(cx.listener(|this, _, _, cx| {
+                    this.setup.squad_step = false;
+                    cx.notify();
+                }))))
                 .child(div().text_size(px(22.)).line_height(px(30.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("welcome.title")))
                 .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(t!("welcome.text")))
+                .child(label(p, t!("welcome.name_label")))
                 .child(
-                    v_flex()
-                        .mt_3()
-                        .px(px(S3 + 4.))
-                        .py_1()
-                        .rounded(px(R_XL))
-                        .border_1()
-                        .border_color(p.hair)
-                        .bg(p.raised)
-                        .child(step(shell, 1, git, t!("welcome.git_title").to_owned(), git_text.to_owned(), git_control, None))
-                        .child(div().h(px(1.)).bg(p.hair))
-                        .child(step(shell, 2, w.folder.is_some(), t!("welcome.folder_title").to_owned(), folder_text, Some(folder_control), None))
-                        .child(div().h(px(1.)).bg(p.hair))
-                        .child(step(shell, 3, equipe_core::squads::valid_name(name.trim()), t!("welcome.name_title").to_owned(), t!("welcome.name_text").to_owned(), None, Some(field.into_any_element()))),
-                )
-                .children(w.problem.clone().map(|why| {
                     h_flex()
-                        .gap_2()
-                        .items_start()
-                        .p(px(S3))
+                        .w_full()
+                        .h(px(FIELD))
+                        .pl(px(S3) - gpui_kit::component::Size::Medium.input_px())
+                        .items_center()
                         .rounded(px(R_MD))
-                        .bg(p.wash)
-                        .text_size(px(SMALL))
-                        .line_height(px(20.))
-                        .text_color(p.danger())
-                        .child(div().pt(px(3.)).flex_none().child(icon(Icon::Alert, ICON_SM, p.danger())))
-                        .child(div().flex_1().min_w_0().child(why))
+                        .bg(p.code_bg)
+                        .border_1()
+                        .border_color(if w.error.is_some() { p.danger() } else { p.hair })
+                        .text_size(px(UI))
+                        .text_color(p.text)
+                        .child(Input::new(&w.name).appearance(false).bordered(false)),
+                )
+                .child(hint(p, w.error.clone().unwrap_or_else(|| t!("welcome.name_hint").to_owned())).when(w.error.is_some(), |h| h.text_color(p.danger())))
+                .child(label(p, t!("welcome.team_label")))
+                .child(v_flex().gap_2().children(team))
+                .child(label(p, t!("welcome.mode_label")))
+                .child(hint(p, t!("welcome.mode_hint")))
+                .child(v_flex().gap_2().children(modes))
+                .child(label(p, t!("welcome.folder_label")))
+                .child(folder)
+                .children(w.failed.clone().map(|why| {
+                    h_flex().pt_3().gap_2().items_start().text_size(px(SMALL)).line_height(px(20.)).text_color(p.danger()).child(div().flex_none().pt(px(3.)).child(icon(Icon::Warning, ICON_SM, p.danger()))).child(div().flex_1().min_w_0().child(why))
                 }))
-                .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(t!("welcome.next")))
                 .child(
-                    h_flex()
-                        .gap_2()
-                        .pt_2()
-                        .child(start)
-                        .child(ui::button(p, "switch", Kind::Ghost, t!("connect.switch_target")).on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx)))),
+                    h_flex().pt_4().gap_3().items_center().child(
+                        ui::button(p, "create", Kind::Primary, if w.busy { t!("welcome.creating") } else { t!("welcome.create") })
+                            .field()
+                            .focus(&w.create_focus)
+                            .disabled(w.busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.create_first_squad(window, cx))),
+                    ).when(w.busy, |r| r.child(motion::spinner(14., p.text2))),
                 ),
             "welcome-in",
         ))
         .into_any_element()
 }
 
-// ── what the page does ──
-
 impl Shell {
-    /// The page shows: git looked at (and watched while macOS installs it),
-    /// and the name field given its first name.
-    pub fn welcome_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.welcome.state.git.is_none() {
-            // Snapshots draw a new Mac's page on any Mac (`FAKE_NO_GIT=1`).
-            let no_git = cfg!(feature = "snapshot") && std::env::var("FAKE_NO_GIT").is_ok_and(|v| v == "1");
-            self.welcome.state.git = Some(!no_git && crate::install::git_ready(std::env::var_os("PATH").as_deref()));
-            self.welcome_rename(window, cx);
-        }
-    }
-
-    /// The name field follows the folder until the person types one.
-    fn welcome_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let typed = self.welcome.name.read(cx).value().to_string();
-        if !typed.is_empty() && typed != self.welcome.suggested {
-            return;
-        }
-        let user = std::env::var("USER").ok();
-        let name = self.welcome.state.suggestion(&equipe_providers::credentials::equipe_home(), user.as_deref());
-        self.welcome.suggested = name.clone();
-        self.welcome.name.update(cx, |s, cx| s.set_value(name, window, cx));
-    }
-
-    pub fn welcome_install_git(&mut self, cx: &mut Context<Self>) {
-        if !crate::install::install_git() {
-            self.welcome.state.problem = Some(t!("welcome.git_failed").to_owned());
-            return cx.notify();
-        }
-        self.welcome.state.git_asked = true;
-        self.welcome._watch = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(GIT_POLL).await;
-                let ready = cx.background_executor().spawn(async { crate::install::git_ready(std::env::var_os("PATH").as_deref()) }).await;
-                let Ok(()) = this.update(cx, |this, cx| {
-                    if ready {
-                        this.welcome.state.git = Some(true);
-                        this.welcome.state.git_asked = false;
-                        cx.notify();
-                    }
-                }) else {
-                    return;
-                };
-                if ready {
-                    return;
-                }
-            }
-        }));
-        cx.notify();
-    }
-
-    pub fn welcome_pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The system's folder picker; the folder is added when the squad is made.
+    fn pick_welcome_folder(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(t!("welcome.folder_prompt").into()) });
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await
                 && let Some(path) = paths.into_iter().next()
             {
-                let _ = this.update_in(cx, |this, window, cx| this.welcome_folder(Some(path), window, cx));
+                this.update(cx, |this, cx| {
+                    this.welcome.folder = Some(path);
+                    cx.notify();
+                })
+                .ok();
             }
         })
         .detach();
     }
 
-    pub fn welcome_folder(&mut self, folder: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        self.welcome.state.folder = folder;
-        self.welcome_rename(window, cx);
-        cx.notify();
-    }
-
-    /// 시작: `equipe squad new`, then the new squad opens with its team.
-    pub fn welcome_start(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let typed = self.welcome.name.read(cx).value().to_string();
-        let say = t!("welcome.made", name = typed.trim()).to_owned();
-        if let Some((job, after)) = self.welcome.state.start(&typed, say) {
-            self.run_job(job, after, cx);
+    /// The first squad, made where the terminal's first run makes it, then
+    /// followed: its team joins as soon as the window is attached.
+    fn create_first_squad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.welcome.busy {
+            return;
         }
+        let home = equipe_providers::credentials::equipe_home();
+        let typed = self.welcome.name.read(cx).value().trim().to_owned();
+        let name = if typed.is_empty() { squads::suggest_name(&home, std::path::Path::new(&std::env::var("USER").unwrap_or_default())) } else { typed };
+        if !squads::valid_name(&name) {
+            self.welcome.error = Some(t!("welcome.name_rule").to_owned());
+            cx.notify();
+            return;
+        }
+        let mut team: Vec<String> = vec![PM.to_owned()];
+        team.extend(STARTERS.iter().zip(self.welcome.team).filter(|(_, on)| *on).map(|((id, _), _)| (*id).to_owned()));
+        let (mode, folder) = (self.welcome.mode, self.welcome.folder.clone());
+        self.welcome.error = None;
+        self.welcome.failed = None;
+        self.welcome.busy = true;
         cx.notify();
+        let made = name.clone();
+        let task = cx.background_executor().spawn(async move {
+            squads::create_without_project(&home, &made)?;
+            equipe_core::journal::Journal::for_squad(&home, &made).and_then(|j| j.set_mode(mode)).map_err(|e| e.to_string())?;
+            // A folder that won't take doesn't undo the squad: it opens, and says so.
+            let folder_error = folder.and_then(|f| squads::add_folder(&home, &made, &f.display().to_string(), std::env::var_os("HOME").map(PathBuf::from).as_deref()).err());
+            Ok::<_, String>(folder_error)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let done = task.await;
+            this.update_in(cx, |this, window, cx| {
+                match done {
+                    // Stays "busy" until the board takes the form's place.
+                    Ok(folder_error) => {
+                        this.pending_team = Some(team);
+                        this.composer.flash = folder_error;
+                        this.select_squad(&name, window, cx);
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(JOIN_WAIT).await;
+                            this.update(cx, |this, cx| {
+                                if this.welcome.busy {
+                                    this.welcome.busy = false;
+                                    this.welcome.failed = Some(t!("welcome.failed_join").to_owned());
+                                    cx.notify();
+                                }
+                            })
+                            .ok();
+                        })
+                        .detach();
+                    }
+                    Err(why) => {
+                        this.welcome.busy = false;
+                        this.welcome.failed = Some(format!("{}\n{why}", t!("welcome.failed_create")));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 }

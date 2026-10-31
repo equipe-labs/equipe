@@ -35,6 +35,8 @@ use crate::{Screen, Shell};
 
 #[path = "settings_switching.rs"]
 mod switching;
+#[path = "settings_signals.rs"]
+mod signals;
 
 /// The page's column, at most this wide.
 const PAGE: f32 = 720.;
@@ -656,6 +658,7 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
         // Its own card, so the footnote above reads as the PM's accepting alone.
         Section::new("", vec![idle_wake]),
+        signals::section(shell, connected, cx),
         Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
     ]
 }

@@ -135,13 +135,6 @@ impl Shell {
     }
 
     pub fn finish_job(&mut self, after: After, answer: Result<Vec<String>, String>, window: &mut Window, cx: &mut Context<Self>) {
-        // The first-run page's squad: why not shows on the page itself.
-        if matches!(after, After::Squads { .. }) && self.welcome.state.creating {
-            self.welcome.state.finished(&answer);
-            if answer.is_err() {
-                return cx.notify();
-            }
-        }
         let memory = matches!(after, After::Memory);
         match sheet::after(&after, answer) {
             Outcome::Flash(text) => self.composer.flash = Some(text),

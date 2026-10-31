@@ -456,7 +456,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { Box::new(vault::Keychain) };
     let vault = vault::Vault::open(&config.home, secrets);
     let logins = vault.logins.clone();
+    let telemetry = if config.persist { crate::telemetry::Telemetry::start(&config.home, &config.client_version) } else { crate::telemetry::Telemetry::off() };
     let mut runtime = Runtime {
+        telemetry,
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
         secret_asks: HashMap::new(),
@@ -827,6 +829,9 @@ enum WorkEnd {
 struct Runtime {
     config: Config,
     client: reqwest::Client,
+    /// Anonymous usage events, after the person's yes (docs/TELEMETRY.md):
+    /// the daemon's only, never a terminal's own runtime.
+    telemetry: crate::telemetry::Telemetry,
     /// Every attached screen, with the squad it follows (`None`: everything).
     /// Closed ones drop out on the next event.
     subscribers: Vec<(Option<String>, UnboundedSender<Event>)>,
@@ -1504,7 +1509,7 @@ impl Runtime {
             }
             Command::Interrupt { session } => self.interrupt(session).await,
             Command::Close { session } => self.close(session).await,
-            Command::Accept { squad, ticket } => self.accept(&squad, ticket).await,
+            Command::Accept { squad, ticket } => self.accept(&squad, ticket, crate::telemetry::Accepter::Person).await,
             Command::Merge { squad, ticket, push } => self.merge(&squad, ticket, push),
             Command::KeepOnBranch { squad, ticket } => self.keep_on_branch(&squad, ticket),
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
@@ -1651,6 +1656,7 @@ impl Runtime {
             Command::ApproveRoutine { squad, id } => self.approve_routine(&squad, id),
             Command::DeclineRoutine { squad, id } => self.decline_routine(&squad, id),
             Command::SetIdleWake { squad, hours } => self.set_idle_wake(&squad, hours).await,
+            Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
             Command::MoveConversation { session, project } => self.move_conversation(session, project),
             Command::CloseConversation { session } => self.close_conversation(session).await,
@@ -1938,6 +1944,16 @@ impl Runtime {
 
     fn journal(&mut self, squad: &str) -> Option<&Journal> {
         journal_for(&mut self.journals, &self.config.home, squad)
+    }
+
+    /// An anonymous usage event of `squad`'s, with its team's size and engines;
+    /// nothing goes out until the person said yes.
+    fn tell(&self, squad: &str, happened: crate::telemetry::Happened) {
+        let members: Vec<&Session> = self.sessions.values().filter(|s| s.squad.as_deref() == Some(squad) && s.name().is_some()).collect();
+        let mut engines: Vec<Engine> = members.iter().map(|s| s.engine).collect();
+        engines.sort_by_key(|e| *e as u8);
+        engines.dedup();
+        self.telemetry.record(squad, &crate::telemetry::Shape { team_size: members.len(), engines }, happened);
     }
 
     /// Every screen of the squad has its projects again, and which is its HQ.
@@ -4174,6 +4190,7 @@ todo); or drop it if it's no longer wanted.]"
         // What the PM is told, in English, and what the person reads (`news`).
         let (by, event, line, news) = match how {
             WorkEnd::HandedIn => {
+                self.tell(&squad, crate::telemetry::Happened::WorkHandedIn { kind: ticket.kind });
                 ticket.status = TicketStatus::Review;
                 ticket.note = handed_in;
                 ticket.images = images;
@@ -4514,7 +4531,7 @@ them with `propose_accept`. Then carry on with what else waits.]"
     }
 
     /// The person accepts a ticket: it is done, and its branch stays to merge.
-    async fn accept(&mut self, squad: &str, ticket: TicketId) {
+    async fn accept(&mut self, squad: &str, ticket: TicketId, by: crate::telemetry::Accepter) {
         // The person's word comes before a designer's.
         self.drop_design_qa(squad, ticket);
         let Some(found) = self.find_ticket(squad, ticket) else {
@@ -4527,6 +4544,9 @@ them with `propose_accept`. Then carry on with what else waits.]"
         if found.status.is_closed() {
             let message = say!(self, "error.already_closed", id = ticket, status = crate::i18n::label::status(self.config.lang, found.status));
             return self.squad_error(squad, message);
+        }
+        if found.status == TicketStatus::Review {
+            self.tell(squad, crate::telemetry::Happened::WorkAccepted { kind: found.kind, by });
         }
         match self.worker_on(squad, ticket) {
             Some(id) => {
@@ -5863,6 +5883,8 @@ there, end your turn, and carry on when they say they're done."
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let new_id = journal.create_ticket(&ticket).map_err(|e| e.to_string())?;
                 let _ = journal.ticket_event(new_id, &member, "created", title);
+                let by = if is_pm { crate::telemetry::Maker::Pm } else { crate::telemetry::Maker::Member };
+                self.tell(&squad, crate::telemetry::Happened::TicketCreated { kind, by });
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: Ticket { id: new_id, ..ticket } });
                 let mut reply = format!("Created T-{new_id}.");
                 if kind.in_home() {
@@ -6166,10 +6188,12 @@ it back there once they have done it.{again} End your turn now with a short line
         let routines = self.routines(squad);
         let routine_proposals = self.routine_proposals(squad).clone();
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
+        let signals = self.signal_views(squad);
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
         let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
         Snapshot {
+            signals,
             reviews,
             routines,
             routine_proposals,

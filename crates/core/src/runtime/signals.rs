@@ -19,13 +19,41 @@ impl Runtime {
         self.journal(squad).map(Journal::signal_states).unwrap_or_default()
     }
 
+    /// The squad's signals as screens show them.
+    pub(super) fn signal_views(&mut self, squad: &str) -> Vec<equipe_protocol::signals::SignalView> {
+        let states = self.signal_states(squad);
+        self.signals(squad).iter().map(|s| s.view(states.get(&s.key()).unwrap_or(&State::default()))).collect()
+    }
+
+    fn publish_signals(&mut self, squad: &str) {
+        let signals = self.signal_views(squad);
+        self.publish(Event::SignalsChanged { squad: squad.to_owned(), signals });
+    }
+
+    /// The person pauses a signal or starts it again; started, it runs now.
+    pub(super) fn set_signal_on(&mut self, squad: &str, project: &str, name: &str, on: bool) {
+        let mut kept = self.signals(squad);
+        if !rules::set_on(&mut kept, project, name, on) {
+            let text = say!(self, "error.signal_missing", project = project, name = name);
+            return self.squad_error(squad, text);
+        }
+        if let Some(Err(err)) = self.journal(squad).map(|j| j.set_signals(&kept)) {
+            crate::daemon_log!("equipe: {squad}: the signals weren't kept: {err}");
+        }
+        crate::daemon_log!("equipe: {squad}: signal {project}/{name} {}", if on { "started again" } else { "paused" });
+        if on && let Some(signal) = kept.into_iter().find(|s| s.project == project && s.name == name) {
+            self.run_signal(squad, signal);
+        }
+        self.publish_signals(squad);
+    }
+
     /// Each minute: every squad's signals that are due, run.
     pub(super) fn run_due_signals(&mut self) {
         let now = now_secs();
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
             let states = self.signal_states(&squad);
-            for signal in self.signals(&squad) {
+            for signal in self.signals(&squad).into_iter().filter(|s| s.on) {
                 let last = states.get(&signal.key()).and_then(|s| s.readings.last()).map(|r| r.at);
                 if rules::due(&signal, last, now) {
                     self.run_signal(&squad, signal);
@@ -48,10 +76,13 @@ impl Runtime {
             .chain(squad_home::others(&self.config.home, squad))
             .collect();
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
+        let (client, home) = (self.client.clone(), self.person_home());
         tokio::spawn(async move {
-            let ran = match project {
-                Some(dir) => run_fenced(&signal.command, &dir, &private).await,
-                None => Ran { failed: Some(format!("the squad has no project \"{}\" any more", signal.project)), ..Ran::default() },
+            let ran = match (project, &signal.source, home) {
+                (None, ..) => Ran { failed: Some(format!("the squad has no project \"{}\" any more", signal.project)), ..Ran::default() },
+                (Some(dir), rules::Source::Command, _) => run_fenced(&signal.command, &dir, &private).await,
+                (Some(_), source, Some(home)) => crate::signal_sources::read(&client, source, &home, now_secs()).await,
+                (Some(_), _, None) => Ran { failed: Some("no home folder to read the keys under".into()), ..Ran::default() },
             };
             let reading = rules::judge(&signal.expect, &ran, now_secs());
             let _ = internal.send(Internal::SignalRead { squad, key, reading });
@@ -71,6 +102,7 @@ impl Runtime {
         if let Some(Err(err)) = self.journal(squad).map(|j| j.set_signal_states(&states)) {
             crate::daemon_log!("equipe: {squad}: signal {key}'s reading wasn't kept: {err}");
         }
+        self.publish_signals(squad);
         let (name, project) = (signal.name.clone(), signal.project.clone());
         match alert {
             Alert::Quiet => {}
@@ -139,7 +171,8 @@ impl Runtime {
         }
         let kept = self.signals(&call.squad);
         let projects: Vec<String> = self.projects(&call.squad).iter().map(|p| board::project_name(p)).collect();
-        let (change, reason) = match rules::check(&call.arguments, &kept, &projects, now_secs()) {
+        let home = self.person_home().unwrap_or_default();
+        let (change, reason) = match rules::check(&call.arguments, &kept, &projects, &home, now_secs()) {
             Ok(checked) => checked,
             Err(why) => {
                 let _ = reply.send(refuse(why));
@@ -149,7 +182,7 @@ impl Runtime {
         let action = match &change {
             Change::On { signal, replaces } => {
                 let every = rules::every_text(signal.every);
-                let (name, project, command, expect) = (&signal.name, &signal.project, &signal.command, signal.expectation());
+                let (name, project, command, expect) = (&signal.name, &signal.project, &signal.what_with_keys(), signal.expectation());
                 if *replaces {
                     say!(self, "card.signal_change", name = name, project = project, command = command, expect = expect, every = every)
                 } else {
@@ -208,11 +241,13 @@ impl Runtime {
                     rules::every_text(signal.every)
                 );
                 self.run_signal(squad, signal);
+                self.publish_signals(squad);
                 text
             }
             Change::Off { project, name } => {
                 states.remove(&rules::key(&project, &name));
                 let _ = self.journal(squad).map(|j| j.set_signal_states(&states));
+                self.publish_signals(squad);
                 format!("The person turned off the signal \"{name}\" of {project}.")
             }
         })

@@ -299,19 +299,19 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
     found.sort();
     let mut expected = vec![
             // The PM's `accept_work`, only while the person lets the PM accept (`SetPmAccepts`).
-            "accept.rs: Box::pin(self.accept(squad, ticket)).await;",
+            "accept.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
             "accept.rs: self.merge(squad, ticket, push);",
             "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>) {",
             "accept.rs: Box::pin(self.handle(Command::Reopen { squad, ticket, note: proposal.note.clone() })).await;",
             "accept.rs: Box::pin(self.handle(Command::Accept { squad: squad.clone(), ticket })).await;",
             "accept.rs: Box::pin(self.handle(Command::Merge { squad, ticket, push: land == Land::Push })).await;",
-            "runtime.rs: Command::Accept { squad, ticket } => self.accept(&squad, ticket).await,",
+            "runtime.rs: Command::Accept { squad, ticket } => self.accept(&squad, ticket, crate::telemetry::Accepter::Person).await,",
             "runtime.rs: Command::Merge { squad, ticket, push } => self.merge(&squad, ticket, push),",
             "runtime.rs: Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,",
             "runtime.rs: Command::ConfirmAccept { squad, id, tickets } => self.confirm_accept(&squad, id, tickets).await,",
             "runtime.rs: self.end_work(id, WorkEnd::Accepted);",
             "runtime.rs: None => self.close_ticket(squad, found, TicketStatus::Done),",
-            "tickets.rs: board::Move::Accept => self.accept(squad, id).await,",
+            "tickets.rs: board::Move::Accept => self.accept(squad, id, crate::telemetry::Accepter::Person).await,",
             "tickets.rs: board::Move::SendBack => self.reopen(squad, id, String::new()).await,",
     ];
     expected.sort();

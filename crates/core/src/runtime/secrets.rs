@@ -9,7 +9,7 @@ use super::*;
 
 impl Runtime {
     /// The person's home folder: secrets are saved under it.
-    fn person_home(&self) -> Option<PathBuf> {
+    pub(super) fn person_home(&self) -> Option<PathBuf> {
         self.config.person_home.clone().or_else(|| std::env::var_os("HOME").map(PathBuf::from))
     }
 

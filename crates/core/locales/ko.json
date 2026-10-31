@@ -151,6 +151,7 @@
   "error.routine_invalid": "정기 업무에는 이름, 할 일, 올바른 시간이 있어야 해요",
   "error.routines_full": "정기 업무는 스쿼드마다 {max}개까지예요",
   "error.secret_not_saved": "{path}에 저장하지 못했어요: {why}",
+  "error.signal_missing": "{project}에 '{name}' 신호가 더는 없어요.",
   "error.still_worked_on": "T-{id}은(는) 아직 작업 중이에요 — {name}에게 직접 말하세요.",
   "error.stuck": "데몬이 응답하지 않아요. {since}부터 {doing} 처리에 머물러 있어요. `equipe daemon restart`를 실행해 보세요.",
   "error.ticket_name_project": "프로젝트를 골라 주세요. 스쿼드에 여러 개가 있어요: {names}.",

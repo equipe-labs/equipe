@@ -30,7 +30,7 @@ fn host(shell: &Shell) -> String {
 }
 
 /// The platform's mark: its icon on its colour, in a rounded tile.
-fn mark(platform: &Platform) -> AnyElement {
+pub(super) fn mark(platform: &Platform) -> AnyElement {
     div()
         .flex_none()
         .size(px(30.))

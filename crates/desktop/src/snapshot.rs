@@ -10,7 +10,7 @@
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
@@ -19,6 +19,10 @@
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
 //! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
+//!
+//! `EQUIPE_SNAPSHOT_SCALE=2` draws the window — and so every `shot` — at that scale, whatever
+//! screen is attached (default: the screen's own): the PNG is exactly twice the pixels of a 1×
+//! one, sharp. The frame is the app's own, so it needs no screen-recording permission.
 
 use std::time::Duration;
 
@@ -252,6 +256,33 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
+                // The first run's steps, held at a state: `missing` · `confirm` · `installing` · `signedout` · `waiting` · `ready` (the AI is connected) · `failed` (the install) · `squad` (the squad form) · `creating` · `error` (the squad didn't go through).
+                "setup" => shell.update(cx, |shell, cx| {
+                    use crate::setup::{Claude, Doing};
+                    let s = &mut shell.setup;
+                    s.probed = true;
+                    // No daemon runs here: hold the screen's place, as a Mac with no squad has it.
+                    shell.model.conn = crate::state::Conn::Down { reason: crate::failure::Failure::NoSquads, since: crate::state::Clock::now(), had_snapshot: false };
+                    let s = &mut shell.setup;
+                    (s.claude, s.codex, s.doing, s.confirm_install, s.failed, s.squad_step, s.git, s.git_asked) = (Some(Claude::Missing), Some(false), Doing::Idle, false, None, false, Some(true), false);
+                    match arg.as_str() {
+                        "nogit" => s.git = Some(false),
+                        "gitasked" => (s.git, s.git_asked) = (Some(false), true),
+                        "confirm" => s.confirm_install = true,
+                        "installing" => s.doing = Doing::Installing,
+                        "signedout" => s.claude = Some(Claude::SignedOut),
+                        "waiting" => (s.claude, s.doing) = (Some(Claude::SignedOut), Doing::ClaudeLogin),
+                        "ready" => (s.claude, s.codex) = (Some(Claude::SignedIn), Some(true)),
+                        "squad" | "creating" | "error" => {
+                            (s.claude, s.codex, s.squad_step) = (Some(Claude::SignedIn), Some(true), true);
+                            shell.welcome.busy = arg == "creating";
+                            shell.welcome.failed = (arg == "error").then(|| format!("{}\nname \"my-squad\" is already taken", equipe_core::t!("welcome.failed_create")));
+                        }
+                        "failed" => s.failed = Some((Doing::Installing, "curl: (6) Could not resolve host: claude.ai — the connection to https://claude.ai/install.sh could not be made, check the network and try once more later".into())),
+                        _ => {}
+                    }
+                    cx.notify();
+                }),
                 // 디자인 시스템: the screen at a section, another system, its draft, what changed, an asset big.
                 // 현황; `overview:<project>` marks that project the HQ here first (no daemon asked).
                 "overview" => shell.update(cx, |shell, cx| {

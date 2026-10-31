@@ -38,6 +38,7 @@ mod pane;
 mod portfolio;
 mod queue;
 mod quote;
+mod setup;
 mod sheet;
 mod side_split;
 mod sidecar;
@@ -72,7 +73,6 @@ mod usage;
 mod views;
 mod visuals;
 mod voiceover;
-mod welcome;
 mod wire;
 mod yourturn;
 mod zoom;
@@ -248,7 +248,7 @@ pub struct Shell {
     pub endpoint: Endpoint,
     pub remembered: Remembered,
     pub connect: ConnectUi,
-    /// The first run's page: no squad yet on this Mac (`welcome.rs`).
+    /// The first run's form (`views/welcome.rs`).
     pub welcome: views::welcome::WelcomeUi,
     pub ask: AskUi,
     /// A password just typed with "don't ask again" on: the key goes there once connected.
@@ -257,6 +257,8 @@ pub struct Shell {
     pub pairing: pair::Pairing,
     /// The AI platforms, as settings shows them.
     pub engines: engines::Engines,
+    /// The first run's git, engine and squad steps, while no squad exists.
+    pub setup: setup::Setup,
     /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
     pub forgetting: Option<String>,
     /// "디스크": the banner while it runs short, and the panel (`disk.rs`).
@@ -383,6 +385,7 @@ impl Shell {
             ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
             engines: engines::Engines::default(),
+            setup: setup::Setup::default(),
             forgetting: None,
             disk: Default::default(),
             zoom_hud: None,
@@ -939,14 +942,6 @@ impl Shell {
                                 this.ask_engines(cx);
                             }
                         }
-                        // No squad yet: the first-run page looks at git and names one.
-                        if !this.endpoint.is_remote() && matches!(this.model.conn, Conn::Down { reason: failure::Failure::NoSquads, .. }) {
-                            this.welcome_shown(window, cx);
-                        }
-                        // Just made on the first-run page: an engine next.
-                        if attached && this.welcome.state.take_then_engines() {
-                            this.open_settings(Some(settings::Category::Engines), window, cx);
-                        }
                         if attached {
                             this.start_team();
                             // A new connection: the design system is asked for again, if on screen.
@@ -1409,8 +1404,7 @@ impl Shell {
             Conn::Down { had_snapshot: false, .. } | Conn::Connecting if remote && self.connecting_shown && (self.connecting.retrying || self.model.conn == Conn::Connecting) => {
                 v_flex().flex_1().child(self.drag_strip()).child(views::connect::connecting_screen(self, cx)).into_any_element()
             }
-            // No squad yet on this Mac: the window starts one, rather than a terminal.
-            Conn::Down { reason: failure::Failure::NoSquads, had_snapshot: false, .. } if !remote => v_flex().flex_1().child(self.drag_strip()).child(views::welcome::welcome_screen(self, cx)).into_any_element(),
+            Conn::Down { reason: failure::Failure::NoSquads, had_snapshot: false, .. } if !remote => v_flex().flex_1().min_h_0().child(self.drag_strip()).child(views::setup::screen(self, cx)).into_any_element(),
             Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide_at(&self.endpoint, self.connecting.door.as_deref()), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()
@@ -1652,6 +1646,10 @@ impl Render for Shell {
         if let Some(later) = self.composer.send_when_ready.filter(|_| !self.composer.strip.busy()) {
             self.composer.send_when_ready = None;
             cx.defer_in(window, move |this, window, cx| this.send_as(later, window, cx));
+        }
+        if !self.setup.probed && self.needs_setup() {
+            self.setup.probed = true;
+            cx.defer_in(window, |this, _, cx| this.setup_probe(cx));
         }
         if self.board.words != crate::i18n::lang() {
             self.relocalize_inputs(window, cx);

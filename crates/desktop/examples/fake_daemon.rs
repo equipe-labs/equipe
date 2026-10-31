@@ -876,6 +876,8 @@ mod pictures;
 mod team;
 #[path = "fake_daemon/routine.rs"]
 mod routine;
+#[path = "fake_daemon/signals.rs"]
+mod signals;
 
 #[path = "fake_daemon/accept.rs"]
 mod accept;
@@ -1158,6 +1160,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             routine_proposals: routine::proposals(),
                             routines: routine::routines(),
                             idle_wake_hours: Some(routine::idle_wake_hours()),
+                            signals: signals::signals(),
                             accepts: accept::cards(),
                             tickets: tickets().lock().unwrap().clone(),
                             allowed: allowed().lock().unwrap().clone(),
@@ -1421,7 +1424,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

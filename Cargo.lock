@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.99.1"
+version = "0.100.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2229,15 +2229,17 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.99.1"
+version = "0.100.0"
 dependencies = [
  "base64 0.23.1",
  "equipe-desktop-control",
  "equipe-protocol",
  "equipe-providers",
+ "flate2",
  "image",
  "libc",
  "reqwest",
+ "ring",
  "rusqlite",
  "security-framework",
  "serde",
@@ -2249,7 +2251,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.99.1"
+version = "0.100.0"
 dependencies = [
  "alacritty_terminal",
  "base64 0.23.1",
@@ -2281,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop-control"
-version = "0.99.1"
+version = "0.100.0"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2297,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.99.1"
+version = "0.100.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2305,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.99.1"
+version = "0.100.0"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",
@@ -3323,8 +3325,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d756813ff1cd741a502af60fd18869e0677795936d7349642b41c49f43120c0"
 dependencies = [
  "accesskit",
  "accesskit_macos",
