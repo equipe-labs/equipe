@@ -98,6 +98,7 @@ impl Palette {
         Theme::update(cx, |theme| {
             theme.colors.caret = caret;
             theme.colors.selection = selection;
+            theme.mono_font_family = MONO.into();
         });
     }
 
@@ -195,7 +196,49 @@ pub fn look(role: &str, name: &str) -> (&'static str, usize) {
     }
 }
 
-pub const SANS: &str = "Helvetica Neue";
+/// The Mac's own interface face (SF): drawn for the screen at every size, in
+/// every weight. Helvetica Neue, the brand's, stays with the brand's moments.
+pub const SANS: &str = ".SystemUIFont";
+
+/// The Mac's faces for what SF doesn't draw — Korean, Japanese, Chinese —
+/// the app's language's first: Han characters are shared, and each language
+/// wants its own shapes for them. All come with every Mac, in every weight.
+pub fn fallbacks(lang: equipe_core::i18n::Lang) -> FontFallbacks {
+    use equipe_core::i18n::Lang;
+    static BY_LANG: std::sync::OnceLock<Vec<(Lang, FontFallbacks)>> = std::sync::OnceLock::new();
+    const KO: &str = "Apple SD Gothic Neo";
+    const JA: &str = "Hiragino Sans";
+    const SC: &str = "PingFang SC";
+    const TC: &str = "PingFang TC";
+    let all = BY_LANG.get_or_init(|| {
+        Lang::ALL
+            .iter()
+            .map(|&lang| {
+                let first = match lang {
+                    Lang::Ja => JA,
+                    Lang::ZhHans => SC,
+                    Lang::ZhHant => TC,
+                    _ => KO,
+                };
+                let faces = std::iter::once(first).chain([KO, JA, SC, TC].into_iter().filter(|f| *f != first)).map(str::to_owned).collect();
+                (lang, FontFallbacks::from_fonts(faces))
+            })
+            .collect()
+    });
+    all.iter().find(|(l, _)| *l == lang).map_or_else(|| all[0].1.clone(), |(_, f)| f.clone())
+}
+
+/// The interface's face, and the faces for the scripts it lacks.
+pub trait Sans: Styled + Sized {
+    fn sans(mut self) -> Self {
+        let style = self.text_style();
+        style.font_family = Some(SANS.into());
+        style.font_fallbacks = Some(fallbacks(crate::i18n::lang()));
+        self
+    }
+}
+
+impl<E: Styled> Sans for E {}
 
 // ── type ──
 //
@@ -241,7 +284,7 @@ pub const TAIL_ROOM: f32 = 20.;
 /// blue, violet, teal, pink, green: never the amber of work under way or the
 /// orange of what waits on the person, which a project's dot would be read as.
 pub const PROJECT_HUES: [usize; 5] = [2, 4, 5, 1, 3];
-pub const MONO: &str = "Menlo";
+pub const MONO: &str = ".AppleSystemUIFontMonospaced";
 
 // ── one scale for everything ──
 //
@@ -436,6 +479,23 @@ mod tests {
             assert!(on(p.text) > on(p.prose) && on(p.prose) > on(p.text2) && on(p.text2) > on(p.muted));
             assert!(on(p.muted) >= 5.8, "muted on bg ({appearance:?}): {:.2}", on(p.muted));
             assert!(contrast(p.accent, p.prose) >= 1.5, "link against the words ({appearance:?}): {:.2}", contrast(p.accent, p.prose));
+        }
+    }
+
+    /// Every language gets every CJK face, its own first: Japanese Han in
+    /// Hiragino's shapes, Chinese in PingFang's, Hangul (and Latin UIs) in
+    /// Apple SD Gothic Neo's.
+    #[test]
+    fn each_language_draws_cjk_in_its_own_faces_first() {
+        use equipe_core::i18n::Lang;
+        for (lang, first) in [(Lang::Ko, "Apple SD Gothic Neo"), (Lang::Ja, "Hiragino Sans"), (Lang::ZhHans, "PingFang SC"), (Lang::ZhHant, "PingFang TC"), (Lang::En, "Apple SD Gothic Neo"), (Lang::De, "Apple SD Gothic Neo")] {
+            let faces = super::fallbacks(lang);
+            let faces = faces.fallback_list();
+            assert_eq!(faces[0], first, "{lang:?}");
+            assert_eq!(faces.len(), 4, "{lang:?}: {faces:?}");
+            for face in ["Apple SD Gothic Neo", "Hiragino Sans", "PingFang SC", "PingFang TC"] {
+                assert!(faces.iter().any(|f| f == face), "{lang:?} lacks {face}");
+            }
         }
     }
 

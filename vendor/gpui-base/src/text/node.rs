@@ -2123,7 +2123,7 @@ impl PartialEq for NodeContext {
 fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHighlight {
     let mut highlight = HighlightStyle::default();
     if mark.bold {
-        highlight.font_weight = Some(FontWeight::BOLD);
+        highlight.font_weight = Some(node_cx.style.strong_weight()); // equipe: the style's weight
     }
     if mark.italic {
         highlight.font_style = Some(FontStyle::Italic);

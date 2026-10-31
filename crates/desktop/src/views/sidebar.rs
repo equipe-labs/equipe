@@ -27,7 +27,7 @@ use super::header::project_color;
 use crate::board::{HeadClick, Live, Menu, SideGroup, recent_done_view, side_groups};
 use crate::state::{Conn, Member, Model, Need, Side, Status, short_span};
 use crate::side_split::Divider;
-use crate::theme::{Palette, SANS, UI};
+use crate::theme::{Palette, Sans, UI};
 use crate::{Screen, Shell, motion};
 
 pub const WIDTH: f32 = 260.;
@@ -335,7 +335,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .flex_none()
         .relative()
         .bg(p.side)
-        .font_family(SANS)
+        .sans()
         .text_color(p.text)
         .child(strip)
         .child(body)

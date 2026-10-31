@@ -28,7 +28,7 @@ use crate::notify::{Permission, Ping};
 use crate::settings::{self as rules, Category};
 use crate::state::Conn;
 use crate::target::{Endpoint, Start};
-use crate::theme::{Appearance, CONTROL, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, ROW, SANS, SMALL, UI, look};
+use crate::theme::{Appearance, CONTROL, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, ROW, SMALL, Sans, UI, look};
 use crate::tips::TipExt as _;
 use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
@@ -962,7 +962,7 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
         .h_full()
         .flex_none()
         .bg(p.side)
-        .font_family(SANS)
+        .sans()
         .border_r_1()
         .border_color(p.hair)
         .child(ui::title_bar(div().h(px(super::sidebar::STRIP)).flex_none().w_full()))
@@ -1054,7 +1054,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .bg(p.bg)
         .child(ui::title_bar(div().h(px(super::sidebar::STRIP)).flex_none().w_full()))
         .child(div().id("settings-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&shell.settings.scroll).child(div().w_full().flex().justify_center().px_8().pt_2().pb(px(48.)).child(column)));
-    h_flex().size_full().font_family(SANS).text_color(p.text).child(nav(shell, &found, searching, cx)).child(main).children(pop_menu(shell, cx)).into_any_element()
+    h_flex().size_full().sans().text_color(p.text).child(nav(shell, &found, searching, cx)).child(main).children(pop_menu(shell, cx)).into_any_element()
 }
 
 /// The open pop-up's rows: what each says, whether it is the one in use, what it does.

@@ -32,7 +32,7 @@ use super::board::{btn, dot, hue_of, member_color};
 use super::icons;
 use crate::board::{self as rules, MergeWay};
 use crate::state::Model;
-use crate::theme::{MONO, Palette, R_MD, SMALL, look};
+use crate::theme::{MONO, Palette, R_MD, SMALL, Sans, look};
 use crate::{Screen, Shell};
 
 /// How long the pointer rests on a link before its card shows.
@@ -875,7 +875,7 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
                 .font_family(MONO)
                 .child(div().text_color(p.accent).child(format!("+{}", stat.added)))
                 .child(div().child(format!("−{}", stat.removed)))
-                .child(div().font_family(crate::theme::SANS).child(format!("· {}", t!("card.files", count = stat.files.len()))))
+                .child(div().sans().child(format!("· {}", t!("card.files", count = stat.files.len()))))
                 .into_any_element(),
             None => div().child("…").into_any_element(),
         });

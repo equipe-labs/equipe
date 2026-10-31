@@ -12,7 +12,7 @@ use gpui_kit::*;
 
 use super::board::{Popover, dot, kbd};
 use crate::state::{Member, Model, Presence};
-use crate::theme::{PROJECT_HUES, Palette, R_MD, SANS, SMALL, look};
+use crate::theme::{PROJECT_HUES, Palette, R_MD, SMALL, Sans, look};
 use crate::Shell;
 
 /// The title bar's one height, the sidebar's strip's too.
@@ -88,7 +88,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .border_b_1()
         .border_color(p.hair)
         .overflow_hidden()
-        .font_family(SANS)
+        .sans()
         .window_control_area(WindowControlArea::Drag)
         .children(who)
         .child(slice_control(shell, "chat", cx))

@@ -91,7 +91,7 @@ use daemon::{Backoff, Link, Spawned, Target};
 use target::{Endpoint, Remembered};
 use equipe_core::protocol::{Command, Event, SessionId};
 use state::{Clock, Conn, Model};
-use theme::{BODY, Palette, SANS, SMALL};
+use theme::{BODY, Palette, SMALL, Sans};
 use views::board::BoardUi;
 use views::browser::{BrowserPanel, PanelEvent};
 use views::chat::Chat;
@@ -1618,7 +1618,7 @@ fn install_screen(p: Palette) -> AnyElement {
                 .bg(p.code_bg)
                 .border_1()
                 .border_color(p.hair)
-                .font_family("Menlo")
+                .font_family(theme::MONO)
                 .text_size(px(SMALL))
                 .text_color(p.text2)
                 .child(install::INSTALL_COMMAND),
@@ -1678,7 +1678,7 @@ impl Render for Shell {
         let root = v_flex()
             .size_full()
             .bg(p.bg)
-            .font_family(SANS)
+            .sans()
             .text_color(p.text)
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {

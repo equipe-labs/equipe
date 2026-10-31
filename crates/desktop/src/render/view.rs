@@ -63,6 +63,8 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
         .with_table_head(table_head)
         .with_table_cell(table_cell)
         .with_inline_code(HighlightStyle { color: Some(to_hsla(p.text2)), background_color: Some(to_hsla(p.code_bg)), ..Default::default() })
+        // Semibold, as Claude's replies: bold Korean clots, and a reply is full of it.
+        .with_strong_weight(FontWeight::SEMIBOLD)
         // A ticket number, many to a reply, is a link without the underline.
         .with_plain_links("ticket:")
         // A conversation is not a document: headings are bold, barely larger,
@@ -237,7 +239,7 @@ mod tests {
 
     /// A link reads as a link and code as code: inline code takes the words'
     /// secondary colour, not the link's; ticket numbers, which a reply is
-    /// full of, go without the underline.
+    /// full of, go without the underline; strong is semibold, not bold.
     #[test]
     fn links_code_and_headings_each_read_as_themselves() {
         for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
@@ -249,6 +251,7 @@ mod tests {
             assert_eq!(s.inline_code().color, Some(text2));
             assert!(s.link_underline_for("ticket:3").is_none());
             assert!(s.link_underline_for("https://example.com").is_some());
+            assert_eq!(s.strong_weight(), gpui_kit::FontWeight::SEMIBOLD);
             // A heading in a reply is the titles' colour, a step brighter
             // than the words.
             let title: Hsla = p.text.into();
