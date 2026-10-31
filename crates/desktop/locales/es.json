@@ -1966,7 +1966,7 @@
   "setup.open_guide": "Abrir la guía de instalación",
   "setup.squad_title": "Crear tu equipo",
   "setup.squad_locked": "Se abre cuando conectes una IA arriba.",
-  "setup.squad_text": "Crea un equipo para `{name}`. El PM saluda primero.",
+  "setup.squad_text": "Crea un equipo para {name}. El PM saluda primero.",
   "setup.squad_create": "Crear equipo",
   "setup.joining": "Conectando con el equipo…",
   "setup.foot": "Inicias sesión en la página de cada servicio, en el navegador de este Mac. equipe nunca ve tu contraseña."

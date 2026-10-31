@@ -1913,7 +1913,7 @@
   "setup.open_guide": "開啟安裝指南",
   "setup.squad_title": "建立小隊",
   "setup.squad_locked": "連接上面任一個 AI 後即可使用。",
-  "setup.squad_text": "為團隊 `{name}` 建立小隊。PM 會先打招呼。",
+  "setup.squad_text": "為團隊 {name} 建立小隊。PM 會先打招呼。",
   "setup.squad_create": "建立小隊",
   "setup.joining": "正在連接小隊…",
   "setup.foot": "登入在這台 Mac 上、各服務自己的瀏覽器頁面完成。equipe 不會看到你的密碼。"

@@ -1913,7 +1913,7 @@
   "setup.open_guide": "案内ドキュメントを開く",
   "setup.squad_title": "スクワッドを作る",
   "setup.squad_locked": "上でAIを1つつなぐと開きます。",
-  "setup.squad_text": "チーム `{name}` のスクワッドを作ります。最初にPMがあいさつします。",
+  "setup.squad_text": "チーム {name} のスクワッドを作ります。最初にPMがあいさつします。",
   "setup.squad_create": "スクワッドを作る",
   "setup.joining": "スクワッドに接続中…",
   "setup.foot": "ログインはこの Mac のブラウザで、各サービス自身のページで行います。equipe がパスワードを見ることはありません。"

@@ -151,7 +151,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         (_, Doing::CodexLogin) => h_flex().gap_3().items_center().child(waiting(p, t!("setup.browser_waiting"))).child(cancel(shell, "setup-cancel-codex", cx)).into_any_element(),
         (Some(false), _) => ui::button(p, "setup-chatgpt", Kind::Primary, t!("setup.chatgpt_login")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.setup_do(Doing::CodexLogin, cx))).into_any_element(),
     };
-    let chatgpt = card(p).child(title(p, Engine::Codex, "ChatGPT", t!("setup.chatgpt_badge"))).child(desc(p, t!("setup.chatgpt_desc"))).child(h_flex().pt_1().child(chatgpt_action));
+    let chatgpt = card(p).child(title(p, Engine::Codex, "ChatGPT", t!("setup.chatgpt_badge"))).child(desc(p, t!("setup.chatgpt_desc"))).child(h_flex().pt_1().w_full().min_w_0().child(chatgpt_action));
 
     // Claude Code: needed for editing files.
     let claude_action: AnyElement = match (s.claude, s.doing) {
@@ -160,6 +160,8 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         (_, Doing::Installing) => waiting(p, t!("setup.installing")).into_any_element(),
         (_, Doing::ClaudeLogin) => h_flex().gap_3().items_center().child(waiting(p, t!("setup.browser_waiting"))).child(cancel(shell, "setup-cancel-claude", cx)).into_any_element(),
         (Some(Claude::Missing), _) if s.confirm_install => v_flex()
+            .flex_1()
+            .min_w_0()
             .gap_2()
             .child(desc(p, t!("setup.install_ask")))
             .child(div().px_3().py_2().rounded(px(R_MD)).bg(p.code_bg).border_1().border_color(p.hair).font_family(MONO).text_size(px(SMALL)).text_color(p.text2).child(setup::CLAUDE_INSTALL))
@@ -183,7 +185,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         Some(Claude::Missing) => t!("setup.claude_missing"),
         _ => t!("setup.claude_desc"),
     };
-    let claude = card(p).child(title(p, Engine::Claude, "Claude Code", t!("setup.claude_badge"))).child(desc(p, claude_state)).child(h_flex().pt_1().child(claude_action));
+    let claude = card(p).child(title(p, Engine::Claude, "Claude Code", t!("setup.claude_badge"))).child(desc(p, claude_state)).child(h_flex().pt_1().w_full().min_w_0().child(claude_action));
 
     // What stopped, in plain words, with the tool's own last words under it.
     let failed = s.failed.as_ref().map(|(doing, why)| {
@@ -195,8 +197,9 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             Doing::Idle => "",
         };
         v_flex()
+            .w_full()
             .gap_1()
-            .child(h_flex().gap_2().items_center().text_size(px(SMALL)).text_color(p.danger()).child(icon(Icon::Warning, ICON_SM, p.danger())).child(words))
+            .child(h_flex().gap_2().items_start().text_size(px(SMALL)).line_height(px(20.)).text_color(p.danger()).child(div().flex_none().pt(px(3.)).child(icon(Icon::Warning, ICON_SM, p.danger()))).child(div().flex_1().min_w_0().child(words)))
             .when(!why.is_empty(), |c| c.child(div().font_family(MONO).text_size(px(11.5)).line_height(px(17.)).text_color(p.muted).child(why.clone())))
             .when(*doing == Doing::Installing, |c| c.child(h_flex().child(ui::button(p, "setup-guide", Kind::Ghost, t!("setup.open_guide")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(setup::CLAUDE_GUIDE)))))
     });
@@ -206,7 +209,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let squad = card(p)
         .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("setup.squad_title")))
         .child(desc(p, if s.ready() { t!("setup.squad_text", name = name) } else { t!("setup.squad_locked").to_owned() }))
-        .child(h_flex().pt_1().child(match s.doing {
+        .child(h_flex().pt_1().w_full().min_w_0().child(match s.doing {
             Doing::Creating | Doing::Joining => waiting(p, t!("setup.joining")).into_any_element(),
             _ => ui::button(p, "setup-create", Kind::Primary, t!("setup.squad_create")).disabled(busy || !s.ready()).on_click(cx.listener(|this, _, _, cx| this.setup_do(Doing::Creating, cx))).into_any_element(),
         }));

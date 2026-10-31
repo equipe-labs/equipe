@@ -239,7 +239,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                             s.codex = Some(true);
                             shell.setup_do(Doing::Creating, cx);
                         }
-                        "failed" => s.failed = Some((Doing::Installing, "curl: (6) Could not resolve host: claude.ai".into())),
+                        "failed" => s.failed = Some((Doing::Installing, "curl: (6) Could not resolve host: claude.ai — the connection to https://claude.ai/install.sh could not be made, check the network and try once more later".into())),
                         _ => {}
                     }
                     cx.notify();

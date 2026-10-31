@@ -1914,7 +1914,7 @@
   "setup.open_guide": "안내 문서 열기",
   "setup.squad_title": "스쿼드 만들기",
   "setup.squad_locked": "위에서 AI를 하나 연결하면 열려요.",
-  "setup.squad_text": "`{name}` 팀으로 스쿼드를 만들어요. PM이 먼저 인사해요.",
+  "setup.squad_text": "{name} 팀으로 스쿼드를 만들어요. PM이 먼저 인사해요.",
   "setup.squad_create": "스쿼드 만들기",
   "setup.joining": "스쿼드에 연결하는 중…",
   "setup.foot": "로그인은 이 Mac에서 각 서비스의 브라우저 창으로 해요. equipe는 비밀번호를 보지 않아요."

@@ -1966,7 +1966,7 @@
   "setup.open_guide": "Installationsanleitung öffnen",
   "setup.squad_title": "Squad erstellen",
   "setup.squad_locked": "Öffnet sich, sobald oben eine KI verbunden ist.",
-  "setup.squad_text": "Erstellt einen Squad für das Team `{name}`. Der PM begrüßt dich zuerst.",
+  "setup.squad_text": "Erstellt einen Squad für das Team {name}. Der PM begrüßt dich zuerst.",
   "setup.squad_create": "Squad erstellen",
   "setup.joining": "Verbinde mit dem Squad…",
   "setup.foot": "Die Anmeldung läuft auf der Seite des jeweiligen Dienstes im Browser dieses Macs. equipe sieht dein Passwort nie."

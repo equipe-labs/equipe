@@ -1966,7 +1966,7 @@
   "setup.open_guide": "Open the setup guide",
   "setup.squad_title": "Create your squad",
   "setup.squad_locked": "Opens once you connect one AI above.",
-  "setup.squad_text": "Creates a squad for the team `{name}`. The PM says hello first.",
+  "setup.squad_text": "Creates a squad for the team {name}. The PM says hello first.",
   "setup.squad_create": "Create squad",
   "setup.joining": "Connecting to the squad…",
   "setup.foot": "You sign in on each service’s own page in your browser, on this Mac. equipe never sees your password."
