@@ -182,7 +182,7 @@ fn picture(p: Palette, n: u64, size: (f32, f32), tag: &Tag, shown: Option<&Shown
         .when(video && !gone, |d| {
             d.child(
                 div().absolute().inset_0().flex().items_center().justify_center().child(
-                    div().size(px(34.)).rounded_full().bg(rgba(0x00000099)).flex().items_center().justify_center().text_size(px(13.)).text_color(rgb(0xFFFFFF)).child("▶"),
+                    div().size(px(34.)).rounded_full().bg(rgba(0x00000099)).flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Play, ICON_SM, rgb(0xFFFFFF))),
                 ),
             )
             .children(tag.duration.clone().map(|d| div().absolute().right(px(6.)).bottom(px(5.)).px_1().rounded(px(4.)).bg(rgba(0x0000008C)).text_size(px(10.5)).font_weight(FontWeight::NORMAL).text_color(rgb(0xFFFFFF)).child(d)))

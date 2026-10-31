@@ -94,7 +94,7 @@
   "approvals.screen": "Pantalla · {path}",
   "approvals.send_always_asks": "Enviar siempre pide permiso cada vez",
   "approvals.sign_in_always": "«Siempre» deja que {member} use esta cuenta sin preguntar · la contraseña sigue oculta",
-  "approvals.waiting_on_you_mark": "⚑ Permiso",
+  "approvals.waiting_on_you_mark": "Permiso",
   "approvals.words_hint": "⏎ rechazar y enviar · ⌘⏎ permitir y enviar · ⇧⏎ nueva línea · Esc cerrar",
   "approvals.words_placeholder": "Por qué no, qué hacer en su lugar, o qué tener en cuenta si lo permites",
   "approvals.writes": "Escribe: {files}",

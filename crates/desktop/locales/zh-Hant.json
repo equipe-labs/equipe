@@ -91,7 +91,7 @@
   "approvals.screen": "畫面 · {path}",
   "approvals.send_always_asks": "傳送一律每次詢問",
   "approvals.sign_in_always": "「一律」讓 {member} 不需詢問即可使用此帳號 · 密碼不會顯示",
-  "approvals.waiting_on_you_mark": "⚑ 權限請求",
+  "approvals.waiting_on_you_mark": "權限請求",
   "approvals.words_hint": "⏎ 拒絕並傳送 · ⌘⏎ 允許並傳送 · ⇧⏎ 換行 · Esc 關閉",
   "approvals.words_placeholder": "為什麼不行、改怎麼做，或允許時要補充的話",
   "approvals.writes": "寫入：{files}",

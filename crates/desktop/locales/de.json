@@ -94,7 +94,7 @@
   "approvals.screen": "Bildschirm · {path}",
   "approvals.send_always_asks": "Beim Senden wird jedes Mal gefragt",
   "approvals.sign_in_always": "„Immer“ lässt {member} dieses Konto ohne Nachfrage nutzen · das Passwort bleibt verborgen",
-  "approvals.waiting_on_you_mark": "⚑ Berechtigung",
+  "approvals.waiting_on_you_mark": "Berechtigung",
   "approvals.words_hint": "⏎ ablehnen und senden · ⌘⏎ erlauben und senden · ⇧⏎ neue Zeile · Esc schließen",
   "approvals.words_placeholder": "Warum nicht, was stattdessen, oder worauf achten, wenn du es erlaubst",
   "approvals.writes": "Schreibt: {files}",

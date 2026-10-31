@@ -91,7 +91,7 @@
   "approvals.screen": "画面 · {path}",
   "approvals.send_always_asks": "送信は毎回確認します",
   "approvals.sign_in_always": "「常に」で {member} はこのアカウントを確認なしで使えます · パスワードは見えません",
-  "approvals.waiting_on_you_mark": "⚑ 許可リクエスト",
+  "approvals.waiting_on_you_mark": "許可リクエスト",
   "approvals.words_hint": "⏎ 拒否して送信 · ⌘⏎ 許可して送信 · ⇧⏎ 改行 · Esc 閉じる",
   "approvals.words_placeholder": "だめな理由、代わりにどうするか、または許可して添える一言",
   "approvals.writes": "書き込み先: {files}",

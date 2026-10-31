@@ -12,7 +12,7 @@ use gpui_kit::*;
 
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, CONTROL, R_MD, R_XL, S3, SMALL};
+use crate::theme::{BODY, CONTROL, ICON_SM, R_MD, R_XL, S3, SMALL};
 use crate::ui::{self, Kind};
 use crate::welcome::{GIT_POLL, Welcome};
 use crate::Shell;
@@ -156,7 +156,7 @@ pub fn welcome_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                         .text_size(px(SMALL))
                         .line_height(px(20.))
                         .text_color(p.danger())
-                        .child(div().pt(px(2.)).flex_none().child(icon(Icon::Alert, 14., p.danger())))
+                        .child(div().pt(px(3.)).flex_none().child(icon(Icon::Alert, ICON_SM, p.danger())))
                         .child(div().flex_1().min_w_0().child(why))
                 }))
                 .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(t!("welcome.next")))

@@ -21,7 +21,7 @@ use super::icons;
 use crate::board::{self, DoneWindow, Filter, GroupBy, Menu, MergeWay, Row, SavedView, Tab, Tone, Undo, View};
 use crate::diffs::{self, Fetched, Source, Stat};
 use crate::state::{Conn, Model, Need, Presence, Verb, local_hm, short_span, status_word};
-use crate::theme::{MONO, PROJECT_HUES, Palette, SMALL, look};
+use crate::theme::{MONO, PROJECT_HUES, Palette, SMALL, key_face, look};
 use crate::tips::TipExt as _;
 use crate::{Screen, Shell};
 
@@ -1264,6 +1264,16 @@ fn flow_ticket(flow: Flow) -> Option<TicketId> {
 // ── drawing ──
 
 pub fn btn(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>, key: Option<&'static str>, primary: bool, enabled: bool) -> Stateful<Div> {
+    btn_frame(p, id, primary, enabled).child(label.into()).when_some(key, |b, key| b.child(btn_key(key)))
+}
+
+/// `btn`'s back button: the arrow as an icon (typed, "←" sat off the middle
+/// of the button), and Esc after it.
+pub fn back_btn(p: Palette, id: impl Into<ElementId>) -> Stateful<Div> {
+    btn_frame(p, id, false, true).child(crate::icons::icon(crate::icons::Icon::ArrowLeft, crate::theme::ICON_SM, p.text)).child(btn_key("Esc"))
+}
+
+fn btn_frame(p: Palette, id: impl Into<ElementId>, primary: bool, enabled: bool) -> Stateful<Div> {
     h_flex()
         .id(id)
         .h(px(28.))
@@ -1277,12 +1287,14 @@ pub fn btn(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>,
         .when(!enabled, |b| b.opacity(0.4))
         .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
         .when(!primary, |b| b.border_1().border_color(p.hair).when(enabled, |b| b.hover(move |s| s.bg(p.wash))))
-        .child(label.into())
-        .when_some(key, |b, key| b.child(div().text_size(px(11.)).opacity(0.6).child(key)))
+}
+
+fn btn_key(key: &'static str) -> Div {
+    div().text_size(px(11.)).opacity(0.6).font_features(key_face()).child(key)
 }
 
 pub fn kbd(p: Palette, key: &'static str) -> Div {
-    div().px(px(5.)).h(px(18.)).flex().items_center().rounded(px(4.)).border_1().border_color(p.hair).text_size(px(11.)).text_color(p.muted).child(key)
+    div().px(px(5.)).h(px(18.)).flex().items_center().rounded(px(4.)).border_1().border_color(p.hair).text_size(px(11.)).text_color(p.muted).font_features(key_face()).child(key)
 }
 
 pub fn hue_of(p: Palette, model: &Model, t: &Ticket) -> Option<Rgba> {
@@ -1415,7 +1427,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             .text_color(p.text2)
             .child(word)
             .when(removable, |c| {
-                c.cursor_pointer().child(div().text_color(p.muted).child("×")).on_click(cx.listener(move |this, _, window, cx| this.board_toggle_word(&w, window, cx)))
+                c.cursor_pointer().child(crate::icons::icon(crate::icons::Icon::X, 11., p.muted)).on_click(cx.listener(move |this, _, window, cx| this.board_toggle_word(&w, window, cx)))
             })
     };
     let has_chips = !chips.is_empty() || !saved_chips.is_empty();
@@ -1529,7 +1541,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .text_size(px(SMALL))
             .cursor_pointer()
             .hover(move |s| s.bg(p.wash))
-            .child(div().w(px(12.)).text_color(p.accent).child(if on { "✓" } else { "" }))
+            .child(div().w(px(12.)).flex_none().flex().items_center().children(on.then(|| crate::icons::icon(crate::icons::Icon::Check, 12., p.accent))))
             .child(label)
     };
     let body: Vec<AnyElement> = match which {
@@ -1940,7 +1952,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             base(SharedString::from(format!("ask-{id}")), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
-                .child(div().size(px(14.)).flex_none().flex().items_center().justify_center().text_size(px(12.)).text_color(p.accent).child("⚑"))
+                .child(div().size(px(14.)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)))
                 .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(a.ticket.map(|t| format!("T-{t}")).unwrap_or_default()))
                 .when(show_project, |r| r.child(project_col(ticket)))
                 .child(
@@ -2101,7 +2113,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .rounded(px(3.))
                         .border_1()
                         .border_color(if chosen { p.accent } else { p.hair })
-                        .when(chosen, |c| c.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓"))
+                        .when(chosen, |c| c.bg(p.accent).child(crate::icons::icon(crate::icons::Icon::Check, 10., p.on_accent)))
                         .when(!chosen, |c| c.invisible().group_hover(group.clone(), |s| s.visible()))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();

@@ -27,7 +27,7 @@ use super::header::project_color;
 use crate::board::{HeadClick, Live, Menu, SideGroup, recent_done_view, side_groups};
 use crate::state::{Conn, Member, Model, Need, Side, Status, short_span};
 use crate::side_split::Divider;
-use crate::theme::{Palette, Sans, UI};
+use crate::theme::{Palette, Sans, UI, key_face};
 use crate::{Screen, Shell, motion};
 
 pub const WIDTH: f32 = 260.;
@@ -202,7 +202,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .gap(px(1.))
         .child(
             nav("nav-new", IconName::Plus, t!("sidebar.new_conversation").into(), 0, 0, new_on)
-                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child("⌘N"))
+                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘N"))
                 .on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))),
         )
         .child(nav("nav-pm", IconName::Bot, t!("sidebar.pm_talk").into(), 0, 0, pm_on).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
@@ -1678,7 +1678,8 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
         Some(whole) => pill.tip(p, whole, None),
         None => pill,
     };
-    let mark = |m: &'static str| div().flex_none().child(m);
+    // The mark as an icon, in the words' colour: typed, "→" and "↻" sat off the line.
+    let mark = |m: crate::icons::Icon, color: Rgba| crate::icons::icon(m, crate::theme::ICON_SM, color);
     let words = div().flex_1().min_w_0().truncate().child(words);
     Some(match act {
         Act::None => pill
@@ -1695,7 +1696,7 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .hover(|s| s.opacity(0.9))
             .on_click(cx.listener(move |this, _, _, cx| this.update_act(act, cx)))
             .child(words)
-            .child(mark("→")),
+            .child(mark(crate::icons::Icon::ArrowRight, p.on_primary)),
         _ => pill
             .border_1()
             .border_color(if act == Act::RestartDaemonNow { p.red } else { p.hair })
@@ -1704,7 +1705,7 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .hover(|s| s.bg(p.wash))
             .on_click(cx.listener(move |this, _, _, cx| this.update_act(act, cx)))
             .child(words)
-            .child(mark(if matches!(act, Act::CheckNow | Act::UpdateDaemon) { "↻" } else { "→" })),
+            .child(mark(if matches!(act, Act::CheckNow | Act::UpdateDaemon) { crate::icons::Icon::Reload } else { crate::icons::Icon::ArrowRight }, if act == Act::RestartDaemonNow { p.red } else { p.text })),
     })
 }
 

@@ -623,26 +623,25 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             .map(|b| if picked { b.bg(p.accent).text_color(p.on_accent) } else { b.bg(rgb(0xFFFFFF)).text_color(rgb(0x111114)).hover(|s| s.bg(rgba(0xFFFFFFE0))) })
             .when(picked, |b| b.child(icon(Icon::Check, 13., p.on_accent)))
             .child(label)
-            .child(div().font_family(MONO).text_size(px(11.)).opacity(0.6).child("⏎"))
+            .child(div().font_family(MONO).font_features(crate::theme::key_face()).text_size(px(11.)).opacity(0.6).child("⏎"))
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.viewer_pick(set, choice, multi, window, cx);
             }))
     });
-    // Zoom: −, how far (a click: whole again), +.
+    // Zoom: −, how far (a click: whole again), +. Drawn as icons like the
+    // arrows beside them: as text, "+" and "−" sat at the font's math axis,
+    // off the middle of their circles and of each other.
     let can_zoom = shown.is_some();
     let path_out = item.path.clone();
     let path_in = item.path.clone();
     let path_fit = item.path.clone();
-    let glyph = |b: Stateful<Div>, words: &'static str, label: &'static str, keys: &'static str| {
-        tip(b.size(px(CONTROL)).flex().items_center().justify_center().rounded_full().cursor_pointer().hover(|s| s.bg(rgba(0xFFFFFF1F))).text_size(px(17.)).text_color(rgb(0xFFFFFF)).child(words), p, label, Some(keys))
-    };
     let zoom = can_zoom.then(|| {
         h_flex()
             .flex_none()
             .gap_1()
             .items_center()
-            .child(glyph(div().id("viewer-zoom-out").on_click(cx.listener(move |this, _, _, cx| this.viewer_zoom_step(&path_out, false, (0., 0.), cx))), "−", t!("visuals.zoom_out"), "−"))
+            .child(round(div().id("viewer-zoom-out").on_click(cx.listener(move |this, _, _, cx| this.viewer_zoom_step(&path_out, false, (0., 0.), cx))), Icon::Minus, t!("visuals.zoom_out"), "−"))
             .child(
                 div()
                     .id("viewer-zoom-fit")
@@ -662,7 +661,7 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                         cx.notify();
                     })),
             )
-            .child(glyph(div().id("viewer-zoom-in").on_click(cx.listener(move |this, _, _, cx| this.viewer_zoom_step(&path_in, true, (0., 0.), cx))), "+", t!("visuals.zoom_in"), "+"))
+            .child(round(div().id("viewer-zoom-in").on_click(cx.listener(move |this, _, _, cx| this.viewer_zoom_step(&path_in, true, (0., 0.), cx))), Icon::Plus, t!("visuals.zoom_in"), "+"))
     });
     let bar = h_flex()
         .id("viewer-bar")
