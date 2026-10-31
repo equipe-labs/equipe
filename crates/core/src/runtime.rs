@@ -4559,15 +4559,17 @@ them with `propose_accept`. Then carry on with what else waits.]"
                 line.push_str(" (it has no remote to push to)");
                 news = "news.merged_local";
             }
-            // Origin's main moved on elsewhere and the two conflict: said plainly,
-            // and the PM hears which files, to have them merged by hand.
-            Some(Err(err)) if let Some(files) = worktree::conflicts_with_origin(&err) => {
-                line.push_str(&format!(", but it wasn't pushed: origin's {main} has commits this one doesn't, and they conflict in {} — someone has to merge origin's {main} in by hand", files.join(", ")));
-                let message = say!(self, "error.push_conflicts", branch = main, count = files.len(), files = files.join(", "));
-                self.squad_error(squad, message);
-            }
             Some(Err(err)) => {
-                let message = say!(self, "error.not_pushed", branch = main, err = err);
+                let message = match worktree::conflicts_with_origin(&err) {
+                    // Origin's main moved on elsewhere and the two conflict: said
+                    // plainly, and the PM hears which files, to have them merged by hand.
+                    Some(files) => {
+                        let (count, files) = (files.len(), files.join(", "));
+                        line.push_str(&format!(", but it wasn't pushed: origin's {main} has commits this one doesn't, and they conflict in {files} — someone has to merge origin's {main} in by hand"));
+                        say!(self, "error.push_conflicts", branch = main, count = count, files = files)
+                    }
+                    None => say!(self, "error.not_pushed", branch = main, err = err),
+                };
                 self.squad_error(squad, message);
             }
             None => {}
