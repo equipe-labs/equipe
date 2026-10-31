@@ -335,6 +335,20 @@ is the person's own: on this Mac "터미널에서 로그인" opens Terminal runn
 there. A phone may see where the engines stand, never sign one in or out, and never gets a
 code. `FAKE_ENGINES` in the fake daemon shows each state.
 
+## Anonymous usage data (opt-in)
+
+The daemon keeps the answer (`telemetry`, `telemetry_set` — `docs/TELEMETRY.md`);
+the app asks it after every attach (`views/telemetry.rs`). While it says
+`unset` the app shows one screen in place of the squad's, wherever the person
+is: the last step of the first run (after the squad is made), or — for a Mac
+whose squads were there before — the first open after the update. It says in
+three lines what is sent and what never is, links the page that lists every
+event, and has two buttons of one weight, *Send* and *Don't send*, neither
+chosen beforehand. Once answered it is never asked again; Settings → General →
+Privacy has the switch. Over SSH the answer is the far daemon's, like the rest.
+The fake daemon (`examples/fake_daemon.rs`) keeps the real consent file in its
+`EQUIPE_HOME`, so a fresh home shows the question.
+
 ## Pairing a phone
 
 "휴대폰 연결…" (the app menu, the account menu at the sidebar's foot, or settings ▸ 스쿼드와

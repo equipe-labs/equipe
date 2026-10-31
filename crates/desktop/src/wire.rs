@@ -102,6 +102,17 @@ impl Commands {
         self.ask(rpc::LIST_IMAGES, rpc::ListImages { squad: squad.to_owned(), folder: folder.to_owned(), max: None })
     }
 
+    /// Whether anonymous usage events are sent (`telemetry`); answered as
+    /// [`Commands::upload`] is.
+    pub fn telemetry(&self) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
+        self.ask(rpc::TELEMETRY, serde_json::json!({}))
+    }
+
+    /// The person's yes or no to those events (`telemetry_set`).
+    pub fn telemetry_set(&self, on: bool) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
+        self.ask(rpc::TELEMETRY_SET, equipe_core::protocol::telemetry::SetTelemetry { on })
+    }
+
     fn ask(&self, method: &str, params: impl serde::Serialize) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
         let (tx, rx) = std::sync::mpsc::channel();
         let id = self.next.fetch_add(1, Ordering::Relaxed);

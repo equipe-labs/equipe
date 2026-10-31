@@ -246,6 +246,8 @@ pub struct Shell {
     pub connect: ConnectUi,
     /// The first run's form (`views/welcome.rs`).
     pub welcome: views::welcome::WelcomeUi,
+    /// Anonymous usage data: the daemon's answer and the question (`views/telemetry.rs`).
+    pub telemetry: views::telemetry::TelemetryUi,
     pub ask: AskUi,
     /// A password just typed with "don't ask again" on: the key goes there once connected.
     ssh_key_wanted: bool,
@@ -324,6 +326,7 @@ impl Shell {
         let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
         let ask = AskUi::new(window, cx);
         let welcome = views::welcome::WelcomeUi::new(window, cx);
+        let telemetry = views::telemetry::TelemetryUi::new(cx);
         // Light or dark as the person picked, else as the Mac is.
         remembered.appearance.apply();
         let appearance = remembered.appearance.resolve(window.appearance());
@@ -370,6 +373,7 @@ impl Shell {
             remembered,
             connect,
             welcome,
+            telemetry,
             ask,
             ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
@@ -882,6 +886,7 @@ impl Shell {
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();
+                            this.telemetry_look(cx);
                             this.install_ssh_key(cx);
                             // The daemon back on this app's release: the update's line has said its piece.
                             if this.daemon_update.is_some() && notify::stale_daemon(&this.model.daemon_version, env!("CARGO_PKG_VERSION")).is_none() {
@@ -1369,6 +1374,8 @@ impl Shell {
                 .text_color(p.muted)
                 .when(self.connecting_shown, |d| d.child(t!("main.connecting_local")))
                 .into_any_element(),
+            // Asked once, before the squad's screens: in the first run's last step, and the first time a squad already there opens after the update.
+            conn if self.telemetry_asking() => v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).child(views::telemetry::screen(self, cx)).into_any_element(),
             conn => {
                 let screen = match self.screen {
                     Screen::Chat => views::chat::screen(self, cx).into_any_element(),
