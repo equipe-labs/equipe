@@ -10,7 +10,7 @@
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<missing|confirm|installing|signedout|waiting|ready|create|failed>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
@@ -222,6 +222,28 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
+                // The first run's steps, held at a state: `missing` · `confirm` · `installing` · `signedout` · `waiting` · `ready` · `failed`.
+                "setup" => shell.update(cx, |shell, cx| {
+                    use crate::setup::{Claude, Doing};
+                    let s = &mut shell.setup;
+                    s.probed = true;
+                    (s.claude, s.codex, s.doing, s.confirm_install, s.failed) = (Some(Claude::Missing), Some(false), Doing::Idle, false, None);
+                    match arg.as_str() {
+                        "confirm" => s.confirm_install = true,
+                        "installing" => s.doing = Doing::Installing,
+                        "signedout" => s.claude = Some(Claude::SignedOut),
+                        "waiting" => (s.claude, s.doing) = (Some(Claude::SignedOut), Doing::ClaudeLogin),
+                        "ready" => (s.claude, s.codex) = (Some(Claude::SignedIn), Some(true)),
+                        // Really make the squad, as the button does (an engine is taken as ready).
+                        "create" => {
+                            s.codex = Some(true);
+                            shell.setup_do(Doing::Creating, cx);
+                        }
+                        "failed" => s.failed = Some((Doing::Installing, "curl: (6) Could not resolve host: claude.ai".into())),
+                        _ => {}
+                    }
+                    cx.notify();
+                }),
                 // 디자인 시스템: the screen at a section, another system, its draft, what changed, an asset big.
                 // 현황; `overview:<project>` marks that project the HQ here first (no daemon asked).
                 "overview" => shell.update(cx, |shell, cx| {
