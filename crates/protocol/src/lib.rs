@@ -723,6 +723,17 @@ pub enum Command {
     DeleteRoutine { squad: SquadName, id: u32 },
     /// The person runs a routine now, off its schedule.
     RunRoutine { squad: SquadName, id: u32 },
+    /// The person turns on a routine the PM proposed
+    /// ([`Event::RoutineProposed`]): saved as their own [`Command::SaveRoutine`]
+    /// would save it. Only ever the person's: no agent sends it. Answered by
+    /// [`Event::RoutineProposalClosed`].
+    ApproveRoutine { squad: SquadName, id: u64 },
+    /// The person says no to it: nothing is saved, and the PM is told.
+    DeclineRoutine { squad: SquadName, id: u64 },
+    /// How long the board may lie empty — nothing to do, under way or
+    /// waiting — before the PM is woken to propose what's next, in hours;
+    /// 0 turns it off. Answered by [`Event::IdleWakeChanged`].
+    SetIdleWake { squad: SquadName, hours: u32 },
     /// The person saves a login for members to sign in with (new, or a
     /// change): its password to the Keychain, the rest to every screen
     /// ([`Event::Logins`]).
@@ -1592,6 +1603,14 @@ pub enum Event {
     SecretClosed { squad: SquadName, id: u64, saved: bool },
     /// The squad's routines now, each with its next run.
     RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
+    /// The PM proposes a routine (`propose_routine`): it waits for the
+    /// person's [`Command::ApproveRoutine`] or [`Command::DeclineRoutine`].
+    RoutineProposed { squad: SquadName, proposal: routines::RoutineProposal },
+    /// No longer waiting: turned on (`approved`) or declined.
+    RoutineProposalClosed { squad: SquadName, id: u64, approved: bool },
+    /// How long an empty board waits before the PM is woken now
+    /// ([`Command::SetIdleWake`]); 0: never.
+    IdleWakeChanged { squad: SquadName, hours: u32 },
     ProjectsChanged {
         squad: SquadName,
         projects: Vec<PathBuf>,
@@ -1636,6 +1655,9 @@ impl Event {
             | Event::SecretClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
+            | Event::RoutineProposed { squad, .. }
+            | Event::RoutineProposalClosed { squad, .. }
+            | Event::IdleWakeChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1697,6 +1719,9 @@ impl Event {
             | Event::SecretClosed { .. }
             | Event::ProjectsChanged { .. }
             | Event::RoutinesChanged { .. }
+            | Event::RoutineProposed { .. }
+            | Event::RoutineProposalClosed { .. }
+            | Event::IdleWakeChanged { .. }
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
@@ -1962,6 +1987,13 @@ pub struct Snapshot {
     /// The squad's routines ([`Command::SaveRoutine`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routines: Vec<routines::Routine>,
+    /// Routines the PM proposed, waiting for the person, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routine_proposals: Vec<routines::RoutineProposal>,
+    /// Hours an empty board waits before the PM is woken ([`Command::SetIdleWake`]);
+    /// 0: never. `None` from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_wake_hours: Option<u32>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -2314,6 +2346,15 @@ mod tests {
                 session: 9,
                 proposed_at: 2,
             }],
+            routine_proposals: vec![routines::RoutineProposal {
+                id: 8,
+                routine: routines::Routine { id: 0, title: "Weekly check-in".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: None, next_run: None },
+                reason: "Nobody wakes the PM".into(),
+                by: "pm".into(),
+                session: 9,
+                proposed_at: 3,
+            }],
+            idle_wake_hours: Some(24),
             scale: Some(2),
             suggestions_off: false,
             plan: None,

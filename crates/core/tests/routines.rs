@@ -87,6 +87,8 @@ async fn the_persons_routine_is_kept_run_on_their_click_and_handed_to_the_pm() {
     std::fs::create_dir_all(&project).unwrap();
     let home = scratch("home");
     squads::create(&home, "acme", &project).unwrap();
+    // Without the weekly check-in a new squad starts with (`tests/heartbeat.rs`).
+    equipe_core::journal::Journal::for_squad(&home, "acme").unwrap().set_routines(&[]).unwrap();
     let claude = busy_claude();
     let (handle, mut events) = runtime::start(config(&claude, &home));
     pm(&handle, &mut events, &project).await;

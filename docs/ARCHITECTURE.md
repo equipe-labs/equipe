@@ -726,6 +726,37 @@ But the person can talk to anyone, the way a CEO can walk over to any desk — T
 Approvals never pass through the PM: equipe asks the person directly, because no
 agent's word — the PM's included — can authorize a merge or a deploy.
 
+### Heartbeat
+
+The PM wakes when someone hands it something: the person's message, a ticket
+that can't start, work handed in. On its own, an empty board wakes nobody — a
+squad could sit still for days. Three things give it a pulse
+(`crates/core/src/heartbeat.rs`, `runtime/heartbeat.rs`):
+
+1. **A weekly check-in.** A new squad starts with one routine, on: Mondays at
+   09:00, in the person's language — last week in short, the metrics and the
+   feedback, the next 1–3 pieces of work as proposed tickets, and what the
+   person must decide gathered into one card. It is the person's like any
+   routine: they change it or turn it off.
+2. **Routines the PM proposes.** Only the person makes a routine; the PM's
+   `propose_routine` only puts one on a card (title, schedule, prompt, why) —
+   kept in memory, like a change to the team, and on every screen
+   (`Event::RoutineProposed`). The person's click
+   (`Command::ApproveRoutine`) saves it as their own `SaveRoutine` would;
+   declining saves nothing, and the PM is told either way. A squad that
+   predates the check-in gets it this way.
+3. **An idle wake.** When nothing is to do, under way or waiting (todo, in
+   progress, waiting — proposals and hand-ins don't count) and nothing has
+   happened for a while (the board's last move or the person's last message;
+   24 hours unless the person says, `Command::SetIdleWake`, 0 turns it off),
+   the PM is handed an `[Idle · 24h]` message: the board is empty, propose
+   what's next against the goal. At most once a day, kept across a restart;
+   with no routine yet, it is also asked to propose the check-in.
+
+Either message comes to the PM as the person's would, after its turn if one
+runs. What it brings back are proposed tickets and one bundled ask — nothing
+starts until the person takes it on.
+
 ### A conversation being compacted
 
 A member's conversation is sometimes summarized to make room, and every screen

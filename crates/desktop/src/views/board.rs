@@ -515,6 +515,12 @@ impl Shell {
                 self.team_decide(id, true, cx);
                 self.advance_from(&before, need, cx);
             }
+            // A routine proposed: Y turns it on, as its card's button does.
+            Need::Routine(id) => {
+                let before = board::items(&self.board_rows());
+                self.routine_decide(id, true, cx);
+                self.advance_from(&before, need, cx);
+            }
             // Work to confirm: Y confirms what is ticked on its card, as its button does.
             Need::Accept(id) => {
                 let before = board::items(&self.board_rows());
@@ -547,7 +553,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_) | Need::Team(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_)) | None => {}
+            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_)) | None => {}
         }
     }
 
@@ -751,6 +757,12 @@ impl Shell {
                 self.team_decide(id, false, cx);
                 self.advance_from(&before, Need::Team(id), cx);
             }
+            // A routine proposed: N says no to it.
+            Some(Need::Routine(id)) => {
+                let before = board::items(&self.board_rows());
+                self.routine_decide(id, false, cx);
+                self.advance_from(&before, Need::Routine(id), cx);
+            }
             // Work to confirm: N says no to it.
             Some(Need::Accept(id)) => {
                 let before = board::items(&self.board_rows());
@@ -872,6 +884,7 @@ impl Shell {
         let session = match self.picked_need() {
             Some(Need::Permission(id)) => self.model.approvals.get(id).map(|a| a.session),
             Some(Need::Team(id)) => self.model.team.get(id).map(|c| c.session),
+            Some(Need::Routine(id)) => self.model.routine_asks.get(id).map(|r| r.session),
             Some(Need::Accept(id)) => self.model.accepts.get(id).map(|c| c.session),
             Some(Need::Questions(id)) => {
                 let member = self.model.asked.get(id).map(|s| s.member.clone());
@@ -1973,6 +1986,21 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::team::mark(p))
+                .child(div().w(px(44.)).flex_none())
+                .when(show_project, |r| r.child(project_col(None)))
+                .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(cell(detail_w).text_color(color).child(name))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        Need::Routine(id) => {
+            let Some((title, name, color)) = super::routine::row_text(shell, id) else { return div().into_any_element() };
+            base(SharedString::from(format!("routine-ask-{id}")), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::routine::mark(p))
                 .child(div().w(px(44.)).flex_none())
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))

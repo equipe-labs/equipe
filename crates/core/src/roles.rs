@@ -435,7 +435,7 @@ filed in {hq}, and what you learn about the whole goes in its files, not only in
     let projects = if role.id == PM {
         format!(
             "{projects} A message that starts with [Routine · …] is one of the person's routines, set up to come on a \
-schedule: do what it asks as if they had just written it, and keep what it produces where it can be found again{}.",
+schedule: do what it asks as if they had just written it, and keep what it produces where it can be found again{}. A message that starts with [Idle · …] is equipe waking you because the board has lain empty: nobody else will start the next work. For either, put the next work up as proposed tickets (`create_ticket` with `proposal`), tied to the squad's goal — its stage, North Star and OKRs — rather than starting it unasked, and gather everything the person must decide into one card (one `ask_decision` with up to four questions), never a string of separate asks. Routines are the person's to turn on, never yours: when regular work would help — a weekly check-in, a monthly look at the dependencies — propose it with `propose_routine`, and only their click on its card turns it on.",
             ctx.hq.map(|hq| format!(" — in {hq}")).unwrap_or_default()
         )
     } else {
@@ -835,6 +835,7 @@ mod tests {
         let none = charter(role(PM).unwrap(), "pm", &ctx(&team, &projects, true));
         assert!(!none.contains("HQ"), "{none}");
         assert!(pm.contains("[Routine · …]") && pm.contains("found again — in atinum-hq."), "{pm}");
+        assert!(pm.contains("[Idle · …]") && pm.contains("`propose_routine`") && pm.contains("one card"), "{pm}");
     }
 
     #[test]

@@ -751,6 +751,27 @@ fn team_change() -> TeamChange {
     }
 }
 
+/// The PM proposes a weekly check-in, Mondays at 09:00.
+fn routine_proposal() -> equipe_core::protocol::routines::RoutineProposal {
+    use equipe_core::protocol::routines::{Routine, RoutineProposal, Schedule};
+    RoutineProposal {
+        id: 9_000_001,
+        routine: Routine {
+            id: 0,
+            title: "주간 점검".into(),
+            prompt: "지난주 요약과 다음 일 1~3개를 제안 티켓으로 올려 주세요.".into(),
+            when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 },
+            on: true,
+            last_run: None,
+            next_run: None,
+        },
+        reason: "3주째 월요일마다 요약을 부탁하셨어요".into(),
+        by: "pm".into(),
+        session: 1001,
+        proposed_at: NOW / 1000,
+    }
+}
+
 /// The person told the PM "T-38 수락할게": the PM puts it to them on a card.
 fn accept_proposal() -> equipe_core::protocol::accept::AcceptProposal {
     equipe_core::protocol::accept::AcceptProposal {
@@ -912,6 +933,8 @@ fn snapshot() -> Snapshot {
         approvals: vec![approval()],
         questions: vec![questions()],
         team_changes: vec![team_change()],
+        routine_proposals: vec![routine_proposal()],
+        idle_wake_hours: Some(24),
         accepts: vec![accept_proposal()],
         scale: Some(0),
         plan: Some(plan(Engine::Claude, 86, 41).usage),
@@ -1034,6 +1057,11 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "decline team change", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_team_change", "squad": SQUAD, "id": 6_000_001 } }));
     tell(&mut core, &mut examples, "event: team change approved", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: true, members: vec!["backend-2".into()] });
     tell(&mut core, &mut examples, "event: team change declined", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: false, members: vec![] });
+    tell(&mut core, &mut examples, "event: routine proposed", Event::RoutineProposed { squad: SQUAD.into(), proposal: routine_proposal() });
+    ask(&mut core, &mut examples, "approve routine", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_routine", "squad": SQUAD, "id": 9_000_001 } }));
+    ask(&mut core, &mut examples, "decline routine", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_routine", "squad": SQUAD, "id": 9_000_001 } }));
+    tell(&mut core, &mut examples, "event: routine approved", Event::RoutineProposalClosed { squad: SQUAD.into(), id: 9_000_001, approved: true });
+    tell(&mut core, &mut examples, "event: routine declined", Event::RoutineProposalClosed { squad: SQUAD.into(), id: 9_000_001, approved: false });
 
     // Handed-in work the person said in words to accept, on a card: confirmed (accepted, never
     // merged from a phone) or declined by the person.
@@ -1138,6 +1166,7 @@ fn message_vectors() -> Value {
         ("push: waiting", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Waiting) }),
         ("push: decision", Event::QuestionsAsked { squad: SQUAD.into(), questions: questions() }),
         ("push: team change", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() }),
+        ("push: routine", Event::RoutineProposed { squad: SQUAD.into(), proposal: routine_proposal() }),
         ("push: accept", Event::AcceptProposed { squad: SQUAD.into(), proposal: accept_proposal() }),
         ("push: disk", Event::DiskLevel { status: disk_status() }),
         ("push: engine exhausted", Event::EngineProposed { squad: SQUAD.into(), proposal: engine_proposal(Why::Exhausted, false) }),
