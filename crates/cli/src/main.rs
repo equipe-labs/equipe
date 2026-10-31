@@ -1444,6 +1444,9 @@ impl App {
                 | Event::EngineSwitchingChanged { .. }
                 | Event::ProjectsChanged { .. }
                 | Event::RoutinesChanged { .. }
+                | Event::RoutineProposed { .. }
+                | Event::RoutineProposalClosed { .. }
+                | Event::IdleWakeChanged { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }

@@ -578,8 +578,18 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             let squad = this.model.squad.clone();
             this.send_command(equipe_core::protocol::Command::SetPmAccepts { squad, on });
         }, cx));
+    // An empty board wakes the PM after a day to look for what comes next; off, it waits for the person.
+    let idle_wake = Line::new(t!("settings.idle_wake"), t!("settings.idle_wake_desc"))
+        .words("idle wake empty board pm 빈 보드 깨우기 쉬는")
+        .control(switch(shell, "idle-wake", model.idle_wake_hours > 0, connected, |this, on, _, _| {
+            let squad = this.model.squad.clone();
+            let hours = if on { equipe_core::protocol::routines::IDLE_WAKE_HOURS } else { 0 };
+            this.send_command(equipe_core::protocol::Command::SetIdleWake { squad, hours });
+        }, cx));
     vec![
         Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
+        // Its own card, so the footnote above reads as the PM's accepting alone.
+        Section::new("", vec![idle_wake]),
         Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
     ]
 }

@@ -28,10 +28,12 @@ mod accept;
 mod decide;
 pub mod engines;
 mod team;
+mod routine;
 mod turn;
 pub use decide::Picking;
 pub use accept::ids as accept_ids;
 pub use team::describe as describe_team_change;
+pub use routine::schedule_words;
 pub use turn::{TurnForm, Typing};
 
 /// How long a turn goes on before equipe's guess at its end shows.
@@ -741,6 +743,10 @@ pub struct App {
     pub picking: HashMap<u64, Picking>,
     /// Changes to the team the PM proposed, waiting for the person, oldest first (`team`).
     pub team_changes: Vec<equipe_core::protocol::team::TeamChange>,
+    /// Routines the PM proposed, waiting for the person, oldest first (`routine`).
+    pub routine_proposals: Vec<equipe_core::protocol::routines::RoutineProposal>,
+    /// Hours an empty board waits before the PM is woken; 0: never (`/wake`).
+    pub idle_wake_hours: u32,
     /// Handed-in work put to the person to confirm, oldest first (`accept`).
     pub accepts: Vec<equipe_core::protocol::accept::AcceptProposal>,
     /// Both engines' plans, the squad's switching, and its cards (`engines`).
@@ -898,6 +904,8 @@ impl App {
             questions: snapshot.questions,
             picking: HashMap::new(),
             team_changes: snapshot.team_changes,
+            routine_proposals: snapshot.routine_proposals,
+            idle_wake_hours: snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS),
             accepts: snapshot.accepts,
             turn_form: None,
             turn_drafts: HashMap::new(),
@@ -1769,6 +1777,10 @@ impl App {
                 self.on_team_change(event);
                 return Vec::new();
             }
+            event @ (Event::RoutineProposed { .. } | Event::RoutineProposalClosed { .. } | Event::IdleWakeChanged { .. }) => {
+                self.on_routine_event(event);
+                return Vec::new();
+            }
             event @ (Event::AcceptProposed { .. } | Event::AcceptClosed { .. }) => {
                 self.on_accept(event);
                 return Vec::new();
@@ -2341,6 +2353,10 @@ impl App {
         if let Some(commands) = self.on_team_key(key.code, ctrl, alt) {
             return commands;
         }
+        // A routine the PM proposed, in its conversation: y turns it on, n says no.
+        if let Some(commands) = self.on_routine_key(key.code, ctrl, alt) {
+            return commands;
+        }
         // Moving members between engines: y makes the moves, n leaves them, u undoes.
         if let Some(commands) = self.on_engines_key(key.code, ctrl, alt) {
             return commands;
@@ -2785,6 +2801,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "title" => self.retitle(rest),
             "mode" => self.set_mode(rest),
             "engines" => self.engines_command(rest),
+            "wake" => self.wake_command(rest),
             "lang" => self.set_lang(rest),
             "close" => match self.agents.get_mut(self.selected) {
                 Some(agent) if agent.is_open() => {

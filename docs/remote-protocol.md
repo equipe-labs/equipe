@@ -169,6 +169,21 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
 
+### A routine the PM proposes
+
+The PM proposes a routine as a `routine_proposed` event: `proposal` is `{ "id", "routine":
+{ "id": 0, "title", "prompt", "when": { "every": "daily" | "weekly", "weekday"? (1 Monday …
+7 Sunday), "hour", "minute" }, "on": true }, "reason"?, "by", "session", "proposed_at" }`. The
+snapshot lists the ones still waiting in `routine_proposals` (absent when none). Only the
+person turns one on: the phone sends `approve_routine` `{ "squad", "id" }` (the daemon saves it
+as `save_routine` would) or `decline_routine` `{ "squad", "id" }`. Every screen then gets
+`routine_proposal_closed` `{ "squad", "id", "approved" }`, and `routines_changed` when it was
+saved. A push for a proposal carries the event with `reason` and the prompt cut to 800
+characters, category `routine`, collapse key `routine-<id>`; its title says who proposes, not
+the routine. The snapshot's `idle_wake_hours` is how long an empty board waits before the PM is
+woken (0: never; absent from an older daemon); it changes with `idle_wake_changed` `{ "squad",
+"hours" }`. Setting it is the terminal's and the desktop's, not a device's.
+
 ### Accepting in words, confirmed on a card
 
 When the person says in words that they accept, merge or send back handed-in work ("전부 수락",
@@ -641,7 +656,7 @@ The daemon follows a device like one more screen, with less reach than the termi
 - **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` and
   `list_images` (a member's pictures, of a squad it follows: see A member's pictures), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
-  `decline_team_change`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
+  `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
   `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`, `focus`, `refresh`,
   `design`, `engines` (where the engines stand; never signing one in or out).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the

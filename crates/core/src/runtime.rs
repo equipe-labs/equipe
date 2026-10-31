@@ -70,6 +70,7 @@ mod accept;
 mod secrets;
 mod design_qa;
 mod team;
+mod heartbeat;
 mod tickets;
 mod compact;
 
@@ -489,6 +490,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_models: None,
         questions: HashMap::new(),
         team_changes: HashMap::new(),
+        routine_proposals: HashMap::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
@@ -879,6 +881,8 @@ struct Runtime {
     questions: HashMap<String, Vec<equipe_protocol::decide::QuestionSet>>,
     /// Changes to the team the PM proposed, waiting for the person, by squad (`team`).
     team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
+    /// Routines the PM proposed, waiting for the person, by squad (`heartbeat`).
+    routine_proposals: HashMap<String, Vec<equipe_protocol::routines::RoutineProposal>>,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
     accepts: HashMap<String, Vec<equipe_protocol::accept::AcceptProposal>>,
     /// Cards the person said no to lately, by squad: not put up again soon.
@@ -1174,6 +1178,8 @@ impl Runtime {
                 self.tidy_check();
                 pulse.step("minute tick: routines");
                 self.run_due_routines().await;
+                pulse.step("minute tick: idle boards");
+                self.wake_idle_pms().await;
                 pulse.step("minute tick: engines");
                 self.engines_tick().await;
                 // Work that reached main outside equipe: every ten minutes is soon
@@ -1417,12 +1423,14 @@ impl Runtime {
             Command::Submit { session, text, about } => {
                 self.said_about = about;
                 let session = self.route(session);
+                self.note_person_active(session);
                 self.submit(session, text).await;
                 self.said_about = None;
             }
             Command::SubmitLater { session, text, about } => {
                 self.said_about = about;
                 let session = self.route(session);
+                self.note_person_active(session);
                 match self.sessions.get(&session) {
                     Some(s) if s.is_working() => self.leave_memo(session, text),
                     _ => self.submit(session, text).await,
@@ -1574,6 +1582,9 @@ impl Runtime {
                 let now = now_secs();
                 self.run_routine(&squad, id, now).await;
             }
+            Command::ApproveRoutine { squad, id } => self.approve_routine(&squad, id),
+            Command::DeclineRoutine { squad, id } => self.decline_routine(&squad, id),
+            Command::SetIdleWake { squad, hours } => self.set_idle_wake(&squad, hours).await,
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -5660,6 +5671,7 @@ it back there once they have done it.{again} End your turn now with a short line
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
+            crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
@@ -5796,8 +5808,12 @@ it back there once they have done it.{again} End your turn now with a short line
         let accepts = self.accepts(squad).clone();
         let hq = self.hq(squad);
         let routines = self.routines(squad);
+        let routine_proposals = self.routine_proposals(squad).clone();
+        let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
         Snapshot {
             routines,
+            routine_proposals,
+            idle_wake_hours,
             team_changes,
             accepts,
             squad: squad.to_owned(),

@@ -665,6 +665,35 @@ impl Journal {
         self.set_meta("routines", &serde_json::to_string(routines).unwrap_or_else(|_| "[]".into()))
     }
 
+    /// Hours an empty board waits before the PM is woken; 0: never.
+    pub fn idle_wake_hours(&self) -> u32 {
+        self.meta("idle_wake_hours").and_then(|h| h.parse().ok()).unwrap_or(crate::protocol::routines::IDLE_WAKE_HOURS)
+    }
+
+    pub fn set_idle_wake_hours(&self, hours: u32) -> Result<()> {
+        self.set_meta("idle_wake_hours", &hours.to_string())
+    }
+
+    /// When the person last did something in the squad — made it, wrote to a
+    /// member — in unix seconds; the board's own times count besides.
+    /// `None`: not since this was kept.
+    pub fn active_at(&self) -> Option<u64> {
+        self.meta("active_at").and_then(|at| at.parse().ok())
+    }
+
+    pub fn set_active_at(&self, at: u64) -> Result<()> {
+        self.set_meta("active_at", &at.to_string())
+    }
+
+    /// When the PM was last woken over an empty board, in unix seconds.
+    pub fn idle_woken_at(&self) -> Option<u64> {
+        self.meta("idle_woken_at").and_then(|at| at.parse().ok())
+    }
+
+    pub fn set_idle_woken_at(&self, at: u64) -> Result<()> {
+        self.set_meta("idle_woken_at", &at.to_string())
+    }
+
     pub fn set_hq(&self, path: Option<&Path>) -> Result<()> {
         self.set_meta("hq", &path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
     }
