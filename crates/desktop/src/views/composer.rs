@@ -2468,7 +2468,8 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
     // A picture: its thumbnail, 72 points, with its number.
     if item.kind == Kind::Image && !failed {
         let face = match &item.thumb {
-            Some(thumb) => img(thumb.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element(),
+            // Rounded itself, inside the border: a parent's overflow clips square, not to its corners.
+            Some(thumb) => img(thumb.clone()).size_full().object_fit(ObjectFit::Cover).rounded(px(R_LG - 1.)).into_any_element(),
             None => div().size_full().flex().items_center().justify_center().text_size(px(11.)).text_color(p.muted).child(t!("composer.preparing")).into_any_element(),
         };
         let number = shell.composer.strip.picture_number(id).unwrap_or(n + 1);
@@ -2509,7 +2510,7 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
             .rounded(px(R_SM))
             .overflow_hidden()
             .bg(p.wash)
-            .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Cover))
+            .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Cover).rounded(px(R_SM)))
             .when(item.kind == Kind::Video, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().child(icon(Icon::Play, 12., rgb(0xFFFFFF)))))
             .into_any_element(),
         _ => div()
