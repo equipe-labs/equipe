@@ -1994,6 +1994,7 @@ runbooks and reports live there, and work across the projects or on running them
     /// A security engineer joining brings the weekly security check — once:
     /// the person changes or deletes it like any routine, and it stays so.
     fn add_security_check(&mut self, squad: &str) {
+        let lang = crate::i18n::Lang::resolve_in(&self.config.home, crate::i18n::Front::App);
         let Some(journal) = self.journal(squad) else { return };
         if journal.security_check_added() {
             return;
@@ -2004,7 +2005,6 @@ runbooks and reports live there, and work across the projects or on running them
             return;
         }
         let id = all.iter().map(|r| r.id).max().unwrap_or(0) + 1;
-        let lang = crate::i18n::Lang::resolve_in(&self.config.home, crate::i18n::Front::App);
         let mut check = crate::heartbeat::weekly_security_check(lang, id);
         check.next_run = Some(routines::next_run(check.when, now_secs(), &routines::Local));
         all.push(check);
