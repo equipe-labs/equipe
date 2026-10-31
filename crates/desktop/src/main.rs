@@ -37,6 +37,7 @@ mod pane;
 mod portfolio;
 mod queue;
 mod quote;
+mod setup;
 mod sheet;
 mod sidecar;
 mod ssh;
@@ -250,6 +251,8 @@ pub struct Shell {
     pub pairing: pair::Pairing,
     /// The AI platforms, as settings shows them.
     pub engines: engines::Engines,
+    /// The first run's engine and squad steps, while no squad exists.
+    pub setup: setup::Setup,
     /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
     pub forgetting: Option<String>,
     /// "디스크": the banner while it runs short, and the panel (`disk.rs`).
@@ -367,6 +370,7 @@ impl Shell {
             ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
             engines: engines::Engines::default(),
+            setup: setup::Setup::default(),
             forgetting: None,
             disk: Default::default(),
             zoom_hud: None,
@@ -1350,6 +1354,7 @@ impl Shell {
             Conn::Down { had_snapshot: false, .. } | Conn::Connecting if remote && self.connecting_shown && (self.connecting.retrying || self.model.conn == Conn::Connecting) => {
                 v_flex().flex_1().child(self.drag_strip()).child(views::connect::connecting_screen(self, cx)).into_any_element()
             }
+            Conn::Down { reason: failure::Failure::NoSquads, had_snapshot: false, .. } if !remote => v_flex().flex_1().child(self.drag_strip()).child(views::setup::screen(self, cx)).into_any_element(),
             Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide_at(&self.endpoint, self.connecting.door.as_deref()), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()
@@ -1639,6 +1644,10 @@ impl Render for Shell {
         if let Some(later) = self.composer.send_when_ready.filter(|_| !self.composer.strip.busy()) {
             self.composer.send_when_ready = None;
             cx.defer_in(window, move |this, window, cx| this.send_as(later, window, cx));
+        }
+        if !self.setup.probed && self.needs_setup() {
+            self.setup.probed = true;
+            cx.defer_in(window, |this, _, cx| this.setup_probe(cx));
         }
         if self.board.words != crate::i18n::lang() {
             self.relocalize_inputs(window, cx);

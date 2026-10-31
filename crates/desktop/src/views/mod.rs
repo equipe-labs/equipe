@@ -20,6 +20,7 @@ pub mod disk;
 pub mod doc;
 pub mod elsewhere;
 pub mod engines;
+pub mod setup;
 pub mod switching;
 pub mod header;
 pub mod icons;

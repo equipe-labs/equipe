@@ -230,6 +230,20 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
             (Some(rpc::VERSION), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, rpc::Version { version: version.clone(), protocol: rpc::PROTOCOL }));
             }
+            // Whether anonymous usage events go out, and the person's yes or no to them.
+            (Some(rpc::TELEMETRY), Some(id)) => {
+                let _ = out_tx.send(Message::response(id, crate::telemetry::status(&home)));
+            }
+            (Some(rpc::TELEMETRY_SET), Some(id)) => {
+                let Some(ask) = message.params_as::<equipe_protocol::telemetry::SetTelemetry>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "telemetry_set needs { on }"));
+                    continue;
+                };
+                let _ = out_tx.send(match crate::telemetry::set(&home, ask.on) {
+                    Ok(status) => Message::response(id, status),
+                    Err(why) => Message::failure(id, -32000, why),
+                });
+            }
             (Some(rpc::SQUADS), Some(id)) => {
                 let home = home.clone();
                 let squads = tokio::task::spawn_blocking(move || squads(&home)).await.unwrap_or_default();
