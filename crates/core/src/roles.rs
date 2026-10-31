@@ -38,6 +38,10 @@ pub const PM: &str = "pm";
 /// on a schedule, and reports; it never changes a project's files.
 pub const SECURITY: &str = "security";
 
+/// The marketer: positioning, copy, content and launches; drafts everything
+/// and publishes nothing without the person's yes.
+pub const MARKETING: &str = "marketing";
+
 /// What the person's answers to a `block_on_person` mean, item by item — told
 /// to a member whose ticket comes back with them.
 pub const ANSWERS_GUIDE: &str = "The person's answers come item by item. Words are the answer; \"done ✓\": they \
@@ -50,8 +54,15 @@ it yourself and say what you chose. \"the person doesn't know\": find it out ano
 note under an item and their own words at the end (\"From the person:\") come first: follow them.";
 
 /// The roles a new squad may start with, besides the PM, and which are ticked.
-pub const STARTERS: [(&str, bool); 6] =
-    [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("security", false), ("data", false)];
+pub const STARTERS: [(&str, bool); 7] = [
+    ("designer", true),
+    ("frontend", true),
+    ("backend", false),
+    ("qa", false),
+    ("security", false),
+    ("marketing", false),
+    ("data", false),
+];
 
 /// The team a squad started from a screen begins with: the PM, then the
 /// starters ticked by default.
@@ -59,7 +70,7 @@ pub fn starting_team() -> Vec<String> {
     std::iter::once(PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
 }
 
-pub const ROLES: [Role; 8] = [
+pub const ROLES: [Role; 9] = [
     Role {
         id: PM,
         title: "product manager (PM)",
@@ -248,6 +259,37 @@ Never turn a protection off, change a setting, or send anything found to anyone 
         tier: Tier::Top,
     },
     Role {
+        id: MARKETING,
+        title: "product marketer",
+        summary: "positioning, copy, content and launches — drafts, published only on your yes",
+        duties: "You are the squad's product marketer: you help the right people find the product and understand \
+why it is for them. Everything you make is a draft until the person says yes to that exact text.\n\
+What you do:\n\
+- Positioning and message: who it is for, the problem it solves for them, why this over the alternatives, in their \
+words, not the team's. Keep it on one page, `marketing/message.md` in the squad's folder, and work from it.\n\
+- Copy: the landing page, app store listings, release notes, onboarding and empty states, emails — in the voice \
+`brand.md` sets (one register, its words, its numbers and dates), and in each audience's language, not translated \
+word for word.\n\
+- Content: blog posts, posts for each social network in its own form (X, LinkedIn, Threads, …), short video \
+scripts, newsletters, a changelog people want to read — each with who it is for and what it should make them do.\n\
+- Launches: a plan for each — where (Product Hunt, Hacker News, communities, the press), when, who says what, the \
+posts and replies drafted, the assets it needs (ask the designer for them as a ticket), and how you will know it worked.\n\
+- Research: competitors and the market from public sources — their pages, pricing, changelogs, reviews, what people \
+say in public threads — each finding with its link and date.\n\
+- Numbers: read the squad's signals (analytics, app store, sign-ups) and say what worked, what didn't and what to try \
+next, with how sure you are; propose experiments as small as they can be.\n\
+Where it goes: drafts and plans in the squad's folder under `marketing/`, by date. On a project you may edit content \
+and copy on your own branch (posts, pages' words, release notes); a change to how a page works or looks is a ticket \
+for the frontend engineer or the designer, proposed through the PM.\n\
+Your limits: never publish, post, send, schedule or reply anywhere public or to anyone outside the squad without the \
+person's yes on that exact text — ask with the drafts in hand. Never spend money (ads, paid tools, boosts) or sign \
+up for anything without their yes. Never write fake reviews or testimonials, pose as a customer, astroturf, or invent \
+numbers: a claim you can't back is marked unconfirmed or left out. Respect what others own — no copied text or \
+images without a licence that allows it.",
+        edits: true,
+        tier: Tier::Upper,
+    },
+    Role {
         id: "data",
         title: "data analyst",
         summary: "defines metrics and answers questions with numbers",
@@ -286,7 +328,7 @@ pub fn role_or_custom(id: &str) -> &'static Role {
 /// Codex reviews what Claude's engineers wrote — the other engine from the
 /// author's. A line here changes a default; the person's own choice of engine
 /// and usage-based switching come on top.
-pub const DEFAULT_ENGINES: [(&str, Engine); 8] = [
+pub const DEFAULT_ENGINES: [(&str, Engine); 9] = [
     (PM, Engine::Claude),
     ("designer", Engine::Claude),
     ("frontend", Engine::Claude),
@@ -294,12 +336,13 @@ pub const DEFAULT_ENGINES: [(&str, Engine); 8] = [
     ("mobile", Engine::Claude),
     ("qa", Engine::Codex),
     (SECURITY, Engine::Codex),
+    (MARKETING, Engine::Claude),
     ("data", Engine::Codex),
 ];
 
 /// The Claude Code model each built-in role is recommended: Opus for judgment,
 /// design, hard building and review; Sonnet for everyday building and numbers.
-pub const CLAUDE_MODELS: [(&str, &str); 8] = [
+pub const CLAUDE_MODELS: [(&str, &str); 9] = [
     (PM, "opus"),
     ("designer", "opus"),
     ("frontend", "sonnet"),
@@ -307,6 +350,7 @@ pub const CLAUDE_MODELS: [(&str, &str); 8] = [
     ("mobile", "opus"),
     ("qa", "opus"),
     (SECURITY, "opus"),
+    (MARKETING, "opus"),
     ("data", "sonnet"),
 ];
 

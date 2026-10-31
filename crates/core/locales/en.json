@@ -368,5 +368,7 @@
   "news.signal_recovered": "Signal passing again · {name} ({project})",
   "news.signal_changed": "Signal moved {pct} · {name} ({project}) · {from} → {to}",
   "routine.weekly_security.title": "Weekly security check",
-  "routine.weekly_security.prompt": "Weekly security check. Give the review to the security member as a ticket.\n1. Start with the code and the dependencies that changed since the last check.\n2. Check known vulnerabilities, leaked secrets, settings exposed to the outside, and this machine's basic security settings.\n3. List what you find by severity and propose the fixes as tickets for the engineers. Tell me at once about anything severe.\n4. Keep the report in the squad's folder under security/, by date."
+  "routine.weekly_security.prompt": "Weekly security check. Give the review to the security member as a ticket.\n1. Start with the code and the dependencies that changed since the last check.\n2. Check known vulnerabilities, leaked secrets, settings exposed to the outside, and this machine's basic security settings.\n3. List what you find by severity and propose the fixes as tickets for the engineers. Tell me at once about anything severe.\n4. Keep the report in the squad's folder under security/, by date.",
+  "routine.weekly_marketing.title": "Weekly marketing check",
+  "routine.weekly_marketing.prompt": "Weekly marketing check. Give it to the marketing member.\n1. Look at last week's content and numbers (visits, sign-ups, responses) and tell me what worked.\n2. Propose 1–3 pieces of content or experiments for this week, with drafts.\n3. Anything public stays a draft until I say yes to it.\n4. Keep the results in the squad's folder under marketing/, by date."
 }

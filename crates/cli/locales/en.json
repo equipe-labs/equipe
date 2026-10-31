@@ -1077,5 +1077,6 @@
   "review.verdict.risky": "Risky",
   "review.what_base": "the changes since {base}",
   "review.what_worktree": "your changes against HEAD",
-  "role.security": "checks that the code, the dependencies and this machine stay safe"
+  "role.security": "checks that the code, the dependencies and this machine stay safe",
+  "role.marketing": "positioning, copy, content and launches — drafts, published only on your yes"
 }

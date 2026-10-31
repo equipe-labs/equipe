@@ -249,3 +249,19 @@ async fn a_security_engineer_joining_brings_a_weekly_security_check_once() {
     assert_eq!(handle.snapshot("acme").await.routines.len(), 1);
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_marketer_joining_brings_a_weekly_marketing_check_beside_securitys() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&busy_claude(), &home));
+    start(&handle, &mut events, 2, "marketing", &project).await;
+    start(&handle, &mut events, 3, "security", &project).await;
+    let routines = handle.snapshot("acme").await.routines;
+    assert_eq!(routines.len(), 3, "{routines:?}");
+    assert_eq!((routines[1].id, routines[1].when, routines[1].on), (2, Schedule::Weekly { weekday: 1, hour: 11, minute: 0 }, true));
+    assert_eq!(routines[2].when, Schedule::Weekly { weekday: 4, hour: 10, minute: 0 }, "security's, its own");
+    // Another marketer adds nothing more.
+    start(&handle, &mut events, 4, "marketing", &project).await;
+    assert_eq!(handle.snapshot("acme").await.routines.len(), 3);
+    handle.shutdown().await;
+}

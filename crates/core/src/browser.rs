@@ -915,6 +915,7 @@ pub fn member_color(name: &str) -> &'static str {
         "data" => 5,
         "mobile" => 6,
         "security" => 7,
+        "marketing" => 1,
         _ => 6 + role.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as usize % 2,
     };
     PALETTE[hue]

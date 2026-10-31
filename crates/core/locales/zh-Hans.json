@@ -364,5 +364,7 @@
   "news.signal_recovered": "信号恢复正常 · {name}（{project}）",
   "news.signal_changed": "信号变化 {pct} · {name}（{project}）· {from} → {to}",
   "routine.weekly_security.title": "每周安全检查",
-  "routine.weekly_security.prompt": "每周安全检查。请把检查工单交给 security 成员。\n1. 先看上次检查以来改动的代码和新增的依赖。\n2. 检查已知漏洞、泄露的密钥、对外暴露的设置，以及这台机器的基本安全设置。\n3. 按严重程度整理发现的问题，并把修复作为工程师的工单提出。严重的问题请立即告诉我。\n4. 报告按日期保存在小组文件夹的 security/ 下。"
+  "routine.weekly_security.prompt": "每周安全检查。请把检查工单交给 security 成员。\n1. 先看上次检查以来改动的代码和新增的依赖。\n2. 检查已知漏洞、泄露的密钥、对外暴露的设置，以及这台机器的基本安全设置。\n3. 按严重程度整理发现的问题，并把修复作为工程师的工单提出。严重的问题请立即告诉我。\n4. 报告按日期保存在小组文件夹的 security/ 下。",
+  "routine.weekly_marketing.title": "每周营销检查",
+  "routine.weekly_marketing.prompt": "每周营销检查。请交给 marketing 成员。\n1. 看看上周发布的内容和数据（访问、注册、反馈），告诉我哪些有效。\n2. 提出本周要做的 1–3 个内容或实验，并附上草稿。\n3. 要公开的内容只准备草稿，经我同意后再发布。\n4. 结果按日期保存在小组文件夹的 marketing/ 下。"
 }

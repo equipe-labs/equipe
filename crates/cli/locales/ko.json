@@ -1054,5 +1054,6 @@
   "review.verdict.risky": "위험해요",
   "review.what_base": "{base} 이후의 변경",
   "review.what_worktree": "HEAD 이후의 변경",
-  "role.security": "코드, 의존성, 이 기기가 안전한지 정기적으로 점검해요"
+  "role.security": "코드, 의존성, 이 기기가 안전한지 정기적으로 점검해요",
+  "role.marketing": "포지셔닝, 카피, 콘텐츠, 출시를 맡아요. 초안만 쓰고, 공개는 내가 승인할 때만 해요"
 }
