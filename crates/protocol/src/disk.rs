@@ -203,6 +203,9 @@ pub struct DiskCleaned {
     pub skipped: Vec<(String, DiskWhy)>,
     /// The disk after it.
     pub status: DiskStatus,
+    /// equipe gave it back on its own: only what it was sure nobody needs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 /// `bytes` as people read it: `4.2 GB`, `880 MB`, `12 KB` (decimal, as macOS says).

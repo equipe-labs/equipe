@@ -1651,6 +1651,7 @@ impl Runtime {
             Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
             Command::DiskScan => self.disk_report(None, true),
             Command::DiskClean { ids } => self.disk_clean(ids, None),
+            Command::DiskRun { id } => self.disk_run(id),
             Command::Engines => {
                 self.refresh_nemotron();
                 self.look_at_engines();

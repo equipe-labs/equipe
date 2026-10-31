@@ -182,8 +182,8 @@ pub fn status(lines: &[ToolLine]) -> Status {
         Status::Running
     } else if lines.iter().any(|l| l.status == Status::Failed) {
         Status::Failed
-    } else if lines.iter().all(|l| l.status == Status::Done) {
-        Status::Done
+    } else if lines.iter().all(|l| matches!(l.status, Status::Done | Status::Declined)) {
+        if lines.iter().any(|l| l.status == Status::Declined) { Status::Declined } else { Status::Done }
     } else {
         Status::Unknown
     }

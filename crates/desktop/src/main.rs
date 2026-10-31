@@ -25,6 +25,7 @@ mod daemon;
 mod disk;
 mod doc;
 mod design;
+mod dictation;
 mod failure;
 mod help;
 mod install;
@@ -335,7 +336,7 @@ impl Shell {
             squads: Vec::new(),
             screen: Screen::Chat,
             chat: Chat::new(cx),
-            composer: Composer::new(window, cx),
+            composer: Composer::new(window, cx, dictation::choose(remembered.dictation.as_deref().and_then(equipe_core::i18n::Lang::parse), crate::i18n::lang(), &equipe_core::i18n::preferred(), dictation::heard_here)),
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),
@@ -809,6 +810,10 @@ impl Shell {
                         // The disk: the banner's and the panel's, never the model's.
                         if let daemon::Update::Event(event @ (Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. })) = &update {
                             changed |= this.disk.on_event(event);
+                            // Given back on equipe's own: said in a line, once.
+                            if let Some(freed) = this.disk.take_auto() {
+                                this.composer.flash = Some(t!("disk.auto_cleaned", size = equipe_core::disk::size(freed)));
+                            }
                             continue;
                         }
                         // The engines: settings' AI platforms, never the model's.

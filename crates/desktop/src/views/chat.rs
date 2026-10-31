@@ -1207,6 +1207,7 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         Status::Running if !cx.reduce_motion() => Some(motion::spinner(12., p.muted)),
         Status::Running => Some(div().child("◌").into_any_element()),
         Status::Failed => Some(icon(Icon::Alert, 13., t.danger).into_any_element()),
+        Status::Declined => Some(icon(Icon::Info, 13., p.muted).into_any_element()),
         _ => None,
     };
     let title: AnyElement = match activity::title(lines) {
@@ -1309,6 +1310,7 @@ fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window:
         .when(!more, |h| h.cursor_default())
         .children(running.then(|| motion::spinner(11., p.muted)))
         .children(failed.then(|| icon(Icon::Alert, 12., t.danger)))
+        .children((line.status == Status::Declined).then(|| icon(Icon::Info, 12., p.muted)))
         .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::line_phrase(line, running)))
         .child(linked(rows, ("call-object", key << 8 | at as u64), &line.text(), p.text2, true))
         .children(diff_stat(line).map(|(a, r)| stat_chip(rows, a, r)))
@@ -1329,6 +1331,10 @@ fn call_body(rows: &Rows, key: u64, at: u32, line: &ToolLine, failed: bool, _win
     let id = key << 8 | at as u64;
     let mut parts: Vec<AnyElement> = Vec::new();
     let command = line.verb == "run";
+    // The squad's rules said no: said plainly first, then what the member was told.
+    if line.status == Status::Declined {
+        parts.push(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(t!("chat.declined_note")).into_any_element());
+    }
     // Under its description, a command shows whole however short.
     if let Some(full) = line.full.as_ref().filter(|f| line.label.is_some() || f.chars().count() > 80 || f.contains('\n')) {
         if command || line.output.is_some() {

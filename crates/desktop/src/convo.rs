@@ -453,6 +453,9 @@ pub enum Status {
     Running,
     Done,
     Failed,
+    /// The squad's rules said no (a ticket only the person may change now):
+    /// told to the member, who takes another way — not a failure.
+    Declined,
     /// Nothing said (an older daemon, or a turn that ended without).
     Unknown,
 }
@@ -650,7 +653,12 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                         let first = shown.lines().next().unwrap_or_default().to_owned();
                         let mut line = ToolLine::new(verb, if shown.is_empty() { Vec::new() } else { vec![first.clone()] }, edits);
                         if let Some(o) = outcome {
-                            line.status = if o.ok { Status::Done } else { Status::Failed };
+                            line.status = match o.ok {
+                                true => Status::Done,
+                                // equipe's own board tools say no by its rules, not by breaking.
+                                false if tool.starts_with("mcp__equipe__") => Status::Declined,
+                                false => Status::Failed,
+                            };
                             line.ms = o.ms;
                             line.exit = o.exit;
                             line.output = (!o.output.is_empty()).then(|| (o.output.clone(), o.skipped));
@@ -883,6 +891,22 @@ mod tests {
         assert_eq!(lines[0].verb, "read");
         assert_eq!(lines[0].targets, ["a.rs", "b.rs"], "a repeat adds nothing");
         assert!(lines[1].edits && lines[2].edits, "each edit is its own step");
+    }
+
+    #[test]
+    fn a_no_by_the_squads_rules_is_not_a_failure() {
+        let mut c = convo(false);
+        let said_no = Event::ToolResult {
+            session: 1,
+            tool: "mcp__equipe__update_ticket".into(),
+            target: Some("T-191".into()),
+            outcome: ToolOutcome { ok: false, output: "T-191 is review — from here it's the person's to change.".into(), ..Default::default() },
+        };
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, tool("mcp__equipe__update_ticket", "T-191"), said_no]);
+        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
+        assert_eq!(lines[0].status, Status::Declined, "not red: the member is told and takes another way");
+        assert_eq!(crate::activity::status(lines), Status::Declined);
+        assert_eq!(crate::activity::groups(lines.clone()).len(), 1, "it doesn't stand apart, open, as a failure does");
     }
 
     #[test]

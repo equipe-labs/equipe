@@ -848,6 +848,11 @@ pub enum Command {
     /// `id`s): only the ones it may remove, looked at again first. Answered by
     /// [`Event::DiskCleaned`], then a fresh [`Event::DiskReport`].
     DiskClean { ids: Vec<String> },
+    /// Clear one item of the daemon's last look that isn't equipe's (a cache
+    /// of the Mac's, a project's build output) with the command that look
+    /// lists for it — never a command the screen sends — as the person said
+    /// yes to. Answered by [`Event::DiskCleaned`], then a fresh report.
+    DiskRun { id: String },
     /// Where each engine stands on the daemon's machine: answered, to every
     /// screen, by [`Event::Engines`].
     Engines,

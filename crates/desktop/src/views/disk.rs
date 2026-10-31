@@ -104,6 +104,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let body = match &shell.disk.stage {
         Stage::List => list(shell, cx),
         Stage::Confirm => confirm(shell, cx),
+        Stage::ConfirmRun(id) => confirm_run(shell, id, cx),
         Stage::Cleaning => {
             let mark = div().size(px(56.)).flex().items_center().justify_center().child(Spinner::new().with_size(px(22.)).color(Hsla::from(p.muted))).into_any_element();
             centered(p, "disk-cleaning", mark, t!("disk.cleaning").into(), None, None)
@@ -258,7 +259,12 @@ fn fix_row(shell: &Shell, n: usize, fix: &Fix, cx: &mut Context<Shell>) -> AnyEl
         FixKind::Yourself => {
             let it = fix.ids.first().and_then(item);
             let kind = it.map_or("", |i| label::disk_kind(lang, i.kind));
-            (Icon::Info, t!("disk.fix_yourself", name = it.map_or(String::new(), |i| i.label.clone())), t!("disk.fix_yourself_desc", kind = kind))
+            let name = it.map_or(String::new(), |i| i.label.clone());
+            // With a command: equipe runs it on the person's yes; without, theirs to clear.
+            match it.and_then(|i| i.command.as_ref()) {
+                Some(_) => (Icon::Info, t!("disk.fix_run", name = name), t!("disk.fix_run_desc", kind = kind)),
+                None => (Icon::Info, t!("disk.fix_yourself", name = name), t!("disk.fix_yourself_desc", kind = kind)),
+            }
         }
     };
     let button = match fix.kind {
@@ -302,13 +308,15 @@ fn yourself_button(shell: &Shell, id: (&'static str, usize), item: &DiskItem, cx
     let p = shell.palette;
     let copied = |text: &str| shell.disk.copied.as_ref().is_some_and(|(c, at)| c == text && at.elapsed() < COPIED_FOR);
     match (&item.command, shell.endpoint.is_remote()) {
+        // Its command, run by the daemon once the person says yes on the sheet.
         (Some(command), _) => {
-            let done = copied(command);
-            let command = command.clone();
-            ui::button(p, id, Kind::Secondary, if done { t!("disk.copied") } else { t!("disk.copy") })
-                .icon(if done { Icon::Check } else { Icon::Copy })
+            let item_id = item.id.clone();
+            ui::button(p, id, Kind::Secondary, t!("disk.run"))
                 .tip(command.clone(), None)
-                .on_click(cx.listener(move |this, _, _, cx| this.copy_disk(&command, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.disk.ask_run(&item_id);
+                    cx.notify();
+                }))
                 .into_any_element()
         }
         (None, false) => {
@@ -398,6 +406,61 @@ fn confirm(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                     cx.notify();
                 })))
                 .child(ui::button(p, "disk-confirm-yes", Kind::Danger, t!("disk.confirm_yes", size = room::size(total))).field().on_click(cx.listener(|this, _, _, cx| this.confirm_disk(cx)))),
+        )
+        .into_any_element()
+}
+
+/// "Run this?" for one that isn't equipe's: what it is, its command, its size.
+fn confirm_run(shell: &Shell, id: &str, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let lang = crate::i18n::lang();
+    let Some(item) = shell.disk.report.as_ref().and_then(|r| r.items.iter().find(|i| i.id == id)) else { return div().into_any_element() };
+    let command = item.command.clone().unwrap_or_default();
+    let done = shell.disk.copied.as_ref().is_some_and(|(c, at)| *c == command && at.elapsed() < COPIED_FOR);
+    let copy = {
+        let command = command.clone();
+        ui::icon_button(p, "disk-run-copy", if done { Icon::Check } else { Icon::Copy }, if done { t!("disk.copied").to_owned() } else { t!("disk.copy").to_owned() }, None)
+            .on_click(cx.listener(move |this, _, _, cx| this.copy_disk(&command, cx)))
+    };
+    v_flex()
+        .gap_3()
+        .child(div().text_size(px(16.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).child(t!("disk.run_title", name = item.label.clone())))
+        .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(t!("disk.run_text", kind = label::disk_kind(lang, item.kind))))
+        .child(
+            h_flex()
+                .px_3()
+                .py_2()
+                .gap_2()
+                .items_center()
+                .rounded(px(R_LG))
+                .border_1()
+                .border_color(p.hair)
+                .bg(p.code_bg)
+                .child(div().flex_1().min_w_0().font_family(MONO).text_size(px(META)).text_color(p.text).child(command.clone()))
+                .child(copy),
+        )
+        .child(
+            h_flex()
+                .px_3()
+                .items_center()
+                .child(div().flex_1().text_size(px(SMALL)).text_color(p.muted).child(t!("disk.total")))
+                .child(div().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(size(item.bytes, item.partial))),
+        )
+        .child(
+            h_flex()
+                .pt_1()
+                .gap_2()
+                .justify_end()
+                .child(ui::button(p, "disk-run-no", Kind::Secondary, t!("disk.cancel")).field().on_click(cx.listener(|this, _, _, cx| {
+                    this.disk.back();
+                    cx.notify();
+                })))
+                .child(ui::button(p, "disk-run-yes", Kind::Danger, t!("disk.run_yes")).field().on_click(cx.listener(|this, _, _, cx| {
+                    for command in this.disk.confirm_run() {
+                        this.send_command(command);
+                    }
+                    cx.notify();
+                }))),
         )
         .into_any_element()
 }

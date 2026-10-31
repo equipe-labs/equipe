@@ -2144,5 +2144,22 @@
   "welcome.start": "开始",
   "welcome.starting": "正在创建…",
   "welcome.next": "下一步连接 AI：Claude Code、Codex 或 Nebius 密钥。",
-  "welcome.made": "已创建小队 {name}"
+  "welcome.made": "已创建小队 {name}",
+  "disk.run": "清理…",
+  "disk.run_title": "清理 {name}？",
+  "disk.run_text": "{kind} 不属于 equipe，你同意后 equipe 会在这台 Mac 上运行下面的命令。删除后无法恢复。",
+  "disk.run_yes": "运行",
+  "disk.fix_run": "清理 {name}",
+  "disk.fix_run_desc": "{kind} · 你同意后由 equipe 清理",
+  "disk.auto_cleaned": "已自动清理 {size}：已完成工作的构建产物等",
+  "chat.declined_note": "这不是错误：按小队规则成员不能这样做，所以 equipe 拒绝了，成员会换个方式。",
+  "secrets.open": "填写",
+  "secrets.folded.other": "请求填写 {count} 个值",
+  "settings.dictation": "语音输入语言",
+  "settings.dictation_desc": "对着麦克风说的语言，可与应用语言分开设置。声音不会离开这台 Mac。",
+  "settings.dictation_missing_desc": "这台 Mac 没有 {lang} 听写模型。请在“添加语言”中获取，或选择其他语言。",
+  "settings.dictation_auto": "自动（{lang}）",
+  "settings.dictation_not_here": "本机没有",
+  "settings.dictation_add": "添加语言",
+  "composer.dictation_no_model": "这台 Mac 没有 {lang} 听写模型。请在 设置 › 通用 › 语音输入语言 中添加或更换。"
 }

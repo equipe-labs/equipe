@@ -159,6 +159,17 @@ fn system_languages() -> Vec<String> {
     sys_locale::get_locales().collect()
 }
 
+/// The system's preferred languages that equipe speaks, most preferred first.
+pub fn preferred() -> Vec<Lang> {
+    let mut langs: Vec<Lang> = Vec::new();
+    for lang in system_languages().iter().filter_map(|tag| Lang::parse(tag)) {
+        if !langs.contains(&lang) {
+            langs.push(lang);
+        }
+    }
+    langs
+}
+
 /// A locale value that names no language: `C`, `POSIX`, `C.UTF-8`.
 fn names_no_language(value: &str) -> bool {
     matches!(value.split(['.', '@']).next().unwrap_or_default(), "" | "C" | "POSIX")
