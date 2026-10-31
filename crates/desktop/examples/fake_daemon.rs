@@ -52,6 +52,8 @@
 //!
 //! `FAKE_HISTORY=<n>`: the PM's history is a long day's, `n` lines of it
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
+//! `FAKE_READING=1`: it ends on a long Korean reply with every kind of text
+//! (`fake_daemon/reading.rs`), to compare how the conversation reads.
 //!
 //! `FAKE_TEAM=1`: the PM proposes one more frontend, for the person to
 //! approve on a card (`fake_daemon/team.rs`; `remove`, `elsewhere`).
@@ -853,6 +855,8 @@ mod browser;
 mod torture;
 #[path = "fake_daemon/history.rs"]
 mod history;
+#[path = "fake_daemon/reading.rs"]
+mod reading;
 
 #[path = "fake_daemon/pictures.rs"]
 mod pictures;
@@ -976,6 +980,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
                             history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None, label: None, background: false });
                             history.push(Entry::Reply { text: ASKLIST.into() });
+                        }
+                        if reading::on() {
+                            history.push(Entry::User { text: reading::ASKED.into() });
+                            history.push(Entry::Reply { text: reading::REPLY.into() });
                         }
                         if pictures::on() {
                             history.push(Entry::Note { text: pictures::NEWS.into() });

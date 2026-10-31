@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Hsla, Rems, StyleRefinement, UnderlineStyle, px, rems};
+use gpui::{HighlightStyle, Hsla, Rems, SharedString, StyleRefinement, UnderlineStyle, px, rems};
 
 use crate::ColorTokens;
 
@@ -29,6 +29,8 @@ pub struct TextViewStyle {
     // which were fixed.
     link_underline: UnderlineStyle,
     list_item_gap: Rems,
+    // equipe: links whose address starts with this draw no underline.
+    plain_links: Option<SharedString>,
     /// The table body background, or the theme surface when `None`. Only
     /// [`Self::on_text_color`] sets it, to let a table on an inverted surface
     /// show that surface.
@@ -54,6 +56,7 @@ impl PartialEq for TextViewStyle {
             && self.table_background == other.table_background
             && self.link_underline == other.link_underline
             && self.list_item_gap == other.list_item_gap
+            && self.plain_links == other.plain_links
             && self.is_dark == other.is_dark
     }
 }
@@ -102,6 +105,7 @@ impl TextViewStyle {
                 ..Default::default()
             },
             list_item_gap: rems(0.),
+            plain_links: None,
             is_dark,
         }
     }
@@ -260,6 +264,21 @@ impl TextViewStyle {
     /// How links are underlined.
     pub fn link_underline(&self) -> UnderlineStyle {
         self.link_underline
+    }
+
+    /// Links whose address starts with `prefix` draw in the link colour
+    /// without an underline.
+    pub fn with_plain_links(mut self, prefix: impl Into<SharedString>) -> Self {
+        self.plain_links = Some(prefix.into());
+        self
+    }
+
+    /// How the link to `url` is underlined: not at all if it is a plain one.
+    pub fn link_underline_for(&self, url: &str) -> Option<UnderlineStyle> {
+        match &self.plain_links {
+            Some(prefix) if url.starts_with(prefix.as_ref()) => None,
+            _ => Some(self.link_underline),
+        }
     }
 
     /// The room between a list's items.
