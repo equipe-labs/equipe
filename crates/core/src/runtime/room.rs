@@ -17,6 +17,9 @@ const TRIM_EVERY: Duration = Duration::from_secs(10 * 60);
 /// With room to spare, what's certain to be unneeded is given back this often
 /// (kept across restarts by a stamp's time, `cache/auto-clean`).
 const AUTO_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// …and not before the daemon has been up this long: a start (an update's
+/// restart, a test's) isn't the moment to walk every worktree.
+const AUTO_AFTER_START: Duration = Duration::from_secs(10 * 60);
 
 /// What the daemon knows of its disk.
 #[derive(Default)]
@@ -35,6 +38,8 @@ pub(super) struct DiskWatch {
     pub cleaning: bool,
     /// When equipe last gave back, on its own, what it was sure of.
     pub auto_cleaned: Option<std::time::Instant>,
+    /// When the disk was first looked at, since the daemon started.
+    pub first_look: Option<std::time::Instant>,
     /// A trim of the build caches under way, and when the last began.
     pub trimming: bool,
     pub trimmed: Option<std::time::Instant>,
@@ -103,7 +108,12 @@ impl Runtime {
     /// when the disk runs short, else every few hours. Off the loop; logged and
     /// told to the screens. The rest waits for the person's yes.
     fn clean_certain_if_due(&mut self) {
-        let every = if self.disk.status.level.is_warning() { TRIM_EVERY } else { AUTO_EVERY };
+        let short = self.disk.status.level.is_warning();
+        let first = *self.disk.first_look.get_or_insert_with(std::time::Instant::now);
+        if !short && first.elapsed() < AUTO_AFTER_START {
+            return;
+        }
+        let every = if short { TRIM_EVERY } else { AUTO_EVERY };
         let stamp = self.config.home.join("cache").join("auto-clean");
         let last = std::fs::metadata(&stamp).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok());
         let due = self.disk.auto_cleaned.is_none_or(|at| at.elapsed() >= every) && last.is_none_or(|ago| ago >= every);
