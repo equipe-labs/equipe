@@ -256,6 +256,8 @@ drives the window through the host-key and password boxes (`chooser`, `connect:<
 `decline`, `retry` too). A Linux machine to try against: any container with `sshd`
 and a stand-in `equipe` that prints the bridge's three lines.
 
+**Sharp snapshots.** `EQUIPE_SNAPSHOT_SCALE=2` (with `--features snapshot`) draws the window and every `shot:` at 2× on any screen, retina or not — the PNG is exactly twice the pixels, no screen-recording permission (the scale is forced in the vendored `gpui-pre-macos`); unset, the screen's own scale.
+
 Later, when the desktop needs them often, the `ssh` side commands can become
 daemon requests like `squads` and `upload` did (a `diff` request first); the
 table is the contract until then.
