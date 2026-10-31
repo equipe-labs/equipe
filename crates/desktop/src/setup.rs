@@ -2,12 +2,13 @@
 //! and the engines (Claude Code, Codex) it needs are not there or not signed
 //! in. Everything the terminal would have done is done from here — the
 //! install, the sign-ins (each opens the person's browser itself), and the
-//! first squad — so nobody has to open a terminal. The rules are here; the
-//! screen is `views/setup.rs`.
+//! first squad (its form is `views/welcome.rs`) — so nobody has to open a
+//! terminal. The rules are here; the screens are `views/setup.rs` (the AI) and
+//! `views/welcome.rs` (the squad).
 //!
 //! No daemon session exists yet (a session needs a squad), so this talks to
 //! the tools directly: `claude auth status`, `codex login status`,
-//! `equipe login codex`, `equipe squad new`.
+//! `equipe login codex`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -37,9 +38,6 @@ pub enum Doing {
     Installing,
     ClaudeLogin,
     CodexLogin,
-    Creating,
-    /// The squad exists; waiting for the connection to pick it up.
-    Joining,
 }
 
 #[derive(Default)]
@@ -56,6 +54,8 @@ pub struct Setup {
     /// The child a sign-in waits on, to cancel it.
     pub pid: Arc<AtomicU32>,
     pub cancelled: bool,
+    /// "Next" pressed with an engine ready: the squad form is up.
+    pub squad_step: bool,
 }
 
 impl Setup {
@@ -138,8 +138,8 @@ fn run(mut command: Command, pid: &AtomicU32) -> Result<(), String> {
     Err(last_words(&said))
 }
 
-/// What `doing` runs. `squad` is the first squad's name.
-pub fn job(doing: Doing, squad: &str, pid: &AtomicU32) -> Result<(), String> {
+/// What `doing` runs.
+pub fn job(doing: Doing, pid: &AtomicU32) -> Result<(), String> {
     let equipe = || crate::install::find_cli(&home(), std::env::var_os("PATH").as_deref()).ok_or_else(|| "equipe".to_owned());
     match doing {
         Doing::Installing => {
@@ -159,21 +159,8 @@ pub fn job(doing: Doing, squad: &str, pid: &AtomicU32) -> Result<(), String> {
             c.args(["login", "codex"]).env_remove("EQUIPE_NO_OPEN");
             run(c, pid)
         }
-        Doing::Creating => {
-            let mut c = Command::new(equipe()?);
-            c.args(["squad", "new", squad]);
-            run(c, pid)
-        }
-        Doing::Idle | Doing::Joining => Ok(()),
+        Doing::Idle => Ok(()),
     }
-}
-
-/// A name for the first squad, from the Mac's user: `Abel Ko` → `abel-ko`;
-/// `my-team` when there is nothing to go on.
-pub fn suggest_squad() -> String {
-    let user = std::env::var("USER").unwrap_or_default();
-    let name = equipe_core::squads::suggest_name(&equipe_providers::credentials::equipe_home(), Path::new(&user));
-    if equipe_core::squads::valid_name(&name) { name } else { "my-team".into() }
 }
 
 #[cfg(test)]
