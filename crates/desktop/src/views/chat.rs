@@ -104,6 +104,8 @@ pub struct Chat {
     remembered: HashMap<Shown, HashSet<(usize, u32)>>,
     /// Tickets opened beside the conversation, the one shown last.
     pub side: Vec<u32>,
+    /// A subagent looked into beside the conversation (`subagent.rs`).
+    pub sub: super::subagent::SubPanel,
     /// An image looked at closer, over the conversation.
     pub lightbox: Option<ImageSource>,
     /// What your messages attached, as far as it is known (`crate::sent`).
@@ -187,6 +189,7 @@ impl Chat {
             opened: Rc::default(),
             remembered: HashMap::new(),
             side: Vec::new(),
+            sub: Default::default(),
             lightbox: None,
             sent: Rc::default(),
             gallery: None,
@@ -515,7 +518,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .child(div().flex_none().child(composer::render(shell, cx))),
         )
         .children(lightbox(shell, cx));
-    h_flex().flex_1().min_h_0().items_stretch().child(main).children(side_panel(shell, cx))
+    // A subagent looked into, else a ticket opened beside the conversation.
+    let beside = super::subagent::panel(shell, cx).or_else(|| side_panel(shell, cx).map(IntoElement::into_any_element));
+    h_flex().flex_1().min_h_0().items_stretch().child(main).children(beside)
 }
 
 /// The cards over the composer — a request, a member's questions, work to
@@ -1994,6 +1999,7 @@ impl Shell {
     /// Open `ticket` beside the conversation.
     pub fn side_open(&mut self, ticket: u32, cx: &mut Context<Self>) {
         self.chat.side.retain(|t| *t != ticket);
+        self.chat.sub.close();
         self.chat.side.push(ticket);
         cx.notify();
     }

@@ -1508,12 +1508,30 @@ pub enum Event {
     /// refused for it — `action` `close`: the screen offers to let it, at
     /// one click (closing the tab), or keep using it.
     BrowserWants { squad: Option<SquadName>, lane: String, page: u64, action: String },
-    /// The member handed `what` to a subagent, which works alongside it.
-    SubagentStarted { session: SessionId, id: String, what: String },
+    /// The member handed `what` to a subagent, which works alongside it;
+    /// `brief`, the whole of what it was asked (an older daemon: empty).
+    SubagentStarted {
+        session: SessionId,
+        id: String,
+        what: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        brief: String,
+    },
     /// A subagent's latest step.
     SubagentStep { session: SessionId, id: String, step: String },
-    /// A subagent handed back what it found.
-    SubagentEnded { session: SessionId, id: String },
+    /// A step of a subagent's, done — a tool use with its outcome — or what
+    /// it said between them: for a screen to look inside it. Never part of the
+    /// member's conversation.
+    SubagentEntry { session: SessionId, id: String, entry: Entry },
+    /// A subagent handed back what it found (`result`), or `failed`.
+    SubagentEnded {
+        session: SessionId,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failed: bool,
+    },
     /// What follows in the conversation is about `project` (`None`: the whole
     /// squad) — a message of the person's sent looking at it, news of its
     /// ticket, or a ticket's work. See [`transcript::scope`].
@@ -1703,6 +1721,7 @@ impl Event {
             | Event::SubagentStarted { session, .. }
             | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
+            | Event::SubagentEntry { session, .. }
             | Event::SubagentEnded { session, .. }
             | Event::TurnEnded { session, .. }
             | Event::BranchLanded { session, .. }
@@ -1944,7 +1963,7 @@ pub struct SessionInfo {
 }
 
 /// A subagent at work for a member, for a screen that attaches mid-turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentInfo {
     /// As its events name it.
     pub id: String,
@@ -1956,6 +1975,12 @@ pub struct SubagentInfo {
     /// How long it had been at it when the snapshot was taken, in seconds.
     #[serde(default)]
     pub secs: u64,
+    /// The whole of what it was asked.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub brief: String,
+    /// Its latest steps and words ([`Event::SubagentEntry`]), oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<Entry>,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -2396,7 +2421,7 @@ mod tests {
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
                 effort: Some("high".into()),
-                subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42 }],
+                subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42, ..Default::default() }],
             }],
             allowed: vec!["Bash(npm install:*)".into()],
             browsers_shown: true,
@@ -2547,7 +2572,7 @@ mod tests {
         let mut info: SessionInfo = serde_json::from_str(old).unwrap();
         assert!(info.subagents.is_empty(), "an older daemon's session has none");
         assert!(serde_json::to_value(&info).unwrap().get("subagents").is_none(), "none: the wire as before");
-        info.subagents.push(SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: None, secs: 3 });
+        info.subagents.push(SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: None, secs: 3, ..Default::default() });
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["subagents"], json!([{ "id": "toolu_1", "what": "Read the logs", "secs": 3 }]));
         assert_eq!(serde_json::from_value::<SessionInfo>(json).unwrap(), info);

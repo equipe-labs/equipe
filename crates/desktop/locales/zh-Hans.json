@@ -2161,5 +2161,19 @@
   "settings.dictation_auto": "自动（{lang}）",
   "settings.dictation_not_here": "本机没有",
   "settings.dictation_add": "添加语言",
-  "composer.dictation_no_model": "这台 Mac 没有 {lang} 听写模型。请在 设置 › 通用 › 语音输入语言 中添加或更换。"
+  "composer.dictation_no_model": "这台 Mac 没有 {lang} 听写模型。请在 设置 › 通用 › 语音输入语言 中添加或更换。",
+  "subagent.brief": "接到的任务",
+  "subagent.steps": "做了什么",
+  "subagent.result": "交回的结果",
+  "subagent.working": "工作中 · {time}",
+  "subagent.done": "已完成 · {time}",
+  "subagent.failed": "失败 · {time}",
+  "subagent.stopped": "随本轮结束而停止 · {time}",
+  "subagent.now": "现在：{step}",
+  "subagent.no_steps": "还没有做任何事。",
+  "subagent.no_steps_kept": "此窗口连接之前做的事没有保留。",
+  "subagent.kept": "只显示最近 {n} 个步骤。",
+  "subagent.prev": "上一个子代理",
+  "subagent.next": "下一个子代理",
+  "subagent.close": "关闭 (Esc)"
 }

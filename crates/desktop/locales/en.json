@@ -2214,5 +2214,19 @@
   "settings.dictation_auto": "Automatic ({lang})",
   "settings.dictation_not_here": "Not on this Mac",
   "settings.dictation_add": "Add language",
-  "composer.dictation_no_model": "This Mac has no {lang} dictation model. Add it, or pick another, in Settings › General › Dictation language."
+  "composer.dictation_no_model": "This Mac has no {lang} dictation model. Add it, or pick another, in Settings › General › Dictation language.",
+  "subagent.brief": "What it was asked",
+  "subagent.steps": "What it did",
+  "subagent.result": "What it handed back",
+  "subagent.working": "Working · {time}",
+  "subagent.done": "Done · {time}",
+  "subagent.failed": "Failed · {time}",
+  "subagent.stopped": "Stopped with the turn · {time}",
+  "subagent.now": "Now: {step}",
+  "subagent.no_steps": "Nothing done yet.",
+  "subagent.no_steps_kept": "What it did before this window connected isn't kept.",
+  "subagent.kept": "Only the latest {n} steps show.",
+  "subagent.prev": "Previous subagent",
+  "subagent.next": "Next subagent",
+  "subagent.close": "Close (Esc)"
 }

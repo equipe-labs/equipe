@@ -2214,5 +2214,19 @@
   "settings.dictation_auto": "Automatique ({lang})",
   "settings.dictation_not_here": "Absent de ce Mac",
   "settings.dictation_add": "Ajouter une langue",
-  "composer.dictation_no_model": "Ce Mac n’a pas de modèle de dictée en {lang}. Ajoutez-le ou changez de langue dans Réglages › Général › Langue de dictée."
+  "composer.dictation_no_model": "Ce Mac n’a pas de modèle de dictée en {lang}. Ajoutez-le ou changez de langue dans Réglages › Général › Langue de dictée.",
+  "subagent.brief": "Ce qu'on lui a demandé",
+  "subagent.steps": "Ce qu'il a fait",
+  "subagent.result": "Ce qu'il a rendu",
+  "subagent.working": "Au travail · {time}",
+  "subagent.done": "Terminé · {time}",
+  "subagent.failed": "Échec · {time}",
+  "subagent.stopped": "Arrêté avec le tour · {time}",
+  "subagent.now": "En cours : {step}",
+  "subagent.no_steps": "Rien de fait pour l'instant.",
+  "subagent.no_steps_kept": "Ce qu'il a fait avant la connexion de cette fenêtre n'est pas gardé.",
+  "subagent.kept": "Seules les {n} dernières étapes s'affichent.",
+  "subagent.prev": "Sous-agent précédent",
+  "subagent.next": "Sous-agent suivant",
+  "subagent.close": "Fermer (Échap)"
 }

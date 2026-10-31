@@ -2214,5 +2214,19 @@
   "settings.dictation_auto": "Automatisch ({lang})",
   "settings.dictation_not_here": "Nicht auf diesem Mac",
   "settings.dictation_add": "Sprache hinzufügen",
-  "composer.dictation_no_model": "Auf diesem Mac fehlt das Diktiermodell für {lang}. Füge es hinzu oder wähle eine andere unter Einstellungen › Allgemein › Diktiersprache."
+  "composer.dictation_no_model": "Auf diesem Mac fehlt das Diktiermodell für {lang}. Füge es hinzu oder wähle eine andere unter Einstellungen › Allgemein › Diktiersprache.",
+  "subagent.brief": "Auftrag",
+  "subagent.steps": "Was er getan hat",
+  "subagent.result": "Was er zurückgab",
+  "subagent.working": "Arbeitet · {time}",
+  "subagent.done": "Fertig · {time}",
+  "subagent.failed": "Fehlgeschlagen · {time}",
+  "subagent.stopped": "Mit der Runde gestoppt · {time}",
+  "subagent.now": "Jetzt: {step}",
+  "subagent.no_steps": "Noch nichts getan.",
+  "subagent.no_steps_kept": "Was vor dem Verbinden dieses Fensters geschah, ist nicht erhalten.",
+  "subagent.kept": "Nur die letzten {n} Schritte werden gezeigt.",
+  "subagent.prev": "Vorheriger Subagent",
+  "subagent.next": "Nächster Subagent",
+  "subagent.close": "Schließen (Esc)"
 }

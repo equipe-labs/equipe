@@ -32,6 +32,7 @@ pub mod secrets;
 pub mod routines;
 pub mod sheet;
 pub mod sidebar;
+pub mod subagent;
 pub mod team;
 pub mod terminal;
 pub mod ticket_card;

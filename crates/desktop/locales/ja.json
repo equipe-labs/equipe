@@ -2161,5 +2161,19 @@
   "settings.dictation_auto": "自動（{lang}）",
   "settings.dictation_not_here": "この Mac になし",
   "settings.dictation_add": "言語を追加",
-  "composer.dictation_no_model": "この Mac には {lang} の音声入力モデルがありません。設定 › 一般 › 音声入力の言語で追加するか変更してください。"
+  "composer.dictation_no_model": "この Mac には {lang} の音声入力モデルがありません。設定 › 一般 › 音声入力の言語で追加するか変更してください。",
+  "subagent.brief": "任されたこと",
+  "subagent.steps": "やったこと",
+  "subagent.result": "返した結果",
+  "subagent.working": "作業中 · {time}",
+  "subagent.done": "完了 · {time}",
+  "subagent.failed": "失敗 · {time}",
+  "subagent.stopped": "ターンの終了とともに停止 · {time}",
+  "subagent.now": "いま: {step}",
+  "subagent.no_steps": "まだ何もしていません。",
+  "subagent.no_steps_kept": "このウインドウが接続する前の作業は残っていません。",
+  "subagent.kept": "最新の {n} ステップだけ表示しています。",
+  "subagent.prev": "前のサブエージェント",
+  "subagent.next": "次のサブエージェント",
+  "subagent.close": "閉じる (Esc)"
 }

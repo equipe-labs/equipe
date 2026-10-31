@@ -1589,6 +1589,35 @@ exec sleep 30"#;
 }
 
 #[tokio::test]
+async fn a_look_inside_a_subagent_shows_its_brief_steps_words_and_what_it_handed_back() {
+    let turn = r#"cat <<'EOF'
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{"description":"Capture 3 landings","prompt":"Open linear.app and capture its hero."}}]}}
+{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"Starting with linear.app."},{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"ls shots"}}]}}
+{"type":"user","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"linear.png"}]}}
+EOF
+exec sleep 30"#;
+    let claude = fake_claude(true, turn);
+    let cwd = scratch("cwd");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), true));
+    add(&handle, &mut events, 3, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 3, text: "look around".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::SubagentEntry { entry: Entry::Tool { .. }, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SubagentStarted { brief, .. } if brief == "Open linear.app and capture its hero.")), "its brief whole");
+    assert!(seen.iter().any(|e| matches!(e, Event::SubagentEntry { id, entry: Entry::Reply { text }, .. } if id == "toolu_1" && text == "Starting with linear.app.")));
+    // A screen attaching now gets what it has done so far.
+    let snapshot = handle.snapshot("acme").await;
+    let sub = &snapshot.sessions[0].subagents[0];
+    assert_eq!(sub.brief, "Open linear.app and capture its hero.");
+    assert!(matches!(&sub.entries[..], [Entry::Reply { .. }, Entry::Tool { tool, outcome: Some(o), .. }] if tool == "Bash" && o.output == "linear.png"), "{:?}", sub.entries);
+    // Never the member's own conversation.
+    assert!(!text_entries(&snapshot.sessions[0].recent).iter().any(|l| l.contains("Starting with linear.app")));
+    handle.send(Command::Interrupt { session: 3 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_member_who_left_is_not_resumed() {
     let claude = fake_claude(true, &answering("ok"));
     let cwd = scratch("cwd");

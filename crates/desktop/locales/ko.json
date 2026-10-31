@@ -2161,5 +2161,19 @@
   "settings.dictation_auto": "자동 ({lang})",
   "settings.dictation_not_here": "이 맥에 없음",
   "settings.dictation_add": "언어 추가",
-  "composer.dictation_no_model": "이 맥에 {lang} 받아쓰기 모델이 없어요. 설정 › 일반 › 음성 입력 언어에서 추가하거나 바꿔 주세요."
+  "composer.dictation_no_model": "이 맥에 {lang} 받아쓰기 모델이 없어요. 설정 › 일반 › 음성 입력 언어에서 추가하거나 바꿔 주세요.",
+  "subagent.brief": "맡은 일",
+  "subagent.steps": "한 일",
+  "subagent.result": "돌려준 결과",
+  "subagent.working": "일하는 중 · {time}",
+  "subagent.done": "끝냄 · {time}",
+  "subagent.failed": "실패 · {time}",
+  "subagent.stopped": "턴이 끝나며 함께 멈춤 · {time}",
+  "subagent.now": "지금: {step}",
+  "subagent.no_steps": "아직 한 일이 없어요.",
+  "subagent.no_steps_kept": "이 창이 연결되기 전에 한 일은 남아 있지 않아요.",
+  "subagent.kept": "최근 {n}개 단계만 보여요.",
+  "subagent.prev": "이전 서브에이전트",
+  "subagent.next": "다음 서브에이전트",
+  "subagent.close": "닫기 (Esc)"
 }
