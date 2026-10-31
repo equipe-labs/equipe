@@ -315,6 +315,13 @@ pub const ICON_SM: f32 = 14.;
 /// Popovers and tooltips sit this far from what opened them.
 pub const GAP: f32 = 6.;
 
+/// For a shortcut beside words (⌘N, ⇧A, +): the face's case-sensitive forms,
+/// which lift +, −, × and the like from the lowercase middle to the capitals',
+/// so a key sits level with the words — Korean ones too — as in the Mac's menus.
+pub fn key_face() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("case".into(), 1)]))
+}
+
 impl Palette {
     pub fn is_dark(&self) -> bool {
         self.bg.r < 0.5

@@ -16,7 +16,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::motion;
-use crate::theme::{GAP, Palette, SMALL};
+use crate::theme::{GAP, Palette, SMALL, key_face};
 
 /// The window's tooltip layer (one window, one layer).
 struct Tips(Entity<TooltipOverlay>);
@@ -72,7 +72,7 @@ impl Render for Tip {
             .when(!long, |chip| chip.whitespace_nowrap())
             .text_color(p.tip_text())
             .child(div().when(long, |d| d.flex_1().min_w_0()).child(self.label.clone()))
-            .when_some(self.keys.clone(), |chip, keys| chip.child(div().flex_none().whitespace_nowrap().text_color(p.tip_muted()).child(keys)))
+            .when_some(self.keys.clone(), |chip, keys| chip.child(div().flex_none().whitespace_nowrap().text_color(p.tip_muted()).font_features(key_face()).child(keys)))
     }
 }
 

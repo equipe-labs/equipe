@@ -12,8 +12,9 @@ use gpui_kit::*;
 
 use super::board::{Popover, dot, kbd};
 use crate::state::{Member, Model, Presence};
-use crate::theme::{PROJECT_HUES, Palette, R_MD, SMALL, Sans, look};
+use crate::theme::{PROJECT_HUES, Palette, R_MD, SMALL, Sans, key_face, look};
 use crate::Shell;
+use crate::tips::TipExt as _;
 
 /// The title bar's one height, the sidebar's strip's too.
 pub const HEIGHT: f32 = super::sidebar::STRIP;
@@ -103,7 +104,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 fn terminal_button(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let on = shell.terminal.as_ref().is_some_and(|t| t.open);
-    super::sidebar::icon_button(p, "header-terminal", IconName::SquareTerminal, true, Some(format!("{} ⌃`", t!("term.tip"))))
+    super::sidebar::icon_button(p, "header-terminal", IconName::SquareTerminal, true, None)
+        .tip(p, t!("term.tip"), Some("⌃`"))
         .when(on, |b| b.bg(p.wash))
         .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)))
 }
@@ -112,7 +114,8 @@ fn terminal_button(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement +
 fn browser_button(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let on = shell.browser.read(cx).open;
-    super::sidebar::icon_button(p, "header-browser", IconName::Globe, true, Some(format!("{} ⌘⇧B", t!("header.browser"))))
+    super::sidebar::icon_button(p, "header-browser", IconName::Globe, true, None)
+        .tip(p, t!("header.browser"), Some("⌘⇧B"))
         .when(on, |b| b.bg(p.wash))
         .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)))
 }
@@ -300,8 +303,8 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                     .when(color.is_none(), |d| d.child(div().truncate().text_size(px(11.)).text_color(p.muted).child(t!("header.all_projects_note")))),
             )
             .when(counts.0 > 0, |r| r.child(h_flex().gap_1().items_center().text_size(px(12.)).text_color(p.amber).child(dot(p.amber, 5.)).child(counts.0.to_string())))
-            .when(counts.1 > 0, |r| r.child(div().text_size(px(12.)).text_color(p.accent).child(format!("⚑ {}", counts.1))))
-            .children(key.map(|k| div().w(px(26.)).text_align(TextAlign::Right).text_size(px(11.)).text_color(p.muted).child(k)))
+            .when(counts.1 > 0, |r| r.child(h_flex().gap_1().items_center().text_size(px(12.)).text_color(p.accent).child(crate::icons::icon(crate::icons::Icon::Flag, 11., p.accent)).child(counts.1.to_string())))
+            .children(key.map(|k| div().w(px(26.)).text_align(TextAlign::Right).text_size(px(11.)).text_color(p.muted).font_features(key_face()).child(k)))
     };
     let keys = ["⌃1", "⌃2", "⌃3", "⌃4", "⌃5", "⌃6", "⌃7", "⌃8", "⌃9"];
     let talk = if shell.board.slice_place == "chat" { model.talk_project() } else { None };

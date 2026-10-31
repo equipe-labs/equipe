@@ -19,7 +19,7 @@ use crate::tailnet;
 use crate::target::{Endpoint, SshHost};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, FIELD, ICON, MONO, Palette, R_MD, R_XL, S3, S6, SMALL, UI};
+use crate::theme::{BODY, FIELD, ICON, ICON_SM, MONO, Palette, R_MD, R_XL, S3, S6, SMALL, UI};
 use crate::ui::{self, Kind};
 use crate::Shell;
 
@@ -233,7 +233,7 @@ pub fn connecting_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                         .text_size(px(SMALL))
                         .line_height(px(20.))
                         .text_color(p.text2)
-                        .child(div().pt(px(2.)).flex_none().child(icon(Icon::Info, 14., p.muted)))
+                        .child(div().pt(px(3.)).flex_none().child(icon(Icon::Info, ICON_SM, p.muted)))
                         .child(div().flex_1().min_w_0().child(why))
                 }))
                 .child(h_flex().pt_2().child(ui::button(p, "switch", Kind::Secondary, t!("connect.switch_target")).field().on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx))))),

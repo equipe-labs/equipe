@@ -116,7 +116,7 @@ pub fn page(shell: &Shell, t: &Ticket, tab: Tab, cx: &mut Context<Shell>) -> imp
                 .items_center()
                 .border_b_1()
                 .border_color(p.hair)
-                .child(btn(p, "page-back", "←", Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                .child(super::board::back_btn(p, "page-back").on_click(cx.listener(|this, _, _, cx| {
                     this.board.view.page = None;
                     cx.notify();
                 })))
@@ -708,7 +708,7 @@ fn question_card(shell: &Shell, flow: Flow, t: &Ticket, project: &str, cx: &mut 
                         this.board.flow = Some(Flow::Way { ticket: id, remember: !remember });
                         cx.notify();
                     }))
-                    .child(div().size(px(14.)).flex().items_center().justify_center().rounded(px(3.)).border_1().border_color(p.accent).when(remember, |d| d.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓")))
+                    .child(div().size(px(14.)).flex().items_center().justify_center().rounded(px(3.)).border_1().border_color(p.accent).when(remember, |d| d.bg(p.accent).child(crate::icons::icon(crate::icons::Icon::Check, 10., p.on_accent))))
                     .child(t!("peek.remember"))
                     .child(kbd(p, "Space")),
             )

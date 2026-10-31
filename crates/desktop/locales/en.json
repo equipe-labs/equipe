@@ -94,7 +94,7 @@
   "approvals.screen": "Screen · {path}",
   "approvals.send_always_asks": "Sending always asks every time",
   "approvals.sign_in_always": "“Always” lets {member} use this account without asking · the password stays hidden",
-  "approvals.waiting_on_you_mark": "⚑ Permission",
+  "approvals.waiting_on_you_mark": "Permission",
   "approvals.words_hint": "⏎ decline and send · ⌘⏎ allow and send · ⇧⏎ new line · Esc close",
   "approvals.words_placeholder": "Why not, what to do instead, or what to mind if you allow it",
   "approvals.writes": "Writes: {files}",

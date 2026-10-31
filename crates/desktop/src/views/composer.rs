@@ -1702,16 +1702,9 @@ fn problem_notice(p: Palette, problem: String, cx: &mut Context<Shell>) -> AnyEl
             .child(div().flex_none().mt(px(2.)).child(icon(Icon::Warning, ICON_SM, p.amber)))
             .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(19.)).text_color(p.text).child(problem))
             .child(
-                div()
-                    .id("problem-close")
-                    .flex_none()
-                    .px_1()
-                    .rounded(px(R_SM))
+                crate::ui::x_box("problem-close", p.muted)
                     .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(p.muted)
-                    .hover(move |s| s.text_color(p.text).bg(p.wash))
-                    .child("✕")
+                    .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.composer.problem = None;
                         cx.notify();
@@ -2333,16 +2326,9 @@ fn quotes(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + u
             .child(div().flex_none().w(px(2.)).h(px(38.)).rounded_full().bg(Rgba { a: 0.6, ..p.accent }))
             .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(19.)).text_color(p.text2).line_clamp(2).text_ellipsis().child(quote.clone()))
             .child(
-                div()
-                    .id(("composer-unquote", n))
-                    .flex_none()
-                    .px_1()
-                    .rounded(px(R_SM))
+                crate::ui::x_box(("composer-unquote", n), p.muted)
                     .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(p.muted)
-                    .hover(move |s| s.text_color(p.text).bg(p.wash))
-                    .child("✕")
+                    .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if n < this.composer.quotes.len() {
                             this.composer.quotes.remove(n);
@@ -2524,7 +2510,7 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
             .overflow_hidden()
             .bg(p.wash)
             .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Cover))
-            .when(item.kind == Kind::Video, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().text_size(px(12.)).text_color(rgb(0xFFFFFF)).child("▶")))
+            .when(item.kind == Kind::Video, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().child(icon(Icon::Play, 12., rgb(0xFFFFFF)))))
             .into_any_element(),
         _ => div()
             .size(px(36.))
@@ -2602,7 +2588,7 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
             .gap_2()
             .max_w(px(520.))
             .text_size(px(SMALL))
-            .child(div().flex_none().text_color(p.danger()).child("✕"))
+            .child(icon(Icon::X, 12., p.danger()))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text2).child(if why.contains(name.as_str()) { why.clone() } else { format!("{name} — {why}") }))
     });
     Some(
@@ -2810,15 +2796,9 @@ pub fn answer_attachments(p: Palette, to: AttachTo, key: u64, items: Vec<attach:
             .children(state.map(|s| div().flex_none().text_color(p.muted).child(s)))
             .children(failed.map(|why| div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.danger()).child(why)))
             .child(
-                div()
-                    .id(SharedString::from(format!("answer-unattach-{key}-{id}")))
-                    .flex_none()
-                    .px_1()
-                    .rounded(px(4.))
+                crate::ui::x_box(SharedString::from(format!("answer-unattach-{key}-{id}")), p.muted)
                     .cursor_pointer()
-                    .text_color(p.muted)
-                    .hover(move |s| s.text_color(p.text).bg(p.hair))
-                    .child("✕")
+                    .hover(move |s| s.bg(p.hair))
                     .on_click(move |_, _, cx| {
                         off.update(cx, |this, cx| this.unattach_from(to, id, cx)).ok();
                     }),

@@ -273,7 +273,7 @@ pub fn render(shell: &Shell, diff: &DiffUi, cx: &mut Context<Shell>) -> impl Int
         .items_center()
         .border_b_1()
         .border_color(p.hair)
-        .child(btn(p, "diff-back", "←", Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+        .child(super::board::back_btn(p, "diff-back").on_click(cx.listener(|this, _, _, cx| {
             this.board.diff = None;
             cx.notify();
         })))
@@ -445,7 +445,7 @@ fn diff_row(p: Palette, files: &[diffs::File], d: &DiffUi, ix: usize, f: usize, 
             .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| this.diff_fold(f, cx)))
-            .child(if folded { "▸" } else { "▾" })
+            .child(crate::icons::icon(if folded { crate::icons::Icon::ChevronRight } else { crate::icons::Icon::ChevronDown }, 12., p.text))
             .child(file.path.clone())
             .child(div().text_color(p.muted).font_weight(FontWeight::NORMAL).child(format!("+{} −{}", file.added, file.removed)))
             .into_any_element();

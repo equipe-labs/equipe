@@ -91,7 +91,7 @@
   "approvals.screen": "화면 · {path}",
   "approvals.send_always_asks": "전송은 항상 매번 물어요",
   "approvals.sign_in_always": "“항상”은 {member}가 이 계정을 묻지 않고 쓰게 해요 · 비밀번호는 보이지 않아요",
-  "approvals.waiting_on_you_mark": "⚑ 허락 요청",
+  "approvals.waiting_on_you_mark": "허락 요청",
   "approvals.words_hint": "⏎ 거절하고 보내기 · ⌘⏎ 허용하고 보내기 · ⇧⏎ 줄바꿈 · Esc 닫기",
   "approvals.words_placeholder": "왜 안 되는지, 대신 어떻게 할지, 또는 허용하며 덧붙일 말",
   "approvals.writes": "쓰는 파일: {files}",

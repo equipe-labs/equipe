@@ -138,13 +138,9 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
                     .text_color(p.text2)
                     .child(who_shown)
                     .child(
-                        div()
-                            .id(SharedString::from(format!("login-forget-{id}-{who}")))
-                            .px_1()
+                        crate::ui::x_box(SharedString::from(format!("login-forget-{id}-{who}")), p.muted)
                             .cursor_pointer()
-                            .text_color(p.muted)
-                            .hover(move |s| s.text_color(p.text))
-                            .child("×")
+                            .hover(move |s| s.bg(p.hair))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.send_command(Command::ForgetLoginAllowance { id, who: who_taken.clone() });
                                 cx.notify();

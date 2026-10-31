@@ -247,7 +247,7 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     use crate::zoom::{self, Step};
     let p = shell.palette;
     let now = shell.remembered.zoom.0;
-    let step = |id: &'static str, glyph: &'static str, how: Step, tip: &'static str, keys: &'static str, cx: &mut Context<Shell>| {
+    let step = |id: &'static str, glyph: Icon, how: Step, tip: &'static str, keys: &'static str, cx: &mut Context<Shell>| {
         let enabled = zoom::step(now, how) != now;
         let seg = h_flex()
             .id(id)
@@ -256,14 +256,13 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .justify_center()
             .items_center()
             .rounded(px(R_SM))
-            .text_size(px(UI))
-            .text_color(p.text2)
             .when(!enabled, |s| s.opacity(0.4))
             .when(enabled, |s| {
                 s.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.zoom(how, window, cx)))
             })
             .tip(p, tip, Some(keys))
-            .child(glyph);
+            // Icons, not "−" and "+" typed: those sat at the font's math axis, off the pill's middle.
+            .child(icon(glyph, ICON_SM, p.text2));
         motion::hover_fill(seg, SharedString::from(format!("{id}-fill")), p.wash, false).into_any_element()
     };
     let pill = h_flex()
@@ -274,9 +273,9 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .items_center()
         .rounded(px(R_MD))
         .bg(if p.is_dark() { p.wash } else { p.code_bg })
-        .child(step("zoom-out", "−", Step::Out, t!("main.menu_zoom_out"), "⌘-", cx))
+        .child(step("zoom-out", Icon::Minus, Step::Out, t!("main.menu_zoom_out"), "⌘-", cx))
         .child(div().min_w(px(48.)).text_center().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(zoom::label(now)))
-        .child(step("zoom-in", "+", Step::In, t!("main.menu_zoom_in"), "⌘+", cx));
+        .child(step("zoom-in", Icon::Plus, Step::In, t!("main.menu_zoom_in"), "⌘+", cx));
     h_flex()
         .flex_none()
         .gap_2()

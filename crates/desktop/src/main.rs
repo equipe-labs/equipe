@@ -1477,7 +1477,7 @@ impl Shell {
                 .border_b_1()
                 .border_color(p.hair)
                 .text_size(px(SMALL))
-                .child(div().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child("✗"))
+                .child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text))
                 .child(div().text_color(p.text).child(format!("{} · {since}", guide.short)))
                 .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
                 .child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx)))),

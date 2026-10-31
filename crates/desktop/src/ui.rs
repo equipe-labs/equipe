@@ -29,7 +29,7 @@ use gpui_kit::base::h_flex;
 
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{CONTROL, FIELD, ICON, Palette, R_MD, SMALL, mix};
+use crate::theme::{CONTROL, FIELD, ICON, Palette, R_MD, R_SM, SMALL, key_face, mix};
 
 /// The narrowest the words of a card's footer or a banner get beside its
 /// buttons; narrower (a panel beside the conversation), the buttons go on a
@@ -187,7 +187,7 @@ impl RenderOnce for Button {
             .when(live, |b| b.cursor_pointer().active(move |s| s.bg(look.press)))
             .children(self.icon.map(|g| icon(g, ICON, look.text)))
             .children(self.label)
-            .children(self.key.map(|k| div().text_size(px(12.)).font_weight(FontWeight::NORMAL).text_color(look.key).child(k)))
+            .children(self.key.map(|k| div().text_size(px(12.)).font_weight(FontWeight::NORMAL).font_features(key_face()).text_color(look.key).child(k)))
             .when_some(self.focus.filter(|_| live), |b, focus| {
                 b.track_focus(&focus).focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]))
             })
@@ -204,6 +204,13 @@ impl RenderOnce for Button {
             None => b.bg(Rgba { a: look.hover.a * t, ..look.hover }),
         })
     }
+}
+
+/// The ✕ of a small control that takes one thing away (a quote, a chip, a
+/// line), in a square of its own: typed as text, the font's metrics set the
+/// mark off the middle of its box and of the words beside it.
+pub fn x_box(id: impl Into<ElementId>, color: impl Into<Hsla>) -> Stateful<Div> {
+    div().id(id).size(px(18.)).flex_none().flex().items_center().justify_center().rounded(px(R_SM)).child(icon(Icon::X, 12., color))
 }
 
 // ── the switch ──
