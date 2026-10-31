@@ -42,6 +42,7 @@ pub mod switching;
 pub mod steers;
 pub mod store;
 pub mod team;
+pub mod telemetry;
 pub mod vault;
 pub mod visuals;
 pub mod watchdog;

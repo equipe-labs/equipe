@@ -186,6 +186,7 @@ impl Runtime {
         let id = journal.create_ticket(&ticket).map_err(|e| e.to_string())?;
         let _ = journal.ticket_event(id, "you", "created", &title);
         let ticket = journal.ticket(id).ok().flatten().unwrap_or(Ticket { id, ..ticket });
+        self.tell(squad, crate::telemetry::Happened::TicketCreated { kind, by: crate::telemetry::Maker::Person });
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         let urgency = if draft.priority.is_normal() { String::new() } else { format!(", {} priority", draft.priority.label()) };
         let (line, shown) = match &owner {
@@ -443,7 +444,7 @@ impl Runtime {
                 self.tell_about(squad, &concerned, line, shown);
                 self.dispatch(squad).await;
             }
-            board::Move::Accept => self.accept(squad, id).await,
+            board::Move::Accept => self.accept(squad, id, crate::telemetry::Accepter::Person).await,
             board::Move::Cancel => self.cancel(squad, id).await,
             board::Move::Resume => self.resume(squad, id, String::new()).await,
             board::Move::SendBack => self.reopen(squad, id, String::new()).await,

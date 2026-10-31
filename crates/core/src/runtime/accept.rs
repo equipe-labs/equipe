@@ -90,7 +90,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
             if let Some(journal) = self.journal(squad) {
                 let _ = journal.ticket_event(ticket, member, "accepted by the PM", &checked);
             }
-            Box::pin(self.accept(squad, ticket)).await;
+            Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;
             // Code lands on main at once: nothing left for the person to merge.
             if !t.kind.in_home() && t.branch.is_some() {
                 self.merge(squad, ticket, push);

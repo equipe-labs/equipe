@@ -26,6 +26,7 @@ pub const COULD_NOT_START: &str = "Couldn't start: ";
 pub mod rpc;
 pub mod stream;
 pub mod tags;
+pub mod telemetry;
 pub mod team;
 pub mod transcript;
 pub mod vault;
