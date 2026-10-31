@@ -28,6 +28,12 @@ pub struct WelcomeUi {
     pub error: Option<String>,
     /// The squad is being made.
     pub busy: bool,
+    /// Tab stops, in the order the keys visit them: the team, the modes, then the buttons.
+    team_focus: [FocusHandle; STARTERS.len()],
+    mode_focus: [FocusHandle; Mode::ALL.len()],
+    pick_focus: FocusHandle,
+    clear_focus: FocusHandle,
+    create_focus: FocusHandle,
 }
 
 impl WelcomeUi {
@@ -37,7 +43,20 @@ impl WelcomeUi {
         for (on, (_, default)) in team.iter_mut().zip(STARTERS) {
             *on = default;
         }
-        Self { name, team, mode: Mode::Auto, folder: None, error: None, busy: false }
+        let stop = |cx: &mut Context<Shell>| cx.focus_handle().tab_stop(true);
+        Self {
+            name,
+            team,
+            mode: Mode::Auto,
+            folder: None,
+            error: None,
+            busy: false,
+            team_focus: std::array::from_fn(|_| stop(cx)),
+            mode_focus: std::array::from_fn(|_| stop(cx)),
+            pick_focus: stop(cx),
+            clear_focus: stop(cx),
+            create_focus: stop(cx),
+        }
     }
 }
 
@@ -60,8 +79,21 @@ fn hint(p: Palette, text: impl Into<SharedString>) -> Div {
     div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(text.into())
 }
 
-/// A line to pick: a mark, a title, a sentence under it.
-fn choice(p: Palette, id: impl Into<ElementId>, on: bool, title: String, desc: &'static str, locked: bool) -> Stateful<Div> {
+/// What a line to pick shows before its words: a square for one of several,
+/// a circle for the one of a few — filled when chosen, drawn empty when not.
+fn mark(p: Palette, round: bool, on: bool) -> Div {
+    let b = div().size(px(18.)).flex_none().flex().items_center().justify_center().border_1().border_color(if on { p.accent } else { p.muted });
+    if round {
+        b.rounded_full().when(on, |m| m.child(div().size(px(8.)).rounded_full().bg(p.accent)))
+    } else {
+        b.rounded(px(4.)).when(on, |m| m.bg(p.accent).child(icon(Icon::Check, 12., p.on_primary)))
+    }
+}
+
+/// A line to pick: a mark, a title, a sentence under it. Reached by Tab
+/// (`focus`) and pressed with Space or Return, as a button is.
+fn choice(p: Palette, id: impl Into<ElementId>, round: bool, on: bool, title: String, desc: &'static str, focus: Option<&FocusHandle>) -> Stateful<Div> {
+    let ring = Rgba { a: 0.55, ..p.accent };
     h_flex()
         .id(id)
         .gap_3()
@@ -71,8 +103,9 @@ fn choice(p: Palette, id: impl Into<ElementId>, on: bool, title: String, desc: &
         .rounded(px(R_MD))
         .border_1()
         .border_color(if on { p.accent } else { p.hair })
-        .when(!locked, |r| r.cursor_pointer().hover(move |s| s.bg(p.wash)))
-        .child(div().pt(px(3.)).size(px(18.)).flex_none().when(on, |m| m.child(icon(Icon::Check, 14., p.accent))))
+        .when(focus.is_some(), |r| r.cursor_pointer().hover(move |s| s.bg(p.wash)))
+        .when_some(focus, |r, f| r.track_focus(f).focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }])))
+        .child(div().pt(px(2.)).child(mark(p, round, on)))
         .child(
             v_flex()
                 .flex_1()
@@ -80,6 +113,23 @@ fn choice(p: Palette, id: impl Into<ElementId>, on: bool, title: String, desc: &
                 .child(div().text_size(px(UI)).line_height(px(22.)).text_color(p.text).child(title))
                 .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(desc)),
         )
+}
+
+/// Space or Return does `act`; Tab moves on, Shift-Tab back.
+fn keys(act: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static {
+    let shell = cx.entity().downgrade();
+    move |event, window, cx| {
+        let k = &event.keystroke;
+        match k.key.as_str() {
+            "space" | "enter" if !k.modifiers.modified() => {
+                shell.update(cx, |this, cx| act(this, window, cx)).ok();
+            }
+            "tab" if k.modifiers.shift => window.focus_prev(cx),
+            "tab" => window.focus_next(cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
 }
 
 pub fn welcome_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
@@ -90,32 +140,45 @@ pub fn welcome_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let team = std::iter::once(PM).chain(STARTERS.iter().map(|(id, _)| *id)).enumerate().map(|(i, id)| {
         let (title, desc) = role_words(id);
         let on = i == 0 || w.team[i - 1];
-        let row = choice(p, ("role", i), on, title.to_owned(), desc, i == 0);
         if i == 0 {
-            row.into_any_element()
-        } else {
-            row.on_click(cx.listener(move |this, _, _, cx| {
-                this.welcome.team[i - 1] = !this.welcome.team[i - 1];
-                cx.notify();
-            }))
-            .into_any_element()
+            return choice(p, ("role", i), false, on, title.to_owned(), desc, None).into_any_element();
         }
-    });
+        let flip = move |this: &mut Shell, _: &mut Window, cx: &mut Context<Shell>| {
+            this.welcome.team[i - 1] = !this.welcome.team[i - 1];
+            cx.notify();
+        };
+        let focus = w.team_focus[i - 1].clone();
+        choice(p, ("role", i), false, on, title.to_owned(), desc, Some(&focus))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.welcome.team_focus[i - 1].clone().focus(window, cx);
+                flip(this, window, cx);
+            }))
+            .on_key_down(keys(flip, cx))
+            .into_any_element()
+    }).collect::<Vec<_>>();
     let modes = Mode::ALL.into_iter().map(|m| {
         let recommended = if m == Mode::Auto { format!("{} · ", t!("welcome.recommended")) } else { String::new() };
         let title = format!("{recommended}{}", equipe_core::i18n::label::mode(lang, m));
-        choice(p, ("mode", m as usize), w.mode == m, title, equipe_core::i18n::label::mode_short(lang, m), false).on_click(cx.listener(move |this, _, _, cx| {
+        let pick = move |this: &mut Shell, _: &mut Window, cx: &mut Context<Shell>| {
             this.welcome.mode = m;
             cx.notify();
-        }))
-    });
+        };
+        let ix = Mode::ALL.iter().position(|x| *x == m).unwrap_or(0);
+        let focus = w.mode_focus[ix].clone();
+        choice(p, ("mode", ix), true, w.mode == m, title, equipe_core::i18n::label::mode_short(lang, m), Some(&focus))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.welcome.mode_focus[ix].clone().focus(window, cx);
+                pick(this, window, cx);
+            }))
+            .on_key_down(keys(pick, cx))
+    }).collect::<Vec<_>>();
     let folder = match &w.folder {
         Some(path) => h_flex()
             .gap_2()
             .items_center()
             .child(icon(Icon::Folder, 16., p.text2))
             .child(div().flex_1().min_w_0().truncate().text_size(px(UI)).text_color(p.text).child(path.display().to_string()))
-            .child(ui::button(p, "folder-clear", Kind::Ghost, t!("welcome.folder_clear")).field().on_click(cx.listener(|this, _, _, cx| {
+            .child(ui::button(p, "folder-clear", Kind::Ghost, t!("welcome.folder_clear")).field().focus(&w.clear_focus).on_click(cx.listener(|this, _, _, cx| {
                 this.welcome.folder = None;
                 cx.notify();
             })))
@@ -123,7 +186,7 @@ pub fn welcome_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         None => h_flex()
             .gap_3()
             .items_center()
-            .child(ui::button(p, "folder-pick", Kind::Secondary, t!("welcome.folder_pick")).icon(Icon::Folder).field().on_click(cx.listener(|this, _, _, cx| this.pick_welcome_folder(cx))))
+            .child(ui::button(p, "folder-pick", Kind::Secondary, t!("welcome.folder_pick")).icon(Icon::Folder).field().focus(&w.pick_focus).on_click(cx.listener(|this, _, _, cx| this.pick_welcome_folder(cx))))
             .child(div().flex_1().min_w_0().child(hint(p, t!("welcome.folder_none"))))
             .into_any_element(),
     };
@@ -170,6 +233,7 @@ pub fn welcome_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                     h_flex().pt_4().child(
                         ui::button(p, "create", Kind::Primary, if w.busy { t!("welcome.creating") } else { t!("welcome.create") })
                             .field()
+                            .focus(&w.create_focus)
                             .disabled(w.busy)
                             .on_click(cx.listener(|this, _, window, cx| this.create_first_squad(window, cx))),
                     ),
