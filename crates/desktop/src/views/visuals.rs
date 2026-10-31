@@ -572,8 +572,12 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
     let zoomed = (size.0 * scale, size.1 * scale);
     let face: AnyElement = match (&shown, &thumb) {
         (Some(shot), _) => {
+            // The board made once at the picture's whole size and stretched
+            // with it: one made at every scale a pinch passes through would be
+            // a new (and, far in, a huge) picture each frame.
+            let board = checker(p, size.0, size.1);
             let size = zoomed;
-            let board = checker(p, size.0, size.1).map(|b| img(b).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Fill).rounded(px(10.)));
+            let board = board.map(|b| img(b).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Fill).rounded(px(10.)));
             div()
                 .relative()
                 .w(px(size.0))
@@ -711,17 +715,21 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
 }
 
 /// The room the picture is shown in: whole, it sits in the middle; zoomed in,
-/// it is clipped to the room and moved by `pan`. The wheel zooms with ⌘ or
-/// Ctrl (a pinch) toward the pointer and otherwise moves a zoomed picture;
-/// a drag moves it; a double-click goes to 2× there, or whole again.
+/// it is clipped to the room and moved by `pan`. A trackpad's pinch zooms
+/// with the fingers, the point between them kept where it is; the wheel
+/// zooms with ⌘ or Ctrl toward the pointer and otherwise moves a zoomed
+/// picture; a drag moves it; a double-click goes to 2× there, or whole again.
 #[allow(clippy::too_many_arguments)]
 fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f32, f32), scale: f32, pan: (f32, f32), viewport: gpui_kit::Size<Pixels>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let _ = shell;
     // The room's centre in the window: the big view's padding, the bar under it.
     let centre = (f32::from(viewport.width) / 2., 32. + (f32::from(viewport.height) - 64. - 44. - 16.) / 2.);
     let from_centre = move |at: Point<Pixels>| (f32::from(at.x) - centre.0, f32::from(at.y) - centre.1);
-    let (wheel_path, down_path, move_path, click_path) = (path.to_owned(), path.to_owned(), path.to_owned(), path.to_owned());
+    let (wheel_path, pinch_path, down_path, click_path) = (path.to_owned(), path.to_owned(), path.to_owned(), path.to_owned());
     let room_now = room;
+    // The picture whole: the same however far it is zoomed, so it holds for
+    // every event this frame sends, however many come before the next.
+    let fit = (size.0 / scale, size.1 / scale);
     div()
         .id("viewer-stage")
         .relative()
@@ -742,8 +750,15 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
             } else {
                 return;
             }
-            let fit = (size.0 / now, size.1 / now);
             this.viewer_zoom.clamp(fit, room_now);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        // Each frame of the pinch, as it comes: no steps between.
+        .on_pinch(cx.listener(move |this, e: &PinchEvent, _, cx| {
+            this.viewer_zoom.pinch(&pinch_path, e.delta, from_centre(e.position), e.phase == TouchPhase::Ended);
+            this.viewer_zoom.clamp(fit, room_now);
+            this.viewer_zoom.drag = None;
             cx.stop_propagation();
             cx.notify();
         }))
@@ -753,7 +768,6 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
             if e.click_count >= 2 {
                 let next = if now > 1. { 1. } else { 2. };
                 this.viewer_zoom.set(&down_path, next, from_centre(e.position));
-                let fit = (size.0 / now, size.1 / now);
                 this.viewer_zoom.clamp(fit, room_now);
                 this.viewer_zoom.drag = None;
                 cx.notify();
@@ -767,11 +781,10 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
                 this.viewer_zoom.drag = None;
                 return;
             }
-            let (now, _) = this.viewer_zoom.of(&move_path);
             let moved = (f32::from(e.position.x) - from.0, f32::from(e.position.y) - from.1);
             this.viewer_zoom.pan = (pan0.0 + moved.0, pan0.1 + moved.1);
             this.viewer_zoom.drag = Some((from, pan0, moved.0.abs() + moved.1.abs() > 3.));
-            this.viewer_zoom.clamp((size.0 / now, size.1 / now), room_now);
+            this.viewer_zoom.clamp(fit, room_now);
             cx.notify();
         }))
         // A click outside a whole picture closes the view, as before; a drag
