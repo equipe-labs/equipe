@@ -37,12 +37,29 @@ pub fn build_id() -> String {
 
 /// `equipe daemon run`: serve in the foreground until asked to stop.
 pub async fn run_foreground() -> io::Result<()> {
+    if gateway::is_running(&socket()).await {
+        equipe_core::daemon_log!("equipe: a daemon already answers here, so this one leaves");
+        return Ok(());
+    }
     let config = runtime::Config::for_user(VERSION).persistent();
     // Telegram, when set up, follows the squads like one more screen.
     tokio::spawn(crate::telegram::serve_forever(equipe_home(), socket(), build_id()));
     // Phones paired with this machine, through the relay.
     tokio::spawn(crate::remote::link::serve_forever(equipe_home(), socket(), build_id()));
-    gateway::serve(config, &socket(), &build_id()).await
+    left_for(gateway::serve(config, &socket(), &build_id()).await)
+}
+
+/// A daemon that finds another already answering leaves cleanly: an exit the
+/// login service would read as a crash and start again, every ten seconds,
+/// beside the one that runs.
+fn left_for(served: io::Result<()>) -> io::Result<()> {
+    match served {
+        Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
+            equipe_core::daemon_log!("equipe: a daemon already answers here, so this one leaves");
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// Start a daemon in the background unless one is answering. `Ok(true)` when
@@ -109,14 +126,17 @@ fn ways(installed: bool) -> &'static [(Way, Duration)] {
 }
 
 /// Take each way in turn until a daemon answers; which one did, or `None`.
-/// A way that can't even be taken gives way to the next at once.
+/// A way that can't even be taken gives way to the next at once — but a reload
+/// that fails is still waited for: another start racing this one may have
+/// loaded the service first (this bootstrap then fails, error 5), and the
+/// daemon that brings beats a second one alone beside it.
 async fn start_with<F: Future<Output = bool>>(
     ways: &[(Way, Duration)],
     mut take: impl FnMut(Way) -> bool,
     answering: impl Fn() -> F,
 ) -> Option<Way> {
     for &(way, wait) in ways {
-        if !take(way) {
+        if !take(way) && way != Way::Reload {
             continue;
         }
         let deadline = tokio::time::Instant::now() + wait;
@@ -500,6 +520,37 @@ mod tests {
     #[tokio::test]
     async fn a_daemon_nothing_starts_is_said_so() {
         assert_eq!(start(None, |_| true).await.1, None);
+    }
+
+    #[tokio::test]
+    async fn a_reload_another_start_got_to_first_is_waited_for_not_doubled() {
+        // This start's bootstrap fails, but the service the other loaded brings
+        // the daemon up a moment later.
+        let taken = RefCell::new(Vec::new());
+        let looks = std::cell::Cell::new(0);
+        let started = start_with(
+            QUICK,
+            |way| {
+                taken.borrow_mut().push(way);
+                way == Way::Alone
+            },
+            || {
+                if taken.borrow().contains(&Way::Reload) {
+                    looks.set(looks.get() + 1);
+                }
+                std::future::ready(looks.get() > 2)
+            },
+        )
+        .await;
+        assert_eq!(started, Some(Way::Reload));
+        assert!(!taken.borrow().contains(&Way::Alone), "no second daemon beside it");
+    }
+
+    #[test]
+    fn a_daemon_beside_one_that_runs_leaves_cleanly_and_a_real_failure_stays_one() {
+        assert!(left_for(Err(io::Error::new(io::ErrorKind::AddrInUse, "a daemon is already running"))).is_ok());
+        assert!(left_for(Err(io::Error::other("disk"))).is_err());
+        assert!(left_for(Ok(())).is_ok());
     }
 
     #[test]
