@@ -728,6 +728,29 @@ absolute path ending in `/`, and its first pictures show as a strip.{}",
             _ => "",
         }
     );
+    let report_folder = match ctx.home {
+        Some(home) => format!(" in the squad's folder, under `{home}/notes/reports/<date> <topic>/`"),
+        None => " in a folder of its own".to_owned(),
+    };
+    let reports = format!(
+        "\n\nWhen the person asks you to research, investigate, compare or explain something in depth — or your \
+answer would run past a screen — don't answer with a long reply: write a report they can read on its own{report_folder}, \
+with a deck beside it. Judge it: a quick question still gets a quick answer, and a simple lookup stays in the \
+conversation. Write the report (`report.md`) for someone who wasn't there: the answer first, in a sentence or two; \
+then three to five key findings; then a section for each part, under a heading, in short paragraphs and plain words, \
+each term explained where it first appears; a table where there are options to compare; what you recommend and the \
+next steps; what you aren't sure of; and the sources, each a link. Show as well as tell: put a visual wherever it \
+makes something easier to grasp — a Mermaid diagram in a ```mermaid block (a flowchart for how something works, a \
+sequence diagram for who does what, a timeline, a mindmap, a quadrantChart for where things stand, an xychart-beta \
+or a pie for numbers), a table, or a picture saved beside the report (a screenshot, a chart drawn with a script) \
+embedded by its absolute path. Every number in a chart comes from your sources; never invent one to fill it. Make \
+the deck (`deck.md`) so it is understood in a few minutes: Marp's Markdown — a front matter of `marp: true`, slides \
+split by a line of `---` — six to twelve slides: the title, the answer, one idea a slide in at most five short \
+lines, a visual on most, the recommendation last. The same file becomes a PDF or a PowerPoint with Marp's CLI \
+(`npx @marp-team/marp-cli deck.md --pdf`, or `--pptx`) when the person wants one. Then reply briefly: the answer \
+in two or three sentences and both files' paths in backticks — equipe opens the report beside the conversation and \
+the deck as a presentation, each with a click."
+    );
     let memory = match ctx.home {
         Some(home) => {
             let index = match ctx.memory {
@@ -774,7 +797,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{desktop}{pictures}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{desktop}{pictures}{reports}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -894,6 +917,23 @@ mod tests {
         assert!(screen.contains("in the language they write in; until they have written, in Japanese"), "{screen}");
         let both = charter(role(PM).unwrap(), "pm", &Context { language: Some("Korean"), screen_language: Some("Japanese"), ..ctx(&team, &[], true) });
         assert!(both.contains("writes in Korean") && !both.contains("Japanese"), "what they write wins: {both}");
+    }
+
+    #[test]
+    fn deep_research_comes_back_as_a_report_with_visuals_and_a_deck_beside_it() {
+        let team = [Teammate { name: "pm", role: PM }];
+        for id in [PM, "designer", "backend", MARKETING, SECURITY] {
+            let text = charter(role(id).unwrap(), id, &Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) });
+            assert!(text.contains("research, investigate, compare or explain something in depth"), "{id}: {text}");
+            assert!(text.contains("`/h/squads/acme/home/notes/reports/<date> <topic>/`"), "{id}: where it goes");
+            assert!(text.contains("a quick question still gets a quick answer"), "{id}: judged, not always");
+            assert!(text.contains("the answer first") && text.contains("the sources, each a link"), "{id}: a report's shape");
+            assert!(text.contains("```mermaid") && text.contains("never invent one"), "{id}: visuals, true ones");
+            assert!(text.contains("`marp: true`") && text.contains("--pptx"), "{id}: a deck, also as PowerPoint");
+            assert!(text.contains("both files' paths in backticks"), "{id}: a short reply naming them");
+        }
+        let nowhere = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(nowhere.contains("write a report they can read on its own in a folder of its own"), "{nowhere}");
     }
 
     #[test]

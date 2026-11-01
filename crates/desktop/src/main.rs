@@ -21,6 +21,7 @@ mod accept;
 mod activity;
 mod convo;
 mod decide;
+mod deck;
 mod daemon;
 mod disk;
 mod doc;
@@ -556,6 +557,11 @@ impl Shell {
                 }
                 Some(false) => return,
                 None => {}
+            }
+            // A deck on show: ←/→, Space, Esc — and nothing typed underneath.
+            if this.update(cx, |shell, cx| shell.on_deck_key(key, &modifiers, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
             }
             // A member's picture shown big: ←/→, a pick, Esc — and nothing typed underneath.
             if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
@@ -1178,7 +1184,7 @@ impl Shell {
         let read = self.doc_reads;
         match &mut self.doc {
             // Read again in place: where it was scrolled to stays.
-            Some(doc) if doc.path == path => (doc.read, doc.folded) = (read, false),
+            Some(doc) if doc.path == path => (doc.read, doc.folded, doc.fresh) = (read, false, false),
             _ => self.doc = Some(doc::Doc::new(path.clone(), read)),
         }
         let endpoint = self.endpoint.clone();
@@ -1203,6 +1209,10 @@ impl Shell {
                 match got {
                     Ok((text, cut)) => (doc.text, doc.cut) = (Some(Ok(text)), cut),
                     Err(why) => doc.text = Some(Err(why)),
+                }
+                // A deck opened afresh is shown as it was made to be: slide by slide.
+                if std::mem::take(&mut doc.fresh) && doc.slides().is_some_and(|s| !s.is_empty()) {
+                    doc.presenting = Some(0);
                 }
                 cx.notify();
             });
@@ -1818,6 +1828,7 @@ impl Render for Shell {
             .children(views::design::lightbox(self, cx))
             .children(views::attached::gallery(self, cx))
             .children(views::visuals::viewer(self, window, cx))
+            .children(views::deck::presentation(self, window, cx))
             .children(views::sheet::sheet(self, cx))
             .children(views::sheet::question(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
