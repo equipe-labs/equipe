@@ -52,27 +52,97 @@ pub async fn ensure_running() -> io::Result<bool> {
     if gateway::is_running(&socket).await {
         return Ok(false);
     }
-    // Installed as a service, the service starts it, so it stays looked after.
-    let service = service::installed() && service::start();
-    if !service {
-        spawn_detached()?;
-    }
-    for i in 0..400 {
-        if gateway::is_running(&socket).await {
-            return Ok(true);
+    let take = |way| match way {
+        Way::Service => service::start(),
+        Way::Reload => std::env::current_exe().is_ok_and(|exe| service::install(&exe, &log_path()).is_ok()),
+        Way::Alone => spawn_detached().is_ok(),
+    };
+    match start_with(ways(service::installed()), take, || gateway::is_running(&socket)).await {
+        Some(way) => {
+            if let Some(line) = way.log_line() {
+                note_in_log(line);
+            }
+            Ok(true)
         }
-        // A daemon just told to stop may still be winding down: the service, seeing
-        // it alive, ignores the start, then leaves it stopped once it exits cleanly.
-        // Ask again each second until one answers.
-        if service && i % 20 == 19 {
-            service::start();
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        None => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            equipe_core::t!("daemon.didnt_start", log = log_path().display()),
+        )),
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        equipe_core::t!("daemon.didnt_start", log = log_path().display()),
-    ))
+}
+
+/// One way to start a daemon, tried while none answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Way {
+    /// Ask the login service to run it, so it stays looked after.
+    Service,
+    /// Load the service afresh: launchd won't run an executable whose signature
+    /// changed since the service was loaded — a build replaced in place exits 78
+    /// (EX_CONFIG) on every try — until it is loaded again.
+    Reload,
+    /// Run it ourselves, detached, without the service.
+    Alone,
+}
+
+impl Way {
+    /// What the daemon's log says when this way, not the first, started it.
+    fn log_line(self) -> Option<&'static str> {
+        match self {
+            Way::Service => None,
+            Way::Reload => Some("equipe: the login service wouldn't start this build, so it was loaded afresh"),
+            Way::Alone => Some(
+                "equipe: the login service didn't start the daemon: it runs on its own until `equipe daemon install`",
+            ),
+        }
+    }
+}
+
+/// The ways to try, in order, each with how long it waits for an answer.
+fn ways(installed: bool) -> &'static [(Way, Duration)] {
+    const SERVICE: &[(Way, Duration)] = &[
+        (Way::Service, Duration::from_secs(10)),
+        (Way::Reload, Duration::from_secs(10)),
+        (Way::Alone, Duration::from_secs(20)),
+    ];
+    const ALONE: &[(Way, Duration)] = &[(Way::Alone, Duration::from_secs(20))];
+    if installed { SERVICE } else { ALONE }
+}
+
+/// Take each way in turn until a daemon answers; which one did, or `None`.
+/// A way that can't even be taken gives way to the next at once.
+async fn start_with<F: Future<Output = bool>>(
+    ways: &[(Way, Duration)],
+    mut take: impl FnMut(Way) -> bool,
+    answering: impl Fn() -> F,
+) -> Option<Way> {
+    for &(way, wait) in ways {
+        if !take(way) {
+            continue;
+        }
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut asked = tokio::time::Instant::now();
+        while tokio::time::Instant::now() < deadline {
+            if answering().await {
+                return Some(way);
+            }
+            // A daemon just told to stop may still be winding down: the service, seeing
+            // it alive, ignores the start, then leaves it stopped once it exits cleanly.
+            // Ask again each second.
+            if way == Way::Service && asked.elapsed() >= Duration::from_secs(1) {
+                take(way);
+                asked = tokio::time::Instant::now();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    None
+}
+
+fn note_in_log(line: &str) {
+    use std::io::Write as _;
+    if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(log_path()) {
+        let _ = writeln!(log, "{line}");
+    }
 }
 
 pub fn log_path() -> PathBuf {
@@ -371,5 +441,72 @@ pub mod service {
             let unit = unit(Path::new("/x/equipe"), "/usr/bin", Path::new("/h/daemon.log"));
             assert!(unit.contains("ExecStart=/x/equipe daemon run") && unit.contains("Restart=on-failure"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Ways as the real ones, with waits short enough for a test.
+    const QUICK: &[(Way, Duration)] = &[
+        (Way::Service, Duration::from_millis(200)),
+        (Way::Reload, Duration::from_millis(200)),
+        (Way::Alone, Duration::from_millis(200)),
+    ];
+
+    /// Start where only `works` brings a daemon up and only `takeable` ways can
+    /// be taken: the ways taken, in order, and the one that started it.
+    async fn start(works: Option<Way>, takeable: impl Fn(Way) -> bool) -> (Vec<Way>, Option<Way>) {
+        let taken = RefCell::new(Vec::new());
+        let up = RefCell::new(false);
+        let started = start_with(
+            QUICK,
+            |way| {
+                taken.borrow_mut().push(way);
+                if Some(way) == works {
+                    *up.borrow_mut() = true;
+                }
+                takeable(way)
+            },
+            || std::future::ready(*up.borrow()),
+        )
+        .await;
+        let mut taken = taken.into_inner();
+        taken.dedup();
+        (taken, started)
+    }
+
+    #[tokio::test]
+    async fn a_service_that_starts_the_daemon_is_all_it_takes() {
+        assert_eq!(start(Some(Way::Service), |_| true).await, (vec![Way::Service], Some(Way::Service)));
+    }
+
+    #[tokio::test]
+    async fn a_service_that_refuses_a_replaced_build_is_loaded_afresh() {
+        // launchd takes the start and runs nothing: exit 78 on a re-signed executable.
+        assert_eq!(start(Some(Way::Reload), |_| true).await, (vec![Way::Service, Way::Reload], Some(Way::Reload)));
+    }
+
+    #[tokio::test]
+    async fn when_the_service_never_starts_it_the_daemon_runs_on_its_own() {
+        assert_eq!(
+            start(Some(Way::Alone), |way| way == Way::Alone).await,
+            (vec![Way::Service, Way::Reload, Way::Alone], Some(Way::Alone))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_daemon_nothing_starts_is_said_so() {
+        assert_eq!(start(None, |_| true).await.1, None);
+    }
+
+    #[test]
+    fn without_the_service_it_runs_on_its_own_and_the_log_says_how_it_started() {
+        assert_eq!(ways(false).iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Alone]);
+        assert_eq!(ways(true).iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Service, Way::Reload, Way::Alone]);
+        assert_eq!(Way::Service.log_line(), None);
+        assert!(Way::Reload.log_line().is_some() && Way::Alone.log_line().is_some());
     }
 }
