@@ -318,6 +318,8 @@
   "chat.committed": "Modifications commitées ·",
   "chat.copy": "Copier",
   "chat.copy_reply": "Copier",
+  "chat.a11y_conversation": "Conversation : {name}",
+  "chat.a11y_said": "{who} : {text}",
   "chat.did_ask_you": "Vous a demandé",
   "chat.did_background": "Lancé en arrière-plan",
   "chat.did_board": "A consulté le tableau",

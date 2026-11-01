@@ -722,6 +722,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     let names = shell.model.project_names();
     let slice = shell.model.chat_slice(shell.chat.follow);
     let every = slice.is_some() && names.len() > 1;
+    let log_name = who.name.clone();
     let rows = Rc::new(Rows {
         p,
         tones: render::tones(&p),
@@ -820,6 +821,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             // edge; read back, the rows fade out there under the jump pill.
             .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
             .with_bottom_fade(p.bg)
+            .aria_label(t!("chat.a11y_conversation", name = log_name))
     );
     // The pill has its own room under the list, so it covers nothing.
     let list = v_flex().flex_1().min_h_0().w_full().items_center().child(scroller);
@@ -853,7 +855,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             let decided = crate::decide::decided(text).unwrap_or(crate::decide::Decided::Closed);
             super::decide::decided_row(p, rows.tones, rows.handle.clone(), key, &decided, rows.is_open(key, super::decide::PART_DECIDED, false), window, cx)
         }
-        Block::User(text) => user_row(rows, ix, key, text, opened(PART_MORE), rows.project_of(ix), cx),
+        Block::User(text) => user_row(rows, ix, key, text, opened(PART_MORE), rows.project_of(ix), window.is_a11y_active(), cx),
         Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
         Block::Steps(lines) => group(rows, key, lines, window, cx),
         Block::News(news) => news_rows(rows, key, news, window, cx),
@@ -962,7 +964,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
 /// and under a turn's last the actions — copy, ask again, how long it worked
 /// and when — in sight on the latest, on hover on the rest.
 #[allow(clippy::too_many_arguments)]
-fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bool, worked: Option<&crate::convo::Worked>, _window: &mut Window, cx: &mut App) -> AnyElement {
+fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bool, worked: Option<&crate::convo::Worked>, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live };
     // A part of the reply's words, drawn in text view `kind`.
@@ -1038,6 +1040,10 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
             .children(when)
     });
     v_flex()
+        .id(("reply", key))
+        .role(Role::Article)
+        // Said only when a screen reader listens: the words, their marks gone.
+        .when(window.is_a11y_active(), |row| row.aria_label(t!("chat.a11y_said", who = rows.who.name.as_str(), text = crate::render::prose::spoken(text))))
         .group(group.clone())
         .when(after_activity && !first, |col| col.pt(px(6.)))
         .when(first, |col| {
@@ -1643,7 +1649,8 @@ fn keyed_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: impl In
 /// wide as your words up to most of the column, no name over it; what it
 /// attached just above it, its start only when it is long ("더 보기"), and on
 /// hover a small row of actions beneath.
-fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<(String, Rgba)>, cx: &mut App) -> AnyElement {
+#[allow(clippy::too_many_arguments)]
+fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<(String, Rgba)>, heard: bool, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
     // Asked about words of the conversation: the quote over the words.
@@ -1712,6 +1719,9 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
             .children(more)
     });
     v_flex()
+        .id(("user", key))
+        .role(Role::Article)
+        .when(heard, |row| row.aria_label(t!("chat.a11y_said", who = t!("tickets.you"), text = text)))
         .group(group.clone())
         .w_full()
         .mt_4()

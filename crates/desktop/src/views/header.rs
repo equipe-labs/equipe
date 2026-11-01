@@ -41,6 +41,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .min_w_0()
             .child(
                 pill(p, "conversation-title")
+                    .role(Role::Button)
+                    .aria_label(match (talk_title.clone(), ticket) {
+                        (Some(name), _) => name,
+                        (None, Some(t)) => format!("{} · {}", m.name, t.title),
+                        (None, None) => m.name.clone(),
+                    })
+                    .aria_expanded(open)
                     .flex_shrink(1.)
                     .min_w_0()
                     .max_w_full()
@@ -234,6 +241,9 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
     let label = focus.clone().unwrap_or_else(|| if talk.is_some() { t!("header.squad_wide").into() } else { t!("header.all_projects").into() });
     // The same pill as the conversation's title beside it: one height, one edge.
     let button = pill(p, SharedString::from(format!("slice-{place}")))
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .aria_expanded(open)
         .flex_shrink(1.)
         .min_w_0()
         .max_w_full()

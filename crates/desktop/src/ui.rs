@@ -166,6 +166,12 @@ impl RenderOnce for Button {
         }
         let ring = Rgba { a: 0.55, ..p.accent };
         let square = self.label.is_none();
+        // What a screen reader says of it: the tooltip's name and keys (see
+        // `tips::Spoken`), or its words when it has them, the tooltip then
+        // saying more after them.
+        let said = self.label.clone();
+        let more = self.tip.as_ref().filter(|_| said.is_some()).map(|(text, _)| SharedString::from(crate::tips::Spoken::of(text, None).name)).filter(|text| Some(text) != said.as_ref());
+        let shortcut = self.key.clone();
         let b = h_flex()
             .id(self.id.clone())
             .h(px(self.height))
@@ -196,6 +202,13 @@ impl RenderOnce for Button {
             Some((name, keys)) => crate::tips::tip(b, p, name, keys),
             None => b,
         };
+        let b = b
+            .role(Role::Button)
+            .aria_disabled(!live)
+            .when_some(said, |b, said| b.aria_label(said))
+            .when_some(more, |b, more| b.aria_description(more))
+            .when_some(shortcut, |b, keys| b.aria_keyshortcuts(keys))
+            .when(self.selected, |b| b.aria_selected(true));
         // Under the pointer the fill eases toward the hover fill (a filled
         // button) or the wash eases in (the others); disabled, nothing.
         motion::hover_with(b, self.id, false, move |b, t| match look.fill {
@@ -208,9 +221,10 @@ impl RenderOnce for Button {
 
 /// The ✕ of a small control that takes one thing away (a quote, a chip, a
 /// line), in a square of its own: typed as text, the font's metrics set the
-/// mark off the middle of its box and of the words beside it.
-pub fn x_box(id: impl Into<ElementId>, color: impl Into<Hsla>) -> Stateful<Div> {
-    div().id(id).size(px(18.)).flex_none().flex().items_center().justify_center().rounded(px(R_SM)).child(icon(Icon::X, 12., color))
+/// mark off the middle of its box and of the words beside it. `name` is what
+/// a screen reader calls it (닫기, 빼기).
+pub fn x_box(id: impl Into<ElementId>, color: impl Into<Hsla>, name: &str) -> Stateful<Div> {
+    div().id(id).role(Role::Button).aria_label(name.to_owned()).size(px(18.)).flex_none().flex().items_center().justify_center().rounded(px(R_SM)).child(icon(Icon::X, 12., color))
 }
 
 // ── the switch ──
@@ -229,18 +243,26 @@ pub struct Switch {
     p: Palette,
     on: bool,
     disabled: bool,
+    name: Option<SharedString>,
     on_flip: Option<OnFlip>,
 }
 
 /// On or off. `id` must be unique on screen: it keys the slide and the focus.
 pub fn switch(p: Palette, id: impl Into<SharedString>, on: bool) -> Switch {
-    Switch { id: id.into(), p, on, disabled: false, on_flip: None }
+    Switch { id: id.into(), p, on, disabled: false, name: None, on_flip: None }
 }
 
 impl Switch {
     /// At 40%, deaf to clicks and skipped by Tab.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// What it turns on or off, as a screen reader says it: the words of
+    /// its row, which a switch has none of its own.
+    pub fn name(mut self, name: impl Into<SharedString>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -283,6 +305,10 @@ impl RenderOnce for Switch {
             .h(px(SWITCH_H))
             .rounded_full()
             .bg(track(&p, t))
+            .role(Role::Switch)
+            .aria_toggled(if on { Toggled::True } else { Toggled::False })
+            .aria_disabled(!live)
+            .when_some(self.name, |d, name| d.aria_label(name))
             .when(!live, |d| d.opacity(0.4))
             .when(live, |d| {
                 let clicked = focus.clone();

@@ -1150,6 +1150,9 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     let stat = shell.board.stat(t).filter(|s| !s.files.is_empty()).map(|s| (s.added, s.removed));
     let el = h_flex()
         .id(SharedString::from(format!("ticket-{id}")))
+        .role(Role::ListItem)
+        .aria_label(format!("T-{id} {}", t.title))
+        .aria_selected(picked)
         .group(group.clone())
         .relative()
         .h(px(super::board::ROW + 4.))
@@ -1181,6 +1184,9 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         .child(
             div()
                 .id(SharedString::from(format!("check-{id}")))
+                .role(Role::CheckBox)
+                .aria_label(format!("T-{id}"))
+                .aria_toggled(if chosen { Toggled::True } else { Toggled::False })
                 .size(px(14.))
                 .flex_none()
                 .flex()
@@ -1626,6 +1632,9 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
         .child(
             v_flex()
                 .id(SharedString::from(format!("card-{id}")))
+                .role(Role::ListItem)
+                .aria_label(format!("T-{id} {}", t.title))
+                .aria_selected(picked)
                 .p(px(10.))
                 .gap(px(6.))
                 .rounded(px(9.))
@@ -1998,7 +2007,7 @@ pub fn views_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> 
                 }))
                 .when(kept, |r| {
                     r.child(
-                        crate::ui::x_box(SharedString::from(format!("view-forget-{at}")), p.muted)
+                        crate::ui::x_box(SharedString::from(format!("view-forget-{at}")), p.muted, t!("composer.tip_remove"))
                             .invisible()
                             .group_hover(group.clone(), |s| s.visible())
                             .hover(move |s| s.bg(p.hair))
@@ -2127,7 +2136,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .child(div().size(px(13.)).flex_none().rounded(px(3.)).border_1().border_color(p.muted))
                 .child(div().flex_1().min_w_0().truncate().text_color(p.text).child(c.clone()))
                 .child(
-                    crate::ui::x_box(("criterion-x", i), p.muted)
+                    crate::ui::x_box(("criterion-x", i), p.muted, t!("composer.tip_remove"))
                         .cursor_pointer()
                         .invisible()
                         .group_hover(SharedString::from(format!("criterion-{i}")), |s| s.visible())
@@ -2335,7 +2344,7 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
             .child(div().flex_1().min_w_0().truncate().text_color(p.text2).child(found.map(|d| d.title.clone()).unwrap_or_default()))
             .when(removable && can, |r| {
                 r.child(
-                    crate::ui::x_box(SharedString::from(format!("prop-unlink-{id}-{dep}")), p.muted)
+                    crate::ui::x_box(SharedString::from(format!("prop-unlink-{id}-{dep}")), p.muted, t!("composer.tip_remove"))
                         .invisible()
                         .group_hover(SharedString::from(format!("prop-link-{dep}")), |s| s.visible())
                         .hover(move |s| s.bg(p.hair))

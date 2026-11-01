@@ -394,7 +394,7 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .border_color(p.accent)
                     .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(21.)).child(Textarea::new(&field).appearance(false).bordered(false)))
                     .child(
-                        crate::ui::x_box(("words-close", id), p.muted)
+                        crate::ui::x_box(("words-close", id), p.muted, t!("composer.aria_close"))
                             .mt(px(2.))
                             .cursor_pointer()
                             .hover(move |s| s.bg(p.wash))
@@ -407,8 +407,15 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
     });
     let opened = words_box.is_some();
     let open_words = handle.clone();
+    // To a screen reader: who asks what, then what it would run.
+    let asked = format!("{}: {}", approval.member, t!("approvals.allow_question", what = card.noun));
+    let detail = card.lines.iter().cloned().chain(approval.reason.clone()).collect::<Vec<_>>().join("\n");
     Some(
         v_flex()
+            .id(("approval-card", id))
+            .role(Role::Group)
+            .aria_label(asked)
+            .aria_description(detail)
             .w_full()
             .gap_2()
             .child(

@@ -311,6 +311,8 @@
   "chat.committed": "変更をコミットしました ·",
   "chat.copy": "コピー",
   "chat.copy_reply": "コピー",
+  "chat.a11y_conversation": "会話: {name}",
+  "chat.a11y_said": "{who}: {text}",
   "chat.did_ask_you": "質問",
   "chat.did_background": "バックグラウンドで開始",
   "chat.did_board": "ボード確認",
