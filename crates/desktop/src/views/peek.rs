@@ -381,9 +381,14 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             }
             out.extend(changes(shell, t, wide, cx));
         }
-        TicketStatus::Proposed => {
+        TicketStatus::Proposed | TicketStatus::Idea => {
+            // An idea the PM brings back: why its time has come, then the idea.
+            if let Some(why) = t.why_now() {
+                out.push(v_flex().gap_1().child(kicker(p, t!("peek.why_now"))).child(md("peek-why-now", why)).into_any_element());
+            }
+            let idea = t.status == TicketStatus::Idea || t.why_now().is_some();
             if !t.body.trim().is_empty() && !wide {
-                out.push(v_flex().gap_1().child(kicker(p, t!("peek.why"))).child(md("peek-body", &t.body)).into_any_element());
+                out.push(v_flex().gap_1().child(kicker(p, if idea { t!("peek.the_idea") } else { t!("peek.why") })).child(md("peek-body", &t.body)).into_any_element());
             }
             let facts = [
                 (t!("peek.owner"), t.owner.clone().unwrap_or_else(|| "—".into())),
@@ -598,6 +603,15 @@ fn foot(shell: &Shell, t: &Ticket, width: f32, cx: &mut Context<Shell>) -> AnyEl
         TicketStatus::Waiting => {
             add(btn(p, "p-yes", t!("peek.did_it").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
             add(btn(p, "p-reply", t!("peek.memo_and_go").into(), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))), false);
+        }
+        TicketStatus::Idea => {
+            add(btn(p, "p-yes", t!("peek.start_idea").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
+            add(btn(p, "p-no", t!("peek.drop").into(), Some("N"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_no(cx))), false);
+        }
+        TicketStatus::Proposed if t.why_now().is_some() => {
+            add(btn(p, "p-yes", t!("peek.start_idea").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
+            add(btn(p, "p-later", t!("peek.keep_idea").into(), None, false, can).on_click(cx.listener(move |this, _, _, cx| this.keep_as_idea(id, cx))), false);
+            add(btn(p, "p-no", t!("peek.drop").into(), Some("N"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_no(cx))), false);
         }
         TicketStatus::Proposed => {
             add(btn(p, "p-yes", t!("peek.take_proposal").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);

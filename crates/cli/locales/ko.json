@@ -138,6 +138,7 @@
   "app.status_done": "끝남",
   "app.status_in_progress": "작업 중",
   "app.status_proposed": "제안",
+  "app.status_idea": "아이디어",
   "app.status_review": "검토",
   "app.status_design_qa": "디자인 QA 중",
   "app.status_todo": "할 일",

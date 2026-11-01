@@ -118,6 +118,7 @@ pub fn builtin_views() -> Vec<SavedView> {
     vec![
         SavedView { name: t!("board.view_blocked").into(), query: "is:blocked".into(), group: GroupBy::Deps, pinned: true },
         SavedView { name: t!("board.view_recent_done").into(), query: "status:done".into(), group: GroupBy::None, pinned: true },
+        SavedView { name: t!("board.view_ideas").into(), query: "status:idea".into(), group: GroupBy::None, pinned: true },
     ]
 }
 
@@ -221,6 +222,7 @@ fn status_of(word: &str) -> Option<TicketStatus> {
         "review" => TicketStatus::Review,
         "waiting" => TicketStatus::Waiting,
         "proposed" => TicketStatus::Proposed,
+        "idea" | "ideas" => TicketStatus::Idea,
         "todo" => TicketStatus::Todo,
         "progress" | "in_progress" | "working" => TicketStatus::InProgress,
         "done" => TicketStatus::Done,
@@ -228,6 +230,7 @@ fn status_of(word: &str) -> Option<TicketStatus> {
         _ if is("match.status_review") => TicketStatus::Review,
         _ if is("match.status_waiting") => TicketStatus::Waiting,
         _ if is("match.status_proposed") => TicketStatus::Proposed,
+        _ if is("match.status_idea") => TicketStatus::Idea,
         _ if is("match.status_todo") => TicketStatus::Todo,
         _ if is("match.status_progress") => TicketStatus::InProgress,
         _ if is("match.status_done") => TicketStatus::Done,
@@ -388,9 +391,9 @@ pub fn working(model: &Model, filter: &Filter) -> Vec<Row> {
 }
 
 /// The order statuses are listed in, by what needs attention: the person's
-/// turn, then their review, work under way, work ready (proposals only when
-/// asked for: they wait in triage), and finished.
-const STATUS_ORDER: [TicketStatus; 6] = [TicketStatus::Waiting, TicketStatus::Review, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done];
+/// turn, then their review, work under way, work ready (proposals and ideas
+/// only when asked for: they wait in triage, and in their own view), and finished.
+const STATUS_ORDER: [TicketStatus; 7] = [TicketStatus::Waiting, TicketStatus::Review, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Idea, TicketStatus::Done];
 
 fn status_rank(s: TicketStatus) -> usize {
     STATUS_ORDER.iter().position(|x| *x == s).unwrap_or(STATUS_ORDER.len() - 1)
@@ -422,6 +425,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
         .filter(|t| model.in_focus(t) && filter.matches(model, t))
         .filter(|t| match t.status {
             TicketStatus::Proposed => asked(TicketStatus::Proposed),
+            TicketStatus::Idea => asked(TicketStatus::Idea),
             TicketStatus::Cancelled => asked(TicketStatus::Cancelled),
             _ => true,
         })
@@ -622,6 +626,11 @@ pub fn recent_done_view() -> usize {
     builtin_views().iter().position(|v| v.query == "status:done").unwrap_or(0)
 }
 
+/// The person's ideas, kept for later: a view of their own.
+pub fn ideas_view() -> usize {
+    builtin_views().iter().position(|v| v.query == "status:idea").unwrap_or(0)
+}
+
 /// Where a click on a project's header in the sidebar lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadClick {
@@ -766,6 +775,8 @@ pub fn yes_commands(squad: &str, t: &Ticket, way: Option<MergeWay>, note: &str) 
     };
     match t.status {
         TicketStatus::Waiting => vec![Command::Resume { squad, ticket: t.id, note: note.to_owned() }],
+        // An idea started: ready for its owner, as a proposal taken on.
+        TicketStatus::Idea => vec![Command::MoveTicket { squad, ticket: t.id, status: Some(TicketStatus::Todo), before: None }],
         TicketStatus::Done if t.waits_to_merge() && way == Some(MergeWay::Branch) => vec![Command::KeepOnBranch { squad, ticket: t.id }],
         TicketStatus::Done if t.not_on_main() => merge(way).into_iter().collect(),
         TicketStatus::Review if Model::merges(t) => std::iter::once(Command::Accept { squad: squad.clone(), ticket: t.id }).chain(merge(way)).collect(),
@@ -986,6 +997,25 @@ mod tests {
         assert_eq!(proposals(&m, &Filter::default()).iter().map(|t| t.id).collect::<Vec<_>>(), vec![4], "nothing else to sort");
         m.pm_accepts = false;
         assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 5, 3, 4, 8, 7], "the person accepting: all of it, as before");
+    }
+
+    #[test]
+    fn ideas_wait_quietly_in_their_own_view_until_the_pm_brings_one_back_and_a_starts_it() {
+        let mut brought = ticket(2, "proposed", "/p", &[]);
+        brought.note = Some(format!("{}지금 출시 직후라 맞아요", equipe_core::protocol::WHY_NOW));
+        brought.created_by = "frontend".into();
+        let mut m = model(vec![ticket(1, "idea", "/p", &[]), brought.clone(), ticket(3, "todo", "/p", &[])], &["/p"]);
+        m.pm_accepts = true;
+        let inbox_ids: Vec<Need> = items(&inbox(&m, &Filter::default()));
+        assert_eq!(inbox_ids, vec![Need::Ticket(2)], "the idea brought back asks, even where the PM accepts; a kept one doesn't");
+        assert_eq!(brought.why_now(), Some("지금 출시 직후라 맞아요"));
+        let everything = all(&m, &View::default(), &Filter::default(), GroupBy::None);
+        assert!(!items(&everything).contains(&Need::Ticket(1)), "not among all the work");
+        let ideas = all(&m, &View::default(), &Filter::parse("status:idea"), GroupBy::None);
+        assert_eq!(items(&ideas), vec![Need::Ticket(1)], "but in their view");
+        assert_eq!(builtin_views()[ideas_view()].query, "status:idea");
+        let idea = &m.tickets[0];
+        assert_eq!(yes_commands("acme", idea, None, ""), vec![Command::MoveTicket { squad: "acme".into(), ticket: 1, status: Some(TicketStatus::Todo), before: None }]);
     }
 
     #[test]

@@ -427,10 +427,16 @@ impl Runtime {
                 self.brief_pm(squad, line, Some(shown));
             }
             board::Move::TakeOn => return self.take_on(squad, t).await,
-            board::Move::BackToProposal | board::Move::Restore(_) => {
+            board::Move::BackToProposal | board::Move::Restore(_) | board::Move::Shelve => {
+                let was_idea = t.status == TicketStatus::Idea;
                 t.status = to;
                 t.assignee = None;
-                let (event, line, shown) = if rule == board::Move::BackToProposal {
+                let (event, line, shown) = if rule == board::Move::Shelve {
+                    t.note = None;
+                    ("kept as an idea", format!("The person kept T-{id} ({}) as an idea: not for now. Don't start it; when its time comes, put it to them (update_ticket, status proposed, with why now).", t.title), say!(self, "news.shelved", id = id, title = t.title))
+                } else if was_idea {
+                    ("idea proposed", format!("The person put their idea T-{id} ({}) up as a proposal.", t.title), say!(self, "news.idea_proposed", id = id, title = t.title))
+                } else if rule == board::Move::BackToProposal {
                     ("back to proposal", format!("The person put T-{id} ({}) back to a proposal: it isn't to be done for now.", t.title), say!(self, "news.back_to_proposal", id = id, title = t.title))
                 } else {
                     t.note = Some("Restored by the person.".into());
@@ -484,6 +490,7 @@ impl Runtime {
 
     /// A proposal taken on: ready for its owner (the person's yes — never a member's).
     pub(super) async fn take_on(&mut self, squad: &str, mut ticket: Ticket) {
+        let was_idea = ticket.status == TicketStatus::Idea;
         ticket.status = TicketStatus::Todo;
         ticket.note = None;
         let id = ticket.id;
@@ -492,7 +499,7 @@ impl Runtime {
             let _ = journal.ticket_event(id, "you", "taken on", "");
         }
         let line = format!("The person took on T-{id} ({}): it is ready for its owner.", ticket.title);
-        let shown = say!(self, "news.taken_on", id = id, title = ticket.title);
+        let shown = if was_idea { say!(self, "news.idea_started", id = id, title = ticket.title) } else { say!(self, "news.taken_on", id = id, title = ticket.title) };
         let concerned = vec![ticket.owner.clone(), Some(ticket.created_by.clone())];
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         self.tell_about(squad, &concerned, line, shown);

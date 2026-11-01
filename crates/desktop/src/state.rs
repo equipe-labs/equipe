@@ -211,6 +211,7 @@ pub fn status_word(status: TicketStatus) -> &'static str {
         TicketStatus::Waiting => t!("state.status_waiting"),
         TicketStatus::Review => t!("state.status_review"),
         TicketStatus::Proposed => t!("state.status_proposed"),
+        TicketStatus::Idea => t!("state.status_idea"),
         TicketStatus::Todo => t!("state.status_todo"),
         TicketStatus::InProgress => t!("state.status_in_progress"),
         TicketStatus::Done => t!("state.status_done"),
@@ -1595,8 +1596,9 @@ impl Model {
             // only what it puts to them, on a card.
             TicketStatus::Review if self.pm_accepts => None,
             TicketStatus::Review => Some(Section::Review),
-            // …and so are members' proposals; the PM's own are for the person.
-            TicketStatus::Proposed if self.pm_accepts && (!self.is_pm_name(&t.created_by) || t.could_not_start()) => None,
+            // …and so are members' proposals; the PM's own are for the person,
+            // as is an idea of theirs the PM brings back, whoever kept it.
+            TicketStatus::Proposed if self.pm_accepts && t.why_now().is_none() && (!self.is_pm_name(&t.created_by) || t.could_not_start()) => None,
             TicketStatus::Proposed => Some(Section::Proposed),
             // A conflict its owner is resolving comes back through the PM.
             TicketStatus::Done if self.pm_accepts && matches!(t.off_main, Some(equipe_core::protocol::OffMain::Conflict { .. })) => None,

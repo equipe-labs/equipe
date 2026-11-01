@@ -5854,6 +5854,7 @@ there, end your turn, and carry on when they say they're done."
                     return Err(format!("There is no T-{missing} to depend on."));
                 }
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
+                let idea = args.get("idea").and_then(Value::as_bool).unwrap_or(false);
                 // Where the PM runs the work, a member's proposal is simply done:
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
@@ -5863,7 +5864,13 @@ there, end your turn, and carry on when they say they're done."
                     title: title.to_owned(),
                     body: body.to_owned(),
                     // The PM's are ready, unless it puts one up for the person to take on.
-                    status: if (is_pm && !proposal) || just_do { TicketStatus::Todo } else { TicketStatus::Proposed },
+                    status: if idea {
+                        TicketStatus::Idea
+                    } else if (is_pm && !proposal) || just_do {
+                        TicketStatus::Todo
+                    } else {
+                        TicketStatus::Proposed
+                    },
                     kind,
                     owner: owner.clone(),
                     assignee: None,
@@ -5891,7 +5898,13 @@ there, end your turn, and carry on when they say they're done."
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
                 }
-                if is_pm && proposal {
+                if idea {
+                    reply = format!("Kept T-{new_id} as an idea — nothing starts it. Tell the person in one line it's kept; when the board is light you'll be asked to look at the ideas again.");
+                    if !is_pm {
+                        let line = format!("{member} kept the person's idea T-{new_id}: {title}");
+                        self.brief_pm(&squad, line, None);
+                    }
+                } else if is_pm && proposal {
                     reply = format!("Proposed T-{new_id} — it waits for the person to take it on.");
                 } else if just_do {
                     reply = format!("T-{new_id} is on the board and starts as soon as its owner is free; the PM is told.");
@@ -5927,7 +5940,7 @@ there, end your turn, and carry on when they say they're done."
                     .collect();
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let mut ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
-                if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Todo | TicketStatus::Waiting) {
+                if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Idea | TicketStatus::Todo | TicketStatus::Waiting) {
                     let status = ticket.status.label();
                     return Err(format!("T-{ticket_id} is {status} — from here it's the person's to change."));
                 }
@@ -5957,7 +5970,20 @@ there, end your turn, and carry on when they say they're done."
                     ticket.depends_on = ids;
                 }
                 let waiting = ticket.status == TicketStatus::Waiting;
+                let was_idea = ticket.status == TicketStatus::Idea;
                 match board::arg_str(&args, "status") {
+                    // An idea's time has come: the person is asked, on its card.
+                    Some("proposed") if was_idea => {
+                        let why = board::arg_str(&args, "why").map(str::trim).filter(|w| !w.is_empty()).ok_or("Say `why` now — what makes this idea timely — in the person's language; it shows on the card that asks them.")?;
+                        ticket.status = TicketStatus::Proposed;
+                        ticket.note = Some(format!("{}{why}", equipe_protocol::WHY_NOW));
+                    }
+                    Some("proposed") => return Err("Only an idea is put up as a proposal; a ready ticket goes back to one by the person's hand.".into()),
+                    Some("idea") if waiting => return Err(format!("T-{ticket_id} waits on the person; it can't be kept for later until that's settled.")),
+                    Some("idea") => {
+                        ticket.status = TicketStatus::Idea;
+                        ticket.note = None;
+                    }
                     // Back to the member that put it down, where it left off.
                     Some("todo") if waiting => {
                         back_to_its_member(&mut ticket, &present, "Resumed: the PM says what you were waiting for is done.");
@@ -5967,12 +5993,16 @@ there, end your turn, and carry on when they say they're done."
                         ticket.note = None;
                     }
                     Some("cancelled") => ticket.status = TicketStatus::Cancelled,
-                    Some(other) => return Err(format!("A ticket's status can be set to todo or cancelled, not {other}.")),
+                    Some(other) => return Err(format!("A ticket's status can be set to todo, cancelled, proposed (an idea) or idea, not {other}.")),
                     None => {}
                 }
                 journal.save_ticket(&ticket).map_err(|e| e.to_string())?;
                 let _ = journal.ticket_event(ticket_id, &member, "updated", &args.to_string());
+                let pitched = was_idea && ticket.status == TicketStatus::Proposed;
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
+                if pitched {
+                    return Ok(format!("Put idea T-{ticket_id} to the person: its card asks whether to start it now. Tell them in a line or two why now; their click starts it."));
+                }
                 Ok(format!("Updated T-{ticket_id}."))
             }
             board::COMMENT => {
@@ -6043,6 +6073,20 @@ it back there once they have done it.{again} End your turn now with a short line
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),
+            board::ADD_PROJECT => {
+                if !is_pm {
+                    return Err("Only the PM adds projects; tell the PM which folder the person wants added.".into());
+                }
+                let typed = board::arg_str(&args, "path").ok_or("Which folder? Give its `path`.")?;
+                let user_home = std::env::var_os("HOME").map(PathBuf::from);
+                let path = crate::squads::add_folder_asked(&self.config.home, &squad, typed, user_home.as_deref())?;
+                let name = board::project_name(&path);
+                crate::daemon_log!("equipe: {squad} has a new project the PM added, {name} ({})", path.display());
+                self.publish_projects(&squad);
+                let shown = say!(self, "news.project_added", name = name, path = path.display().to_string());
+                self.show_news(id, shown);
+                Ok(format!("Added {name} at {} — tickets can name it now. Tell the person in one line; they can take it off from the sidebar.", path.display()))
+            }
             crate::signals::SIGNALS => self.read_signals(&squad, id, &args),
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
             board::ESTIMATE => {

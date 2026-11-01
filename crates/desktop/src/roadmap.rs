@@ -88,6 +88,8 @@ fn stage_of(model: &Model, t: &Ticket, now: u64) -> Option<Stage> {
         TicketStatus::Done => t.updated_at.is_some_and(|at| now.saturating_sub(at) < DONE_WINDOW).then_some(Stage::Done),
         TicketStatus::InProgress | TicketStatus::Review | TicketStatus::Waiting => Some(Stage::Now),
         TicketStatus::Proposed => Some(Stage::Next),
+        // Kept for later: later, on the road.
+        TicketStatus::Idea => Some(Stage::Later),
         TicketStatus::Todo => Some(if model.blocked_by(t).is_some() { Stage::Later } else { Stage::Next }),
     }
 }

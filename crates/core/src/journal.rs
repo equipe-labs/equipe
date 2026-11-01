@@ -220,6 +220,7 @@ fn mode_str(mode: Mode) -> &'static str {
 fn status_str(status: TicketStatus) -> &'static str {
     match status {
         TicketStatus::Proposed => "proposed",
+        TicketStatus::Idea => "idea",
         TicketStatus::Todo => "todo",
         TicketStatus::InProgress => "in_progress",
         TicketStatus::Waiting => "waiting",
@@ -232,6 +233,7 @@ fn status_str(status: TicketStatus) -> &'static str {
 fn status_from(s: &str) -> TicketStatus {
     match s {
         "proposed" => TicketStatus::Proposed,
+        "idea" => TicketStatus::Idea,
         "in_progress" => TicketStatus::InProgress,
         "waiting" => TicketStatus::Waiting,
         "review" => TicketStatus::Review,
@@ -743,6 +745,15 @@ impl Journal {
 
     pub fn set_idle_woken_at(&self, at: u64) -> Result<()> {
         self.set_meta("idle_woken_at", &at.to_string())
+    }
+
+    /// When the PM was last asked to look at the person's ideas, in unix seconds.
+    pub fn ideas_woken_at(&self) -> Option<u64> {
+        self.meta("ideas_woken_at").and_then(|at| at.parse().ok())
+    }
+
+    pub fn set_ideas_woken_at(&self, at: u64) -> Result<()> {
+        self.set_meta("ideas_woken_at", &at.to_string())
     }
 
     pub fn set_hq(&self, path: Option<&Path>) -> Result<()> {

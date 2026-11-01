@@ -24,7 +24,7 @@ use gpui_kit::*;
 
 use super::board::dot;
 use super::header::project_color;
-use crate::board::{HeadClick, Live, Menu, SideGroup, recent_done_view, side_groups};
+use crate::board::{HeadClick, Live, Menu, SideGroup, ideas_view, recent_done_view, side_groups};
 use crate::state::{Conn, Member, Model, Need, Side, Status, short_span};
 use crate::side_split::Divider;
 use crate::theme::{Palette, Sans, UI, key_face};
@@ -305,6 +305,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     }
     list.extend(removed_row(shell, cx));
     list.push(done_row(shell, after_rows, cx));
+    list.extend(ideas_row(shell, cx));
 
     // The three areas: what each was drawn as goes to the hairlines' drags.
     let drawn = shell.board.side_drawn.clone();
@@ -1157,6 +1158,26 @@ fn done_row(shell: &Shell, after_rows: bool, cx: &mut Context<Shell>) -> AnyElem
         .child(div().flex_none().text_size(px(TEXT)).text_color(if on { p.text } else if today > 0 { p.text2 } else { p.muted }).child(label))
         .child(icon(IconName::ChevronRight, 11., p.muted))
         .into_any_element()
+}
+
+/// The person's ideas, kept for later, under what was finished: how many,
+/// which opens them. None kept: no row.
+fn ideas_row(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let kept = shell.model.tickets.iter().filter(|t| t.status == TicketStatus::Idea && shell.model.in_focus(t)).count();
+    if kept == 0 {
+        return None;
+    }
+    let on = shell.screen == Screen::Board && shell.board.view.menu == Menu::View(ideas_view());
+    let label = t!("sidebar.ideas", n = kept);
+    Some(
+        row_shell(p, "ideas", on)
+            .on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::View(ideas_view()), cx)))
+            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Lightbulb, 12., p.text2)))
+            .child(div().flex_none().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(label))
+            .child(icon(IconName::ChevronRight, 11., p.muted))
+            .into_any_element(),
+    )
 }
 
 /// The team, pinned above the foot so it never scrolls away: a compact row

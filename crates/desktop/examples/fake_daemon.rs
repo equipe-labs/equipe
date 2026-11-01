@@ -346,6 +346,10 @@ fn board() -> Vec<Ticket> {
             ticket(73, "waiting", "api", "backend", "운영 DB 읽기 전용 계정", "", &[], None, Some("Waiting on you:\n- [ ] 운영 DB 읽기 전용 비밀번호 알려 주기")),
             ticket(52, "proposed", "web", "frontend", "다크 모드 토글", "사용자 설정에 다크 모드를 넣으면 야간 이용 시간이 늘 것 같습니다.\n\n- [ ] 시스템 설정을 따른다\n- [ ] 직접 고를 수 있다", &[], None, None),
             ticket(64, "proposed", "app", "designer", "빈 화면 일러스트 세트", "", &[], None, None),
+            // The person's ideas, kept for later — and one the PM brought back.
+            ticket(80, "idea", "app", "pm", "클라우드 서버에서 equipe 돌리기", "맥미니 없이도 쓸 수 있게, 서버를 빌려 컴퓨터 전체를 맡기는 방식.", &[], None, None),
+            ticket(81, "idea", "web", "marketing", "온보딩 영상 가이드", "처음 쓰는 사람이 3분 영상으로 따라 할 수 있게.", &[], None, None),
+            ticket(82, "proposed", "web", "frontend", "주간 리포트 이메일", "매주 월요일, 지난주 지표를 메일로 받아 보기.", &[], None, Some("Why now: 지난주 지표 대시보드가 막 출시돼서, 같은 데이터로 바로 만들 수 있어요. 지금 손이 비는 멤버도 있어요.")),
         ]);
         let mut task = ticket(63, "review", "app", "designer", "경쟁 앱 온보딩 조사", "", &[], None, Some("다섯 개 앱의 온보딩을 정리했습니다. `research/onboarding.md`"));
         task.kind = equipe_core::protocol::TicketKind::Task;
@@ -789,6 +793,7 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
                 Move::Cancel => TicketStatus::Cancelled,
                 Move::Resume | Move::SendBack | Move::TakeOn => TicketStatus::Todo,
                 Move::BackToProposal => TicketStatus::Proposed,
+                Move::Shelve => TicketStatus::Idea,
                 Move::Restore(s) => s,
             };
             if t.status != found.status {

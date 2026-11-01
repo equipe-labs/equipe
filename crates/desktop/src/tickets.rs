@@ -51,9 +51,10 @@ impl Layout {
     }
 }
 
-/// The board's columns, left to right; the last holds finished work.
-pub const COLUMNS: [TicketStatus; 6] =
-    [TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Waiting, TicketStatus::Review, TicketStatus::Done];
+/// The board's columns, left to right — the person's ideas first, kept for
+/// later; the last holds finished work.
+pub const COLUMNS: [TicketStatus; 7] =
+    [TicketStatus::Idea, TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Waiting, TicketStatus::Review, TicketStatus::Done];
 
 /// How far back the finished column reaches until "more" is asked for.
 pub const DONE_DAYS: u64 = 7;
@@ -147,8 +148,9 @@ pub fn local_rank(model: &Model, id: TicketId, status: TicketStatus, before: Opt
 }
 
 /// What the person may do to a ticket's status by hand — a drag, or the
-/// status menu: take a proposal on, order what is ready (and the proposals),
-/// cancel anything open. Into 진행 중, 내 차례, 검토 or 끝남 it never goes by
+/// status menu: take a proposal or an idea on, keep a proposal or ready work
+/// as an idea, order what is ready (and the proposals and ideas), cancel
+/// anything open. Into 진행 중, 내 차례, 검토 or 끝남 it never goes by
 /// hand: members and accepting own those.
 pub fn person_rule(t: &Ticket, to: TicketStatus) -> Result<Move, Why> {
     use TicketStatus::*;
@@ -159,7 +161,8 @@ pub fn person_rule(t: &Ticket, to: TicketStatus) -> Result<Move, Why> {
     match (from, to) {
         (_, Cancelled) if t.status.is_closed() => Err(Why::Core(Refusal::Closed)),
         (_, Cancelled) => Ok(Move::Cancel),
-        (Proposed, Todo) => Ok(Move::TakeOn),
+        (Proposed | Idea, Todo) => Ok(Move::TakeOn),
+        (Proposed | Todo, Idea) => Ok(Move::Shelve),
         (_, InProgress) => Err(Why::Core(Refusal::StartsByItself)),
         (_, Waiting) => Err(Why::Core(Refusal::WaitsByMember)),
         (_, Review) => Err(Why::Core(Refusal::HandedInByMember)),
@@ -189,8 +192,8 @@ pub fn drop_card(model: &Model, t: &Ticket, to: TicketStatus, before: Option<Tic
     if what == Move::Cancel {
         return Ok(Drop::ConfirmCancel);
     }
-    // Order means something where work waits to be picked up: 할 일, and the proposals.
-    let ordered = matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed);
+    // Order means something where work waits to be picked up: 할 일, the proposals and the ideas.
+    let ordered = matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed | TicketStatus::Idea);
     let same_place = before == Some(t.id) || (what == Move::Reorder && next_in_column(model, t) == before && before.is_some());
     if what == Move::Reorder && (same_place || !ordered) {
         return Ok(Drop::Stay);
@@ -199,8 +202,10 @@ pub fn drop_card(model: &Model, t: &Ticket, to: TicketStatus, before: Option<Tic
     let commands = vec![Command::MoveTicket { squad: model.squad.clone(), ticket: t.id, status, before }];
     let mut after = t.clone();
     after.rank = local_rank(model, t.id, to, before);
-    if what == Move::TakeOn {
-        after.status = TicketStatus::Todo;
+    match what {
+        Move::TakeOn => after.status = TicketStatus::Todo,
+        Move::Shelve => after.status = TicketStatus::Idea,
+        _ => {}
     }
     Ok(Drop::Send { commands, after: Box::new(after), what })
 }
@@ -345,7 +350,7 @@ pub fn owners(model: &Model) -> Vec<(String, String)> {
 
 /// The statuses the status menu offers, each with why not when it can't be picked.
 pub fn status_choices(t: &Ticket) -> Vec<(TicketStatus, Option<Why>)> {
-    [TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Waiting, TicketStatus::Review, TicketStatus::Done, TicketStatus::Cancelled]
+    [TicketStatus::Idea, TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Waiting, TicketStatus::Review, TicketStatus::Done, TicketStatus::Cancelled]
         .into_iter()
         .map(|s| (s, if s == t.status { None } else { person_rule(t, s).err() }))
         .collect()
@@ -568,14 +573,31 @@ mod tests {
         fresh.updated_at = Some(100 * 86_400 - 3600);
         let mut cancelled = ticket(10, "cancelled");
         cancelled.updated_at = Some(100 * 86_400 - 60);
-        let m = model(vec![ticket(1, "proposed"), ticket(2, "todo"), moved, ticket(4, "in_progress"), ticket(5, "waiting"), ticket(6, "review"), old, fresh, cancelled]);
+        let m = model(vec![ticket(1, "proposed"), ticket(2, "todo"), moved, ticket(4, "in_progress"), ticket(5, "waiting"), ticket(6, "review"), old, fresh, cancelled, ticket(11, "idea")]);
         let cols = columns(&m, &Filter::default(), false);
         let ids: Vec<Vec<u32>> = cols.iter().map(|c| c.cards.clone()).collect();
-        assert_eq!(ids, vec![vec![1], vec![3, 2], vec![4], vec![5], vec![6], vec![9]], "cancelled work out of sight");
-        assert_eq!(cols[5].hidden, 1, "older finished work behind more");
-        assert_eq!(columns(&m, &Filter::default(), true)[5].cards, vec![9, 8]);
-        assert_eq!(columns(&m, &Filter::parse("status:cancelled"), false)[5].cards, vec![10], "unless asked for");
-        assert_eq!(columns(&m, &Filter::parse("title 2"), false)[1].cards, vec![2], "the filter narrows the board too");
+        assert_eq!(ids, vec![vec![11], vec![1], vec![3, 2], vec![4], vec![5], vec![6], vec![9]], "the ideas first; cancelled work out of sight");
+        assert_eq!(cols[6].hidden, 1, "older finished work behind more");
+        assert_eq!(columns(&m, &Filter::default(), true)[6].cards, vec![9, 8]);
+        assert_eq!(columns(&m, &Filter::parse("status:cancelled"), false)[6].cards, vec![10], "unless asked for");
+        assert_eq!(columns(&m, &Filter::parse("title 2"), false)[2].cards, vec![2], "the filter narrows the board too");
+    }
+
+    #[test]
+    fn by_hand_an_idea_is_started_and_a_proposal_or_ready_work_is_kept_as_one() {
+        let m = model(vec![ticket(1, "idea"), ticket(2, "proposed"), ticket(3, "todo"), ticket(4, "in_progress"), ticket(5, "idea")]);
+        let t = |id| m.tickets.iter().find(|t| t.id == id).unwrap().clone();
+        let Ok(Drop::Send { commands, after, what }) = drop_card(&m, &t(1), TicketStatus::Todo, None) else { panic!() };
+        assert_eq!((what, after.status), (Move::TakeOn, TicketStatus::Todo));
+        assert_eq!(commands, vec![Command::MoveTicket { squad: "acme".into(), ticket: 1, status: Some(TicketStatus::Todo), before: None }]);
+        for id in [2, 3] {
+            let Ok(Drop::Send { after, what, .. }) = drop_card(&m, &t(id), TicketStatus::Idea, None) else { panic!("T-{id}") };
+            assert_eq!((what, after.status), (Move::Shelve, TicketStatus::Idea));
+        }
+        assert!(drop_card(&m, &t(4), TicketStatus::Idea, None).is_err(), "work under way isn't shelved by hand");
+        assert!(matches!(drop_card(&m, &t(5), TicketStatus::Idea, Some(1)), Ok(Drop::Send { what: Move::Reorder, .. })), "ideas keep the person's order");
+        assert_eq!(person_rule(&t(1), TicketStatus::InProgress), Err(Why::Core(Refusal::StartsByItself)));
+        assert!(status_choices(&t(3)).iter().any(|(s, why)| *s == TicketStatus::Idea && why.is_none()), "the status menu offers it");
     }
 
     #[test]
