@@ -1,0 +1,4 @@
+{
+  "match.answers": "?|tell me|let me know|which|what |when |who |where |how many|how much|decide|choose|pick|provide|share|send me|give me|name the",
+  "match.confirms": "confirm|looks good|look over|check that|check the|review the|is it ok|ok?|approve"
+}

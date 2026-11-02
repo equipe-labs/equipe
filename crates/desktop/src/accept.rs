@@ -229,25 +229,22 @@ pub fn read_words(text: &str, tickets: &[Ticket]) -> Option<(Verdict, Vec<Ticket
         return None;
     }
     // Asking, not saying; a "not", a "wait", an "if": not plain.
-    const UNSURE: [&str; 30] = [
-        "?", "？", "않", "안 ", "안해", "안 해", "말고", "말아", "마세요", "하지 마", "하지마", "지 마", "아직", "보류", "잠깐", "나중", "하면", "되면", "이면", "으면",
-        "not ", "n't", "dont", "never", "wait", "later", "hold", "if ", "unless", "after ",
-    ];
-    if UNSURE.iter().any(|w| lower.contains(w)) {
+    let unsure = crate::i18n::every("match.accept_unsure");
+    if ["?", "？"].iter().chain(unsure).any(|w| lower.contains(w)) {
         return None;
     }
-    let merge = ["머지", "병합", "merge"].iter().any(|w| lower.contains(w));
-    let accept = ["수락", "승인", "accept", "approve"].iter().any(|w| lower.contains(w));
+    let merge = crate::i18n::every("match.accept_merge").iter().any(|w| lower.contains(w));
+    let accept = crate::i18n::every("match.accept_accept").iter().any(|w| lower.contains(w));
     if !(merge || accept) {
         return None;
     }
     let verdict = if merge { Verdict::Merge } else { Verdict::Accept };
     let named = named_tickets(&lower);
     let words: Vec<&str> = lower.split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | '!' | '~')).filter(|w| !w.is_empty()).collect();
-    let verbs = ["수락", "승인", "머지", "병합"];
-    let all = words.iter().any(|w| {
-        w.starts_with("전부") || w.starts_with("모두") || w.starts_with("몽땅") || matches!(*w, "다" | "all" | "everything") || verbs.iter().any(|v| w.starts_with(&format!("다{v}")))
-    });
+    // "전부", "모두수락"; "다", "all"; "다승인" — all, and the verb after it.
+    let starts = crate::i18n::every("match.accept_all_starts");
+    let whole = crate::i18n::every("match.accept_all_words");
+    let all = words.iter().any(|w| starts.iter().any(|s| w.starts_with(s)) || *w == "all" || whole.contains(w));
     let ids = match (named.is_empty(), all) {
         (false, _) => named,
         (true, true) => all_of(tickets, verdict),

@@ -35,7 +35,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .border_t_1()
         .border_color(p.hair)
         .pt_3()
-        .child(div().mt(px(1.)).child(icon(Icon::Lock, ICON_SM, p.muted)))
+        .child(div().mt(px(2.)).child(icon(Icon::Lock, ICON_SM, p.muted)))
         .child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("notify.sheet_private")));
     let buttons = h_flex()
         .gap_2()

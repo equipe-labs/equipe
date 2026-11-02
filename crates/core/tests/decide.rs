@@ -78,6 +78,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
     }
 }
 

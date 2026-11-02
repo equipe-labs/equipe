@@ -50,6 +50,7 @@ async fn a_look_and_a_clean_go_through_the_daemon_and_off_its_loop() {
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
     };
     let (handle, mut events) = runtime::start(config);
 

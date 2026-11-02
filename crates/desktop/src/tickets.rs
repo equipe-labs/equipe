@@ -434,7 +434,7 @@ pub fn parse_quick(text: &str, model: &Model) -> (Sheet, Vec<Token>) {
         } else if let Some(id) = word.strip_prefix("after:").and_then(ticket_id) {
             sheet.depends_on.push(id);
             tokens.push(Token::After(id));
-        } else if (word == "after" || word == "선행") && words.peek().is_some_and(|w| ticket_id(w).is_some()) {
+        } else if (word == "after" || crate::i18n::every("match.after_words").contains(&word)) && words.peek().is_some_and(|w| ticket_id(w).is_some()) {
             let id = words.next().and_then(ticket_id).unwrap_or_default();
             sheet.depends_on.push(id);
             tokens.push(Token::After(id));
@@ -448,11 +448,16 @@ pub fn parse_quick(text: &str, model: &Model) -> (Sheet, Vec<Token>) {
 
 /// `!high`, `!긴급`, `!1` (urgent) … `!4` (low).
 fn priority_of(word: &str) -> Option<Priority> {
+    let is = |key: &str| crate::i18n::every(key).contains(&word);
     Priority::parse(word).or(match word {
-        "긴급" | "1" | "u" => Some(Priority::Urgent),
-        "높음" | "2" | "h" => Some(Priority::High),
-        "보통" | "3" | "n" => Some(Priority::Normal),
-        "낮음" | "4" | "l" => Some(Priority::Low),
+        "1" | "u" => Some(Priority::Urgent),
+        "2" | "h" => Some(Priority::High),
+        "3" | "n" => Some(Priority::Normal),
+        "4" | "l" => Some(Priority::Low),
+        _ if is("match.priority_urgent") => Some(Priority::Urgent),
+        _ if is("match.priority_high") => Some(Priority::High),
+        _ if is("match.priority_normal") => Some(Priority::Normal),
+        _ if is("match.priority_low") => Some(Priority::Low),
         _ => None,
     })
 }

@@ -39,6 +39,8 @@ pub enum Goal {
     Project(String),
     /// A ticket, on the board.
     Ticket(u32),
+    /// A conversation with the PM the person opened.
+    Conversation(equipe_core::protocol::SessionId),
 }
 
 /// Open `goal` in a window of its own — once the click that asked is done
@@ -81,6 +83,7 @@ impl Shell {
                 self.open_side(crate::state::Side::Pm, window, cx);
             }
             Goal::Ticket(id) => self.open_ticket(id, cx),
+            Goal::Conversation(id) => self.open_side(crate::state::Side::Conversation(id), window, cx),
         }
         cx.notify();
     }

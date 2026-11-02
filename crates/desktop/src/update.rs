@@ -13,6 +13,10 @@
 //! pill, settings, the update notices) and, with any error whole (domain,
 //! code, userInfo, the underlying errors), to ~/Library/Logs/equipe/updates.log.
 //!
+//! Sparkle reads no feed while an update waits (it resumes the staged one);
+//! the app reads it itself and a restart goes on to the newest
+//! (`relaunch.rs`, "the newest, in one restart").
+//!
 //! The app never starts a session against one in progress: a quiet check only
 //! when Sparkle has none and no update is found, downloading or waiting
 //! (`relaunch::may_check_quietly`), and "지금 확인" with an update waiting

@@ -18,6 +18,15 @@ pub struct Ask {
     pub then: Then,
 }
 
+impl Ask {
+    /// Whether yes takes something away — a project off the squad, a member,
+    /// a ticket: its button says so in red.
+    pub fn destructive(&self) -> bool {
+        use equipe_core::protocol::Command;
+        matches!(&self.then, Then::Send(commands) if commands.iter().any(|c| matches!(c, Command::RemoveProject { .. } | Command::Close { .. } | Command::Cancel { .. })))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Then {
     /// Send these commands to the daemon.
@@ -78,16 +87,16 @@ impl Row {
 /// `/usage`: the plan's windows, then each member.
 pub fn usage_sheet(view: &usage::View) -> Sheet {
     let row = |r: &usage::Row| Row { bar: r.percent, ..Row::text(r.label.clone(), r.text.clone()) };
-    let rows = std::iter::once(Row::heading("CLAUDE 플랜"))
+    let rows = std::iter::once(Row::heading(equipe_core::t!("sheet.claude_plan")))
         .chain(view.plan.iter().map(row))
         .chain(std::iter::once(Row::heading(equipe_core::t!("engines.codex_heading"))))
         .chain(view.codex.iter().map(row))
         .chain(std::iter::once(Row::heading(equipe_core::t!("engines.settings_section"))))
         .chain(std::iter::once(row(&view.switching)))
-        .chain(std::iter::once(Row::heading("멤버")))
+        .chain(std::iter::once(Row::heading(equipe_core::t!("sheet.members"))))
         .chain(view.members.iter().map(row))
         .collect();
-    Sheet { title: "사용량".into(), lead: None, rows, buttons: Vec::new(), foot: Some(usage::NOTE.into()) }
+    Sheet { title: equipe_core::t!("sheet.usage_title").into(), lead: None, rows, buttons: Vec::new(), foot: Some(equipe_core::t!("usage.note").into()) }
 }
 
 /// `/help`: this window's keys and every command.
@@ -96,7 +105,7 @@ pub fn help_sheet() -> Sheet {
         .into_iter()
         .flat_map(|s| std::iter::once(Row::heading(s.title)).chain(s.rows.into_iter().map(|(k, w)| Row::text(k, w))))
         .collect();
-    Sheet { title: "도움말".into(), lead: Some(help::INTRO.into()), rows, buttons: Vec::new(), foot: Some("⌘Q로 나가도 스쿼드는 계속 일합니다.".into()) }
+    Sheet { title: equipe_core::t!("help.title").into(), lead: Some(help::intro().into()), rows, buttons: Vec::new(), foot: Some(equipe_core::t!("help.foot").into()) }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,7 +143,7 @@ pub fn after(after: &After, answer: Result<Vec<String>, String>) -> Outcome {
                     None => Row::text("", line.clone()),
                 })
                 .collect();
-            Outcome::Sheet(Sheet { title: title.clone(), lead: None, rows, buttons: Vec::new(), foot: undo.then(|| "1이 가장 최근입니다. 되돌림도 변경으로 남아 다시 되돌릴 수 있습니다.".to_owned()) })
+            Outcome::Sheet(Sheet { title: title.clone(), lead: None, rows, buttons: Vec::new(), foot: undo.then(|| equipe_core::t!("sheet.changes_foot").to_owned()) })
         }
         After::Memory => {
             let mut lead = None;
@@ -143,7 +152,7 @@ pub fn after(after: &After, answer: Result<Vec<String>, String>) -> Outcome {
                 if i == 0 {
                     lead = Some(line.clone());
                 } else if let Some(recent) = line.strip_prefix("lately: ") {
-                    rows.push(Row::text("최근", recent));
+                    rows.push(Row::text(equipe_core::t!("sheet.lately"), recent));
                 } else if let Some((name, about)) = line.split_once(" — ") {
                     rows.push(Row::text(name, about));
                 } else {
@@ -151,11 +160,11 @@ pub fn after(after: &After, answer: Result<Vec<String>, String>) -> Outcome {
                 }
             }
             Outcome::Sheet(Sheet {
-                title: "스쿼드의 기억".into(),
+                title: equipe_core::t!("sheet.memory_title").into(),
                 lead,
                 rows,
                 buttons: Vec::new(),
-                foot: Some("파일을 고치거나 지우면 스쿼드가 아는 것이 바뀝니다. 바뀐 내용: /memory changes · 되돌리기: /home undo".into()),
+                foot: Some(equipe_core::t!("sheet.memory_foot").into()),
             })
         }
         After::Confirm { title, yes, then } => {

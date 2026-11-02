@@ -88,23 +88,33 @@ fn start(home: &Path, name: &str, project: Option<&Path>) -> Result<(), String> 
     if !valid_name(name) {
         return Err(format!("'{name}' isn't a squad name — use lowercase letters, digits and dashes"));
     }
-    if squad_dir(home, name).join("squad.db").exists() {
+    let dir = squad_dir(home, name);
+    if dir.join("squad.db").exists() {
         return Err(format!("there is already a squad called {name}"));
     }
-    if let Some(project) = project {
-        add_project(home, name, project)?;
+    let new = !dir.exists();
+    let made = match project {
+        Some(project) => add_project(home, name, project),
+        None => Ok(()),
     }
-    let journal = Journal::for_squad(home, name).map_err(|err| err.to_string())?;
-    // Its heartbeat: a weekly check-in, on — the person's to change or turn
-    // off — and the board counted as quiet from now, not from ever.
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
-    let lang = crate::i18n::Lang::resolve_in(home, crate::i18n::Front::App);
-    let mut check_in = crate::heartbeat::weekly_check_in(lang);
-    check_in.next_run = Some(crate::routines::next_run(check_in.when, now, &crate::routines::Local));
-    journal.set_routines(&[check_in]).map_err(|err| err.to_string())?;
-    journal.set_active_at(now).map_err(|err| err.to_string())?;
-    drop(journal);
-    crate::squad_home::ensure(home, name, None).map(|_| ())
+    .and_then(|()| {
+        let journal = Journal::for_squad(home, name).map_err(|err| err.to_string())?;
+        // Its heartbeat: a weekly check-in, on — the person's to change or turn
+        // off — and the board counted as quiet from now, not from ever.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+        let lang = crate::i18n::Lang::resolve_in(home, crate::i18n::Front::App);
+        let mut check_in = crate::heartbeat::weekly_check_in(lang);
+        check_in.next_run = Some(crate::routines::next_run(check_in.when, now, &crate::routines::Local));
+        journal.set_routines(&[check_in]).map_err(|err| err.to_string())?;
+        journal.set_active_at(now).map_err(|err| err.to_string())?;
+        drop(journal);
+        crate::squad_home::ensure(home, name, None).map(|_| ())
+    });
+    // Not half made (git missing on a new Mac, say): the name stays free to try again.
+    if made.is_err() && new {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    made
 }
 
 /// The squad to open where no project says which: the one opened last, else

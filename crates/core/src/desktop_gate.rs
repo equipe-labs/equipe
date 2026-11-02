@@ -71,45 +71,15 @@ const BLOCKED_APPS: [&str; 6] = [
 /// account, passwords, security settings. Matched in the window's title (outside
 /// messaging apps, where it is a conversation's name) and in the name of what
 /// is clicked or typed into.
-const BLOCKED_WORDS: [&str; 30] = [
-    "password",
-    "passcode",
-    "passkey",
-    "비밀번호",
-    "암호 변경",
-    "two-factor",
-    "2단계 인증",
-    "security settings",
-    "privacy & security",
-    "개인정보 보호 및 보안",
-    "보안 설정",
-    "touch id & password",
-    "users & groups",
-    "filevault",
-    "delete account",
-    "close account",
-    "delete my account",
-    "계정 삭제",
-    "회원 탈퇴",
-    "회원탈퇴",
-    "payment",
-    "checkout",
-    "pay now",
-    "buy now",
-    "place order",
-    "billing",
-    "결제",
-    "구매하기",
-    "주문하기",
-    "송금",
-];
+fn blocked_words() -> impl Iterator<Item = &'static str> {
+    crate::i18n::every("match.blocked_words").iter().copied().chain(["filevault"])
+}
 
 /// Names of buttons that reach someone: clicking one in a messaging app asks.
-/// English ones are whole words ("call", not "recall").
-const OUTWARD_WORDS: [&str; 26] = [
-    "send", "share", "invite", "accept", "join", "post", "submit", "publish", "call", "upload", "attach", "forward",
-    "보내기", "전송", "보냄", "공유", "초대", "수락", "참가", "참여", "게시", "제출", "통화", "업로드", "첨부", "전달",
-];
+/// ASCII ones are whole words ("call", not "recall").
+fn outward_words() -> &'static [&'static str] {
+    crate::i18n::every("match.outward_words")
+}
 
 /// AX roles of things a click acts on rather than places a cursor in.
 const PRESSABLE: [&str; 6] = ["AXButton", "AXMenuButton", "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXMenuItem"];
@@ -285,7 +255,7 @@ fn presses(keys: &str) -> bool {
 fn outward(name: &str) -> bool {
     let name = name.to_lowercase();
     let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).collect();
-    OUTWARD_WORDS.iter().any(|w| if w.is_ascii() { words.contains(w) } else { name.contains(w) })
+    outward_words().iter().any(|w| if w.is_ascii() { words.contains(w) } else { name.contains(w) })
 }
 
 /// Why no member may make this input, in any mode, if so.
@@ -305,7 +275,7 @@ fn blocked(act: &Act, scene: &Scene, in_messaging: bool) -> Option<&'static str>
     let window = scene.window.as_deref().filter(|_| !in_messaging);
     let sensitive = |text: &str| {
         let text = text.to_lowercase();
-        BLOCKED_WORDS.iter().any(|w| text.contains(w))
+        blocked_words().any(|w| text.contains(w))
     };
     if window.into_iter().chain(on.into_iter().flat_map(Element::names)).any(sensitive) {
         return Some("Payment, account deletion, passwords and security settings are the person's to do: equipe never acts there.");

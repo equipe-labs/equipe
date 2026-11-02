@@ -174,7 +174,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap | Screen::Metrics => return Took::Pass,
         };
         if self.decide.drafts.get(&id).is_none_or(|d| d.collapsed) {
             return Took::Pass;
@@ -687,6 +687,7 @@ fn key_badge(p: Palette, key: &str, on: bool) -> impl IntoElement {
         .border_color(if on { p.accent } else { p.hair })
         .when(on, |b| b.bg(p.accent))
         .font_family(MONO)
+        .font_features(crate::theme::key_face())
         .text_size(px(11.))
         .text_color(if on { p.bg } else { p.muted })
         .child(key.to_owned())

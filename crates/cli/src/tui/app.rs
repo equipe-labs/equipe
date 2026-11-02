@@ -1761,6 +1761,9 @@ impl App {
                 self.on_ticket(ticket);
                 return Vec::new();
             }
+            // Nemotron's reviews show in the desktop's ticket peek and in
+            // `equipe review`; the console's board doesn't draw them yet.
+            Event::CodeReviewed { .. } => return Vec::new(),
             Event::ApprovalRequested { approval, .. } => {
                 self.approvals.push(approval);
                 return Vec::new();
@@ -1811,7 +1814,7 @@ impl App {
             self.agents.push(Agent::new(id, member.clone(), false, self.cwd.clone()));
         }
         // A session just started that turns out to be a lane: it leaves the list.
-        if let Event::LaneOpened { of, project, .. } = &event
+        if let Event::LaneOpened { of, project, kept, .. } = &event
             && let Some(at) = self.agents.iter().position(|a| a.id == id)
         {
             let mut lane = self.agents.remove(at);
@@ -1819,13 +1822,15 @@ impl App {
                 self.selected -= 1;
             }
             // Its conversation so far: what the member said about the project.
+            // (A conversation the person opened starts empty.)
             if let Some(main) = self.agents.iter().find(|a| a.id == *of)
+                && !*kept
                 && main.thread_view == *project
             {
                 lane.transcript = Transcript::from_entries(main.shown().into_iter().map(|e| e.into_owned()).collect());
             }
             lane.thread_view = None;
-            lane.lane = Some(equipe_core::protocol::Lane { of: *of, project: project.clone() });
+            lane.lane = Some(equipe_core::protocol::Lane { of: *of, project: project.clone(), kept: *kept });
             self.lanes.push(lane);
             return Vec::new();
         }

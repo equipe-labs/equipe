@@ -216,14 +216,22 @@ pub struct Filter {
 pub const FILTER_WORDS: [&str; 6] = ["is:blocked", "is:live", "is:quiet", "has:branch", "not-on-main", "kind:code"];
 
 fn status_of(word: &str) -> Option<TicketStatus> {
+    let is = |key: &str| crate::i18n::every(key).contains(&word);
     Some(match word {
-        "review" | "검토" => TicketStatus::Review,
-        "waiting" | "내차례" | "내_차례" => TicketStatus::Waiting,
-        "proposed" | "제안" => TicketStatus::Proposed,
-        "todo" | "할일" | "할_일" => TicketStatus::Todo,
-        "progress" | "in_progress" | "working" | "작업중" | "작업_중" => TicketStatus::InProgress,
-        "done" | "끝남" => TicketStatus::Done,
-        "cancelled" | "취소" => TicketStatus::Cancelled,
+        "review" => TicketStatus::Review,
+        "waiting" => TicketStatus::Waiting,
+        "proposed" => TicketStatus::Proposed,
+        "todo" => TicketStatus::Todo,
+        "progress" | "in_progress" | "working" => TicketStatus::InProgress,
+        "done" => TicketStatus::Done,
+        "cancelled" => TicketStatus::Cancelled,
+        _ if is("match.status_review") => TicketStatus::Review,
+        _ if is("match.status_waiting") => TicketStatus::Waiting,
+        _ if is("match.status_proposed") => TicketStatus::Proposed,
+        _ if is("match.status_todo") => TicketStatus::Todo,
+        _ if is("match.status_progress") => TicketStatus::InProgress,
+        _ if is("match.status_done") => TicketStatus::Done,
+        _ if is("match.status_cancelled") => TicketStatus::Cancelled,
         _ => return None,
     })
 }

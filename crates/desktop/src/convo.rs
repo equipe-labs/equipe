@@ -20,7 +20,12 @@ use crate::state::Clock;
 /// How many targets a merged tool line names before it counts the rest.
 pub const TARGETS_SHOWN: usize = 3;
 
-/// A subagent the member handed work to, at it now.
+/// How many of a subagent's steps and words a screen keeps: the latest.
+pub const SUB_KEPT: usize = 200;
+/// How many subagents that handed back a conversation keeps to look into.
+pub const SUBS_FINISHED: usize = 12;
+
+/// A subagent the member handed work to: at it now, or handed back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sub {
     pub id: String,
@@ -30,6 +35,43 @@ pub struct Sub {
     pub step: Option<String>,
     /// Since when it works (attached mid-way: as long ago as the daemon said).
     pub since: Instant,
+    /// The whole of what it was asked (an older daemon: empty).
+    pub brief: String,
+    /// Its steps done and its words, oldest first: the latest [`SUB_KEPT`].
+    pub entries: Vec<Entry>,
+    /// How it ended, once it has.
+    pub ended: Option<SubEnd>,
+}
+
+/// How a subagent ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubEnd {
+    /// It said it failed.
+    pub failed: bool,
+    /// It stopped with its member's turn, handing nothing back.
+    pub stopped: bool,
+    /// What it handed back.
+    pub result: Option<String>,
+    /// How long it worked.
+    pub took: Duration,
+}
+
+impl Sub {
+    pub fn new(id: String, what: String, brief: String, since: Instant) -> Self {
+        Self { id, what, step: None, since, brief, entries: Vec::new(), ended: None }
+    }
+
+    /// One more step done, or words: the oldest go past [`SUB_KEPT`].
+    pub fn keep(&mut self, entry: Entry) {
+        if self.entries.len() == SUB_KEPT {
+            self.entries.remove(0);
+        }
+        self.entries.push(entry);
+    }
+
+    fn end(&mut self, failed: bool, stopped: bool, result: Option<String>, now: Instant) {
+        self.ended = Some(SubEnd { failed, stopped, result, took: now.saturating_duration_since(self.since) });
+    }
 }
 
 impl Sub {
@@ -71,6 +113,9 @@ pub struct Convo {
     pub subagents: Vec<Sub>,
     /// Its conversation being summarized, or just was.
     pub compact: Option<Compact>,
+    /// Those that handed back (or stopped with a turn), the latest
+    /// [`SUBS_FINISHED`], oldest first: still there to look into.
+    pub finished: Vec<Sub>,
     /// Where it works now; tool paths are shown relative to it.
     pub base: PathBuf,
     desk: PathBuf,
@@ -115,6 +160,7 @@ impl Convo {
             suggestion: None,
             subagents: Vec::new(),
             compact: None,
+            finished: Vec::new(),
             desk: base.clone(),
             base,
             is_pm,
@@ -135,7 +181,11 @@ impl Convo {
         convo.subagents = info
             .subagents
             .iter()
-            .map(|s| Sub { id: s.id.clone(), what: s.what.clone(), step: s.step.clone(), since: now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now) })
+            .map(|s| Sub {
+                step: s.step.clone(),
+                entries: s.entries.clone(),
+                ..Sub::new(s.id.clone(), s.what.clone(), s.brief.clone(), now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now))
+            })
             .collect();
         convo.compact = info.compacting.as_ref().map(|c| Compact::Running {
             manual: c.trigger == CompactTrigger::Manual,
@@ -208,13 +258,24 @@ impl Convo {
             }
             // Told twice (attached as it started): it is the one already here.
             Event::SubagentStarted { id, .. } if self.subagents.iter().any(|s| s.id == *id) => {}
-            Event::SubagentStarted { id, what, .. } => self.subagents.push(Sub { id: id.clone(), what: what.clone(), step: None, since: now }),
+            Event::SubagentStarted { id, what, brief, .. } => self.subagents.push(Sub::new(id.clone(), what.clone(), brief.clone(), now)),
             Event::SubagentStep { id, step, .. } => {
                 if let Some(sub) = self.subagents.iter_mut().find(|s| s.id == *id) {
                     sub.step = Some(step.clone());
                 }
             }
-            Event::SubagentEnded { id, .. } => self.subagents.retain(|s| s.id != *id),
+            Event::SubagentEntry { id, entry, .. } => {
+                if let Some(sub) = self.subagents.iter_mut().find(|s| s.id == *id) {
+                    sub.keep(entry.clone());
+                }
+            }
+            Event::SubagentEnded { id, result, failed, .. } => {
+                if let Some(at) = self.subagents.iter().position(|s| s.id == *id) {
+                    let mut sub = self.subagents.remove(at);
+                    sub.end(*failed, false, result.clone(), now);
+                    self.finish_subagent(sub);
+                }
+            }
             Event::Compacting { trigger, started_at, .. } => {
                 self.compact = Some(Compact::Running { manual: *trigger == CompactTrigger::Manual, since: since_ms(*started_at, now) });
             }
@@ -224,7 +285,11 @@ impl Convo {
             }
             Event::CompactFailed { .. } => self.compact = Some(Compact::Failed),
             Event::TurnEnded { outcome, .. } => {
-                self.subagents.clear();
+                // Whatever didn't hand back stopped with the turn.
+                for mut sub in std::mem::take(&mut self.subagents) {
+                    sub.end(false, true, None, now);
+                    self.finish_subagent(sub);
+                }
                 // Unread, it comes back as a memo, delivered now.
                 self.queue.turn_ended();
                 self.stop_working(now, at, *outcome);
@@ -248,6 +313,19 @@ impl Convo {
         if !matches!(self.compact, Some(Compact::Running { .. })) {
             self.compact = None;
         }
+    }
+
+    /// A subagent done with: kept to look into, the oldest let go.
+    fn finish_subagent(&mut self, sub: Sub) {
+        if self.finished.len() == SUBS_FINISHED {
+            self.finished.remove(0);
+        }
+        self.finished.push(sub);
+    }
+
+    /// A subagent of this conversation's, at work or handed back, by id.
+    pub fn subagent(&self, id: &str) -> Option<&Sub> {
+        self.subagents.iter().chain(&self.finished).find(|s| s.id == id)
     }
 
     /// The reasoning in progress, finished: a line saying how long it took,
@@ -511,6 +589,9 @@ pub enum Status {
     Running,
     Done,
     Failed,
+    /// The squad's rules said no (a ticket only the person may change now):
+    /// told to the member, who takes another way — not a failure.
+    Declined,
     /// Nothing said (an older daemon, or a turn that ended without).
     Unknown,
 }
@@ -710,7 +791,12 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                         let first = shown.lines().next().unwrap_or_default().to_owned();
                         let mut line = ToolLine::new(verb, if shown.is_empty() { Vec::new() } else { vec![first.clone()] }, edits);
                         if let Some(o) = outcome {
-                            line.status = if o.ok { Status::Done } else { Status::Failed };
+                            line.status = match o.ok {
+                                true => Status::Done,
+                                // equipe's own board tools say no by its rules, not by breaking.
+                                false if tool.starts_with("mcp__equipe__") => Status::Declined,
+                                false => Status::Failed,
+                            };
                             line.ms = o.ms;
                             line.exit = o.exit;
                             line.output = (!o.output.is_empty()).then(|| (o.output.clone(), o.skipped));
@@ -909,6 +995,50 @@ mod tests {
     }
 
     #[test]
+    fn a_subagents_steps_and_words_are_kept_and_it_stays_to_look_into_once_it_hands_back() {
+        let mut c = convo(false);
+        let start = Instant::now();
+        c.on_event(&Event::SubagentStarted { session: 1, id: "a".into(), what: "Capture".into(), brief: "Open linear.app".into() }, start, T);
+        let tool = Entry::Tool { tool: "Bash".into(), target: Some("ls".into()), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(300), output: "x.png".into(), ..Default::default() })), label: None, background: false };
+        feed(&mut c, &[
+            Event::SubagentEntry { session: 1, id: "a".into(), entry: Entry::Reply { text: "Starting.".into() } },
+            Event::SubagentEntry { session: 1, id: "a".into(), entry: tool.clone() },
+            Event::SubagentEntry { session: 1, id: "zz".into(), entry: tool.clone() },
+        ]);
+        let sub = c.subagent("a").unwrap();
+        assert_eq!((sub.brief.as_str(), sub.entries.len(), sub.ended.is_none()), ("Open linear.app", 2, true));
+        assert!(c.transcript.entries().iter().all(|e| !matches!(e, Entry::Reply { text } if text == "Starting.")), "never the member's own words");
+        // It hands back: gone from the sidebar's list, still there to look into.
+        c.on_event(&Event::SubagentEnded { session: 1, id: "a".into(), result: Some("3 shots".into()), failed: false }, start + Duration::from_secs(40), T);
+        assert!(c.subagents.is_empty());
+        let end = c.subagent("a").unwrap().ended.clone().unwrap();
+        assert_eq!((end.result.as_deref(), end.failed, end.stopped, end.took), (Some("3 shots"), false, false, Duration::from_secs(40)));
+        // One still at work when the turn ends stops with it.
+        c.on_event(&Event::SubagentStarted { session: 1, id: "b".into(), what: "More".into(), brief: String::new() }, start, T);
+        c.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Interrupted, usage: None }, start, T);
+        assert!(c.subagent("b").unwrap().ended.as_ref().is_some_and(|e| e.stopped));
+    }
+
+    #[test]
+    fn a_subagent_keeps_its_latest_steps_and_a_conversation_its_latest_subagents() {
+        let mut sub = Sub::new("a".into(), "x".into(), String::new(), Instant::now());
+        for n in 0..SUB_KEPT + 5 {
+            sub.keep(Entry::Reply { text: n.to_string() });
+        }
+        assert_eq!(sub.entries.len(), SUB_KEPT);
+        assert_eq!(sub.entries[0], Entry::Reply { text: "5".into() }, "the oldest go");
+        let mut c = convo(false);
+        let now = Instant::now();
+        for n in 0..SUBS_FINISHED + 2 {
+            let id = format!("s{n}");
+            c.on_event(&Event::SubagentStarted { session: 1, id: id.clone(), what: "w".into(), brief: String::new() }, now, T);
+            c.on_event(&Event::SubagentEnded { session: 1, id, result: None, failed: false }, now, T);
+        }
+        assert_eq!(c.finished.len(), SUBS_FINISHED);
+        assert!(c.subagent("s0").is_none() && c.subagent("s13").is_some());
+    }
+
+    #[test]
     fn a_reply_streams_whole_through_what_adds_no_line() {
         // Said while it answered: once, the chunk after it started a reply of
         // its own, and "지" ended one row, "금 보드를" began the next.
@@ -944,6 +1074,22 @@ mod tests {
         assert_eq!(lines[0].verb, "read");
         assert_eq!(lines[0].targets, ["a.rs", "b.rs"], "a repeat adds nothing");
         assert!(lines[1].edits && lines[2].edits, "each edit is its own step");
+    }
+
+    #[test]
+    fn a_no_by_the_squads_rules_is_not_a_failure() {
+        let mut c = convo(false);
+        let said_no = Event::ToolResult {
+            session: 1,
+            tool: "mcp__equipe__update_ticket".into(),
+            target: Some("T-191".into()),
+            outcome: ToolOutcome { ok: false, output: "T-191 is review — from here it's the person's to change.".into(), ..Default::default() },
+        };
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, tool("mcp__equipe__update_ticket", "T-191"), said_no]);
+        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
+        assert_eq!(lines[0].status, Status::Declined, "not red: the member is told and takes another way");
+        assert_eq!(crate::activity::status(lines), Status::Declined);
+        assert_eq!(crate::activity::groups(lines.clone()).len(), 1, "it doesn't stand apart, open, as a failure does");
     }
 
     #[test]
@@ -1381,13 +1527,13 @@ mod tests {
     fn subagents_come_and_go_with_their_steps() {
         let mut c = convo(false);
         let start = Instant::now();
-        c.on_event(&Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into() }, start, T);
+        c.on_event(&Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into(), brief: String::new() }, start, T);
         c.on_event(&Event::SubagentStep { session: 1, id: "a".into(), step: "Read x".into() }, start + Duration::from_secs(5), T);
-        assert_eq!(c.subagents, [Sub { id: "a".into(), what: "look".into(), step: Some("Read x".into()), since: start }], "its clock runs from when it started");
+        assert_eq!(c.subagents, [Sub { step: Some("Read x".into()), ..Sub::new("a".into(), "look".into(), String::new(), start) }], "its clock runs from when it started");
         // Told again (attached as it started): still one.
-        feed(&mut c, &[Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into() }, Event::SubagentStarted { session: 1, id: "b".into(), what: "more".into() }]);
+        feed(&mut c, &[Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into(), brief: String::new() }, Event::SubagentStarted { session: 1, id: "b".into(), what: "more".into(), brief: String::new() }]);
         assert_eq!(c.subagents.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a", "b"], "in the order they started");
-        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "a".into() }, Event::SubagentStep { session: 1, id: "a".into(), step: "late".into() }]);
+        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "a".into(), result: None, failed: false }, Event::SubagentStep { session: 1, id: "a".into(), step: "late".into() }]);
         assert_eq!(c.subagents.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b"], "a step after its end brings nothing back");
         feed(&mut c, &[Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
         assert!(c.subagents.is_empty(), "the turn's end takes the rest with it");
@@ -1404,7 +1550,7 @@ mod tests {
         .unwrap();
         let now = Instant::now();
         let c = Convo::from_info(&info, now);
-        assert_eq!(c.subagents, [Sub { id: "t1".into(), what: "Read the logs".into(), step: Some("Grep error".into()), since: now - Duration::from_secs(90) }]);
+        assert_eq!(c.subagents, [Sub { step: Some("Grep error".into()), ..Sub::new("t1".into(), "Read the logs".into(), String::new(), now - Duration::from_secs(90)) }]);
         let Block::Steps(lines) = &c.blocks()[0] else { panic!("{:?}", c.blocks()) };
         assert_eq!((lines[0].verb.as_str(), lines[0].status), ("delegate", Status::Running));
     }
@@ -1417,7 +1563,7 @@ mod tests {
             &[
                 Event::UserMessage { session: 1, text: "go".into() },
                 tool("Agent", "Read the logs"),
-                Event::SubagentStarted { session: 1, id: "t1".into(), what: "Read the logs".into() },
+                Event::SubagentStarted { session: 1, id: "t1".into(), what: "Read the logs".into(), brief: String::new() },
                 // Sent to the background: answered at once, at work still.
                 Event::ToolResult { session: 1, tool: "Agent".into(), target: Some("Read the logs".into()), outcome: ToolOutcome { ok: true, exit: None, ms: Some(5), output: String::new(), skipped: 0, diff: None } },
                 Event::TextDelta { session: 1, text: "Meanwhile…".into() },
@@ -1430,7 +1576,7 @@ mod tests {
         assert_eq!(at, 1, "{blocks:?}");
         let Block::Steps(lines) = &blocks[at] else { panic!() };
         assert_eq!(lines[line].status, Status::Running);
-        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "t1".into() }]);
+        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "t1".into(), result: None, failed: false }]);
         let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
         assert_eq!(lines[0].status, Status::Done, "handed back: done");
     }
@@ -1438,7 +1584,7 @@ mod tests {
     #[test]
     fn a_subagent_knows_its_task_cut_at_eighty_characters() {
         let long = "a".repeat(100);
-        let sub = Sub { id: "x".into(), what: "a".repeat(80), step: None, since: Instant::now() };
+        let sub = Sub::new("x".into(), "a".repeat(80), String::new(), Instant::now());
         assert!(sub.handed(&long) && !sub.handed("b") && !sub.handed(""));
     }
 

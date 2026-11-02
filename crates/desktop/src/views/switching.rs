@@ -90,7 +90,8 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .child(div().font_weight(FontWeight::NORMAL).text_size(px(11.)).child(rules::mode_word(model.engines.mode)))
         .children(waiting.then(|| div().size(px(6.)).rounded_full().bg(p.accent)));
     let rows: Vec<AnyElement> = meters.iter().map(|m| meter_row(shell, m, now, cx)).collect();
-    Some(v_flex().flex_none().pt(px(6.)).pb_1().border_t_1().border_color(p.hair).child(head).children(rows).into_any_element())
+    // Its hairline above is the sidebar's, to drag (`sidebar::split_area`).
+    Some(v_flex().flex_none().pt(px(6.)).pb_1().child(head).children(rows).into_any_element())
 }
 
 /// One engine: its name, then each window — a short label, a thin bar, the percent.

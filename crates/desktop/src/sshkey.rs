@@ -46,7 +46,7 @@ pub fn ensure_key() -> Result<String, String> {
     let path = key_path();
     let public = path.with_extension("pub");
     if !path.exists() {
-        let dir = path.parent().ok_or("no folder for the key")?;
+        let dir = path.parent().ok_or(equipe_core::t!("sshkey.no_folder"))?;
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
@@ -69,7 +69,7 @@ pub fn ensure_key() -> Result<String, String> {
     let line = std::fs::read_to_string(&public).map_err(|e| e.to_string())?;
     let line = line.trim().to_owned();
     if !is_public_key(&line) {
-        return Err("the key's public half isn't readable".into());
+        return Err(equipe_core::t!("sshkey.unreadable_public").into());
     }
     Ok(line)
 }
@@ -98,7 +98,7 @@ pub fn install(host: &SshHost) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     runtime
         .block_on(ssh::Launcher::system(None).run(host, &install_script(&public)))
-        .map_err(|f| f.detail().map_or_else(|| "the other machine didn't answer".to_owned(), str::to_owned))?;
+        .map_err(|f| f.detail().map_or_else(|| equipe_core::t!("sshkey.no_answer").to_owned(), str::to_owned))?;
     let mut list = std::fs::read_to_string(keyed_list()).unwrap_or_default();
     if !list.lines().any(|l| l == host.spec()) {
         list.push_str(&host.spec());

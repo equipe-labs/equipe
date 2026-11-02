@@ -16,6 +16,11 @@ What a turn does depends on its prompt:
 
 FAKE_CODEX_LOG: a file each message received is appended to, one JSON a line.
 FAKE_CODEX_SIGNED_OUT: set, it is signed out.
+FAKE_CODEX_ARGS: a file each run's command line is appended to, one JSON a
+line, with whether NEBIUS_API_KEY was in its environment (never its value).
+
+Run with `-c model_provider=…` (another provider, as a member on Token
+Factory is), it needs no ChatGPT sign-in, as the real one doesn't.
 """
 import json
 import os
@@ -25,6 +30,10 @@ THREAD = "thr-1"
 TURN = "turn-1"
 LOG = os.environ.get("FAKE_CODEX_LOG")
 SIGNED_OUT = bool(os.environ.get("FAKE_CODEX_SIGNED_OUT"))
+OTHER_PROVIDER = any(a.startswith("model_provider=") for a in sys.argv[1:])
+if os.environ.get("FAKE_CODEX_ARGS"):
+    with open(os.environ["FAKE_CODEX_ARGS"], "a") as f:
+        f.write(json.dumps({"args": sys.argv[1:], "nebius_key": bool(os.environ.get("NEBIUS_API_KEY"))}) + "\n")
 
 LIMITS = {
     "limitId": "codex", "limitName": None, "normalModelSlug": None,
@@ -205,7 +214,7 @@ def handle(message):
         send({"id": request_id, "result": {"userAgent": "codex_cli_rs/0.154.0 (fake)", "codexHome": "/nonexistent/.codex", "platformFamily": "unix", "platformOs": "macos"}})
     elif method == "account/read":
         account = None if SIGNED_OUT else {"type": "chatgpt", "email": None, "planType": "pro"}
-        send({"id": request_id, "result": {"account": account, "requiresOpenaiAuth": True}})
+        send({"id": request_id, "result": {"account": account, "requiresOpenaiAuth": not OTHER_PROVIDER}})
     elif method == "account/rateLimits/read":
         send({"id": request_id, "result": {"ordinaryUsageAllowed": True, "rateLimits": LIMITS, "rateLimitsByLimitId": {"codex": LIMITS}, "rateLimitResetCredits": None, "accountId": None, "rateLimitUpsell": None}})
     elif method == "model/list":

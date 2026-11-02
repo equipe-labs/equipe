@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-24.04]
+        os: [macos-15, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -68,11 +68,11 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             package: equipe
             key: release-aarch64-apple-darwin
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             package: equipe
             key: release-x86_64-apple-darwin
           - target: x86_64-unknown-linux-musl
@@ -84,11 +84,11 @@ jobs:
             package: equipe
             key: release-aarch64-unknown-linux-musl
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             package: equipe-desktop
             key: release-desktop-aarch64
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             package: equipe-desktop
             key: release-desktop-x86_64
     runs-on: ${{ matrix.os }}

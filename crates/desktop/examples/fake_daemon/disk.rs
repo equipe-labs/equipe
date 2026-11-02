@@ -147,7 +147,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                 gone().lock().unwrap().extend(safe.iter().map(|i| i.id.clone()));
                 let now = *free().lock().unwrap();
                 let status = DiskStatus { level: level(now), free: now, total: TOTAL, path: home().join(".equipe"), container_free: None };
-                let cleaned = DiskCleaned { freed, removed: safe.iter().map(|i| i.id.clone()).collect(), skipped: Vec::new(), status: status.clone() };
+                let cleaned = DiskCleaned { freed, removed: safe.iter().map(|i| i.id.clone()).collect(), skipped: Vec::new(), status: status.clone(), auto: false };
                 let _ = events.send(Event::DiskCleaned { cleaned });
                 if status.level != before {
                     let _ = events.send(Event::DiskLevel { status });

@@ -64,6 +64,7 @@ fn config(home: &Path, claude: &Path) -> Config {
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
     }
 }
 
@@ -566,5 +567,84 @@ async fn a_daemon_without_its_phone_link_says_so_in_the_screens_language() {
         matches!(seen.last(), Some(Event::PairEnded { why: equipe_core::protocol::PairEnd::Unavailable, message }) if message.contains("Daemon")),
         "{seen:#?}"
     );
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+/// docs/METRICS.md end to end: a screen connects the fake source, refreshes
+/// and reads the numbers back; a member reads them with `metrics`; the key is
+/// in none of it, nor in a file of equipe's home.
+#[tokio::test]
+async fn a_screen_connects_metrics_and_a_member_reads_them_without_the_key() {
+    use equipe_core::metrics::{InMemory, Metrics};
+    use equipe_core::protocol::metrics::{self as m, Connection, QueryResult, Sources, Summary};
+    use equipe_core::protocol::rpc::Message;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    const KEY: &str = "fake-KEY-99887766";
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let mut metrics = Metrics::new(&home, Box::new(InMemory::default()));
+    metrics.with_fake = true;
+    let socket = gateway::socket_path(&home);
+    let _daemon = tokio::spawn({
+        let (socket, config) = (socket.clone(), config(&home, &claude));
+        async move { gateway::serve_with(config, &socket, "test", std::sync::Arc::new(metrics)).await }
+    });
+    for _ in 0..100 {
+        if gateway::is_running(&socket).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut said = String::new();
+    let mut ask = async |id: u64, method: &str, params: serde_json::Value| -> Message {
+        writer.write_all(Message::request(id, method, params).to_line().as_bytes()).await.unwrap();
+        loop {
+            let line = lines.next_line().await.unwrap().unwrap();
+            said.push_str(&line);
+            let message = Message::from_line(&line).unwrap();
+            if message.id == Some(id) {
+                return message;
+            }
+        }
+    };
+    let sources = ask(1, m::SOURCES, serde_json::json!({ "squad": "acme" })).await.result_as::<Sources>().unwrap();
+    assert!(sources.connections.is_empty() && sources.kinds.iter().any(|k| k.kind == m::SourceKind::Fake));
+    let params = serde_json::json!({ "squad": "acme", "project": "site", "kind": "fake", "settings": { "token": KEY, "seed": "5" } });
+    let connection = ask(2, m::CONNECT, params).await.result_as::<Connection>().unwrap();
+    assert_eq!(connection.keys, ["token"]);
+    let refreshed = ask(3, m::REFRESH, serde_json::json!({ "squad": "acme" })).await.result_as::<Sources>().unwrap();
+    assert!(refreshed.connections[0].last_ok.is_some(), "{refreshed:?}");
+    let read = ask(4, m::QUERY, serde_json::json!({ "squad": "acme", "project": "site", "days": 7 })).await.result_as::<QueryResult>().unwrap();
+    let visits = read.values.iter().find(|v| v.metric == "visits").unwrap();
+    assert_eq!(visits.days_known, 7);
+    assert!(visits.value.is_some_and(|v| v > 0.0));
+    let card = ask(5, m::SUMMARY, serde_json::json!({ "squad": "acme" })).await.result_as::<Summary>().unwrap();
+    assert_eq!(card.tiles.iter().map(|t| t.metric.as_str()).collect::<Vec<_>>(), ["visits", "stars"]);
+    assert_eq!(ask(6, m::QUERY, serde_json::json!({ "squad": "acme", "days": 999 })).await.error.unwrap().code, -32602);
+    assert!(!said.contains(KEY), "an answer over the socket holds the key");
+
+    // A member reads them with its `metrics` tool.
+    let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    screen.send(Command::Start { session: 41, spec: spec(&project) });
+    until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let call = ToolCall { squad: "acme".into(), member: "designer".into(), name: "metrics".into(), arguments: serde_json::json!({ "days": 7 }) };
+    let result = gateway::call_tool(&socket, &call).await.unwrap();
+    assert!(!result.is_error && result.text.contains("Visits `visits`"), "{result:?}");
+    assert!(!result.text.contains(KEY));
+
+    let mut files = vec![home.join("metrics")];
+    while let Some(dir) = files.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry.path().is_dir() {
+                files.push(entry.path());
+            } else {
+                assert!(!std::fs::read_to_string(entry.path()).unwrap().contains(KEY), "{} holds the key", entry.path().display());
+            }
+        }
+    }
+    assert!(home.join("metrics/acme").join(&connection.id).read_dir().unwrap().count() == 1, "today's snapshot");
     gateway::shutdown(&socket).await.unwrap();
 }

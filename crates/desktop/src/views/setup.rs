@@ -1,7 +1,7 @@
 //! The first run, before any squad: connect an AI, then make the first squad
 //! (`views/welcome.rs`'s form), all from the window (`crate::setup` has the
 //! rules). It stands in for the "no squad yet — run `equipe` in a terminal"
-//! guide on this Mac.
+//! guide on this Mac. A Mac without its developer tools gets a git step first.
 
 use equipe_core::protocol::Engine;
 use equipe_core::t;
@@ -23,15 +23,19 @@ impl Shell {
         !self.endpoint.is_remote() && matches!(&self.model.conn, crate::state::Conn::Down { reason: crate::failure::Failure::NoSquads, had_snapshot: false, .. })
     }
 
-    /// Look at where the engines stand, off the UI thread.
+    /// Look at where git and the engines stand, off the UI thread.
     pub fn setup_probe(&mut self, cx: &mut Context<Self>) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(setup::probe());
+            let _ = tx.send((setup::git_ready(), setup::probe()));
         });
         cx.spawn(async move |this, cx| {
-            if let Ok((claude, codex)) = rx.await {
+            if let Ok((git, (claude, codex))) = rx.await {
                 let _ = this.update(cx, |this, cx| {
+                    // Once seen, git stays: the watch below says when it comes.
+                    if this.setup.git != Some(true) && !this.setup.git_asked {
+                        this.setup.git = Some(git);
+                    }
                     this.setup.claude = Some(claude);
                     this.setup.codex = Some(codex);
                     cx.notify();
@@ -79,6 +83,34 @@ impl Shell {
         cx.notify();
     }
 
+    /// Ask macOS to install its developer tools, then watch until git runs.
+    pub fn setup_install_git(&mut self, cx: &mut Context<Self>) {
+        if !crate::install::install_git() {
+            self.setup.git_failed = true;
+            return cx.notify();
+        }
+        self.setup.git_failed = false;
+        self.setup.git_asked = true;
+        self.setup.git_watch = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(setup::GIT_POLL).await;
+                let ready = cx.background_executor().spawn(async { setup::git_ready() }).await;
+                let Ok(()) = this.update(cx, |this, cx| {
+                    if ready {
+                        (this.setup.git, this.setup.git_asked) = (Some(true), false);
+                        cx.notify();
+                    }
+                }) else {
+                    return;
+                };
+                if ready {
+                    return;
+                }
+            }
+        }));
+        cx.notify();
+    }
+
     pub fn setup_cancel(&mut self, cx: &mut Context<Self>) {
         self.setup.cancel();
         cx.notify();
@@ -116,12 +148,26 @@ fn cancel(shell: &Shell, id: &'static str, cx: &mut Context<Shell>) -> ui::Butto
 }
 
 pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
-    if shell.setup.squad_step && shell.setup.ready() {
+    if shell.setup.squad_step && shell.setup.can_go_on() {
         return super::welcome::welcome_screen(shell, cx);
     }
     let p = shell.palette;
     let s = &shell.setup;
     let busy = s.doing != Doing::Idle;
+
+    // git first, only on a Mac without its developer tools.
+    let git = (s.git == Some(false)).then(|| {
+        let action: AnyElement = if s.git_asked {
+            waiting(p, t!("setup.git_installing")).into_any_element()
+        } else {
+            ui::button(p, "setup-git", Kind::Primary, t!("setup.git_install")).icon(Icon::ArrowDown).on_click(cx.listener(|this, _, _, cx| this.setup_install_git(cx))).into_any_element()
+        };
+        card(p)
+            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("setup.git_title")))
+            .child(desc(p, if s.git_asked { t!("setup.git_asked") } else { t!("setup.git_text") }))
+            .when(s.git_failed, |c| c.child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.danger()).child(t!("setup.git_failed"))))
+            .child(h_flex().pt_1().w_full().min_w_0().child(action))
+    });
 
     // ChatGPT: the easiest way, answers only.
     let chatgpt_action: AnyElement = match (s.codex, s.doing) {
@@ -182,7 +228,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     });
 
     // Next: the squad form, once an AI is connected.
-    let next = h_flex().pt_1().child(ui::button(p, "setup-next", Kind::Primary, t!("setup.next")).disabled(busy || !s.ready()).on_click(cx.listener(|this, _, _, cx| {
+    let next = h_flex().pt_1().child(ui::button(p, "setup-next", Kind::Primary, t!("setup.next")).disabled(busy || !s.can_go_on()).on_click(cx.listener(|this, _, _, cx| {
         this.setup.squad_step = true;
         cx.notify();
     })));
@@ -202,6 +248,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .gap_3()
                 .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("setup.title")))
                 .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(t!("setup.text")))
+                .children(git)
                 .child(chatgpt)
                 .child(claude)
                 .children(failed)

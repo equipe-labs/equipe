@@ -58,6 +58,7 @@ async fn a_full_disk_is_said_once_and_the_daemon_goes_on_serving() {
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
     };
     let (handle, mut events) = runtime::start(config);
     let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: project.clone(), role: Some("pm".into()), squad: Some("acme".into()) };

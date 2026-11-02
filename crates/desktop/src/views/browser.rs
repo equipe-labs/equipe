@@ -45,7 +45,7 @@ use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::stream::{Link, Update};
 use crate::target::Endpoint;
-use crate::theme::{CONTROL, ICON_SM, Palette, R_LG, R_MD, R_SM, SANS, SMALL, UI};
+use crate::theme::{CONTROL, ICON_SM, Palette, R_LG, R_MD, R_SM, SMALL, Sans, UI};
 use crate::tips::tip;
 use crate::ui::{self, Kind};
 
@@ -2198,7 +2198,7 @@ impl Render for BrowserPanel {
             .h_full()
             .w(px(self.width))
             .flex_none()
-            .font_family(SANS)
+            .sans()
             .child(
                 // The divider: drag to resize.
                 div()

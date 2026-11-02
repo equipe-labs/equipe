@@ -105,7 +105,7 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
             if let Some(parent) = out.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            std::fs::write(&out, kit::specimen(&parsed.tokens, &parsed.modes, &title)).map_err(|e| format!("{}: {e}", out.display()))?;
+            std::fs::write(&out, kit::specimen(&parsed.tokens, &parsed.modes, &title, crate::i18n::lang())).map_err(|e| format!("{}: {e}", out.display()))?;
             println!("wrote {}", out.display());
             if png {
                 let at = out.parent().unwrap_or(Path::new(".")).to_path_buf();

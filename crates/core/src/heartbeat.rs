@@ -27,6 +27,44 @@ pub fn weekly_check_in(lang: Lang) -> Routine {
     }
 }
 
+/// The weekly security check a squad gets when a security engineer joins it:
+/// Thursdays at 10:00, on, handed to the PM like any routine, who gives the
+/// review to the security member. Added once; gone if the person deletes it.
+pub fn weekly_security_check(lang: Lang, id: u32) -> Routine {
+    Routine {
+        id,
+        title: core(lang).get("routine.weekly_security.title").to_owned(),
+        prompt: core(lang).get("routine.weekly_security.prompt").to_owned(),
+        when: Schedule::Weekly { weekday: 4, hour: 10, minute: 0 },
+        on: true,
+        last_run: None,
+        next_run: None,
+    }
+}
+
+/// The weekly marketing check a squad gets when a marketer joins it: Mondays
+/// at 11:00, on, handed to the PM like any routine. Added once.
+pub fn weekly_marketing_check(lang: Lang, id: u32) -> Routine {
+    Routine {
+        id,
+        title: core(lang).get("routine.weekly_marketing.title").to_owned(),
+        prompt: core(lang).get("routine.weekly_marketing.prompt").to_owned(),
+        when: Schedule::Weekly { weekday: 1, hour: 11, minute: 0 },
+        on: true,
+        last_run: None,
+        next_run: None,
+    }
+}
+
+/// The weekly routine a role brings when it joins a squad, if it brings one.
+pub fn joining_routine(role: &str, lang: Lang, id: u32) -> Option<Routine> {
+    match role {
+        crate::roles::SECURITY => Some(weekly_security_check(lang, id)),
+        crate::roles::MARKETING => Some(weekly_marketing_check(lang, id)),
+        _ => None,
+    }
+}
+
 /// The PM's tool, as an MCP tool definition.
 pub fn tool() -> Value {
     json!({
@@ -38,7 +76,7 @@ they decide. Write the title and the prompt in the person's language; the prompt
         "inputSchema": {
             "type": "object",
             "properties": {
-                "title": { "type": "string", "description": "A short name: \"주간 점검\"." },
+                "title": { "type": "string", "description": "A short name, in the person's language: \"Weekly check-in\"." },
                 "prompt": { "type": "string", "description": "What you are asked each time it runs, in the person's language." },
                 "every": { "type": "string", "enum": ["daily", "weekly"] },
                 "weekday": { "type": "integer", "minimum": 1, "maximum": 7, "description": "weekly: 1 Monday … 7 Sunday." },

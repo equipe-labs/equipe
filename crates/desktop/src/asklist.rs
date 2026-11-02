@@ -36,49 +36,42 @@ pub enum Chip {
 }
 
 /// Lines that ask for what follows, in the languages equipe speaks.
-const LEADS: &[&str] = &[
-    "알려 주", "알려주", "정해 주", "정해주", "확인해 주", "확인해주", "답해 주", "답해주", "말씀해 주", "말씀해주", "적어 주", "적어주", "보내 주", "보내주",
-    "여쭤", "여쭙", "질문", "궁금", "필요한 정보", "주셔야", "please tell", "tell me", "let me know", "questions", "question for you", "need from you",
-    "i need you", "please confirm", "please provide", "please answer", "please send", "can you tell", "could you tell", "教えて", "確認して",
-    "決めて", "質問", "请告诉", "請告訴", "告诉我", "告訴我", "请确认", "請確認", "请提供", "請提供", "问题", "問題", "dime", "dígame", "indícame",
-    "preguntas", "confírma", "dites-moi", "indiquez", "confirmez", "fragen", "sagen sie mir", "sag mir", "teilen sie mir", "bitte bestätig",
-];
+fn leads() -> &'static [&'static str] {
+    crate::i18n::every("match.ask_leads")
+}
 
 /// What says the work was done, not asked about (beside Korean's past
 /// tense, which [`past_ko`] reads).
-const DONE: &[&str] = &["완료", "ました", "完了", "已完成", "完成了"];
+fn done() -> &'static [&'static str] {
+    crate::i18n::every("match.done")
+}
 
-/// Endings of a sentence that asks or requests, punctuation aside.
-const ASKING_ENDS: &[&str] = &[
-    "?", "？", "주세요", "주십시오", "주시겠어요", "주실래요", "줄래요", "까요", "나요", "는지", "은지", "인지", "을지", "할지", "될지", "쓸지", "둘지",
-    "볼지", "줄지", "갈지", "올지", "건지", "가요", "습니까", "입니까", "ください", "ですか", "吗", "呢",
-];
+/// Endings of a sentence that asks or requests, punctuation aside (and the
+/// question marks themselves).
+fn asking_ends() -> impl Iterator<Item = &'static &'static str> {
+    ["?", "？"].iter().chain(crate::i18n::every("match.asking_ends"))
+}
 
 /// Words that make a question more than a yes or a no.
-const OPEN_WORDS: &[&str] = &[
-    "어떤", "어느", "무엇", "뭘", "뭐", "언제", "어디", "누구", "누가", "몇", "얼마", "어떻게", "which", "what", "when", "where", "who", "how",
-    "どの", "何", "いつ", "どこ", "誰", "哪", "什么", "什麼", "几", "幾", "quel", "quand", "où", "welche", "wann", "wo ", "wer ", "cuál", "cuándo",
-    "dónde", "quién",
-];
+fn open_words() -> &'static [&'static str] {
+    crate::i18n::every("match.open_words")
+}
 
 /// Endings of a question a yes or a no answers — once it has none of
-/// [`OPEN_WORDS`].
-const YES_NO_ENDS: &[&str] = &[
-    "까요", "나요", "는지", "은지", "인지", "을지", "할지", "될지", "쓸지", "둘지", "볼지", "줄지", "가요", "습니까", "입니까", "는지요", "도 돼요", "でしょうか",
-    "ですか", "吗",
-];
+/// [`open_words`].
+fn yes_no_ends() -> &'static [&'static str] {
+    crate::i18n::every("match.yes_no_ends")
+}
 
 /// English (and the like) questions a yes or a no answers start so.
-const YES_NO_STARTS: &[&str] = &[
-    "should ", "can ", "could ", "is ", "are ", "do ", "does ", "may ", "shall ", "will ", "would ", "did ", "have ", "has ", "ok to ", "okay to ",
-    "est-ce que", "peut-on", "soll ", "kann ", "darf ", "ist ", "sind ", "¿puedo", "¿podemos", "¿es ", "¿está",
-];
+fn yes_no_starts() -> &'static [&'static str] {
+    crate::i18n::every("match.yes_no_starts")
+}
 
 /// What asks whether what was given before will do.
-const SAME: &[&str] = &[
-    "위와 같", "위와 동일", "위의 것", "같은 걸", "같은 것으로", "같은 번호", "같은 메일", "same as above", "the same", "上記と同じ", "同じもの",
-    "同上", "与上面相同", "與上面相同", "wie oben", "dieselbe", "même", "lo mismo", "el mismo", "la misma",
-];
+fn same() -> &'static [&'static str] {
+    crate::i18n::every("match.same")
+}
 
 /// How many characters may follow the list ("받으면 바로 입력합니다") for it to
 /// still be what the reply ends on.
@@ -118,7 +111,7 @@ fn asks(reply: &str, list: &List) -> bool {
     if is_done(&lead) {
         return false;
     }
-    if LEADS.iter().any(|w| lead.contains(w)) {
+    if leads().iter().any(|w| lead.contains(w)) {
         return true;
     }
     let asking = list.items.iter().filter(|i| is_asking(i)).count();
@@ -141,13 +134,13 @@ pub fn is_asking(text: &str) -> bool {
     let words = plain(text);
     let end = bare(text);
     let lower = words.to_lowercase();
-    words.trim_end().ends_with(['?', '？']) || ASKING_ENDS.iter().any(|e| end.ends_with(e)) || lower.starts_with("please ")
+    words.trim_end().ends_with(['?', '？']) || asking_ends().any(|e| end.ends_with(e)) || lower.starts_with("please ")
 }
 
 /// Whether an item says what was done.
 fn is_done(text: &str) -> bool {
     let end = bare(text);
-    if past_ko(&end) || DONE.iter().any(|d| end.ends_with(d)) {
+    if past_ko(&end) || done().iter().any(|d| end.ends_with(d)) {
         return true;
     }
     // "Fixed the header", "Added a test".
@@ -158,10 +151,11 @@ fn is_done(text: &str) -> bool {
 /// Whether Korean words end in the past tense: "고쳤습니다", "했어요" — a
 /// syllable closing on ㅆ before the ending ("있습니다" is the present).
 fn past_ko(end: &str) -> bool {
-    let Some(stem) = end.strip_suffix("습니다").or_else(|| end.strip_suffix("어요")).or_else(|| end.strip_suffix("다")) else { return false };
+    let Some(stem) = crate::i18n::every("match.past_endings").iter().find_map(|e| end.strip_suffix(e)) else { return false };
     let Some(last) = stem.chars().last() else { return false };
     let code = last as u32;
-    (0xAC00..=0xD7A3).contains(&code) && (code - 0xAC00) % 28 == 20 && last != '있'
+    let present = crate::i18n::every("match.past_not");
+    (0xAC00..=0xD7A3).contains(&code) && (code - 0xAC00) % 28 == 20 && !present.iter().any(|p| p.chars().eq(std::iter::once(last)))
 }
 
 /// Whether `text` (lowercase) has one of `words`: an ASCII one as a whole
@@ -177,7 +171,7 @@ fn has_any(text: &str, words: &[&str]) -> bool {
 /// The quick answers that fit an item.
 fn chips(text: &str) -> Vec<Chip> {
     let lower = plain(text).to_lowercase();
-    if SAME.iter().any(|w| lower.contains(w)) {
+    if same().iter().any(|w| lower.contains(w)) {
         return vec![Chip::Same, Chip::No];
     }
     if !is_asking(text) {
@@ -188,13 +182,13 @@ fn chips(text: &str) -> Vec<Chip> {
         Some((_, rest)) => rest.to_owned(),
         None => lower.clone(),
     };
-    if has_any(&question, OPEN_WORDS) {
+    if has_any(&question, open_words()) {
         return Vec::new();
     }
     let end = bare(&question);
     let end = end.trim_end_matches(['?', '？']).trim_end();
     let start = question.trim_start_matches('¿');
-    if YES_NO_ENDS.iter().any(|e| end.ends_with(e)) || YES_NO_STARTS.iter().any(|s| start.starts_with(s.trim_start_matches('¿'))) {
+    if yes_no_ends().iter().any(|e| end.ends_with(e)) || yes_no_starts().iter().any(|s| start.starts_with(s.trim_start_matches('¿'))) {
         return vec![Chip::Yes, Chip::No];
     }
     Vec::new()

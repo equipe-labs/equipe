@@ -1,0 +1,4 @@
+{
+  "match.answers": "？|告诉|决定|选择|提供|哪|什么",
+  "match.confirms": "确认|没问题"
+}

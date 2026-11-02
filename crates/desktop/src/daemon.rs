@@ -53,7 +53,8 @@ impl Target {
 }
 
 /// What the link tells the window.
-// The snapshot is the big one, and comes once a connection: not worth a box.
+// The hello is the big one, and there is one per connection; boxing it would
+// spare the events that follow a few hundred bytes each, in a channel.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Update {
@@ -165,6 +166,16 @@ impl Uploader {
 }
 
 impl Uploader {
+    /// One request of the daemon's (`metrics.*`), its answer as JSON. Blocks:
+    /// call it off the UI thread.
+    pub fn call(&self, method: &str, params: impl serde::Serialize, wait: Duration) -> Result<serde_json::Value, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.ask(method, params).recv_timeout(wait) {
+            Ok(answer) => answer,
+            Err(_) => Err(t!("metrics.no_answer").into()),
+        }
+    }
+
     /// A member's picture, from the daemon — wherever it runs; it gives only
     /// what `squad` shows. Blocks: call it off the UI thread.
     pub fn read_image(&self, squad: &str, path: &str, max: Option<u32>) -> Result<equipe_core::protocol::rpc::ImageRead, String> {

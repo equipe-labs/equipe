@@ -107,13 +107,8 @@ fn line(fact: &Fact) -> String {
 
 /// `INDEX.md` for these facts, headed in the person's language.
 pub fn index_text(facts: &[Fact], language: Option<&str>) -> String {
-    let head = if language == Some("Korean") {
-        "# 스쿼드 기억\n\n스쿼드가 함께 아는 것들입니다. 파일 하나에 사실 하나이고, 이 목록은 equipe가 파일들로 만듭니다. \
-파일을 고치거나 지우면 다음 대화부터 모든 멤버에게 반영됩니다. 직접 고친 내용이 우선합니다.\n\n"
-    } else {
-        "# The squad's memory\n\nWhat the squad knows together: one fact per file. equipe makes this list from the files; \
-edit or delete one and every member has it from their next turn. What you write wins.\n\n"
-    };
+    let words = crate::i18n::core(squad_home::named(language));
+    let head = format!("# {}\n\n{}\n\n", words.get("squad_memory.index_title"), words.get("squad_memory.index_intro"));
     let lines: Vec<String> = facts.iter().map(line).collect();
     format!("{head}{}\n", lines.join("\n"))
 }

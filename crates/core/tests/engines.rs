@@ -54,6 +54,7 @@ fn config(home: &Path, claude: &Path) -> Config {
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
     }
 }
 
@@ -168,4 +169,41 @@ async fn codex_signs_in_with_its_own_tool_on_the_daemons_machine_and_out_again()
     // Claude Code signs in on its own: equipe offers no sign-in for it.
     core.send(Command::SignIn { engine: Engine::Claude, device: false });
     assert!(matches!(sign_in(&mut events).await, SignInStep::Failed { why: SignInFailure::Unsupported, .. }));
+}
+
+/// Nebius Token Factory's status, as every screen hears it.
+async fn nebius(events: &mut UnboundedReceiver<Event>) -> equipe_core::protocol::NebiusStatus {
+    match next(events, |e| matches!(e, Event::Nebius { .. })).await {
+        Event::Nebius { status } => status,
+        _ => unreachable!(),
+    }
+}
+
+/// A key pasted on a screen: saved on the daemon's machine for the person
+/// alone, used from then on, never sent back; a bad paste is refused; and
+/// forgetting it stops Nebius again.
+#[tokio::test]
+async fn a_nebius_key_pasted_on_a_screen_is_saved_used_and_forgotten() {
+    use equipe_core::protocol::NebiusKey;
+    let home = scratch("home");
+    let (core, mut events) = runtime::start(config(&home, &fake_claude()));
+    core.send(Command::Engines);
+    assert_eq!(nebius(&mut events).await.key, NebiusKey::None);
+
+    core.send(Command::SetNebiusKey { key: Some("not a key".into()) });
+    assert!(matches!(next(&mut events, |e| matches!(e, Event::Error { .. })).await, Event::Error { session: None, .. }));
+    assert_eq!(nebius(&mut events).await.key, NebiusKey::None);
+    assert!(equipe_core::nemotron::saved_key(&home).is_none());
+
+    core.send(Command::SetNebiusKey { key: Some("  sk-pasted-on-a-screen-123 ".into()) });
+    let status = nebius(&mut events).await;
+    assert_eq!((status.key, status.codex, status.provider.as_str()), (NebiusKey::Saved, false, "Nebius Token Factory"));
+    assert!(!format!("{status:?}").contains("sk-pasted"), "the key never goes back to a screen");
+    assert_eq!(equipe_core::nemotron::saved_key(&home).as_deref(), Some("sk-pasted-on-a-screen-123"));
+    use std::os::unix::fs::PermissionsExt as _;
+    assert_eq!(std::fs::metadata(equipe_core::nemotron::key_path(&home)).unwrap().permissions().mode() & 0o777, 0o600);
+
+    core.send(Command::SetNebiusKey { key: None });
+    assert_eq!(nebius(&mut events).await.key, NebiusKey::None);
+    assert!(equipe_core::nemotron::saved_key(&home).is_none());
 }

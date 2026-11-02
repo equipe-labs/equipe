@@ -76,19 +76,20 @@ fn quiet(dir: &Path) -> Result<(), String> {
 }
 
 fn readme_text(squad: &str, language: Option<&str>) -> String {
-    if language == Some("Korean") {
-        format!(
-            "# {squad} 스쿼드 폴더\n\n스쿼드가 함께 쓰는 폴더입니다. 멤버들은 여기서 일을 시작하고, 코드가 아닌 결과물은 여기에 남깁니다.\n\n\
-- `notes/` — 조사, 메모, 참고 자료\n- `outputs/` — 맡긴 일의 결과물 (`outputs/T-12 제목/…`)\n\n\
-파일을 직접 고치거나 넣어도 됩니다. equipe가 바뀐 내용을 모두 기억하므로 언제든 되돌릴 수 있습니다(`/home undo`).\n"
-        )
-    } else {
-        format!(
-            "# The {squad} squad's folder\n\nWhere the squad works together: members start here, and work that isn't code lands here.\n\n\
-- `notes/` — research, findings, references\n- `outputs/` — what tasks hand over (`outputs/T-12 title/…`)\n\n\
-You may edit or drop files here yourself. equipe remembers every change, so any of them can be taken back (`/home undo`).\n"
-        )
-    }
+    let words = crate::i18n::core(named(language));
+    format!(
+        "# {}\n\n{}\n\n- `notes/` — {}\n- `outputs/` — {}\n\n{}\n",
+        words.fill("squad_home.readme_title", &[("squad", squad.to_owned())]),
+        words.get("squad_home.readme_intro"),
+        words.get("squad_home.readme_notes"),
+        words.get("squad_home.readme_outputs"),
+        words.get("squad_home.readme_edit"),
+    )
+}
+
+/// The language a squad's `language` (its English name: `Korean`) names; English when none.
+pub(crate) fn named(language: Option<&str>) -> crate::i18n::Lang {
+    crate::i18n::Lang::ALL.into_iter().find(|l| Some(l.english_name()) == language).unwrap_or(crate::i18n::Lang::En)
 }
 
 /// One saved change to the home.

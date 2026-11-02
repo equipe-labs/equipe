@@ -121,6 +121,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
     }
 }
 
@@ -724,12 +725,12 @@ async fn equipe_speaks_to_the_person_in_their_screens_language() {
     handle.send(Command::Language { lang: "ko_KR.UTF-8".into() });
     handle.send(Command::Start { session: 1, spec: member(&scratch("cwd"), "pm") });
     let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
-    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message == "acme라는 스쿼드가 없습니다."), "{failed:#?}");
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message == "acme라는 스쿼드가 없어요."), "{failed:#?}");
     // A language equipe doesn't speak changes nothing.
     handle.send(Command::Language { lang: "pt-BR".into() });
     handle.send(Command::Start { session: 2, spec: member(&scratch("cwd"), "pm") });
     let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
-    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("스쿼드가 없습니다")), "{failed:#?}");
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("스쿼드가 없어요")), "{failed:#?}");
 }
 
 #[tokio::test]
@@ -1186,6 +1187,11 @@ async fn work_sent_back_returns_to_its_member_on_the_same_branch_and_conversatio
     let review =
         until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
     let branch = ticket_changed(&review).pop().unwrap().branch;
+    // Its turn ends (and its conversation is kept) before the person sends it
+    // back: else the reopen can come first and find nothing yet to resume.
+    if !review.iter().any(|e| matches!(e, Event::TurnEnded { session: 2, .. })) {
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    }
 
     handle.send(Command::Reopen { squad: "acme".into(), ticket: 1, note: "make the button blue".into() });
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
@@ -1579,6 +1585,35 @@ exec sleep 30"#;
     handle.send(Command::Interrupt { session: 3 });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(handle.snapshot("acme").await.sessions[0].subagents.is_empty(), "the turn's end takes them with it");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_look_inside_a_subagent_shows_its_brief_steps_words_and_what_it_handed_back() {
+    let turn = r#"cat <<'EOF'
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{"description":"Capture 3 landings","prompt":"Open linear.app and capture its hero."}}]}}
+{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"Starting with linear.app."},{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"ls shots"}}]}}
+{"type":"user","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"linear.png"}]}}
+EOF
+exec sleep 30"#;
+    let claude = fake_claude(true, turn);
+    let cwd = scratch("cwd");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), true));
+    add(&handle, &mut events, 3, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 3, text: "look around".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::SubagentEntry { entry: Entry::Tool { .. }, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SubagentStarted { brief, .. } if brief == "Open linear.app and capture its hero.")), "its brief whole");
+    assert!(seen.iter().any(|e| matches!(e, Event::SubagentEntry { id, entry: Entry::Reply { text }, .. } if id == "toolu_1" && text == "Starting with linear.app.")));
+    // A screen attaching now gets what it has done so far.
+    let snapshot = handle.snapshot("acme").await;
+    let sub = &snapshot.sessions[0].subagents[0];
+    assert_eq!(sub.brief, "Open linear.app and capture its hero.");
+    assert!(matches!(&sub.entries[..], [Entry::Reply { .. }, Entry::Tool { tool, outcome: Some(o), .. }] if tool == "Bash" && o.output == "linear.png"), "{:?}", sub.entries);
+    // Never the member's own conversation.
+    assert!(!text_entries(&snapshot.sessions[0].recent).iter().any(|l| l.contains("Starting with linear.app")));
+    handle.send(Command::Interrupt { session: 3 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.shutdown().await;
 }
 
@@ -3047,7 +3082,7 @@ async fn the_pm_on_a_ticket_of_its_own_is_still_reached_beside_it() {
     let lane = seen
         .iter()
         .find_map(|e| match e {
-            Event::LaneOpened { session, of: 1, project: None } => Some(*session),
+            Event::LaneOpened { session, of: 1, project: None, kept: false } => Some(*session),
             _ => None,
         })
         .expect("the PM's conversation, beside its ticket");
@@ -3092,6 +3127,75 @@ async fn said_to_the_pm_while_its_conversation_beside_the_work_is_at_it_steers_t
     handle.send(Command::Submit { session: 1, text: "and the footer".into(), about: Some(None) });
     let seen = until(&mut events, |e| matches!(e, Event::SteerQueued { .. } | Event::MessageQueued { .. })).await;
     assert!(matches!(seen.last(), Some(Event::SteerQueued { session, text, project: None }) if *session == lane && text == "and the footer"), "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through_a_restart() {
+    let site = named("site");
+    let app = named("app");
+    let (claude, recorded) = recording_claude(&answering_per_call("ok"));
+    let home = squad_home(&[&site, &app]);
+    let said = |calls: &[Vec<String>], words: &str| calls.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains(words))).cloned().unwrap_or_else(|| panic!("no turn said {words}"));
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&site, "pm")).await;
+        handle.send(Command::Submit { session: 1, text: "the pm's own".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+
+        // A conversation about the site: its own, beside the PM's.
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 50, project: Some("site".into()) });
+        let opened = until(&mut events, |e| matches!(e, Event::LaneOpened { session: 50, .. })).await;
+        assert!(matches!(opened.last(), Some(Event::LaneOpened { of: 1, project: Some(p), kept: true, .. }) if p == "site"), "{opened:#?}");
+        // The screen looks at the whole squad; the conversation is about the site.
+        handle.send(Command::Submit { session: 50, text: "login is broken".into(), about: Some(None) });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+        // Said to the PM itself, it is still the PM's own.
+        handle.send(Command::Submit { session: 1, text: "the pm again".into(), about: None });
+        let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        assert!(matches!(seen.last(), Some(Event::TurnEnded { session: 1, .. })), "{seen:#?}");
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 51, project: None });
+        until(&mut events, |e| matches!(e, Event::LaneOpened { session: 51, .. })).await;
+        handle.send(Command::Submit { session: 51, text: "what next?".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 51, .. })).await;
+
+        let all = calls(&recorded);
+        let login = said(&all, "login is broken");
+        assert!(arg(&login, "-p").unwrap().contains("looking at the project site"), "{login:?}");
+        assert_eq!(arg(&login, "--resume"), None, "not the PM's own conversation");
+        assert_eq!(arg(&said(&all, "what next?"), "--resume"), None, "nor the other one");
+        // Each carries on its own.
+        handle.send(Command::Submit { session: 50, text: "and the signup?".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+        assert_eq!(arg(&said(&calls(&recorded), "and the signup?"), "--resume"), Some("sess-1"));
+
+        handle.send(Command::MoveConversation { session: 51, project: Some("app".into()) });
+        until(&mut events, |e| matches!(e, Event::LaneMoved { session: 51, project: Some(p) } if p == "app")).await;
+        handle.shutdown().await;
+    }
+
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    let snapshot = handle.snapshot("acme").await;
+    let mut kept: Vec<_> = snapshot.sessions.iter().filter_map(|s| s.lane.as_ref().map(|l| (s.session, l.of, l.project.clone(), l.kept, s.title.clone()))).collect();
+    kept.sort();
+    assert_eq!(
+        kept,
+        [(50, 1, Some("site".to_owned()), true, Some("login is broken".to_owned())), (51, 1, Some("app".to_owned()), true, Some("what next?".to_owned()))],
+        "both back, where they were left"
+    );
+    let login = snapshot.sessions.iter().find(|s| s.session == 50).unwrap();
+    assert!(text_entries(&login.recent).contains(&"user: and the signup?".to_owned()), "{:?}", login.recent);
+    handle.send(Command::Submit { session: 50, text: "still there?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+    assert_eq!(arg(&said(&calls(&recorded), "still there?"), "--resume"), Some("sess-4"), "picked up where it was left");
+
+    // Put away: it leaves, and stays away.
+    handle.send(Command::CloseConversation { session: 51 });
+    until(&mut events, |e| matches!(e, Event::SessionClosed { session: 51 })).await;
+    handle.shutdown().await;
+    let (handle, _events) = runtime::start(config(&claude, &home, true));
+    let left: Vec<_> = handle.snapshot("acme").await.sessions.iter().filter(|s| s.lane.is_some()).map(|s| s.session).collect();
+    assert_eq!(left, [50]);
     handle.shutdown().await;
 }
 
@@ -3989,4 +4093,130 @@ async fn without_a_designer_changed_screens_go_straight_to_the_person() {
     let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("handed in T-1 for your review"))).await;
     assert!(!told.is_empty());
     handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_project_taken_off_the_squad_leaves_its_list_and_its_folder_stays() {
+    let (site, app) = (scratch("site"), scratch("app"));
+    let home = squad_home(&[&site, &app]);
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    handle.send(Command::RemoveProject { squad: "acme".into(), path: app.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::ProjectsChanged { .. })).await;
+    let Some(Event::ProjectsChanged { projects, .. }) = seen.last() else { unreachable!() };
+    assert!(!projects.contains(&app) && projects.len() == 1, "{projects:?}");
+    assert!(app.is_dir(), "its folder stays");
+    // One it doesn't work on: said, and nothing changes.
+    handle.send(Command::RemoveProject { squad: "acme".into(), path: app.clone() });
+    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("wasn't removed")), "{failed:#?}");
+}
+
+// ── Nemotron reviews (against a mock Token Factory on localhost: no network, no key) ──
+
+/// A mock Token Factory: answers every request with `status` and `body`, and
+/// keeps each request's text. Its base URL, for `EQUIPE_NEBIUS_BASE_URL`.
+async fn mock_token_factory(status: u16, body: String) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1/", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let (body, kept) = (body.clone(), kept.clone());
+            tokio::spawn(async move {
+                let mut data = Vec::new();
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = socket.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    data.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&data).into_owned();
+                    let Some(end) = text.find("\r\n\r\n") else { continue };
+                    let length = text[..end].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                    if data.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                kept.lock().unwrap().push(String::from_utf8_lossy(&data).into_owned());
+                let head = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\nx-request-id: req-mock\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(body.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (base, seen)
+}
+
+fn nemotron_at(base: &str) -> equipe_core::nemotron::Config {
+    equipe_core::nemotron::Config::from_vars(|name| match name {
+        "NEBIUS_API_KEY" => Some("sk-mock-not-a-real-key".into()),
+        "EQUIPE_NEBIUS_BASE_URL" => Some(base.into()),
+        "EQUIPE_NEBIUS_MODEL" => Some("nvidia/mock-nemotron".into()),
+        _ => None,
+    })
+    .unwrap()
+}
+
+/// A ticket handed in by the frontend, in a squad whose reviewer asks `base`.
+async fn hand_in_reviewed_at(base: &str) -> (Handle, UnboundedReceiver<Event>, PathBuf) {
+    let repo = repo();
+    let claude = fake_claude(true, &working_turn("HERO.md"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(Config { nemotron: Some(nemotron_at(base)), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Landing hero", "body": "- [ ] A headline and one button.", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    // Handed in mid-turn: at the turn's end the work is committed, and reviewed.
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done." })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    (handle, events, home)
+}
+
+#[tokio::test]
+async fn code_handed_in_is_reviewed_by_nemotron_kept_and_shown_on_every_screen() {
+    let review = r#"{"verdict":"needs_attention","summary":"The button has no handler.","risks":[{"file":"HERO.md","line":1,"why":"Nothing happens on click."}],"missing_tests":["Clicking the button."]}"#;
+    let completion = serde_json::json!({
+        "model": "nvidia/mock-nemotron",
+        "choices": [{ "message": { "role": "assistant", "content": review } }],
+        "usage": { "prompt_tokens": 900, "completion_tokens": 80, "total_tokens": 980 },
+    });
+    let (base, seen) = mock_token_factory(200, completion.to_string()).await;
+    let (handle, mut events, _home) = hand_in_reviewed_at(&base).await;
+
+    let reviewed = until(&mut events, |e| matches!(e, Event::CodeReviewed { .. })).await;
+    let Some(Event::CodeReviewed { squad, review }) = reviewed.last() else { panic!() };
+    assert_eq!((squad.as_str(), review.ticket, review.model.as_str()), ("acme", 1, "nvidia/mock-nemotron"));
+    assert_eq!(review.verdict, equipe_core::protocol::review::ReviewVerdict::NeedsAttention);
+    assert_eq!(review.summary, "The button has no handler.");
+    assert_eq!(review.risks[0].file, "HERO.md");
+    // What the model read: the ticket and the branch's diff, with what was made.
+    let request = seen.lock().unwrap().last().cloned().unwrap();
+    assert!(request.starts_with("POST /v1/chat/completions"), "{request}");
+    assert!(request.contains("Landing hero") && request.contains("+made by the squad"), "{request}");
+    assert!(request.contains("in English"), "{request}");
+
+    // A screen attaching later sees it; the ticket's record says so, by Nemotron.
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.reviews, vec![review.clone()]);
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 1 });
+    let history = until(&mut events, |e| matches!(e, Event::TicketHistory { .. })).await;
+    let Some(Event::TicketHistory { entries, .. }) = history.last() else { panic!() };
+    assert!(entries.iter().any(|e| e.by == "nemotron" && e.kind == "reviewed" && e.text == "The button has no handler."), "{entries:#?}");
+}
+
+#[tokio::test]
+async fn a_review_that_cant_run_says_why_and_never_the_key() {
+    let (base, _) = mock_token_factory(401, r#"{"error":"invalid key sk-mock-not-a-real-key"}"#.into()).await;
+    let (handle, mut events, _home) = hand_in_reviewed_at(&base).await;
+    let said = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("Nemotron"))).await;
+    let Some(Event::Notice { session, text }) = said.last() else { panic!() };
+    assert_eq!(*session, 2, "in the conversation of the member who handed it in");
+    assert_eq!(text, "Nemotron couldn't review T-1: Nebius Token Factory didn't accept the API key");
+    assert!(!said.iter().any(|e| format!("{e:?}").contains("sk-mock")));
+    assert!(handle.snapshot("acme").await.reviews.is_empty());
 }

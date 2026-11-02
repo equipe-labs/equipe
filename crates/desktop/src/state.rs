@@ -118,6 +118,14 @@ pub struct Lane {
     pub project: Option<String>,
     pub presence: Presence,
     pub verb: Verb,
+    /// A conversation the person opened with the PM: listed in the sidebar,
+    /// opened by itself (`Side::Conversation`), never folded back.
+    pub kept: bool,
+    /// Its first message's first line, once said.
+    pub title: Option<String>,
+    /// When something last happened in it (unix seconds; 0 before this
+    /// window saw anything), for the most lately used first.
+    pub active: u64,
 }
 
 /// What can be opened in the conversation's place: the PM (the one
@@ -127,6 +135,8 @@ pub enum Side {
     Pm,
     Ticket(TicketId),
     Member(SessionId),
+    /// A conversation the person opened with the PM (a kept lane).
+    Conversation(SessionId),
 }
 
 /// The sections of what waits for the person, in their order.
@@ -340,6 +350,13 @@ pub struct Model {
     voice: Vec<Say>,
     /// Whose conversation is on screen.
     pub selected: Option<SessionId>,
+    /// The conversation with the PM open, when one the person opened is
+    /// (`Side::Conversation`): it is what shows and what is said goes to.
+    pub talk: Option<SessionId>,
+    /// A conversation with the PM about to start ("새 대화"), and its project
+    /// (`None`: the whole squad): it is made with its first message, so none
+    /// is left empty.
+    pub draft_talk: Option<(SessionId, Option<String>)>,
     /// The ticket open on screen: its work in place of a conversation.
     pub opened: Option<TicketId>,
     /// The project in focus, by name; `None`: the whole squad.
@@ -387,6 +404,8 @@ pub struct Model {
     browser_tabs: HashMap<String, LaneTabs>,
     /// Tickets' records, as the daemon last sent them (a ticket page asks).
     pub histories: HashMap<TicketId, Vec<TicketEntry>>,
+    /// Nemotron's reviews of handed-in work, by ticket (Nebius Token Factory).
+    pub reviews: HashMap<TicketId, equipe_core::protocol::review::CodeReview>,
     /// Bumped whenever a ticket or a record changes, so the screens draw again.
     pub board_rev: u64,
     /// Bumped on every error the daemon says about the squad (a refused edit).
@@ -469,6 +488,8 @@ impl Model {
             convos: HashMap::new(),
             voice: Vec::new(),
             selected: None,
+            talk: None,
+            draft_talk: None,
             focus: None,
             opened: None,
             revision: 0,
@@ -489,6 +510,7 @@ impl Model {
             browser_asked: HashMap::new(),
             browser_tabs: HashMap::new(),
             histories: HashMap::new(),
+            reviews: HashMap::new(),
             board_rev: 0,
             squad_errors: 0,
         }
@@ -506,12 +528,51 @@ impl Model {
         if let Some(ticket) = self.opened {
             return self.convos.iter().find(|(_, c)| c.showing == Some(ticket)).map(|(&id, _)| id);
         }
+        if let Some((draft, _)) = self.draft_talk {
+            return Some(draft);
+        }
+        if let Some(talk) = self.talk.filter(|t| self.lanes.iter().any(|l| l.session == *t)) {
+            return Some(talk);
+        }
         let selected = self.selected?;
         Some(self.lane_of(selected).map_or(selected, |l| l.session))
     }
 
+    /// The member's conversation beside its work, if one runs — not one the
+    /// person opened, which shows only when opened itself.
     fn lane_of(&self, member: SessionId) -> Option<&Lane> {
-        self.lanes.iter().find(|l| l.of == member)
+        self.lanes.iter().find(|l| l.of == member && !l.kept)
+    }
+
+    /// The conversations the person opened with the PM, most lately used first.
+    pub fn conversations(&self) -> Vec<&Lane> {
+        let mut kept: Vec<&Lane> = self.lanes.iter().filter(|l| l.kept).collect();
+        kept.sort_by(|a, b| b.active.cmp(&a.active).then(b.session.cmp(&a.session)));
+        kept
+    }
+
+    /// Start a new conversation with the PM about `project`: empty on
+    /// screen until its first message makes it ([`Command::NewConversation`]).
+    pub fn draft_conversation(&mut self, project: Option<String>) {
+        self.open(Side::Pm);
+        let id = equipe_core::protocol::new_session_id();
+        self.talk = Some(id);
+        self.draft_talk = Some((id, project));
+        self.revision += 1;
+    }
+
+    /// The project the open conversation with the PM is about (`Some(None)`:
+    /// the whole squad) — one the person opened, or one about to start.
+    pub fn talk_project(&self) -> Option<Option<String>> {
+        if let Some((_, project)) = &self.draft_talk {
+            return Some(project.clone());
+        }
+        self.talking().map(|l| l.project.clone())
+    }
+
+    /// The conversation open now, if it is one the person opened.
+    pub fn talking(&self) -> Option<&Lane> {
+        self.talk.and_then(|t| self.lanes.iter().find(|l| l.session == t))
     }
 
     /// The team as the sidebar lists it: the PM first, then whoever needs
@@ -536,6 +597,9 @@ impl Model {
         if let Some(ticket) = self.opened {
             return Some(Side::Ticket(ticket));
         }
+        if let Some(talk) = self.talking() {
+            return Some(Side::Conversation(talk.session));
+        }
         let selected = self.selected_member()?;
         Some(if Self::is_pm(selected) { Side::Pm } else { Side::Member(selected.session) })
     }
@@ -548,8 +612,16 @@ impl Model {
             convo.showing = None;
         }
         self.opened = None;
+        self.talk = None;
+        self.draft_talk = None;
         self.revision += 1;
         match side {
+            Side::Conversation(session) => {
+                let Some(of) = self.lanes.iter().find(|l| l.session == session && l.kept).map(|l| l.of) else { return false };
+                self.selected = Some(of);
+                self.talk = Some(session);
+                true
+            }
             Side::Pm => {
                 self.selected = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
                 true
@@ -596,6 +668,19 @@ impl Model {
         subs
     }
 
+    /// Every subagent of a member's there is to look into — at work, and
+    /// those that handed back — oldest first, each with its conversation.
+    pub fn subagents_all(&self, member: SessionId) -> Vec<(SessionId, &crate::convo::Sub)> {
+        let lanes = self.lanes.iter().filter(|l| l.of == member).map(|l| l.session);
+        let mut subs: Vec<(SessionId, &crate::convo::Sub)> = std::iter::once(member)
+            .chain(lanes)
+            .filter_map(|s| self.convos.get(&s).map(|c| (s, c)))
+            .flat_map(|(s, c)| c.subagents.iter().chain(&c.finished).map(move |sub| (s, sub)))
+            .collect();
+        subs.sort_by_key(|(_, sub)| sub.since);
+        subs
+    }
+
     /// How many of a member's conversations are at work at once.
     pub fn at_once(&self, member: &Member) -> usize {
         self.lanes_working(member.session) + usize::from(member.presence == Presence::Working)
@@ -605,6 +690,12 @@ impl Model {
     /// of its own is free to talk: what is said opens its conversation beside
     /// the work.
     pub fn viewed_presence(&self) -> Option<Presence> {
+        if self.draft_talk.is_some() {
+            return Some(Presence::Ready);
+        }
+        if let Some(talk) = self.talking() {
+            return Some(talk.presence);
+        }
         let member = self.selected_member()?;
         if self.opened.is_some() {
             return Some(member.presence);
@@ -636,7 +727,8 @@ impl Model {
     /// to follow the project (`follow`) and it is the PM's. `None`: whole, as
     /// it always was.
     pub fn chat_slice(&self, follow: bool) -> Option<Option<String>> {
-        self.convo().filter(|c| follow && c.sliceable()).map(|_| self.focus.clone())
+        // A conversation the person opened is one project's already: whole.
+        self.convo().filter(|c| follow && c.sliceable() && self.talk.is_none()).map(|_| self.focus.clone())
     }
 
     /// The conversation in view as it shows (see [`Convo::sliced`]): with a
@@ -832,6 +924,7 @@ impl Model {
         self.signals = snapshot.signals.clone();
         self.secret_asks = snapshot.secret_asks.clone();
         self.routines = snapshot.routines.clone();
+        self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
         self.order_projects();
         self.mode = snapshot.mode;
         self.plan = snapshot.plan;
@@ -867,6 +960,10 @@ impl Model {
                     project: lane.project.clone(),
                     presence: if s.state == SessionState::Working { Presence::Working } else { Presence::Ready },
                     verb: Verb::of_entry(s.recent.iter().rev().find(|e| matches!(e, Entry::Tool { .. } | Entry::Reply { .. } | Entry::User { .. }))),
+                    kept: lane.kept,
+                    title: s.title.clone(),
+                    // Kept as this window last saw them, else in the daemon's order.
+                    active: self.lanes.iter().find(|l| l.session == s.session).map_or(0, |l| l.active),
                 })
             })
             .collect();
@@ -1020,6 +1117,10 @@ impl Model {
                     self.board_rev += 1;
                 }
             }
+            Event::CodeReviewed { squad, review } if squad == self.squad => {
+                self.reviews.insert(review.ticket, review);
+                self.board_rev += 1;
+            }
             Event::ApprovalRequested { squad, approval } => {
                 if squad == self.squad && !self.approvals.has(approval.id) {
                     self.alerts.push(Alert::Approval { approval: approval.clone(), squad });
@@ -1079,7 +1180,13 @@ impl Model {
                 self.desktop_stopped = desktop.stopped;
                 self.desktop = desktop;
             }
-            Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
+            Event::LaneOpened { session, of, project, kept } => self.open_lane(session, of, project, kept),
+            Event::LaneMoved { session, project } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
+                    lane.project = project;
+                    self.revision += 1;
+                }
+            }
             // Taken back, or sent at once: the member's count follows its conversation's.
             Event::MemoWithdrawn { session, .. } | Event::QueueSent { session, .. } => {
                 let memos = self.convos.get(&session).map(|c| c.queue.memo_count());
@@ -1088,7 +1195,12 @@ impl Model {
                 }
             }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
-            Event::Error { session: None, message, .. } => {
+            // The squad's, or a member's start that failed before it began (no
+            // engine, none installed): with no conversation to show it in, it
+            // would be lost, and the person would see nothing happen.
+            Event::Error { session, message, .. }
+                if session.is_none_or(|id| !self.convos.contains_key(&id) && !self.members.iter().any(|m| m.session == id)) =>
+            {
                 self.problem = Some(message);
                 self.squad_errors += 1;
                 self.board_rev += 1;
@@ -1117,7 +1229,16 @@ impl Model {
             }
             other => {
                 let Some(id) = other.session() else { return };
+                let unix = self.unix;
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == id) {
+                    if matches!(other, Event::UserMessage { .. } | Event::TurnEnded { .. }) {
+                        lane.active = unix;
+                    }
+                    if let Event::UserMessage { text, .. } = &other
+                        && lane.title.is_none()
+                    {
+                        lane.title = text.lines().next().map(str::to_owned);
+                    }
                     match other {
                         Event::UserMessage { .. } => (lane.presence, lane.verb) = (Presence::Working, Verb::Thinking),
                         Event::ToolUse { tool, .. } => (lane.presence, lane.verb) = (Presence::Working, Verb::of_tool(&tool)),
@@ -1181,17 +1302,23 @@ impl Model {
     }
 
     /// A session just started turns out to be a lane: it leaves the list.
-    fn open_lane(&mut self, session: SessionId, of: SessionId, project: Option<String>) {
+    fn open_lane(&mut self, session: SessionId, of: SessionId, project: Option<String>, kept: bool) {
         let Some(at) = self.members.iter().position(|m| m.session == session) else { return };
         let lane = self.members.remove(at);
         let main = self.convos.get(&of).cloned();
         if let Some(convo) = self.convos.get_mut(&session) {
             match &main {
-                Some(main) => convo.open_lane(main),
-                None => convo.lane = true,
+                // A conversation the person opened starts empty; one beside
+                // the work picks up where the member's left off.
+                Some(main) if !kept => convo.open_lane(main),
+                _ => convo.lane = true,
             }
         }
-        self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb });
+        self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb, kept, title: None, active: self.unix });
+        // The new conversation this window started: made now, and open.
+        if self.draft_talk.as_ref().is_some_and(|(draft, _)| *draft == session) {
+            self.draft_talk = None;
+        }
         self.revision += 1;
     }
 
@@ -1200,6 +1327,15 @@ impl Model {
     fn fold_lane(&mut self, session: SessionId) {
         let Some(at) = self.lanes.iter().position(|l| l.session == session) else { return };
         let lane = self.lanes.remove(at);
+        // A conversation put away goes, lines and all; the PM is shown instead.
+        if lane.kept {
+            self.convos.remove(&session);
+            if self.talk == Some(session) {
+                self.talk = None;
+            }
+            self.revision += 1;
+            return;
+        }
         if let Some(convo) = self.convos.remove(&session)
             && let Some(main) = self.convos.get_mut(&lane.of)
         {
@@ -1214,6 +1350,10 @@ impl Model {
         let qa_passed = ticket.ready_for_review() && self.tickets.iter().any(|t| t.id == ticket.id && t.in_design_qa());
         if let Some(alert) = self.tickets.iter().find(|t| t.id == ticket.id).and_then(|old| crate::notify::merge_alert(old, ticket, self.ticket_project_name(ticket))) {
             self.alerts.push(alert);
+        }
+        // Work back in hand: its review was of what came before.
+        if !matches!(ticket.status, TicketStatus::Review | TicketStatus::Done) {
+            self.reviews.remove(&ticket.id);
         }
         if was != Some(ticket.status) {
             self.since.insert(ticket.id, self.unix);
@@ -1687,6 +1827,15 @@ mod tests {
     const T1: Clock = Clock { hour: 14, minute: 3, second: 12 };
 
     #[test]
+    fn a_member_that_never_started_says_why_rather_than_nothing() {
+        let mut model = Model::new("acme");
+        let failed = Event::Error { session: Some(7), message: "No engine is ready.".into(), next: Some("equipe login".into()) };
+        model.apply(Update::Event(failed), T0);
+        assert_eq!(model.take_problem().as_deref(), Some("No engine is ready."), "no conversation to show it in: the squad's problem");
+        assert_eq!(model.squad_errors, 1);
+    }
+
+    #[test]
     fn projects_keep_the_order_they_were_dragged_into() {
         let mut model = Model::new("acme");
         model.projects = vec!["/c/mcp".into(), "/c/website".into(), "/c/hq".into()];
@@ -2025,6 +2174,26 @@ mod tests {
         assert_eq!(model.needs_you(), vec![(Section::Waiting, Need::Ticket(3))]);
     }
 
+    #[test]
+    fn nemotron_reviews_come_with_the_snapshot_and_as_they_arrive() {
+        use equipe_core::protocol::review::{CodeReview, ReviewVerdict};
+        let review = |ticket, verdict| CodeReview { ticket, model: "nvidia/mock".into(), verdict, summary: "s".into(), ..Default::default() };
+        let mut model = Model::new("acme");
+        let snapshot = Snapshot { squad: "acme".into(), reviews: vec![review(3, ReviewVerdict::Risky)], ..Default::default() };
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        assert_eq!(model.reviews.get(&3).map(|r| r.verdict), Some(ReviewVerdict::Risky));
+        let rev = model.board_rev;
+        model.apply(Update::Event(Event::CodeReviewed { squad: "acme".into(), review: review(3, ReviewVerdict::LooksGood) }), T0);
+        assert_eq!(model.reviews.get(&3).map(|r| r.verdict), Some(ReviewVerdict::LooksGood));
+        assert!(model.board_rev > rev, "the peek draws again");
+        // Sent back, its review goes: it was of the work before.
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(3, "in_progress", None) }), T0);
+        assert!(!model.reviews.contains_key(&3));
+        // Another squad's is not this one's.
+        model.apply(Update::Event(Event::CodeReviewed { squad: "zeta".into(), review: review(4, ReviewVerdict::Risky) }), T0);
+        assert!(!model.reviews.contains_key(&4));
+    }
+
     fn ticket(id: u32, status: &str, note: Option<&str>) -> Ticket {
         serde_json::from_value(serde_json::json!({"id": id, "title": "t", "body": "", "status": status, "owner": "backend", "assignee": null, "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": note})).unwrap()
     }
@@ -2064,7 +2233,7 @@ mod tests {
         };
         model.apply(tick("in_progress", None), T0);
         model.apply(tick("waiting", Some("Waiting on you:\n- [ ] 토큰을 알려 주세요.\n- [ ] 일정을 정해 주세요.")), T0);
-        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend이(가) 2가지를 묻습니다"), "no asks run together, no keys to learn");
+        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend이(가) 2가지를 물어요"), "no asks run together, no keys to learn");
         // Answered on another screen: the card learns it as the ticket moves.
         let revision = model.revision;
         model.unix = 1_000;
@@ -2239,7 +2408,7 @@ mod tests {
         model.apply(Update::Event(Event::UserMessage { session: 1, text: "사이트는?".into() }), T0);
         model.members[0].ticket = Some(9);
         model.apply(Update::Event(Event::SessionStarted { session: 77, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
-        model.apply(Update::Event(Event::LaneOpened { session: 77, of: 1, project: None }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 77, of: 1, project: None, kept: false }), T0);
         model
     }
 
@@ -2354,7 +2523,7 @@ mod tests {
     #[test]
     fn a_snapshot_keeps_lanes_apart_from_members() {
         let mut lane = session(9, "pm", "pm", SessionState::Working);
-        lane.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()) });
+        lane.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: false });
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), lane]), T0);
         assert_eq!(model.members.len(), 1);
@@ -2376,29 +2545,29 @@ mod tests {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "frontend", "frontend", SessionState::Working)]), T0);
         // Not the conversation on screen, yet the sidebar draws again each time.
-        assert!(model.apply(Update::Event(Event::SubagentStarted { session: 2, id: "a".into(), what: "Read the logs".into() }), T0));
-        assert!(model.apply(Update::Event(Event::SubagentStarted { session: 2, id: "b".into(), what: "Run the tests".into() }), T0));
+        assert!(model.apply(Update::Event(Event::SubagentStarted { session: 2, id: "a".into(), what: "Read the logs".into(), brief: String::new() }), T0));
+        assert!(model.apply(Update::Event(Event::SubagentStarted { session: 2, id: "b".into(), what: "Run the tests".into(), brief: String::new() }), T0));
         assert!(model.apply(Update::Event(Event::SubagentStep { session: 2, id: "b".into(), step: "Bash cargo test".into() }), T0));
         assert_eq!(subs(&model, 2), [(2, "Read the logs".into(), None), (2, "Run the tests".into(), Some("Bash cargo test".into()))]);
         assert!(subs(&model, 1).is_empty());
-        assert!(model.apply(Update::Event(Event::SubagentEnded { session: 2, id: "a".into() }), T0));
+        assert!(model.apply(Update::Event(Event::SubagentEnded { session: 2, id: "a".into(), result: None, failed: false }), T0));
         assert_eq!(subs(&model, 2), [(2, "Run the tests".into(), Some("Bash cargo test".into()))]);
         // Someone else's subagent ending changes nothing here.
-        assert!(!model.apply(Update::Event(Event::SubagentEnded { session: 2, id: "zz".into() }), T0));
+        assert!(!model.apply(Update::Event(Event::SubagentEnded { session: 2, id: "zz".into(), result: None, failed: false }), T0));
     }
 
     #[test]
     fn attaching_again_shows_the_subagents_at_work_now_and_not_those_that_ended_meanwhile() {
         let mut model = Model::new("acme");
         let mut frontend = session(2, "frontend", "frontend", SessionState::Working);
-        frontend.subagents = vec![SubagentInfo { id: "a".into(), what: "Read the logs".into(), step: Some("Grep error".into()), secs: 30 }];
+        frontend.subagents = vec![SubagentInfo { id: "a".into(), what: "Read the logs".into(), step: Some("Grep error".into()), secs: 30, ..Default::default() }];
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), frontend.clone()]), T0);
         assert_eq!(subs(&model, 2), [(2, "Read the logs".into(), Some("Grep error".into()))]);
         let (_, sub) = model.subagents_of(2)[0];
         assert!(sub.since.elapsed() >= Duration::from_secs(30), "its clock picks up where the daemon's was");
         // The link went down; meanwhile one handed back and another started.
         model.apply(Update::Down(Failure::Closed), T0);
-        frontend.subagents = vec![SubagentInfo { id: "c".into(), what: "Compare flows".into(), step: None, secs: 2 }];
+        frontend.subagents = vec![SubagentInfo { id: "c".into(), what: "Compare flows".into(), step: None, secs: 2, ..Default::default() }];
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), frontend]), T0);
         assert_eq!(subs(&model, 2), [(2, "Compare flows".into(), None)]);
     }
@@ -2406,10 +2575,22 @@ mod tests {
     #[test]
     fn a_lanes_subagents_are_its_members_oldest_first() {
         let mut model = with_lane();
-        model.apply(Update::Event(Event::SubagentStarted { session: 1, id: "a".into(), what: "own".into() }), T0);
+        model.apply(Update::Event(Event::SubagentStarted { session: 1, id: "a".into(), what: "own".into(), brief: String::new() }), T0);
         std::thread::sleep(Duration::from_millis(2));
-        model.apply(Update::Event(Event::SubagentStarted { session: 77, id: "b".into(), what: "lane's".into() }), T0);
+        model.apply(Update::Event(Event::SubagentStarted { session: 77, id: "b".into(), what: "lane's".into(), brief: String::new() }), T0);
         assert_eq!(subs(&model, 1), [(1, "own".into(), None), (77, "lane's".into(), None)]);
+    }
+
+    #[test]
+    fn a_members_subagents_to_look_into_are_those_at_work_and_those_handed_back() {
+        let mut model = with_lane();
+        model.apply(Update::Event(Event::SubagentStarted { session: 1, id: "a".into(), what: "own".into(), brief: String::new() }), T0);
+        std::thread::sleep(Duration::from_millis(2));
+        model.apply(Update::Event(Event::SubagentStarted { session: 77, id: "b".into(), what: "lane's".into(), brief: String::new() }), T0);
+        model.apply(Update::Event(Event::SubagentEnded { session: 1, id: "a".into(), result: Some("done".into()), failed: false }), T0);
+        let all: Vec<&str> = model.subagents_all(1).into_iter().map(|(_, s)| s.id.as_str()).collect();
+        assert_eq!(all, ["a", "b"], "the one that handed back stays, in the order they started");
+        assert_eq!(subs(&model, 1).len(), 1, "the sidebar lists only those at work");
     }
 
     fn needs_model() -> Model {

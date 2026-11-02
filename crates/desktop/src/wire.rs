@@ -113,7 +113,8 @@ impl Commands {
         self.ask(rpc::TELEMETRY_SET, equipe_core::protocol::telemetry::SetTelemetry { on })
     }
 
-    fn ask(&self, method: &str, params: impl serde::Serialize) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
+    /// Any request of the daemon's JSON-RPC (`metrics.*`); answered as [`Commands::upload`] is.
+    pub fn ask(&self, method: &str, params: impl serde::Serialize) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
         let (tx, rx) = std::sync::mpsc::channel();
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.pending.lock().unwrap().insert(id, tx);

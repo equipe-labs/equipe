@@ -125,7 +125,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
     let s = |area, keys, what| Shortcut { area, keys, what };
     vec![
         s(window, "⌘,", t!("settings.key_settings")),
-        s(window, "⌘N", t!("sidebar.new_message")),
+        s(window, "⌘N", t!("sidebar.new_conversation")),
         s(window, "⌘K", t!("settings.key_search_all")),
         s(window, "⌘\\", t!("settings.key_sidebar")),
         s(window, "⌘B", t!("settings.key_board")),

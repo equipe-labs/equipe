@@ -48,7 +48,7 @@ const STALE_AFTER: Duration = Duration::from_secs(3 * 24 * 60 * 60);
 pub const LOG_PAST: u64 = 20 * MB;
 const LOG_KEEP: u64 = MB;
 /// The Mac's caches are listed from this size.
-const CACHE_FROM: u64 = 500 * MB;
+const CACHE_FROM: u64 = if cfg!(test) { MB } else { 500 * MB };
 /// How long a look may take, all told.
 pub const SCAN_BUDGET: Duration = Duration::from_secs(20);
 
@@ -614,7 +614,7 @@ impl Scan<'_> {
             (DiskKind::Pnpm, library.join("pnpm/store"), Some("pnpm store prune")),
             (DiskKind::Pnpm, user.join(".local/share/pnpm/store"), Some("pnpm store prune")),
             (DiskKind::Yarn, library.join("Caches/Yarn"), Some("yarn cache clean")),
-            (DiskKind::Docker, library.join("Containers/com.docker.docker/Data"), Some("docker system prune")),
+            (DiskKind::Docker, library.join("Containers/com.docker.docker/Data"), Some("docker system prune -f")),
         ];
         for (kind, path, command) in listed {
             if !path.is_dir() || !self.budget.left() {
@@ -731,6 +731,72 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
             done.freed += item.bytes + builds;
             done.removed.push(id.clone());
         }
+    }
+    done
+}
+
+/// What equipe gives back on its own, without asking: what it may remove and
+/// nobody needs again — a finished ticket's work (in main, or cancelled; its
+/// branch stays), build folders nobody built in for days, a log's old part.
+/// The rest it may remove (a working member's build folder, a worktree no
+/// ticket keeps) waits for the person's yes.
+pub fn certain(item: &DiskItem) -> bool {
+    item.safe && matches!(item.why, DiskWhy::Merged | DiskWhy::Cancelled | DiskWhy::Stale | DiskWhy::OldLog)
+}
+
+/// Give back, on equipe's own, what one look finds [`certain`].
+pub fn clean_certain(known: &Known) -> DiskCleaned {
+    off_the_loop("disk::clean_certain");
+    let fresh = Known { user_home: None, projects: Vec::new(), ..known.clone() };
+    let (items, _) = scan(&fresh, Duration::from_secs(60));
+    let ids: Vec<String> = items.iter().filter(|i| certain(i)).map(|i| i.id.clone()).collect();
+    if ids.is_empty() {
+        return DiskCleaned { auto: true, ..DiskCleaned::default() };
+    }
+    DiskCleaned { auto: true, ..clean(known, &ids) }
+}
+
+/// How long a cache's own command may take.
+const COMMAND_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// Clear what isn't equipe's — a cache of the Mac's, a project's build output —
+/// with the command a fresh look lists for `id`, as the person said yes to
+/// it: never a command a screen sends. What it gave back, measured.
+pub fn clear_other(known: &Known, id: &str) -> DiskCleaned {
+    off_the_loop("disk::clear_other");
+    let (items, _) = scan(known, Duration::from_secs(120));
+    let mut done = DiskCleaned::default();
+    let Some((item, command)) = items.iter().find(|i| i.id == id).and_then(|i| Some((i, i.command.clone()?))) else {
+        done.skipped.push((id.to_owned(), DiskWhy::Needed));
+        return done;
+    };
+    let mut budget = Budget::new(Duration::from_secs(60));
+    let (before, _) = measure(&item.path, &mut budget);
+    let mut run = std::process::Command::new("/bin/sh");
+    run.args(["-c", &command]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    if let Some(user) = &known.user_home {
+        run.current_dir(user).env("HOME", user);
+    }
+    let ran = run.spawn().is_ok_and(|mut child| {
+        let deadline = Instant::now() + COMMAND_WAIT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.success(),
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
+                _ => {
+                    let _ = child.kill();
+                    break false;
+                }
+            }
+        }
+    });
+    let mut budget = Budget::new(Duration::from_secs(60));
+    let after = if item.path.exists() { measure(&item.path, &mut budget).0 } else { 0 };
+    done.freed = before.saturating_sub(after);
+    if ran || done.freed > 0 {
+        done.removed.push(id.to_owned());
+    } else {
+        done.skipped.push((id.to_owned(), DiskWhy::NotEquipes));
     }
     done
 }
@@ -1063,6 +1129,49 @@ mod tests {
 
     fn find<'a>(items: &'a [DiskItem], kind: DiskKind, path: &Path) -> &'a DiskItem {
         items.iter().find(|i| i.kind == kind && i.path == path).unwrap_or_else(|| panic!("no {kind:?} at {}: {items:#?}", path.display()))
+    }
+
+    #[test]
+    fn only_a_finished_tickets_work_goes_on_its_own_and_the_rest_waits_for_a_yes() {
+        let tree = Tree::new();
+        let merged = tree.worktree(1, 3 * MB as usize);
+        let cancelled = tree.worktree(2, 2 * MB as usize);
+        let orphan = tree.worktree(5, 2 * MB as usize);
+        let not_merged = tree.worktree(7, 2 * MB as usize);
+        let known = Known {
+            home: tree.home.clone(),
+            tickets: vec![
+                tree.ticket(1, TicketStatus::Done, Some(true), None),
+                tree.ticket(2, TicketStatus::Cancelled, None, None),
+                tree.ticket(7, TicketStatus::Done, Some(false), None),
+            ],
+            ..Known::default()
+        };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        assert!(certain(find(&items, DiskKind::Worktree, &merged)) && certain(find(&items, DiskKind::Worktree, &cancelled)));
+        assert!(!certain(find(&items, DiskKind::Worktree, &orphan)), "no ticket keeps it: the person says");
+        assert!(!certain(find(&items, DiskKind::Worktree, &not_merged)), "not in main yet: never");
+        let cleaned = clean_certain(&known);
+        assert!(cleaned.auto && cleaned.freed >= 5 * MB, "{cleaned:?}");
+        assert!(!merged.exists() && !cancelled.exists(), "a finished ticket's work went");
+        assert!(orphan.exists() && not_merged.exists(), "the rest stays for the person's yes");
+    }
+
+    #[test]
+    fn what_isnt_equipes_is_cleared_only_with_the_command_a_look_lists() {
+        let tree = Tree::new();
+        let user = tree.home.parent().unwrap().join("user");
+        let npm = user.join(".npm/_cacache");
+        std::fs::create_dir_all(&npm).unwrap();
+        std::fs::write(npm.join("blob"), vec![0u8; (CACHE_FROM + MB) as usize]).unwrap();
+        let known = Known { home: tree.home.clone(), user_home: Some(user.clone()), ..Known::default() };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        let item = find(&items, DiskKind::Npm, &npm);
+        assert!(!item.safe && item.command.as_deref() == Some("npm cache clean --force"));
+        assert_eq!(clear_other(&known, "made-up").skipped, vec![("made-up".to_owned(), DiskWhy::Needed)], "an id no look lists runs nothing");
+        // Whatever the command does here (npm may be missing), it's the listed one.
+        let done = clear_other(&known, &item.id);
+        assert_eq!(done.removed.len() + done.skipped.len(), 1);
     }
 
     #[test]

@@ -78,7 +78,7 @@ pub fn pdf(path: &Path, side: u32) -> Result<(usize, Option<RgbImage>), String> 
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (path, side);
-        Err("no PDF reader here".into())
+        Err(equipe_core::t!("media.no_pdf_reader").into())
     }
 }
 
@@ -251,7 +251,7 @@ mod ffmpeg {
 
     pub fn video(path: &Path) -> Result<Video, String> {
         let ffmpeg = tool("ffmpeg").ok_or("no ffmpeg")?;
-        let probe = probe(path).ok_or("ffprobe couldn't read it")?;
+        let probe = probe(path).ok_or(equipe_core::t!("media.unreadable"))?;
         let duration = probe.duration.filter(|d| d.is_finite() && *d > 0.).ok_or("no length")?;
         let mut frames = Vec::new();
         for at in frame_times(duration) {
@@ -267,7 +267,7 @@ mod ffmpeg {
             }
         }
         if frames.is_empty() {
-            return Err("no frame could be read".into());
+            return Err(equipe_core::t!("media.no_frame").into());
         }
         let (width, height) = probe.size.unwrap_or((frames[0].image.width(), frames[0].image.height()));
         Ok(Video { duration, width, height, fps: probe.fps, frames })
@@ -303,10 +303,10 @@ mod avf {
 
     #[allow(deprecated)]
     pub fn video(path: &Path) -> Result<Video, String> {
-        let asset = open(path).ok_or("unreadable path")?;
+        let asset = open(path).ok_or(equipe_core::t!("media.unreadable"))?;
         let duration = seconds(&asset).ok_or("no length")?;
-        let kind = unsafe { AVMediaTypeVideo }.ok_or("no video type")?;
-        let track = unsafe { asset.tracksWithMediaType(kind) }.firstObject().ok_or("no video track")?;
+        let kind = unsafe { AVMediaTypeVideo }.ok_or(equipe_core::t!("media.no_video"))?;
+        let track = unsafe { asset.tracksWithMediaType(kind) }.firstObject().ok_or(equipe_core::t!("media.no_video"))?;
         let natural = unsafe { track.naturalSize() };
         let turn = unsafe { track.preferredTransform() };
         // A phone's portrait video is stored on its side; its transform turns it.
@@ -335,7 +335,7 @@ mod avf {
             }
         }
         if frames.is_empty() {
-            return Err("no frame could be read".into());
+            return Err(equipe_core::t!("media.no_frame").into());
         }
         Ok(Video { duration, width, height, fps, frames })
     }
@@ -369,7 +369,7 @@ mod cg {
     }
 
     pub fn pdf(path: &Path, side: u32) -> Result<(usize, Option<RgbImage>), String> {
-        let url = CFURL::from_file_path(path).ok_or("unreadable path")?;
+        let url = CFURL::from_file_path(path).ok_or(equipe_core::t!("media.unreadable"))?;
         let document = CGPDFDocument::with_url(Some(&url)).ok_or("not a PDF")?;
         let pages = CGPDFDocument::number_of_pages(Some(&document));
         if pages == 0 {

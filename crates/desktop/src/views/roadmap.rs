@@ -67,7 +67,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let layout = roadmap::layout(model, now_secs());
     let (tops, height) = lane_tops(&layout);
     let width = column_x(Stage::Later) + COL_W + PAD;
-    let header = h_flex()
+    // Nothing to press in it: the whole bar is the title bar's.
+    let header = crate::ui::title_bar(h_flex())
         .h(px(super::header::HEIGHT))
         .flex_none()
         .pr_4()
@@ -76,7 +77,6 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .items_center()
         .border_b_1()
         .border_color(p.hair)
-        .window_control_area(WindowControlArea::Drag)
         .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("roadmap.title")))
         .child(div().flex_1().min_w_0().truncate().text_size(px(SMALL)).text_color(p.muted).child(t!("roadmap.subtitle")))
         .child(legend(shell));

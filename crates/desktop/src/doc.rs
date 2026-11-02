@@ -47,11 +47,27 @@ pub struct Doc {
     pub read: u64,
     /// Folded to a rail at the window's edge.
     pub folded: bool,
+    /// A deck shown as a presentation over the window: the slide on show.
+    pub presenting: Option<usize>,
+    /// Opened afresh rather than read again: a deck starts as a presentation
+    /// once its words come.
+    pub fresh: bool,
 }
 
 impl Doc {
     pub fn new(path: PathBuf, read: u64) -> Self {
-        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false }
+        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false, presenting: None, fresh: true }
+    }
+
+    /// Its slides, when it is a deck (`deck.rs`).
+    pub fn slides(&self) -> Option<Vec<String>> {
+        let text = self.text.as_ref()?.as_ref().ok()?;
+        crate::deck::is_deck(&self.path, text).then(|| crate::deck::slides(text))
+    }
+
+    /// The slide `at` would show, kept to the deck: none past either end.
+    pub fn slide_at(&self, at: usize) -> Option<usize> {
+        self.slides().filter(|s| !s.is_empty()).map(|s| at.min(s.len() - 1))
     }
 
     pub fn name(&self) -> String {
@@ -62,7 +78,7 @@ impl Doc {
     pub fn markdown(&self) -> Option<String> {
         let text = self.text.as_ref()?.as_ref().ok()?;
         let plain = self.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("txt"));
-        Some(if plain { format!("```text\n{text}\n```") } else { text.clone() })
+        Some(if plain { format!("```text\n{text}\n```") } else { crate::deck::body(text).to_owned() })
     }
 }
 
@@ -163,6 +179,18 @@ fn words(mut bytes: Vec<u8>) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deck_read_in_the_panel_starts_presenting_from_its_first_slide_and_keeps_to_its_ends() {
+        let mut doc = Doc::new(PathBuf::from("/s/notes/reports/x/deck.md"), 1);
+        assert!(doc.fresh && doc.slides().is_none(), "nothing read yet");
+        doc.text = Some(Ok("---\nmarp: true\n---\n# One\n\n---\n\n# Two".into()));
+        assert_eq!(doc.slides().map(|s| s.len()), Some(2));
+        assert_eq!(doc.slide_at(5), Some(1));
+        assert_eq!(doc.markdown().as_deref().map(str::trim_start), Some("# One\n\n---\n\n# Two"), "the front matter isn't the reader's");
+        let report = Doc { text: Some(Ok("# Report\n\n---\n\nmore".into())), ..Doc::new(PathBuf::from("/s/report.md"), 2) };
+        assert_eq!(report.slides(), None);
+    }
 
     #[test]
     fn markdown_and_text_open_in_the_panel() {

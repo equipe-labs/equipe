@@ -6,6 +6,10 @@
 //! terminal. The rules are here; the screens are `views/setup.rs` (the AI) and
 //! `views/welcome.rs` (the squad).
 //!
+//! Before the AI, git: a new Mac has only Apple's stub until its developer
+//! tools are installed, and the squad keeps its work in git. Missing, the
+//! screen asks macOS to install them and watches until they're there.
+//!
 //! No daemon session exists yet (a session needs a squad), so this talks to
 //! the tools directly: `claude auth status`, `codex login status`,
 //! `equipe login codex`.
@@ -16,6 +20,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use equipe_providers::{claude_code, codex_app, credentials::CredentialStore};
+
+/// How often the window looks again while macOS installs its developer tools.
+pub const GIT_POLL: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What Anthropic's own installer line is; the screen shows it before it runs.
 pub const CLAUDE_INSTALL: &str = "curl -fsSL https://claude.ai/install.sh | bash";
@@ -56,12 +63,24 @@ pub struct Setup {
     pub cancelled: bool,
     /// "Next" pressed with an engine ready: the squad form is up.
     pub squad_step: bool,
+    /// Whether git runs here; `None` until looked at.
+    pub git: Option<bool>,
+    /// macOS was asked to install its developer tools: the window watches.
+    pub git_asked: bool,
+    /// macOS couldn't be asked.
+    pub git_failed: bool,
+    pub git_watch: Option<gpui_kit::Task<()>>,
 }
 
 impl Setup {
     /// Whether an engine is ready, so the first squad can start.
     pub fn ready(&self) -> bool {
         self.claude == Some(Claude::SignedIn) || self.codex == Some(true)
+    }
+
+    /// Whether "Next" opens the squad form: git runs and an engine is ready.
+    pub fn can_go_on(&self) -> bool {
+        self.git == Some(true) && self.ready()
     }
 
     pub fn cancel(&mut self) {
@@ -91,6 +110,13 @@ fn home() -> PathBuf {
 fn child_path() -> String {
     let home = home();
     format!("{}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{}", home.display(), std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()))
+}
+
+/// Whether git runs here. Snapshots draw a new Mac's screen on any Mac
+/// (`FAKE_NO_GIT=1`).
+pub fn git_ready() -> bool {
+    let no_git = cfg!(feature = "snapshot") && std::env::var("FAKE_NO_GIT").is_ok_and(|v| v == "1");
+    !no_git && crate::install::git_ready(std::env::var_os("PATH").as_deref())
 }
 
 /// Where each engine stands. Blocks: call it off the UI thread.
@@ -181,6 +207,18 @@ mod tests {
     fn last_words_keeps_the_end() {
         assert_eq!(last_words("a\n\nb\nc\nd\n"), "b\nc\nd");
         assert_eq!(last_words(""), "");
+    }
+
+    #[test]
+    fn next_waits_for_git_and_an_engine() {
+        let mut s = Setup { codex: Some(true), ..Setup::default() };
+        assert!(!s.can_go_on(), "git not looked at yet");
+        s.git = Some(false);
+        assert!(!s.can_go_on(), "a new Mac's stub");
+        s.git = Some(true);
+        assert!(s.can_go_on());
+        s.codex = Some(false);
+        assert!(!s.can_go_on());
     }
 
     #[test]

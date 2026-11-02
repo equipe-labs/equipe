@@ -684,7 +684,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 16,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -704,7 +704,7 @@
             "type": "accept_closed"
           }
         },
-        "seq": 30,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -721,7 +721,7 @@
             "type": "accept_closed"
           }
         },
-        "seq": 31,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -747,7 +747,7 @@
             "type": "accept_proposed"
           }
         },
-        "seq": 29,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -771,7 +771,7 @@
             "type": "approval_requested"
           }
         },
-        "seq": 7,
+        "seq": 8,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -788,7 +788,7 @@
             "type": "approval_resolved"
           }
         },
-        "seq": 8,
+        "seq": 9,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -806,7 +806,39 @@
             "type": "branch_landed"
           }
         },
-        "seq": 59,
+        "seq": 60,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: code reviewed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "review": {
+              "at": 1760000000,
+              "missing_tests": [
+                "A failed user lookup answers 401."
+              ],
+              "model": "nvidia/nemotron-example",
+              "risks": [
+                {
+                  "file": "src/auth.rs",
+                  "line": 42,
+                  "why": "The error branch returns Ok: the request goes through."
+                }
+              ],
+              "summary": "A wrong password still gets a session when the lookup fails.",
+              "ticket": 38,
+              "verdict": "needs_attention"
+            },
+            "squad": "acme",
+            "type": "code_reviewed"
+          }
+        },
+        "seq": 7,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -825,7 +857,7 @@
             "type": "compact_failed"
           }
         },
-        "seq": 64,
+        "seq": 65,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -844,7 +876,7 @@
             "type": "compacted"
           }
         },
-        "seq": 62,
+        "seq": 63,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -864,7 +896,7 @@
             "type": "compacting"
           }
         },
-        "seq": 61,
+        "seq": 62,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -883,7 +915,7 @@
             "type": "compacting"
           }
         },
-        "seq": 63,
+        "seq": 64,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1055,7 +1087,7 @@
             "type": "design"
           }
         },
-        "seq": 21,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1072,7 +1104,7 @@
             "type": "design"
           }
         },
-        "seq": 22,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1092,7 +1124,7 @@
             "type": "disk_level"
           }
         },
-        "seq": 57,
+        "seq": 58,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1133,7 +1165,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 34,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1173,7 +1205,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 33,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1190,7 +1222,7 @@
             "type": "engine_proposal_closed"
           }
         },
-        "seq": 35,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1206,7 +1238,7 @@
             "type": "engine_switching_changed"
           }
         },
-        "seq": 36,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1243,7 +1275,7 @@
             "type": "engines"
           }
         },
-        "seq": 58,
+        "seq": 59,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1260,7 +1292,7 @@
             "type": "error"
           }
         },
-        "seq": 50,
+        "seq": 51,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1277,7 +1309,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 39,
+        "seq": 40,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1293,7 +1325,7 @@
             "type": "model_known"
           }
         },
-        "seq": 55,
+        "seq": 56,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1308,7 +1340,7 @@
             "type": "nothing_changed"
           }
         },
-        "seq": 60,
+        "seq": 61,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1324,7 +1356,7 @@
             "type": "notice"
           }
         },
-        "seq": 49,
+        "seq": 50,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1349,7 +1381,7 @@
             }
           }
         },
-        "seq": 32,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1374,7 +1406,7 @@
             }
           }
         },
-        "seq": 47,
+        "seq": 48,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1396,7 +1428,7 @@
             }
           }
         },
-        "seq": 48,
+        "seq": 49,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1426,7 +1458,7 @@
             "type": "questions_closed"
           }
         },
-        "seq": 10,
+        "seq": 11,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1480,7 +1512,7 @@
             "type": "questions_asked"
           }
         },
-        "seq": 9,
+        "seq": 10,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1496,7 +1528,7 @@
             "type": "questions_closed"
           }
         },
-        "seq": 11,
+        "seq": 12,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1515,7 +1547,7 @@
             "type": "queue_sent"
           }
         },
-        "seq": 56,
+        "seq": 57,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1532,7 +1564,7 @@
             "type": "routine_proposal_closed"
           }
         },
-        "seq": 27,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1549,7 +1581,7 @@
             "type": "routine_proposal_closed"
           }
         },
-        "seq": 28,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1583,7 +1615,7 @@
             "type": "routine_proposed"
           }
         },
-        "seq": 26,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1600,7 +1632,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 51,
+        "seq": 52,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1616,7 +1648,7 @@
             "type": "steered"
           }
         },
-        "seq": 52,
+        "seq": 53,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1632,7 +1664,7 @@
             "type": "subagent_ended"
           }
         },
-        "seq": 44,
+        "seq": 45,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1649,7 +1681,7 @@
             "what": "Compare the two login flows"
           }
         },
-        "seq": 42,
+        "seq": 43,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1666,7 +1698,7 @@
             "type": "subagent_step"
           }
         },
-        "seq": 43,
+        "seq": 44,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1686,7 +1718,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 24,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1703,7 +1735,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 25,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1730,7 +1762,7 @@
             "type": "team_change_proposed"
           }
         },
-        "seq": 23,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1746,7 +1778,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 40,
+        "seq": 41,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1762,7 +1794,7 @@
             "type": "thread"
           }
         },
-        "seq": 53,
+        "seq": 54,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1778,7 +1810,7 @@
             "type": "thread"
           }
         },
-        "seq": 54,
+        "seq": 55,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1809,7 +1841,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 37,
+        "seq": 38,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1875,7 +1907,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 20,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1892,7 +1924,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 41,
+        "seq": 42,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1912,7 +1944,7 @@
             }
           }
         },
-        "seq": 45,
+        "seq": 46,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1929,7 +1961,7 @@
             "usage": null
           }
         },
-        "seq": 46,
+        "seq": 47,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1945,7 +1977,7 @@
             "type": "user_message"
           }
         },
-        "seq": 38,
+        "seq": 39,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1989,7 +2021,7 @@
             "type": "questions_asked"
           }
         },
-        "seq": 12,
+        "seq": 13,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2152,6 +2184,25 @@
                     ],
                     "session": 4242,
                     "ticket": 38
+                  }
+                ],
+                "reviews": [
+                  {
+                    "at": 1760000000,
+                    "missing_tests": [
+                      "A failed user lookup answers 401."
+                    ],
+                    "model": "nvidia/nemotron-example",
+                    "risks": [
+                      {
+                        "file": "src/auth.rs",
+                        "line": 42,
+                        "why": "The error branch returns Ok: the request goes through."
+                      }
+                    ],
+                    "summary": "A wrong password still gets a session when the lookup fails.",
+                    "ticket": 38,
+                    "verdict": "needs_attention"
                   }
                 ],
                 "routine_proposals": [
@@ -2442,7 +2493,7 @@
               "total": 3
             }
           },
-          "seq": 17,
+          "seq": 18,
           "squad": "acme",
           "ts": 1760000000000
         },
@@ -2478,7 +2529,7 @@
           "id": 24,
           "jsonrpc": "2.0"
         },
-        "seq": 18,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2494,7 +2545,7 @@
             "id": 25,
             "jsonrpc": "2.0"
           },
-          "seq": 19,
+          "seq": 20,
           "squad": "home",
           "ts": 1760000000000
         }
@@ -2913,7 +2964,7 @@
               "width": 1024
             }
           },
-          "seq": 13,
+          "seq": 14,
           "squad": "acme",
           "ts": 1760000000000
         },
@@ -2951,7 +3002,7 @@
           "id": 21,
           "jsonrpc": "2.0"
         },
-        "seq": 14,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2967,7 +3018,7 @@
             "id": 22,
             "jsonrpc": "2.0"
           },
-          "seq": 15,
+          "seq": 16,
           "squad": "home",
           "ts": 1760000000000
         }

@@ -394,17 +394,10 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .border_color(p.accent)
                     .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(21.)).child(Textarea::new(&field).appearance(false).bordered(false)))
                     .child(
-                        div()
-                            .id(("words-close", id))
-                            .flex_none()
+                        crate::ui::x_box(("words-close", id), p.muted)
                             .mt(px(2.))
-                            .px_1()
-                            .rounded(px(4.))
                             .cursor_pointer()
-                            .text_size(px(12.))
-                            .text_color(p.muted)
-                            .hover(|s| s.text_color(p.text).bg(p.wash))
-                            .child("✕")
+                            .hover(move |s| s.bg(p.wash))
                             .on_click(move |_, window, cx| {
                                 close.update(cx, |shell, cx| shell.close_words(id, window, cx)).ok();
                             }),
@@ -423,7 +416,7 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .gap_2()
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(div().text_color(p.accent).child(t!("approvals.waiting_on_you_mark")))
+                    .child(h_flex().gap_1().text_color(p.accent).child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)).child(t!("approvals.waiting_on_you_mark")))
                     .child(div().text_color(p.member(hue)).child(format!("{mark} {}", approval.member)))
                     .children(approval.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}"))))
                     .child(div().flex_1())

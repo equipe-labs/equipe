@@ -401,13 +401,13 @@ fn steps_bar(card: &Card, d: &Draw<'_>) -> impl IntoElement {
         .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(t!("turn.steps", done = done, total = total)))
 }
 
-/// A step's mark: its number (✓ when done) in a ring — the same size for
+/// A step's mark: its number (a check when done) in a ring — the same size for
 /// 1 and 10, the digits centred, two of them a size smaller to fit — so the
 /// words after every mark start in one column.
 fn number(n: usize, done: bool, edge: Rgba, fill: Option<Rgba>, ink: Rgba) -> Div {
-    let words = if done { "✓".to_owned() } else { (n + 1).to_string() };
+    let words = (n + 1).to_string();
     let size = if words.chars().count() > 1 { 9.5 } else { 11. };
-    div()
+    let ring = div()
         .flex_none()
         .size(px(NUMBER))
         .flex()
@@ -420,8 +420,9 @@ fn number(n: usize, done: bool, edge: Rgba, fill: Option<Rgba>, ink: Rgba) -> Di
         .text_size(px(size))
         .line_height(px(NUMBER - 2.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(ink)
-        .child(div().text_center().child(words))
+        .text_color(ink);
+    // Done: the check icon, centred in the ring as a typed "✓" was not.
+    if done { ring.child(icon(Icon::Check, 12., ink)) } else { ring.child(div().text_center().child(words)) }
 }
 
 /// The ring a step's number sits in.

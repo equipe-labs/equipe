@@ -24,16 +24,35 @@ pub fn patience(length: Option<f64>) -> Duration {
     Duration::from_secs_f64((length * 1.5).clamp(60., 3. * 3600.) + 30.)
 }
 
-/// What was said in the recording at `path`, in `locale` ("ko-KR"). Blocks
-/// until the recognizer is through: call it off the main thread.
-pub fn transcribe(path: &Path, locale: &str, length: Option<f64>) -> Result<String, Failure> {
+/// Whether this Mac can recognize `locale` on the device (no audio leaves it).
+pub fn on_device(locale: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
-        sf::transcribe(path, locale, patience(length))
+        use objc2::AnyThread as _;
+        use objc2_foundation::{NSLocale, NSString};
+        use objc2_speech::SFSpeechRecognizer;
+        let locale = NSLocale::initWithLocaleIdentifier(NSLocale::alloc(), &NSString::from_str(locale));
+        // SAFETY: a valid locale; nil for one with no recognizer; plain property reads.
+        unsafe { SFSpeechRecognizer::initWithLocale(SFSpeechRecognizer::alloc(), &locale) }.is_some_and(|r| unsafe { r.supportsOnDeviceRecognition() })
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (path, locale, length);
+        let _ = locale;
+        false
+    }
+}
+
+/// What was said in the recording at `path`, in `locale` ("ko-KR"). Blocks
+/// until the recognizer is through: call it off the main thread.
+/// With `servers`, Apple's servers may recognize it too (the person agreed).
+pub fn transcribe(path: &Path, locale: &str, length: Option<f64>, servers: bool) -> Result<String, Failure> {
+    #[cfg(target_os = "macos")]
+    {
+        sf::transcribe(path, locale, patience(length), servers)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (path, locale, length, servers);
         Err(Failure::Unsupported)
     }
 }
@@ -138,20 +157,20 @@ mod sf {
         if status == Status::Authorized { Ok(()) } else { Err(Failure::Denied) }
     }
 
-    pub fn transcribe(path: &Path, locale: &str, patience: Duration) -> Result<String, Failure> {
+    pub fn transcribe(path: &Path, locale: &str, patience: Duration, servers: bool) -> Result<String, Failure> {
         allowed()?;
         let locale = NSLocale::initWithLocaleIdentifier(NSLocale::alloc(), &NSString::from_str(locale));
         let recognizer = unsafe { SFSpeechRecognizer::initWithLocale(SFSpeechRecognizer::alloc(), &locale) }.ok_or(Failure::Unsupported)?;
-        // Never sent to Apple's servers, as dictation isn't.
-        if !unsafe { recognizer.isAvailable() && recognizer.supportsOnDeviceRecognition() } {
+        // On this Mac only, unless the person agreed to Apple's servers.
+        if !unsafe { recognizer.isAvailable() && (servers || recognizer.supportsOnDeviceRecognition()) } {
             return Err(Failure::Unsupported);
         }
-        let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().ok_or_else(|| Failure::Failed("unreadable path".into()))?));
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().ok_or_else(|| Failure::Failed(equipe_core::t!("media.unreadable").into()))?));
         let request = unsafe {
             let request = SFSpeechURLRecognitionRequest::initWithURL(SFSpeechURLRecognitionRequest::alloc(), &url);
             // Partial results show where an utterance ends, so a long one is kept whole.
             request.setShouldReportPartialResults(true);
-            request.setRequiresOnDeviceRecognition(true);
+            request.setRequiresOnDeviceRecognition(!servers);
             if request.respondsToSelector(sel!(setAddsPunctuation:)) {
                 request.setAddsPunctuation(true);
             }

@@ -3,12 +3,15 @@
 //! Wire formats and protocol rules live in pure functions so they are testable
 //! without a network or a login; the async functions only add I/O around them.
 
+pub mod chat_wire;
 pub mod claude_code;
 pub mod codex_app;
 pub mod credentials;
 pub mod error;
 pub mod openai;
 pub mod pkce;
+pub mod relay;
+pub mod tools_path;
 pub mod turn;
 
 pub use credentials::{AuthMethod, CredentialStore, Credentials};

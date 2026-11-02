@@ -21,7 +21,7 @@ use super::icons;
 use crate::board::{self, DoneWindow, Filter, GroupBy, Menu, MergeWay, Row, SavedView, Tab, Tone, Undo, View};
 use crate::diffs::{self, Fetched, Source, Stat};
 use crate::state::{Conn, Model, Need, Presence, Verb, local_hm, short_span, status_word};
-use crate::theme::{MONO, PROJECT_HUES, Palette, SMALL, look};
+use crate::theme::{MONO, PROJECT_HUES, Palette, SMALL, key_face, look};
 use crate::tips::TipExt as _;
 use crate::{Screen, Shell};
 
@@ -97,10 +97,26 @@ pub struct BoardUi {
     pub sidebar_hidden: bool,
     pub sidebar_width: f32,
     pub sidebar_drag: Option<(f32, f32)>,
+    /// A hairline between the sidebar's areas held: which, where the pointer
+    /// was, and the areas as drawn then (`side_split.rs`).
+    pub side_split_drag: Option<(crate::side_split::Divider, f32, crate::side_split::Drawn)>,
+    /// The sidebar's areas as last drawn: projects, usage (0: none), team.
+    pub side_drawn: std::rc::Rc<std::cell::Cell<[f32; 3]>>,
     /// When the sidebar last came or went, to slide it.
     pub sidebar_shown_at: Option<Instant>,
     /// The sidebar's live rows as last drawn, to ease them in and out.
     pub side_motion: std::cell::RefCell<super::sidebar::SideMotion>,
+    /// The sidebar's projects whose live work shows ticket by ticket, not
+    /// in one line (by [`SideGroup::key`]).
+    pub side_work_open: std::collections::HashSet<String>,
+    /// The sidebar's lists of conversations shown whole (by project; "" the squad's).
+    pub side_talks_all: std::collections::HashSet<String>,
+    /// Every project shown, the quiet ones past the first few too.
+    pub side_projects_all: bool,
+    /// A project's menu, open where its ⋯ or a right-click was.
+    pub project_menu: Option<(String, Point<Pixels>)>,
+    /// A project just taken off the squad, to put back while it is said.
+    pub removed_project: Option<super::sidebar::Removed>,
     /// The team block's subagent rows as last drawn, the same way.
     pub sub_motion: std::cell::RefCell<super::sidebar::SubMotion>,
     /// A small menu out of the sidebar's foot.
@@ -178,8 +194,15 @@ impl BoardUi {
             sidebar_hidden: false,
             sidebar_width: super::sidebar::WIDTH,
             sidebar_drag: None,
+            side_split_drag: None,
+            side_drawn: Default::default(),
             sidebar_shown_at: None,
             side_motion: Default::default(),
+            side_work_open: Default::default(),
+            side_talks_all: Default::default(),
+            side_projects_all: false,
+            project_menu: None,
+            removed_project: None,
             sub_motion: Default::default(),
             popup: None,
             popup_closed: None,
@@ -1241,6 +1264,16 @@ fn flow_ticket(flow: Flow) -> Option<TicketId> {
 // ── drawing ──
 
 pub fn btn(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>, key: Option<&'static str>, primary: bool, enabled: bool) -> Stateful<Div> {
+    btn_frame(p, id, primary, enabled).child(label.into()).when_some(key, |b, key| b.child(btn_key(key)))
+}
+
+/// `btn`'s back button: the arrow as an icon (typed, "←" sat off the middle
+/// of the button), and Esc after it.
+pub fn back_btn(p: Palette, id: impl Into<ElementId>) -> Stateful<Div> {
+    btn_frame(p, id, false, true).child(crate::icons::icon(crate::icons::Icon::ArrowLeft, crate::theme::ICON_SM, p.text)).child(btn_key("Esc"))
+}
+
+fn btn_frame(p: Palette, id: impl Into<ElementId>, primary: bool, enabled: bool) -> Stateful<Div> {
     h_flex()
         .id(id)
         .h(px(28.))
@@ -1254,12 +1287,14 @@ pub fn btn(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>,
         .when(!enabled, |b| b.opacity(0.4))
         .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
         .when(!primary, |b| b.border_1().border_color(p.hair).when(enabled, |b| b.hover(move |s| s.bg(p.wash))))
-        .child(label.into())
-        .when_some(key, |b, key| b.child(div().text_size(px(11.)).opacity(0.6).child(key)))
+}
+
+fn btn_key(key: &'static str) -> Div {
+    div().text_size(px(11.)).opacity(0.6).font_features(key_face()).child(key)
 }
 
 pub fn kbd(p: Palette, key: &'static str) -> Div {
-    div().px(px(5.)).h(px(18.)).flex().items_center().rounded(px(4.)).border_1().border_color(p.hair).text_size(px(11.)).text_color(p.muted).child(key)
+    div().px(px(5.)).h(px(18.)).flex().items_center().rounded(px(4.)).border_1().border_color(p.hair).text_size(px(11.)).text_color(p.muted).font_features(key_face()).child(key)
 }
 
 pub fn hue_of(p: Palette, model: &Model, t: &Ticket) -> Option<Rgba> {
@@ -1392,7 +1427,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             .text_color(p.text2)
             .child(word)
             .when(removable, |c| {
-                c.cursor_pointer().child(div().text_color(p.muted).child("×")).on_click(cx.listener(move |this, _, window, cx| this.board_toggle_word(&w, window, cx)))
+                c.cursor_pointer().child(crate::icons::icon(crate::icons::Icon::X, 11., p.muted)).on_click(cx.listener(move |this, _, window, cx| this.board_toggle_word(&w, window, cx)))
             })
     };
     let has_chips = !chips.is_empty() || !saved_chips.is_empty();
@@ -1506,7 +1541,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .text_size(px(SMALL))
             .cursor_pointer()
             .hover(move |s| s.bg(p.wash))
-            .child(div().w(px(12.)).text_color(p.accent).child(if on { "✓" } else { "" }))
+            .child(div().w(px(12.)).flex_none().flex().items_center().children(on.then(|| crate::icons::icon(crate::icons::Icon::Check, 12., p.accent))))
             .child(label)
     };
     let body: Vec<AnyElement> = match which {
@@ -1917,7 +1952,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             base(SharedString::from(format!("ask-{id}")), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
-                .child(div().size(px(14.)).flex_none().flex().items_center().justify_center().text_size(px(12.)).text_color(p.accent).child("⚑"))
+                .child(div().size(px(14.)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)))
                 .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(a.ticket.map(|t| format!("T-{t}")).unwrap_or_default()))
                 .when(show_project, |r| r.child(project_col(ticket)))
                 .child(
@@ -2078,7 +2113,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .rounded(px(3.))
                         .border_1()
                         .border_color(if chosen { p.accent } else { p.hair })
-                        .when(chosen, |c| c.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓"))
+                        .when(chosen, |c| c.bg(p.accent).child(crate::icons::icon(crate::icons::Icon::Check, 10., p.on_accent)))
                         .when(!chosen, |c| c.invisible().group_hover(group.clone(), |s| s.visible()))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
