@@ -59,6 +59,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         retention_days: 90,
         equipe_binary: Some("/opt/equipe".into()),
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,

@@ -116,6 +116,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         retention_days: 90,
         equipe_binary: None,
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
@@ -3701,6 +3702,38 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
     let helper = handle.desktop(desktop("frontend")).await;
     assert!(helper.is_error && helper.text.contains("equipe desktop setup"), "{}", helper.text);
     assert!(handle.desktop(desktop("nobody")).await.text.contains("off for nobody"));
+}
+
+#[tokio::test]
+async fn only_a_designer_gets_equipe_designs_tools_and_only_when_it_is_installed() {
+    let servers = |call: &[String]| -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(arg(call, "--mcp-config").unwrap()).unwrap()["mcpServers"].clone()
+    };
+    let bin = scratch("bin");
+    let design = bin.join("equipe-design");
+    std::fs::write(&design, "#!/bin/sh\n").unwrap();
+    for (path, installed) in [(Some(std::env::join_paths([scratch("empty"), bin.clone()]).unwrap()), true), (Some(scratch("empty").into_os_string()), false), (None, false)] {
+        let (claude, recorded) = recording_claude(&answering("ok"));
+        let cwd = scratch("cwd");
+        let (handle, mut events) = runtime::start(Config { design_path: path, ..with_tools(&claude, &squad_home(&[&cwd])) });
+        add(&handle, &mut events, 1, member(&cwd, "designer")).await;
+        add(&handle, &mut events, 2, member(&cwd, "frontend")).await;
+        for session in [1, 2] {
+            handle.send(Command::Submit { session, text: "go".into(), about: None });
+            until(&mut events, |e| matches!(e, Event::TurnEnded { session: s, .. } if *s == session)).await;
+        }
+        let made = calls(&recorded);
+        let (designer, frontend) = (servers(&made[0]), servers(&made[1]));
+        assert!(frontend.get("design").is_none(), "{frontend}");
+        if installed {
+            assert_eq!(designer["design"], serde_json::json!({ "type": "stdio", "command": design, "args": ["mcp"] }));
+            assert!(made[0].iter().any(|a| a == "mcp__design"), "used without asking in auto: {:?}", made[0]);
+        } else {
+            assert!(designer.get("design").is_none(), "{designer}");
+            assert!(designer.get("equipe").is_some(), "the board's tools still: {designer}");
+        }
+        handle.shutdown().await;
+    }
 }
 
 // ── the design system ──

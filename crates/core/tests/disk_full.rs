@@ -53,6 +53,7 @@ async fn a_full_disk_is_said_once_and_the_daemon_goes_on_serving() {
         retention_days: 90,
         equipe_binary: None,
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,

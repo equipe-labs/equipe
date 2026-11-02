@@ -457,6 +457,8 @@ pub struct Context<'a> {
     pub profiles: &'a [crate::browser::BrowserProfile],
     /// Whether the member works the Mac's desktop apps (`mcp__desktop__…`).
     pub desktop: bool,
+    /// equipe-design's `design` tools: a designer's, when it is installed.
+    pub design: bool,
     /// The squad's home, where the member sits between tickets.
     pub home: Option<&'a str>,
     /// The squad's memory: its index as the member is given it, and how many facts it holds.
@@ -685,6 +687,18 @@ on either."
     } else {
         ""
     };
+    // A designer with equipe-design: a brand remixed from references the person names.
+    let remix = if ctx.design && role.id == "designer" {
+        " For a remix from references (the `design` tools): `design_extract` from two or three sites into the ticket's \
+`outputs/…/extract/<host>/`, and tell the person in a few lines what `design_report` says it couldn't see; \
+`design_remix` with the person's brand colour and name, then put the variants' sheet PNGs to them on \
+`ask_decision`; write the chosen one with `design_emit` (`dtcgLegacy: true`) into the project's `design/`, and run \
+`equipe design check` before you hand in. The engine opens its own headless Chrome, never your `browser`: it \
+reads public pages only and stops at robots.txt or a sign-in wall — tell the person and pick another reference rather \
+than get round it."
+    } else {
+        ""
+    };
     let desktop = if ctx.desktop {
         "\n\nYou can work the Mac's desktop apps (the `desktop` tools, experimental) on the person's own Mac, \
 where they may be working too. Look first: `screenshot`, then `elements` for the app's buttons and fields — \
@@ -797,7 +811,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{desktop}{pictures}{reports}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{remix}{desktop}{pictures}{reports}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -901,7 +915,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]
@@ -944,6 +958,18 @@ mod tests {
         assert!(text.contains("play \nback") || text.contains("play back"), "it says back what it understood");
         assert!(text.contains("start on their yes") && text.contains("you decide"), "{text}");
         assert!(text.contains("Questions that sharpen a vague ask are `ask_decision` questions too"));
+    }
+
+    #[test]
+    fn a_designer_with_equipe_design_knows_the_remix_flow_and_no_one_else_hears_of_it() {
+        let team = [Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
+        let with = |role_id: &str, design: bool| charter(role(role_id).unwrap(), role_id, &Context { design, ..ctx(&team, &[], true) });
+        let text = with("designer", true);
+        for step in ["`design_extract`", "`design_report`", "`design_remix`", "`ask_decision`", "`dtcgLegacy: true`", "`equipe design check`", "never your `browser`"] {
+            assert!(text.contains(step), "{step}: {text}");
+        }
+        assert!(!with("designer", false).contains("`design_extract`"), "not installed: not mentioned");
+        assert!(!with("frontend", true).contains("`design_extract`"));
     }
 
     #[test]
