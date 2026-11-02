@@ -28,11 +28,11 @@ pub fn time_left(resets_at: i64, now: i64) -> String {
     let left = (resets_at - now).max(0);
     let (days, hours, minutes) = (left / 86_400, left % 86_400 / 3_600, left % 3_600 / 60);
     if days > 0 {
-        t!("usage.left_days", days = days, hours = hours).into()
+        t!("usage.left_days", days = days, hours = hours)
     } else if hours > 0 {
-        t!("usage.left_hours", hours = hours, minutes = minutes).into()
+        t!("usage.left_hours", hours = hours, minutes = minutes)
     } else {
-        t!("usage.left_minutes", minutes = minutes.max(1)).into()
+        t!("usage.left_minutes", minutes = minutes.max(1))
     }
 }
 
