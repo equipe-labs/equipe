@@ -1179,6 +1179,17 @@ impl Shell {
 
     /// Open `path` (on the daemon's machine) in the panel at the right, read
     /// off the main thread; the same one again is read again.
+    /// Each ticket, for [`doc::places`]: its number, whether it is the viewed
+    /// member's, and where its work is.
+    pub fn ticket_places(&self) -> Vec<(u64, bool, doc::Place)> {
+        let mine = self.model.viewed().and_then(|s| self.model.members.iter().find(|m| m.session == s)).map(|m| m.name.clone());
+        self.model
+            .tickets
+            .iter()
+            .map(|t| (u64::from(t.id), mine.is_some() && (t.owner == mine || t.assignee == mine), (t.worktree.clone(), t.branch.clone(), t.project.clone())))
+            .collect()
+    }
+
     pub fn open_doc(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         self.doc_reads += 1;
         let read = self.doc_reads;
@@ -1190,16 +1201,7 @@ impl Shell {
         let endpoint = self.endpoint.clone();
         // Written in a ticket's worktree, or on its branch only: looked for there too.
         let base = render::base_dir(self);
-        let mine = self.model.viewed().and_then(|s| self.model.members.iter().find(|m| m.session == s)).map(|m| m.name.clone());
-        let tickets: Vec<_> = self
-            .model
-            .tickets
-            .iter()
-            .filter(|t| mine.is_some() && (t.owner == mine || t.assignee == mine))
-            .filter(|t| t.worktree.is_some() || t.branch.is_some())
-            .map(|t| (t.worktree.clone(), t.branch.clone(), t.project.clone()))
-            .collect();
-        let also = doc::elsewhere(&path, &base, &tickets);
+        let also = doc::elsewhere(&path, &base, &doc::places(&path, &self.ticket_places()));
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || drop(tx.send(doc::read(&endpoint, &path, &also))));
         cx.spawn(async move |this, cx| {

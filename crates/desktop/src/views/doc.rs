@@ -11,7 +11,8 @@ use gpui_kit::*;
 use crate::Shell;
 use crate::icons::{Icon, icon};
 use crate::render::view::Look;
-use crate::theme::{BODY, BODY_LINE, MONO, META, SMALL};
+use crate::theme::{BODY, BODY_LINE, META, SMALL};
+use crate::tips::tip;
 use crate::ui;
 
 /// The panel's left edge: drag to make it wider or narrower (kept), double-
@@ -73,6 +74,8 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     }
     let local = !shell.endpoint.is_remote();
     let path = doc.path.display().to_string();
+    let wide = shell.side_width(window);
+    let folder = crate::doc::folder_shown(&doc.path, &crate::render::base_dir(shell), std::env::home_dir().as_deref());
     let bar = h_flex()
         .h(px(super::header::HEIGHT))
         .flex_none()
@@ -82,13 +85,20 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
         .border_b_1()
         .border_color(p.hair)
         .child(icon(Icon::FileText, 15., p.muted))
-        .child(
-            v_flex()
+        // One line: its name, then where it is, short — the whole path on hover.
+        .child(tip(
+            h_flex()
+                .id("doc-where")
                 .flex_1()
                 .min_w_0()
-                .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).overflow_hidden().whitespace_nowrap().text_ellipsis().child(doc.name()))
-                .child(div().text_size(px(META)).text_color(p.muted).font_family(MONO).overflow_hidden().whitespace_nowrap().text_ellipsis().child(path.clone())),
-        )
+                .gap(px(8.))
+                .items_baseline()
+                .child(div().min_w_0().flex_shrink_0().max_w(px(wide * 0.6)).text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).overflow_hidden().whitespace_nowrap().text_ellipsis().child(doc.name()))
+                .child(div().flex_1().min_w_0().text_size(px(META)).text_color(p.muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(folder)),
+            p,
+            path.clone(),
+            None,
+        ))
         .when(doc.slides().is_some_and(|s| !s.is_empty()), |bar| bar.child(ui::icon_button(p, "doc-present", Icon::Play, t!("deck.present"), None).on_click(cx.listener(|this, _, _, cx| this.present(0, cx)))))
         .child(ui::icon_button(p, "doc-reload", Icon::Reload, t!("doc.reload"), None).on_click(cx.listener(|this, _, _, cx| this.reload_doc(cx))))
         .when(local, |bar| {
@@ -123,7 +133,6 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
                 .into_any_element()
         }
     };
-    let wide = shell.side_width(window);
     Some(
         v_flex()
             .id("doc-panel")

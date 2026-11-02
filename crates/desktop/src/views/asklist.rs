@@ -433,7 +433,7 @@ pub fn hint(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .text_size(px(12.5))
         .text_color(p.text)
         .cursor_pointer()
-        .hover(move |s| s.bg(p.wash))
+        .hover(move |s| s.bg(p.popover_hover()))
         .child(icon(Icon::Pencil, 12., p.accent))
         .child(t!("asklist.hint"))
         .when(enter, |c| {

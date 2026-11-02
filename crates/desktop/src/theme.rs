@@ -333,6 +333,12 @@ impl Palette {
         if self.is_dark() { rgb(0x252422) } else { rgb(0xFFFFFF) }
     }
 
+    /// A popover under the pointer: a step from it, and as solid — a
+    /// floating control is never see-through to what scrolls beneath.
+    pub fn popover_hover(&self) -> Rgba {
+        if self.is_dark() { rgb(0x2F2E2B) } else { rgb(0xF2F1EE) }
+    }
+
     /// A tooltip: a small dark chip in either appearance.
     pub fn tip_bg(&self) -> Rgba {
         if self.is_dark() { rgb(0x2F2E2C) } else { rgb(0x232220) }
@@ -416,13 +422,21 @@ mod tests {
     use super::{Appearance, Palette, contrast};
     use gpui_kit::WindowAppearance;
 
+    #[test]
+    fn a_popover_under_the_pointer_stays_solid() {
+        for p in [Palette::new(WindowAppearance::Dark), Palette::new(WindowAppearance::Light)] {
+            assert_eq!(p.popover_hover().a, 1., "nothing beneath shows through");
+            assert_ne!(p.popover_hover(), p.popover());
+        }
+    }
+
     /// Every colour text is drawn in, on every surface it is drawn on, reads
     /// at WCAG AA for small text (4.5:1), in both appearances.
     #[test]
     fn text_colours_pass_aa_on_every_surface() {
         for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
             let p = Palette::new(appearance);
-            let surfaces = [("bg", p.bg), ("side", p.side), ("side_hover", p.side_hover), ("side_sel", p.side_sel), ("raised", p.raised), ("code_bg", p.code_bg), ("popover", p.popover())];
+            let surfaces = [("bg", p.bg), ("side", p.side), ("side_hover", p.side_hover), ("side_sel", p.side_sel), ("raised", p.raised), ("code_bg", p.code_bg), ("popover", p.popover()), ("popover_hover", p.popover_hover())];
             let inks = [("text", p.text), ("prose", p.prose), ("text2", p.text2), ("muted", p.muted), ("accent", p.accent), ("danger", p.danger()), ("amber", p.amber), ("orange", p.orange), ("red", p.red)];
             for (surface, bg) in surfaces {
                 for (ink, fg) in inks {

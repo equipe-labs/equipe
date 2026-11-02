@@ -34,11 +34,14 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     };
     // The title gives way when the bar is narrow (a panel open beside it):
     // its words end in "…", the engine and the ⌄ stay whole.
+    // With only a name and an engine there is nothing to give way: it keeps
+    // its width, and what is beside it narrows instead of being drawn over.
+    let shrinks = talk_title.is_some() || ticket.is_some();
     let who = member.map(|m| {
         div()
             .relative()
             .flex_shrink(1.)
-            .min_w_0()
+            .when(shrinks, |d| d.min_w_0())
             .child(
                 pill(p, "conversation-title")
                     .role(Role::Button)
@@ -49,8 +52,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     })
                     .aria_expanded(open)
                     .flex_shrink(1.)
-                    .min_w_0()
+                    .when(shrinks, |b| b.min_w_0())
                     .max_w_full()
+                    .overflow_hidden()
                     .when(open, |b| b.bg(p.wash))
                     .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_popover(Popover::Members, cx)))
@@ -67,6 +71,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     });
     let context = member.and_then(|m| m.context).map(|c| {
         div()
+            .min_w_0()
+            .truncate()
             .text_size(px(SMALL))
             .text_color(if c >= 50 { p.text2 } else { p.muted })
             .when(c >= 50, |d| d.font_weight(FontWeight::SEMIBOLD))
@@ -103,8 +109,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .child(crate::ui::title_gap())
         .children(screen)
         .children(context)
-        .child(terminal_button(shell, cx))
-        .child(browser_button(shell, cx))
+        // The buttons stay whole; the words before them give way.
+        .child(div().flex_none().child(terminal_button(shell, cx)))
+        .child(div().flex_none().child(browser_button(shell, cx)))
 }
 
 /// The terminal's switch (⌃`): a shell on the daemon's machine.

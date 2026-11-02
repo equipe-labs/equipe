@@ -1825,7 +1825,7 @@ fn jump_pill(p: Palette, scroller: Entity<MessageScrollerState>) -> impl IntoEle
         .text_size(px(13.))
         .text_color(p.text)
         .cursor_pointer()
-        .hover(move |s| s.bg(p.wash))
+        .hover(move |s| s.bg(p.popover_hover()))
         .child(icon(Icon::ArrowDown, 14., p.text2))
         .child(t!("chat.jump_to_bottom"))
         .on_click(move |_, _, cx| scroller.update(cx, |state, cx| state.scroll_to_end(cx)));

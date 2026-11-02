@@ -110,6 +110,46 @@ pub fn elsewhere(path: &Path, base: &Path, tickets: &[(Option<PathBuf>, Option<S
     out
 }
 
+/// Where it is, said short beside its name: its folder from where the
+/// conversation works (`outputs/T-287 …`), else from home (`~/…`); nothing
+/// when it sits right there. The whole path is a hover away.
+pub fn folder_shown(path: &Path, base: &Path, home: Option<&Path>) -> String {
+    let Some(folder) = path.parent() else { return String::new() };
+    if !base.as_os_str().is_empty()
+        && let Ok(rel) = folder.strip_prefix(base)
+    {
+        return rel.to_string_lossy().into_owned();
+    }
+    match home.and_then(|h| folder.strip_prefix(h).ok()) {
+        Some(rel) => Path::new("~").join(rel).to_string_lossy().into_owned(),
+        None => folder.to_string_lossy().into_owned(),
+    }
+}
+
+/// The tickets a document may be in, as [`elsewhere`] takes them: the one its
+/// path names first (`outputs/T-287 …/x.txt`, wherever the person reads it
+/// from), then those of the member being read, then every other ticket's
+/// worktree — a file handed over before its ticket is merged is still there.
+/// Branches are looked through only for the first two: each look is a `git`.
+pub type Place = (Option<PathBuf>, Option<String>, Option<PathBuf>);
+pub fn places(path: &Path, tickets: &[(u64, bool, Place)]) -> Vec<Place> {
+    let path = path.to_string_lossy();
+    let named = |id: u64| {
+        let tag = format!("T-{id}");
+        path.match_indices(&tag).any(|(at, _)| !path[at + tag.len()..].starts_with(|c: char| c.is_ascii_digit()) && !path[..at].ends_with(|c: char| c.is_alphanumeric()))
+    };
+    let mut ordered: Vec<(u8, &Place)> = tickets
+        .iter()
+        .filter(|(_, _, (worktree, branch, _))| worktree.is_some() || branch.is_some())
+        .map(|(id, ours, place)| (if named(*id) { 0 } else if *ours { 1 } else { 2 }, place))
+        .collect();
+    ordered.sort_by_key(|(rank, _)| *rank);
+    ordered.into_iter().filter_map(|(rank, (worktree, branch, repo))| {
+        let branch = branch.clone().filter(|_| rank < 2);
+        (worktree.is_some() || branch.is_some()).then(|| (worktree.clone(), branch, repo.clone()))
+    }).collect()
+}
+
 /// Read `path` where the daemon is (blocking), else where it went
 /// (`elsewhere`): its words, and whether they were cut.
 pub fn read(endpoint: &Endpoint, path: &Path, also: &Elsewhere) -> Result<(String, bool), String> {
@@ -179,6 +219,32 @@ fn words(mut bytes: Vec<u8>) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_documents_place_is_said_short_from_where_the_conversation_works() {
+        let base = Path::new("/Users/a/.equipe/squads/s/home");
+        let home = Some(Path::new("/Users/a"));
+        assert_eq!(folder_shown(Path::new("/Users/a/.equipe/squads/s/home/outputs/T-287 홍보/A.txt"), base, home), "outputs/T-287 홍보");
+        assert_eq!(folder_shown(Path::new("/Users/a/.equipe/squads/s/home/plan.md"), base, home), "");
+        assert_eq!(folder_shown(Path::new("/Users/a/.equipe/worktrees/x/notes/a.md"), base, home), "~/.equipe/worktrees/x/notes");
+        assert_eq!(folder_shown(Path::new("/opt/x/a.md"), Path::new(""), home), "/opt/x");
+    }
+
+    #[test]
+    fn a_file_handed_over_on_anyones_ticket_is_found_before_its_ticket_is_merged() {
+        let place = |w: &str, b: &str| (Some(PathBuf::from(w)), Some(b.to_owned()), None);
+        let tickets = [
+            (12, true, place("/w/t12", "t12")),
+            (287, false, place("/w/t287", "t287")),
+            (28, false, place("/w/t28", "t28")),
+            (9, false, (None, None, None)),
+        ];
+        let got = places(Path::new("/h/outputs/T-287 홍보 글 올리기/A linkedin 붙여넣기.txt"), &tickets);
+        assert_eq!(got, [place("/w/t287", "t287"), place("/w/t12", "t12"), (Some(PathBuf::from("/w/t28")), None, None)], "named first, the reader's next, the rest by worktree only");
+        let got = places(Path::new("/h/notes/plan.md"), &tickets);
+        assert_eq!(got[0], place("/w/t12", "t12"));
+        assert_eq!(places(Path::new("/h/T-2870/x.md"), &tickets)[0], place("/w/t12", "t12"), "T-2870 is not T-287");
+    }
 
     #[test]
     fn a_deck_read_in_the_panel_starts_presenting_from_its_first_slide_and_keeps_to_its_ends() {
