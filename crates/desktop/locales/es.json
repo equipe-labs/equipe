@@ -2330,6 +2330,7 @@
   "metrics.all_optional": "No hace falta conectarlos todos. Solo lo conectado aparece en el panel.",
   "metrics.as_of": "A fecha de {date}",
   "metrics.back": "Atrás",
+  "metrics.card_retry": "Reintentando a las {time}",
   "metrics.change_key": "Cambiar clave",
   "metrics.confirm": "Comprobar y conectar",
   "metrics.connect": "Conectar",

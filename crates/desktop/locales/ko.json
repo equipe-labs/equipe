@@ -2277,6 +2277,7 @@
   "metrics.all_optional": "모두 연결하지 않아도 돼요. 연결한 것만 대시보드에 나와요.",
   "metrics.as_of": "{date} 기준",
   "metrics.back": "뒤로",
+  "metrics.card_retry": "{time}에 다시 시도해요",
   "metrics.change_key": "키 바꾸기",
   "metrics.confirm": "확인하고 연결",
   "metrics.connect": "연결",

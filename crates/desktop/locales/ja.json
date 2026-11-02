@@ -2276,6 +2276,7 @@
   "metrics.all_optional": "すべて接続する必要はありません。接続したものだけがダッシュボードに表示されます。",
   "metrics.as_of": "{date}時点",
   "metrics.back": "戻る",
+  "metrics.card_retry": "{time}に再試行します",
   "metrics.change_key": "キーを変更",
   "metrics.confirm": "確認して接続",
   "metrics.connect": "接続",

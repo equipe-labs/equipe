@@ -138,13 +138,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let m = &shell.metrics;
-    let title = match &shell.model.focus {
-        Some(project) => t!("metrics.title_project", project = project),
-        None => t!("metrics.title").to_owned(),
-    };
     let bar = ui::title_bar(h_flex()).h(px(super::header::HEIGHT)).flex_none().pr_4().pl(px(shell.header_inset(16., cx))).gap_3().items_center().border_b_1().border_color(p.hair);
-    let bar = bar.child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title)).child(div().flex_1());
-    if !matches!(m.flow, Flow::Dash) || m.is_empty() || m.sources.is_none() {
+    let bar = bar.child(div().flex_1());
+    if !matches!(m.flow, Flow::Dash) || m.sources.is_none() {
         // Connecting: the way back to the numbers, once there are some.
         let back = (!m.is_empty() && m.sources.is_some() && !matches!(m.flow, Flow::Dash)).then(|| ui::button(p, "metrics-back-dash", Kind::Secondary, t!("metrics.see_dash")).on_click(cx.listener(|this, _, _, cx| this.metrics_show_dash(cx))));
         return bar.children(back);
@@ -173,6 +169,17 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .child(ui::button(p, "metrics-manage", Kind::Secondary, t!("metrics.manage")).on_click(cx.listener(|this, _, window, cx| this.metrics_open_connect(None, None, window, cx))))
 }
 
+/// "지표 · equipe-site": whose numbers these are, with what follows it under.
+fn title(shell: &Shell, under: Option<String>) -> Div {
+    let p = shell.palette;
+    let project = shell.model.focus.clone().or_else(|| shell.metrics.connections().iter().find_map(|c| c.project.clone()));
+    let words = match project {
+        Some(project) => t!("metrics.title_project", project = project),
+        None => t!("metrics.title").to_owned(),
+    };
+    v_flex().gap_1().child(div().text_size(px(24.)).line_height(px(30.)).font_weight(FontWeight::BOLD).text_color(p.text).child(words)).children(under.map(|u| note(p, u)))
+}
+
 fn note(p: Palette, text: impl Into<SharedString>) -> Div {
     div().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(text.into())
 }
@@ -194,12 +201,9 @@ fn dash_page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         };
     };
     if sources.connections.is_empty() {
-        return empty_card(shell, sources, cx);
+        return v_flex().gap_4().w_full().child(title(shell, query.as_ref().map(metrics::range_words))).child(empty_card(shell, sources, cx)).into_any_element();
     }
-    let mut page = v_flex().gap_4().w_full();
-    if let Some(q) = query {
-        page = page.child(note(p, metrics::range_words(q)));
-    }
+    let mut page = v_flex().gap_4().w_full().child(title(shell, query.as_ref().map(metrics::range_words)));
     for banner in metrics::banners(sources) {
         page = page.child(banner_row(shell, &banner, sources, now, cx));
     }
@@ -302,26 +306,29 @@ fn metric_card(shell: &Shell, n: usize, c: &Card, sources: &Sources, now: u64) -
         (None, Some(at)) => t!("metrics.source", service = name, time = metrics::moment(at, now)),
         (None, None) => name.clone(),
     };
-    let head = h_flex().gap_2().items_center().child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label)).child(div().flex_none().size(px(7.)).rounded_full().bg(dot)).child(div().flex_none().max_w(px(180.)).truncate().text_size(px(12.)).text_color(p.muted).child(source));
+    let head = h_flex().gap_2().items_center().child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label)).child(div().flex_none().size(px(7.)).rounded_full().bg(dot)).child(div().flex_none().max_w(px(240.)).truncate().text_size(px(12.)).text_color(p.muted).child(source));
     let border = c.error.map_or(p.hair, |e| tone(p, e));
     let mut card = card_frame(p, border).id(("metrics-card", n)).child(head);
     card = match &c.body {
         Body::Number { value, change, series, previous } => {
             let shown = value.clone().unwrap_or_else(|| "—".into());
             let numbers = h_flex().gap_2().items_baseline().child(div().text_size(px(32.)).line_height(px(38.)).font_weight(FontWeight::SEMIBOLD).text_color(if stale { p.text2 } else { p.text }).child(shown)).children(value.is_some().then(|| div().text_size(px(13.)).text_color(p.muted).child(unit.clone())));
-            card.child(numbers).children(change.as_ref().map(|ch| change_row(p, ch, stale))).child(sparkline(p, series.clone(), previous.clone(), stale))
+            card.child(numbers).children(change.as_ref().map(|ch| change_row(p, ch))).child(sparkline(p, series.clone(), previous.clone(), stale))
         }
         Body::Bars(bars) => card.child(v_flex().gap_2().children(bars.iter().take(6).map(|b| {
             h_flex()
                 .gap_3()
                 .items_center()
-                .child(div().w(px(110.)).flex_none().truncate().text_size(px(13.)).text_color(if stale { p.text2 } else { p.text }).child(b.label.clone()))
-                .child(div().flex_1().h(px(6.)).rounded_full().bg(p.wash).child(div().h_full().w(relative(b.fill.clamp(0.02, 1.))).rounded_full().bg(if stale { Rgba { a: 0.5, ..p.accent } } else { p.accent })))
+                .child(div().w(px(96.)).flex_none().truncate().text_size(px(13.)).text_color(if stale { p.text2 } else { p.text }).child(b.label.clone()))
+                .child(div().flex_1().h(px(8.)).rounded_full().bg(p.wash).child(div().h_full().w(relative(b.fill.clamp(0.02, 1.))).rounded_full().bg(if stale { Rgba { a: 0.5, ..p.accent } } else { p.accent })))
                 .child(div().w(px(52.)).flex_none().text_size(px(13.)).text_color(p.text).text_right().child(b.value.clone()))
         }))),
     };
     if stale && let Some(at) = c.last_ok {
         card = card.child(note(p, t!("metrics.stale_last", when = metrics::moment(at, now))).text_size(px(12.)));
+        if let Some(retry) = c.retry_at {
+            card = card.child(note(p, t!("metrics.card_retry", time = metrics::moment(retry, now))).text_size(px(12.)));
+        }
     } else if let Some(day) = c.as_of.as_ref().filter(|d| c.as_of.is_some() && Some(d.as_str()) < today_day(now).as_deref()) {
         card = card.child(note(p, t!("metrics.as_of", date = metrics::day_words(day))).text_size(px(12.)));
     }
@@ -338,26 +345,43 @@ fn today_day(now: u64) -> Option<String> {
     Some(metrics::local_day_time(now).0)
 }
 
-fn change_row(p: Palette, ch: &Change, stale: bool) -> impl IntoElement + use<> {
+fn change_row(p: Palette, ch: &Change) -> impl IntoElement + use<> {
     let (mark, color) = match ch.up {
         Some(true) => ("▲", ok(p)),
         Some(false) => ("▼", wait(p)),
         None => ("–", p.muted),
     };
-    h_flex().gap_1p5().items_baseline().text_size(px(13.)).opacity(if stale { 0.6 } else { 1. }).child(div().text_color(color).font_weight(FontWeight::SEMIBOLD).child(format!("{mark} {}", ch.text))).child(div().text_color(p.muted).child(t!("metrics.vs_previous")))
+    h_flex().gap_1p5().items_baseline().text_size(px(13.)).child(div().text_color(color).font_weight(FontWeight::SEMIBOLD).child(format!("{mark} {}", ch.text))).child(div().text_color(p.text2).child(t!("metrics.vs_previous")))
 }
 
 /// This period's line in the accent, the one before beside it, fainter.
 fn sparkline(p: Palette, series: Vec<Option<f64>>, previous: Vec<Option<f64>>, stale: bool) -> impl IntoElement {
     const H: f32 = 52.;
-    let (now_color, then_color) = (Rgba { a: if stale { 0.5 } else { 1. }, ..p.accent }, Rgba { a: 0.55, ..p.muted });
+    let (now_color, then_color) = (Rgba { a: if stale { 0.5 } else { 1. }, ..p.accent }, Rgba { a: 0.8, ..p.muted });
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
             let w: f32 = bounds.size.width.into();
             let (line, before) = metrics::spark(&series, &previous, w, H - 4.);
             let o = bounds.origin;
-            for (points, color, width) in [(&before, then_color, 1.25), (&line, now_color, 2.)] {
+            // The period before is dashed: told from this one by more than its colour.
+            for pair in before.windows(2) {
+                let (Some((x0, y0)), Some((x1, y1))) = (pair[0], pair[1]) else { continue };
+                let len = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt().max(0.1);
+                let mut at = 0.;
+                while at < len {
+                    let end = (at + 4.).min(len);
+                    let place = |d: f32| gpui_kit::point(o.x + px(x0 + (x1 - x0) * d / len), o.y + px(y0 + (y1 - y0) * d / len + 2.));
+                    let mut dash = PathBuilder::stroke(px(1.5));
+                    dash.move_to(place(at));
+                    dash.line_to(place(end));
+                    if let Ok(dash) = dash.build() {
+                        window.paint_path(dash, then_color);
+                    }
+                    at += 7.;
+                }
+            }
+            for (points, color, width) in [(&line, now_color, 2.)] {
                 let mut path = PathBuilder::stroke(px(width));
                 let mut pen_down = false;
                 let mut any = false;
@@ -453,12 +477,14 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
         let (_, input) = shell.metrics_ui.boxes.iter().find(|(k, _)| *k == f.key)?;
         let label = word(format!("metrics.field.{}", f.key), &f.label);
         let hint = f.hint.as_deref().map(|h| word(format!("metrics.hint.{}", f.key), h));
+        let focus = input.read(cx).focus_handle(cx);
+        let ring = BoxShadow { color: p.accent.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: false };
         let empty = draft.missing && f.required && input.read(cx).value().trim().is_empty() && !(replacing && f.secret);
         Some(
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label))
-                .child(div().w_full().h(px(CONTROL + 4.)).px_3().flex().items_center().rounded(px(R_MD)).border_1().border_color(if empty { p.red } else { p.hair }).bg(p.code_bg).text_size(px(13.)).font_family(if f.secret { MONO } else { MONO }).child(Input::new(input).appearance(false).bordered(false)))
+                .child(div().w_full().h(px(CONTROL + 4.)).px_3().flex().items_center().rounded(px(R_MD)).border_1().border_color(if empty { p.red } else { p.hair }).id(SharedString::from(format!("metrics-box-{}", f.key))).track_focus(&focus).in_focus(move |s| s.border_color(ring.color).shadow(vec![ring])).bg(p.code_bg).text_size(px(13.)).font_family(if f.secret { MONO } else { MONO }).child(Input::new(input).appearance(false).bordered(false)))
                 .children(hint.map(|h| div().text_size(px(12.)).text_color(p.muted).child(h))),
         )
     });

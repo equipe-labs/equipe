@@ -2330,6 +2330,7 @@
   "metrics.all_optional": "You don't need them all. Only what you connect shows on the dashboard.",
   "metrics.as_of": "As of {date}",
   "metrics.back": "Back",
+  "metrics.card_retry": "Trying again at {time}",
   "metrics.change_key": "Change key",
   "metrics.confirm": "Check and connect",
   "metrics.connect": "Connect",

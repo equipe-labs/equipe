@@ -2330,6 +2330,7 @@
   "metrics.all_optional": "Inutile de tout connecter. Seul ce qui est connecté apparaît sur le tableau de bord.",
   "metrics.as_of": "Au {date}",
   "metrics.back": "Retour",
+  "metrics.card_retry": "Nouvel essai à {time}",
   "metrics.change_key": "Changer la clé",
   "metrics.confirm": "Vérifier et connecter",
   "metrics.connect": "Connecter",

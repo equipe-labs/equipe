@@ -2276,6 +2276,7 @@
   "metrics.all_optional": "不必全部連線。只有已連線的會顯示在儀表板上。",
   "metrics.as_of": "截至 {date}",
   "metrics.back": "返回",
+  "metrics.card_retry": "將在 {time} 重試",
   "metrics.change_key": "更換金鑰",
   "metrics.confirm": "確認並連線",
   "metrics.connect": "連線",

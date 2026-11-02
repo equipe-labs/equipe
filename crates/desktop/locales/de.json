@@ -2330,6 +2330,7 @@
   "metrics.all_optional": "Du musst nicht alle verbinden. Nur Verbundenes erscheint im Dashboard.",
   "metrics.as_of": "Stand {date}",
   "metrics.back": "Zurück",
+  "metrics.card_retry": "Neuer Versuch um {time}",
   "metrics.change_key": "Schlüssel ändern",
   "metrics.confirm": "Prüfen und verbinden",
   "metrics.connect": "Verbinden",

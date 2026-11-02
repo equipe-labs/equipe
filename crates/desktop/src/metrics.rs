@@ -186,6 +186,8 @@ pub struct Card {
     pub last_ok: Option<u64>,
     /// The latest fetch (unix seconds).
     pub fetched: Option<u64>,
+    /// When a refused-for-now fetch is tried again (unix seconds).
+    pub retry_at: Option<u64>,
     /// The service itself keeps this many days only.
     pub keeps_days: Option<u32>,
 }
@@ -222,6 +224,7 @@ pub fn cards(query: &QueryResult, sources: &Sources) -> Vec<Card> {
                 days: query.days,
                 last_ok: connection.and_then(|c| c.last_ok),
                 fetched: connection.and_then(|c| c.last.as_ref()).map(|l| l.at),
+                retry_at: connection.and_then(|c| c.last.as_ref()?.error.as_ref()?.retry_at),
                 keeps_days: spec.and_then(|s| s.keeps_days),
             }
         })
@@ -342,6 +345,15 @@ pub mod demo {
         MetricValue { metric: "languages".into(), label: "Languages".into(), shape: Shape::Breakdown, value: Some(1284.), previous: Some(1187.), change: None, change_pct: None, series: vec![], previous_series: vec![], breakdown: vec![share("English", 742., 700.), share("한국어", 283., 240.), share("日本語", 112., 100.), share("Español", 64., 60.), share("기타", 83., 87.)], ..visits(connection) }
     }
 
+    fn spots(connection: &str, metric: &str, label: &str, unit: &str, rows: &[(&str, f64)]) -> MetricValue {
+        let all: f64 = rows.iter().map(|r| r.1).sum();
+        MetricValue { metric: metric.into(), label: label.into(), unit: unit.into(), value: Some(all), previous: Some(all * 0.9), change_pct: Some(12.), change: Some(all * 0.1), breakdown: rows.iter().map(|(l, v)| share(l, *v, v * 0.9)).collect(), ..languages(connection) }
+    }
+
+    fn downloads(connection: &str) -> MetricValue {
+        MetricValue { connection: connection.into(), kind: SourceKind::AppStore, metric: "downloads".into(), label: "Downloads".into(), unit: "downloads".into(), shape: Shape::Count, value: Some(63.), previous: Some(54.), change: Some(9.), change_pct: Some(17.), as_of: Some("2026-11-01".into()), days_known: 7, series: line(&[7., 9., 8., 11., 10., 9., 9.]), previous_series: line(&[6., 8., 7., 9., 8., 8., 8.]), breakdown: vec![] }
+    }
+
     fn github(connection: &str, metric: &str, label: &str, unit: &str, shape: Shape, value: f64, pct: f64) -> MetricValue {
         MetricValue { connection: connection.into(), kind: SourceKind::Github, metric: metric.into(), label: label.into(), unit: unit.into(), shape, value: Some(value), previous: Some(value / (1. + pct / 100.)), change: Some(value - value / (1. + pct / 100.)), change_pct: Some(pct), as_of: Some("2026-11-02".into()), days_known: 7, series: line(&[310., 322., 318., 340., 335., 351., 334.]), previous_series: line(&[300., 305., 312., 309., 318., 321., 325.]), breakdown: vec![] }
     }
@@ -352,8 +364,17 @@ pub mod demo {
 
     /// Everything connected and well.
     pub fn healthy() -> (Sources, QueryResult) {
-        let connections = vec![connection("m1", SourceKind::Posthog, None), connection("m2", SourceKind::Github, None)];
-        let values = vec![visits("m1"), languages("m1"), github("m2", "views", "Views", "views", Shape::Count, 2310., 5.1), github("m2", "stars", "Stars", "stars", Shape::Total, 25., 19.0)];
+        let connections = vec![connection("m1", SourceKind::Posthog, None), connection("m2", SourceKind::Github, None), connection("m3", SourceKind::AppStore, None)];
+        let values = vec![
+            visits("m1"),
+            languages("m1"),
+            spots("m1", "referrers", "Referrers", "page_loads", &[("직접", 514.), ("X", 308.), ("GitHub", 231.), ("LinkedIn", 128.), ("기타", 103.)]),
+            spots("m1", "download_clicks", "Download click spots", "clicks", &[("첫 화면 버튼", 96.), ("상단 메뉴", 34.), ("설치 안내", 19.), ("맨 아래", 7.)]),
+            github("m2", "views", "Views", "views", Shape::Count, 2310., 5.1),
+            github("m2", "clones", "Clones", "clones", Shape::Count, 418., -2.3),
+            github("m2", "stars", "Stars", "stars", Shape::Total, 25., 19.0),
+            downloads("m3"),
+        ];
         (Sources { kinds: kinds(), connections: connections.clone() }, query(values, connections))
     }
 
@@ -442,7 +463,7 @@ mod tests {
         m.sources = Some(demo::healthy().0);
         assert!(!m.is_empty());
         assert_eq!(m.connection_of(SourceKind::Github).map(|c| c.id.as_str()), Some("m2"));
-        assert!(m.connection_of(SourceKind::AppStore).is_none());
+        assert!(m.connection_of(SourceKind::Fake).is_none());
     }
 
     #[test]
