@@ -13,6 +13,7 @@
 pub mod accept;
 pub mod awake;
 pub mod board;
+pub mod controls;
 pub mod browser;
 pub mod design;
 pub mod group;

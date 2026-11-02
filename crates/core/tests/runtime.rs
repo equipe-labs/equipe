@@ -1811,6 +1811,53 @@ async fn the_browser_shows_on_screen_when_asked_and_its_code_tool_follows_the_mo
 }
 
 #[tokio::test]
+async fn the_pm_changes_what_the_person_asks_and_only_their_tap_widens_what_the_squad_does() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    // What only narrows the squad: done at once.
+    let done = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "idle_wake_hours", "value": "6" })).await;
+    assert!(!done.is_error && done.text.starts_with("Done:"), "{}", done.text);
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().idle_wake_hours(), 6);
+    let narrowed = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "mode", "member": "frontend", "value": "ask" })).await;
+    assert!(!narrowed.is_error, "{}", narrowed.text);
+    until(&mut events, |e| matches!(e, Event::ModeChanged { mode: Some(Mode::Ask), .. })).await;
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("idle_wake_hours): 6 h") && read.text.contains("frontend: engine") && read.text.contains("mode ask"), "{}", read.text);
+
+    // A member changes nothing, and reads nothing of it.
+    let refused = tool(&handle, "frontend", "change_setting", serde_json::json!({ "setting": "mode", "value": "full" })).await;
+    assert!(refused.is_error && refused.text.contains("Only the PM"), "{}", refused.text);
+    assert!(tool(&handle, "frontend", "settings", serde_json::json!({})).await.is_error);
+
+    // What widens it: a card the daemon writes, and nothing until the person's tap.
+    let handle2 = handle.clone();
+    let asking = tokio::spawn(async move {
+        tool(&handle2, "pm", "change_setting", serde_json::json!({ "setting": "mode", "member": "frontend", "value": "full", "why": "they said go faster" })).await
+    });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.tool, "Change setting");
+    assert!(approval.action.contains("frontend"), "the card says whose: {}", approval.action);
+    assert!(!asked.iter().any(|e| matches!(e, Event::ModeChanged { mode: Some(Mode::Full), .. })), "not before the tap");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { member: Some(m), mode: Some(Mode::Full), .. } if m == "frontend")).await;
+    assert!(asking.await.unwrap().text.starts_with("The person said yes"));
+
+    // Said no: as it was.
+    let handle3 = handle.clone();
+    let asking = tokio::spawn(async move { tool(&handle3, "pm", "change_setting", serde_json::json!({ "setting": "pm_accepts", "value": "on" })).await });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
+    assert!(asking.await.unwrap().text.starts_with("The person said no"));
+}
+
+#[tokio::test]
 async fn running_code_in_the_browser_shows_the_code_to_the_person() {
     let repo = repo();
     let claude = fake_claude(true, "exec sleep 30");

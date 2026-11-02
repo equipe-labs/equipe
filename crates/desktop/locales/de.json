@@ -2337,6 +2337,5 @@
   "routine_ask.title": "Vorgeschlagene Routine",
   "routine_ask.what": "Jedes Mal",
   "routine_ask.when": "Wann",
-  "settings.idle_wake": "PM bei leerem Board wecken",
-  "settings.idle_wake_desc": "Nach einem Tag ohne offene Tickets sucht der PM, was als Nächstes ansteht (höchstens einmal am Tag)"
+  "chat.chapters": "Gesprächsübersicht"
 }

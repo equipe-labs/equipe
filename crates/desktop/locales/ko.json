@@ -2284,6 +2284,5 @@
   "routine_ask.title": "정기 업무 제안",
   "routine_ask.what": "매번 맡길 일",
   "routine_ask.when": "언제",
-  "settings.idle_wake": "빈 보드에서 PM 깨우기",
-  "settings.idle_wake_desc": "열린 티켓 없이 하루가 지나면 PM이 다음에 할 일을 찾아봐요 (하루에 한 번까지)"
+  "chat.chapters": "대화 목차"
 }

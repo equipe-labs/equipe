@@ -10,6 +10,7 @@ mod askpass;
 mod attach;
 mod beat;
 mod board;
+mod chapters;
 mod browse;
 mod commands;
 mod diffs;

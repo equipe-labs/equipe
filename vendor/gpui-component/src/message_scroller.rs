@@ -135,6 +135,11 @@ impl MessageScrollerState {
         true
     }
 
+    /// The row at the top of the view.
+    pub fn top_item(&self) -> usize {
+        self.list_state.logical_scroll_top().item_ix
+    }
+
     /// Scroll to the row at `index`, if it exists.
     pub fn scroll_to_item(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
         if index >= self.list_state.item_count() {

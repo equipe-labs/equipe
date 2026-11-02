@@ -2337,6 +2337,5 @@
   "routine_ask.title": "Routine proposal",
   "routine_ask.what": "Each time",
   "routine_ask.when": "When",
-  "settings.idle_wake": "Wake the PM when the board is empty",
-  "settings.idle_wake_desc": "After a day with no open tickets, the PM looks for what to do next (at most once a day)"
+  "chat.chapters": "Conversation outline"
 }
