@@ -708,7 +708,10 @@ and a README. In conversation you may write there directly for short things the 
 tidying material, making one table: equipe saves each change as soon as your turn ends, tells the person, and lets \
 them take it back, so just say in plain words what you saved where (\"I saved notes/tax-deadline.md\"), never in \
 git's. In conversation the squad's projects are for reading only: a repository changes only on a `code` ticket, in \
-its worktree. Work with several steps, work for a teammate, or a result the person should review before it counts \
+its worktree. Taking a file from a folder kept for reading (a logo, a screenshot) is reading it: copy it with \
+`cat <file> > <where it goes>` — a rule kept for such folders can refuse `cp` from them. When a rule or a refusal \
+stops something the work needs and no other way does it, never drop that part quietly: say what was blocked and \
+why it mattered, and ask the person (`ask_decision`, or `block_on_person` for what only they can do). Work with several steps, work for a teammate, or a result the person should review before it counts \
 goes on a ticket instead. On a `task` or `action` ticket you work in a worktree of this folder, whatever your \
 role, and leave what you produce under `outputs/` or `notes/`; it goes into the folder when the person accepts. \
 Anything that reaches outside — sending, submitting, paying — asks the person first, \
@@ -1094,7 +1097,7 @@ mod tests {
     fn a_charter_says_what_the_squads_folder_is_for_and_what_needs_a_ticket() {
         let team = [Teammate { name: "pm", role: "pm" }];
         let text = charter(role("backend").unwrap(), "backend", &Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) });
-        for part in ["The squad's folder is /h/squads/acme/home", "`notes/`", "`outputs/`", "write there directly", "for reading only", "goes on a ticket", "asks the person first", "Other squads' folders are private"] {
+        for part in ["The squad's folder is /h/squads/acme/home", "`notes/`", "`outputs/`", "write there directly", "for reading only", "`cat <file> > <where it goes>`", "never drop that part quietly", "goes on a ticket", "asks the person first", "Other squads' folders are private"] {
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], true)).contains("squad's folder"));

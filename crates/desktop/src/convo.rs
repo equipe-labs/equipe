@@ -657,6 +657,12 @@ impl ToolLine {
     }
 }
 
+/// A call the engine refused by a rule it was given, not one that broke:
+/// Claude Code's words for a deny rule or a permission not granted.
+pub fn refused_by_rule(output: &str) -> bool {
+    output.contains("was blocked by a deny rule") || (output.contains("Permission to use ") && output.contains(" has been denied"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     User(String),
@@ -793,8 +799,9 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                         if let Some(o) = outcome {
                             line.status = match o.ok {
                                 true => Status::Done,
-                                // equipe's own board tools say no by its rules, not by breaking.
-                                false if tool.starts_with("mcp__equipe__") => Status::Declined,
+                                // equipe's own board tools say no by its rules, not by breaking;
+                                // so does a rule the engine was given (a folder kept read-only).
+                                false if tool.starts_with("mcp__equipe__") || refused_by_rule(&o.output) => Status::Declined,
                                 false => Status::Failed,
                             };
                             line.ms = o.ms;
@@ -1074,6 +1081,29 @@ mod tests {
         assert_eq!(lines[0].verb, "read");
         assert_eq!(lines[0].targets, ["a.rs", "b.rs"], "a repeat adds nothing");
         assert!(lines[1].edits && lines[2].edits, "each edit is its own step");
+    }
+
+    #[test]
+    fn a_call_a_rule_refused_is_told_quietly_and_a_broken_one_in_red() {
+        let mut c = convo(false);
+        let refused = |target: &str, output: &str| Event::ToolResult {
+            session: 1,
+            tool: "Bash".into(),
+            target: Some(target.into()),
+            outcome: ToolOutcome { ok: false, output: output.into(), ..Default::default() },
+        };
+        feed(&mut c, &[
+            Event::UserMessage { session: 1, text: "go".into() },
+            tool("Bash", "cp /a/logo.png img/"),
+            refused("cp /a/logo.png img/", "cp to '/Users/abel/Abel/equipe-site/public/logo.png' was blocked by a deny rule."),
+            tool("Bash", "cp x y"),
+            refused("cp x y", "cp: y: Permission denied"),
+        ]);
+        let lines: Vec<ToolLine> = c.blocks().iter().filter_map(|b| if let Block::Steps(l) = b { Some(l.clone()) } else { None }).flatten().collect();
+        assert_eq!(lines[0].status, Status::Declined, "a rule said no: grey, not red");
+        assert_eq!(lines[1].status, Status::Failed, "the system's own no is a failure");
+        assert!(refused_by_rule("Permission to use Edit has been denied."));
+        assert!(!refused_by_rule("Access denied"));
     }
 
     #[test]
