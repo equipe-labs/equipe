@@ -53,6 +53,8 @@ pub struct Metrics {
     pub failed: Option<String>,
     /// The screen's own sample (`--features snapshot`): no daemon is asked.
     pub demo: bool,
+    /// The width the screen has, in pixels (0 until the shell has drawn once).
+    pub room: f32,
 }
 
 impl Metrics {
@@ -201,6 +203,7 @@ pub fn cards(query: &QueryResult, sources: &Sources) -> Vec<Card> {
     query
         .values
         .iter()
+        .filter(|m| m.metric != NORTH_STAR)
         .map(|m| {
             let connection = sources.connections.iter().chain(&query.connections).find(|c| c.id == m.connection);
             let spec = sources.kinds.iter().find(|k| k.kind == m.kind);
@@ -260,6 +263,99 @@ pub fn needs_key(code: ErrorCode) -> bool {
 /// The days of a period, as the screen words them: `10월 27일 ~ 11월 2일`.
 pub fn range_words(query: &QueryResult) -> String {
     equipe_core::t!("metrics.range", from = day_words(&query.from), to = day_words(&query.to), previous_from = day_words(&query.previous_from), previous_to = day_words(&query.previous_to))
+}
+
+// ---- the North Star ----
+
+/// The metric the card at the top shows: squads that approved work in the last
+/// 7 days, as 12 windows of 7 days (docs/TELEMETRY.md, "The North Star").
+pub const NORTH_STAR: &str = "north_star";
+pub const NORTH_BARS: usize = 12;
+
+/// What the North Star card is in.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NorthStar {
+    /// Asked, not answered yet.
+    Loading,
+    /// Connected to PostHog, which has no definition for it.
+    Undefined,
+    Ready(NorthCard),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NorthCard {
+    pub value: Option<String>,
+    /// The last window against the one 7 days before; `None` with nothing to compare.
+    pub change: Option<Change>,
+    pub previous: Option<String>,
+    /// Twelve windows, the oldest first; `None` is a window not known.
+    pub bars: Vec<Option<f64>>,
+    pub error: Option<ErrorCode>,
+    pub fetched: Option<u64>,
+    pub last_ok: Option<u64>,
+    pub as_of: Option<String>,
+}
+
+impl NorthCard {
+    /// Windows with a value.
+    pub fn known(&self) -> usize {
+        self.bars.iter().flatten().count()
+    }
+
+    /// Fewer windows than the twelve the card draws.
+    pub fn short(&self) -> bool {
+        self.known() < NORTH_BARS
+    }
+}
+
+/// The card's state, or nothing when PostHog is not connected (there is no
+/// number to look for).
+pub fn north_star(query: Option<&QueryResult>, sources: &Sources, loading: bool) -> Option<NorthStar> {
+    let connection = sources.connections.iter().find(|c| c.kind == SourceKind::Posthog)?;
+    let Some(m) = query.and_then(|q| q.values.iter().find(|m| m.metric == NORTH_STAR)) else {
+        return Some(if loading { NorthStar::Loading } else { NorthStar::Undefined });
+    };
+    let mut bars: Vec<Option<f64>> = m.series.iter().map(|s| s.value).collect();
+    if bars.len() > NORTH_BARS {
+        bars.drain(..bars.len() - NORTH_BARS);
+    }
+    while bars.len() < NORTH_BARS {
+        bars.insert(0, None);
+    }
+    Some(NorthStar::Ready(NorthCard {
+        value: m.value.map(number),
+        change: change_of(m).map(|ch| match (m.change, m.change_pct) {
+            // `3 (+27%)`: the count, then the share.
+            (Some(delta), Some(_)) => Change { text: format!("{} ({})", number(delta.abs()), ch.text), ..ch },
+            _ => ch,
+        }),
+        previous: m.previous.map(number),
+        bars,
+        error: connection.last.as_ref().and_then(|l| l.error.as_ref()).map(|e| e.code),
+        fetched: connection.last.as_ref().map(|l| l.at),
+        last_ok: connection.last_ok,
+        as_of: m.as_of.clone(),
+    }))
+}
+
+/// A bar's height in a box `h` tall: a window with a value is at least 3 px
+/// (zero stays visible), the biggest fills the box.
+pub fn bar_height(value: f64, top: f64, h: f32) -> f32 {
+    if top <= 0. { 3. } else { ((value / top) as f32 * h).max(3.) }
+}
+
+/// The source's words in a card's title line, in the three forms the screen
+/// uses: `오늘 07:00 갱신` (today), `11월 1일 기준` (an earlier day) — the
+/// bare time is for a card with no room.
+pub fn updated(at: u64, now: u64) -> Updated {
+    let (day, time) = local_day_time(at);
+    if day == local_day_time(now).0 { Updated::Today(time) } else { Updated::Day(day_words(&day)) }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Updated {
+    Today(String),
+    Day(String),
 }
 
 // ---- sparkline ----
@@ -362,6 +458,18 @@ pub mod demo {
         QueryResult { from: "2026-10-27".into(), to: "2026-11-02".into(), previous_from: "2026-10-20".into(), previous_to: "2026-10-26".into(), days: 7, bucket: Bucket::Day, values, connections }
     }
 
+    /// The North Star: 12 windows of 7 days, the oldest first.
+    pub fn north(connection: &str, windows: &[Option<f64>]) -> MetricValue {
+        let last = windows.iter().flatten().last().copied();
+        let before = windows.len().checked_sub(2).and_then(|n| windows[n]);
+        let series = windows.iter().enumerate().map(|(n, v)| Sample { day: format!("2026-w{n:02}"), value: *v }).collect();
+        MetricValue { connection: connection.into(), kind: SourceKind::Posthog, metric: NORTH_STAR.into(), label: "Squads approving each week".into(), unit: "squads".into(), shape: Shape::Total, value: last, previous: before, change: last.zip(before).map(|(a, b)| a - b), change_pct: last.zip(before).filter(|(_, b)| *b > 0.).map(|(a, b)| ((a - b) / b * 100.).round()), as_of: Some("2026-11-02".into()), days_known: 7, series, previous_series: vec![], breakdown: vec![] }
+    }
+
+    pub fn north_full() -> Vec<Option<f64>> {
+        [2., 3., 3., 5., 4., 6., 7., 6., 8., 11., 11., 14.].iter().map(|v| Some(*v)).collect()
+    }
+
     /// Everything connected and well.
     pub fn healthy() -> (Sources, QueryResult) {
         let connections = vec![connection("m1", SourceKind::Posthog, None), connection("m2", SourceKind::Github, None), connection("m3", SourceKind::AppStore, None)];
@@ -374,6 +482,7 @@ pub mod demo {
             github("m2", "clones", "Clones", "clones", Shape::Count, 418., -2.3),
             github("m2", "stars", "Stars", "stars", Shape::Total, 25., 19.0),
             downloads("m3"),
+            north("m1", &north_full()),
         ];
         (Sources { kinds: kinds(), connections: connections.clone() }, query(values, connections))
     }
@@ -383,7 +492,7 @@ pub mod demo {
         let auth = FetchError { code: ErrorCode::Auth, message: "key ••• was refused".into(), retry_at: None };
         let limit = FetchError { code: ErrorCode::RateLimited, message: "slow down".into(), retry_at: Some(1_793_602_800 + 7 * 3600) };
         let connections = vec![connection("m1", SourceKind::Posthog, Some(auth)), connection("m2", SourceKind::Github, Some(limit))];
-        let values = vec![visits("m1"), languages("m1"), github("m2", "stars", "Stars", "stars", Shape::Total, 25., 19.0)];
+        let values = vec![north("m1", &north_full()), visits("m1"), languages("m1"), github("m2", "stars", "Stars", "stars", Shape::Total, 25., 19.0)];
         (Sources { kinds: kinds(), connections: connections.clone() }, query(values, connections))
     }
 
@@ -404,6 +513,38 @@ mod tests {
         assert_eq!(number(8.24), "8.2");
         assert_eq!(number(0.), "0");
         assert_eq!(number(-3.), "−3");
+    }
+
+    #[test]
+    fn the_north_star_is_its_own_card_in_six_states() {
+        let (s, q) = demo::healthy();
+        assert!(cards(&q, &s).iter().all(|c| c.metric != NORTH_STAR));
+        let Some(NorthStar::Ready(c)) = north_star(Some(&q), &s, false) else { panic!("ready") };
+        assert_eq!((c.value.as_deref(), c.bars.len(), c.short()), (Some("14"), NORTH_BARS, false));
+        assert_eq!(c.change.as_ref().map(|c| c.text.as_str()), Some("3 (+27%)"));
+        // Asked, not answered: loading; answered without it: no definition.
+        let mut none = q.clone();
+        none.values.retain(|m| m.metric != NORTH_STAR);
+        assert_eq!(north_star(Some(&none), &s, true), Some(NorthStar::Loading));
+        assert_eq!(north_star(Some(&none), &s, false), Some(NorthStar::Undefined));
+        // Nothing from PostHog connected: no card at all.
+        assert_eq!(north_star(Some(&q), &Sources { connections: vec![], ..s.clone() }, false), None);
+        // Few windows: short, padded to twelve with unknowns at the left.
+        let mut few = q.clone();
+        few.values.iter_mut().find(|m| m.metric == NORTH_STAR).unwrap().series.truncate(2);
+        let Some(NorthStar::Ready(c)) = north_star(Some(&few), &s, false) else { panic!("ready") };
+        assert_eq!((c.known(), c.short(), c.bars.len()), (2, true, NORTH_BARS));
+        // A key refused keeps the last value and says so.
+        let (s, q) = demo::failing();
+        let Some(NorthStar::Ready(c)) = north_star(Some(&q), &s, false) else { panic!("ready") };
+        assert_eq!((c.error, c.value.as_deref()), (Some(ErrorCode::Auth), Some("14")));
+    }
+
+    #[test]
+    fn a_zero_window_keeps_three_pixels() {
+        assert_eq!(bar_height(0., 14., 72.), 3.);
+        assert_eq!(bar_height(14., 14., 72.), 72.);
+        assert_eq!(bar_height(0., 0., 72.), 3.);
     }
 
     #[test]

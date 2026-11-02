@@ -16,9 +16,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::icons::{Icon, icon};
-use crate::metrics::{self, Banner, Body, Card, Change, Draft, Flow};
+use crate::metrics::{self, Banner, Body, Card, Change, Draft, Flow, NorthCard, NorthStar};
 use crate::state::now_unix;
 use crate::theme::{CONTROL, MONO, Palette, R_LG, R_MD, SMALL};
+use crate::tips::TipExt as _;
 use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
 
@@ -65,6 +66,11 @@ fn word(key: String, fallback: &str) -> String {
 
 fn service(kind: SourceKind, spec: Option<&SourceSpec>) -> String {
     word(format!("metrics.kind.{}", kind.as_str()), spec.map_or(kind.as_str(), |s| s.label.as_str()))
+}
+
+/// A service as a card's title line names it: `App Store`, not `App Store Connect`.
+fn card_service(kind: SourceKind, spec: Option<&SourceSpec>) -> String {
+    word(format!("metrics.kind_short.{}", kind.as_str()), &service(kind, spec))
 }
 
 fn short(kind: SourceKind) -> &'static str {
@@ -214,7 +220,8 @@ fn dash_page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     if cards.is_empty() && m.failed.is_none() {
         page = page.child(note(p, if m.loading { t!("metrics.loading") } else { t!("metrics.no_cards") }));
     }
-    page.child(h_flex().w_full().flex_wrap().gap_4().items_stretch().children(cards.iter().enumerate().map(|(n, c)| metric_card(shell, n, c, sources, now))))
+    let north = metrics::north_star(query.as_ref(), sources, m.loading).map(|state| north_card(shell, &state, sources, now, cx));
+    page.child(h_flex().w_full().flex_wrap().gap_4().items_stretch().children(north).children(cards.iter().enumerate().map(|(n, c)| metric_card(shell, n, c, sources, now))))
         .into_any_element()
 }
 
@@ -295,18 +302,18 @@ fn banner_row(shell: &Shell, b: &Banner, sources: &Sources, now: u64, cx: &mut C
 fn metric_card(shell: &Shell, n: usize, c: &Card, sources: &Sources, now: u64) -> AnyElement {
     let p = shell.palette;
     let spec = sources.kinds.iter().find(|k| k.kind == c.kind);
-    let name = service(c.kind, spec);
+    let name = card_service(c.kind, spec);
     let label = word(format!("metrics.metric.{}", c.metric), &c.label);
     let unit = word(format!("metrics.unit.{}", c.unit), &c.unit);
     let stale = c.error.is_some();
     let dot = c.error.map_or_else(|| ok(p), |e| tone(p, e));
-    // "PostHog · 07:00", or "PostHog · 키 만료" while it is failing.
+    let at = c.fetched.unwrap_or(now);
     let source = match (c.error, c.fetched) {
         (Some(e), _) => t!("metrics.source_error", service = name, what = lookup(format!("metrics.err.{}.short", code_word(e)))),
-        (None, Some(at)) => t!("metrics.source", service = name, time = metrics::moment(at, now)),
+        (None, Some(_)) => source_line(&name, at, now, c.as_of.as_deref(), false),
         (None, None) => name.clone(),
     };
-    let head = h_flex().gap_2().items_center().child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label)).child(div().flex_none().size(px(7.)).rounded_full().bg(dot)).child(div().flex_none().max_w(px(240.)).truncate().text_size(px(12.)).text_color(p.muted).child(source));
+    let head = title_line(p, label, dot, source);
     let border = c.error.map_or(p.hair, |e| tone(p, e));
     let mut card = card_frame(p, border).id(("metrics-card", n)).child(head);
     card = match &c.body {
@@ -329,8 +336,6 @@ fn metric_card(shell: &Shell, n: usize, c: &Card, sources: &Sources, now: u64) -
         if let Some(retry) = c.retry_at {
             card = card.child(note(p, t!("metrics.card_retry", time = metrics::moment(retry, now))).text_size(px(12.)));
         }
-    } else if let Some(day) = c.as_of.as_ref().filter(|d| c.as_of.is_some() && Some(d.as_str()) < today_day(now).as_deref()) {
-        card = card.child(note(p, t!("metrics.as_of", date = metrics::day_words(day))).text_size(px(12.)));
     }
     if c.days_known < c.days && c.days_known > 0 {
         card = card.child(note(p, t!("metrics.days_known", known = c.days_known, days = c.days)).text_size(px(12.)));
@@ -341,8 +346,156 @@ fn metric_card(shell: &Shell, n: usize, c: &Card, sources: &Sources, now: u64) -
     card.into_any_element()
 }
 
-fn today_day(now: u64) -> Option<String> {
-    Some(metrics::local_day_time(now).0)
+/// A card's title line: the title on one line, never cut, and the source at
+/// the right — below it when the two don't fit, never shortened with `…`.
+fn title_line(p: Palette, label: String, dot: Rgba, source: String) -> Div {
+    h_flex()
+        .flex_wrap()
+        .gap_x_2()
+        .gap_y_1()
+        .items_start()
+        .child(div().flex_none().whitespace_nowrap().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label))
+        .child(h_flex().ml_auto().max_w_full().gap_1p5().items_start().child(div().flex_none().mt(px(7.)).size(px(7.)).rounded_full().bg(dot)).child(div().text_size(px(12.)).line_height(px(20.)).text_right().text_color(p.muted).child(source)))
+}
+
+/// The source and when it spoke, in the three forms: `PostHog · 오늘 07:00 갱신`,
+/// `PostHog · 11월 1일 기준`, and with no room `PostHog · 07:00`.
+fn source_line(name: &str, fetched: u64, now: u64, as_of: Option<&str>, narrow: bool) -> String {
+    let today = metrics::local_day_time(now).0;
+    if let Some(day) = as_of.filter(|d| *d < today.as_str()) {
+        return t!("metrics.source_asof", service = name, date = metrics::day_words(day));
+    }
+    match metrics::updated(fetched, now) {
+        metrics::Updated::Today(time) if narrow => t!("metrics.source", service = name, time = time),
+        metrics::Updated::Today(time) => t!("metrics.source_today", service = name, time = time),
+        metrics::Updated::Day(day) => t!("metrics.source_asof", service = name, date = day),
+    }
+}
+
+// ---- the North Star ----
+
+/// Two columns of cards, and the padding around them: narrower than this the
+/// card takes the one column it has.
+const NORTH_WIDE: f32 = 704.;
+const NORTH_BARS_H: f32 = 72.;
+
+fn bar_color(p: Palette) -> Rgba {
+    // `color.border.strong`, light and dark.
+    if dark(p) { rgb(0x7C7E85) } else { rgb(0x74767D) }
+}
+
+/// The box a loading card keeps for what is coming: `sunken` in the light,
+/// `border` in the dark (there `sunken` hardly shows).
+fn placeholder(p: Palette) -> Div {
+    div().rounded(px(6.)).bg(if dark(p) { p.hair } else { p.wash })
+}
+
+fn north_frame(p: Palette, border: Rgba) -> Stateful<Div> {
+    v_flex().id("metrics-north").flex_none().flex_basis(px(CARD_BASIS * 2. + 16.)).max_w_full().min_w(px(CARD_MIN)).p_4().gap_3().rounded(px(R_LG)).border_1().border_color(border).bg(p.raised)
+}
+
+fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let narrow = shell.metrics.room > 0. && shell.metrics.room < NORTH_WIDE;
+    let spec = sources.kinds.iter().find(|k| k.kind == SourceKind::Posthog);
+    let name = card_service(SourceKind::Posthog, spec);
+    let connection = sources.connections.iter().find(|c| c.kind == SourceKind::Posthog).map(|c| c.id.clone());
+    let title = if narrow { lookup("metrics.ns.title_short".into()) } else { lookup("metrics.ns.title".into()) };
+    let edit = {
+        let connection = connection.clone();
+        div()
+            .id("metrics-north-edit")
+            .flex_none()
+            .cursor_pointer()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(p.accent)
+            .hover(|s| s.underline())
+            .child(lookup("metrics.ns.edit".into()))
+            .on_click(cx.listener(move |this, _, window, cx| this.metrics_open_connect(Some(SourceKind::Posthog), connection.clone(), window, cx)))
+    };
+    let about = |text: String, link: Option<Stateful<Div>>| h_flex().gap_1().flex_wrap().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(text).children(link.map(|l| h_flex().gap_1().child("·").child(l)));
+    match state {
+        NorthStar::Loading => {
+            let numbers = v_flex().gap_2().flex_none().child(placeholder(p).w(px(96.)).h(px(40.))).child(placeholder(p).w(px(140.)).h(px(20.)));
+            let body = if narrow { v_flex().gap_3().child(numbers).child(placeholder(p).w_full().h(px(56.))) } else { h_flex().gap_8().items_end().child(numbers).child(div().flex_1().child(placeholder(p).w_full().h(px(NORTH_BARS_H)))) };
+            north_frame(p, p.hair).child(title_line(p, title, wait(p), t!("metrics.source", service = name, time = lookup("metrics.ns.loading".into())))).child(body).child(about(lookup("metrics.ns.def".into()), None)).into_any_element()
+        }
+        NorthStar::Undefined => {
+            let set = ui::button(p, "metrics-north-set", Kind::Primary, t!("metrics.ns.set")).on_click(cx.listener(move |this, _, window, cx| this.metrics_open_connect(Some(SourceKind::Posthog), connection.clone(), window, cx)));
+            north_frame(p, p.hair)
+                .child(title_line(p, lookup("metrics.ns.title_short".into()), wait(p), lookup("metrics.ns.none".into())))
+                .child(div().text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(lookup("metrics.ns.none_title".into())))
+                .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text).child(lookup("metrics.ns.none_body".into())))
+                .child(h_flex().gap_2().child(set))
+                .into_any_element()
+        }
+        NorthStar::Ready(c) => {
+            let stale = c.error.is_some();
+            let dot = c.error.map_or_else(|| ok(p), |e| tone(p, e));
+            let source = match (c.error, c.fetched) {
+                (Some(e), _) => t!("metrics.source_error", service = name, what = lookup(format!("metrics.err.{}.short", code_word(e)))),
+                (None, Some(at)) => source_line(&name, at, now, c.as_of.as_deref(), narrow),
+                (None, None) => name.clone(),
+            };
+            let faint = if stale { 0.55 } else { 1. };
+            let big = div().text_size(px(36.)).line_height(px(40.)).font_weight(FontWeight::BOLD).text_color(Rgba { a: faint, ..p.text }).child(c.value.clone().unwrap_or_else(|| "—".into()));
+            let unit = div().text_size(px(13.)).text_color(p.muted).child(lookup("metrics.ns.unit".into()));
+            let below = if let (Some(at), true) = (c.last_ok, stale) {
+                note(p, t!("metrics.ns.last_value", date = metrics::day_words(&metrics::local_day_time(at).0))).text_size(px(13.)).into_any_element()
+            } else if let Some(ch) = &c.change {
+                let (mark, color) = match ch.up {
+                    Some(true) => ("▲", ok(p)),
+                    Some(false) => ("▼", wait(p)),
+                    None => ("–", p.muted),
+                };
+                h_flex().gap_1p5().items_baseline().text_size(px(13.)).child(div().text_color(color).font_weight(FontWeight::SEMIBOLD).child(format!("{mark} {}", ch.text))).children(c.previous.clone().map(|n| div().text_color(p.text2).child(t!("metrics.ns.prev", n = n)))).into_any_element()
+            } else {
+                note(p, lookup("metrics.ns.no_previous".into())).text_size(px(13.)).into_any_element()
+            };
+            let bars = north_bars(p, c, if narrow { 56. } else { NORTH_BARS_H }, stale);
+            let axis = h_flex().justify_between().text_size(px(12.)).text_color(p.muted).child(lookup("metrics.ns.first".into())).child(lookup("metrics.ns.last".into()));
+            let body = if narrow {
+                v_flex().gap_3().child(h_flex().gap_2().flex_wrap().items_baseline().child(big).child(unit)).child(below).child(v_flex().gap_1().child(bars).child(axis))
+            } else {
+                h_flex().gap_8().items_end().child(v_flex().flex_none().gap_1().child(h_flex().gap_2().items_baseline().child(big).child(unit)).child(below)).child(v_flex().flex_1().min_w_0().gap_1().child(bars).child(axis))
+            };
+            let foot = match c.error {
+                Some(e) => {
+                    let why = fill(format!("metrics.err.{}.title", code_word(e)), &[("service", name.clone())]);
+                    let fix = if metrics::needs_key(e) { format!(" {}", lookup("metrics.ns.err_key".into())) } else { String::new() };
+                    div().text_size(px(13.)).line_height(px(20.)).text_color(p.red).child(format!("✕ {why}.{fix}")).into_any_element()
+                }
+                None if c.short() => about(t!("metrics.ns.short_note", n = c.known()), Some(edit)).into_any_element(),
+                None => about(lookup("metrics.ns.def".into()), Some(edit)).into_any_element(),
+            };
+            north_frame(p, c.error.map_or(p.hair, |e| tone(p, e))).child(title_line(p, title, dot, source)).child(body).child(foot).into_any_element()
+        }
+    }
+}
+
+/// Twelve bars, the oldest at the left and the last window in the accent.
+/// A window with no value is a dashed outline; a zero keeps 3 px.
+fn north_bars(p: Palette, c: &NorthCard, h: f32, stale: bool) -> Stateful<Div> {
+    let top = c.bars.iter().flatten().copied().fold(0., f64::max);
+    let last = c.bars.len() - 1;
+    let fade = if stale { 0.55 } else { 1. };
+    h_flex().id("metrics-north-bars").h(px(h)).gap(px(6.)).items_end().children(c.bars.iter().enumerate().map(|(n, v)| {
+        let color = if n == last { Rgba { a: fade, ..p.accent } } else { Rgba { a: fade, ..bar_color(p) } };
+        let bar = div().id(("metrics-north-bar", n)).flex_1().min_w_0();
+        let bar = match v {
+            Some(v) => bar.h(px(metrics::bar_height(*v, top, h))).rounded(px(3.)).bg(color),
+            None => bar.h(px(3.)).rounded(px(1.5)).border_1().border_dashed().border_color(bar_color(p)),
+        };
+        bar.tip(p, north_bar_words(n, last, *v), None)
+    }))
+}
+
+fn north_bar_words(n: usize, last: usize, v: Option<f64>) -> String {
+    let when = if n == last { lookup("metrics.ns.last".into()) } else { t!("metrics.ns.weeks_ago", n = last - n) };
+    match v {
+        Some(v) => t!("metrics.ns.bar_value", when = when, n = metrics::number(v)),
+        None => t!("metrics.ns.bar_unknown", when = when),
+    }
 }
 
 fn change_row(p: Palette, ch: &Change) -> impl IntoElement + use<> {
@@ -753,6 +906,33 @@ impl Shell {
         self.metrics.flow = Flow::Dash;
         let (sources, query) = match which {
             "error" => demo::failing(),
+            "ns-loading" => {
+                let (s, mut q) = demo::healthy();
+                q.values.retain(|m| m.metric != metrics::NORTH_STAR);
+                self.metrics.loading = true;
+                (s, q)
+            }
+            "store" => {
+                let (mut s, mut q) = demo::healthy();
+                q.values.retain(|m| m.metric == "downloads");
+                s.connections.retain(|c| c.kind == SourceKind::AppStore);
+                (s, q)
+            }
+            "ns-none" => {
+                let (s, mut q) = demo::healthy();
+                q.values.retain(|m| m.metric != metrics::NORTH_STAR);
+                (s, q)
+            }
+            "ns-short" => {
+                let (s, mut q) = demo::healthy();
+                if let Some(m) = q.values.iter_mut().find(|m| m.metric == metrics::NORTH_STAR) {
+                    *m = demo::north("m1", &[None, None, None, None, None, None, None, None, None, None, Some(1.), Some(3.)]);
+                    m.previous = None;
+                    m.change = None;
+                    m.change_pct = None;
+                }
+                (s, q)
+            }
             "empty" => (demo::nothing(), demo::healthy().1),
             "done" => {
                 let (s, q) = demo::healthy();
