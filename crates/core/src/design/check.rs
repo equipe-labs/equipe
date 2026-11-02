@@ -140,7 +140,8 @@ fn contrast_of(tokens: &[Token], mode: Option<&str>, dark: bool, out: &mut Vec<F
             continue;
         }
         let is_line = words.iter().any(|w| ["border", "icon", "outline", "focus", "ring"].contains(w));
-        if contrast::is_surface(t) || !(is_text || is_line) || words.iter().any(|w| ["disabled", "placeholder", "subtle", "faint"].contains(w)) {
+        // A translucent tint (`color.raw.alpha.ink-5`) is laid over a surface, never text on its own.
+        if contrast::is_surface(t) || !(is_text || is_line) || words.iter().any(|w| ["disabled", "placeholder", "subtle", "faint", "alpha"].contains(w)) {
             continue;
         }
         let Some(ratio) = contrast::measure(tokens, t, mode, dark) else { continue };
@@ -364,6 +365,28 @@ mod tests {
         assert!(levels(&f, "type").contains(&Level::Ok), "Pretendard sets Korean");
         assert!(levels(&f, "brand").iter().all(|l| *l == Level::Ok), "{f:#?}");
         assert!(levels(&f, "assets").is_empty(), "{f:#?}");
+    }
+
+    #[test]
+    fn a_components_text_is_measured_on_its_own_fill_and_tints_are_not_text() {
+        let tokens = r##"{
+          "color": { "$type": "color",
+            "bg": { "$value": "#F6F5F1", "$extensions": { "mode": { "dark": "#0A0A0C" } } },
+            "action": { "$value": "#15161A", "$extensions": { "mode": { "dark": "#EFEDE7" } } },
+            "on-action": { "$value": "#FFFFFF", "$extensions": { "mode": { "dark": "#0A0A0C" } } },
+            "raw": { "alpha": { "ink-5": { "$value": "#15161A0D" } } }
+          },
+          "button": {
+            "primary-bg": { "$type": "color", "$value": "{color.action}" },
+            "primary-fg": { "$type": "color", "$value": "{color.on-action}" },
+            "ghost-bg": { "$type": "color", "$value": "#F6F5F1" },
+            "ghost-fg": { "$type": "color", "$value": "#C8C8C8" }
+          }
+        }"##;
+        let f = check(&dir(tokens, &[]));
+        let light = f.iter().find(|x| x.area == "contrast" && x.message.contains("light")).unwrap();
+        assert!(!light.message.contains("primary-fg") && !light.message.contains("ink-5"), "{}", light.message);
+        assert!(light.message.contains("button.ghost-fg 1."), "still measured, on its own fill: {}", light.message);
     }
 
     #[test]
