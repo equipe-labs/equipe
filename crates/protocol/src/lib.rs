@@ -24,6 +24,8 @@ pub mod signals;
 
 /// How a ticket that couldn't start says why, in its note.
 pub const COULD_NOT_START: &str = "Couldn't start: ";
+/// How an idea the PM put to the person says why its time has come, in its note.
+pub const WHY_NOW: &str = "Why now: ";
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -143,6 +145,9 @@ pub type TicketId = u32;
 pub enum TicketStatus {
     /// Suggested by a member; the PM or the person makes it real.
     Proposed,
+    /// The person's idea, kept for later: nothing starts it and nothing asks
+    /// about it, until the PM finds its time and puts it to them as a proposal.
+    Idea,
     /// Ready to be picked up once its dependencies are done.
     Todo,
     InProgress,
@@ -160,6 +165,7 @@ impl TicketStatus {
     pub fn label(self) -> &'static str {
         match self {
             TicketStatus::Proposed => "proposed",
+            TicketStatus::Idea => "idea",
             TicketStatus::Todo => "todo",
             TicketStatus::InProgress => "in progress",
             TicketStatus::Waiting => "waiting",
@@ -341,6 +347,11 @@ impl Ticket {
     }
 
     /// Handed in and ready for the person's review: past design QA, if it had one.
+    /// An idea the PM put to the person as a proposal: why its time has come.
+    pub fn why_now(&self) -> Option<&str> {
+        self.note.as_deref().filter(|_| self.status == TicketStatus::Proposed)?.strip_prefix(WHY_NOW).map(str::trim)
+    }
+
     /// A ticket that was taken on but couldn't start (its workplace couldn't
     /// be made): back among the proposals, its reason in its note.
     pub fn could_not_start(&self) -> bool {

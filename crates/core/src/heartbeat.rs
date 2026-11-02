@@ -1,7 +1,9 @@
 //! The squad's heartbeat: what wakes the PM when nobody else does. A new
 //! squad starts with a weekly check-in routine, on; the PM proposes others
 //! (`propose_routine`), which only the person's click turns on; and when the
-//! board lies empty for long the PM is woken once to propose what's next.
+//! board lies empty for long the PM is woken once to propose what's next. The
+//! person's ideas, kept for later, come back the same way: when the board is
+//! light, the PM is asked whether one's time has come.
 //! Plain functions here, tested without an engine; the runtime keeps and
 //! sends (`runtime/heartbeat.rs`).
 
@@ -148,9 +150,67 @@ pub fn idle_due(hours: u32, open: usize, last: Option<u64>, woken_at: Option<u64
         && woken_at.is_none_or(|at| now.saturating_sub(at) >= IDLE_WAKE_EVERY)
 }
 
+/// An idea the person kept: its number, title, and how many days it has waited.
+pub type KeptIdea = (equipe_protocol::TicketId, String, u64);
+
+/// The person's ideas on the board, oldest first, with their days kept.
+pub fn kept_ideas(tickets: &[Ticket], now: u64) -> Vec<KeptIdea> {
+    let mut ideas: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Idea).collect();
+    ideas.sort_by_key(|t| (t.updated_at.unwrap_or(0), t.id));
+    ideas.into_iter().map(|t| (t.id, t.title.clone(), t.updated_at.map_or(0, |at| now.saturating_sub(at) / (24 * 60 * 60)))).collect()
+}
+
+/// At most one look at the ideas in this long: often enough that none is
+/// forgotten, rarely enough that it never nags.
+pub const IDEAS_WAKE_EVERY: u64 = 3 * 24 * 60 * 60;
+
+/// The board is light enough for an idea when this little is open.
+pub const LIGHT_BOARD: usize = 1;
+
+/// Whether to ask the PM about the person's ideas now: waking is on
+/// (`hours` > 0), ideas wait, the board is light, no proposal already waits on
+/// the person, and it wasn't asked in `IDEAS_WAKE_EVERY`.
+pub fn ideas_due(hours: u32, ideas: usize, open: usize, proposals: usize, woken_at: Option<u64>, now: u64) -> bool {
+    hours > 0 && ideas > 0 && open <= LIGHT_BOARD && proposals == 0 && woken_at.is_none_or(|at| now.saturating_sub(at) >= IDEAS_WAKE_EVERY)
+}
+
+/// Proposals waiting on the person (an idea put to them is one).
+pub fn waiting_proposals(tickets: &[Ticket]) -> usize {
+    tickets.iter().filter(|t| t.status == TicketStatus::Proposed).count()
+}
+
+/// The ideas as the PM reads them: `T-3 Dark mode (kept 12 days)`, a line each.
+fn idea_lines(ideas: &[KeptIdea]) -> String {
+    ideas.iter().map(|(id, title, days)| format!("- T-{id} {title} (kept {days} days)")).collect::<Vec<_>>().join("\n")
+}
+
+/// What the PM is asked to do with ideas whose time may have come.
+const JUDGE_IDEAS: &str = "Judge each against the business and the board: the squad's goal and stage, its North Star and \
+OKRs, the signals and feedback, what the person said lately, and what is under way or just shipped. If one's time has \
+come — it serves the goal now, it builds on what just shipped, the squad has hands free for it — put that one to the \
+person: update_ticket with status proposed and `why` (what makes it timely, in a line or two in their language); their \
+click starts it. At most one. Never start an idea yourself. If none fits yet, leave them all and say nothing; you'll be \
+asked again.";
+
+/// The message the PM is woken with over a light board and the person's ideas.
+pub fn ideas_message(ideas: &[KeptIdea], open: usize) -> String {
+    format!(
+        "[Ideas · {}]\n\nThe board is light ({open} open), and the person kept these ideas for later — they float them \
+whenever one comes to mind and count on you to bring each back at the right time:\n{}\n\n{JUDGE_IDEAS}",
+        ideas.len(),
+        idea_lines(ideas)
+    )
+}
+
 /// The message the PM is woken with. `routines`: how many the squad keeps;
-/// with none, it is asked to propose a weekly check-in.
-pub fn idle_message(hours: u32, routines: usize) -> String {
+/// with none, it is asked to propose a weekly check-in. The person's ideas,
+/// when they kept some, come before anything new.
+pub fn idle_message(hours: u32, routines: usize, ideas: &[KeptIdea]) -> String {
+    let kept = if ideas.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nBefore anything new, the ideas the person kept for later:\n{}\n{JUDGE_IDEAS} An idea put to them counts among the proposals.", idea_lines(ideas))
+    };
     let routine = if routines == 0 {
         " The squad has no routine either: propose a weekly check-in with `propose_routine` (Mondays 09:00 — last week \
 in short, the metrics and feedback, the next 1–3 pieces of work, what the person must decide)."
@@ -161,7 +221,7 @@ in short, the metrics and feedback, the next 1–3 pieces of work, what the pers
         "[Idle · {hours}h]\n\nThe board is empty: nothing to do, under way or waiting, and nothing has happened for \
 {hours} hours. Look at the squad's goal — the product's stage, its North Star and OKRs, what the person last asked for — \
 and propose what's next: 1–3 tickets, put up as proposals for the person to take on. Ask nothing in words: put what \
-the person must decide in one card. If proposals already wait for them, don't add more — leave it.{routine}"
+the person must decide in one card. If proposals already wait for them, don't add more — leave it.{routine}{kept}"
     )
 }
 
@@ -171,6 +231,33 @@ mod tests {
 
     const DAY: u64 = 24 * 60 * 60;
     const NOW: u64 = 1_800_000_000;
+
+    fn ticket_with(status: TicketStatus) -> Ticket {
+        Ticket {
+            id: 1,
+            title: String::new(),
+            body: String::new(),
+            status,
+            kind: equipe_protocol::TicketKind::Task,
+            owner: None,
+            assignee: None,
+            project: None,
+            depends_on: vec![],
+            branch: None,
+            worktree: None,
+            merged: None,
+            off_main: None,
+            design_qa: None,
+            created_by: "pm".into(),
+            note: None,
+            asks: vec![],
+            remaining: vec![],
+            images: Vec::new(),
+            updated_at: None,
+            priority: Default::default(),
+            rank: 0,
+        }
+    }
 
     #[test]
     fn a_new_squads_check_in_is_weekly_on_monday_morning_and_on() {
@@ -239,7 +326,32 @@ mod tests {
         assert_eq!(open_tickets(&[ticket(TicketStatus::Waiting, 1)]), 1);
         assert_eq!(last_activity(&board, Some(8)), Some(9));
         assert_eq!(last_activity(&[], None), None);
-        assert!(idle_message(24, 0).starts_with("[Idle · 24h]") && idle_message(24, 0).contains("propose_routine"));
-        assert!(!idle_message(24, 1).contains("propose_routine"));
+        assert!(idle_message(24, 0, &[]).starts_with("[Idle · 24h]") && idle_message(24, 0, &[]).contains("propose_routine"));
+        assert!(!idle_message(24, 1, &[]).contains("propose_routine"));
+        let kept = [(3, "다크 모드".to_owned(), 12)];
+        assert!(idle_message(24, 1, &kept).contains("T-3 다크 모드 (kept 12 days)"));
+        assert!(!idle_message(24, 1, &[]).contains("ideas"));
+    }
+
+    #[test]
+    fn the_persons_ideas_come_back_when_the_board_is_light_and_nothing_waits_on_them_every_few_days_at_most() {
+        assert!(ideas_due(24, 2, 1, 0, None, NOW));
+        assert!(!ideas_due(24, 0, 0, 0, None, NOW), "no ideas");
+        assert!(!ideas_due(24, 2, 2, 0, None, NOW), "the board is busy");
+        assert!(!ideas_due(24, 2, 0, 1, None, NOW), "a proposal already waits on the person");
+        assert!(!ideas_due(24, 2, 0, 0, Some(NOW - 2 * DAY), NOW), "asked two days ago");
+        assert!(ideas_due(24, 2, 0, 0, Some(NOW - 3 * DAY), NOW));
+        assert!(!ideas_due(0, 2, 0, 0, None, NOW), "waking is off");
+        let said = ideas_message(&[(3, "다크 모드".to_owned(), 12), (8, "클라우드 서버".to_owned(), 0)], 1);
+        assert!(said.starts_with("[Ideas · 2]") && said.contains("- T-8 클라우드 서버 (kept 0 days)"), "{said}");
+        assert!(said.contains("status proposed") && said.contains("Never start an idea yourself"), "{said}");
+    }
+
+    #[test]
+    fn ideas_are_listed_oldest_first_with_the_days_they_waited() {
+        let idea = |id, at| Ticket { id, title: format!("i{id}"), status: TicketStatus::Idea, updated_at: Some(at), ..ticket_with(TicketStatus::Idea) };
+        let tickets = [idea(5, NOW - DAY), idea(2, NOW - 10 * DAY), Ticket { id: 9, ..ticket_with(TicketStatus::Todo) }];
+        assert_eq!(kept_ideas(&tickets, NOW), vec![(2, "i2".to_owned(), 10), (5, "i5".to_owned(), 1)]);
+        assert_eq!(waiting_proposals(&[ticket_with(TicketStatus::Proposed), ticket_with(TicketStatus::Idea)]), 1);
     }
 }

@@ -138,6 +138,7 @@
   "app.status_done": "完成",
   "app.status_in_progress": "進行中",
   "app.status_proposed": "提案",
+  "app.status_idea": "想法",
   "app.status_review": "審查",
   "app.status_design_qa": "設計 QA 中",
   "app.status_todo": "待辦",

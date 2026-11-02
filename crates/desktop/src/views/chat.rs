@@ -1241,7 +1241,10 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
     };
     let one = single.then(|| &lines[0]);
     // A document read or written: a look at it in the panel, one click away.
-    let doc = one.filter(|_| status != Status::Running && !failed).and_then(|l| l.path.clone()).filter(|path| crate::doc::is_doc(path)).map(|path| {
+    // A deck written, among whatever else: shown as a presentation.
+    let deck = crate::deck::written(lines).map(str::to_owned);
+    let presents = deck.is_some();
+    let doc = deck.or_else(|| one.filter(|_| status != Status::Running && !failed).and_then(|l| l.path.clone()).filter(|path| crate::doc::is_doc(path))).map(|path| {
         let handle = rows.handle.clone();
         div()
             .id(("group-doc", key))
@@ -1255,7 +1258,13 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
             .text_color(p.text2)
             .cursor_pointer()
             .hover(move |s| s.bg(p.wash).text_color(p.text))
-            .child(t!("doc.view"))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .role(Role::Button)
+            .aria_label(if presents { t!("deck.present") } else { t!("doc.view") })
+            .children(presents.then(|| icon(Icon::Play, 10., p.text2)))
+            .child(if presents { t!("deck.present") } else { t!("doc.view") })
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 let path = std::path::PathBuf::from(&path);

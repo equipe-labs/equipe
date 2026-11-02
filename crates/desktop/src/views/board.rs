@@ -526,7 +526,7 @@ impl Shell {
                 } else if t.status == TicketStatus::Waiting {
                     let note = self.done_note(&t, cx);
                     self.land_with(&t, None, &note, cx);
-                } else if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed) {
+                } else if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Idea) {
                     self.land(&t, None, cx);
                 }
             }
@@ -649,6 +649,7 @@ impl Shell {
         let text = match t.status {
             TicketStatus::Waiting => t!("board.toast_resume", id = t.id),
             TicketStatus::Proposed => t!("board.toast_proposal", id = t.id),
+            TicketStatus::Idea => t!("board.toast_idea_start", id = t.id),
             TicketStatus::Done if way == Some(MergeWay::Branch) => t!("board.toast_keep", id = t.id),
             TicketStatus::Done => t!("board.toast_merge", id = t.id, project = project, way = way.unwrap_or(MergeWay::Merge).label()),
             _ if Model::merges(t) => match way {
@@ -747,6 +748,15 @@ impl Shell {
 
     // ── no ──
 
+    /// An idea the PM brought back, kept for later again: not yet.
+    pub fn keep_as_idea(&mut self, id: TicketId, cx: &mut Context<Self>) {
+        if !self.can_act() {
+            return;
+        }
+        let command = Command::MoveTicket { squad: self.model.squad.clone(), ticket: id, status: Some(TicketStatus::Idea), before: None };
+        self.hold(id, t!("board.toast_kept_idea", id = id), vec![command], cx);
+    }
+
     /// N: no to what is picked — decline, drop, or (asked once) cancel.
     pub fn board_no(&mut self, cx: &mut Context<Self>) {
         if !self.board.view.chosen.is_empty() {
@@ -763,7 +773,7 @@ impl Shell {
             Some(Need::Ticket(id)) => {
                 let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
                 match t.status {
-                    TicketStatus::Proposed => {
+                    TicketStatus::Proposed | TicketStatus::Idea => {
                         let command = Command::Cancel { squad: self.model.squad.clone(), ticket: id };
                         self.hold(id, t!("board.toast_drop", id = id), vec![command], cx);
                     }
@@ -817,7 +827,7 @@ impl Shell {
                 let set = self.merge_way_of(&self.project_of(&t));
                 // Work accepted already is merged in bulk, never kept unasked.
                 let way = if t.not_on_main() { set.filter(|w| *w != MergeWay::Branch) } else { board::needs_way(&t).then(|| set.unwrap_or(MergeWay::Branch)) };
-                if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Waiting) || t.not_on_main() {
+                if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Idea | TicketStatus::Waiting) || t.not_on_main() {
                     self.land(&t, way, cx);
                 }
             } else if !t.status.is_closed() {
@@ -1878,6 +1888,7 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
             n => (format!("{a} · {}", t!("sidebar.subagents", n = n)), p.text2),
         }),
         TicketStatus::Waiting => board::first_need(t).map(|n| (n, p.accent)),
+        TicketStatus::Proposed if t.why_now().is_some() => Some((t!("board.idea_back").to_owned(), p.accent)),
         TicketStatus::Proposed => Some((t!("board.proposed_by", who = t.created_by), p.muted)),
         TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind)), p.muted)),
         TicketStatus::Review | TicketStatus::Done => shell.board.stat(t).map(|s| (s.short(), p.muted)),

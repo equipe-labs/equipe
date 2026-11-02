@@ -89,9 +89,8 @@ work into small tickets, each with an owner (a role on the team, or yourself), a
 criteria, written so its owner can start without asking. Keep track of what was decided and what is in flight. \
 You don't change a project's code yourself: that is a code ticket for an engineer. The person may talk with you about \
 anything, tied to no project: work that belongs to none happens in the squad's folder. When they want a new project \
-(an app, a repository), make its folder where they say (else beside their other projects), start it as a git repository \
-with a first commit, and give them its full path in `code`: they add it to the squad with one click on that path \
-(\"Add as a project\") or from the project list. You never add a project to the squad yourself.",
+(an app, a repository), or ask you to add one they have, add it with `add_project`: a new one's folder where they say \
+(else beside their other projects), made and started as a repository for you. Only when they asked for it.",
         edits: false,
         tier: Tier::Top,
     },
@@ -751,6 +750,24 @@ lines, a visual on most, the recommendation last. The same file becomes a PDF or
 in two or three sentences and both files' paths in backticks — equipe opens the report beside the conversation and \
 the deck as a presentation, each with a click."
     );
+    // The person's ideas: kept the moment they float one, brought back by the PM.
+    let ideas = if !ctx.board_tools {
+        String::new()
+    } else if role.id == PM {
+        "\n\nThe person floats ideas whenever one comes to mind — often things that can't be done now. Never let one \
+go: when they mention something for later ('an idea', 'someday', 'not now, but'), keep it at once with `create_ticket` \
+and `idea: true` — their words in the body, what led to it — and say in one line that it's kept; don't plan it out \
+or start it. Ideas wait on the board, quiet. It's yours to bring each back at the right time: when you plan what's \
+next, in a check-in, or when equipe asks you about them, weigh them against the goal and the board, and put one whose \
+time has come to the person with `update_ticket` (status proposed, `why`). Only their click or their word starts one. \
+When they say something on the board isn't for now, keep it as an idea (status idea) rather than cancel it."
+            .to_owned()
+    } else {
+        "\n\nWhen the person floats an idea for later in a conversation with you, keep it at once with \
+`create_ticket` and `idea: true` — their words in the body — and say in one line that it's kept; the PM brings it \
+back at the right time."
+            .to_owned()
+    };
     let memory = match ctx.home {
         Some(home) => {
             let index = match ctx.memory {
@@ -797,7 +814,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{desktop}{pictures}{reports}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{desktop}{pictures}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -934,6 +951,19 @@ mod tests {
         }
         let nowhere = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(nowhere.contains("write a report they can read on its own in a folder of its own"), "{nowhere}");
+    }
+
+    #[test]
+    fn an_idea_for_later_is_kept_at_once_and_only_the_pm_brings_it_back_for_the_persons_yes() {
+        let team = [Teammate { name: "pm", role: PM }];
+        let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(pm.contains("`idea: true`") && pm.contains("Never let one \ngo") || pm.contains("Never let one go"), "{pm}");
+        assert!(pm.contains("status proposed, `why`") && pm.contains("Only their click or their word starts one"), "{pm}");
+        assert!(pm.contains("keep it as an idea (status idea) rather than cancel it"), "{pm}");
+        let member = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true));
+        assert!(member.contains("`idea: true`") && member.contains("the PM brings it back"), "{member}");
+        let no_tools = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], false));
+        assert!(!no_tools.contains("`idea: true`"), "no board tools, no ideas to keep");
     }
 
     #[test]

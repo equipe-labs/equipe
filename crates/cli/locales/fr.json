@@ -148,6 +148,7 @@
   "app.status_done": "Terminé",
   "app.status_in_progress": "En cours",
   "app.status_proposed": "Proposé",
+  "app.status_idea": "Idée",
   "app.status_review": "En revue",
   "app.status_design_qa": "QA design",
   "app.status_todo": "À faire",
