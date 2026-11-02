@@ -138,7 +138,7 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
                     .text_color(p.text2)
                     .child(who_shown)
                     .child(
-                        crate::ui::x_box(SharedString::from(format!("login-forget-{id}-{who}")), p.muted)
+                        crate::ui::x_box(SharedString::from(format!("login-forget-{id}-{who}")), p.muted, t!("accounts.delete"))
                             .cursor_pointer()
                             .hover(move |s| s.bg(p.hair))
                             .on_click(cx.listener(move |this, _, _, cx| {

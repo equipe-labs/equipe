@@ -191,6 +191,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let nav = |id: &'static str, name: IconName, label: String, badge: usize, count: usize, on: bool| {
         row_shell(p, id, on)
             .h(px(32.))
+            .role(Role::Tab)
+            .aria_selected(on)
+            .aria_label(match badge.max(count) {
+                0 => label.clone(),
+                n => format!("{label}, {n}"),
+            })
             .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(name, 16., if on { p.text } else { p.text2 })))
             .child(div().flex_1().min_w_0().truncate().text_color(if on { p.text } else { p.text2 }).child(label))
             .when(badge > 0, |r| {
@@ -685,6 +691,7 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
         rows.push(
             row_shell(p, SharedString::from(format!("talks-more-{key}")), false)
                 .h(px(26.))
+                .aria_label(words.clone())
                 .pl(px(8. + indent))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if !this.board.side_talks_all.remove(&key) {
@@ -718,6 +725,8 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
     let title = lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into());
     row_shell(p, ("conv", id as usize), on)
         .pl(px(8. + indent))
+        .aria_label(title.clone())
+        .aria_selected(on)
         .group(group.clone())
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Conversation(id), window, cx) {
@@ -756,8 +765,11 @@ fn work_line(shell: &Shell, g: &SideGroup, cx: &mut Context<Shell>) -> AnyElemen
     let open = shell.board.side_work_open.contains(&key);
     let toggle = key.clone();
     let mark = if g.waiting > 0 { dot(p.orange, 7.).into_any_element() } else { icon(IconName::LoaderCircle, 12., p.muted).into_any_element() };
+    let said = [(g.waiting > 0).then(|| t!("sidebar.work_needs_you", n = g.waiting)), (g.working > 0).then(|| t!("sidebar.work_working", n = g.working))];
     row_shell(p, SharedString::from(format!("work-{key}")), false)
         .pl(px(8. + inset(SideRow::Work)))
+        .aria_label(said.into_iter().flatten().collect::<Vec<_>>().join(", "))
+        .aria_expanded(open)
         .on_click(cx.listener(move |this, _, _, cx| {
             if !this.board.side_work_open.remove(&toggle) {
                 this.board.side_work_open.insert(toggle.clone());
@@ -785,6 +797,7 @@ fn projects_more_row(shell: &Shell, hidden: usize, cx: &mut Context<Shell>) -> A
     let words = if shell.board.side_projects_all { t!("sidebar.fewer").to_owned() } else { t!("sidebar.more", n = hidden) };
     row_shell(p, "projects-more", false)
         .h(px(26.))
+        .aria_label(words.clone())
         .on_click(cx.listener(|this, _, _, cx| {
             this.board.side_projects_all = !this.board.side_projects_all;
             cx.notify();
@@ -1071,7 +1084,7 @@ fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx
     };
     // Its card on the pointer, beside the sidebar: the number, where it
     // stands, who is on it, what it asks.
-    let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on).pl(px(8. + inset(SideRow::Ticket))), id, super::ticket_card::Side::Right)
+    let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on).pl(px(8. + inset(SideRow::Ticket))).aria_label(format!("T-{id} {}", t.title)).aria_selected(on), id, super::ticket_card::Side::Right)
         .group(group.clone())
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
             let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: Some(id) });
@@ -1152,6 +1165,8 @@ fn done_row(shell: &Shell, after_rows: bool, cx: &mut Context<Shell>) -> AnyElem
     let label = if today > 0 { t!("sidebar.recent_done_today", n = today) } else { t!("sidebar.recent_done").to_owned() };
     row_shell(p, "recent-done", on)
         .mt(px(if after_rows { 10. } else { 14. }))
+        .aria_label(label.clone())
+        .aria_selected(on)
         .on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::View(recent_done_view()), cx)))
         .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(IconName::Check, 12., if today > 0 { p.text2 } else { p.muted })))
         .child(div().flex_none().text_size(px(TEXT)).text_color(if on { p.text } else if today > 0 { p.text2 } else { p.muted }).child(label))
@@ -1461,6 +1476,8 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
     let group = SharedString::from(format!("mem-{session}"));
     row_shell(p, ("member", session), on)
         .h(px(TEAM_ROW))
+        .aria_label(format!("{}, {}", member.name, state.words()))
+        .aria_selected(on)
         .group(group.clone())
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
             let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: Some(session), ticket: None });

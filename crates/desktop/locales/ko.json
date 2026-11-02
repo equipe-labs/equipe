@@ -311,6 +311,8 @@
   "chat.committed": "변경을 커밋했어요 ·",
   "chat.copy": "복사",
   "chat.copy_reply": "복사",
+  "chat.a11y_conversation": "대화: {name}",
+  "chat.a11y_said": "{who}: {text}",
   "chat.did_ask_you": "나에게 물음",
   "chat.did_background": "백그라운드에서 시작",
   "chat.did_board": "보드 확인",

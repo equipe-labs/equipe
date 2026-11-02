@@ -195,7 +195,7 @@ fn row(shell: &Shell, r: &Routine, rule: bool, now: u64, cx: &mut Context<Shell>
         .when(rule, |r| r.border_t_1().border_color(p.hair))
         .child({
             let shell_handle = cx.entity().downgrade();
-            ui::switch(p, format!("routine-on-{id}"), r.on).on_flip(move |on, _, cx| {
+            ui::switch(p, format!("routine-on-{id}"), r.on).name(r.title.clone()).on_flip(move |on, _, cx| {
                 let routine = Routine { on, ..routine.clone() };
                 let _ = shell_handle.update(cx, |shell, cx| shell.save_routine(routine, cx));
             })

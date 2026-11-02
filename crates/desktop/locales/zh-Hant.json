@@ -311,6 +311,8 @@
   "chat.committed": "已提交變更 ·",
   "chat.copy": "拷貝",
   "chat.copy_reply": "拷貝",
+  "chat.a11y_conversation": "對話：{name}",
+  "chat.a11y_said": "{who}：{text}",
   "chat.did_ask_you": "問了你",
   "chat.did_background": "已在背景啟動",
   "chat.did_board": "查看了看板",

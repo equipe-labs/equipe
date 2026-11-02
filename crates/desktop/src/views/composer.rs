@@ -1702,7 +1702,7 @@ fn problem_notice(p: Palette, problem: String, cx: &mut Context<Shell>) -> AnyEl
             .child(div().flex_none().mt(px(2.)).child(icon(Icon::Warning, ICON_SM, p.amber)))
             .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(19.)).text_color(p.text).child(problem))
             .child(
-                crate::ui::x_box("problem-close", p.muted)
+                crate::ui::x_box("problem-close", p.muted, t!("composer.aria_close"))
                     .cursor_pointer()
                     .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1907,6 +1907,12 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                     };
                     let row_el = base
                         .id(("menu-row", ix))
+                        .role(Role::MenuItem)
+                        .aria_label(if row.hint.is_empty() { row.label.to_string() } else { format!("{}, {}", row.label, row.hint) })
+                        .aria_selected(picked)
+                        .when(row.on, |r| r.aria_toggled(Toggled::True))
+                        .when(row.more, |r| r.aria_expanded(false))
+                        .when_some(row.keys, |r, keys| r.aria_keyshortcuts(keys))
                         .when(live, |r| {
                             r.cursor_pointer()
                                 // The pointer moves the highlight, as the arrows do.
@@ -1933,6 +1939,8 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
     let kind = menu.kind;
     let surface = v_flex()
         .id(if live { "bar-menu" } else { "bar-menu-leaving" })
+        .role(Role::Menu)
+        .when_some(menu.title.clone(), |s, title| s.aria_label(title))
         .w(px(kind.width()))
         .p_1()
         .rounded(px(R_MD))
@@ -2326,7 +2334,7 @@ fn quotes(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + u
             .child(div().flex_none().w(px(2.)).h(px(38.)).rounded_full().bg(Rgba { a: 0.6, ..p.accent }))
             .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(19.)).text_color(p.text2).line_clamp(2).text_ellipsis().child(quote.clone()))
             .child(
-                crate::ui::x_box(("composer-unquote", n), p.muted)
+                crate::ui::x_box(("composer-unquote", n), p.muted, t!("composer.tip_remove"))
                     .cursor_pointer()
                     .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -2797,7 +2805,7 @@ pub fn answer_attachments(p: Palette, to: AttachTo, key: u64, items: Vec<attach:
             .children(state.map(|s| div().flex_none().text_color(p.muted).child(s)))
             .children(failed.map(|why| div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.danger()).child(why)))
             .child(
-                crate::ui::x_box(SharedString::from(format!("answer-unattach-{key}-{id}")), p.muted)
+                crate::ui::x_box(SharedString::from(format!("answer-unattach-{key}-{id}")), p.muted, t!("composer.tip_remove"))
                     .cursor_pointer()
                     .hover(move |s| s.bg(p.hair))
                     .on_click(move |_, _, cx| {

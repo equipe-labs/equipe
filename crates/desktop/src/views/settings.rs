@@ -139,6 +139,12 @@ impl Line {
         self
     }
 
+    /// Its control a switch, called by the row's words.
+    pub(super) fn switch(self, shell: &Shell, id: &str, on: bool, enabled: bool, flip: impl Fn(&mut Shell, bool, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> Self {
+        let control = switch(shell, id, &self.text, on, enabled, flip, cx);
+        self.control(control)
+    }
+
     pub(super) fn words(mut self, words: impl Into<String>) -> Self {
         self.words = words.into();
         self
@@ -190,10 +196,12 @@ impl Section {
 
 // ── controls, on the app's tokens ──
 
-/// On or off: the app's switch (`ui::switch`), flipping a setting of the shell's.
-fn switch(shell: &Shell, id: &str, on: bool, enabled: bool, flip: impl Fn(&mut Shell, bool, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
+/// On or off: the app's switch (`ui::switch`), flipping a setting of the
+/// shell's; `name` is what a screen reader calls it.
+pub(super) fn switch(shell: &Shell, id: &str, name: &str, on: bool, enabled: bool, flip: impl Fn(&mut Shell, bool, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
     let handle = cx.entity().downgrade();
     ui::switch(shell.palette, format!("switch-{id}"), on)
+        .name(name.to_owned())
         .disabled(!enabled)
         .on_flip(move |on, window, cx| {
             handle
@@ -223,6 +231,9 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, 
             let set = set.clone();
             let seg = h_flex()
                 .id(SharedString::from(format!("{id}-{ix}")))
+                .role(Role::RadioButton)
+                .aria_label(label.clone())
+                .aria_toggled(if on { Toggled::True } else { Toggled::False })
                 .h_full()
                 .px_3()
                 .items_center()
@@ -290,7 +301,8 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 }
 
 /// A pop-up button: what is chosen and ⌄; a click opens the list under it.
-fn picker(shell: &Shell, pop: Pop, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
+/// `name` is what it chooses, as a screen reader says it.
+fn picker(shell: &Shell, pop: Pop, name: &str, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
     use gpui_kit::base::ElementExt as _;
     let p = shell.palette;
     let open = shell.settings.pop == Some(pop);
@@ -298,6 +310,10 @@ fn picker(shell: &Shell, pop: Pop, label: String, min: f32, cx: &mut Context<She
     let id = SharedString::from(format!("picker-{pop:?}"));
     let el = h_flex()
         .id(id.clone())
+        .role(Role::ComboBox)
+        .aria_label(name.to_owned())
+        .aria_value(label.clone())
+        .aria_expanded(open)
         .flex_none()
         .h(px(CONTROL))
         .min_w(px(min))
@@ -384,7 +400,7 @@ fn dictation_rows(shell: &Shell, language: Line, dictation: Line, appearance: Li
     let on = shell.remembered.dictation_servers;
     let servers = Line::new(t!("settings.dictation_servers"), if on { t!("settings.dictation_servers_on") } else { t!("settings.dictation_servers_desc") })
         .words("dictation voice speech apple server accuracy korean")
-        .control(switch(shell, "dictation-servers", on || shell.settings.dictation_consent, true, |this, on, window, cx| {
+        .switch(shell, "dictation-servers", on || shell.settings.dictation_consent, true, |this, on, window, cx| {
             if on {
                 this.settings.dictation_consent = true;
                 cx.notify();
@@ -392,7 +408,7 @@ fn dictation_rows(shell: &Shell, language: Line, dictation: Line, appearance: Li
                 this.settings.dictation_consent = false;
                 this.set_dictation_servers(false, window, cx);
             }
-        }, cx));
+        }, cx);
     let mut rows = vec![language, dictation, servers];
     // Asked before it is on: what leaves the Mac, and the person's yes.
     if shell.settings.dictation_consent && !on {
@@ -426,7 +442,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let p = shell.palette;
     let mut language = Line::new(t!("sidebar.language"), t!("settings.language_desc"))
         .words(Lang::ALL.iter().map(|l| l.native_name()).collect::<Vec<_>>().join(" ") + " language");
-    language.control = Some(picker(shell, Pop::Language, language_label(shell), 0., cx));
+    language.control = Some(picker(shell, Pop::Language, t!("sidebar.language"), language_label(shell), 0., cx));
     // Dictation's language, apart from the app's: what this Mac can hear on the device.
     let listening = shell.composer.listening;
     let dictation_label = match shell.remembered.dictation.as_deref().and_then(Lang::parse) {
@@ -442,7 +458,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .gap_2()
             .items_center()
             .child(ui::button(p, "dictation-add", Kind::Ghost, t!("settings.dictation_add")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(crate::dictation::SETTINGS_URL)))
-            .child(picker(shell, Pop::Dictation, dictation_label, 0., cx))
+            .child(picker(shell, Pop::Dictation, t!("settings.dictation"), dictation_label, 0., cx))
             .into_any_element(),
     );
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
@@ -454,11 +470,11 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let start = Line::new(t!("settings.start"), t!("settings.start_desc")).words("launch").control(segmented(shell, "start", starts, shell.remembered.start, |this, s, _, _| this.set_start(s), cx));
     let follow = Line::new(t!("settings.follow_project"), t!("settings.follow_project_desc"))
         .words("project conversation slice filter")
-        .control(switch(shell, "follow-project", shell.chat.follow, true, |this, on, _, cx| this.set_follow_project(on, cx), cx));
+        .switch(shell, "follow-project", shell.chat.follow, true, |this, on, _, cx| this.set_follow_project(on, cx), cx);
 
     let pings = shell.remembered.pings;
     let ping = |ping: Ping, label: &'static str, desc: &'static str, cx: &mut Context<Shell>| {
-        Line::new(label, desc).words("notification").control(switch(shell, ping.code(), pings.get(ping), true, move |this, on, _, cx| this.set_ping(ping, on, cx), cx))
+        Line::new(label, desc).words("notification").switch(shell, ping.code(), pings.get(ping), true, move |this, on, _, cx| this.set_ping(ping, on, cx), cx)
     };
     // What macOS allows, first: nothing else here matters while it allows nothing.
     let permission = shell.bell.permission;
@@ -486,7 +502,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         ping(Ping::Sound, t!("settings.ping_sound"), t!("settings.ping_sound_desc"), cx),
         Line::new(t!("settings.ping_badge"), t!("settings.ping_badge_desc"))
             .words("dock badge count notification")
-            .control(switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx)),
+            .switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx),
     ];
     vec![
         Section::new(t!("settings.section_look"), dictation_rows(shell, language, dictation, appearance, zoom, cx)).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
@@ -523,7 +539,7 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         Conn::Down { .. } => t!("sidebar.disconnected").to_owned(),
     };
     let squad_name = if model.squad.is_empty() { t!("settings.none").to_owned() } else { model.squad.clone() };
-    let squad = Line::new(t!("sidebar.squads"), t!("settings.squad_desc")).words(shell.squads.join(" ")).control(if shell.squads.len() > 1 { picker(shell, Pop::Squad, squad_name, 0., cx) } else { value(p, squad_name) });
+    let squad = Line::new(t!("sidebar.squads"), t!("settings.squad_desc")).words(shell.squads.join(" ")).control(if shell.squads.len() > 1 { picker(shell, Pop::Squad, t!("sidebar.squads"), squad_name, 0., cx) } else { value(p, squad_name) });
     let machine_desc = match &shell.endpoint {
         Endpoint::Local { .. } => t!("settings.machine_local_desc").to_owned(),
         Endpoint::Ssh(host) => t!("settings.machine_ssh_desc", host = host.spec()),
@@ -548,8 +564,8 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .words(t!("settings.disk_words"))
         .control(ui::button(p, "open-disk", Kind::Secondary, t!("settings.disk_open")).icon(Icon::Server).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_disk(window, cx))));
 
-    let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").control(switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx));
-    let screen = Line::new(t!("settings.mac_screen"), t!("settings.mac_screen_desc")).words("desktop computer use /desktop").control(switch(shell, "desktop", !model.desktop_stopped, connected, |this, on, _, _| this.set_desktop_open(on), cx));
+    let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx);
+    let screen = Line::new(t!("settings.mac_screen"), t!("settings.mac_screen_desc")).words("desktop computer use /desktop").switch(shell, "desktop", !model.desktop_stopped, connected, |this, on, _, _| this.set_desktop_open(on), cx);
     vec![
         Section::new(t!("settings.section_connection"), vec![squad, machine, connection]).foot(t!("settings.connection_foot")),
         phones(shell, connected, cx),
@@ -631,9 +647,9 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
                 .gap_2()
                 .when(connected, |c| {
                     let s = m.session;
-                    c.child(with_tip(picker(shell, Pop::Model(s), model_name.clone(), 112., cx), format!("tip-model-{s}"), p, t!("composer.tip_model")))
-                        .child(with_tip(picker(shell, Pop::Effort(s), effort.clone(), 96., cx), format!("tip-effort-{s}"), p, t!("composer.tip_effort")))
-                        .child(with_tip(picker(shell, Pop::Mode(s), mode.clone(), 124., cx), format!("tip-mode-{s}"), p, t!("composer.tip_mode")))
+                    c.child(with_tip(picker(shell, Pop::Model(s), t!("composer.tip_model"), model_name.clone(), 112., cx), format!("tip-model-{s}"), p, t!("composer.tip_model")))
+                        .child(with_tip(picker(shell, Pop::Effort(s), t!("composer.tip_effort"), effort.clone(), 96., cx), format!("tip-effort-{s}"), p, t!("composer.tip_effort")))
+                        .child(with_tip(picker(shell, Pop::Mode(s), t!("composer.tip_mode"), mode.clone(), 124., cx), format!("tip-mode-{s}"), p, t!("composer.tip_mode")))
                 });
             Line::new(m.name.clone(), desc).label_el(label).words(format!("{} {model_name} {effort} {mode}", m.role)).control(controls)
         })
@@ -642,18 +658,18 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     // Who accepts the team's work: the PM (only what needs the person comes to them), or the person, all of it.
     let pm_accepts = Line::new(t!("settings.pm_accepts"), t!("settings.pm_accepts_desc"))
         .words(t!("settings.accept_words"))
-        .control(switch(shell, "pm-accepts", model.pm_accepts, connected, |this, on, _, _| {
+        .switch(shell, "pm-accepts", model.pm_accepts, connected, |this, on, _, _| {
             let squad = this.model.squad.clone();
             this.send_command(equipe_core::protocol::Command::SetPmAccepts { squad, on });
-        }, cx));
+        }, cx);
     // An empty board wakes the PM after a day to look for what comes next; off, it waits for the person.
     let idle_wake = Line::new(t!("settings.idle_wake"), t!("settings.idle_wake_desc"))
         .words("idle wake empty board pm quiet")
-        .control(switch(shell, "idle-wake", model.idle_wake_hours > 0, connected, |this, on, _, _| {
+        .switch(shell, "idle-wake", model.idle_wake_hours > 0, connected, |this, on, _, _| {
             let squad = this.model.squad.clone();
             let hours = if on { equipe_core::protocol::routines::IDLE_WAKE_HOURS } else { 0 };
             this.send_command(equipe_core::protocol::Command::SetIdleWake { squad, hours });
-        }, cx));
+        }, cx);
     vec![
         Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
         // Its own card, so the footnote above reads as the PM's accepting alone.
@@ -750,7 +766,7 @@ pub fn short_path(path: &std::path::Path) -> String {
 fn browser(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let p = shell.palette;
     let connected = matches!(shell.model.conn, Conn::Connected { .. });
-    let shown = Line::new(t!("settings.browsers_shown"), t!("settings.browsers_shown_desc")).words("headless window").control(switch(shell, "browsers", shell.model.browsers_shown, connected, |this, on, _, _| this.set_browsers_shown(on), cx));
+    let shown = Line::new(t!("settings.browsers_shown"), t!("settings.browsers_shown_desc")).words("headless window").switch(shell, "browsers", shell.model.browsers_shown, connected, |this, on, _, _| this.set_browsers_shown(on), cx);
     let panel = Line::new(t!("settings.browser_panel"), t!("settings.browser_panel_desc"))
         .words("panel ⌘⇧B")
         .control(ui::button(p, "open-panel", Kind::Secondary, t!("settings.open_panel")).key("⌘⇧B").on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx))));
@@ -822,7 +838,7 @@ fn about(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     updates.push(
         Line::new(t!("settings.auto_update"), t!("settings.auto_update_desc"))
             .words("update automatic")
-            .control(switch(shell, "auto-update", can && crate::relaunch::automatic(cx), can, |_, on, _, cx| crate::relaunch::set_automatic(on, cx), cx)),
+            .switch(shell, "auto-update", can && crate::relaunch::automatic(cx), can, |_, on, _, cx| crate::relaunch::set_automatic(on, cx), cx),
     );
     let link = |id: &'static str, label: &'static str, desc: &'static str, url: &'static str| {
         Line::new(label, desc).words(url).control(ui::button(p, id, Kind::Ghost, t!("settings.open")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(url)))
@@ -928,6 +944,7 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
     };
     let back = row("settings-back".into(), false)
         .tip_at(p, t!("settings.back_tip"), Some("Esc"), gpui_kit::base::Placement::Right)
+        .aria_label(t!("settings.back"))
         .on_click(cx.listener(|this, _, window, cx| this.close_settings(window, cx)))
         .child(icon(Icon::ArrowLeft, ICON, p.text2))
         .child(div().text_color(p.text2).child(t!("settings.back")));
@@ -951,6 +968,9 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
         let on = !searching && c == at;
         let dim = searching && count.is_none();
         row(SharedString::from(format!("settings-cat-{}", c.code())), on)
+            .role(Role::Tab)
+            .aria_label(c.label())
+            .aria_selected(on)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.settings.search.update(cx, |s, cx| s.set_value(String::new(), window, cx));
                 this.settings_go(c, cx);
@@ -1118,6 +1138,9 @@ fn pop_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let rows = rows.into_iter().enumerate().map(|(ix, (label, hint, on, act))| {
         let row = h_flex()
             .id(("settings-pop-row", ix))
+            .role(Role::MenuItemRadio)
+            .aria_label(if hint.is_empty() { label.clone() } else { format!("{label}, {hint}") })
+            .aria_toggled(if on { Toggled::True } else { Toggled::False })
             .min_h(px(ROW))
             .px_2()
             .gap_2()
@@ -1132,6 +1155,7 @@ fn pop_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     });
     let surface = v_flex()
         .id("settings-pop")
+        .role(Role::Menu)
         .w(px(width))
         .max_h(px(360.))
         .overflow_y_scroll()

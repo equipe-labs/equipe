@@ -1901,9 +1901,13 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     let p = shell.palette;
     let model = &shell.model;
     let group = SharedString::from(format!("row-{need:?}"));
-    let base = |id: SharedString, cx: &mut Context<Shell>| {
+    // `said`: the row as a screen reader reads it.
+    let base = |id: SharedString, said: String, cx: &mut Context<Shell>| {
         h_flex()
             .id(id)
+            .role(Role::ListItem)
+            .aria_label(said)
+            .aria_selected(picked)
             .group(group.clone())
             .relative()
             .h(px(ROW))
@@ -1949,7 +1953,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             let card = super::approvals::Card::of(a);
             let hue = look(model.members.iter().find(|m| m.session == a.session).map_or("", |m| m.role.as_str()), &a.member).1;
             let ticket = a.ticket.and_then(|t| model.tickets.iter().find(|x| x.id == t));
-            base(SharedString::from(format!("ask-{id}")), cx)
+            base(SharedString::from(format!("ask-{id}")), format!("{}: {}", a.member, t!("approvals.allow_question", what = card.noun)), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(div().size(px(14.)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)))
@@ -1972,7 +1976,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
         }
         Need::Browser(page) => {
             let Some((title, name, color)) = super::browser::need_row(shell, page) else { return div().into_any_element() };
-            base(SharedString::from(format!("browser-{page}")), cx)
+            base(SharedString::from(format!("browser-{page}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::browser::need_mark(p))
@@ -1987,7 +1991,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
         }
         Need::Secret(id) => {
             let Some((title, name, color)) = super::secrets::row_text(shell, id) else { return div().into_any_element() };
-            base(SharedString::from(format!("secret-{id}")), cx)
+            base(SharedString::from(format!("secret-{id}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::secrets::mark(p))
@@ -2002,7 +2006,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
         }
         Need::Accept(id) => {
             let Some((title, name, color)) = super::accept::row_text(shell, id) else { return div().into_any_element() };
-            base(SharedString::from(format!("accept-{id}")), cx)
+            base(SharedString::from(format!("accept-{id}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::accept::mark(p))
@@ -2017,7 +2021,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
         }
         Need::Team(id) => {
             let Some((title, name, color)) = super::team::row_text(shell, id) else { return div().into_any_element() };
-            base(SharedString::from(format!("team-{id}")), cx)
+            base(SharedString::from(format!("team-{id}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::team::mark(p))
@@ -2032,7 +2036,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
         }
         Need::Routine(id) => {
             let Some((title, name, color)) = super::routine::row_text(shell, id) else { return div().into_any_element() };
-            base(SharedString::from(format!("routine-ask-{id}")), cx)
+            base(SharedString::from(format!("routine-ask-{id}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::routine::mark(p))
@@ -2048,7 +2052,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
         Need::Questions(id) => {
             let Some((title, ticket_id, name, color)) = super::decide::row_text(shell, id) else { return div().into_any_element() };
             let ticket = ticket_id.and_then(|t| model.tickets.iter().find(|x| x.id == t));
-            base(SharedString::from(format!("decide-{id}")), cx)
+            base(SharedString::from(format!("decide-{id}")), [ticket_id.map(|t| format!("T-{t}")), Some(title.to_string()), Some(name.to_string())].into_iter().flatten().collect::<Vec<_>>().join(", "), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::decide::mark(p))
@@ -2100,7 +2104,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 actions.push(quick("q-d", "D", cx, |this, w, cx| this.board_open_diff(w, cx)).into_any_element());
             }
             let has_actions = !actions.is_empty();
-            base(SharedString::from(format!("ticket-{id}")), cx)
+            base(SharedString::from(format!("ticket-{id}")), format!("T-{id} {}", t.title), cx)
                 .pl_2()
                 .child(
                     div()
