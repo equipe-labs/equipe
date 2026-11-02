@@ -1,67 +1,74 @@
-//! `/usage`: both engines' plan windows, the squad's engine switching, and each member's context and tokens,
-//! as the console's usage screen words them (`tui/view.rs` `render_usage`) —
-//! rows of text, without a window.
-
-use equipe_core::protocol::PlanUsage;
+//! `/usage`'s figures (`views/usage.rs` draws them): how full a plan's
+//! window is and when it starts over, and the members, those that spent the
+//! most first.
 
 use crate::state::{Model, Presence};
 use equipe_core::t;
 
+/// How full a plan's window is, as its bar is coloured: room, getting full,
+/// nearly out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    Room,
+    Full,
+    Out,
+}
+
+pub fn fill(percent: u8) -> Fill {
+    match percent {
+        0..=69 => Fill::Room,
+        70..=89 => Fill::Full,
+        _ => Fill::Out,
+    }
+}
+
+/// How long until `resets_at`, from `now`, as a person says it: "3h 20m",
+/// "2d 4h", "12m".
+pub fn time_left(resets_at: i64, now: i64) -> String {
+    let left = (resets_at - now).max(0);
+    let (days, hours, minutes) = (left / 86_400, left % 86_400 / 3_600, left % 3_600 / 60);
+    if days > 0 {
+        t!("usage.left_days", days = days, hours = hours).into()
+    } else if hours > 0 {
+        t!("usage.left_hours", hours = hours, minutes = minutes).into()
+    } else {
+        t!("usage.left_minutes", minutes = minutes.max(1)).into()
+    }
+}
+
+/// A member as the usage panel lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Row {
-    pub label: String,
-    pub text: String,
-    /// Share of the bar to fill, 0–100, where the row has one.
-    pub percent: Option<u8>,
+pub struct MemberUse {
+    pub name: String,
+    pub role: String,
+    pub engine: Option<equipe_core::protocol::Engine>,
+    /// Its context's fill, once known.
+    pub context: Option<u8>,
+    pub tokens: u64,
+    /// The share of what it read that came from the prompt cache.
+    pub cache: Option<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct View {
-    pub plan: Vec<Row>,
-    /// Codex's plan, as last read.
-    pub codex: Vec<Row>,
-    /// How the squad moves members between engines.
-    pub switching: Row,
-    pub members: Vec<Row>,
-}
-
-/// The plan's windows, each as "N% used · starts over <time>"; `when` words a
-/// reset time (local time, which this module doesn't know).
-pub fn plan_rows(plan: Option<PlanUsage>, when: impl Fn(i64) -> String) -> Vec<Row> {
-    let Some(plan) = plan else {
-        return vec![Row { label: "—".into(), text: t!("usage.not_yet").into(), percent: None }];
-    };
-    [(t!("usage.five_hour"), plan.five_hour), (t!("usage.week"), plan.seven_day)]
-        .into_iter()
-        .filter_map(|(label, window)| {
-            let w = window?;
-            Some(Row { label: label.into(), text: t!("usage.window", used = w.used_percent, when = when(w.resets_at)), percent: Some(w.used_percent.min(100)) })
-        })
-        .collect()
-}
-
-pub fn view(model: &Model, when: impl Fn(i64) -> String) -> View {
-    let members = model
+/// The squad's open members, those that spent the most first.
+pub fn members(model: &Model) -> Vec<MemberUse> {
+    let mut all: Vec<MemberUse> = model
         .members
         .iter()
         .filter(|m| m.presence != Presence::Closed)
         .map(|m| {
             let spent = model.spent.get(&m.session).copied().unwrap_or_default();
-            let (context, percent) = match spent.context.filter(|(_, w)| *w > 0) {
-                Some((u, w)) => (t!("usage.context", pct = u * 100 / w, used = u / 1000, window = w / 1000), Some((u * 100 / w).min(100) as u8)),
-                None => (t!("usage.context_unknown").to_owned(), None),
-            };
-            let cache = (spent.seen.1 * 100).checked_div(spent.seen.0).map_or_else(String::new, |p| t!("usage.from_cache", pct = p));
-            Row { label: m.name.clone(), text: t!("usage.tokens", context = context, tokens = short_count(spent.tokens), cache = cache), percent }
+            MemberUse {
+                name: m.name.clone(),
+                role: m.role.clone(),
+                engine: m.engine,
+                context: spent.context.filter(|(_, w)| *w > 0).map(|(u, w)| (u * 100 / w).min(100) as u8),
+                tokens: spent.tokens,
+                cache: (spent.seen.1 * 100).checked_div(spent.seen.0).map(|p| p.min(100) as u8),
+            }
         })
         .collect();
-    let codex = match model.engines.plan(equipe_core::protocol::Engine::Codex) {
-        Some(p) => plan_rows(Some(p.usage), &when),
-        None => vec![Row { label: "—".into(), text: equipe_core::t!("engines.codex_not_read").into(), percent: None }],
-    };
-    let mode = model.engines.mode;
-    let switching = Row { label: crate::switching::mode_word(mode).into(), text: format!("{} · /engines", crate::switching::mode_about(mode)), percent: None };
-    View { plan: plan_rows(model.plan, &when), codex, switching, members }
+    all.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.name.cmp(&b.name)));
+    all
 }
 
 /// 8400 → "8.4k", 2_800_000 → "2.8M".
@@ -93,7 +100,7 @@ mod tests {
     use crate::daemon::Update;
     use crate::state::Clock;
     use equipe_core::protocol::rpc::Hello;
-    use equipe_core::protocol::{Access, Engine, Event, Member as Who, PlanWindow, SessionInfo, SessionState, Snapshot, TurnOutcome, Usage};
+    use equipe_core::protocol::{Access, Engine, Event, Member as Who, SessionInfo, SessionState, Snapshot, TurnOutcome, Usage};
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
 
@@ -129,27 +136,26 @@ mod tests {
         m
     }
 
+
+
     #[test]
-    fn the_plan_says_when_it_isnt_known_yet_and_then_each_window() {
-        let mut m = model();
-        let when = |t: i64| format!("@{t}");
-        assert_eq!(view(&m, when).plan[0].text, "멤버가 Claude Code에서 다음 턴을 마치면 알 수 있어요");
-        m.apply(Update::Event(Event::PlanUsage { usage: PlanUsage { five_hour: Some(PlanWindow { used_percent: 42, resets_at: 100 }), seven_day: None }, engine: equipe_core::protocol::Engine::Claude }), T0);
-        let plan = view(&m, when).plan;
-        assert_eq!(plan.len(), 1);
-        assert_eq!((plan[0].label.as_str(), plan[0].text.as_str(), plan[0].percent), ("5시간", "42% 사용 · @100에 초기화", Some(42)));
+    fn a_plan_is_coloured_by_how_full_it_is_and_says_how_long_until_it_starts_over() {
+        assert_eq!([fill(0), fill(53), fill(70), fill(89), fill(90), fill(100)], [Fill::Room, Fill::Room, Fill::Full, Fill::Full, Fill::Out, Fill::Out]);
+        assert_eq!(time_left(1_000 + 3 * 3_600 + 20 * 60, 1_000), "3시간 20분");
+        assert_eq!(time_left(1_000 + 2 * 86_400 + 4 * 3_600, 1_000), "2일 4시간");
+        assert_eq!(time_left(1_030, 1_000), "1분", "never \"0\"");
+        assert_eq!(time_left(500, 1_000), "1분", "past: it starts over any moment");
     }
 
     #[test]
-    fn members_show_context_tokens_and_the_share_from_cache() {
+    fn members_are_listed_by_what_they_spent_most() {
         let mut m = model();
-        assert_eq!(view(&m, |_| String::new()).members[0].text, "컨텍스트 — · 토큰 0");
         let usage = Usage { input_tokens: Some(100_000), output_tokens: Some(2_000), cache_tokens: Some(900_000), context_tokens: Some(126_000), context_window: Some(200_000) };
         m.apply(Update::Event(Event::TurnEnded { session: 2, outcome: TurnOutcome::Completed, usage: Some(usage) }), T0);
-        let rows = view(&m, |_| String::new()).members;
-        assert_eq!(rows[1].label, "frontend");
-        assert_eq!(rows[1].text, "컨텍스트 63% (126k / 200k) · 토큰 1M · 89% 캐시");
-        assert_eq!(rows[1].percent, Some(63));
+        let all = members(&m);
+        assert_eq!(all.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["frontend", "pm"]);
+        assert_eq!((all[0].context, all[0].cache), (Some(63), Some(89)));
+        assert_eq!((all[1].context, all[1].tokens), (None, 0), "nothing yet: no bar, no guess");
     }
 
     #[test]

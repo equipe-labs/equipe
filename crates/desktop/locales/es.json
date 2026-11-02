@@ -2341,5 +2341,13 @@
   "browser.done_give_back_short": "Listo",
   "browser.handed_more": "Ver todo",
   "browser.handed_less": "Ver menos",
-  "browser.bar_asked": "{name} espera a que se lo devuelvas"
+  "browser.bar_asked": "{name} espera a que se lo devuelvas",
+  "usage.left_days": "{days} d {hours} h",
+  "usage.left_hours": "{hours} h {minutes} min",
+  "usage.left_minutes": "{minutes} min",
+  "usage.resets": "Se renueva en {left} · {when}",
+  "usage.col_context": "Contexto",
+  "usage.col_tokens": "Tokens",
+  "usage.cache_tip": "El {pct} % de lo que leyó vino de la caché (alrededor de una décima parte del precio)",
+  "usage.note_short": "Los tokens son todo lo que procesaron los turnos de un miembro. Una conversación empieza de nuevo al pasar del 60 % — /compact o /clear lo hace ya."
 }

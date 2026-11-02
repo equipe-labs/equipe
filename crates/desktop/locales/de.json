@@ -2341,5 +2341,13 @@
   "browser.done_give_back_short": "Fertig",
   "browser.handed_more": "Alles zeigen",
   "browser.handed_less": "Weniger",
-  "browser.bar_asked": "{name} wartet, bis du ihn zurückgibst"
+  "browser.bar_asked": "{name} wartet, bis du ihn zurückgibst",
+  "usage.left_days": "{days} T. {hours} Std.",
+  "usage.left_hours": "{hours} Std. {minutes} Min.",
+  "usage.left_minutes": "{minutes} Min.",
+  "usage.resets": "Neu in {left} · {when}",
+  "usage.col_context": "Kontext",
+  "usage.col_tokens": "Tokens",
+  "usage.cache_tip": "{pct} % des Gelesenen kam aus dem Cache (etwa ein Zehntel des Preises)",
+  "usage.note_short": "Tokens sind alles, was die Züge eines Mitglieds verarbeitet haben. Ein Gespräch beginnt ab 60 % neu — /compact oder /clear tut es sofort."
 }

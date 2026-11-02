@@ -2288,5 +2288,13 @@
   "browser.done_give_back_short": "다 했어요",
   "browser.handed_more": "더 보기",
   "browser.handed_less": "접기",
-  "browser.bar_asked": "{name}이(가) 돌려받기를 기다려요"
+  "browser.bar_asked": "{name}이(가) 돌려받기를 기다려요",
+  "usage.left_days": "{days}일 {hours}시간",
+  "usage.left_hours": "{hours}시간 {minutes}분",
+  "usage.left_minutes": "{minutes}분",
+  "usage.resets": "{left} 뒤 다시 채워져요 · {when}",
+  "usage.col_context": "컨텍스트",
+  "usage.col_tokens": "토큰",
+  "usage.cache_tip": "읽은 것의 {pct}%는 캐시에서 왔어요(값이 약 10분의 1)",
+  "usage.note_short": "토큰은 멤버의 턴이 처리한 전부예요. 대화는 60%를 넘으면 새로 시작돼요 — /compact나 /clear로 바로 할 수도 있어요."
 }

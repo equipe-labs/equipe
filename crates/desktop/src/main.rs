@@ -265,6 +265,8 @@ pub struct Shell {
     pub forgetting: Option<String>,
     /// "디스크": the banner while it runs short, and the panel (`disk.rs`).
     pub disk: disk::DiskUi,
+    /// `/usage`, over the window (`views/usage.rs`).
+    pub usage_open: bool,
     /// The window's size, shown for a moment after it changes (`zoom.rs`).
     pub zoom_hud: Option<zoom::Hud>,
     _pair_tick: Option<Task<()>>,
@@ -390,6 +392,7 @@ impl Shell {
             setup: setup::Setup::default(),
             forgetting: None,
             disk: Default::default(),
+            usage_open: false,
             zoom_hud: None,
             _pair_tick: None,
             notices,
@@ -1084,7 +1087,7 @@ impl Shell {
     // ── questions from ssh ──
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
+        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open || self.disk.open || self.usage_open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1094,6 +1097,8 @@ impl Shell {
             self.close_pairing(window, cx);
         } else if self.disk.open {
             self.close_disk(window, cx);
+        } else if self.usage_open {
+            self.close_usage(window, cx);
         } else if self.bell.sheet {
             self.notify_later(window, cx);
         } else if self.connect.open {
@@ -1803,6 +1808,7 @@ impl Render for Shell {
                 .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
                 .children(views::pair::sheet(self, cx))
                 .children(views::disk::sheet(self, cx))
+                .children(views::usage::panel(self, cx))
                 .children(views::bell::sheet(self, cx))
                 .children(views::connect::question(self, cx))
                 .children(self.zoom_chip(window, cx))
@@ -1840,6 +1846,7 @@ impl Render for Shell {
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::pair::sheet(self, cx))
             .children(views::disk::sheet(self, cx))
+                .children(views::usage::panel(self, cx))
             .children(views::bell::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(self.zoom_chip(window, cx))
