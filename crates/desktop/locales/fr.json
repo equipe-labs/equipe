@@ -2337,6 +2337,5 @@
   "routine_ask.title": "Routine proposée",
   "routine_ask.what": "À chaque fois",
   "routine_ask.when": "Quand",
-  "settings.idle_wake": "Réveiller le PM quand le tableau est vide",
-  "settings.idle_wake_desc": "Après une journée sans ticket ouvert, le PM cherche quoi faire ensuite (une fois par jour au plus)"
+  "chat.chapters": "Plan de la conversation"
 }

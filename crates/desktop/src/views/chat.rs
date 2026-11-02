@@ -76,6 +76,8 @@ type Shown = (SessionId, Option<u32>, Option<Option<String>>);
 
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
+    /// The chapters' list open over the rail (`views/chapters.rs`).
+    pub rail_open: bool,
     /// Which of the cards over the composer is in front, when several wait.
     pub dock_at: usize,
     pub blocks: Rc<Vec<Block>>,
@@ -177,6 +179,7 @@ impl Chat {
         cx.set_global(render::ShellRef(cx.entity().downgrade()));
         Self {
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
+            rail_open: false,
             blocks: Rc::new(Vec::new()),
             shown: None,
             about: Rc::default(),
@@ -281,6 +284,11 @@ impl Chat {
             self.toggle(row, PART_GROUP, cx);
         }
         Some(ix)
+    }
+
+    /// The row at the top of the view.
+    pub fn top_row(&self, cx: &App) -> usize {
+        self.scroller.read(cx).top_item()
     }
 
     /// Bring row `ix` to the top (the snapshot script's; a subagent's row in the sidebar).
@@ -844,7 +852,9 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
             .with_bottom_fade(p.bg)
             .aria_label(t!("chat.a11y_conversation", name = log_name))
-    );
+    )
+    // A bar for each thing asked, in the rows' left margin — over them.
+    .children(super::chapters::rail(shell, cx));
     // The pill has its own room under the list, so it covers nothing.
     let list = v_flex().flex_1().min_h_0().w_full().items_center().child(scroller);
     // Another project's slice: the list fades in at its end.

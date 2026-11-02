@@ -2283,6 +2283,5 @@
   "routine_ask.title": "定期任務提議",
   "routine_ask.what": "每次交代的事",
   "routine_ask.when": "時間",
-  "settings.idle_wake": "看板空著時喚醒 PM",
-  "settings.idle_wake_desc": "沒有未完成工單滿一天後，PM 會找找接下來做什麼（每天最多一次）"
+  "chat.chapters": "對話目錄"
 }

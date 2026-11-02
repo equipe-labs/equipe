@@ -719,7 +719,7 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
     let (info, tools) = if desktop {
         (mcp::DESKTOP, equipe_desktop_control::tools::tools())
     } else {
-        (mcp::BOARD, equipe_core::board::tools(role == equipe_core::roles::PM))
+        (mcp::BOARD, equipe_core::board::tools_for(&role))
     };
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();

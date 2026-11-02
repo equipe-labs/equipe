@@ -2283,6 +2283,5 @@
   "routine_ask.title": "定期業務の提案",
   "routine_ask.what": "毎回任せること",
   "routine_ask.when": "いつ",
-  "settings.idle_wake": "ボードが空のとき PM を起こす",
-  "settings.idle_wake_desc": "未完了のチケットがないまま 1 日たつと、PM が次にやることを探します (1 日 1 回まで)"
+  "chat.chapters": "会話の目次"
 }

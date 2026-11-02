@@ -586,6 +586,10 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "browser" => shell.update(cx, |shell, cx| shell.toggle_browser(window, cx)),
                 "doc" => shell.update(cx, |shell, cx| shell.open_doc(std::path::PathBuf::from(&arg), cx)),
                 "slide" => shell.update(cx, |shell, cx| shell.present(arg.parse().unwrap_or(0), cx)),
+                "rail" => shell.update(cx, |shell, cx| {
+                    shell.chat.rail_open = arg != "close";
+                    cx.notify();
+                }),
                 "dfold" => shell.update(cx, |shell, cx| shell.fold_doc(arg != "open", cx)),
                 "term" => shell.update(cx, |shell, cx| shell.open_terminal((!arg.is_empty()).then(|| arg.to_owned()), window, cx)),
                 "tmove" => shell.update(cx, |shell, cx| shell.move_terminal(cx)),

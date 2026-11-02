@@ -9,6 +9,7 @@ pub mod attached;
 pub mod bell;
 pub mod board;
 pub mod browser;
+pub mod chapters;
 pub mod chat;
 pub mod compact;
 pub mod composer;

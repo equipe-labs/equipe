@@ -74,6 +74,7 @@ mod heartbeat;
 mod signals;
 mod tickets;
 mod compact;
+mod controls;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -751,6 +752,8 @@ enum Internal {
     Done(TurnDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
+    /// What the person said yes to on a card, done as their screen would ask.
+    Apply(Box<Command>),
     /// Codex asks before it acts, as Claude Code does through `approve`.
     Ask(ToolCall, oneshot::Sender<ToolResult>),
     /// The Codex plan's limits, as just read or reported; `None`: they couldn't be read.
@@ -982,6 +985,7 @@ impl Wake {
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
+            Wake::Internal(Internal::Apply(_)) => Borrowed("a change the person said yes to"),
             Wake::Internal(Internal::Ask(..)) => Borrowed("codex asking for approval"),
             Wake::Internal(Internal::CodexLimits(_)) => Borrowed("codex's plan usage"),
             Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
@@ -1146,6 +1150,7 @@ impl Runtime {
                 },
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
+                Internal::Apply(command) => Box::pin(self.handle(*command)).await,
                 Internal::Ask(call, reply) => self.ask_permission(call, reply),
                 Internal::CodexLimits(limits) => self.on_codex_limits(limits),
                 Internal::Frame(session, frame) => {
@@ -4874,6 +4879,9 @@ them with `propose_accept`. Then carry on with what else waits.]"
         if call.name == board::ASK_PERSON {
             return self.ask_person(call, reply);
         }
+        if call.name == crate::controls::CHANGE_SETTING {
+            return self.change_setting(call, reply).await;
+        }
         if call.name == crate::signals::PROPOSE_SIGNAL {
             return self.propose_signal(call, reply);
         }
@@ -5149,6 +5157,10 @@ there, end your turn, and carry on when they say they're done."
         if approval.tool == SIGN_IN_TOOL {
             self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
             return self.sign_in_answered(squad, approval, input, decision, reply);
+        }
+        if approval.tool == crate::controls::SETTING_TOOL {
+            self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
+            return self.setting_answered(squad, approval, input, decision, reply);
         }
         let mut decision = decision;
         let rule = (decision == Decision::Always).then(|| permissions::rule_for(&approval.tool, &approval.action)).flatten();
@@ -6088,6 +6100,8 @@ it back there once they have done it.{again} End your turn now with a short line
                 Ok(format!("Added {name} at {} — tickets can name it now. Tell the person in one line; they can take it off from the sidebar.", path.display()))
             }
             crate::signals::SIGNALS => self.read_signals(&squad, id, &args),
+            crate::controls::SETTINGS if is_pm => Ok(self.settings_text(&squad)),
+            crate::controls::SETTINGS => Err("Only the PM reads the squad's settings; ask the PM.".into()),
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
