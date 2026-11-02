@@ -769,12 +769,19 @@ or start it. Ideas wait on the board, quiet. It's yours to bring each back at th
 next, in a check-in, or when equipe asks you about them, weigh them against the goal and the board, and put one whose \
 time has come to the person with `update_ticket` (status proposed, `why`). Only their click or their word starts one. \
 When they say something on the board isn't for now, keep it as an idea (status idea) rather than cancel it. \
-Bring ideas of your own too, where the moment calls for them: when the person is brainstorming, thinking aloud about \
-what's next or stuck on a problem, offer a few concrete ones of yours — each a line, what it is and why it fits what you \
-know of their product, users and numbers — rather than only asking questions; and when you notice something worth doing \
-later (a gap a ticket showed, a pattern in the signals), keep it as an idea yourself with `idea: true`, saying in the \
-body it was yours and why, and mention it in one line. Not while they are heads-down on something else: then keep it \
-and say nothing until it is useful. Yours wait for their yes like theirs."
+Bring ideas of your own too, as a strong product manager does — never generic ones anyone could have written. Each \
+starts from evidence: what the squad remembers of building this product with the person (its memory, past decisions, \
+what shipped and what didn't land), what the users do and say (the signals' numbers and trends, analytics, feedback, \
+reviews, support), and what is true outside (competitors, the market, what similar products learned — look it up on \
+the web when you don't know). Look before you propose: read the memory and `signals`, and search, rather than \
+guessing. Each idea then says the insight it rests on and where that came from — a number and its trend, a user's \
+words, a source — what it would change for the user and for the business, and how you'd know it worked; what you \
+couldn't confirm is marked unconfirmed. Two or three sharp ones beat ten loose ones. When the person is brainstorming, \
+thinking aloud about what's next or stuck on a problem, offer yours that way rather than only asking questions; when \
+the numbers or the users show you something worth doing later (a drop, a request that keeps coming, a gap a ticket \
+revealed), keep it as an idea yourself with `idea: true` — the evidence and its source in the body, saying it was \
+yours — and mention it in one line. Not while they are heads-down on something else: then keep it and say nothing \
+until it is useful. Yours wait for their yes like theirs."
             .to_owned()
     } else {
         "\n\nWhen the person floats an idea for later in a conversation with you, keep it at once with \
@@ -982,8 +989,10 @@ mod tests {
         assert!(pm.contains("`idea: true`") && pm.contains("Never let one \ngo") || pm.contains("Never let one go"), "{pm}");
         assert!(pm.contains("status proposed, `why`") && pm.contains("Only their click or their word starts one"), "{pm}");
         assert!(pm.contains("keep it as an idea (status idea) rather than cancel it"), "{pm}");
-        assert!(pm.contains("when the person is brainstorming") && pm.contains("offer a few concrete ones of yours"), "the PM brings its own ideas: {pm}");
-        assert!(pm.contains("saying in the \nbody it was yours") || pm.contains("saying in the body it was yours"), "{pm}");
+        assert!(pm.contains("When the person is brainstorming") && pm.contains("never generic ones"), "the PM brings its own ideas: {pm}");
+        for part in ["starts from evidence", "what the squad remembers", "the signals' numbers", "look it up on the web", "read the memory and `signals`", "the insight it rests on and where that came from", "how you'd know it worked", "marked unconfirmed", "the evidence and its source in the body"] {
+            assert!(pm.contains(part), "{part}: {pm}");
+        }
         let member = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true));
         assert!(member.contains("`idea: true`") && member.contains("the PM brings it back"), "{member}");
         let no_tools = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], false));
