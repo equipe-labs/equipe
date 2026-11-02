@@ -86,17 +86,18 @@ pub struct Button {
     disabled: bool,
     selected: bool,
     focus: Option<FocusHandle>,
+    width: Option<f32>,
     on_click: Option<OnClick>,
 }
 
 /// A button with words.
 pub fn button(p: Palette, id: impl Into<ElementId>, kind: Kind, label: impl Into<SharedString>) -> Button {
-    Button { id: id.into(), p, kind, label: Some(label.into()), icon: None, key: None, tip: None, height: CONTROL, disabled: false, selected: false, focus: None, on_click: None }
+    Button { id: id.into(), p, kind, label: Some(label.into()), icon: None, key: None, tip: None, height: CONTROL, disabled: false, selected: false, focus: None, width: None, on_click: None }
 }
 
 /// A square button with only an icon; its name shows as a tooltip.
 pub fn icon_button(p: Palette, id: impl Into<ElementId>, glyph: Icon, name: impl Into<SharedString>, keys: Option<&'static str>) -> Button {
-    Button { id: id.into(), p, kind: Kind::Ghost, label: None, icon: Some(glyph), key: None, tip: Some((name.into(), keys)), height: CONTROL, disabled: false, selected: false, focus: None, on_click: None }
+    Button { id: id.into(), p, kind: Kind::Ghost, label: None, icon: Some(glyph), key: None, tip: Some((name.into(), keys)), height: CONTROL, disabled: false, selected: false, focus: None, width: None, on_click: None }
 }
 
 impl Button {
@@ -114,6 +115,12 @@ impl Button {
     /// On a text field's line: as tall as the field.
     pub fn field(mut self) -> Self {
         self.height = FIELD;
+        self
+    }
+
+    /// At least this wide, so choices side by side weigh the same.
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.width = Some(width);
         self
     }
 
@@ -187,6 +194,7 @@ impl RenderOnce for Button {
             .whitespace_nowrap()
             .when(square, |b| b.w(px(self.height)))
             .when(!square, |b| b.px_3())
+            .when_some(self.width, |b, w| b.min_w(px(w)))
             .when(self.kind == Kind::Primary || self.selected, |b| b.font_weight(FontWeight::SEMIBOLD))
             .when_some(look.fill, |b, fill| b.bg(fill))
             .when(faded, |b| b.opacity(0.4))

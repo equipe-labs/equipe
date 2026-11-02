@@ -1,0 +1,1 @@
+{"cache_key": "x", "columns": ["day", "label", "n"], "types": [["day", "String"], ["label", "String"], ["n", "UInt64"]], "results": [["2026-10-31", "en", 41], ["2026-10-31", "ko", 22], ["2026-11-01", "en", 37], ["2026-11-01", "ko", 19], ["2026-11-01", "ja", 3], ["2026-11-02", "en", 12]], "hasMore": false, "limit": 50000, "offset": 0, "is_cached": false, "query_status": null}

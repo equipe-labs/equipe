@@ -95,10 +95,24 @@ fn best<'a>(tokens: &'a [Token], names: &[&str]) -> Option<&'a Token> {
 }
 
 /// What a component's colour is drawn on: its sibling `bg`, `background` or
-/// `fill` (`button.primary.text` on `button.primary.bg`).
+/// `fill` (`button.primary.text` on `button.primary.bg`), or the fill of its
+/// own name (`button.primary-fg` on `button.primary-bg`).
 pub fn sibling_fill<'a>(tokens: &'a [Token], token: &Token) -> Option<&'a Token> {
     if token.name.starts_with("color.") {
         return None;
+    }
+    let leaf = token.leaf().to_ascii_lowercase();
+    let stem = ["fg", "text", "foreground"].iter().find_map(|ink| leaf.strip_suffix(ink).and_then(|s| s.strip_suffix(['-', '_'])));
+    if let Some(stem) = stem {
+        let paired = tokens.iter().find(|t| {
+            let other = t.leaf().to_ascii_lowercase();
+            t.kind == "color"
+                && t.group() == token.group()
+                && other.strip_prefix(stem).and_then(|r| r.strip_prefix(['-', '_'])).is_some_and(|fill| ["bg", "background", "fill"].contains(&fill))
+        });
+        if paired.is_some() {
+            return paired;
+        }
     }
     tokens.iter().find(|t| t.kind == "color" && t.group() == token.group() && t.name != token.name && ["bg", "background", "fill", "surface"].contains(&t.leaf().to_ascii_lowercase().as_str()))
 }

@@ -58,6 +58,7 @@ fn config(codex: &Path, home: &Path) -> Config {
         retention_days: 90,
         equipe_binary: None,
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,

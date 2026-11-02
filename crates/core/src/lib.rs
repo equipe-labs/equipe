@@ -31,6 +31,7 @@ pub mod i18n;
 pub mod journal;
 pub mod language;
 pub mod mcp;
+pub mod metrics;
 pub mod permissions;
 pub mod mock;
 pub mod nemotron;

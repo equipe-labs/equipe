@@ -48,6 +48,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         equipe_binary: Some("/opt/equipe".into()),
         // A browser is said to be there; none starts, as nobody says yes.
         npx: Some("/nonexistent/npx".into()),
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,

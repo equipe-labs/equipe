@@ -65,6 +65,7 @@ mod icons;
 mod motion;
 mod relaunch;
 use relaunch::DaemonUpdate;
+mod metrics;
 mod roadmap;
 mod sent;
 mod render;
@@ -184,6 +185,8 @@ pub enum Screen {
     Overview,
     /// 로드맵: the work as one picture, what waits on what (`views/roadmap.rs`).
     Roadmap,
+    /// 지표: the product's numbers, from the services it reports to (`views/metrics.rs`).
+    Metrics,
 }
 
 pub struct Shell {
@@ -218,6 +221,9 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// 디자인 시스템's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
+    /// 지표's state: what the daemon said, the form being filled.
+    pub metrics: metrics::Metrics,
+    pub metrics_ui: views::metrics::Inputs,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
     /// The terminal at the right, while one runs.
@@ -252,6 +258,8 @@ pub struct Shell {
     pub connect: ConnectUi,
     /// The first run's form (`views/welcome.rs`).
     pub welcome: views::welcome::WelcomeUi,
+    /// Anonymous usage data: the daemon's answer and the question (`views/telemetry.rs`).
+    pub telemetry: views::telemetry::TelemetryUi,
     pub ask: AskUi,
     /// A password just typed with "don't ask again" on: the key goes there once connected.
     ssh_key_wanted: bool,
@@ -334,6 +342,7 @@ impl Shell {
         let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
         let ask = AskUi::new(window, cx);
         let welcome = views::welcome::WelcomeUi::new(window, cx);
+        let telemetry = views::telemetry::TelemetryUi::new(cx);
         // Light or dark as the person picked, else as the Mac is.
         remembered.appearance.apply();
         let appearance = remembered.appearance.resolve(window.appearance());
@@ -367,6 +376,8 @@ impl Shell {
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
+            metrics: metrics::Metrics::new(),
+            metrics_ui: Default::default(),
             browser,
             terminal: None,
             term_offered: None,
@@ -385,6 +396,7 @@ impl Shell {
             remembered,
             connect,
             welcome,
+            telemetry,
             ask,
             ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
@@ -934,6 +946,7 @@ impl Shell {
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();
+                            this.telemetry_look(cx);
                             this.install_ssh_key(cx);
                             // The daemon back on this app's release: the update's line has said its piece.
                             if this.daemon_update.is_some() && notify::stale_daemon(&this.model.daemon_version, env!("CARGO_PKG_VERSION")).is_none() {
@@ -1433,6 +1446,8 @@ impl Shell {
                 .text_color(p.muted)
                 .when(self.connecting_shown, |d| d.child(t!("main.connecting_local")))
                 .into_any_element(),
+            // Asked once, before the squad's screens: in the first run's last step, and the first time a squad already there opens after the update.
+            conn if self.telemetry_asking() => v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).child(views::telemetry::screen(self, cx)).into_any_element(),
             conn => {
                 let screen = match self.screen {
                     Screen::Chat => views::chat::screen(self, cx).into_any_element(),
@@ -1442,6 +1457,7 @@ impl Shell {
                     Screen::Design => views::design::render(self, cx),
                     Screen::Overview => views::overview::render(self, cx),
                     Screen::Roadmap => views::roadmap::render(self, cx),
+                    Screen::Metrics => views::metrics::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
@@ -1660,6 +1676,8 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The metrics cards pick their layout by the width the screen has.
+        self.metrics.room = f32::from(window.viewport_size().width) - self.board.sidebar_width;
         // A message held for its uploads goes as soon as they're up.
         if let Some(later) = self.composer.send_when_ready.filter(|_| !self.composer.strip.busy()) {
             self.composer.send_when_ready = None;

@@ -1,0 +1,1 @@
+{"type":"authentication_error","code":"permission_denied","detail":"API key missing required scope 'query:read'","attr":null}
