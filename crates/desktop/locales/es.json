@@ -2337,5 +2337,9 @@
   "routine_ask.title": "Rutina propuesta",
   "routine_ask.what": "Cada vez",
   "routine_ask.when": "Cuándo",
-  "chat.chapters": "Índice de la conversación"
+  "chat.chapters": "Índice de la conversación",
+  "browser.done_give_back_short": "Listo",
+  "browser.handed_more": "Ver todo",
+  "browser.handed_less": "Ver menos",
+  "browser.bar_asked": "{name} espera a que se lo devuelvas"
 }

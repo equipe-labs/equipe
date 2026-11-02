@@ -2283,5 +2283,9 @@
   "routine_ask.title": "定期任务提议",
   "routine_ask.what": "每次交代的事",
   "routine_ask.when": "时间",
-  "chat.chapters": "对话目录"
+  "chat.chapters": "对话目录",
+  "browser.done_give_back_short": "完成",
+  "browser.handed_more": "展开",
+  "browser.handed_less": "收起",
+  "browser.bar_asked": "{name} 在等你交还"
 }

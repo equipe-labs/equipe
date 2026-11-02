@@ -19,7 +19,7 @@ use crate::tailnet;
 use crate::target::{Endpoint, SshHost};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, FIELD, ICON, ICON_SM, MONO, Palette, R_MD, R_XL, S3, S6, SMALL, UI};
+use crate::theme::{BODY, FIELD, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_XL, S3, S6, SMALL, UI};
 use crate::ui::{self, Kind};
 use crate::Shell;
 
@@ -214,15 +214,34 @@ pub fn connecting_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .items_center()
         .justify_center()
         .py_8()
+        .px_4()
         .child(motion::rise(
+            // A card, so it stands in the window rather than floats in it:
+            // where to, then each step, then what to do if it is slow.
             v_flex()
                 .w_full()
                 .max_w(px(440.))
-                .px_4()
-                .gap_3()
-                .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("connect.connecting_title", name = shell.endpoint.label())))
-                .children(c.door.clone().map(|door| div().text_size(px(SMALL)).text_color(p.muted).font_family(MONO).child(t!("connect.door", door = door))))
-                .child(v_flex().gap_1().pt_1().children(rows))
+                .p_6()
+                .gap_4()
+                .rounded(px(R_LG))
+                .bg(p.popover())
+                .border_1()
+                .border_color(p.hair)
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(div().size(px(36.)).flex_none().rounded(px(R_MD)).bg(p.wash).border_1().border_color(p.hair).flex().items_center().justify_center().child(icon(Icon::Server, 18., p.text)))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(div().truncate().text_size(px(17.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("connect.connecting_title", name = shell.endpoint.label())))
+                                .children(c.door.clone().map(|door| div().truncate().text_size(px(12.)).text_color(p.muted).font_family(MONO).child(t!("connect.door", door = door)))),
+                        ),
+                )
+                .child(v_flex().gap_1p5().children(rows))
                 .children(c.slow(now).map(|why| {
                     h_flex()
                         .gap_2()
@@ -236,7 +255,7 @@ pub fn connecting_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                         .child(div().pt(px(3.)).flex_none().child(icon(Icon::Info, ICON_SM, p.muted)))
                         .child(div().flex_1().min_w_0().child(why))
                 }))
-                .child(h_flex().pt_2().child(ui::button(p, "switch", Kind::Secondary, t!("connect.switch_target")).field().on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx))))),
+                .child(h_flex().border_t_1().border_color(p.hair).pt_4().justify_end().child(ui::button(p, "switch", Kind::Secondary, t!("connect.switch_target")).on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx))))),
             "connecting-in",
         ))
         .into_any_element()

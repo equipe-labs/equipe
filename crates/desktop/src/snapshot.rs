@@ -621,6 +621,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     panel.update(cx, |b, cx| b.hand(verb == "btake", window, cx));
                 }
                 // A member's page waiting for the person, opened as 나에게 or a notification would.
+                // 브라우저 열기 on a hand-over row: `bhanded:demo/pm`.
+                "bhanded" => shell.update(cx, |shell, cx| shell.reveal_handed(&arg, cx)),
                 "breveal" => shell.update(cx, |shell, cx| shell.reveal_browser(arg.parse().unwrap_or(0), cx)),
                 "bclick" => {
                     // A real press and release, where `fx,fy` (fractions) fall on the page's picture.

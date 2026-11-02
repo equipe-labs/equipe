@@ -2284,5 +2284,9 @@
   "routine_ask.title": "정기 업무 제안",
   "routine_ask.what": "매번 맡길 일",
   "routine_ask.when": "언제",
-  "chat.chapters": "대화 목차"
+  "chat.chapters": "대화 목차",
+  "browser.done_give_back_short": "다 했어요",
+  "browser.handed_more": "더 보기",
+  "browser.handed_less": "접기",
+  "browser.bar_asked": "{name}이(가) 돌려받기를 기다려요"
 }

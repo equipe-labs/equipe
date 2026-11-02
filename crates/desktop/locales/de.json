@@ -2337,5 +2337,9 @@
   "routine_ask.title": "Vorgeschlagene Routine",
   "routine_ask.what": "Jedes Mal",
   "routine_ask.when": "Wann",
-  "chat.chapters": "Gesprächsübersicht"
+  "chat.chapters": "Gesprächsübersicht",
+  "browser.done_give_back_short": "Fertig",
+  "browser.handed_more": "Alles zeigen",
+  "browser.handed_less": "Weniger",
+  "browser.bar_asked": "{name} wartet, bis du ihn zurückgibst"
 }

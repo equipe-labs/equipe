@@ -1808,7 +1808,10 @@ impl Render for Shell {
                 .children(self.zoom_chip(window, cx))
                 .children(tips::layer(cx));
         }
-        let sidebar = self.sidebar(window, cx);
+        // Before the first connection there is nothing to list: no sidebar
+        // (it showed only its ⌘N), the connecting or setup screen alone.
+        let away = matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting);
+        let sidebar = if away { None } else { self.sidebar(window, cx) };
         // A document open takes the right side; closed, the browser is back.
         let doc = (self.screen == Screen::Chat).then(|| views::doc::panel(self, window, cx)).flatten();
         // Then the terminal, sized to the panel as the window is now.

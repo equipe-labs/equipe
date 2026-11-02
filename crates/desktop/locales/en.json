@@ -686,7 +686,7 @@
   "connect.sign_in_to": "Sign in to {who}",
   "connect.ssh_confirm": "SSH asks you to confirm",
   "connect.ssh_first_time": "New to SSH? Turn on Remote Login on the machine to connect to (Mac: System Settings → General → Sharing) and install equipe there too. Passwords aren't saved, and a machine seen for the first time connects only after you check its fingerprint.",
-  "connect.switch_target": "Change Target",
+  "connect.switch_target": "Change target",
   "connect.this_mac": "This Mac",
   "connect.this_mac_note": "The daemon on this Mac",
   "connect.title": "Connect To",
@@ -2337,5 +2337,9 @@
   "routine_ask.title": "Routine proposal",
   "routine_ask.what": "Each time",
   "routine_ask.when": "When",
-  "chat.chapters": "Conversation outline"
+  "chat.chapters": "Conversation outline",
+  "browser.done_give_back_short": "Done",
+  "browser.handed_more": "Show all",
+  "browser.handed_less": "Show less",
+  "browser.bar_asked": "{name} waits until you give it back"
 }

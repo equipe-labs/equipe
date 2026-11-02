@@ -957,6 +957,9 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Ok(())
         }
         DaemonAction::Install => {
+            if !daemon::own_home() {
+                return Err(Failure::new(t!("main.service_own_home_only")));
+            }
             let exe = std::env::current_exe().map_err(|err| Failure::new(err.to_string()))?;
             // The service takes over from a daemon already running — between turns.
             wait_until_idle(&p).await?;
@@ -973,6 +976,9 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Err(Failure::new(t!("main.service_no_answer")).next(format!("tail {}", daemon::log_path().display())))
         }
         DaemonAction::Uninstall => {
+            if !daemon::own_home() {
+                return Err(Failure::new(t!("main.service_own_home_only")));
+            }
             if daemon::service::uninstall().map_err(|err| Failure::new(err.to_string()))? {
                 println!("{}", p.ok_line(t!("main.service_removed")));
             } else {

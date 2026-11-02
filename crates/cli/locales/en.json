@@ -1079,5 +1079,6 @@
   "review.what_base": "the changes since {base}",
   "review.what_worktree": "your changes against HEAD",
   "role.security": "checks that the code, the dependencies and this machine stay safe",
-  "role.marketing": "positioning, copy, content and launches — drafts, published only on your yes"
+  "role.marketing": "positioning, copy, content and launches — drafts, published only on your yes",
+  "main.service_own_home_only": "The login service runs equipe from its own folder (~/.equipe). With EQUIPE_HOME set elsewhere it is left alone — start that one with `equipe daemon start`."
 }

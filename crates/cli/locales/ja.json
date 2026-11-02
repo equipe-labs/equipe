@@ -1056,5 +1056,6 @@
   "review.what_base": "{base} からの変更",
   "review.what_worktree": "HEAD からの変更",
   "role.security": "コード、依存関係、このマシンが安全かを定期的に点検します",
-  "role.marketing": "ポジショニング、コピー、コンテンツ、ローンチを担当。下書きまでで、公開はあなたの承認後だけ"
+  "role.marketing": "ポジショニング、コピー、コンテンツ、ローンチを担当。下書きまでで、公開はあなたの承認後だけ",
+  "main.service_own_home_only": "ログインサービスは既定のフォルダー（~/.equipe）の equipe だけを実行します。EQUIPE_HOME を別の場所にしている間はサービスに触れません — `equipe daemon start` で別に起動してください。"
 }
