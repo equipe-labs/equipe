@@ -28,7 +28,7 @@ use crate::notify::{Permission, Ping};
 use crate::settings::{self as rules, Category};
 use crate::state::Conn;
 use crate::target::{Endpoint, Start};
-use crate::theme::{Appearance, CONTROL, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, ROW, SMALL, Sans, UI, look};
+use crate::theme::{Appearance, CONTROL, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, ROW, SMALL, Sans, UI};
 use crate::tips::TipExt as _;
 use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
@@ -632,14 +632,13 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .ordered()
         .into_iter()
         .map(|m| {
-            let (mark, hue) = look(&m.role, &m.name);
             let engine = match m.engine {
                 Some(equipe_core::protocol::Engine::Codex) => "Codex",
                 Some(_) => "Claude Code",
                 None => "",
             };
             let desc = [Some(m.role.clone()).filter(|r| !r.is_empty() && *r != m.name), Some(engine.to_owned()).filter(|e| !e.is_empty())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-            let label = h_flex().gap_2().items_center().child(div().text_size(px(12.)).text_color(p.member(hue)).child(mark)).child(m.name.clone());
+            let label = h_flex().gap_2().items_center().child(crate::theme::avatar(p, &m.role, &m.name, 18.)).child(m.name.clone());
             let model_name = m.model.as_deref().map(super::composer::short_model).unwrap_or_else(|| t!("settings.engine_default").to_owned());
             let effort = model.efforts.get(&m.session).cloned().unwrap_or_else(|| t!("settings.engine_default").to_owned());
             let mode = model.member_modes.get(&m.session).map(|m| mode_label(*m).to_owned()).unwrap_or_else(|| t!("settings.mode_follows").to_owned());

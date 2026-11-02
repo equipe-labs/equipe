@@ -178,24 +178,42 @@ impl Palette {
     }
 }
 
-/// A member's mark and colour index, the same as the terminal console's.
-pub fn look(role: &str, name: &str) -> (&'static str, usize) {
+/// A member's mark — an icon for what its role does — and colour index (the
+/// terminal console's colours; its marks are its own, in text).
+pub fn look(role: &str, name: &str) -> (crate::icons::Icon, usize) {
+    use crate::icons::Icon;
     match role {
-        "pm" => ("◆", 0),
-        "designer" => ("✦", 1),
-        "frontend" => ("●", 2),
-        "backend" => ("■", 3),
-        "qa" => ("◎", 4),
-        "data" => ("▲", 5),
-        "mobile" => ("◈", 6),
-        "security" => ("⬢", 7),
-        "marketing" => ("✺", 1),
+        "pm" => (Icon::Compass, 0),
+        "designer" => (Icon::PenTool, 1),
+        "frontend" => (Icon::AppWindow, 2),
+        "backend" => (Icon::Server, 3),
+        "qa" => (Icon::Bug, 4),
+        "data" => (Icon::Chart, 5),
+        "mobile" => (Icon::Phone, 6),
+        "security" => (Icon::Shield, 7),
+        "marketing" => (Icon::Megaphone, 1),
         _ => {
-            const MARKS: [&str; 4] = ["◇", "★", "▼", "✚"];
             let h = name.bytes().fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
-            (MARKS[h % MARKS.len()], 6 + h % 2)
+            (Icon::Sparkles, 6 + h % 2)
         }
     }
+}
+
+/// A member's avatar, `size` square: its role's icon in its colour, on a
+/// tint of it — one shape for every role, where the text marks were each
+/// their own size and weight.
+pub fn avatar(p: Palette, role: &str, name: &str, size: f32) -> gpui_kit::Div {
+    let (mark, hue) = look(role, name);
+    let color = p.member(hue);
+    div()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px((size * 0.3).round()))
+        .bg(Rgba { a: 0.16, ..color })
+        .child(crate::icons::icon(mark, (size * 0.62).round(), color))
 }
 
 /// The Mac's own interface face (SF): drawn for the screen at every size, in

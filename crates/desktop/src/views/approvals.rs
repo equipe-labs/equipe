@@ -359,7 +359,8 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
     let model = &shell.model;
     let approval = model.approvals.get(id)?;
     let card = Card::of(approval);
-    let (mark, hue) = look(model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str()), &approval.member);
+    let role = model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str());
+    let (_, hue) = look(role, &approval.member);
     let waiting = model.approvals.len();
     let handle = cx.entity().downgrade();
     let for_decisions = handle.clone();
@@ -424,7 +425,7 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(h_flex().gap_1().text_color(p.accent).child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)).child(t!("approvals.waiting_on_you_mark")))
-                    .child(div().text_color(p.member(hue)).child(format!("{mark} {}", approval.member)))
+                    .child(h_flex().gap_1().items_center().text_color(p.member(hue)).child(crate::theme::avatar(p, role, &approval.member, 15.)).child(approval.member.clone()))
                     .children(approval.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}"))))
                     .child(div().flex_1())
                     .when(queue_line && waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting)))),

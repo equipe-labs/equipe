@@ -16,9 +16,15 @@ strip = true
 opt-level = 3
 panic = "abort"
 
+# Lines in backtraces, not full debug info: full, a debug build of this
+# workspace took 27 GB, and every worktree and member makes its own.
+[profile.dev]
+debug = "line-tables-only"
+
 # Fast inner loop: optimize deps once, keep our own crates cheap to rebuild.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
 # Three GPUI crates, patched where they offer no way in (each change is marked
 # `equipe:` in the source; take them again on a gpui-kit upgrade):

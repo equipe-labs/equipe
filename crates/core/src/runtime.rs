@@ -3255,6 +3255,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = std::fs::create_dir_all(dir);
         }
         let mut env: Vec<(String, String)> = builds.iter().map(|d| ("CARGO_TARGET_DIR".to_owned(), d.to_string_lossy().into_owned())).collect();
+        // No incremental state: it was most of a member's build folder (up to
+        // 11 GB of one), for faster rebuilds of what it changes, and the disk
+        // ran out for it.
+        if builds.is_some() {
+            env.push(("CARGO_INCREMENTAL".to_owned(), "0".to_owned()));
+        }
         // Leaner Rust builds unless the squad says otherwise: debug info is most of a target's size.
         if builds.is_some()
             && let Some(debug) = squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::build_debug).and_then(|d| d.cargo_value())
@@ -6576,7 +6582,7 @@ check what is already done in your worktree first."
             .collect();
         let home = self.config.home.clone();
         std::thread::spawn(move || {
-            for line in worktree::trim_builds(&home, &busy, BUILD_CAP) {
+            for line in worktree::trim_builds(&home, &busy, BUILD_CAP, BUILDS_BUDGET) {
                 crate::daemon_log!("equipe: {line}");
             }
         });
@@ -7408,10 +7414,13 @@ const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
 /// to guess from.
 const GUESSED_AFTER: Duration = Duration::from_secs(60);
 
-/// How big a member's build cache may grow before it is trimmed, and how often
+/// How big a member's build cache may grow before it is trimmed; how big all
+/// of them together, every squad's — each member building on its own made it
+/// members × the cap, and filled the disk within the hour; and how often
 /// that is looked at.
 const BUILD_CAP: u64 = 10 * 1024 * 1024 * 1024;
-const BUILDS_TRIM_EVERY: Duration = Duration::from_secs(30 * 60);
+const BUILDS_BUDGET: u64 = 20 * 1024 * 1024 * 1024;
+const BUILDS_TRIM_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// How long past its expected time something to go live is still waited for.
 const LIVE_STALE: Duration = Duration::from_secs(30 * 60);
