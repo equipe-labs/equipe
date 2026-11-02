@@ -2397,7 +2397,7 @@ fn remove_button(p: Palette, id: u64, name: &str, cx: &mut Context<Shell>) -> St
         .bg(p.popover())
         .border_1()
         .border_color(p.hair)
-        .hover(move |s| s.bg(p.wash))
+        .hover(move |s| s.bg(p.popover_hover()))
         .child(icon(Icon::X, 12., p.text2));
     tip(b, p, t!("composer.tip_remove"), None)
 }

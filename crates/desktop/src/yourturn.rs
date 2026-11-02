@@ -151,6 +151,12 @@ pub fn named(text: &str, roots: &[PathBuf]) -> Vec<Named> {
             }
         }
     }
+    // A name alone (`A 그림 first-run.png`) beside a file named with its
+    // folder: looked for in that folder too, where it was handed over.
+    let folders: Vec<PathBuf> = out.iter().filter_map(|n| n.at.as_ref()?.parent().map(Path::to_path_buf)).collect();
+    for n in out.iter_mut().filter(|n| n.at.is_none() && !n.written.contains('/')) {
+        n.at = locate(&n.written, &folders);
+    }
     out
 }
 
@@ -262,6 +268,27 @@ pub fn mark(blocks: &mut [crate::convo::Block], looks: &HashMap<TicketId, u64>) 
             *live = seen.insert(*ticket);
             *look = if *live { looks.get(ticket).copied().unwrap_or(0) } else { 0 };
         }
+    }
+}
+
+#[cfg(test)]
+mod handed_over {
+    use super::*;
+
+    #[test]
+    fn files_handed_over_in_a_tickets_folder_open_from_its_card() {
+        let root = std::env::temp_dir().join(format!("equipe-turn-{}", std::process::id()));
+        let folder = root.join("outputs/T-287 홍보 글 올리기");
+        std::fs::create_dir_all(&folder).unwrap();
+        for f in ["A linkedin 붙여넣기.txt", "A 그림 first-run.png"] {
+            std::fs::write(folder.join(f), "x").unwrap();
+        }
+        let ask = "`outputs/T-287 홍보 글 올리기/A linkedin 붙여넣기.txt`의 글을 `A 그림 first-run.png`와 함께 LinkedIn 개인 계정에 올려 주세요.";
+        let got = named(ask, &[PathBuf::from("/nowhere"), root.clone()]);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(got.len(), 2, "{got:#?}");
+        assert_eq!(got[0].at.as_deref(), Some(folder.join("A linkedin 붙여넣기.txt").as_path()));
+        assert_eq!(got[1].at.as_deref(), Some(folder.join("A 그림 first-run.png").as_path()), "a name alone, found beside the other");
     }
 }
 

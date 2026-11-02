@@ -69,14 +69,15 @@ pub fn banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .border_color(p.hair)
             .text_size(px(SMALL))
             .window_control_area(WindowControlArea::Drag)
-            .child(icon(Icon::Warning, ICON_SM, tone(p, status.level)))
-            .child(div().flex_none().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(line))
+            .child(div().flex_none().child(icon(Icon::Warning, ICON_SM, tone(p, status.level))))
+            // Narrow, the words give way — never its buttons.
+            .child(div().min_w_0().truncate().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(line))
             .child(div().flex_1().min_w_0().truncate().text_color(p.muted).children(reclaim.map(|b| t!("disk.banner_reclaim", size = room::size(b)))))
-            .child(ui::button(p, "disk-banner-open", Kind::Secondary, t!("disk.banner_open")).on_click(cx.listener(|this, _, window, cx| this.open_disk(window, cx))))
-            .child(ui::icon_button(p, "disk-banner-close", Icon::X, t!("disk.banner_close"), None).on_click(cx.listener(|this, _, _, cx| {
+            .child(div().flex_none().child(ui::button(p, "disk-banner-open", Kind::Secondary, t!("disk.banner_open")).on_click(cx.listener(|this, _, window, cx| this.open_disk(window, cx)))))
+            .child(div().flex_none().child(ui::icon_button(p, "disk-banner-close", Icon::X, t!("disk.banner_close"), None).on_click(cx.listener(|this, _, _, cx| {
                 this.disk.dismiss();
                 cx.notify();
-            })))
+            }))))
             .into_any_element(),
     )
 }
