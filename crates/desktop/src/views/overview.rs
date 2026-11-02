@@ -143,8 +143,9 @@ fn card(shell: &Shell, c: &Card, now: u64, cx: &mut Context<Shell>) -> AnyElemen
         .rounded(px(R_MD))
         .when(open_project.is_some(), |n| {
             n.cursor_pointer().hover(move |s| s.bg(p.wash)).on_click(cx.listener(move |this, _, window, cx| {
-                this.focus_project(open_project.clone(), window, cx);
-                this.open_side(Side::Pm, window, cx);
+                if let Some(name) = open_project.clone() {
+                    this.open_project_page(name, window, cx);
+                }
             }))
         })
         .child(ident)

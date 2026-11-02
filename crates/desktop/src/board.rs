@@ -634,19 +634,18 @@ pub fn ideas_view() -> usize {
 /// Where a click on a project's header in the sidebar lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadClick {
-    /// Its name: the project slice (the conversation and the board follow).
+    /// Its name: the project's page (its conversations and its work).
     Name,
-    /// Its chevron: fold or unfold its rows.
+    /// Its chevron: fold or unfold its conversations.
     Chevron,
 }
 
-/// What a click on a project's header does: `Some` slice to switch to (with
-/// `None` inside: every project), or a fold toggled in `folded` (by
-/// [`SideGroup::key`]). A click on the name of the project in focus goes back
-/// to every project; the shared folder has no slice, so its name folds it.
-pub fn head_click(click: HeadClick, project: Option<&str>, focus: Option<&str>, folded: &mut BTreeSet<String>) -> Option<Option<String>> {
+/// What a click on a project's header does: `Some` project whose page opens,
+/// or a fold toggled in `folded` (by [`SideGroup::key`]). The squad's own
+/// group has no page: its name folds it.
+pub fn head_click(click: HeadClick, project: Option<&str>, folded: &mut BTreeSet<String>) -> Option<String> {
     match (click, project) {
-        (HeadClick::Name, Some(name)) => Some(if focus == Some(name) { None } else { Some(name.to_owned()) }),
+        (HeadClick::Name, Some(name)) => Some(name.to_owned()),
         (_, project) => {
             let key = project.unwrap_or_default().to_owned();
             if !folded.remove(&key) {
@@ -655,6 +654,74 @@ pub fn head_click(click: HeadClick, project: Option<&str>, focus: Option<&str>, 
             None
         }
     }
+}
+
+/// A project page's two tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProjectTab {
+    /// Its conversations with the PM.
+    #[default]
+    Talks,
+    /// Its tickets.
+    Work,
+}
+
+/// A project's conversations with the PM, by whose turn it is: the person's
+/// (the PM answered), then those the PM is still answering. Most lately used
+/// first in each.
+pub fn project_talks<'a>(model: &'a Model, project: &str) -> (Vec<&'a crate::state::Lane>, Vec<&'a crate::state::Lane>) {
+    model.conversations().into_iter().filter(|l| l.project.as_deref() == Some(project)).partition(|l| l.presence != crate::state::Presence::Working)
+}
+
+/// A part of a project's work on its page, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkPart {
+    /// Waiting on the person: their turn, a request, a hand-in, a proposal.
+    NeedsYou,
+    /// Under way, or the PM's to accept.
+    Working,
+    /// Ready to start, or waiting on other work.
+    Next,
+    /// Finished lately, the latest first.
+    Done,
+}
+
+/// At most this many finished tickets on a project's page.
+pub const PAGE_DONE: usize = 10;
+
+/// A project's work, part by part (empty parts left out): what waits on the
+/// person first, then what is under way, what is next, and what finished
+/// lately. Ideas and what was cancelled are kept elsewhere.
+pub fn project_work(model: &Model, project: &str) -> Vec<(WorkPart, Vec<TicketId>)> {
+    let since = |t: &Ticket| model.since.get(&t.id).copied().unwrap_or(0);
+    let mut parts: Vec<(WorkPart, Vec<&Ticket>)> = [WorkPart::NeedsYou, WorkPart::Working, WorkPart::Next, WorkPart::Done].into_iter().map(|w| (w, Vec::new())).collect();
+    for t in model.tickets.iter().filter(|t| model.ticket_project_name(t).as_deref() == Some(project)) {
+        let needs = live(model, t) == Some(Live::YourTurn) || (model.section_of(t).is_some() && !model.is_acted(t));
+        let part = match t.status {
+            TicketStatus::Idea | TicketStatus::Cancelled => continue,
+            _ if needs => WorkPart::NeedsYou,
+            TicketStatus::Done => WorkPart::Done,
+            TicketStatus::Todo | TicketStatus::Proposed => WorkPart::Next,
+            TicketStatus::InProgress | TicketStatus::Waiting | TicketStatus::Review => WorkPart::Working,
+        };
+        if let Some((_, list)) = parts.iter_mut().find(|(w, _)| *w == part) {
+            list.push(t);
+        }
+    }
+    parts
+        .into_iter()
+        .filter(|(_, list)| !list.is_empty())
+        .map(|(part, mut list)| {
+            match part {
+                WorkPart::Next => list.sort_by_key(|t| t.id),
+                _ => list.sort_by_key(|t| (std::cmp::Reverse(since(t)), std::cmp::Reverse(t.id))),
+            }
+            if part == WorkPart::Done {
+                list.truncate(PAGE_DONE);
+            }
+            (part, list.into_iter().map(|t| t.id).collect())
+        })
+        .collect()
 }
 
 /// The things listed, in order.
@@ -1267,18 +1334,54 @@ mod tests {
     }
 
     #[test]
-    fn a_headers_name_switches_the_project_its_chevron_folds() {
+    fn a_headers_name_opens_the_projects_page_its_chevron_folds() {
         let mut folded = BTreeSet::new();
-        assert_eq!(head_click(HeadClick::Name, Some("web"), None, &mut folded), Some(Some("web".into())));
+        assert_eq!(head_click(HeadClick::Name, Some("web"), &mut folded), Some("web".into()));
         assert!(folded.is_empty(), "the name doesn't fold");
-        assert_eq!(head_click(HeadClick::Name, Some("web"), Some("web"), &mut folded), Some(None), "the one in focus: back to every project");
-        assert_eq!(head_click(HeadClick::Name, Some("api"), Some("web"), &mut folded), Some(Some("api".into())));
-        assert_eq!(head_click(HeadClick::Chevron, Some("web"), None, &mut folded), None, "the chevron doesn't switch");
+        assert_eq!(head_click(HeadClick::Name, Some("web"), &mut folded), Some("web".into()), "again: the same page, never every project");
+        assert_eq!(head_click(HeadClick::Chevron, Some("web"), &mut folded), None, "the chevron opens nothing");
         assert!(folded.contains("web"));
-        head_click(HeadClick::Chevron, Some("web"), None, &mut folded);
+        head_click(HeadClick::Chevron, Some("web"), &mut folded);
         assert!(folded.is_empty(), "and unfolds");
-        assert_eq!(head_click(HeadClick::Name, None, None, &mut folded), None, "the shared folder has no slice: it folds");
+        assert_eq!(head_click(HeadClick::Name, None, &mut folded), None, "the squad's group has no page: it folds");
         assert!(folded.contains(""));
+    }
+
+    #[test]
+    fn a_projects_page_holds_its_own_work_what_waits_on_the_person_first() {
+        let mut tickets = vec![ticket(1, "todo", "/web", &[]), ticket(2, "in_progress", "/web", &[]), ticket(3, "waiting", "/web", &[]), ticket(4, "idea", "/web", &[]), ticket(5, "cancelled", "/web", &[]), ticket(6, "in_progress", "/api", &[])];
+        tickets.extend((10..23).map(|i| ticket(i, "done", "/web", &[])));
+        let mut m = model(tickets, &["/web", "/api"]);
+        m.since.insert(10, 500);
+        let work = project_work(&m, "web");
+        assert_eq!(work.iter().map(|(w, _)| *w).collect::<Vec<_>>(), [WorkPart::NeedsYou, WorkPart::Working, WorkPart::Next, WorkPart::Done]);
+        assert_eq!(work[0].1, [3], "its turn: the person's");
+        assert_eq!(work[1].1, [2], "another project's work is never here");
+        assert_eq!(work[2].1, [1]);
+        assert_eq!(work[3].1.len(), PAGE_DONE, "the latest finished only");
+        assert_eq!(work[3].1[0], 10, "the latest first");
+        assert!(!work.iter().any(|(_, ids)| ids.contains(&4) || ids.contains(&5)), "ideas and what was cancelled are kept elsewhere");
+        assert_eq!(project_work(&m, "api").iter().map(|(w, _)| *w).collect::<Vec<_>>(), [WorkPart::Working], "the empty parts left out");
+    }
+
+    #[test]
+    fn a_projects_conversations_split_by_whose_turn_it_is() {
+        let mut m = model(vec![], &["/web", "/api"]);
+        let lane = |session, project: Option<&str>, presence, active| crate::state::Lane {
+            session,
+            of: 1,
+            project: project.map(str::to_owned),
+            presence,
+            verb: crate::state::Verb::Thinking,
+            kept: true,
+            title: None,
+            active,
+        };
+        use crate::state::Presence;
+        m.lanes = vec![lane(10, Some("web"), Presence::Ready, 5), lane(11, Some("web"), Presence::Working, 9), lane(12, Some("web"), Presence::Ready, 7), lane(13, Some("api"), Presence::Ready, 8), lane(14, None, Presence::Ready, 9)];
+        let (yours, answering) = project_talks(&m, "web");
+        assert_eq!(yours.iter().map(|l| l.session).collect::<Vec<_>>(), [12, 10], "the PM answered: the person's turn, latest first");
+        assert_eq!(answering.iter().map(|l| l.session).collect::<Vec<_>>(), [11]);
     }
 
     #[test]

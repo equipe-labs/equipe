@@ -187,6 +187,8 @@ pub enum Screen {
     Roadmap,
     /// 지표: the product's numbers, from the services it reports to (`views/metrics.rs`).
     Metrics,
+    /// A project's page: its conversations and its work (`views/project.rs`).
+    Project,
 }
 
 pub struct Shell {
@@ -766,7 +768,7 @@ impl Shell {
 
     fn project_number(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(name) = self.model.project_names().get(n - 1).cloned() {
-            self.focus_project(Some(name), window, cx);
+            self.open_project_page(name, window, cx);
         }
     }
 
@@ -1458,6 +1460,7 @@ impl Shell {
                     Screen::Overview => views::overview::render(self, cx),
                     Screen::Roadmap => views::roadmap::render(self, cx),
                     Screen::Metrics => views::metrics::render(self, cx),
+                    Screen::Project => views::project::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
