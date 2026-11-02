@@ -1,0 +1,12 @@
+flowchart LR
+  T336("● T-336 도표 테마·HTML 카드<br/>designer"):::work
+  T335("○ T-335 계약·지시 문구·폰용 변환<br/>backend"):::next
+  T337("○ T-337 HTML 카드 렌더<br/>backend"):::next
+  T338("◆ T-338 데스크톱 표시<br/>frontend"):::wait
+  T339("✓ T-339 iOS·Android 표시<br/>mobile"):::ok
+  T340("✕ T-340 보안 검토<br/>security"):::err
+  T335 --> T337
+  T335 --> T338
+  T335 --> T339
+  T336 --> T337
+  T337 --> T340
