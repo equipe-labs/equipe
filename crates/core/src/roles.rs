@@ -158,9 +158,11 @@ alone. Never grade your own work: when a direction or screen is drawn, hand its 
 critic (a subagent told to find faults, not to praise) with this rubric — hierarchy and density, alignment and \
 spacing on the scale, type (scale, Korean setting, numbers), colour roles and contrast, brand fidelity (\"hide the \
 logo: could this be another company?\"), states and real copy, and the stock looks — each finding tied to a region \
-of the picture; revise on its findings, at most three rounds, and keep the best round, not the last. When the \
-person chooses, write it in `design/taste.md`: what they chose, what they passed over, their reason in their own \
-words, and what it says (denser or airier, quieter or louder, …) — read it before every new direction. Korean text: \
+of the picture; revise on its findings, at most three rounds, and keep the best round, not the last. equipe keeps the \
+person's taste for you in the squad's memory, `design taste`: every design question they answer — what they chose, \
+what they passed over, their own words — and every piece of design work they send back, with why. Read it whole \
+before every new direction, and let it move you (denser or airier, quieter or louder, …). Among your options, always \
+one bolder than your recommendation, said as such: a choice only teaches when there is one. Korean text: \
 `word-break: keep-all` with `overflow-wrap: anywhere`, body 15–17px at 1.5–1.7, Pretendard's letter spacing 0 in \
 body and slightly negative in large headings, `font-variant-numeric: tabular-nums` wherever numbers line up. Money \
 and markets for Korean readers: red is up and blue is down — give them their own tokens (`color.change.up`, \
@@ -172,9 +174,11 @@ picture yourself before you show or hand it in; compute contrast ratios instead 
 least); mark what you could not check as unconfirmed. You may edit files on your own branch: design notes, tokens, \
 styles, static mockups. Leave building to the engineers: propose build work as tickets.\n\
 Design QA: when an engineer hands in a code ticket that changes what users see, equipe gives you a design QA ticket \
-before the person reviews it. Compare the built screens with the spec and the system, take screenshots where you \
-can, and count only differences from the spec, the tokens and accessibility as defects, not taste. Finish it with \
-`design_qa`: pass, or changes with each difference numbered — the work then goes back to its engineer.",
+before the person reviews it. Run the built screens yourself — its preview from its worktree, shot with \
+`equipe design render http://localhost:…` at each width, light and dark — and put them beside the spec; never pass on \
+the engineer's screenshots alone. Differences from the spec, the tokens and accessibility are blockers and send it \
+back; what keeps it from looking finished — rhythm, alignment, density, hierarchy, the first impression — is polish, \
+always written down, even on a pass. Finish it with `design_qa`.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -684,8 +688,8 @@ person with `show_my_browser` as you would yours."
     let render = if ctx.browser && role.id == "designer" {
         " To look at a mockup, open it as a `data:` URL (`data:text/html,…` or `data:image/svg+xml,…`), take a \
 screenshot saved in your worktree, and Read it; check each width you design for with `browser_resize` (390, 768 and \
-1280 on the web). The browser doesn't open `file://` pages, and a server you start on this Mac times out: don't wait \
-on either."
+1280 on the web). The browser doesn't open `file://` pages or a server you start on this Mac: for those, \
+`equipe design render <file or http://localhost:<port>/…>` draws them to PNG, at each width, light and dark."
     } else {
         ""
     };
@@ -1019,7 +1023,7 @@ mod tests {
         assert!(text.contains("(`/Users/x/.local/bin/equipe` if `equipe` isn't on your PATH)"), "{text}");
         assert!(text.contains("this, not that") && text.contains("formal or casual"), "brand and voice first");
         assert!(!text.contains("{tools_at}"));
-        for rule in ["## Locked", "sceptical", "design/taste.md", "keep-all", "color.change.up", "(unit: 100M KRW)"] {
+        for rule in ["## Locked", "sceptical", "`design taste`", "one bolder than your recommendation", "keep-all", "color.change.up", "(unit: 100M KRW)"] {
             assert!(text.contains(rule), "{rule}");
         }
         let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
@@ -1230,14 +1234,17 @@ mod tests {
             "unconfirmed",
             // Design QA, finished with its own tool.
             "design QA ticket",
-            "`design_qa`: pass, or changes",
+            "Finish it with `design_qa`",
+            // On its own look at the built screens, polish never left out.
+            "never pass on the engineer's screenshots alone",
+            "is polish, always written down, even on a pass",
         ] {
             assert!(text.contains(part), "{part}: {text}");
         }
         assert_eq!(role("designer").unwrap().summary, "design — flows, UI, design system and brand");
         // How to render: what the browser opens, and what to give up on.
         let browsing = charter(role("designer").unwrap(), "designer", &Context { browser: true, ..ctx(&team, &[], true) });
-        for part in ["`data:` URL", "`browser_resize`", "doesn't open `file://`", "times out"] {
+        for part in ["`data:` URL", "`browser_resize`", "doesn't open `file://`", "`equipe design render <file or http://localhost:<port>/…>`"] {
             assert!(browsing.contains(part), "{part}: {browsing}");
         }
         assert!(!text.contains("`data:` URL"), "no browser, no render advice");

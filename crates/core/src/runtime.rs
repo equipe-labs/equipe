@@ -4792,6 +4792,11 @@ them with `propose_accept`. Then carry on with what else waits.]"
             return self.squad_error(squad, message);
         }
         let said = note.clone();
+        // Design work sent back with a reason: the person's taste, in their words.
+        let by_designer = [found.assignee.as_deref(), found.owner.as_deref()].into_iter().flatten().any(|who| who == "designer" || self.member_id(squad, who).and_then(|id| self.sessions.get(&id)).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == "designer"));
+        if let Some(entry) = by_designer.then(|| crate::taste::sent_back(found.id, &found.title, &said, &squad_memory::date(now_secs()))).flatten() {
+            self.learn_taste(squad, &entry);
+        }
         let note = if note.trim().is_empty() { "Reopened.".to_owned() } else { format!("Reopened: {}", note.trim()) };
         found.owner = found.assignee.take().or(found.owner);
         found.status = TicketStatus::Todo;

@@ -3993,7 +3993,7 @@ async fn a_members_send_from_teams_waits_for_the_persons_yes_and_a_password_fiel
 
 /// A ticket's turn that saves a screenshot, `shot.png`, in its worktree, then works on a while.
 fn screenshot_turn() -> String {
-    format!("case \"$*\" in *\"You're on T-\"*) echo 'pretend png' > shot.png; sleep 2;; esac\n{}", answering("working on it"))
+    format!("case \"$*\" in *\"You're on T-\"*) echo 'pretend png' > shot.png; echo 'pretend png' > built-390.png; sleep 2;; esac\n{}", answering("working on it"))
 }
 
 /// Wait until `file` exists.
@@ -4043,7 +4043,7 @@ async fn screens_in_design_qa(recorded: &Path, handle: &Handle, events: &mut Unb
 
     let call = latest_call(recorded, |p| p.contains("This is design QA of T-1")).await;
     let prompt = arg(&call, "-p").unwrap();
-    for part in ["Per the spec in design/settings.md.", "Settings built.", "shot.png", "finish with design_qa", "not taste"] {
+    for part in ["Per the spec in design/settings.md.", "Settings built.", "shot.png", "finish with design_qa", "never enough to pass", "equipe design render http://localhost:", "polish"] {
         assert!(prompt.contains(part), "{part}: {prompt}");
     }
     // A design QA ends with a verdict, not a hand-in.
@@ -4070,14 +4070,26 @@ async fn changed_screens_pass_design_qa_before_the_person_reviews_them() {
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
-    let passed = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "pass", "findings": "Matches the spec.", "images": ["shot.png"] })).await;
+    // On the engineer's screenshot alone, or its own one look, no pass.
+    let thin = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "pass", "findings": "Matches the spec.", "checked": ["1280"], "images": ["shot.png"] })).await;
+    assert!(thin.is_error && thin.text.contains("pictures of your own") && thin.text.contains("beside the spec"), "{thin:?}");
+    let passed = tool(&handle, "designer", "design_qa", serde_json::json!({
+        "verdict": "pass",
+        "findings": "Matches the spec.",
+        "compared": true,
+        "checked": ["390", "1280", "dark"],
+        "polish": ["Section gaps 40 and 48 alternate; the scale says 48"],
+        "images": ["shot.png", "built-390.png"],
+    })).await;
     assert!(!passed.is_error, "{passed:?}");
     let done = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
     let checked = ticket_changed(&done).into_iter().rev().find(|t| t.id == 1).unwrap();
     assert_eq!((checked.status, checked.design_qa), (TicketStatus::Review, None), "on to the person");
     let note = checked.note.unwrap();
     assert!(note.starts_with("Settings built.") && note.contains("Design QA by designer (T-2): passed.") && note.contains("Matches the spec."), "{note}");
-    assert_eq!(checked.images.len(), 2, "the engineer's screenshot, then the designer's: {:?}", checked.images);
+    assert!(note.contains("Polish:\n1. Section gaps") && note.contains("Checked: 390, 1280, dark."), "polish reaches the person even on a pass: {note}");
+    assert_eq!(checked.images.len(), 4, "the engineer's screenshots, then the designer's: {:?}", checked.images);
+    assert!(checked.images[2..].iter().all(|i| i.contains("/squads/acme/home/")), "the designer's own come last: {:?}", checked.images);
     let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("passed the screens of T-1"))).await;
     assert!(!told.is_empty());
 
@@ -4095,7 +4107,9 @@ async fn screens_that_need_changes_go_back_to_their_engineer() {
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     let held = screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
-    let sent = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "changes", "findings": "1. The title is 20px; the spec says 24px." })).await;
+    let vague = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "changes", "findings": "Feels off.", "checked": ["1280"] })).await;
+    assert!(vague.is_error && vague.text.contains("blockers"), "{vague:?}");
+    let sent = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "changes", "findings": "Close, one difference.", "checked": ["1280"], "blockers": ["The title is 20px; the spec says 24px."] })).await;
     assert!(!sent.is_error, "{sent:?}");
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if Some(&ws.branch) == held.branch.as_ref()), "{again:#?}");

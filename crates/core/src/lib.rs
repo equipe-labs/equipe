@@ -14,6 +14,8 @@ pub mod accept;
 pub mod awake;
 pub mod board;
 pub mod controls;
+pub mod design_qa;
+pub mod taste;
 pub mod scratch;
 pub mod browser;
 pub mod design;
