@@ -39,6 +39,7 @@ pub mod sheet;
 pub mod sidebar;
 pub mod subagent;
 pub mod team;
+pub mod telemetry;
 pub mod terminal;
 pub mod ticket_card;
 pub mod tickets;

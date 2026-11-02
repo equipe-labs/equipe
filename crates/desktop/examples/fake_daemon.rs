@@ -1188,6 +1188,22 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         return browser::serve_stream(lines.into_inner(), writer, events.clone()).await;
                     }
+                    // The real consent file, in the fake home: `unset` until a screen answers.
+                    (Some(rpc::TELEMETRY), Some(id)) => {
+                        if writer.write_all(Message::response(id, equipe_core::telemetry::status(&equipe_home())).to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    (Some(rpc::TELEMETRY_SET), Some(id)) => {
+                        let ask: equipe_core::protocol::telemetry::SetTelemetry = message.params_as().unwrap();
+                        let reply = match equipe_core::telemetry::set(&equipe_home(), ask.on) {
+                            Ok(status) => Message::response(id, status),
+                            Err(why) => Message::failure(id, -32000, why),
+                        };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
                     (Some(rpc::UPLOAD), Some(id)) => {
                         use base64::Engine as _;
                         use std::io::Write as _;

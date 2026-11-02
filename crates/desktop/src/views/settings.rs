@@ -488,12 +488,32 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .words("dock badge count notification")
             .control(switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx)),
     ];
+    let telemetry = telemetry_line(shell, cx);
     vec![
         Section::new(t!("settings.section_look"), dictation_rows(shell, language, dictation, appearance, zoom, cx)).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
         Section::new(t!("settings.section_conversation"), vec![follow, links]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
+        Section::new(t!("settings.section_privacy"), telemetry).foot(t!("settings.telemetry_foot")),
     ]
+}
+
+/// "익명 사용 데이터": the switch (the daemon keeps it) and the page that lists every event.
+fn telemetry_line(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
+    let p = shell.palette;
+    let status = shell.telemetry.status.as_ref();
+    let connected = matches!(shell.model.conn, Conn::Connected { .. });
+    let desc = match status.and_then(|s| s.held_by.as_deref()) {
+        Some(by) => t!("settings.telemetry_held", by = by),
+        None => t!("settings.telemetry_desc").to_owned(),
+    };
+    let send = Line::new(t!("settings.telemetry"), desc)
+        .words("telemetry analytics usage data anonymous 익명 사용 데이터")
+        .control(switch(shell, "telemetry", shell.telemetry.on(), connected && status.is_some() && !shell.telemetry.saving, |this, on, _, cx| this.telemetry_answer(on, cx), cx));
+    let list = Line::new(t!("settings.telemetry_list"), t!("settings.telemetry_list_desc"))
+        .words("telemetry events list sent never")
+        .control(ui::button(p, "telemetry-doc", Kind::Secondary, t!("settings.telemetry_open")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(super::telemetry::DOC)));
+    vec![send, list]
 }
 
 fn appearance_word(a: Appearance) -> &'static str {
