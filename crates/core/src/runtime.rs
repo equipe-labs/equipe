@@ -93,6 +93,8 @@ const MCP_SERVER: &str = "equipe";
 const ENGINE_QUESTION_TOOL: &str = "AskUserQuestion";
 /// The Mac's desktop: its tools are `mcp__desktop__…`.
 pub const DESKTOP_SERVER: &str = "desktop";
+/// equipe-design's extraction and remix tools, for designers (`equipe-design mcp`).
+pub const DESIGN_SERVER: &str = "design";
 /// The tool name a member's own question shows under, among approvals.
 const CONFIRM: &str = "Confirm";
 /// An approval to sign a member in with a kept login (`vault`).
@@ -142,6 +144,10 @@ pub struct Config {
     pub equipe_binary: Option<PathBuf>,
     /// Node's `npx`, which runs the members' browser. `None`: no browser.
     pub npx: Option<PathBuf>,
+    /// Where to look for `equipe-design`, the designer's `design` tools: the
+    /// daemon's PATH, searched each turn so an install shows up without a
+    /// restart. `None`: no `design` server.
+    pub design_path: Option<std::ffi::OsString>,
     /// What the Mac says about the person's session: whether they are at it,
     /// whether it is locked. Asked before every member's desktop input.
     pub mac: Box<dyn desktop::Probe>,
@@ -175,6 +181,7 @@ impl Config {
             retention_days: journal::DEFAULT_RETENTION_DAYS,
             equipe_binary: std::env::current_exe().ok(),
             npx: crate::browser::find_npx(),
+            design_path: std::env::var_os("PATH"),
             mac: Box::new(desktop::ThisMac),
             suggest: true,
             browser_host: cfg!(target_os = "macos"),
@@ -3134,6 +3141,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         let desktop = wants_browser
             && cfg!(target_os = "macos")
             && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.journals.get(s).is_some_and(|j| j.desktop_enabled(&m.name)));
+        // A designer's `design` tools, when equipe-design is installed: never installed for it.
+        let design = (board_tools && session.member.as_ref().is_some_and(|m| m.role == "designer"))
+            .then(|| self.config.design_path.as_deref().and_then(|path| std::env::split_paths(path).map(|d| d.join("equipe-design")).find(|p| p.is_file())))
+            .flatten();
         let browser = match (self.config.npx.clone(), self.browser_key(id), session.member.as_ref().map(|m| m.name.clone())) {
             (Some(npx), Some((squad, key)), Some(name)) if wants_browser => {
                 // Page snapshots and screenshots: in the temp folder, readable without
@@ -3191,6 +3202,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         "args": ["mcp", "--server", DESKTOP_SERVER, "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
                     });
                 }
+                if let Some(design) = &design {
+                    servers[DESIGN_SERVER] = json!({ "type": "stdio", "command": design, "args": ["mcp"] });
+                }
                 Some(json!({ "mcpServers": servers }).to_string())
             }
             _ => None,
@@ -3214,6 +3228,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 profiles: &profile_browsers.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
                 pm_accepts: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::pm_accepts),
                 desktop,
+                design: design.is_some(),
                 home: home.as_deref(),
                 memory: memory.as_deref(),
                 facts: facts.len(),
@@ -3296,7 +3311,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let binary = self.config.codex_binary.clone();
                 let lang = self.config.lang;
                 let model = session.model.clone();
-                let mut effort = session.effort.clone();
+                let mut effort = effort_of(session);
                 // NVIDIA's models: Codex's agent with Token Factory as its provider.
                 let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
                 let provider = match (&self.config.nemotron, nebius) {
@@ -3330,6 +3345,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }
                         if desktop {
                             servers[DESKTOP_SERVER] = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
+                        }
+                        if let Some(design) = &design {
+                            servers[DESIGN_SERVER] = codex_app::mcp_server(design, &["mcp".to_owned()], matches!(mode, Mode::Auto | Mode::Full));
                         }
                         Some(servers)
                     }
@@ -3419,7 +3437,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     return self.error(Some(id), say!(self, "error.codex_signed_out"), Some("equipe login codex"));
                 };
                 let model = session.model.clone().unwrap_or_default();
-                let effort = session.effort.clone();
+                let effort = effort_of(session);
                 let version = self.config.client_version.clone();
                 // Codex gets no conversation of its own: equipe sends the recent
                 // part of it each turn, never more than fits.
@@ -3448,7 +3466,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             Engine::Claude => {
                 let binary = self.config.claude_binary.clone();
                 let model = session.model.clone();
-                let effort = session.effort.clone();
+                let effort = effort_of(session);
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
@@ -3457,6 +3475,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }
                 if desktop && matches!(mode, Mode::Auto | Mode::Full) {
                     allowed.push(format!("mcp__{DESKTOP_SERVER}"));
+                }
+                if design.is_some() && matches!(mode, Mode::Auto | Mode::Full) {
+                    allowed.push(format!("mcp__{DESIGN_SERVER}"));
                 }
                 // What the person always allows no longer asks, and reaches its service from inside the fence.
                 let outward = permissions::still_asks(&squad_rules);
@@ -4792,6 +4813,11 @@ them with `propose_accept`. Then carry on with what else waits.]"
             return self.squad_error(squad, message);
         }
         let said = note.clone();
+        // Design work sent back with a reason: the person's taste, in their words.
+        let by_designer = [found.assignee.as_deref(), found.owner.as_deref()].into_iter().flatten().any(|who| who == "designer" || self.member_id(squad, who).and_then(|id| self.sessions.get(&id)).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == "designer"));
+        if let Some(entry) = by_designer.then(|| crate::taste::sent_back(found.id, &found.title, &said, &squad_memory::date(now_secs()))).flatten() {
+            self.learn_taste(squad, &entry);
+        }
         let note = if note.trim().is_empty() { "Reopened.".to_owned() } else { format!("Reopened: {}", note.trim()) };
         found.owner = found.assignee.take().or(found.owner);
         found.status = TicketStatus::Todo;
@@ -6108,6 +6134,10 @@ it back there once they have done it.{again} End your turn now with a short line
             crate::signals::SIGNALS => self.read_signals(&squad, id, &args),
             crate::controls::SETTINGS if is_pm => Ok(self.settings_text(&squad)),
             crate::controls::SETTINGS => Err("Only the PM reads the squad's settings; ask the PM.".into()),
+            crate::metrics::tool::METRICS => {
+                let today = crate::metrics::day_of(&crate::routines::Local, now_secs());
+                crate::metrics::tool::answer(&self.config.home, &squad, &args, today)
+            }
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
@@ -7413,6 +7443,12 @@ const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
 /// Turns shorter than this need no guess at when they end, and aren't kept
 /// to guess from.
 const GUESSED_AFTER: Duration = Duration::from_secs(60);
+
+/// The effort a member's turn runs at: the person's choice, else its role's
+/// ([`roles::default_effort`]), else its engine's default.
+fn effort_of(session: &Session) -> Option<String> {
+    session.effort.clone().or_else(|| session.member.as_ref().and_then(|m| roles::default_effort(&m.role)).map(str::to_owned))
+}
 
 /// How big a member's build cache may grow before it is trimmed; how big all
 /// of them together, every squad's — each member building on its own made it

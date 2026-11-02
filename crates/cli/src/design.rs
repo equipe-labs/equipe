@@ -52,6 +52,28 @@ pub enum DesignAction {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Shoot running pages as people see them: each URL at each width, light and dark
+    Shoot {
+        /// The pages: http://localhost:3000/, http://localhost:3000/pricing …
+        urls: Vec<String>,
+        /// Widths in px, comma-separated
+        #[arg(long, default_value = "390,768,1280")]
+        widths: String,
+        /// Light only (dark is shot too unless this is given)
+        #[arg(long)]
+        light: bool,
+        /// Where the PNGs go
+        #[arg(long, default_value = "shots")]
+        out: PathBuf,
+    },
+    /// A spec or mockup and what was built, side by side, and where they differ — one sheet
+    Diff {
+        spec: String,
+        built: String,
+        /// The sheet (default: diff.png)
+        #[arg(long, default_value = "diff.png")]
+        out: PathBuf,
+    },
     /// Harvest a brand from its site: colours by area, type and webfonts, logo files, voice — one audit sheet
     Audit {
         url: String,
@@ -125,6 +147,18 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
             }
             run_script("render.mjs", &args.iter().map(String::as_str).collect::<Vec<_>>()).await
         }
+        DesignAction::Shoot { urls, widths, light, out } => {
+            if urls.is_empty() {
+                return Err("name the pages to shoot: http://localhost:<port>/…".into());
+            }
+            let mut args: Vec<String> = urls;
+            args.extend(["--widths".into(), widths, "--out".into(), out.to_string_lossy().into_owned()]);
+            if !light {
+                args.push("--dark".into());
+            }
+            run_script("render.mjs", &args.iter().map(String::as_str).collect::<Vec<_>>()).await
+        }
+        DesignAction::Diff { spec, built, out } => run_script("diff.mjs", &[&spec, &built, "--out", out.to_string_lossy().as_ref()]).await,
         DesignAction::Audit { url, pages, out } => {
             let out = out.unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR).join("audit"));
             run_script("audit.mjs", &[&url, "--pages", &pages.to_string(), "--out", out.to_string_lossy().as_ref()]).await
@@ -167,7 +201,7 @@ async fn ensure_kit() -> Result<PathBuf, String> {
             return Err("couldn't install Playwright for the design tools".into());
         }
     }
-    for (name, body) in [("render.mjs", include_str!("../assets/design/render.mjs")), ("audit.mjs", include_str!("../assets/design/audit.mjs"))] {
+    for (name, body) in [("render.mjs", include_str!("../assets/design/render.mjs")), ("audit.mjs", include_str!("../assets/design/audit.mjs")), ("diff.mjs", include_str!("../assets/design/diff.mjs"))] {
         std::fs::write(dir.join(name), body).map_err(|e| e.to_string())?;
     }
     Ok(dir)

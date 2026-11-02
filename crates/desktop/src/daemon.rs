@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use equipe_core::protocol::rpc::{Attached, Hello, Squads};
+use equipe_core::protocol::telemetry::TelemetryStatus;
 use equipe_core::protocol::{Command, Event};
 use tokio::net::UnixStream;
 use tokio::sync::Notify;
@@ -165,6 +166,16 @@ impl Uploader {
 }
 
 impl Uploader {
+    /// One request of the daemon's (`metrics.*`), its answer as JSON. Blocks:
+    /// call it off the UI thread.
+    pub fn call(&self, method: &str, params: impl serde::Serialize, wait: Duration) -> Result<serde_json::Value, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.ask(method, params).recv_timeout(wait) {
+            Ok(answer) => answer,
+            Err(_) => Err(t!("metrics.no_answer").into()),
+        }
+    }
+
     /// A member's picture, from the daemon — wherever it runs; it gives only
     /// what `squad` shows. Blocks: call it off the UI thread.
     pub fn read_image(&self, squad: &str, path: &str, max: Option<u32>) -> Result<equipe_core::protocol::rpc::ImageRead, String> {
@@ -180,6 +191,27 @@ impl Uploader {
     pub fn list_images(&self, squad: &str, folder: &str) -> Result<equipe_core::protocol::rpc::ImageList, String> {
         let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
         match door.list_images(squad, folder).recv_timeout(Duration::from_secs(60)) {
+            Ok(answer) => answer.and_then(|v| serde_json::from_value(v).map_err(|_| t!("failure.answer_unreadable").into())),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
+        }
+    }
+}
+
+impl Uploader {
+    /// Where anonymous usage events stand on the daemon's machine
+    /// (docs/TELEMETRY.md). Blocks: call it off the UI thread.
+    pub fn telemetry(&self) -> Result<TelemetryStatus, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.telemetry().recv_timeout(Duration::from_secs(10)) {
+            Ok(answer) => answer.and_then(|v| serde_json::from_value(v).map_err(|_| t!("failure.answer_unreadable").into())),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
+        }
+    }
+
+    /// The person's answer, kept by the daemon. Blocks: call it off the UI thread.
+    pub fn telemetry_set(&self, on: bool) -> Result<TelemetryStatus, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.telemetry_set(on).recv_timeout(Duration::from_secs(10)) {
             Ok(answer) => answer.and_then(|v| serde_json::from_value(v).map_err(|_| t!("failure.answer_unreadable").into())),
             Err(_) => Err(t!("daemon.upload_no_answer").into()),
         }

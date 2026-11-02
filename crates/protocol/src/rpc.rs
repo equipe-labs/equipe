@@ -32,6 +32,9 @@
 //!   anonymous usage events are sent (docs/TELEMETRY.md)
 //! - `telemetry_set` (request): [`crate::telemetry::SetTelemetry`] →
 //!   [`crate::telemetry::TelemetryStatus`], the person's yes or no
+//! - `metrics.sources`, `metrics.connect`, `metrics.disconnect`,
+//!   `metrics.refresh`, `metrics.query`, `metrics.summary` (requests): the
+//!   product's numbers, [`crate::metrics`] (docs/METRICS.md)
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
 //!   the first line a screen reads through the bridge, before anything the
 //!   daemon says

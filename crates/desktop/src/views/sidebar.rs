@@ -246,6 +246,11 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 this.open_roadmap(cx);
             }
         })))
+        .child(nav("nav-metrics", glyph(IconName::ChartPie, shell.screen == Screen::Metrics), t!("metrics.title").into(), 0, 0, shell.screen == Screen::Metrics).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Metrics, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_metrics(cx);
+            }
+        })))
         .child(nav("nav-design", glyph(IconName::Palette, shell.screen == Screen::Design), t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Design, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                 this.open_design(cx);
@@ -463,7 +468,7 @@ fn selected_ticket(shell: &Shell) -> Option<TicketId> {
             Some(Need::Ticket(id)) => Some(id),
             _ => None,
         },
-        Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap => None,
+        Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap | Screen::Metrics => None,
     }
 }
 
@@ -2189,6 +2194,7 @@ impl Shell {
             Screen::Design => self.open_design(cx),
             Screen::Overview => self.open_overview(cx),
             Screen::Roadmap => self.open_roadmap(cx),
+            Screen::Metrics => self.open_metrics(cx),
         }
         cx.notify();
     }

@@ -115,12 +115,30 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         let Some(set) = self.take_questions(squad, id) else { return };
         let answers = fit(&set, answers);
         let message = decide::answer_message(&set, &answers);
+        // A designer's question answered: the person's taste, kept for every design after.
+        let designer = self.sessions.get(&set.session).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == "designer");
+        if let Some(entry) = designer.then(|| crate::taste::decided(&set, &answers, &crate::squad_memory::date(now_secs()))).flatten() {
+            self.learn_taste(squad, &entry);
+        }
         if let (Some(ticket), Some(journal)) = (set.ticket, self.journal(squad)) {
             let _ = journal.ticket_event(ticket, "you", "decided", &message);
         }
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers) });
         if let Some(to) = self.asker(squad, &set) {
             Box::pin(self.submit(to, message)).await;
+        }
+    }
+
+    /// Add `entry` to the person's design taste in the squad's memory, as
+    /// equipe: what they chose and said, not what a member recalls of it.
+    pub(super) fn learn_taste(&mut self, squad: &str, entry: &str) {
+        let folder = crate::squad_home::path(&self.config.home, squad);
+        let before = crate::squad_memory::facts(&folder).into_iter().find(|f| f.name == crate::taste::NAME).map(|f| f.body);
+        let body = crate::taste::with(before.as_deref(), entry);
+        let fact = crate::squad_memory::Remember { name: crate::taste::NAME, description: crate::taste::DESCRIPTION, kind: "decision", body: &body, confirmed: true };
+        let language = self.journals.get(squad).and_then(Journal::language);
+        if let Err(why) = crate::squad_memory::remember(&folder, "equipe", &fact, &crate::squad_memory::date(now_secs()), language.as_deref()) {
+            crate::daemon_log!("equipe: {squad}'s design taste wasn't kept: {why}");
         }
     }
 

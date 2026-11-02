@@ -73,6 +73,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         retention_days: 90,
         equipe_binary: Some("/opt/equipe".into()),
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
@@ -182,6 +183,34 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     handle.send(Command::Submit { session: 1, text: "status?".into(), about: None });
     let after = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert!(!after.iter().any(|e| matches!(e, Event::QuestionsClosed { .. } | Event::UserMessage { session: 2, .. } | Event::Error { .. })), "{after:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_persons_answers_to_the_designer_are_kept_as_their_taste_for_every_design_after() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "Which hero layout?", "options": ["B: airy (Recommended)", "A: dense"] }] })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let set = asked(&seen);
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![1], other: Some("we're a tool, show more".into()) }], about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).expect("kept in the squad's memory");
+    assert!(taste.body.contains("Which hero layout? → chose A: dense; passed over B: airy; in their words: \u{201c}we're a tool, show more\u{201d}"), "{}", taste.body);
+
+    // A backend's answers are no design taste.
+    add(&handle, &mut events, 3, member(&project, "backend")).await;
+    tool(&handle, "backend", "ask_decision", json!({ "questions": [{ "question": "Which database?", "options": ["Postgres", "SQLite"] }] })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
+    let set = asked(&seen);
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![0], other: None }], about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 3, .. })).await;
+    let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).unwrap();
+    assert!(!taste.body.contains("database"), "{}", taste.body);
     handle.shutdown().await;
 }
 

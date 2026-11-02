@@ -1,0 +1,37 @@
+{
+  "title": "이번 주 스쿼드 숫자",
+  "asOf": "11월 3일",
+  "source": "equipe 보드 · main 병합 기록",
+  "stats": [
+    {
+      "label": "병합된 티켓 (최근 7일)",
+      "value": "17",
+      "unit": "건",
+      "delta": "오늘 2건",
+      "deltaTone": "flat",
+      "points": [
+        0,
+        0,
+        4,
+        2,
+        7,
+        2,
+        2
+      ],
+      "from": "10월 28일",
+      "to": "11월 3일"
+    },
+    {
+      "label": "사람 차례",
+      "value": "5",
+      "unit": "건"
+    },
+    {
+      "label": "검토 대기",
+      "value": "12",
+      "unit": "건",
+      "delta": "진행 중 4건",
+      "deltaTone": "flat"
+    }
+  ]
+}

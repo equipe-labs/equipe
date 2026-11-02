@@ -405,6 +405,8 @@ pub enum Effect {
     ShowBoard,
     /// 디자인 시스템 (`/design`).
     ShowDesign,
+    /// 지표 (`/metrics`).
+    ShowMetrics,
     /// The board, narrowed to these words (`/find`).
     Find(String),
     /// Put this project (or all) in focus.
@@ -572,6 +574,7 @@ fn slash(model: &Model, command: &str) -> Plan {
         "board" => Plan { effect: Some(Effect::ShowBoard), ..Plan::default() },
         "disk" => Plan { effect: Some(Effect::Disk), ..Plan::default() },
         "design" => Plan { effect: Some(Effect::ShowDesign), ..Plan::default() },
+        "metrics" => Plan { effect: Some(Effect::ShowMetrics), ..Plan::default() },
         "find" => Plan { effect: Some(Effect::Find(rest.to_owned())), ..Plan::default() },
         "project" => {
             let wanted = rest;
@@ -1374,6 +1377,7 @@ mod tests {
         assert!(matches!(tidy.commands.as_slice(), [Command::Submit { session: 1, .. }]));
         assert_eq!(plan(&model, "/board").effect, Some(Effect::ShowBoard));
         assert_eq!(plan(&model, "/design").effect, Some(Effect::ShowDesign));
+        assert_eq!(plan(&model, "/metrics").effect, Some(Effect::ShowMetrics));
         assert_eq!(plan(&model, "/find 로그인 화면").effect, Some(Effect::Find("로그인 화면".into())));
         for (line, effect) in [("/usage", Effect::Usage), ("/help", Effect::Help), ("/export", Effect::Export), ("/quit", Effect::Quit), ("/home", Effect::OpenHome), ("/memory", Effect::OpenMemory)] {
             let p = plan(&model, line);

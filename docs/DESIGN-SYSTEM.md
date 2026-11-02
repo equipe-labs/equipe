@@ -156,3 +156,43 @@ says when (`roles.rs`).
 
 The scripts and the one npm package they import (`playwright`, no browser
 download) live in `~/.equipe/design-kit`, set up on first use.
+
+## Remixing references — the `design` tools (equipe-design)
+
+[equipe-design](https://github.com/equipe-labs/equipe-design) extracts a design
+system from a site's public pages and remixes it with the person's own brand.
+Its `equipe-design mcp` command is an MCP server, `design`, with
+`design_extract`, `design_report`, `design_remix` and `design_emit` (and the
+design library's `design_library_*`).
+
+**How it connects.** Each turn the daemon looks for an `equipe-design`
+executable on its own PATH (the service's PATH, `daemon.rs`
+`service_path`). Found, and the member's role is `designer` with equipe's board
+tools, the turn's MCP config gets
+
+```json
+"design": { "type": "stdio", "command": "/opt/homebrew/bin/equipe-design", "args": ["mcp"] }
+```
+
+beside `equipe`, `browser` and `desktop` (`runtime.rs`, `DESIGN_SERVER`; on
+Codex the same server through its own config). The tools are
+`mcp__design__design_extract` and so on; in Auto and Full they don't ask, in
+Ask each call comes to the person. No other role gets it. Not on PATH: no
+`design` server and no word of it in the designer's charter — equipe never
+installs it (until it is published, the person links a checkout onto PATH:
+`npm link` in its `packages/cli`). Since the PATH is searched each turn, an install shows up on the next
+turn without restarting the daemon.
+
+**Its own browser.** The engine launches a headless Chrome of its own, with a
+fresh temporary profile. It never attaches to the member's `browser` (the
+window the person's and the squad's sign-ins live in), carries no cookies, and
+stops at robots.txt or a sign-in wall.
+
+**The flow** (the designer's charter, `roles.rs`):
+
+1. `design_extract` from two or three reference URLs into the ticket's `outputs/…/extract/<host>/`.
+2. Tell the person in a few lines what `design_report` says it couldn't see.
+3. `design_remix` with the person's brand colour and name → variants, each with a sheet PNG.
+4. Put the sheets to the person on `ask_decision`.
+5. `design_emit` the chosen one with `dtcgLegacy: true` into the project's `design/`.
+6. `equipe design check`, then hand in with the pictures.
