@@ -181,7 +181,13 @@ async fn connecting_again_keeps_the_key_left_out_and_checks_the_fields() {
     let refused = |p: ConnectParams| metrics.connect(p, 3).unwrap_err().code;
     assert_eq!(refused(ConnectParams { settings: BTreeMap::new(), ..fake(&[]) }), BAD_SETTINGS, "no token");
     assert_eq!(refused(fake(&[("colour", "red")])), BAD_SETTINGS, "no such field");
-    assert_eq!(refused(ConnectParams { kind: Some(SourceKind::Posthog), ..fake(&[]) }), UNKNOWN_KIND, "no adapter yet");
+    assert_eq!(refused(ConnectParams { kind: Some(SourceKind::Posthog), ..fake(&[]) }), BAD_SETTINGS, "a token isn't PostHog's");
+    let github = |extra: (&str, &str)| ConnectParams {
+        kind: Some(SourceKind::Github),
+        settings: BTreeMap::from([("token".into(), TOKEN.into()), ("repo".into(), "a/b".into()), (extra.0.into(), extra.1.into())]),
+        ..fake(&[])
+    };
+    assert_eq!(refused(github(("api_url", "http://127.0.0.1:9"))), BAD_SETTINGS, "where the key goes isn't a setting");
     assert_eq!(refused(ConnectParams { kind: None, ..fake(&[]) }), BAD_PARAMS);
     assert_eq!(refused(ConnectParams { squad: "../x".into(), ..fake(&[]) }), BAD_PARAMS);
     assert_eq!(refused(ConnectParams { id: Some("m9".into()), ..fake(&[]) }), NOT_FOUND);
@@ -251,4 +257,23 @@ fn the_tool_says_when_nothing_is_connected() {
     let home = scratch("empty");
     let said = tool::answer(&home, "acme", &json!({}), day("2026-11-02")).unwrap();
     assert!(said.starts_with("No service is connected"), "{said}");
+}
+
+#[test]
+fn a_total_split_by_label_shows_its_last_days_split() {
+    let def = MetricDef { name: "referrers".into(), label: "Referrers".into(), unit: "views".into(), shape: Shape::Total };
+    let point = |d: &str, split: &[(&str, f64)]| Point {
+        metric: "referrers".into(),
+        day: d.into(),
+        value: split.iter().map(|(_, v)| v).sum(),
+        breakdown: Some(split.iter().map(|(l, v)| ((*l).into(), *v)).collect()),
+    };
+    let points: BTreeMap<(String, i64), Point> = [point("2026-10-30", &[("github.com", 10.0)]), point("2026-11-01", &[("github.com", 12.0), ("t.co", 3.0)])]
+        .into_iter()
+        .map(|p| ((p.metric.clone(), day(&p.day)), p))
+        .collect();
+    let (value, _, split, as_of, _) = over(&def, &points, day("2026-10-27"), day("2026-11-02"), Bucket::Day);
+    assert_eq!(value, Some(15.0), "the last day's, not a sum of overlapping windows");
+    assert_eq!(split, BTreeMap::from([("github.com".into(), 12.0), ("t.co".into(), 3.0)]));
+    assert_eq!(as_of, Some(day("2026-11-01")));
 }

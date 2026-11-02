@@ -586,12 +586,21 @@ fn over(def: &MetricDef, points: &BTreeMap<(String, i64), Point>, from: i64, to:
         start = end + 1;
     }
     let mut breakdown = BTreeMap::new();
-    if def.shape == Shape::Breakdown {
-        for n in from..=to {
-            for (label, v) in day(n).and_then(|p| p.breakdown.as_ref()).into_iter().flatten() {
-                *breakdown.entry(label.clone()).or_insert(0.0) += v;
+    match def.shape {
+        Shape::Breakdown => {
+            for n in from..=to {
+                for (label, v) in day(n).and_then(|p| p.breakdown.as_ref()).into_iter().flatten() {
+                    *breakdown.entry(label.clone()).or_insert(0.0) += v;
+                }
             }
         }
+        // A total split by label (GitHub's referrers of the last 14 days): its last day's split.
+        Shape::Total => {
+            if let Some(split) = (from..=to).rev().find_map(day).and_then(|p| p.breakdown.clone()) {
+                breakdown = split;
+            }
+        }
+        Shape::Count => {}
     }
     let known: Vec<i64> = (from..=to).filter(|n| day(*n).is_some()).collect();
     (value, series, breakdown, known.last().copied(), known.len() as u32)
