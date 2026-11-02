@@ -241,6 +241,12 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
     }
     // Over a conversation with the PM: the project it is about, which it moves to.
     let talk = if place == "chat" { model.talk_project() } else { None };
+    // Nothing slices the whole window any more (a project's page is its
+    // own): only a conversation's project, to move it, or the way back from
+    // a focus `/project` put on.
+    if talk.is_none() && model.focus.is_none() {
+        return div().into_any_element();
+    }
     let focus = talk.clone().unwrap_or_else(|| model.focus.clone());
     let at = focus.as_ref().and_then(|f| names.iter().position(|n| n == f));
     let open = shell.board.popover == Some(Popover::Projects) && shell.board.slice_place == place;

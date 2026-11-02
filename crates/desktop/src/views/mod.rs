@@ -30,6 +30,7 @@ pub mod icons;
 pub mod pair;
 pub mod overview;
 pub mod peek;
+pub mod project;
 pub mod quote;
 pub mod settings;
 pub mod metrics;

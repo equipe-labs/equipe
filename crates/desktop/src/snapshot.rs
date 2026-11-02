@@ -154,6 +154,11 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let click = if verb == "shead" { crate::board::HeadClick::Name } else { crate::board::HeadClick::Chevron };
                     shell.side_head_click(click, (!arg.is_empty()).then(|| arg.clone()), window, cx);
                 }),
+                // A project page's tab (`ptab:work`, `ptab:talks`).
+                "ptab" => shell.update(cx, |shell, cx| {
+                    shell.board.project_tab = if arg == "work" { crate::board::ProjectTab::Work } else { crate::board::ProjectTab::Talks };
+                    cx.notify();
+                }),
                 "select" => shell.update(cx, |shell, cx| {
                     if let Some(m) = shell.model.members.iter().find(|m| m.name == arg) {
                         let session = m.session;

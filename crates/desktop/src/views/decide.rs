@@ -174,7 +174,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap | Screen::Metrics => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap | Screen::Metrics | Screen::Project => return Took::Pass,
         };
         if self.decide.drafts.get(&id).is_none_or(|d| d.collapsed) {
             return Took::Pass;
