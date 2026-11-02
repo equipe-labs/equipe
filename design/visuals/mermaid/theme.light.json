@@ -1,0 +1,52 @@
+{
+  "base": "light",
+  "fields": {
+    "font_family": "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif",
+    "font_size": 14,
+    "background": "transparent",
+    "primary_color": "#FFFFFF",
+    "primary_text_color": "#15161A",
+    "text_color": "#4F5159",
+    "primary_border_color": "#74767D",
+    "line_color": "#4F5159",
+    "secondary_color": "#EAE7E0",
+    "tertiary_color": "#FFFFFF",
+    "edge_label_background": "#FFFFFF",
+    "cluster_background": "#EAE7E0",
+    "cluster_border": "#CAC8C2",
+    "sequence_actor_fill": "#FFFFFF",
+    "sequence_actor_border": "#74767D",
+    "sequence_actor_line": "#4F5159",
+    "sequence_note_fill": "#F0EAE0",
+    "sequence_note_border": "#825600",
+    "sequence_activation_fill": "#EAE7E0",
+    "sequence_activation_border": "#74767D",
+    "pie_colors": [
+      "#1D4ED8",
+      "#1F6B33",
+      "#825600",
+      "#A04610",
+      "#AD2E27",
+      "#74767D",
+      "#1D4ED8",
+      "#1F6B33",
+      "#825600",
+      "#A04610",
+      "#AD2E27",
+      "#74767D"
+    ],
+    "pie_section_text_color": "#FFFFFF",
+    "pie_title_text_color": "#15161A",
+    "pie_legend_text_color": "#15161A",
+    "pie_stroke_color": "#FFFFFF",
+    "pie_outer_stroke_color": "#FFFFFF",
+    "pie_opacity": 1
+  },
+  "layout": {
+    "nodeSpacing": 28,
+    "rankSpacing": 56,
+    "nodePaddingX": 22,
+    "nodePaddingY": 14,
+    "maxLabelWidthChars": 30
+  }
+}
