@@ -390,13 +390,26 @@ fn placeholder(p: Palette) -> Div {
     div().rounded(px(6.)).bg(if dark(p) { p.hair } else { p.wash })
 }
 
-fn north_frame(p: Palette, border: Rgba) -> Stateful<Div> {
-    v_flex().id("metrics-north").flex_none().flex_basis(px(CARD_BASIS * 2. + 16.)).max_w_full().min_w(px(CARD_MIN)).p_4().gap_3().rounded(px(R_LG)).border_1().border_color(border).bg(p.raised)
+/// The card's width: two columns of the cards' grid where it has three or
+/// more, else the whole row (two columns would leave a gap beside it).
+fn north_width(room: f32) -> Option<f32> {
+    let inner = (room - 48.).min(1100. - 48.);
+    let columns = ((inner + 16.) / (CARD_BASIS + 16.)).floor();
+    (room > 0. && columns >= 3.).then(|| 2. * (inner - (columns - 1.) * 16.) / columns + 16.)
+}
+
+fn north_frame(p: Palette, border: Rgba, room: f32) -> Stateful<Div> {
+    let frame = v_flex().id("metrics-north").min_w(px(CARD_MIN)).p_4().gap_3().rounded(px(R_LG)).border_1().border_color(border).bg(p.raised);
+    match north_width(room) {
+        Some(w) => frame.flex_none().w(px(w)),
+        None => frame.w_full(),
+    }
 }
 
 fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let narrow = shell.metrics.room > 0. && shell.metrics.room < NORTH_WIDE;
+    let room = shell.metrics.room;
+    let narrow = room > 0. && room < NORTH_WIDE;
     let spec = sources.kinds.iter().find(|k| k.kind == SourceKind::Posthog);
     let name = card_service(SourceKind::Posthog, spec);
     let connection = sources.connections.iter().find(|c| c.kind == SourceKind::Posthog).map(|c| c.id.clone());
@@ -418,11 +431,11 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
         NorthStar::Loading => {
             let numbers = v_flex().gap_2().flex_none().child(placeholder(p).w(px(96.)).h(px(40.))).child(placeholder(p).w(px(140.)).h(px(20.)));
             let body = if narrow { v_flex().gap_3().child(numbers).child(placeholder(p).w_full().h(px(56.))) } else { h_flex().gap_8().items_end().child(numbers).child(div().flex_1().child(placeholder(p).w_full().h(px(NORTH_BARS_H)))) };
-            north_frame(p, p.hair).child(title_line(p, title, wait(p), t!("metrics.source", service = name, time = lookup("metrics.ns.loading".into())))).child(body).child(about(lookup("metrics.ns.def".into()), None)).into_any_element()
+            north_frame(p, p.hair, room).child(title_line(p, title, wait(p), t!("metrics.source", service = name, time = lookup("metrics.ns.loading".into())))).child(body).child(about(lookup("metrics.ns.def".into()), None)).into_any_element()
         }
         NorthStar::Undefined => {
             let set = ui::button(p, "metrics-north-set", Kind::Primary, t!("metrics.ns.set")).on_click(cx.listener(move |this, _, window, cx| this.metrics_open_connect(Some(SourceKind::Posthog), connection.clone(), window, cx)));
-            north_frame(p, p.hair)
+            north_frame(p, p.hair, room)
                 .child(title_line(p, lookup("metrics.ns.title_short".into()), wait(p), lookup("metrics.ns.none".into())))
                 .child(div().text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(lookup("metrics.ns.none_title".into())))
                 .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text).child(lookup("metrics.ns.none_body".into())))
@@ -468,7 +481,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
                 None if c.short() => about(t!("metrics.ns.short_note", n = c.known()), Some(edit)).into_any_element(),
                 None => about(lookup("metrics.ns.def".into()), Some(edit)).into_any_element(),
             };
-            north_frame(p, c.error.map_or(p.hair, |e| tone(p, e))).child(title_line(p, title, dot, source)).child(body).child(foot).into_any_element()
+            north_frame(p, c.error.map_or(p.hair, |e| tone(p, e)), room).child(title_line(p, title, dot, source)).child(body).child(foot).into_any_element()
         }
     }
 }
