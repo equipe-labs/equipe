@@ -1661,6 +1661,8 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The metrics cards pick their layout by the width the screen has.
+        self.metrics.room = f32::from(window.viewport_size().width) - self.board.sidebar_width;
         // A message held for its uploads goes as soon as they're up.
         if let Some(later) = self.composer.send_when_ready.filter(|_| !self.composer.strip.busy()) {
             self.composer.send_when_ready = None;
