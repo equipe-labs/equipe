@@ -6044,6 +6044,10 @@ it back there once they have done it.{again} End your turn now with a short line
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),
             crate::signals::SIGNALS => self.read_signals(&squad, id, &args),
+            crate::metrics::tool::METRICS => {
+                let today = crate::metrics::day_of(&crate::routines::Local, now_secs());
+                crate::metrics::tool::answer(&self.config.home, &squad, &args, today)
+            }
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));

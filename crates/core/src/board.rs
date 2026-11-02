@@ -731,6 +731,8 @@ once they have done what it needed. Work in progress and done work are the perso
     }
     // A secret for a command or a config, typed by the person into a card.
     tools.push(crate::secrets::tool());
+    // The product's numbers the person connected, read only.
+    tools.push(crate::metrics::tool::tool());
     tools
 }
 
