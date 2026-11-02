@@ -3311,7 +3311,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let binary = self.config.codex_binary.clone();
                 let lang = self.config.lang;
                 let model = session.model.clone();
-                let mut effort = session.effort.clone();
+                let mut effort = effort_of(session);
                 // NVIDIA's models: Codex's agent with Token Factory as its provider.
                 let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
                 let provider = match (&self.config.nemotron, nebius) {
@@ -3437,7 +3437,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     return self.error(Some(id), say!(self, "error.codex_signed_out"), Some("equipe login codex"));
                 };
                 let model = session.model.clone().unwrap_or_default();
-                let effort = session.effort.clone();
+                let effort = effort_of(session);
                 let version = self.config.client_version.clone();
                 // Codex gets no conversation of its own: equipe sends the recent
                 // part of it each turn, never more than fits.
@@ -3466,7 +3466,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             Engine::Claude => {
                 let binary = self.config.claude_binary.clone();
                 let model = session.model.clone();
-                let effort = session.effort.clone();
+                let effort = effort_of(session);
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
@@ -7443,6 +7443,12 @@ const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
 /// Turns shorter than this need no guess at when they end, and aren't kept
 /// to guess from.
 const GUESSED_AFTER: Duration = Duration::from_secs(60);
+
+/// The effort a member's turn runs at: the person's choice, else its role's
+/// ([`roles::default_effort`]), else its engine's default.
+fn effort_of(session: &Session) -> Option<String> {
+    session.effort.clone().or_else(|| session.member.as_ref().and_then(|m| roles::default_effort(&m.role)).map(str::to_owned))
+}
 
 /// How big a member's build cache may grow before it is trimmed; how big all
 /// of them together, every squad's — each member building on its own made it

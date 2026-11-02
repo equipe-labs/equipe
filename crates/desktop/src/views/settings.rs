@@ -524,7 +524,7 @@ fn telemetry_line(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
         None => t!("settings.telemetry_desc").to_owned(),
     };
     let send = Line::new(t!("settings.telemetry"), desc)
-        .words("telemetry analytics usage data anonymous 익명 사용 데이터")
+        .words("telemetry analytics usage data anonymous")
         .control(switch(shell, "telemetry", t!("settings.telemetry"), shell.telemetry.on(), connected && status.is_some() && !shell.telemetry.saving, |this, on, _, cx| this.telemetry_answer(on, cx), cx));
     let list = Line::new(t!("settings.telemetry_list"), t!("settings.telemetry_list_desc"))
         .words("telemetry events list sent never")

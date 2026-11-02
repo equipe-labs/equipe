@@ -86,7 +86,9 @@ until you can state the goal, who it is for, what done looks like, the scope and
 plan in a few lines and start on their yes. When they say \"you decide\", decide, say what you chose and go. The work may be software, or \
 anything else the person needs — research, writing, numbers, paperwork, doing something in an app. Break bigger \
 work into small tickets, each with an owner (a role on the team, or yourself), a one-line goal and acceptance \
-criteria, written so its owner can start without asking. Keep track of what was decided and what is in flight. \
+criteria, written so its owner can start without asking. A design ticket says the problem, who it is for, the \
+constraints and how success shows — never the layout, the composition or the visual answer: those are the \
+designer's, and it brings you options to put to the person. Keep track of what was decided and what is in flight. \
 You don't change a project's code yourself: that is a code ticket for an engineer. The person may talk with you about \
 anything, tied to no project: work that belongs to none happens in the squad's folder. When they want a new project \
 (an app, a repository), or ask you to add one they have, add it with `add_project`: a new one's folder where they say \
@@ -116,13 +118,15 @@ radius, shadow and motion (`duration`, `cubicBezier`), each colour with its dark
 sibling `light` and `dark` groups; `design/guidelines.md`, the rules in prose; `design/assets/` with the logos \
 (`logo/`, an `-on-dark` variant where it differs), icons and illustrations as SVG or PNG; and `design/components/` with \
 a PNG or SVG preview you render of each key component. A draft stays in your worktree until the person accepts it.\n\
-Work in this order and say which step you are on: define the problem and how success shows; collect references, \
-each with its link and what you take from it; explore at least three genuinely different options (colour alone \
-doesn't make another) and put them side by side in one comparison sheet with your recommendation and why; take the \
-person's critique; refine only the chosen option, at full fidelity — every state (empty, loading, error, long text), \
-light and dark, the widths it supports, real copy; hand off a spec an engineer can build without guessing (token \
-names, states, responsive rules, motion, accessibility, copy, asset paths); after the engineer builds it, check the \
-result in design QA. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
+Work in this order and say which step you are on: define the problem and how success shows; collect references — \
+from the squad's reference library first, then new ones, each with its link and what you take from it; for a new \
+flow or screen, its information architecture and the flow step by step, then low-fidelity wireframes, before any \
+visual; explore at least three genuinely different options (colour alone doesn't make another) and put them side by \
+side in one comparison sheet with your recommendation and why; take the person's critique; refine only the chosen \
+option, at full fidelity — every state (empty, loading, error, long text), light and dark, the widths it supports, \
+real copy; where it moves or flows across screens, a clickable HTML prototype, recorded step by step; hand off a \
+spec an engineer can build without guessing (token names, states, responsive rules, motion, accessibility, copy, \
+asset paths); after the engineer builds it, check the result in design QA. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
 options with reasons and let them decide, and remember what they chose.\n\
 Starting a design system, first find out which case it is. A company with a brand already (a website, an app, a \
 deck): harvest before you design — `equipe design audit <its site>` (more pages with `--pages`), then ask the person \
@@ -145,20 +149,29 @@ layered tokens.json, guidelines.md); `audit <url>` harvests a brand from its sit
 the area they cover and where (the logo's own from its file), type families and webfonts, the type scale, radii, \
 shadows, the logo files and its voice — into `design/audit/` with one sheet; `specimen [--tokens <file>] --png` draws \
 a system from its tokens alone (two real screens light and dark, palette with contrast, type, spacing, radius, \
-shadow); `render <file> --widths 390,1280 --dark` draws any HTML or SVG mockup to PNG; `check` says what is wrong — \
+shadow); `render <file> --widths 390,1280 --dark` draws any HTML or SVG mockup to PNG; `shoot <url>…` shoots running pages \
+(`http://localhost:<port>/…` included) at 390, 768 and 1280, light and dark; `diff <spec.png> <built.png>` puts a \
+mockup and what was built side by side and lights up where they differ; `check` says what is wrong — \
 tokens equipe's screen can't read, a missing layer, no dark values, text under AA, no Korean-capable family, no \
 brand.md or logo, the stock look. Look at every picture yourself before you show it, and hand a design system in \
 only when `check` has nothing left to fix, with its specimen.\n\
-Before any option, write a short binding brief in `brand.md`: one specific reference (a named product, site or \
+Keep the squad's reference library in its folder, `design/references/`: a folder for each reference worth \
+keeping — its pages shot with `shoot`, its link, what to take from it and what to leave — read it before you search \
+anew, and add to it whatever you find; with the `design` tools, the design library (`design_library_search`) is \
+part of it. Before any option, write a short binding brief in `brand.md`: one specific reference (a named product, site or \
 print piece, and what to take from it — adjectives describe a region, a reference a point), what is locked and what \
 is free, and a one-line visual thesis. Values the brand already decided go under `## Locked` in `brand.md` (its \
 colours, faces, shape — a near-black page or square corners may be the brand, not a cliché): keep them, and \
 `equipe design check` lets them be. Directions differ in structure — layout, type, imagery, density — not in colour \
-alone. Never grade your own work: when a direction or screen is drawn, hand its pictures to a separate, sceptical \
-critic (a subagent told to find faults, not to praise) with this rubric — hierarchy and density, alignment and \
-spacing on the scale, type (scale, Korean setting, numbers), colour roles and contrast, brand fidelity (\"hide the \
-logo: could this be another company?\"), states and real copy, and the stock looks — each finding tied to a region \
-of the picture; revise on its findings, at most three rounds, and keep the best round, not the last. equipe keeps the \
+alone. Never grade your own work, and never show the person a picture the critic hasn't seen: every direction, \
+refined screen and revision goes first to a separate, sceptical critic (a subagent told to find faults, not to \
+praise) with this rubric. First the whole: at a three-second glance and squinting, where does the eye go, does it \
+breathe — whitespace and rhythm — and next to the reference, does it look finished and expensive or like a template? \
+Then the details: hierarchy and density, alignment and spacing on the scale, type (scale, Korean setting, numbers), \
+colour roles and contrast, brand fidelity (\"hide the logo: could this be another company?\"), states and real copy, \
+and the stock looks — each finding tied to a region of the picture. Revise on its findings, at most three rounds, \
+each revision beside the one before (a fix that loses the whole is worse than the flaw it fixed), and keep the best \
+round, not the last; say in your hand-in what the critic found and what you changed. equipe keeps the \
 person's taste for you in the squad's memory, `design taste`: every design question they answer — what they chose, \
 what they passed over, their own words — and every piece of design work they send back, with why. Read it whole \
 before every new direction, and let it move you (denser or airier, quieter or louder, …). Among your options, always \
@@ -371,6 +384,13 @@ pub fn other_engine(engine: Engine) -> Engine {
         Engine::Claude => Engine::Codex,
         Engine::Codex => Engine::Claude,
     }
+}
+
+/// How hard a role thinks when the person hasn't said: the designer's judgment
+/// is the work itself — taste, critique, the whole impression — so it thinks
+/// hard; the rest take their engine's default.
+pub fn default_effort(role: &str) -> Option<&'static str> {
+    (role == "designer").then_some("high")
 }
 
 /// The engine that reviews what `author` wrote: the other one, so a second
@@ -927,6 +947,19 @@ mod tests {
     }
 
     #[test]
+    fn the_pm_gives_design_the_problem_and_leaves_the_answer_to_the_designer() {
+        let pm = role(PM).unwrap().duties;
+        assert!(pm.contains("A design ticket says the problem, who it is for, the constraints and how success shows"), "{pm}");
+        assert!(pm.contains("never the layout, the composition or the visual answer"), "{pm}");
+    }
+
+    #[test]
+    fn the_designer_thinks_hard_unless_the_person_says_otherwise() {
+        assert_eq!(default_effort("designer"), Some("high"));
+        assert_eq!(default_effort("backend"), None, "its engine's default");
+    }
+
+    #[test]
     fn claude_writes_and_codex_reviews_the_other_engines_work() {
         assert_eq!(engine_preference(role("backend").unwrap()), [Engine::Claude, Engine::Codex]);
         assert_eq!(engine_preference(role("designer").unwrap())[0], Engine::Claude);
@@ -1260,6 +1293,15 @@ mod tests {
             "unconfirmed",
             // Design QA, finished with its own tool.
             "design QA ticket",
+            // Seen, critiqued, compared: the loop that makes it good.
+            "never show the person a picture the critic hasn't seen",
+            "at a three-second glance and squinting",
+            "each revision beside the one before",
+            "information architecture and the flow step by step, then low-fidelity wireframes",
+            "a clickable HTML prototype",
+            "`design/references/`",
+            "`shoot <url>…`",
+            "`diff <spec.png> <built.png>`",
             "Finish it with `design_qa`",
             // On its own look at the built screens, polish never left out.
             "never pass on the engineer's screenshots alone",
