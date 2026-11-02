@@ -188,7 +188,11 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .child(crate::ui::title_gap());
 
     // A badge for what waits on the person; a quiet count for the rest.
-    let nav = |id: &'static str, name: IconName, label: String, badge: usize, count: usize, on: bool| {
+    // A row's mark: an icon, or the PM's own (◆ in its colour), as the header and the composer show it.
+    let glyph = |name: IconName, on: bool| icon(name, 16., if on { p.text } else { p.text2 }).into_any_element();
+    let (pm_mark, pm_hue) = crate::theme::look(equipe_core::roles::PM, equipe_core::roles::PM);
+    let pm_glyph = div().text_size(px(13.)).text_color(p.member(pm_hue)).child(pm_mark).into_any_element();
+    let nav = |id: &'static str, mark: AnyElement, label: String, badge: usize, count: usize, on: bool| {
         row_shell(p, id, on)
             .h(px(32.))
             .role(Role::Tab)
@@ -197,7 +201,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 0 => label.clone(),
                 n => format!("{label}, {n}"),
             })
-            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(name, 16., if on { p.text } else { p.text2 })))
+            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(mark))
             .child(div().flex_1().min_w_0().truncate().text_color(if on { p.text } else { p.text2 }).child(label))
             .when(badge > 0, |r| {
                 r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.accent).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string()))
@@ -207,43 +211,43 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let nav_rows = v_flex()
         .gap(px(1.))
         .child(
-            nav("nav-new", IconName::Plus, t!("sidebar.new_conversation").into(), 0, 0, new_on)
+            nav("nav-new", glyph(IconName::Plus, new_on), t!("sidebar.new_conversation").into(), 0, 0, new_on)
                 .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘N"))
                 .on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))),
         )
-        .child(nav("nav-pm", IconName::Bot, t!("sidebar.pm_talk").into(), 0, 0, pm_on).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-pm", pm_glyph, t!("sidebar.pm_talk").into(), 0, 0, pm_on).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                 this.open_side(Side::Pm, window, cx);
             }
         })))
         // The conversations about the whole squad, under the PM's own.
         .children(conversation_rows(shell, None, cx))
-        .child(nav("nav-inbox", IconName::Inbox, t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-inbox", glyph(IconName::Inbox, on_board && menu == Menu::Inbox), t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }), window, cx) {
                 this.open_side_menu(Menu::Inbox, cx);
             }
         })))
-        .child(nav("nav-working", IconName::LoaderCircle, t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-working", glyph(IconName::LoaderCircle, on_board && menu == Menu::Working), t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Working, member: None, ticket: None }), window, cx) {
                 this.open_side_menu(Menu::Working, cx);
             }
         })))
-        .child(nav("nav-all", IconName::LayoutDashboard, t!("board.menu_all").into(), 0, 0, on_board && matches!(menu, Menu::All | Menu::View(_))).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-all", glyph(IconName::LayoutDashboard, on_board && matches!(menu, Menu::All | Menu::View(_))), t!("board.menu_all").into(), 0, 0, on_board && matches!(menu, Menu::All | Menu::View(_))).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::All, member: None, ticket: None }), window, cx) {
                 this.open_side_menu(Menu::All, cx);
             }
         })))
-        .child(nav("nav-overview", IconName::ChartPie, t!("overview.title").into(), 0, 0, shell.screen == Screen::Overview).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-overview", glyph(IconName::ChartPie, shell.screen == Screen::Overview), t!("overview.title").into(), 0, 0, shell.screen == Screen::Overview).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Overview, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                 this.open_overview(cx);
             }
         })))
-        .child(nav("nav-roadmap", IconName::Map, t!("roadmap.title").into(), 0, 0, shell.screen == Screen::Roadmap).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-roadmap", glyph(IconName::Map, shell.screen == Screen::Roadmap), t!("roadmap.title").into(), 0, 0, shell.screen == Screen::Roadmap).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Roadmap, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                 this.open_roadmap(cx);
             }
         })))
-        .child(nav("nav-design", IconName::Palette, t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-design", glyph(IconName::Palette, shell.screen == Screen::Design), t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Design, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                 this.open_design(cx);
             }

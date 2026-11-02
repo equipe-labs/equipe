@@ -2283,5 +2283,9 @@
   "routine_ask.title": "定期業務の提案",
   "routine_ask.what": "毎回任せること",
   "routine_ask.when": "いつ",
-  "chat.chapters": "会話の目次"
+  "chat.chapters": "会話の目次",
+  "browser.done_give_back_short": "完了",
+  "browser.handed_more": "すべて表示",
+  "browser.handed_less": "閉じる",
+  "browser.bar_asked": "{name} は返してもらうのを待っています"
 }

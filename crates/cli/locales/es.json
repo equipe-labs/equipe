@@ -1079,5 +1079,6 @@
   "review.what_base": "los cambios desde {base}",
   "review.what_worktree": "tus cambios respecto a HEAD",
   "role.security": "revisa con regularidad que el código, las dependencias y esta máquina sigan seguros",
-  "role.marketing": "posicionamiento, textos, contenidos y lanzamientos — borradores, publicados solo con tu sí"
+  "role.marketing": "posicionamiento, textos, contenidos y lanzamientos — borradores, publicados solo con tu sí",
+  "main.service_own_home_only": "El servicio de inicio de sesión solo ejecuta equipe desde su carpeta (~/.equipe). Con EQUIPE_HOME en otro sitio no se toca — inicia esa con `equipe daemon start`."
 }

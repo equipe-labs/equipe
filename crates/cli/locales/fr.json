@@ -1079,5 +1079,6 @@
   "review.what_base": "les changements depuis {base}",
   "review.what_worktree": "vos changements depuis HEAD",
   "role.security": "vérifie régulièrement que le code, les dépendances et cette machine restent sûrs",
-  "role.marketing": "positionnement, textes, contenus et lancements — des brouillons, publiés seulement avec ton accord"
+  "role.marketing": "positionnement, textes, contenus et lancements — des brouillons, publiés seulement avec ton accord",
+  "main.service_own_home_only": "Le service de connexion ne lance equipe que depuis son dossier (~/.equipe). Avec EQUIPE_HOME ailleurs, il n’est pas touché — lancez celle-ci avec `equipe daemon start`."
 }

@@ -869,10 +869,13 @@ fn unbuilt<T>(path: &Path, f: impl FnOnce() -> T) -> Option<T> {
 }
 
 /// When the disk runs short: the caches no build needs between builds go,
-/// without asking — incremental caches in members' build folders, and at
-/// `deeper` (nearly full) whole build folders nobody built in for days. Only
-/// where cargo isn't building, kept out while they go. What went, for the log.
-pub fn trim_builds(home: &Path, deeper: bool) -> (u64, Vec<String>) {
+/// without asking — incremental caches in members' build folders; nearly
+/// full, whole build folders nobody built in for days; full, every member's
+/// build folder cargo isn't building in now, however recent (a build makes it
+/// again; a full disk fails every build, and the work with it). Only where
+/// cargo isn't building, kept out while they go. What went, for the log.
+pub fn trim_builds(home: &Path, level: DiskLevel) -> (u64, Vec<String>) {
+    let (deeper, whole) = (level >= DiskLevel::Critical, level >= DiskLevel::Full);
     off_the_loop("disk::trim_builds");
     let roots = roots(home);
     let mut freed = 0;
@@ -891,7 +894,7 @@ pub fn trim_builds(home: &Path, deeper: bool) -> (u64, Vec<String>) {
             if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
                 continue;
             }
-            if deeper && newest(&path).is_some_and(|at| at.elapsed().unwrap_or_default() > STALE_AFTER) {
+            if whole || (deeper && newest(&path).is_some_and(|at| at.elapsed().unwrap_or_default() > STALE_AFTER)) {
                 give(&path, &mut done);
                 continue;
             }
@@ -1368,7 +1371,7 @@ mod tests {
         fill(&builds.join("qa").join("aarch64-apple-darwin").join("debug").join("incremental"), MB as usize);
         fill(&builds.join("mobile").join("debug").join("incremental"), MB as usize);
         let held = building_in(&builds.join("mobile").join("debug"));
-        let (freed, done) = trim_builds(&tree.home, false);
+        let (freed, done) = trim_builds(&tree.home, DiskLevel::Low);
         assert!(!builds.join("pm").join("debug").join("incremental").exists() && builds.join("pm").join("debug").join("deps").exists());
         assert!(!builds.join("qa").join("aarch64-apple-darwin").join("debug").join("incremental").exists(), "per target too");
         assert!(builds.join("mobile").join("debug").join("incremental").exists(), "cargo builds there now");
@@ -1380,10 +1383,27 @@ mod tests {
         for dir in [builds.join("pm"), builds.join("pm").join("debug")] {
             std::fs::File::open(&dir).unwrap().set_modified(old).unwrap();
         }
-        trim_builds(&tree.home, false);
+        trim_builds(&tree.home, DiskLevel::Low);
         assert!(builds.join("pm").exists(), "only when nearly full");
-        trim_builds(&tree.home, true);
+        trim_builds(&tree.home, DiskLevel::Critical);
         assert!(!builds.join("pm").exists() && builds.join("mobile").join("debug").exists());
+    }
+
+    #[test]
+    fn a_full_disk_gives_back_every_build_folder_no_build_is_using_however_recent() {
+        let tree = Tree::new();
+        let builds = tree.home.join("cache").join("build").join("acme");
+        for member in ["frontend", "backend", "mobile"] {
+            fill(&builds.join(member).join("debug").join("deps"), MB as usize);
+        }
+        let held = building_in(&builds.join("mobile").join("debug"));
+        trim_builds(&tree.home, DiskLevel::Critical);
+        assert!(builds.join("frontend").exists(), "built today: kept while there is a little room");
+        let (freed, done) = trim_builds(&tree.home, DiskLevel::Full);
+        assert!(!builds.join("frontend").exists() && !builds.join("backend").exists(), "{done:?}");
+        assert!(builds.join("mobile").join("debug").join("deps").exists(), "cargo builds there now");
+        assert!(freed >= 2 * MB);
+        drop(held);
     }
 
     #[test]

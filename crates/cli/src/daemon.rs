@@ -6,7 +6,7 @@
 //! `~/.equipe/daemon.log`.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use equipe_core::gateway::{self, Client};
@@ -74,7 +74,7 @@ pub async fn ensure_running() -> io::Result<bool> {
         Way::Reload => std::env::current_exe().is_ok_and(|exe| service::install(&exe, &log_path()).is_ok()),
         Way::Alone => spawn_detached().is_ok(),
     };
-    match start_with(ways(service::installed()), take, || gateway::is_running(&socket)).await {
+    match start_with(ways(service::installed() && own_home()), take, || gateway::is_running(&socket)).await {
         Some(way) => {
             if let Some(line) = way.log_line() {
                 note_in_log(line);
@@ -115,6 +115,19 @@ impl Way {
 }
 
 /// The ways to try, in order, each with how long it waits for an answer.
+/// Whether this is the person's own home (`~/.equipe`), the one the login
+/// service runs. Another (`EQUIPE_HOME` set elsewhere: a test, a second
+/// squad's trial) never touches the service: starting it there reloaded the
+/// person's own daemon in the middle of its work and pointed its log at a
+/// temporary folder.
+pub fn own_home() -> bool {
+    is_own_home(&equipe_home(), dirs::home_dir().as_deref())
+}
+
+fn is_own_home(home: &Path, user: Option<&Path>) -> bool {
+    user.is_some_and(|u| home == u.join(".equipe"))
+}
+
 fn ways(installed: bool) -> &'static [(Way, Duration)] {
     const SERVICE: &[(Way, Duration)] = &[
         (Way::Service, Duration::from_secs(10)),
@@ -556,6 +569,9 @@ mod tests {
     #[test]
     fn without_the_service_it_runs_on_its_own_and_the_log_says_how_it_started() {
         assert_eq!(ways(false).iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Alone]);
+        assert!(is_own_home(Path::new("/Users/a/.equipe"), Some(Path::new("/Users/a"))));
+        assert!(!is_own_home(Path::new("/var/folders/x/T/tmp.V/"), Some(Path::new("/Users/a"))), "a home elsewhere starts alone, never through the person's service");
+        assert!(!is_own_home(Path::new("/Users/a/.equipe"), None));
         assert_eq!(ways(true).iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Service, Way::Reload, Way::Alone]);
         assert_eq!(Way::Service.log_line(), None);
         assert!(Way::Reload.log_line().is_some() && Way::Alone.log_line().is_some());

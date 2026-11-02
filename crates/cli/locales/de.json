@@ -1079,5 +1079,6 @@
   "review.what_base": "die Änderungen seit {base}",
   "review.what_worktree": "deine Änderungen gegenüber HEAD",
   "role.security": "prüft regelmäßig, ob Code, Abhängigkeiten und dieser Rechner sicher sind",
-  "role.marketing": "Positionierung, Texte, Inhalte und Launches — Entwürfe, veröffentlicht nur mit deinem Ja"
+  "role.marketing": "Positionierung, Texte, Inhalte und Launches — Entwürfe, veröffentlicht nur mit deinem Ja",
+  "main.service_own_home_only": "Der Anmeldedienst startet equipe nur aus dem eigenen Ordner (~/.equipe). Ist EQUIPE_HOME woanders gesetzt, bleibt der Dienst unberührt — starte diese Instanz mit `equipe daemon start`."
 }
