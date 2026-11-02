@@ -47,12 +47,31 @@ hard-code fields. A kind is offered only once its adapter exists.
 | kind | status | fields (`*` secret, kept in the Keychain) | metrics |
 |---|---|---|---|
 | `fake` | here (tests, screens; offered when `EQUIPE_METRICS_FAKE` is set) | `token`*, `seed`, `fail` | `visits`, `stars`, `languages` |
-| `posthog` | adapter to come | `api_key`*, `project_id`, `host` (default `https://us.posthog.com`) | `visits`, `languages`, `referrers`, `download_clicks`, custom |
-| `github` | adapter to come | `token`*, `repo` (`owner/name`) | `views`, `clones`, `stars` |
-| `app_store` | adapter to come | `issuer_id`, `key_id`, `private_key`* (the .p8's text), `vendor_number`, `app_id` | `downloads` |
+| `posthog` | here (`adapters/posthog.rs`) | `api_key`* (Query: Read), `project_id`, `host` (default `https://us.posthog.com`), `filter`, `language_property`, `click_events`, `click_property` | `visits`, `languages`, `referrers`, `utm_sources`, `clicks` |
+| `github` | here (`adapters/github.rs`) | `token`* (Administration: read), `repo` (`owner/name`) | `views`, `visitors`, `clones`, `stars`, `referrers` |
+| `app_store` | here (`adapters/app_store.rs`) | `issuer_id`, `key_id`, `private_key`* (the .p8's text), `vendor_number`, `app_id` | `downloads` |
 
-The fields and metrics of the three adapters to come are planned: each
-adapter's ticket settles them in its `spec()`, which is the truth.
+Each adapter's `spec()` is the truth for its fields and metrics; the hints
+there say where in the service each one is found.
+
+- **PostHog** asks HogQL (`/api/projects/<id>/query/`), days cut by this Mac's
+  time zone. `visits` is page loads, not people, on a site that gives each
+  load a new person ID. `filter` (`internal!=true, environment=production`) is
+  the person's to set, never guessed. A breakdown keeps a day's 30 biggest
+  labels and adds the rest up as `(other)`. Without `click_events` no clicks
+  are asked.
+- **GitHub** traffic (`views`, `visitors`, `clones`) is the API's last 14
+  days (`keeps_days` 14); `stars` is a day's running total from the
+  stargazers' dates when they fit in 10 pages (1,000), else today's count
+  only. `referrers` is GitHub's 14-day window, so it is a `total` split
+  by label: a period shows its last day's split, not a sum of overlapping
+  windows.
+- **App Store Connect** reads the daily Sales report (`/v1/salesReports`,
+  a JWT signed with the .p8 on this Mac): `downloads` is first-time
+  downloads of `app_id`. Today is never asked; a day Apple has no report for
+  yet is left out, and only a day it says sold nothing is 0. Apple keeps
+  daily reports about a year (`keeps_days` 365), so a first fetch asks a
+  year at most.
 
 `fake` makes up numbers that look like a small site's, the same for the same
 `seed` and day, and — like GitHub — remembers 14 days. `fail` (`auth`,
@@ -75,7 +94,7 @@ Each source reports metrics by **name** (unique within the source), with a
 | shape | a day is | a period is |
 |---|---|---|
 | `count` | that day's count | the sum of its days |
-| `total` | a running total that day (stars) | its last known day |
+| `total` | a running total that day (stars), maybe split by label | its last known day (and that day's split) |
 | `breakdown` | that day's count, split by label (`breakdown`) | each label summed, biggest first |
 
 Units: `page_loads`, `clicks`, `views`, `clones`, `stars`, `downloads`. Screens

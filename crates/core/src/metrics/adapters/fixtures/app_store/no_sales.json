@@ -1,0 +1,11 @@
+{
+  "errors": [
+    {
+      "id": "3f5b1c2e-7a41-4c1d-9b0e-5d8a6f2e1c90",
+      "status": "404",
+      "code": "NOT_FOUND",
+      "title": "The specified resource does not exist",
+      "detail": "There were no sales for the date specified."
+    }
+  ]
+}
