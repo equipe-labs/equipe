@@ -13,7 +13,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 31] = [
+pub const COMMANDS: [Spec; 32] = [
     Spec { name: "usage", args: "", about: "commands.about_usage" },
     Spec { name: "scale", args: "[0-6|off]", about: "commands.about_scale" },
     Spec { name: "compact", args: "[member]", about: "commands.about_compact" },
@@ -30,6 +30,7 @@ pub const COMMANDS: [Spec; 31] = [
     Spec { name: "cancel", args: "T-n", about: "commands.about_cancel" },
     Spec { name: "board", args: "", about: "commands.about_board" },
     Spec { name: "design", args: "", about: "commands.about_design" },
+    Spec { name: "metrics", args: "", about: "commands.about_metrics" },
     Spec { name: "find", args: "<words>", about: "commands.about_find" },
     Spec { name: "tidy", args: "", about: "commands.about_tidy" },
     Spec { name: "disk", args: "", about: "commands.about_disk" },

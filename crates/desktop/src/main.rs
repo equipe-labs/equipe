@@ -64,6 +64,7 @@ mod icons;
 mod motion;
 mod relaunch;
 use relaunch::DaemonUpdate;
+mod metrics;
 mod roadmap;
 mod sent;
 mod render;
@@ -183,6 +184,8 @@ pub enum Screen {
     Overview,
     /// 로드맵: the work as one picture, what waits on what (`views/roadmap.rs`).
     Roadmap,
+    /// 지표: the product's numbers, from the services it reports to (`views/metrics.rs`).
+    Metrics,
 }
 
 pub struct Shell {
@@ -217,6 +220,9 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// 디자인 시스템's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
+    /// 지표's state: what the daemon said, the form being filled.
+    pub metrics: metrics::Metrics,
+    pub metrics_ui: views::metrics::Inputs,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
     /// The terminal at the right, while one runs.
@@ -364,6 +370,8 @@ impl Shell {
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
+            metrics: metrics::Metrics::new(),
+            metrics_ui: Default::default(),
             browser,
             terminal: None,
             term_offered: None,
@@ -1434,6 +1442,7 @@ impl Shell {
                     Screen::Design => views::design::render(self, cx),
                     Screen::Overview => views::overview::render(self, cx),
                     Screen::Roadmap => views::roadmap::render(self, cx),
+                    Screen::Metrics => views::metrics::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
