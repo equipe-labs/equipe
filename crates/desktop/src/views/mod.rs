@@ -30,6 +30,7 @@ pub mod overview;
 pub mod peek;
 pub mod quote;
 pub mod settings;
+pub mod metrics;
 pub mod roadmap;
 pub mod secrets;
 pub mod routine;
