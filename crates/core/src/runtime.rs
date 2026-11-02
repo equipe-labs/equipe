@@ -2007,25 +2007,26 @@ runbooks and reports live there, and work across the projects or on running them
         self.publish(Event::RoutinesChanged { squad: squad.to_owned(), routines });
     }
 
-    /// A security engineer joining brings the weekly security check — once:
-    /// the person changes or deletes it like any routine, and it stays so.
-    fn add_security_check(&mut self, squad: &str) {
+    /// A role that brings a weekly routine (security's check, marketing's)
+    /// adds it on joining — once: the person changes or deletes it like any
+    /// routine, and it stays so.
+    fn add_joining_routine(&mut self, squad: &str, role: &str) {
         let lang = crate::i18n::Lang::resolve_in(&self.config.home, crate::i18n::Front::App);
         let Some(journal) = self.journal(squad) else { return };
-        if journal.security_check_added() {
+        if journal.role_routine_added(role) {
             return;
         }
         let mut all = journal.routines();
+        let id = all.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        let Some(mut routine) = crate::heartbeat::joining_routine(role, lang, id) else { return };
         if all.len() >= MAX_ROUTINES {
-            crate::daemon_log!("equipe: {squad}: no room for the weekly security check ({MAX_ROUTINES} routines)");
+            crate::daemon_log!("equipe: {squad}: no room for {role}'s weekly routine ({MAX_ROUTINES} routines)");
             return;
         }
-        let id = all.iter().map(|r| r.id).max().unwrap_or(0) + 1;
-        let mut check = crate::heartbeat::weekly_security_check(lang, id);
-        check.next_run = Some(routines::next_run(check.when, now_secs(), &routines::Local));
-        all.push(check);
-        if let Err(err) = journal.set_security_check_added() {
-            crate::daemon_log!("equipe: {squad}: the security check wasn't marked added: {err}");
+        routine.next_run = Some(routines::next_run(routine.when, now_secs(), &routines::Local));
+        all.push(routine);
+        if let Err(err) = journal.set_role_routine_added(role) {
+            crate::daemon_log!("equipe: {squad}: {role}'s routine wasn't marked added: {err}");
         }
         self.keep_routines(squad, all);
     }
@@ -2447,9 +2448,9 @@ runbooks and reports live there, and work across the projects or on running them
         };
         if self.config.persist
             && let Some(squad) = &squad
-            && role.is_some_and(|r| r.id == roles::SECURITY)
+            && let Some(role) = role
         {
-            self.add_security_check(squad);
+            self.add_joining_routine(squad, role.id);
         }
 
         if self.config.persist

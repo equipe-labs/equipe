@@ -7133,6 +7133,13 @@ impl Window {
         self.a11y.is_active()
     }
 
+    /// equipe: build the accessibility tree from the next frame on, as when a
+    /// screen reader asks for it — for a tool that reads it with none listening.
+    pub fn activate_a11y(&mut self) {
+        self.a11y.force_active();
+        self.refresh();
+    }
+
     /// Debug representation of the last frame's accessibility information.
     pub fn debug_a11y_tree_json(&self) -> Option<String> {
         self.a11y.debug_tree_json()

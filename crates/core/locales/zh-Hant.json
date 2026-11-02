@@ -364,5 +364,7 @@
   "news.signal_recovered": "訊號恢復正常 · {name}（{project}）",
   "news.signal_changed": "訊號變化 {pct} · {name}（{project}）· {from} → {to}",
   "routine.weekly_security.title": "每週安全檢查",
-  "routine.weekly_security.prompt": "每週安全檢查。請把檢查工單交給 security 成員。\n1. 先看上次檢查以來變更的程式碼和新增的相依套件。\n2. 檢查已知漏洞、外洩的金鑰、對外開放的設定，以及這台機器的基本安全設定。\n3. 依嚴重程度整理發現的問題，並把修正以工程師的工單提出。嚴重的問題請立即告訴我。\n4. 報告依日期保存在小組資料夾的 security/ 下。"
+  "routine.weekly_security.prompt": "每週安全檢查。請把檢查工單交給 security 成員。\n1. 先看上次檢查以來變更的程式碼和新增的相依套件。\n2. 檢查已知漏洞、外洩的金鑰、對外開放的設定，以及這台機器的基本安全設定。\n3. 依嚴重程度整理發現的問題，並把修正以工程師的工單提出。嚴重的問題請立即告訴我。\n4. 報告依日期保存在小組資料夾的 security/ 下。",
+  "routine.weekly_marketing.title": "每週行銷檢查",
+  "routine.weekly_marketing.prompt": "每週行銷檢查。請交給 marketing 成員。\n1. 看看上週發布的內容和數據（造訪、註冊、回應），告訴我哪些有效。\n2. 提出本週要做的 1–3 個內容或實驗，並附上草稿。\n3. 要公開的內容只準備草稿，經我同意後再發布。\n4. 結果依日期保存在小組資料夾的 marketing/ 下。"
 }

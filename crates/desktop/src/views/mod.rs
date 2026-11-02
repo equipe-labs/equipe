@@ -14,6 +14,7 @@ pub mod compact;
 pub mod composer;
 pub mod connect;
 pub mod decide;
+pub mod deck;
 pub mod design;
 pub mod diffview;
 pub mod disk;

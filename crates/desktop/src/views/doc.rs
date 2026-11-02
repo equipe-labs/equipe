@@ -89,6 +89,7 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
                 .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).overflow_hidden().whitespace_nowrap().text_ellipsis().child(doc.name()))
                 .child(div().text_size(px(META)).text_color(p.muted).font_family(MONO).overflow_hidden().whitespace_nowrap().text_ellipsis().child(path.clone())),
         )
+        .when(doc.slides().is_some_and(|s| !s.is_empty()), |bar| bar.child(ui::icon_button(p, "doc-present", Icon::Play, t!("deck.present"), None).on_click(cx.listener(|this, _, _, cx| this.present(0, cx)))))
         .child(ui::icon_button(p, "doc-reload", Icon::Reload, t!("doc.reload"), None).on_click(cx.listener(|this, _, _, cx| this.reload_doc(cx))))
         .when(local, |bar| {
             let path = doc.path.clone();
@@ -117,7 +118,7 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
                 .pt_4()
                 .pb_8()
                 .min_w_0()
-                .child(crate::render::view::nested(p, ("doc", crate::render::hash_of((&doc.path, doc.read))), &markdown, look))
+                .child(crate::render::view::document(p, ("doc", crate::render::hash_of((&doc.path, doc.read))), &markdown, look))
                 .when(doc.cut, |b| b.child(div().pt_3().text_size(px(SMALL)).text_color(p.muted).child(t!("doc.cut", size = crate::doc::MOST / 1024))))
                 .into_any_element()
         }

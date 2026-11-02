@@ -325,8 +325,8 @@ impl Reach {
 /// engine. Off Claude: backend, then mobile and frontend…; off Codex: data and
 /// qa first. The PM always last. A role of the person's own sits before the designer.
 pub fn rank(to: Engine, role: &str) -> usize {
-    const TO_CODEX: [&str; 8] = ["backend", "mobile", "frontend", "data", "qa", "security", "designer", "pm"];
-    const TO_CLAUDE: [&str; 8] = ["data", "qa", "security", "backend", "mobile", "frontend", "designer", "pm"];
+    const TO_CODEX: [&str; 9] = ["backend", "mobile", "frontend", "data", "qa", "security", "marketing", "designer", "pm"];
+    const TO_CLAUDE: [&str; 9] = ["data", "qa", "security", "backend", "mobile", "frontend", "marketing", "designer", "pm"];
     let order = if to == Engine::Codex { TO_CODEX } else { TO_CLAUDE };
     let designer = order.iter().position(|r| *r == "designer").unwrap_or(0);
     order.iter().position(|r| *r == role).map_or(designer * 2 - 1, |at| at * 2)
@@ -563,7 +563,7 @@ pub struct Seat {
 pub fn seat(role: &str) -> Option<Seat> {
     let s = |engine, model| Some(Seat { engine, model, effort: "medium" });
     match role {
-        "pm" | "designer" | "backend" | "mobile" => s(Engine::Claude, "opus"),
+        "pm" | "designer" | "backend" | "mobile" | "marketing" => s(Engine::Claude, "opus"),
         "frontend" => s(Engine::Claude, "sonnet"),
         "qa" | "security" | "data" => s(Engine::Codex, "gpt-6.1-sol"),
         _ => None,

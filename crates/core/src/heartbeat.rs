@@ -42,6 +42,29 @@ pub fn weekly_security_check(lang: Lang, id: u32) -> Routine {
     }
 }
 
+/// The weekly marketing check a squad gets when a marketer joins it: Mondays
+/// at 11:00, on, handed to the PM like any routine. Added once.
+pub fn weekly_marketing_check(lang: Lang, id: u32) -> Routine {
+    Routine {
+        id,
+        title: core(lang).get("routine.weekly_marketing.title").to_owned(),
+        prompt: core(lang).get("routine.weekly_marketing.prompt").to_owned(),
+        when: Schedule::Weekly { weekday: 1, hour: 11, minute: 0 },
+        on: true,
+        last_run: None,
+        next_run: None,
+    }
+}
+
+/// The weekly routine a role brings when it joins a squad, if it brings one.
+pub fn joining_routine(role: &str, lang: Lang, id: u32) -> Option<Routine> {
+    match role {
+        crate::roles::SECURITY => Some(weekly_security_check(lang, id)),
+        crate::roles::MARKETING => Some(weekly_marketing_check(lang, id)),
+        _ => None,
+    }
+}
+
 /// The PM's tool, as an MCP tool definition.
 pub fn tool() -> Value {
     json!({

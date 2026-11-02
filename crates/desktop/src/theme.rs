@@ -189,6 +189,7 @@ pub fn look(role: &str, name: &str) -> (&'static str, usize) {
         "data" => ("▲", 5),
         "mobile" => ("◈", 6),
         "security" => ("⬢", 7),
+        "marketing" => ("✺", 1),
         _ => {
             const MARKS: [&str; 4] = ["◇", "★", "▼", "✚"];
             let h = name.bytes().fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));

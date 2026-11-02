@@ -186,6 +186,37 @@ pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<H
         .motion(motion)
 }
 
+/// The style of a document read on its own — a report, a slide: its headings
+/// a document's, a clear step above the words, where a conversation's are
+/// barely larger.
+pub fn document_style(p: Palette, look: &Look) -> TextViewStyle {
+    let heading = if look.color == p.prose { p.text } else { look.color };
+    let size = look.size;
+    style(p, look).with_heading(move |level| {
+        let scale = match level {
+            1 => 1.75,
+            2 => 1.4,
+            3 => 1.15,
+            _ => 1.,
+        };
+        let weight = if level == 1 { FontWeight::BOLD } else { FontWeight::SEMIBOLD };
+        StyleRefinement::default()
+            .text_size(px(size * scale))
+            .line_height(px(size * scale * 1.25))
+            .font_weight(weight)
+            .text_color(Hsla::from(heading))
+            .mt(px(size * 1.1))
+            .pb(px(size * 0.35))
+    })
+}
+
+/// A document's text view: [`nested`]'s, with [`document_style`].
+pub fn document(p: Palette, id: (&'static str, u64), markdown: &str, look: Look) -> impl IntoElement {
+    let (text, full) = prepare(markdown, false, &|_| true);
+    let view = configure(TextView::markdown(ElementId::NamedInteger(id.0.into(), id.1), text), p, look, 0, Arc::new(full));
+    div().text_size(px(look.size)).line_height(px(look.line)).text_color(look.color).child(view.style(document_style(p, &look)))
+}
+
 /// A text view of its own, inside another's custom block (a callout's body).
 pub fn nested(p: Palette, id: (&'static str, u64), markdown: &str, look: Look) -> impl IntoElement {
     let (text, full) = prepare(markdown, false, &|_| true);
@@ -236,9 +267,23 @@ pub fn follow(url: &str, modifiers: Modifiers, scope: u64, window: &mut Window, 
 
 #[cfg(test)]
 mod tests {
-    use super::{Look, style};
+    use super::{Look, document_style, style};
     use crate::theme::Palette;
-    use gpui_kit::{Hsla, WindowAppearance};
+    use gpui_kit::base::text::TextViewStyle;
+    use gpui_kit::{Hsla, WindowAppearance, px};
+
+    #[test]
+    fn a_documents_headings_stand_well_above_its_words_where_a_replys_barely_do() {
+        let p = Palette::new(WindowAppearance::Dark);
+        let look = Look { size: 15., line: 24., color: p.prose, live: false };
+        let size = |s: TextViewStyle, level| s.heading(level).text.font_size.map(|s| f32::from(s.to_pixels(px(16.))));
+        assert_eq!(size(style(p, &look), 1), Some(17.), "a reply's: barely larger");
+        assert_eq!(size(document_style(p, &look), 1), Some(15. * 1.75));
+        assert!(size(document_style(p, &look), 2) > size(document_style(p, &look), 3));
+        // On a slide the words are big, and the headings with them.
+        let slide = Look { size: 32., line: 46., ..look };
+        assert_eq!(size(document_style(p, &slide), 1), Some(56.));
+    }
 
     /// A link reads as a link and code as code: inline code takes the words'
     /// secondary colour, not the link's; ticket numbers, which a reply is

@@ -331,7 +331,7 @@ mod tests {
         let err = |args: Value| check_args(args).unwrap_err();
         assert!(err(json!({ "role": "mobile", "reason": "r" })).contains("`add` or `remove`"));
         assert!(err(json!({ "change": "add", "role": "mobile" })).contains("reason"));
-        assert!(err(json!({ "change": "add", "role": "astronaut", "reason": "r" })).contains("No role called astronaut. Roles: designer, frontend, backend, mobile, qa, security, data"));
+        assert!(err(json!({ "change": "add", "role": "astronaut", "reason": "r" })).contains("No role called astronaut. Roles: designer, frontend, backend, mobile, qa, security, marketing, data"));
         assert!(err(json!({ "change": "add", "role": "pm", "reason": "r" })).contains("one PM"));
         assert!(err(json!({ "change": "add", "role": "po", "reason": "r" })).contains("one PM"));
         assert!(err(json!({ "change": "add", "role": "custom", "reason": "r" })).contains("needs its name"));

@@ -727,13 +727,13 @@ impl Journal {
         self.set_meta("active_at", &at.to_string())
     }
 
-    /// Whether the weekly security check was ever added (it comes once).
-    pub fn security_check_added(&self) -> bool {
-        self.meta("security_check_added").is_some()
+    /// Whether the weekly routine `role` brings was ever added (it comes once).
+    pub fn role_routine_added(&self, role: &str) -> bool {
+        self.meta(&format!("{role}_check_added")).is_some()
     }
 
-    pub fn set_security_check_added(&self) -> Result<()> {
-        self.set_meta("security_check_added", "1")
+    pub fn set_role_routine_added(&self, role: &str) -> Result<()> {
+        self.set_meta(&format!("{role}_check_added"), "1")
     }
 
     /// When the PM was last woken over an empty board, in unix seconds.

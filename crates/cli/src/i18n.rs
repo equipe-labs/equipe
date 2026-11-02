@@ -29,6 +29,7 @@ pub fn role_summary(role: &equipe_core::roles::Role) -> &'static str {
         "mobile" => equipe_core::t!("role.mobile"),
         "qa" => equipe_core::t!("role.qa"),
         "security" => equipe_core::t!("role.security"),
+        "marketing" => equipe_core::t!("role.marketing"),
         "data" => equipe_core::t!("role.data"),
         "custom" => equipe_core::t!("role.custom"),
         _ => role.summary,

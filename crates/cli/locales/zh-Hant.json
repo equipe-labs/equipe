@@ -1054,5 +1054,6 @@
   "review.verdict.risky": "有風險",
   "review.what_base": "自 {base} 以來的變更",
   "review.what_worktree": "相對 HEAD 的變更",
-  "role.security": "定期檢查程式碼、相依套件和這台機器是否安全"
+  "role.security": "定期檢查程式碼、相依套件和這台機器是否安全",
+  "role.marketing": "負責定位、文案、內容和發布。只寫草稿，經你同意才公開"
 }
