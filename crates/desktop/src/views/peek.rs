@@ -274,8 +274,8 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
     }
     if let Some(w) = &who {
         let member = model.members.iter().find(|m| m.name == *w || m.role == *w);
-        let (mark, _) = member.map_or_else(|| look(w, w), |m| look(&m.role, &m.name));
-        facts.push(h_flex().gap_1().text_color(member_color(p, model, w)).child(mark).child(w.clone()).into_any_element());
+        let role = member.map_or(w.as_str(), |m| m.role.as_str());
+        facts.push(h_flex().gap_1().items_center().text_color(member_color(p, model, w)).child(crate::theme::avatar(p, role, w, 15.)).child(w.clone()).into_any_element());
     }
     if let Some(branch) = t.branch.clone().filter(|_| !t.kind.in_home()) {
         facts.push(div().font_family(MONO).text_size(px(12.)).child(format!("{branch} → main")).into_any_element());
@@ -531,7 +531,7 @@ fn activity(shell: &Shell, id: TicketId, turns: usize) -> AnyElement {
         let w = rules::who(t)?.to_owned();
         Some((w.clone(), shell.model.members.iter().find(|m| m.name == w).map_or(w, |m| m.role.clone())))
     });
-    let (mark, hue) = who.as_ref().map_or(("·", 0), |(n, r)| look(r, n));
+    let hue = who.as_ref().map_or(0, |(n, r)| look(r, n).1);
     let short = |s: &str| {
         let s = s.trim();
         if s.chars().count() > 280 { format!("{}…", s.chars().take(280).collect::<String>()) } else { s.to_owned() }
@@ -541,13 +541,21 @@ fn activity(shell: &Shell, id: TicketId, turns: usize) -> AnyElement {
         .child(kicker(p, t!("peek.last_words")))
         .when(blocks.is_empty(), |c| c.child(div().text_size(px(12.)).text_color(p.muted).child(t!("peek.no_words"))))
         .children(blocks[start..].iter().map(|b| {
-            let (lead, color, text) = match b {
-                Block::User(text) => ("›".to_owned(), p.accent, short(text)),
-                Block::Reply { text, .. } => (mark.to_owned(), p.member(hue), short(text)),
-                Block::Error { message, .. } => ("✗".to_owned(), p.red, short(message)),
-                _ => (String::new(), p.muted, String::new()),
+            let glyph = |g: &str, color: Rgba| div().w(px(14.)).flex_none().text_color(color).child(g.to_owned()).into_any_element();
+            let (lead, text) = match b {
+                Block::User(text) => (glyph("›", p.accent), short(text)),
+                // The member's avatar, as everywhere else it speaks.
+                Block::Reply { text, .. } => (
+                    match &who {
+                        Some((n, r)) => div().pt(px(3.)).child(crate::theme::avatar(p, r, n, 14.)).into_any_element(),
+                        None => glyph("·", p.member(hue)),
+                    },
+                    short(text),
+                ),
+                Block::Error { message, .. } => (glyph("✗", p.red), short(message)),
+                _ => (glyph("", p.muted), String::new()),
             };
-            h_flex().gap_2().items_start().text_size(px(13.)).line_height(px(20.)).child(div().w(px(14.)).flex_none().text_color(color).child(lead)).child(div().flex_1().min_w_0().text_color(p.text2).child(text))
+            h_flex().gap_2().items_start().text_size(px(13.)).line_height(px(20.)).child(lead).child(div().flex_1().min_w_0().text_color(p.text2).child(text))
         }))
         .into_any_element()
 }

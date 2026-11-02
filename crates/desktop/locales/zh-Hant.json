@@ -2287,5 +2287,13 @@
   "browser.done_give_back_short": "完成",
   "browser.handed_more": "展開",
   "browser.handed_less": "收起",
-  "browser.bar_asked": "{name} 正在等你交還"
+  "browser.bar_asked": "{name} 正在等你交還",
+  "usage.left_days": "{days}天{hours}小時",
+  "usage.left_hours": "{hours}小時{minutes}分鐘",
+  "usage.left_minutes": "{minutes}分鐘",
+  "usage.resets": "{left}後重置 · {when}",
+  "usage.col_context": "上下文",
+  "usage.col_tokens": "權杖",
+  "usage.cache_tip": "讀取內容的 {pct}% 來自快取（價格約為十分之一）",
+  "usage.note_short": "權杖是成員每輪處理的全部內容。對話超過 60% 後會重新開始——也可以用 /compact 或 /clear 立即進行。"
 }

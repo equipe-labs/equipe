@@ -22,6 +22,8 @@ static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0)
 /// A fresh directory. A counter, not the clock: two tests in the same
 /// microsecond (macOS clock resolution) must never share one.
 fn scratch(name: &str) -> PathBuf {
+    static SWEPT: std::sync::Once = std::sync::Once::new();
+    equipe_core::scratch::sweep_once(&SWEPT, "equipe-rt-");
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("equipe-rt-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

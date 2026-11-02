@@ -32,7 +32,7 @@ use super::board::{btn, dot, hue_of, member_color};
 use super::icons;
 use crate::board::{self as rules, MergeWay};
 use crate::state::Model;
-use crate::theme::{MONO, Palette, R_MD, SMALL, Sans, look};
+use crate::theme::{MONO, Palette, R_MD, SMALL, Sans};
 use crate::{Screen, Shell};
 
 /// How long the pointer rests on a link before its card shows.
@@ -814,8 +814,8 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     });
     let who = rules::who(t).map(|w| {
         let member = model.members.iter().find(|m| m.name == w || m.role == w);
-        let (mark, _) = member.map_or_else(|| look(w, w), |m| look(&m.role, &m.name));
-        h_flex().flex_none().gap_1().text_size(px(11.5)).text_color(member_color(p, model, w)).child(mark).child(w.to_owned())
+        let role = member.map_or(w, |m| m.role.as_str());
+        h_flex().flex_none().gap_1().items_center().text_size(px(11.5)).text_color(member_color(p, model, w)).child(crate::theme::avatar(p, role, w, 15.)).child(w.to_owned())
     });
     let head = h_flex()
         .gap_2()

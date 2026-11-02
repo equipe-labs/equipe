@@ -2341,5 +2341,13 @@
   "browser.done_give_back_short": "Terminé",
   "browser.handed_more": "Tout afficher",
   "browser.handed_less": "Réduire",
-  "browser.bar_asked": "{name} attend que vous le lui rendiez"
+  "browser.bar_asked": "{name} attend que vous le lui rendiez",
+  "usage.left_days": "{days} j {hours} h",
+  "usage.left_hours": "{hours} h {minutes} min",
+  "usage.left_minutes": "{minutes} min",
+  "usage.resets": "Renouvelé dans {left} · {when}",
+  "usage.col_context": "Contexte",
+  "usage.col_tokens": "Jetons",
+  "usage.cache_tip": "{pct} % de ce qu’il a lu venait du cache (environ un dixième du prix)",
+  "usage.note_short": "Les jetons sont tout ce que les tours d’un membre ont traité. Une conversation repart à zéro au-delà de 60 % — /compact ou /clear le fait tout de suite."
 }

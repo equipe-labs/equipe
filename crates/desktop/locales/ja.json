@@ -2287,5 +2287,13 @@
   "browser.done_give_back_short": "完了",
   "browser.handed_more": "すべて表示",
   "browser.handed_less": "閉じる",
-  "browser.bar_asked": "{name} は返してもらうのを待っています"
+  "browser.bar_asked": "{name} は返してもらうのを待っています",
+  "usage.left_days": "{days}日{hours}時間",
+  "usage.left_hours": "{hours}時間{minutes}分",
+  "usage.left_minutes": "{minutes}分",
+  "usage.resets": "{left}後にリセット · {when}",
+  "usage.col_context": "コンテキスト",
+  "usage.col_tokens": "トークン",
+  "usage.cache_tip": "読んだ内容の{pct}%はキャッシュから（料金は約10分の1）",
+  "usage.note_short": "トークンはメンバーのターンが処理したすべてです。会話は60%を超えると新しく始まります — /compact や /clear ですぐにもできます。"
 }

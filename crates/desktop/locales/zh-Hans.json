@@ -2287,5 +2287,13 @@
   "browser.done_give_back_short": "完成",
   "browser.handed_more": "展开",
   "browser.handed_less": "收起",
-  "browser.bar_asked": "{name} 在等你交还"
+  "browser.bar_asked": "{name} 在等你交还",
+  "usage.left_days": "{days}天{hours}小时",
+  "usage.left_hours": "{hours}小时{minutes}分钟",
+  "usage.left_minutes": "{minutes}分钟",
+  "usage.resets": "{left}后重置 · {when}",
+  "usage.col_context": "上下文",
+  "usage.col_tokens": "令牌",
+  "usage.cache_tip": "读取内容的 {pct}% 来自缓存（价格约为十分之一）",
+  "usage.note_short": "令牌是成员每轮处理的全部内容。对话超过 60% 后会重新开始——也可以用 /compact 或 /clear 立即进行。"
 }

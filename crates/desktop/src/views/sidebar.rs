@@ -190,8 +190,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     // A badge for what waits on the person; a quiet count for the rest.
     // A row's mark: an icon, or the PM's own (◆ in its colour), as the header and the composer show it.
     let glyph = |name: IconName, on: bool| icon(name, 16., if on { p.text } else { p.text2 }).into_any_element();
-    let (pm_mark, pm_hue) = crate::theme::look(equipe_core::roles::PM, equipe_core::roles::PM);
-    let pm_glyph = div().text_size(px(13.)).text_color(p.member(pm_hue)).child(pm_mark).into_any_element();
+    let pm_glyph = crate::theme::avatar(p, equipe_core::roles::PM, equipe_core::roles::PM, 18.).into_any_element();
     let nav = |id: &'static str, mark: AnyElement, label: String, badge: usize, count: usize, on: bool| {
         row_shell(p, id, on)
             .h(px(32.))

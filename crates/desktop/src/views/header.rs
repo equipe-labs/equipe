@@ -144,7 +144,6 @@ fn members(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .filter_map(|s| model.members.iter().find(|m| m.session == s))
         .map(|m| {
             let session = m.session;
-            let (mark, hue) = look(&m.role, &m.name);
             let on = model.selected == Some(session) && model.opened.is_none();
             h_flex()
                 .id(("switch-member", session))
@@ -161,7 +160,7 @@ fn members(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                     this.board.popover = None;
                     this.select_member(session, window, cx);
                 }))
-                .child(div().w(px(16.)).text_center().text_color(p.member(hue)).child(mark))
+                .child(crate::theme::avatar(p, &m.role, &m.name, 18.))
                 .child(div().flex_1().child(m.name.clone()))
                 .into_any_element()
         })
@@ -208,14 +207,14 @@ const CHEVRON: f32 = 12.;
 
 /// `◆ pm`, in the member's colour; a member who left is dimmed.
 fn title(p: Palette, member: &Member) -> impl IntoElement + use<> {
-    let (mark, hue) = look(&member.role, &member.name);
+    let (_, hue) = look(&member.role, &member.name);
     let color = if member.presence == Presence::Closed { p.muted } else { p.member(hue) };
     h_flex()
         .gap_2()
         .items_center()
         .flex_none()
         .text_color(color)
-        .child(div().text_size(px(11.)).child(mark))
+        .child(crate::theme::avatar(p, &member.role, &member.name, 18.))
         .child(div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(member.name.clone()))
 }
 

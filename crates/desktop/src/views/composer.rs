@@ -131,11 +131,12 @@ impl MenuKind {
 
 /// What leads a menu row: an icon, a member's mark in their colour, or nothing
 /// (the column stays, so every label starts at the same place).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Lead {
     None,
     Icon(Icon),
-    Mark(&'static str, usize),
+    /// A member: its avatar (`theme::avatar`), by role and name.
+    Avatar(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -1200,8 +1201,7 @@ impl Shell {
                 title = Some(t!("composer.menu_to").to_owned());
                 let selected = self.model.selected;
                 self.model.ordered().iter().filter(|m| m.presence != Presence::Closed).map(|m| {
-                        let (mark, hue) = look(&m.role, &m.name);
-                        Row { lead: Lead::Mark(mark, hue), ..Row::new(m.name.clone(), m.role.clone(), Act::Select(m.session)).checked(Some(m.session) == selected) }
+                        Row { lead: Lead::Avatar(m.role.clone(), m.name.clone()), ..Row::new(m.name.clone(), m.role.clone(), Act::Select(m.session)).checked(Some(m.session) == selected) }
                     })
                     .collect()
             }
@@ -1893,9 +1893,9 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                 None => base.py_1().child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(row.label.clone())).into_any_element(),
                 Some(_) => {
                     let picked = ix == menu.pick;
-                    let lead = match row.lead {
-                        Lead::Icon(name) => icon(name, ICON, p.text2).into_any_element(),
-                        Lead::Mark(mark, hue) => div().text_size(px(12.)).text_color(p.member(hue)).child(mark).into_any_element(),
+                    let lead = match &row.lead {
+                        Lead::Icon(name) => icon(*name, ICON, p.text2).into_any_element(),
+                        Lead::Avatar(role, name) => crate::theme::avatar(p, role, name, 18.).into_any_element(),
                         Lead::None if row.on => icon(Icon::Check, ICON, p.accent).into_any_element(),
                         Lead::None => div().into_any_element(),
                     };
@@ -2287,8 +2287,8 @@ fn context_ring(p: Palette, used: u8) -> impl IntoElement {
 /// Who the line goes to, as the bar shows it: always someone, never a guess.
 fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
     let name_of = |m: &crate::state::Member| {
-        let (mark, hue) = look(&m.role, &m.name);
-        (format!("{mark} {}", m.name), p.member(hue))
+        let (_, hue) = look(&m.role, &m.name);
+        (m.name.clone(), p.member(hue))
     };
     if text.starts_with('/') {
         return (t!("composer.command").into(), p.accent);

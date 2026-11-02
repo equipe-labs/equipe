@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Minus, Paperclip, Pencil, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Undo2, Users, X
+        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Minus, Paperclip, Pencil, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Undo2, Users, X
     ]
 );
 
@@ -108,11 +108,18 @@ pub enum Icon {
     /// OpenAI's own mark, for Codex (Simple Icons, CC0; the mark is OpenAI's,
     /// shown to name the platform).
     OpenAiMark,
+    /// The members' marks, by role (`theme::role_icon`).
+    Compass,
+    AppWindow,
+    PenTool,
+    Bug,
+    Chart,
+    Megaphone,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 59] = [
+    pub const ALL: [Icon; 65] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -172,6 +179,12 @@ impl Icon {
         Icon::Sparkles,
         Icon::ClaudeMark,
         Icon::OpenAiMark,
+        Icon::Compass,
+        Icon::AppWindow,
+        Icon::PenTool,
+        Icon::Bug,
+        Icon::Chart,
+        Icon::Megaphone,
     ];
 
     pub fn path(self) -> &'static str {
@@ -207,6 +220,12 @@ impl Icon {
             Icon::Retry => "icons/rotate-ccw.svg",
             Icon::Search => "icons/search.svg",
             Icon::Server => "icons/server.svg",
+            Icon::Compass => "icons/compass.svg",
+            Icon::AppWindow => "icons/app-window.svg",
+            Icon::PenTool => "icons/pen-tool.svg",
+            Icon::Bug => "icons/bug.svg",
+            Icon::Chart => "icons/chart-no-axes-column.svg",
+            Icon::Megaphone => "icons/megaphone.svg",
             Icon::Settings => "icons/settings.svg",
             Icon::Shield => "icons/shield-check.svg",
             Icon::Users => "icons/users.svg",

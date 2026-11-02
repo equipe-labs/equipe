@@ -1074,6 +1074,8 @@ mod tests {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn scratch(name: &str) -> PathBuf {
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        crate::scratch::sweep_once(&SWEPT, "equipe-disk-");
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("equipe-disk-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1127,6 +1129,15 @@ mod tests {
 
         fn ticket(&self, id: TicketId, status: TicketStatus, merged: Option<bool>, worktree: Option<&Path>) -> KnownTicket {
             KnownTicket { squad: "acme".into(), id, status, merged, worktree: worktree.map(Path::to_owned), project: Some(self.repo.clone()) }
+        }
+    }
+
+    // Its folder goes with it: one run left 140 MB of them.
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            if let Some(root) = self.home.parent() {
+                let _ = std::fs::remove_dir_all(root);
+            }
         }
     }
 

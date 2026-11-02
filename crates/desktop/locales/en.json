@@ -2341,5 +2341,13 @@
   "browser.done_give_back_short": "Done",
   "browser.handed_more": "Show all",
   "browser.handed_less": "Show less",
-  "browser.bar_asked": "{name} waits until you give it back"
+  "browser.bar_asked": "{name} waits until you give it back",
+  "usage.left_days": "{days}d {hours}h",
+  "usage.left_hours": "{hours}h {minutes}m",
+  "usage.left_minutes": "{minutes}m",
+  "usage.resets": "Refills in {left} · {when}",
+  "usage.col_context": "Context",
+  "usage.col_tokens": "Tokens",
+  "usage.cache_tip": "{pct}% of what it read came from the cache (about a tenth of the price)",
+  "usage.note_short": "Tokens are everything a member's turns processed. A conversation starts afresh past 60% full — /compact or /clear does it now."
 }

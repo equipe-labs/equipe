@@ -11,6 +11,7 @@ pub mod board;
 pub mod browser;
 pub mod chapters;
 pub mod chat;
+pub mod usage;
 pub mod compact;
 pub mod composer;
 pub mod connect;

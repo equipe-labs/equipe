@@ -586,6 +586,9 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "browser" => shell.update(cx, |shell, cx| shell.toggle_browser(window, cx)),
                 "doc" => shell.update(cx, |shell, cx| shell.open_doc(std::path::PathBuf::from(&arg), cx)),
                 "slide" => shell.update(cx, |shell, cx| shell.present(arg.parse().unwrap_or(0), cx)),
+                "usage" => shell.update(cx, |shell, cx| shell.open_usage(cx)),
+                // The header's member list, open.
+                "members" => shell.update(cx, |shell, cx| shell.toggle_popover(crate::views::board::Popover::Members, cx)),
                 "rail" => shell.update(cx, |shell, cx| {
                     shell.chat.rail_open = arg != "close";
                     cx.notify();
