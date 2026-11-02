@@ -1,0 +1,27 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>연결하기</title><link rel="stylesheet" href="metrics.css"></head><body><div class="win"><aside class="side"><div style="padding:4px 12px 12px;font-weight:700;font-size:15px">equipe<span style="color:var(--eq-color-dot)">.</span></div>
+<h6>프로젝트</h6><div class="nav"><i></i>equipe-site</div><div class="nav"><i></i>equipe-app</div><div class="nav"><i></i>equipe-desktop</div>
+<h6>보기</h6><div class="nav">대화</div><div class="nav">티켓</div><div class="nav on">지표</div><div class="nav">설정</div></aside><main class="main">
+<div class="head"><div><h1>지표 연결하기</h1><div class="sub">서비스를 연결하면 숫자를 equipe 안에서 바로 봐요. 읽기만 하고, 아무것도 바꾸지 않아요.</div></div></div>
+<div class="grid g3" style="align-items:start">
+<div class="card"><div class="tag">1 · 서비스 고르기</div>
+<div style="display:flex;gap:12px;align-items:center;padding:12px 0;border-top:1px solid var(--eq-color-line)"><div class="ico">PH</div><div style="flex:1"><div style="font-weight:600;font-size:14px">PostHog</div><div class="note">방문, 언어, 유입 경로, 클릭 위치</div></div><span class="btn p">연결</span></div>
+<div style="display:flex;gap:12px;align-items:center;padding:12px 0;border-top:1px solid var(--eq-color-line)"><div class="ico">GH</div><div style="flex:1"><div style="font-weight:600;font-size:14px">GitHub</div><div class="note">저장소 트래픽, 별</div></div><span class="btn">연결</span></div>
+<div style="display:flex;gap:12px;align-items:center;padding:12px 0;border-top:1px solid var(--eq-color-line)"><div class="ico">AS</div><div style="flex:1"><div style="font-weight:600;font-size:14px">App Store Connect</div><div class="note">앱 다운로드 수</div></div><span class="btn">연결</span></div>
+<div class="note">세 개 모두 연결하지 않아도 돼요. 연결한 것만 대시보드에 나와요.</div></div>
+<div class="card"><div class="tag">2 · 키 넣기 · PostHog</div>
+<div class="note" style="color:var(--eq-color-text)">PostHog → 설정 → 개인 API 키에서 <b>읽기 전용</b> 키를 만들어 붙여 넣어요.</div>
+<div style="display:flex;flex-direction:column;gap:4px"><label class="l">개인 API 키</label><div class="field f">phx_••••••••••••••••<span style="margin-left:auto;width:1px;height:16px;background:var(--eq-color-text)"></span></div></div>
+<div style="display:flex;flex-direction:column;gap:4px"><label class="l">프로젝트 ID</label><div class="field">700951</div><div class="note">PostHog 주소의 /project/ 뒤 숫자예요.</div></div>
+<div style="display:flex;gap:8px"><span class="btn p">확인하고 연결</span><span class="btn g">뒤로</span></div>
+<div class="note">🔒 키는 이 Mac에만 저장돼요. equipe 서버나 폰으로 보내지 않아요.</div></div>
+<div class="card"><div class="tag">3 · 연결됨</div>
+<div style="display:flex;gap:10px;align-items:center"><span class="badge ok">✓ 연결됨</span><b style="font-size:15px">PostHog</b></div>
+<div class="note" style="color:var(--eq-color-text)">프로젝트 700951에서 읽을 수 있는 것</div>
+<div style="display:flex;flex-direction:column;gap:6px;font-size:13px"><span>✓ 페이지 방문 · 언어 · 유입 경로</span><span>✓ 다운로드 클릭 위치</span><span>✓ 직접 정의한 지표 (North Star)</span></div>
+<div class="note">첫 숫자는 몇 초 뒤에 채워져요. 이후 하루 한 번, 오전 7시에 갱신해요.</div>
+<div style="display:flex;gap:8px"><span class="btn p">대시보드 보기</span><span class="btn">GitHub 연결하기</span></div>
+<div class="note">키 삭제는 설정 → 연결 관리에서 언제든 해요.</div></div>
+</div>
+<div class="card" style="flex-direction:row;gap:32px;align-items:flex-start"><div style="flex:1"><div class="tag">다른 두 서비스는 무엇을 받아요?</div></div>
+<div style="flex:2;display:grid;grid-template-columns:1fr 1fr;gap:16px" class="note"><div><b style="color:var(--eq-color-text)">GitHub</b><br>설정 → 개발자 설정 → 토큰에서 저장소 읽기 권한 토큰을 받아요. 트래픽은 저장소에 쓰기 권한이 있는 계정이어야 보여요.</div><div><b style="color:var(--eq-color-text)">App Store Connect</b><br>사용자 및 액세스 → 통합에서 API 키(.p8 파일), 키 ID, 발급자 ID를 받아요. 판매·트렌드 읽기 권한이면 돼요.</div></div></div>
+</main></div></body></html>
