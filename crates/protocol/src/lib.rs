@@ -16,6 +16,7 @@ pub mod accept;
 pub mod asks;
 pub mod decide;
 pub mod disk;
+pub mod metrics;
 pub mod engines;
 pub mod design;
 pub mod routines;

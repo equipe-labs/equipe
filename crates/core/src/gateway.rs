@@ -30,8 +30,17 @@ pub fn socket_path(home: &Path) -> PathBuf {
 /// Serve the runtime on `socket` until a client asks it to shut down.
 /// Fails with `AddrInUse` when a daemon is already answering there.
 pub async fn serve(config: runtime::Config, socket: &Path, version: &str) -> io::Result<()> {
+    let metrics = std::sync::Arc::new(crate::metrics::Metrics::open(&config.home));
+    serve_with(config, socket, version, metrics).await
+}
+
+/// [`serve`], with the product's numbers kept by `metrics` (its keys in
+/// memory, for tests).
+pub async fn serve_with(config: runtime::Config, socket: &Path, version: &str, metrics: std::sync::Arc<crate::metrics::Metrics>) -> io::Result<()> {
     let listener = bind(socket).await?;
     let home = config.home.clone();
+    // Each connection's numbers, once a day.
+    let daily = tokio::spawn(metrics.clone().daily());
     let (core, own_events) = runtime::start(config);
     // Screens subscribe for themselves; an unread receiver would only pile up events.
     drop(own_events);
@@ -41,7 +50,7 @@ pub async fn serve(config: runtime::Config, socket: &Path, version: &str) -> io:
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    tokio::spawn(serve_client(stream, core.clone(), home.clone(), version.to_owned(), stop_tx.clone()));
+                    tokio::spawn(serve_client(stream, core.clone(), home.clone(), version.to_owned(), stop_tx.clone(), metrics.clone()));
                 }
                 // Out of file descriptors, say: the next screen may find one. The
                 // daemon — and the agents it runs — stays.
@@ -56,6 +65,7 @@ pub async fn serve(config: runtime::Config, socket: &Path, version: &str) -> io:
                     let doing = core.stall().map_or_else(|| "?".to_owned(), |s| s.doing);
                     crate::daemon_log!("equipe: stopping without the core, which is still on {doing}");
                 }
+                daily.abort();
                 let _ = std::fs::remove_file(socket);
                 let _ = ack.send(());
                 return Ok(());
@@ -127,7 +137,14 @@ where
 }
 
 /// One screen's connection: answer requests, forward its events.
-async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: String, stop: UnboundedSender<oneshot::Sender<()>>) {
+async fn serve_client(
+    stream: UnixStream,
+    core: Handle,
+    home: PathBuf,
+    version: String,
+    stop: UnboundedSender<oneshot::Sender<()>>,
+    metrics: std::sync::Arc<crate::metrics::Metrics>,
+) {
     let (reader, writer) = stream.into_split();
     // Replies and events share the write half; a task owns it.
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Message>();
@@ -385,6 +402,30 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                 let _ = ack_rx.await;
                 let _ = out_tx.send(Message::response(id, "stopped"));
                 break;
+            }
+            // The product's numbers (docs/METRICS.md): each on its own task, a refresh takes seconds.
+            (Some(method), Some(id)) if method.starts_with("metrics.") => {
+                let (metrics, out, method) = (metrics.clone(), out_tx.clone(), method.to_owned());
+                let params = message.params.clone().unwrap_or(serde_json::Value::Null);
+                tokio::spawn(async move {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    let answered = metrics.call(&method, params, now).await;
+                    // A new connection, or new keys: its first numbers, right after.
+                    if method == equipe_protocol::metrics::CONNECT
+                        && let Ok(connection) = &answered
+                        && let Some(id) = connection.get("id").and_then(serde_json::Value::as_str)
+                    {
+                        let (metrics, id) = (metrics.clone(), id.to_owned());
+                        tokio::spawn(async move {
+                            let today = crate::metrics::day_of(&crate::routines::Local, now);
+                            metrics.refresh_one(&id, now, today).await;
+                        });
+                    }
+                    let _ = out.send(match answered {
+                        Ok(result) => Message::response(id, result),
+                        Err(e) => Message::failure(id, e.code, e.message),
+                    });
+                });
             }
             (Some(_), Some(id)) => {
                 let _ = out_tx.send(Message::failure(id, -32601, "unknown method"));
