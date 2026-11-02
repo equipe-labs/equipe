@@ -243,23 +243,22 @@ impl Chat {
         }
         // Rows from the first that differs are new or changed (a streaming
         // reply is the last row growing); the list measures only those again.
-        let same = old.iter().zip(self.blocks.iter()).take_while(|(a, b)| a == b).count();
+        let change = changed(&old, &self.blocks);
         if n > old.len() {
             let now = std::time::Instant::now();
             let mut arrived: HashMap<u64, std::time::Instant> = self.arrived.iter().filter(|(_, at)| now.duration_since(**at) < ARRIVING).map(|(k, v)| (*k, *v)).collect();
             // Rows put in between (a fold opened) rise where they come; else the new ones at the end.
-            let tail = old.iter().rev().zip(self.blocks.iter().rev()).take_while(|(a, b)| a == b).count().min(old.len() - same);
-            let added = n - old.len();
-            for ix in n - tail - added..n - tail {
+            for ix in change.replaced.start..change.replaced.start + change.count {
                 arrived.insert(self.serial << 24 | ix as u64, now);
             }
             self.arrived = Rc::new(arrived);
         }
         self.scroller.update(cx, |s, cx| {
-            if old.len() != n {
-                s.splice(same..old.len(), n - same, cx);
-            } else if same < n {
-                s.remeasure_items(same..n, cx);
+            if !change.replaced.is_empty() || change.count > 0 {
+                s.splice(change.replaced, change.count, cx);
+            }
+            if !change.remeasured.is_empty() {
+                s.remeasure_items(change.remeasured, cx);
             }
             if folds_changed {
                 s.remeasure(cx);
@@ -680,6 +679,29 @@ impl Rows {
     fn is_open(&self, key: u64, part: u32, default: bool) -> bool {
         default != self.opened.contains(&(key, part))
     }
+}
+
+/// How the rows went from `old` to `new`: those in `replaced` gave way to
+/// `count` new ones, and those in `remeasured` (counted after the splice)
+/// are measured again.
+#[derive(Debug, PartialEq)]
+struct Changed {
+    replaced: std::ops::Range<usize>,
+    count: usize,
+    remeasured: std::ops::Range<usize>,
+}
+
+/// Between the rows that stayed at the start and those at the end, the
+/// first ones are the same rows changed in place (a reply streaming on, a
+/// card no longer the latest): only those after them came or went. A
+/// replaced row puts the reader back at its top, so the rows they read in
+/// are measured again instead, and they stay where they were reading.
+fn changed(old: &[Block], new: &[Block]) -> Changed {
+    let same = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let tail = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count().min(old.len().min(new.len()) - same);
+    let (gone, came) = (old.len() - same - tail, new.len() - same - tail);
+    let kept = same + gone.min(came);
+    Changed { replaced: kept..same + gone, count: came - gone.min(came), remeasured: same..new.len() }
 }
 
 /// The replies that end a turn: the last before the person speaks again, or
@@ -2204,7 +2226,57 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 
 #[cfg(test)]
 mod tests {
-    use super::{Block, escape_markdown, find_hits, occurrences, turn_ends};
+    use super::{Block, changed, escape_markdown, find_hits, occurrences, turn_ends};
+    use gpui_kit::{ListAlignment, ListOffset, ListState, px};
+
+    /// Where the reader is once the list is told how `old` became `new`, read
+    /// from `at` (a row and how far into it).
+    fn place_after(old: &[Block], new: &[Block], at: (usize, f32)) -> (usize, f32) {
+        let list = ListState::new(old.len(), ListAlignment::Top, px(400.));
+        list.scroll_to(ListOffset { item_ix: at.0, offset_in_item: px(at.1) });
+        let change = changed(old, new);
+        if !change.replaced.is_empty() || change.count > 0 {
+            list.splice(change.replaced, change.count);
+        }
+        list.remeasure_items(change.remeasured);
+        assert_eq!(list.item_count(), new.len());
+        let top = list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item.into())
+    }
+
+    fn reply(text: &str, live: bool) -> Block {
+        Block::Reply { text: text.into(), first: false, live, worked: None }
+    }
+
+    #[test]
+    fn a_reply_read_as_it_streams_stays_put_when_the_next_call_comes() {
+        let old = [Block::User("go".into()), reply("a long answer", true)];
+        let new = [Block::User("go".into()), reply("a long answer, and more", true), Block::Steps(vec![])];
+        assert_eq!(place_after(&old, &new, (1, 300.)), (1, 300.));
+    }
+
+    #[test]
+    fn a_row_changing_above_the_reader_while_rows_come_leaves_them_where_they_read() {
+        let card = |live| Block::YourTurn { ticket: 7, news: "T-7".into(), live, look: 0 };
+        let old = [card(true), reply("read here", false), Block::Steps(vec![])];
+        let new = [card(false), reply("read here", false), Block::Steps(vec![]), card(true)];
+        assert_eq!(place_after(&old, &new, (1, 120.)), (1, 120.));
+    }
+
+    #[test]
+    fn a_row_put_in_above_the_reader_moves_their_place_down_with_it() {
+        let old = [Block::User("go".into()), reply("one", false), reply("two", false)];
+        let new = [Block::User("go".into()), Block::Note("between".into()), reply("one", false), reply("two", false)];
+        assert_eq!(place_after(&old, &new, (2, 50.)), (3, 50.));
+    }
+
+    #[test]
+    fn a_row_that_streams_on_alone_is_measured_again_in_place() {
+        let old = [Block::User("go".into()), reply("a", true)];
+        let new = [Block::User("go".into()), reply("ab", true)];
+        assert_eq!(place_after(&old, &new, (1, 10.)), (1, 10.));
+        assert_eq!(changed(&old, &new).remeasured, 1..2);
+    }
 
     #[test]
     fn your_words_show_as_typed() {
