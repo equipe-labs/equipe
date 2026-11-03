@@ -224,6 +224,9 @@ pub struct Remembered {
     pub tickets_board: bool,
     /// How large the window draws, in percent (⌘+ / ⌘-, settings ▸ 일반).
     pub zoom: Zoom,
+    /// The design screen's tab the person last picked (`map`, `system`);
+    /// none: the map when there is one.
+    pub design_tab: Option<String>,
 }
 
 /// The window's size in percent (`zoom.rs`): actual size unless the person
@@ -457,6 +460,8 @@ impl Remembered {
                 out.folded.insert(name.to_owned());
             } else if line.trim() == "tickets board" {
                 out.tickets_board = true;
+            } else if let Some(rest) = line.strip_prefix("design-tab ") {
+                out.design_tab = Some(rest.trim().to_owned()).filter(|t| !t.is_empty());
             } else if let Some((on, rest)) = line.strip_prefix("quiet ").map(|r| (false, r)).or_else(|| line.strip_prefix("ping ").map(|r| (true, r))) {
                 if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
                     out.pings.set(ping, on);
@@ -575,6 +580,9 @@ impl Remembered {
         }
         if self.tickets_board {
             text.push_str("tickets board\n");
+        }
+        if let Some(tab) = &self.design_tab {
+            text.push_str(&format!("design-tab {tab}\n"));
         }
         // Only what differs from the default: off as `quiet`, on as `ping`.
         for ping in Ping::ALL.into_iter().filter(|p| self.pings.get(*p) != p.default_on()) {
@@ -835,7 +843,7 @@ mod tests {
         assert!(!fresh.whole_conversation, "the conversation follows the project by default");
         assert!(!fresh.tickets_board, "티켓 opens as a list");
         assert_eq!(fresh.zoom, Zoom(100), "actual size");
-        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), ..Remembered::default() };
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), design_tab: Some("system".into()), ..Remembered::default() };
         prefs.pings.set(Ping::Failed, false);
         prefs.pings.set(Ping::Sound, false);
         prefs.set_merge_way("app", "push");
@@ -848,6 +856,7 @@ mod tests {
         assert_eq!(loaded.zoom, Zoom(125), "the window's size, from one launch to the next");
         assert_eq!(loaded.folded, prefs.folded, "the sidebar's folds, the shared folder's too");
         assert!(loaded.tickets_board, "the board, as last left");
+        assert_eq!(loaded.design_tab.as_deref(), Some("system"), "the design screen's tab, as last picked");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 
