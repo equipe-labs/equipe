@@ -8,7 +8,8 @@
 //! here), 간격 · 모서리 · 그림자 · 모션 (specimens; a curve plays under the
 //! pointer), 에셋 (pictures on a checkerboard, big in a lightbox) and
 //! 가이드라인 (guidelines.md with its contents). With none yet, what one is
-//! and a way to ask the designer. ←/→ or 1–9 move between sections.
+//! and a way to ask the designer. ←/→ or 1–9 move between sections. Its
+//! other tab, 화면 지도, is `views/flows.rs`.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::design::{self as ds, Section};
+use crate::flows::Tab;
 use crate::visuals::{Look as Shown, Size};
 use crate::icons::{Icon, icon};
 use crate::render::view::Look;
@@ -65,8 +67,10 @@ fn ref_of(name: &str) -> String {
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let ui = &shell.design;
+    let tab = shell.design_tab();
     let body: AnyElement = match ui.current() {
         _ if !ui.loaded => waiting(shell),
+        _ if tab == Tab::Map => super::flows::page(shell, cx),
         None => empty(shell, cx),
         Some(system) => page(shell, system, cx),
     };
@@ -78,7 +82,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .bg(p.bg)
         .child(header(shell, cx))
         .children(ui.loaded.then(|| ui.current().filter(|s| s.draft.is_some()).map(|s| draft_banner(shell, s, cx))).flatten())
-        .children(ui.loaded.then(|| ui.current().map(|s| tabs(shell, s, cx))).flatten())
+        .children(super::design_setup::band(shell, cx))
+        .children((ui.loaded && tab == Tab::System).then(|| ui.current().map(|s| tabs(shell, s, cx))).flatten())
         .child(body)
         .children(changes_popover(shell, cx))
         .into_any_element()
@@ -93,7 +98,7 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let current = ui.current();
     let draft = current.and_then(|_| ui.draft_of(&ui.source)).and_then(|d| d.draft.clone());
     let only_draft = current.is_some_and(|s| s.draft.is_some()) && ui.systems.iter().all(|s| s.draft.is_some() || ds::base_key(s) != ui.source);
-    let changes = current.map(|s| ui.changes(&shell.design_seen_key(s))).unwrap_or_default();
+    let changes = current.filter(|_| shell.design_tab() == Tab::System).map(|s| ui.changes(&shell.design_seen_key(s))).unwrap_or_default();
     let dir = current.map(|s| s.dir.clone()).unwrap_or_else(|| ui.folder.clone());
     let remote = shell.endpoint.is_remote();
     let mut bar = h_flex()
@@ -106,7 +111,8 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .border_b_1()
         .border_color(p.hair)
         .window_control_area(WindowControlArea::Drag)
-        .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("design.title")));
+        .when(!ui.loaded, |bar| bar.child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("design.title"))))
+        .when(ui.loaded, |bar| bar.child(super::flows::tabs(shell, cx)));
     // Projects with a look of their own: one segment each.
     if sources.len() > 1 || accepted > 1 {
         let mut seg = h_flex().flex_none().h(px(26.)).p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash);
@@ -444,7 +450,7 @@ fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> An
     let logos: Vec<(usize, &equipe_core::protocol::design::Asset)> = ds::DesignUi::logos(system).into_iter().take(3).map(|i| (i, &system.assets[i])).collect();
     let mut col = v_flex().gap_8();
     if !system.problems.is_empty() {
-        col = col.child(problems(shell, &system.problems, cx));
+        col = col.child(problems(shell, &system.problems, false, cx));
     }
     if !logos.is_empty() {
         let mut row = h_flex().gap_3().flex_wrap();
@@ -501,18 +507,22 @@ fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> An
 }
 
 /// What couldn't be read: one line, its count, with the way to have it fixed
-/// beside it; the list itself only when asked for.
-fn problems(shell: &Shell, problems: &[String], cx: &mut Context<Shell>) -> AnyElement {
+/// beside it; the list itself only when asked for. `map`: the UI map's.
+pub(super) fn problems(shell: &Shell, problems: &[String], map: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let open = shell.design.problems_open;
+    let open = if map { shell.design.map.problems_open } else { shell.design.problems_open };
     let shown = 8;
     let toggle = ui::button(p, "design-problems-toggle", ui::Kind::Ghost, if open { t!("design.problems_less") } else { t!("design.problems_more") })
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.design.problems_open = !this.design.problems_open;
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if map {
+                this.design.map.problems_open = !this.design.map.problems_open;
+            } else {
+                this.design.problems_open = !this.design.problems_open;
+            }
             cx.notify();
         }));
     let listed: Vec<String> = problems.to_vec();
-    let fix = ui::button(p, "design-problems-fix", ui::Kind::Secondary, t!("design.ask_fix")).on_click(cx.listener(move |this, _, window, cx| this.design_ask_fix(&listed, window, cx)));
+    let fix = ui::button(p, "design-problems-fix", ui::Kind::Secondary, t!("design.ask_fix")).on_click(cx.listener(move |this, _, window, cx| this.design_ask_fix(&listed, map, window, cx)));
     v_flex()
         .p_3()
         .gap_1()
@@ -1032,7 +1042,7 @@ fn checkerboard(dark: bool) -> Arc<Image> {
 }
 
 /// A picture of the system's as it stands: drawn, still coming, or why not.
-fn picture(shell: &Shell, path: &str, quiet: Rgba) -> AnyElement {
+pub(super) fn picture(shell: &Shell, path: &str, quiet: Rgba) -> AnyElement {
     let shots = shell.shots.borrow();
     match shots.best(path) {
         Some(shot) => img(shot.image).max_w_full().max_h_full().object_fit(ObjectFit::Contain).into_any_element(),
@@ -1151,28 +1161,35 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
     col.into_any_element()
 }
 
-/// An asset shown big over the window: ←/→ through the others, Esc closes.
+/// An asset shown big over the window — or, in 화면 지도, the state on show:
+/// ←/→ through the others, Esc closes.
 pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if shell.screen != Screen::Design {
         return None;
     }
-    let at = shell.design.lightbox?;
-    let system = shell.design.current()?;
-    let asset = system.assets.get(at)?;
-    let n = system.assets.len();
     let p = shell.palette;
-    let remote = shell.endpoint.is_remote();
-    let name = asset.name.rsplit('/').next().unwrap_or(&asset.name).to_owned();
-    let dark_stage = match ds::logo_sides(&asset.name) {
-        (true, false) => false,
-        (false, true) => true,
-        _ => p.is_dark(),
+    let (path, name, said, many, dark_stage) = match super::flows::zoomed(shell) {
+        Some((path, name, said, many)) => (path, name, said, many, p.is_dark()),
+        None => {
+            let at = shell.design.lightbox?;
+            let system = shell.design.current()?;
+            let asset = system.assets.get(at)?;
+            let n = system.assets.len();
+            let name = asset.name.rsplit('/').next().unwrap_or(&asset.name).to_owned();
+            let dark_stage = match ds::logo_sides(&asset.name) {
+                (true, false) => false,
+                (false, true) => true,
+                _ => p.is_dark(),
+            };
+            (asset.path.clone(), name, format!("{}/{n} · {}", at + 1, human_size(asset.size)), n > 1, dark_stage)
+        }
     };
+    let remote = shell.endpoint.is_remote();
     let round = |b: Stateful<Div>, glyph: Icon, label: String, keys: Option<&'static str>| {
         b.size(px(CONTROL)).flex().items_center().justify_center().rounded_full().cursor_pointer().hover(|s| s.bg(rgba(0xFFFFFF1F))).child(icon(glyph, ICON, rgb(0xFFFFFF))).tip(p, label, keys)
     };
-    let (path, dl_name) = (asset.path.clone(), name.clone());
-    let reveal = asset.path.clone();
+    let (shown, dl_name) = (path.clone(), name.clone());
+    let reveal = path.clone();
     let backdrop = div()
         .id("design-lightbox")
         .absolute()
@@ -1197,8 +1214,8 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .overflow_hidden()
                 .on_click(|_, _, cx| cx.stop_propagation())
                 .child(img(checkerboard(dark_stage)).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
-                .child(div().absolute().inset_0().p_8().flex().items_center().justify_center().child(picture(shell, &asset.path, rgba(0xFFFFFFB3)))),
-            ElementId::Name(format!("design-lightbox-{}", asset.path).into()),
+                .child(div().absolute().inset_0().p_8().flex().items_center().justify_center().child(picture(shell, &shown, rgba(0xFFFFFFB3)))),
+            ElementId::Name(format!("design-lightbox-{shown}").into()),
         ))
         .child(
             h_flex()
@@ -1213,9 +1230,9 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .border_1()
                 .border_color(rgba(0xFFFFFF1F))
                 .on_click(|_, _, cx| cx.stop_propagation())
-                .when(n > 1, |b| b.child(round(div().id("design-lb-prev").on_click(cx.listener(|this, _, _, cx| this.design_step(false, cx))), Icon::ArrowLeft, t!("composer.aria_previous").into(), Some("←"))))
+                .when(many, |b| b.child(round(div().id("design-lb-prev").on_click(cx.listener(|this, _, _, cx| this.design_step(false, cx))), Icon::ArrowLeft, t!("composer.aria_previous").into(), Some("←"))))
                 .child(div().text_size(px(13.)).text_color(rgb(0xFFFFFF)).child(name))
-                .child(div().text_size(px(12.)).text_color(rgba(0xFFFFFFB3)).child(format!("{}/{n} · {}", at + 1, human_size(asset.size))))
+                .child(div().min_w_0().truncate().text_size(px(12.)).text_color(rgba(0xFFFFFFB3)).child(said))
                 .child(round(div().id("design-lb-dl").on_click(cx.listener(move |this, _, _, cx| this.design_download(&path, &dl_name, cx))), Icon::ArrowDown, t!("design.download").into(), None))
                 .when(!remote, |b| {
                     b.child(round(
@@ -1227,7 +1244,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                         None,
                     ))
                 })
-                .when(n > 1, |b| b.child(round(div().id("design-lb-next").on_click(cx.listener(|this, _, _, cx| this.design_step(true, cx))), Icon::ArrowRight, t!("composer.aria_next").into(), Some("→"))))
+                .when(many, |b| b.child(round(div().id("design-lb-next").on_click(cx.listener(|this, _, _, cx| this.design_step(true, cx))), Icon::ArrowRight, t!("composer.aria_next").into(), Some("→"))))
                 .child(round(div().id("design-lb-close").on_click(cx.listener(|this, _, _, cx| this.design_lightbox(None, cx))), Icon::X, t!("composer.aria_close").into(), Some("Esc"))),
         );
     Some(motion::fade(backdrop, "design-lightbox-in", motion::BASE).into_any_element())
@@ -1381,6 +1398,7 @@ impl Shell {
             } else {
                 self.design_end_look();
                 self.design.lightbox = None;
+                self.design.map.zoomed = false;
                 self.design.changes_open = false;
             }
         }
@@ -1406,6 +1424,7 @@ impl Shell {
             .detach();
         }
         self.design_load_pictures(cx);
+        self.flows_load_pictures(cx);
     }
 
     /// The person looked: what is on screen is what they have seen.
@@ -1427,6 +1446,9 @@ impl Shell {
     /// the one in the lightbox whole — through the window's pictures
     /// (`crate::visuals`), which read them through the daemon off the UI thread.
     fn design_load_pictures(&mut self, cx: &mut Context<Self>) {
+        if self.design_tab() != Tab::System {
+            return;
+        }
         let Some(system) = self.design.current() else { return };
         let big = self.design.lightbox.and_then(|at| system.assets.get(at)).map(|a| a.path.clone());
         let wanted = {
@@ -1493,10 +1515,14 @@ impl Shell {
 
     pub fn design_lightbox(&mut self, at: Option<usize>, cx: &mut Context<Self>) {
         self.design.lightbox = at;
+        self.design.map.zoomed = false;
         cx.notify();
     }
 
     fn design_step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if super::flows::zoomed(self).is_some() {
+            return self.flows_step_state(forward, cx);
+        }
         let n = self.design.current().map_or(0, |s| s.assets.len());
         if let Some(at) = self.design.lightbox.filter(|_| n > 0) {
             self.design.lightbox = Some(if forward { (at + 1) % n } else { (at + n - 1) % n });
@@ -1553,11 +1579,17 @@ impl Shell {
     /// message, the way the composer sends one — to the designer, or to the
     /// PM to bring one in when the team has none — and the conversation opens.
     pub fn design_ask_designer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.design_ask_with(t!("design.ask_designer_message").into(), t!("design.ask_pm_message").into(), window, cx);
+    }
+
+    /// The same with other words: `to_designer` to the designer, `to_pm` to
+    /// the PM when the team has none (화면 지도's asks).
+    pub fn design_ask_with(&mut self, to_designer: String, to_pm: String, window: &mut Window, cx: &mut Context<Self>) {
         let designer = self.model.members.iter().find(|m| m.role == "designer" && m.presence != crate::state::Presence::Closed).map(|m| m.session);
         let pm = self.model.members.iter().find(|m| crate::state::Model::is_pm(m)).map(|m| m.session);
         let (to, text) = match (designer, pm) {
-            (Some(d), _) => (d, t!("design.ask_designer_message").to_owned()),
-            (None, Some(pm)) => (pm, t!("design.ask_pm_message").to_owned()),
+            (Some(d), _) => (d, to_designer),
+            (None, Some(pm)) => (pm, to_pm),
             (None, None) => {
                 self.composer.flash = Some(t!("design.no_one_to_ask").into());
                 cx.notify();
@@ -1571,7 +1603,7 @@ impl Shell {
 
     /// "designer에게 고쳐 달라고 하기": what couldn't be read goes to the
     /// designer (or the PM) as the person's message, a few of them named.
-    pub fn design_ask_fix(&mut self, problems: &[String], window: &mut Window, cx: &mut Context<Self>) {
+    pub fn design_ask_fix(&mut self, problems: &[String], map: bool, window: &mut Window, cx: &mut Context<Self>) {
         let designer = self.model.members.iter().find(|m| m.role == "designer" && m.presence != crate::state::Presence::Closed).map(|m| m.session);
         let pm = self.model.members.iter().find(|m| crate::state::Model::is_pm(m)).map(|m| m.session);
         let Some(to) = designer.or(pm) else {
@@ -1580,19 +1612,20 @@ impl Shell {
             return;
         };
         let examples = problems.iter().take(5).cloned().collect::<Vec<_>>().join("; ");
-        let text = t!("design.fix_message", count = problems.len(), examples = examples);
+        let text = if map { t!("flows.fix_message", count = problems.len(), examples = examples) } else { t!("design.fix_message", count = problems.len(), examples = examples) };
         self.select_member(to, window, cx);
         self.composer.set_text(&text, window, cx);
         self.send(window, cx);
     }
 
-    /// The design screen's keys: ←/→ and 1–9 move between sections; in the
-    /// lightbox ←/→ step and Esc closes; Esc puts what changed away.
-    pub fn on_design_key(&mut self, key: &str, m: &Modifiers, cx: &mut Context<Self>) -> bool {
+    /// The design screen's keys: ←/→ and 1–9 move between sections (in
+    /// 화면 지도, `on_flows_key`'s); in the lightbox ←/→ step and Esc closes;
+    /// Esc puts what changed away.
+    pub fn on_design_key(&mut self, key: &str, m: &Modifiers, window: &Window, cx: &mut Context<Self>) -> bool {
         if self.screen != Screen::Design || m.platform || m.control || m.alt || m.function {
             return false;
         }
-        if self.design.lightbox.is_some() {
+        if self.design.lightbox.is_some() || self.design.map.zoomed {
             match key {
                 "left" => self.design_step(false, cx),
                 "right" => self.design_step(true, cx),
@@ -1606,6 +1639,9 @@ impl Shell {
             self.design.sources_open = false;
             cx.notify();
             return true;
+        }
+        if self.design_tab() == Tab::Map {
+            return self.on_flows_key(key, window, cx);
         }
         let Some(system) = self.design.current() else { return false };
         let sections = ds::sections(system);

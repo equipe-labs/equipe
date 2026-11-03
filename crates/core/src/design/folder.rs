@@ -24,14 +24,20 @@ use crate::visuals;
 pub const DIR: &str = "design";
 pub const TOKENS: &str = "tokens.json";
 pub const GUIDELINES: &str = "guidelines.md";
+/// The designer's brief, and the folder design QA's reports land in.
+pub const BRIEF: &str = "brand.md";
+pub const QA: &str = "qa";
 const PICTURE_DIRS: [&str; 2] = ["assets", "components"];
+/// Every folder the stamp follows: the pictures', then the UI map's and
+/// design QA's — walked last, so a big map never crowds the pictures out.
+const WATCHED_DIRS: [&str; 4] = [QA, super::flows::DIR, "assets", "components"];
 /// The biggest `tokens.json` read.
 pub const TOKENS_MAX: u64 = 1 << 20;
 /// How much of `guidelines.md` is sent: past it, cut with a word.
 pub const GUIDELINES_MAX: usize = 256 << 10;
 /// How many pictures, and how many files looked at to find them.
 pub const ASSETS_MAX: usize = 240;
-const FILES_MAX: usize = 2000;
+const FILES_MAX: usize = 5000;
 const DEPTH_MAX: usize = 5;
 
 /// One place a design system may be.
@@ -74,16 +80,17 @@ pub fn places(home: &Path, squad: &str) -> Vec<Place> {
     out
 }
 
-/// The files under `dir`'s picture folders, and its two files: path and
-/// what the disk says of each. Links are listed, not followed.
+/// The files under `dir`'s picture folders, its UI map's and design QA's, and
+/// its own three files: path and what the disk says of each. Links are
+/// listed, not followed.
 fn files(dir: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
     let mut out = Vec::new();
-    for name in [TOKENS, GUIDELINES] {
+    for name in [TOKENS, GUIDELINES, BRIEF] {
         if let Ok(meta) = std::fs::symlink_metadata(dir.join(name)) {
             out.push((dir.join(name), meta));
         }
     }
-    let mut stack: Vec<(PathBuf, usize)> = PICTURE_DIRS.iter().map(|d| (dir.join(d), 0)).collect();
+    let mut stack: Vec<(PathBuf, usize)> = WATCHED_DIRS.iter().map(|d| (dir.join(d), 0)).collect();
     while let Some((at, depth)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&at) else { continue };
         let mut entries: Vec<_> = entries.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).collect();
@@ -126,15 +133,17 @@ pub fn stamp(places: &[Place]) -> u64 {
     h.finish()
 }
 
-/// A file inside `dir`, no bigger than `max` — a link only when it stays in `dir`.
-fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
-    use std::io::Read as _;
+/// Where file `name` in `dir` really is, when it is one and stays in `dir`.
+pub(super) fn within(dir: &Path, name: &str) -> Option<PathBuf> {
     let root = std::fs::canonicalize(dir).ok()?;
     let real = std::fs::canonicalize(dir.join(name)).ok()?;
-    let meta = std::fs::metadata(&real).ok()?;
-    if !real.starts_with(&root) || !meta.is_file() {
-        return None;
-    }
+    (real.starts_with(&root) && std::fs::metadata(&real).is_ok_and(|m| m.is_file())).then_some(real)
+}
+
+/// A file inside `dir`, no bigger than `max` — a link only when it stays in `dir`.
+pub(super) fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let real = within(dir, name)?;
     let mut bytes = Vec::new();
     std::fs::File::open(&real).ok()?.take(max + 1).read_to_end(&mut bytes).ok()?;
     Some(bytes)
@@ -226,6 +235,10 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
         system.guidelines = Some(text);
     }
     system.assets = assets(&place.dir);
+    // A project's folder is in its repository, where the screens' code is.
+    let repo = place.project.as_ref().and_then(|_| place.dir.parent());
+    system.flows = super::flows::read(&place.dir, repo, lang);
+    system.setup = super::flows::setup(&place.dir);
     system.stamp = stamp(std::slice::from_ref(place));
     system
 }
@@ -257,13 +270,16 @@ pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
     (systems, folder)
 }
 
-/// The pictures `squad`'s design systems show, and where they may be — for
-/// `read_image`.
+/// The pictures `squad`'s design systems show, their UI maps' included, and
+/// where they may be — for `read_image`.
 pub fn shown(home: &Path, squad: &str) -> (Vec<String>, Vec<PathBuf>) {
     let mut paths = Vec::new();
     let mut roots = Vec::new();
     for place in places(home, squad).into_iter().filter(|p| is_design_dir(&p.dir)) {
         paths.extend(assets(&place.dir).into_iter().map(|a| a.path));
+        let map = super::flows::read(&place.dir, None, Lang::En).unwrap_or_default();
+        let states = map.flows.into_iter().flat_map(|f| f.screens).flat_map(|s| s.states);
+        paths.extend(states.flat_map(|s| s.pictures).map(|p| p.path));
         roots.push(place.dir);
     }
     (paths, roots)
@@ -364,6 +380,26 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(design.join(TOKENS), r##"{ "color": { "$type": "color", "bg": { "$value": "#0A0A0C" } } }"##).unwrap();
         assert_ne!(with_logo, stamp(&place), "the same size, saved again");
+        // The UI map, its pictures deep in it, the brief and design QA count too.
+        let mut last = stamp(&place);
+        let moved = |last: &mut u64, what: &str| {
+            let now = stamp(&place);
+            assert_ne!(*last, now, "{what}");
+            *last = now;
+        };
+        std::fs::create_dir_all(design.join("flows")).unwrap();
+        std::fs::write(design.join("flows/flows.json"), r#"{ "flows": [] }"#).unwrap();
+        moved(&mut last, "flows.json");
+        png(&design.join("flows/onboarding/login/default.light.390.png"));
+        moved(&mut last, "a screen's picture");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        png(&design.join("flows/onboarding/login/default.light.390.png"));
+        moved(&mut last, "a picture shot again");
+        std::fs::write(design.join("brand.md"), "# Brief").unwrap();
+        moved(&mut last, "the brief");
+        std::fs::create_dir_all(design.join("qa/2026-11-04")).unwrap();
+        std::fs::write(design.join("qa/2026-11-04/report.md"), "# QA").unwrap();
+        moved(&mut last, "a QA report");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -378,6 +414,10 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(TOKENS), TOKENS_JSON).unwrap();
         png(&folder.join("assets/logo/mark.png"));
+        std::fs::create_dir_all(folder.join("flows")).unwrap();
+        std::fs::write(folder.join("flows/flows.json"), r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default", "label": "Default", "kind": "default" } ] } ] } ] }"#).unwrap();
+        png(&folder.join("flows/app/home/default.light.390.png"));
+        png(&folder.join("flows/app/home/stray.light.390.png"));
         // A project with its own.
         let app = home.join("code/app");
         std::fs::create_dir_all(app.join(DIR)).unwrap();
@@ -412,6 +452,9 @@ mod tests {
         let (paths, roots) = shown(&home, "acme");
         assert_eq!(roots.len(), 4, "{roots:?}");
         assert!(paths.iter().any(|p| p.ends_with("home/design/assets/logo/mark.png")));
+        assert!(paths.iter().any(|p| p.ends_with("home/design/flows/app/home/default.light.390.png")), "the UI map's pictures too");
+        assert!(!paths.iter().any(|p| p.ends_with("stray.light.390.png")), "not one of no state");
+        assert_eq!(systems[0].flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures.len(), 1);
         std::fs::remove_dir_all(home).unwrap();
     }
 }

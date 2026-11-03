@@ -4,7 +4,8 @@
 //! folders written under `$EQUIPE_HOME/design-system` and read the
 //! daemon's way (`equipe_core::design`), pictures and all.
 //!
-//! - `1`: the squad's, and the web project's own (the site's older palette).
+//! - `1`: the squad's, and the web project's own (the site's older palette),
+//!   with its UI map (`fake_daemon/flows.rs`).
 //! - `draft`: the squad's as the desktop has it now (steel blue), and T-144
 //!   in review with its draft (signal blue) — the "검토 중" pill.
 //! - `empty`: none yet.
@@ -78,6 +79,7 @@ pub fn seed() {
     } else {
         write_system(&squad, &tokens(&SIGNAL), GUIDELINES);
         write_system(&base().join("web/design"), &tokens(&SITE), GUIDELINES_WEB);
+        super::flows::seed(&base().join("web/design"));
     }
 }
 
@@ -304,7 +306,13 @@ fn social_card(dot: &str) -> image::RgbaImage {
 
 /// The design systems as the daemon would send them now.
 fn event() -> Event {
-    let (systems, folder) = folder::catalog_of(&places(), Lang::Ko);
+    let (mut systems, folder) = folder::catalog_of(&places(), Lang::Ko);
+    super::flows::dress(&mut systems);
+    // The web project's designer is at its map: brief, logo and system done.
+    for web in systems.iter_mut().filter(|s| s.project.as_deref() == Some("web")) {
+        use equipe_core::protocol::design::{Setup, SetupStep};
+        web.setup = [Setup::Brief, Setup::Logo, Setup::System, Setup::Flows, Setup::Qa].map(|step| SetupStep { step, done: !matches!(step, Setup::Flows | Setup::Qa) }).to_vec();
+    }
     Event::Design { squad: "demo".into(), systems, folder }
 }
 
@@ -348,8 +356,9 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
 /// only one an asset names, inside its folder.
 pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
     let places = places();
-    let (systems, _) = folder::catalog_of(&places, Lang::En);
-    if !systems.iter().any(|s| s.assets.iter().any(|a| a.path == ask.path)) {
+    let (mut systems, _) = folder::catalog_of(&places, Lang::En);
+    super::flows::dress(&mut systems);
+    if !systems.iter().any(|s| s.assets.iter().any(|a| a.path == ask.path)) && !super::flows::pictures(&systems).contains(&ask.path) {
         return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
     }
     let roots: Vec<PathBuf> = places.into_iter().map(|p| p.dir).collect();

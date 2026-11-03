@@ -18,6 +18,7 @@
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
 //! `metrics[:<dash|error|empty|connect|key|done>]` (지표, on a sample) · `mtype:<n>,<text>` (in its form's box n) ·
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
+//! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fto:<designer|pm>` · `ftalk:<words>` (in the box under the screen) · `fsend` · `fkey:<left|right|up|down|escape>` ·
 //! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
@@ -361,6 +362,34 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     cx.notify();
                 }),
                 "dask" => shell.update(cx, |shell, cx| shell.design_ask_designer(window, cx)),
+                // 화면 지도: its tab, a flow, a screen, a state, the look, the box.
+                "dtab" => shell.update(cx, |shell, cx| {
+                    if let Some(tab) = crate::flows::Tab::parse(&arg) {
+                        shell.design_set_tab(tab, cx);
+                    }
+                }),
+                "fflow" => shell.update(cx, |shell, cx| shell.flows_pick_flow(&arg, cx)),
+                "fscreen" => shell.update(cx, |shell, cx| shell.flows_toggle_screen(&arg, cx)),
+                "fstate" => shell.update(cx, |shell, cx| shell.flows_chip(&arg, cx)),
+                "fmode" => shell.update(cx, |shell, cx| shell.flows_mode(&arg, cx)),
+                "fwidth" => shell.update(cx, |shell, cx| shell.flows_width(arg.parse().unwrap_or(390), cx)),
+                "fzoom" => shell.update(cx, |shell, cx| shell.flows_zoom(true, cx)),
+                "fvideos" => shell.update(cx, |shell, cx| {
+                    shell.design.map.older_open = !shell.design.map.older_open;
+                    cx.notify();
+                }),
+                "fto" => shell.update(cx, |shell, cx| {
+                    shell.design.map.to_pm = arg == "pm";
+                    cx.notify();
+                }),
+                "ftalk" => shell.update(cx, |shell, cx| {
+                    shell.flow_talk.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    cx.notify();
+                }),
+                "fsend" => shell.update(cx, |shell, cx| shell.flows_send(window, cx)),
+                "fkey" => shell.update(cx, |shell, cx| {
+                    shell.on_flows_key(&arg, window, cx);
+                }),
                 "dtoc" => shell.update(cx, |shell, cx| {
                     let n: usize = arg.parse().unwrap_or(0);
                     let section = shell.design.current().and_then(|s| s.guidelines.as_deref()).map(crate::design::headings).and_then(|h| h.get(n).map(|h| h.section));

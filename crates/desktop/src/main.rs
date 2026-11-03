@@ -28,6 +28,7 @@ mod disk;
 mod doc;
 mod design;
 mod dictation;
+mod flows;
 mod failure;
 mod help;
 mod install;
@@ -85,7 +86,7 @@ use std::time::Duration;
 use equipe_core::t;
 
 use equipe_providers::credentials::equipe_home;
-use gpui_kit::component::input::{Enter, InputEvent};
+use gpui_kit::component::input::{Enter, InputEvent, InputState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -223,6 +224,8 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// 디자인 시스템's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
+    /// 화면 지도's box for talking about the screen open (`views/flows.rs`).
+    pub flow_talk: Entity<InputState>,
     /// The routines' list on 진행 상황: which is being edited or deleted.
     pub routines_ui: views::routines::RoutinesUi,
     /// Each project's newest tag, as last found, and when it was asked.
@@ -382,6 +385,7 @@ impl Shell {
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
+            flow_talk: cx.new(|cx| InputState::new(window, cx).placeholder(t!("flows.talk_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
             releases_asked: None,
@@ -542,6 +546,13 @@ impl Shell {
             }
         }));
         // Settings' search filters as it is typed.
+        // 화면 지도's box: ⏎ sends; the send button follows what is typed.
+        let flow_talk = shell.flow_talk.clone();
+        shell._subscriptions.push(cx.subscribe_in(&flow_talk, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.flows_send(window, cx),
+            InputEvent::Change => cx.notify(),
+            _ => {}
+        }));
         let settings_search = shell.settings.search.clone();
         shell._subscriptions.push(cx.subscribe_in(&settings_search, window, |_, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
@@ -654,7 +665,7 @@ impl Shell {
                 return;
             }
             // 디자인 시스템's keys: sections, the lightbox.
-            if this.update(cx, |shell, cx| shell.on_design_key(key, &modifiers, cx)).unwrap_or(false) {
+            if this.update(cx, |shell, cx| shell.on_design_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
             }
@@ -1694,6 +1705,7 @@ impl Shell {
         }
         self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
+        self.flow_talk.update(cx, |s, cx| s.set_placeholder(t!("flows.talk_placeholder"), window, cx));
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
 }

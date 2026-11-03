@@ -8,6 +8,7 @@
 //! - `contrast`: WCAG 2.x contrast, and which colour is the background.
 //! - `diff`: what changed since the person last looked.
 //! - `critique`: the designer's pictures, critiqued by the other engine.
+//! - `flows`: the service's UI map — every flow, screen and state, pictured.
 //! - `folder`: where the folders are, what they hold, and the stamp that says
 //!   one changed; the pictures in them are what `read_image` may give.
 
@@ -16,6 +17,7 @@ pub mod kit;
 pub mod contrast;
 pub mod critique;
 pub mod diff;
+pub mod flows;
 pub mod folder;
 pub mod tokens;
 pub mod values;

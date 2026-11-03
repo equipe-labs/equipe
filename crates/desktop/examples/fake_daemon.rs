@@ -912,6 +912,9 @@ mod switching;
 #[path = "fake_daemon/design.rs"]
 mod design;
 
+#[path = "fake_daemon/flows.rs"]
+mod flows;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
