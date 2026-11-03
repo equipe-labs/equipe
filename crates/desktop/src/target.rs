@@ -179,6 +179,9 @@ pub struct Remembered {
     pub term_height: Option<f32>,
     /// What accepting lands, per project (by name), once the person said.
     pub merge_ways: Vec<(String, String)>,
+    /// The person's own names for the machines they connect to, by what
+    /// connecting is given (`user@host`, an address): read, not an IP.
+    pub host_names: Vec<(String, String)>,
     /// The views the person saved (⌥V), in their order.
     pub views: Vec<KeptView>,
     /// How wide the sidebar was left (px).
@@ -417,6 +420,10 @@ impl Remembered {
                     out.merge_ways.retain(|(p, _)| p != project);
                     out.merge_ways.push((project.to_owned(), way.to_owned()));
                 }
+            } else if let Some(rest) = line.strip_prefix("host-name ") {
+                if let Some((spec, name)) = rest.split_once('\t') {
+                    out.set_host_name(spec, name);
+                }
             } else if let Some(rest) = line.strip_prefix("view ") {
                 let mut parts = rest.splitn(4, '\t');
                 if let (Some(pinned), Some(group), Some(name), Some(query)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
@@ -582,6 +589,9 @@ impl Remembered {
         for (project, way) in &self.merge_ways {
             text.push_str(&format!("merge {project} {way}\n"));
         }
+        for (spec, name) in &self.host_names {
+            text.push_str(&format!("host-name {spec}\t{}\n", name.replace(['\t', '\n'], " ")));
+        }
         for view in &self.views {
             let clean = |s: &str| s.replace(['\t', '\n'], " ");
             text.push_str(&format!("view {}\t{}\t{}\t{}\n", u8::from(view.pinned), clean(&view.group), clean(&view.name), clean(&view.query)));
@@ -592,6 +602,20 @@ impl Remembered {
     /// What accepting lands in `project`, if the person said.
     pub fn merge_way(&self, project: &str) -> Option<&str> {
         self.merge_ways.iter().find(|(p, _)| p == project).map(|(_, w)| w.as_str())
+    }
+
+    /// The person's name for the machine `spec` connects to, if they gave one.
+    pub fn host_name(&self, spec: &str) -> Option<&str> {
+        self.host_names.iter().find(|(s, _)| s == spec).map(|(_, n)| n.as_str())
+    }
+
+    /// Name a machine; an empty name takes the name away.
+    pub fn set_host_name(&mut self, spec: &str, name: &str) {
+        self.host_names.retain(|(s, _)| s != spec);
+        let name = name.trim();
+        if !name.is_empty() {
+            self.host_names.push((spec.to_owned(), name.to_owned()));
+        }
     }
 
     pub fn set_merge_way(&mut self, project: &str, way: &str) {
@@ -743,6 +767,9 @@ mod tests {
         remembered.side_team = Some(240.4);
         remembered.progress_seen = Some(1_793_700_000);
         remembered.team_open = true;
+        remembered.set_host_name("me@100.106.17.55", "  사무실 맥미니 ");
+        remembered.set_host_name("vision", "vision");
+        remembered.set_host_name("vision", "");
         remembered.lang = Some("ko".into());
         remembered.dictation = Some("ja".into());
         remembered.dictation_servers = true;
@@ -757,6 +784,8 @@ mod tests {
         assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
         assert_eq!(loaded.progress_seen, Some(1_793_700_000), "진행 상황's last look, for \"since you last looked\"");
         assert!(loaded.team_open, "the team as the person left it");
+        assert_eq!(loaded.host_name("me@100.106.17.55"), Some("사무실 맥미니"), "a machine's name, trimmed");
+        assert_eq!(loaded.host_name("vision"), None, "an empty name takes it away");
         assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
         assert!(loaded.dictation_servers, "the person's yes to Apple's servers is kept");
         assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");

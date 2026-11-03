@@ -509,6 +509,12 @@ impl Shell {
         let board_subscriptions = shell.board_subscriptions(window, cx);
         shell._subscriptions.extend(board_subscriptions);
         let (connect_input, ask_input) = (shell.connect.input.clone(), shell.ask.input.clone());
+        let name_input = shell.connect.name_input.clone();
+        shell._subscriptions.push(cx.subscribe_in(&name_input, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.finish_naming(cx);
+            }
+        }));
         shell._subscriptions.push(cx.subscribe_in(&connect_input, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } => this.choose_first(window, cx),
             // The list narrows as it is typed; a refusal goes with the text that earned it.

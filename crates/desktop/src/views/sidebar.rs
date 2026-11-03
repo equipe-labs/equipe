@@ -1695,7 +1695,7 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_popup(Popup::Account, cx)))
                 .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(dot(if connected { p.accent } else { p.muted }, 7.)))
                 .child(div().flex_none().text_size(px(TEXT)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(squad))
-                .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(shell.endpoint.label()))
+                .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(shell.place_name()))
                 .child(icon(IconName::ChevronsUpDown, 12., p.muted)),
         )
         .child(icon_button(p, "settings", IconName::Settings, true, None).tip(p, t!("sidebar.settings"), Some("⌘,")).on_click(cx.listener(|this, _, window, cx| this.open_settings(None, window, cx))))

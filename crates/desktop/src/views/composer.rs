@@ -124,6 +124,8 @@ impl MenuKind {
             MenuKind::Recent => 340.,
             MenuKind::Context => 300.,
             MenuKind::Model => 280.,
+            // Each mode's name and what it lets members do, whole.
+            MenuKind::Mode => 340.,
             _ => 248.,
         }
     }
@@ -150,16 +152,24 @@ struct Row {
     more: bool,
     on: bool,
     act: Option<Act>,
+    /// The hint is a sentence: under the label, whole, not cut beside it.
+    below: bool,
 }
 
 impl Row {
     fn new(label: impl Into<String>, hint: impl Into<String>, act: Act) -> Self {
-        Self { label: label.into(), hint: hint.into(), keys: None, lead: Lead::None, more: false, on: false, act: Some(act) }
+        Self { label: label.into(), hint: hint.into(), keys: None, lead: Lead::None, more: false, on: false, act: Some(act), below: false }
+    }
+
+    /// The hint under the label, wrapping, for one that says what a choice does.
+    fn below(mut self) -> Self {
+        self.below = true;
+        self
     }
 
     /// A line of words that does nothing (the context menu's explanation).
     fn note(label: impl Into<String>) -> Self {
-        Self { label: label.into(), hint: String::new(), keys: None, lead: Lead::None, more: false, on: false, act: None }
+        Self { label: label.into(), hint: String::new(), keys: None, lead: Lead::None, more: false, on: false, act: None, below: false }
     }
 
     fn checked(self, on: bool) -> Self {
@@ -1257,7 +1267,7 @@ impl Shell {
             MenuKind::Mode => {
                 title = Some(t!("composer.menu_mode").to_owned());
                 let lang = crate::i18n::lang();
-                Mode::ALL.iter().map(|m| Row::new(label::mode(lang, *m), label::mode_short(lang, *m), Act::Mode(*m)).checked(*m == self.model.mode)).collect()
+                Mode::ALL.iter().map(|m| Row::new(label::mode(lang, *m), label::mode_short(lang, *m), Act::Mode(*m)).checked(*m == self.model.mode).below()).collect()
             }
             MenuKind::Context => {
                 let Some(member) = member else { return };
@@ -1943,8 +1953,18 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                                 .on_click(cx.listener(move |this, _, window, cx| this.run_row(ix, window, cx)))
                         })
                         .child(div().w(px(ICON)).flex_none().flex().justify_center().child(lead))
-                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(p.text).child(row.label.clone()))
-                        .when(!row.hint.is_empty(), |r| r.child(div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(row.hint.clone())))
+                        .when(row.below, |r| {
+                            r.py(px(6.)).items_start().child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(13.)).text_color(p.text).child(row.label.clone()))
+                                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).child(row.hint.clone())),
+                            )
+                        })
+                        .when(!row.below, |r| r.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(p.text).child(row.label.clone())))
+                        .when(!row.below && !row.hint.is_empty(), |r| r.child(div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(row.hint.clone())))
                         .children(trail.map(|t| div().flex_none().flex().items_center().child(t)));
                     motion::hover_fill(row_el, ("menu-row-fill", ix), p.wash, picked).into_any_element()
                 }
