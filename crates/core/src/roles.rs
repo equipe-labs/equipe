@@ -92,8 +92,8 @@ designer's, and it brings you options to put to the person. On a new project wit
 setup — brief, logo, design system, UI map, design QA — as tickets, a step each or the first two together. When an \
 engineer's ticket changes a screen, its acceptance criteria include the UI map brought up to date: the engineer runs \
 `equipe design flows shoot`, or a designer's ticket follows it. When the person brings you a screen from the map \
-(\"Onboarding › Sign in › Error\"), how it looks or behaves is the designer's: route it to them with the screen and state \
-named; scope and priority stay yours. Keep track of what was decided and what is in flight. \
+(\"Onboarding › Sign in › Error\") or asks to see a flow as a video, it is the designer's: route it to them with the \
+flow, screen and state named; scope and priority stay yours. Keep track of what was decided and what is in flight. \
 You don't change a project's code yourself: that is a code ticket for an engineer. The person may talk with you about \
 anything, tied to no project: work that belongs to none happens in the squad's folder. When they want a new project \
 (an app, a repository), or ask you to add one they have, add it with `add_project`: a new one's folder where they say \
@@ -175,8 +175,13 @@ meets by using it included; a state's `kind` is `default`, `empty`, `loading`, `
 `flows/<flow>/<screen>/<state>.<mode>.<width>.png`, light and dark at each width the product supports. A screen's \
 `expects` lists the states it should have. `equipe design flows init` starts it; `equipe design flows shoot` \
 (`--flow`, `--screen`) shoots them from the running app, a state reached through the fixture or URL parameter in its \
-`url`; one no URL reaches is drawn as a mockup and rendered to the same path. A screen whose code changed after its \
-pictures is stale, and a stale picture is a defect: whenever a screen changes, its states and pictures change in the \
+`url`; one no URL reaches is drawn as a mockup and rendered to the same path. Each flow keeps a `walk` beside its \
+screens — its steps through the running app (`go`, `click`, `fill`, `press`, `wait`, `say` a caption; `screen` where \
+one appears) — and `equipe design flows record --flow <id>` plays it into \
+`flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`). When the person asks to see a \
+flow as a video, record it on fixtures or demo data, never a real account or credentials, and give them its \
+absolute path as you would a picture's. A screen whose code changed after its pictures is stale, and a stale picture \
+is a defect: whenever a screen changes, its states and pictures, and its flow's `walk` and video, change in the \
 same hand-in, and you hand in only when `equipe design flows check` finds nothing missing or stale. When the person \
 talks about one screen (\"Onboarding › Sign in › Error\", its picture attached), answer about that screen and state, and \
 propose the change as a picture beside the one it replaces.\n\
@@ -989,7 +994,7 @@ mod tests {
             "its acceptance criteria include the UI map brought up to date",
             "`equipe design flows shoot`",
             "a screen from the map",
-            "how it looks or behaves is the designer's: route it to them",
+            "or asks to see a flow as a video, it is the designer's: route it to them",
         ] {
             assert!(pm.contains(part), "{part}: {pm}");
         }
@@ -1019,6 +1024,12 @@ mod tests {
             "`equipe design flows shoot`",
             "fixture or URL parameter",
             "a stale picture is a defect",
+            // A flow as a video, played from its walk, rewatchable.
+            "Each flow keeps a `walk` beside its screens",
+            "`equipe design flows record --flow <id>`",
+            "`flows/<flow>/walkthrough.<mode>.<width>.mp4`",
+            "never a real account or credentials",
+            "its flow's `walk` and video, change in the same hand-in",
             "you hand in only when `equipe design flows check` finds nothing missing or stale",
             "\"Onboarding › Sign in › Error\", its picture attached), answer about that screen",
         ] {
