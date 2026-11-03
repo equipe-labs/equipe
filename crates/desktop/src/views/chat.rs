@@ -835,8 +835,6 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             .absolute()
             .size_0()
         })
-        .children(pulse)
-        .children(jump)
         .child(
         // The list is the pane's whole width, so its scrollbar is at the
         // window's right edge (as a terminal's is); each row keeps the column.
@@ -851,6 +849,10 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             .with_bottom_fade(p.bg)
             .aria_label(t!("chat.a11y_conversation", name = log_name))
     )
+    // The pills come after the list, so they are painted over its rows and
+    // its bottom fade, not under them.
+    .children(pulse)
+    .children(jump)
     // A bar for each thing asked, in the rows' left margin — over them.
     .children(super::chapters::rail(shell, cx));
     // The pill has its own room under the list, so it covers nothing.
