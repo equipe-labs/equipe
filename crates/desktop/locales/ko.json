@@ -1316,6 +1316,7 @@
   "project.gone": "이 프로젝트는 스쿼드에서 빠졌어요",
   "project.menu_tip": "프로젝트 메뉴",
   "project.new_talk": "새 대화",
+  "project.release": "최근 릴리스 {tag} · {ago}",
   "project.reopen_tip": "다시 열기 — 그만둔 데서 이어가요",
   "project.tab_talks": "대화",
   "project.tab_work": "일",
