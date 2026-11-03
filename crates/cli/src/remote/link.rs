@@ -44,6 +44,8 @@ enum Input {
     ImageRead(String, String, u64, Result<equipe_core::protocol::rpc::ImageRead, String>),
     /// A folder's pictures a device asked for, listed (`list_images`).
     ImagesListed(String, String, u64, Result<equipe_core::protocol::rpc::ImageList, String>),
+    /// The project's numbers a device asked for, worked out (`metrics.summary`).
+    MetricsSummarized(String, String, u64, Result<equipe_core::protocol::metrics::Summary, String>),
     /// The answer to a device's request, made off the loop (an `upload`'s).
     Answer(String, equipe_core::protocol::rpc::Message),
 }
@@ -63,6 +65,13 @@ fn phone_image(home: &Path, ask: &equipe_core::protocol::rpc::ReadImage) -> Resu
         return Err("the picture is too big for the phone".into());
     }
     Ok(read)
+}
+
+/// A project's numbers for a phone (`metrics.summary`): read from what the
+/// daemon kept — connections.json and the days' numbers — never a key.
+pub(super) fn phone_summary(home: &Path, ask: &equipe_core::protocol::metrics::SummaryParams, now: u64) -> Result<equipe_core::protocol::metrics::Summary, String> {
+    let today = equipe_core::metrics::day_of(&equipe_core::routines::Local, now);
+    equipe_core::metrics::summary(home, ask, today).map_err(|refused| refused.message)
 }
 
 /// Run in the daemon for as long as it lives.
@@ -227,6 +236,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
             Some(Input::Squad(squad, event)) => actions.extend(core.on_squad_event(&squad, &event)),
             Some(Input::ImageRead(device, squad, id, read)) => actions.extend(core.image_read(&device, &squad, id, read)),
             Some(Input::ImagesListed(device, squad, id, listed)) => actions.extend(core.images_listed(&device, &squad, id, listed)),
+            Some(Input::MetricsSummarized(device, squad, id, summary)) => actions.extend(core.metrics_summarized(&device, &squad, id, summary)),
             Some(Input::Answer(device, message)) => actions.extend(core.answer(&device, &message)),
         }
         for action in actions {
@@ -279,6 +289,17 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     tokio::spawn(async move {
                         let listed = tokio::task::spawn_blocking(move || equipe_core::visuals::list(&home, &ask)).await.unwrap_or_else(|_| Err("the folder couldn't be read".into()));
                         let _ = tx.send(Input::ImagesListed(device, squad, id, listed));
+                    });
+                }
+                // Read from what the daemon kept (connections.json and the numbers): no key is read.
+                Action::MetricsSummary { device, squad, id, ask } => {
+                    let (tx, home) = (input_tx.clone(), home.clone());
+                    tokio::spawn(async move {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        let summary = tokio::task::spawn_blocking(move || phone_summary(&home, &ask, now))
+                        .await
+                        .unwrap_or_else(|_| Err("the numbers couldn't be read".into()));
+                        let _ = tx.send(Input::MetricsSummarized(device, squad, id, summary));
                     });
                 }
                 Action::Close { device } => {
@@ -453,6 +474,10 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                     }
                     Action::ListImages { device, squad, id, .. } => {
                         actions.extend(core.images_listed(&device, &squad, id, Err("the demo has no pictures".into())));
+                    }
+                    // Nor any numbers: the phone hides the card.
+                    Action::MetricsSummary { device, squad, id, .. } => {
+                        actions.extend(core.metrics_summarized(&device, &squad, id, Err("the demo has no numbers".into())));
                     }
                     Action::Upload { device, id, piece } => {
                         let answer = match uploads.piece(&device, *piece, now) {

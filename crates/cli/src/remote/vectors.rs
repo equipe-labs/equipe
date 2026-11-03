@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{Hello, Message};
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
+use equipe_core::protocol::metrics::{ErrorCode, FetchError, SourceKind, Summary, Tile};
 use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
     Access, Approval, CompactTrigger, CompactingInfo, Decision, Engine, EnginePlan, EngineState, EngineStatus, Entry, Event, Member, MemberRef, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, SignInStep, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
@@ -968,6 +969,36 @@ fn snapshot() -> Snapshot {
     }
 }
 
+/// A project's numbers this week: one tile fetched today, one whose key the
+/// service refused (its number the last kept).
+fn metrics_summary() -> Summary {
+    let tile = |connection: &str, kind, metric: &str, label: &str, unit: &str, (value, previous, change_pct): (f64, f64, f64), as_of: &str| Tile {
+        connection: connection.into(),
+        kind,
+        metric: metric.into(),
+        label: label.into(),
+        unit: unit.into(),
+        value: Some(value),
+        previous: Some(previous),
+        change_pct: Some(change_pct),
+        as_of: Some(as_of.into()),
+        error: None,
+    };
+    let refused = FetchError { code: ErrorCode::Auth, message: "key ••• was refused".into(), retry_at: None };
+    Summary {
+        squad: SQUAD.into(),
+        project: Some("site".into()),
+        from: "2026-10-27".into(),
+        to: "2026-11-02".into(),
+        tiles: vec![
+            tile("m1", SourceKind::Posthog, "visits", "Visits", "page_loads", (1284.0, 1187.0, 8.2), "2026-11-02"),
+            tile("m3", SourceKind::Github, "stars", "Stars", "stars", (25.0, 22.0, 13.6), "2026-11-02"),
+            Tile { error: Some(refused), ..tile("m2", SourceKind::AppStore, "downloads", "Downloads", "downloads", (63.0, 67.0, -6.0), "2026-11-01") },
+        ],
+        updated_at: Some(1_793_520_000),
+    }
+}
+
 /// The Claude plan's windows, as Claude Code reports them.
 fn claude_plan() -> PlanUsage {
     PlanUsage { five_hour: Some(PlanWindow { used_percent: 62, resets_at: 1_760_018_000 }), seven_day: Some(PlanWindow { used_percent: 41, resets_at: 1_760_400_000 }) }
@@ -994,6 +1025,7 @@ fn message_vectors() -> Value {
             [Action::Command { squad, command, .. }] => json!({ "to_squad": squad, "command": Message::command(command) }),
             [Action::ReadImage { squad, ask, .. }] => json!({ "reads_picture_of": squad, "asked": ask, "max_for_a_phone": equipe_core::visuals::PHONE_SIDE }),
             [Action::ListImages { squad, ask, .. }] => json!({ "lists_pictures_of": squad, "asked": ask, "at_most": equipe_core::visuals::LIST_MAX }),
+            [Action::MetricsSummary { squad, ask, .. }] => json!({ "sums_up_numbers_of": squad, "asked": ask }),
             other => panic!("{name}: {other:?}"),
         };
         examples.insert(name.to_owned(), json!({ "sends": serde_json::from_str::<Value>(&sealed.plaintext).unwrap(), "daemon": does }));
@@ -1176,6 +1208,15 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "a command for another squad than the frame's", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "home", "ticket": 1 } }));
     ask(&mut core, &mut examples, "a command for a squad not followed", Some("home"), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "home", "ticket": 1 } }));
 
+    // The project's numbers for the board's card: the summary only, read from what the daemon kept — no key, no setting.
+    let numbers = |id: u64, squad: &str, method: &str| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": { "squad": squad, "project": "site" } });
+    let out = ask(&mut core, &mut examples, "metrics summary", Some(SQUAD), numbers(26, SQUAD, "metrics.summary"));
+    let [Action::MetricsSummary { id, .. }] = &out[..] else { panic!("{out:?}") };
+    examples["metrics summary"]["daemon"]["answers"] = opened(&relay_frames(&core.metrics_summarized(&device_id(), SQUAD, *id, Ok(metrics_summary())))[0]);
+    let none = Summary { tiles: vec![], updated_at: None, ..metrics_summary() };
+    examples.insert("metrics summary: nothing connected".into(), json!({ "receives": opened(&relay_frames(&core.metrics_summarized(&device_id(), SQUAD, 27, Ok(none)))[0]) }));
+    ask(&mut core, &mut examples, "metrics summary: another squad than the frame's", Some(SQUAD), numbers(28, "home", "metrics.summary"));
+    ask(&mut core, &mut examples, "metrics: connecting is not something a device may ask", Some(SQUAD), numbers(29, SQUAD, "metrics.connect"));
     // Pushes, to a phone away.
     core.on_relay(&json!({ "type": "presence", "device": device_id(), "online": false }), NOW);
     for (name, event) in [
