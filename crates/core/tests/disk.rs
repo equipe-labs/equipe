@@ -52,6 +52,7 @@ async fn a_look_and_a_clean_go_through_the_daemon_and_off_its_loop() {
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
         nemotron: None,
+        watch_disk: true,
     };
     let (handle, mut events) = runtime::start(config);
 

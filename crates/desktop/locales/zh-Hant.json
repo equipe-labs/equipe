@@ -2000,6 +2000,7 @@
   "settings.section_privacy": "隱私",
   "settings.telemetry": "傳送匿名使用資料",
   "settings.telemetry_desc": "只傳送數字，例如建立的小隊與工單數，絕不傳送對話與名稱。",
+  "settings.telemetry_words": "遙測 匿名 使用資料 telemetry analytics usage data anonymous",
   "settings.telemetry_held": "已開啟，但被 {by} 擋下了",
   "settings.telemetry_foot": "這是常駐程式所在電腦的設定。關閉後，這次安裝的 ID 也會被清除。",
   "settings.telemetry_list": "傳送的全部內容",

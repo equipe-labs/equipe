@@ -2000,6 +2000,7 @@
   "settings.section_privacy": "개인정보",
   "settings.telemetry": "익명 사용 데이터 보내기",
   "settings.telemetry_desc": "스쿼드·티켓을 만든 수 같은 숫자만 보내요. 대화와 이름은 보내지 않아요.",
+  "settings.telemetry_words": "익명 사용 데이터 원격 측정 telemetry analytics usage data anonymous",
   "settings.telemetry_held": "켜져 있지만 {by} 때문에 보내지 않아요",
   "settings.telemetry_foot": "데몬이 있는 컴퓨터의 설정이에요. 끄면 이 설치의 ID도 지워요.",
   "settings.telemetry_list": "보내는 것 전체",
