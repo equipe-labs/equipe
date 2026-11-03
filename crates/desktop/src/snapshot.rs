@@ -11,7 +11,7 @@
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
-//! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
+//! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|reply|copy|type:<words>|write:<words>|add|cancel|edit:<n>|remove:<n>|peek:<n>|card:<quote>|<words>|send|close|jump>` (asking about — replying to — the words selected; a card's 답글, ✕, the pointer on it; a card made at once) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) · `dview:<n>` (option n's picture of the card on show, big) · `dtake:<n>` / `dmix:<n>[,<k>]` / `dagain` (a design choice's one click: option n's 이걸로, its mix menu opened or its kth line, 다시) · `tview:<ticket>,<n>` (a hand-in's nth picture, big; then `press:right`, `press:enter`) · `rview:<n>` (the nth picture the latest reply showing pictures embeds, big) · `tpick:<id>` (a change to the team in 나에게, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) · `rpick:<id>` (a routine the PM proposed in 나에게, peeking) · `ryes` / `rno` (turn on or decline the oldest) · `cpick:<id>` (a card to confirm in 나에게, peeking; `cpick` alone: the oldest) · `ctick:<ticket>` (tick or untick a ticket on the oldest card) · `cyes` / `cno` (confirm or decline the oldest card) · `eyes` / `eno` / `eundo` (the engine card: its yes, its no, undo) · `engines:<off|suggest|auto>` (the squad's engine switching) ·
@@ -872,10 +872,27 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 // Asking about words selected: `quote:open` (the bar's button), `quote:copy`,
                 // `quote:type:<words>`, `quote:send`, `quote:close`, `quote:jump` (the latest quote in a message of yours).
+                // Replying: `quote:reply` (the bar's 답글 달기), `quote:write:<words>` (in its box),
+                // `quote:add` (⏎), `quote:cancel` (Esc), `quote:edit:<n>` / `quote:remove:<n>` (card n's 답글 / ✕),
+                // `quote:peek:<n>` (the pointer on card n; `quote:peek:` off it), `quote:card:<quote>|<words>`.
                 "quote" => shell.update(cx, |shell, cx| {
                     let (what, words) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
                     match what {
                         "open" => shell.quote_open(window, cx),
+                        "reply" => shell.quote_reply(window, cx),
+                        "write" => shell.quote_type(&words.replace("\\n", "\n"), window, cx),
+                        "add" => shell.quote_add(window, cx),
+                        "cancel" => shell.quote_cancel(window, cx),
+                        "edit" => shell.quote_edit(words.parse().unwrap_or(0), window, cx),
+                        "remove" => shell.remove_card(words.parse().unwrap_or(0), cx),
+                        "peek" => {
+                            shell.composer.peek = words.parse().ok();
+                            cx.notify();
+                        }
+                        "card" => {
+                            let (quote, said) = words.split_once('|').unwrap_or((words, ""));
+                            shell.quote_card(&quote.replace("\\n", "\n"), &said.replace("\\n", "\n"), cx);
+                        }
                         "copy" => shell.quote_copy(cx),
                         "type" => {
                             shell.composer.set_text(words, window, cx);
@@ -883,7 +900,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                         }
                         "send" => shell.send(window, cx),
                         "close" => {
-                            shell.composer.quotes.clear();
+                            shell.composer.replies.clear();
                             cx.notify();
                         }
                         "jump" => shell.quote_jump_latest(cx),

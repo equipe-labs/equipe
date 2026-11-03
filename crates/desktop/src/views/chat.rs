@@ -1627,8 +1627,15 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
     let now = keyed_button(p, ("pending-now", key), Icon::SendNow, now_tip, Some("⌘↵"), move |_, cx| {
         handle.update(cx, |shell, cx| shell.send_pending_now(cx)).ok();
     });
+    // Its cards folded, as when it is sent.
+    let (cards, rest) = crate::quote::read(&crate::design_talk::split(&parts.text).1);
+    let quoted = (!cards.is_empty()).then(|| {
+        v_flex().gap(px(10.)).children(cards.iter().enumerate().map(|(n, card)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), usize::MAX, card, rows.handle.clone())))
+    });
+    let shown = if cards.is_empty() { parts.text.clone() } else { rest };
     let bubble = (!parts.text.is_empty()).then(|| {
-        div()
+        v_flex()
+            .gap(px(10.))
             .max_w(gpui_kit::relative(BUBBLE_SHARE))
             .px(px(BUBBLE_X))
             .py(px(BUBBLE_Y))
@@ -1640,7 +1647,8 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
             .text_size(px(BODY))
             .line_height(px(BODY_LINE))
             .text_color(p.text2)
-            .child(SelectableText::new(("pending", key), parts.text.clone()))
+            .children(quoted)
+            .when(!shown.is_empty(), |b| b.child(SelectableText::new(("pending", key), shown)))
     });
     let label = h_flex()
         .gap(px(5.))
@@ -1702,12 +1710,19 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     // Pointed at things on the design screen: their chips first.
     let (pointed, after) = crate::design_talk::split(&parts.text);
     let pointed = (!pointed.is_empty()).then(|| super::design_talk::in_bubble(p, &pointed));
-    // Asked about words of the conversation: the quote over the words.
-    let (quotes, rest) = crate::quote::split_all(&after);
-    let quoted = (!quotes.is_empty()).then(|| {
-        v_flex().gap_1().children(quotes.iter().enumerate().map(|(n, quote)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), ix, quote, rows.handle.clone()))).into_any_element()
+    // Replied to — or asked about — passages of the conversation: each
+    // folded over the words to it, then the rest.
+    let (cards, rest) = crate::quote::read(&after);
+    let quoted = (!cards.is_empty()).then(|| {
+        let answered = cards.iter().any(crate::quote::Reply::answered);
+        v_flex()
+            .gap(px(if answered { 12. } else { 4. }))
+            .children(cards.iter().enumerate().map(|(n, card)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), ix, card, rows.handle.clone())))
+            // Replies, then the rest: a hairline between, so the rest isn't read as the last reply's.
+            .when(answered && !rest.trim().is_empty(), |q| q.pb(px(10.)).border_b_1().border_color(p.hair))
+            .into_any_element()
     });
-    let text = if quotes.is_empty() { after.as_str() } else { rest.as_str() };
+    let text = if cards.is_empty() { after.as_str() } else { rest.as_str() };
     // The pictures it embeds show under it, their markup out of its words.
     let embedded = equipe_core::visuals::markdown::local_images(text);
     let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &rows.base).map(|p| p.to_string_lossy().into_owned());
