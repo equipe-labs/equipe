@@ -29,7 +29,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let folder = model.projects.iter().find(|path| equipe_core::board::project_name(path) == name).map(|path| super::settings::short_path(path));
     let ident = match at {
         Some(_) if hq => super::sidebar::icon(IconName::Building2, 15., p.text2).into_any_element(),
-        Some(at) => super::board::dot(super::header::project_color(p, at), 10.).into_any_element(),
+        Some(_) => crate::theme::project_mark(p, 15.),
         None => super::sidebar::icon(IconName::Folder, 15., p.muted).into_any_element(),
     };
     let new_in = name.clone();
@@ -93,7 +93,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                         .rounded(px(9.))
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .when(hot, |b| b.bg(p.orange).text_color(p.on_accent))
+                        .when(hot, |b| b.text_color(p.orange))
                         .when(!hot, |b| b.bg(p.wash).text_color(p.text2))
                         .child(count.to_string()),
                 )

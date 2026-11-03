@@ -20,7 +20,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::board::{Flow, btn, dot, hue_of, kbd, member_color};
+use super::board::{Flow, btn, dot, kbd, member_color};
 use super::icons;
 use crate::board::{self as rules, Menu, Tab};
 use crate::motion;
@@ -1242,7 +1242,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                     .flex_none()
                     .gap(px(6.))
                     .items_center()
-                    .child(dot(hue_of(p, model, t).unwrap_or(p.muted), 7.))
+                    .child(crate::theme::project_mark(p, 12.))
                     .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(project.unwrap_or_else(|| t!("board.squad_folder").into()))),
             )
         })
@@ -1360,8 +1360,7 @@ pub fn quick_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .map(|t| match t {
             tickets::Token::Owner(name) => chip(avatar(p, &shell.model, Some(name), 14.), name.clone()).into_any_element(),
             tickets::Token::Project(name) => {
-                let at = shell.model.project_names().iter().position(|x| x == name);
-                chip(dot(at.map_or(p.muted, |i| p.member(crate::theme::PROJECT_HUES[i % crate::theme::PROJECT_HUES.len()])), 7.).into_any_element(), name.clone()).into_any_element()
+                chip(crate::theme::project_mark(p, 12.), name.clone()).into_any_element()
             }
             tickets::Token::Priority(pr) => chip(priority_icon(p, *pr, 12.), tickets::priority_word(*pr).to_owned()).into_any_element(),
             tickets::Token::After(id) => chip(div().text_color(p.orange).child("⛔").into_any_element(), format!("T-{id}")).into_any_element(),
@@ -1709,7 +1708,7 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
                         .text_size(px(11.5))
                         .text_color(p.muted)
                         .when(t.status.is_closed() && status == TicketStatus::Done, |h| h.child(icons::status(p, t.status, 11.)))
-                        .child(h_flex().gap(px(5.)).items_center().min_w_0().child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.)).child(div().truncate().child(project.unwrap_or_else(|| t!("board.squad_folder").into()))))
+                        .child(h_flex().gap(px(5.)).items_center().min_w_0().child(crate::theme::project_mark(p, 11.)).child(div().truncate().child(project.unwrap_or_else(|| t!("board.squad_folder").into()))))
                         .when_some(blocked, |h, dep| h.child(super::ticket_card::hover_link(div().id(("card-blocked", id as u64)).px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.orange).child(format!("⛔ T-{dep}")), dep, super::ticket_card::Side::Below)))
                         .when(unblocks > 0 && !t.status.is_closed(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).child(format!("→ {unblocks}"))))
                         .when(t.not_on_main(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.accent).child(t!("state.chip_not_on_main")))),
@@ -1809,8 +1808,7 @@ pub fn edit_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 }
                 Choice::Project(Some(path)) => {
                     let name = equipe_core::board::project_name(path);
-                    let at = model.project_names().iter().position(|x| *x == name);
-                    (dot(at.map_or(p.muted, |i| p.member(crate::theme::PROJECT_HUES[i % crate::theme::PROJECT_HUES.len()])), 8.).into_any_element(), name, None)
+                    (crate::theme::project_mark(p, 13.), name, None)
                 }
                 Choice::Project(None) => (dot(p.muted, 8.).into_any_element(), t!("board.squad_folder").to_owned(), None),
                 Choice::Kind(k) => (div().w(px(14.)).into_any_element(), equipe_core::i18n::label::kind(crate::i18n::lang(), *k).to_owned(), Some(kind_hint(*k).to_owned())),
@@ -2118,7 +2116,6 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .into_any_element()
     };
     let project_name = s.project.as_deref().map(equipe_core::board::project_name);
-    let project_dot = project_name.as_ref().and_then(|n| model.project_names().iter().position(|x| x == n)).map_or(p.muted, |i| p.member(crate::theme::PROJECT_HUES[i % crate::theme::PROJECT_HUES.len()]));
     let deps_label = if s.depends_on.is_empty() { t!("tickets.prop_depends").to_owned() } else { s.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", ") };
     let kind_label = s.kind.map_or_else(|| t!("tickets.kind_auto").to_owned(), |k| equipe_core::i18n::label::kind(crate::i18n::lang(), k).to_owned());
     let criteria: Vec<AnyElement> = s
@@ -2227,7 +2224,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .border_color(p.hair)
                 .child(prop(EditKind::Priority, priority_icon(p, s.priority, 13.), tickets::priority_word(s.priority).to_owned(), cx))
                 .child(prop(EditKind::Assignee, avatar(p, model, s.assignee.as_deref(), 16.), s.assignee.clone().unwrap_or_else(|| t!("tickets.pm_decides").into()), cx))
-                .child(prop(EditKind::Project, dot(project_dot, 7.).into_any_element(), project_name.unwrap_or_else(|| t!("tickets.project_auto").into()), cx))
+                .child(prop(EditKind::Project, crate::theme::project_mark(p, 12.), project_name.unwrap_or_else(|| t!("tickets.project_auto").into()), cx))
                 .child(prop(EditKind::Depends, div().text_color(p.muted).child("⛓").into_any_element(), deps_label, cx))
                 .child(prop(EditKind::Kind, div().w(px(0.)).into_any_element(), kind_label, cx)),
         )
@@ -2317,7 +2314,7 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
         row(t!("tickets.prop_status"), prop(EditKind::Status, icons::status(p, t.status, 13.).into_any_element(), crate::state::state_word(t).to_owned(), cx)),
         row(t!("tickets.prop_priority"), prop(EditKind::Priority, priority_icon(p, t.priority, 13.), tickets::priority_word(t.priority).to_owned(), cx)),
         row(t!("tickets.prop_assignee"), prop(EditKind::Assignee, avatar(p, model, who.as_deref(), 16.), who.unwrap_or_else(|| t!("tickets.pm_decides").into()), cx)),
-        row(t!("tickets.prop_project"), prop(EditKind::Project, dot(hue_of(p, model, t).unwrap_or(p.muted), 7.).into_any_element(), project.unwrap_or_else(|| t!("board.squad_folder").into()), cx)),
+        row(t!("tickets.prop_project"), prop(EditKind::Project, crate::theme::project_mark(p, 12.).into_any_element(), project.unwrap_or_else(|| t!("board.squad_folder").into()), cx)),
     ];
     if !compact {
         rows.push(row(t!("tickets.prop_kind"), prop(EditKind::Kind, div().into_any_element(), equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind).to_owned(), cx)));

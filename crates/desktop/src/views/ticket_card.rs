@@ -28,7 +28,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::board::{btn, dot, hue_of, member_color};
+use super::board::{btn, member_color};
 use super::icons;
 use crate::board::{self as rules, MergeWay};
 use crate::state::Model;
@@ -809,7 +809,7 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
             .items_center()
             .text_size(px(11.5))
             .text_color(p.muted)
-            .child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.))
+            .child(crate::theme::project_mark(p, 11.))
             .child(div().truncate().child(name))
     });
     let who = rules::who(t).map(|w| {

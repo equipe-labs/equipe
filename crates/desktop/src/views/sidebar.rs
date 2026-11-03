@@ -23,7 +23,6 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::board::dot;
-use super::header::project_color;
 use crate::board::{HeadClick, Menu, SideGroup, ideas_view, recent_done_view, side_groups};
 use crate::state::{Conn, Member, Model, Side, Status};
 use crate::side_split::Divider;
@@ -170,7 +169,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let menu = ui.view.menu;
     let new_on = shell.screen == Screen::Chat && model.draft_talk.as_ref().is_some_and(|(_, project)| project.is_none());
     let needs = model.needs_you_count();
-    let working = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && model.in_focus(t)).count();
+    let working = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).count();
+    let risky = crate::board::progress(model, model.unix).risks.len();
+    let progress_on = shell.screen == Screen::Progress;
 
     // The strip: the title bar's fixed buttons float over its left (see
     // `title_buttons`); search, the sidebar's own, sits after them and leaves
@@ -217,11 +218,16 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 this.open_side_menu(Menu::Inbox, cx);
             }
         })))
-        .child(nav("nav-working", glyph(IconName::LoaderCircle, on_board && menu == Menu::Working), t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Working, member: None, ticket: None }), window, cx) {
-                this.open_side_menu(Menu::Working, cx);
-            }
-        })))
+        // 진행 상황: a red dot once work under way needs a look.
+        .child(
+            nav("nav-working", glyph(IconName::LoaderCircle, progress_on), t!("progress.title").into(), 0, working, progress_on)
+                .when(risky > 0, |r| r.child(div().flex_none().size(px(7.)).rounded_full().bg(p.danger())))
+                .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                    if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Progress, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                        this.open_progress(cx);
+                    }
+                })),
+        )
         // The squad's other screens, named, behind "더 보기".
         .children(more_rows(shell, cx));
 
@@ -376,7 +382,7 @@ enum Glyph {
 /// person sees where they are.
 fn on_more(shell: &Shell) -> bool {
     let menu = shell.board.view.menu;
-    matches!(shell.screen, Screen::Overview | Screen::Roadmap | Screen::Metrics | Screen::Design)
+    matches!(shell.screen, Screen::Roadmap | Screen::Metrics | Screen::Design)
         || (shell.screen == Screen::Board && matches!(menu, Menu::All | Menu::View(_)))
 }
 
@@ -422,15 +428,6 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Board, Menu::All)), window, cx) {
                     this.open_side_menu(Menu::All, cx);
-                }
-            }))
-            .into_any_element(),
-    );
-    rows.push(
-        tool("nav-overview", Glyph::Kit(IconName::ChartPie), t!("overview.title").into(), shell.screen == Screen::Overview)
-            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Overview, this.board.view.menu)), window, cx) {
-                    this.open_overview(cx);
                 }
             }))
             .into_any_element(),
@@ -592,21 +589,24 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
     let ident = match g.at {
         // The HQ: a building, not a dot — the squad's own place, not one of its products.
         Some(_) if hq => icon(IconName::Building2, 13., p.text2).into_any_element(),
-        Some(at) => dot(project_color(p, at), 8.).into_any_element(),
+        Some(_) => crate::theme::project_mark(p, 13.),
         // Outside every project: a ring, where a project has its colour.
         None => div().size(px(8.)).rounded_full().border_1().border_color(p.muted).into_any_element(),
     };
     let name_color = if focused { p.text } else { p.text2 };
     // Waiting on the person: its share of 확인 필요, so the rows add up to it.
     let waiting = shell.model.needs_by_project().get(&g.name).copied().unwrap_or(0);
-    // One sign at the end: waiting on the person (an orange badge), else at work (a spinner).
+    // One sign at the end: waiting on the person (an orange badge), else work
+    // that needs a look (a red dot), else at work (a spinner).
+    let risky = crate::board::progress(&shell.model, shell.model.unix).risks.iter().any(|(id, _)| shell.model.tickets.iter().find(|t| t.id == *id).is_some_and(|t| shell.model.ticket_project_name(t) == g.name));
     let spin = shell.spin(cx);
     let meta = h_flex()
         .flex_none()
         .gap(px(6.))
         .items_center()
         .group_hover(group.clone(), |s| s.invisible())
-        .when(waiting == 0 && g.working > 0, |m| {
+        .when(waiting == 0 && risky, |m| m.child(div().id(SharedString::from(format!("risky-{key}"))).size(px(18.)).flex().items_center().justify_center().tip(p, t!("progress.risks"), None).child(div().size(px(7.)).rounded_full().bg(p.danger()))))
+        .when(waiting == 0 && !risky && g.working > 0, |m| {
             m.child(
                 div()
                     .id(SharedString::from(format!("working-{key}")))
@@ -620,20 +620,16 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
         })
         .when(waiting > 0, |m| {
             m.child(
-                div()
+                h_flex()
                     .id(SharedString::from(format!("waiting-{key}")))
-                    .min_w(px(18.))
                     .h(px(18.))
-                    .px(px(5.))
-                    .flex()
+                    .gap(px(5.))
                     .items_center()
-                    .justify_center()
-                    .rounded(px(9.))
-                    .bg(p.orange)
-                    .text_color(p.on_accent)
-                    .text_size(px(11.))
+                    .text_color(p.orange)
+                    .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .tip(p, t!("sidebar.work_needs_you", n = waiting), None)
+                    .child(div().size(px(6.)).rounded_full().bg(p.orange))
                     .child(waiting.to_string()),
             )
         });
@@ -741,7 +737,7 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
         rows.push(
             row_shell(p, ("conv-draft", *draft as usize), on)
                 .pl(px(8. + indent))
-                .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Message, 13., p.text2)))
+                .child(div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none())
                 .child(row_title(p, t!("sidebar.new_conversation").into(), on, true))
                 .into_any_element(),
         );
@@ -1152,7 +1148,7 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
     };
     // Folded, the usual: one row of faces, each with how it stands; a click
     // on the heading shows the rows.
-    let open = shell.board.team_open;
+    let open = shell.remembered.team_open;
     let turns = members.iter().filter(|m| TeamState::of(model, m).waits()).count();
     let heading = h_flex()
         .id("team-heading")
@@ -1167,7 +1163,8 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
         .aria_expanded(open)
         .aria_label(t!("sidebar.team"))
         .on_click(cx.listener(|this, _, _, cx| {
-            this.board.team_open = !this.board.team_open;
+            this.remembered.team_open = !this.remembered.team_open;
+            this.remembered.save(&equipe_providers::credentials::equipe_home());
             cx.notify();
         }))
         .text_size(px(12.))
@@ -1189,6 +1186,28 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
             .child(body)
             .into_any_element(),
     )
+}
+
+/// Someone on the team, in a row: their avatar, as the folded row and every
+/// card shows them, its dot saying how they stand — orange waiting on the
+/// person, the accent at work — dimmed once they left.
+fn face(p: Palette, member: &Member, mark: Mark) -> AnyElement {
+    let dot = match mark {
+        Mark::Waits => Some(p.orange),
+        Mark::Spinner => Some(p.accent),
+        _ => None,
+    };
+    div()
+        .relative()
+        .size(px(MARK_BOX + 2.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(mark == Mark::Hollow, |d| d.opacity(0.5))
+        .child(crate::theme::avatar(p, &member.role, &member.name, 16.))
+        .children(dot.map(|c| div().absolute().right(px(-2.)).bottom(px(-2.)).size(px(7.)).rounded_full().border_1().border_color(p.side).bg(c)))
+        .into_any_element()
 }
 
 /// The team folded: a face each, its dot saying how it stands — orange
@@ -1466,7 +1485,7 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
                 this.select_member(session, window, cx);
             }
         }))
-        .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
+        .child(face(p, member, mark))
         // Name, then what it is doing against the right edge, then its engine:
         // each in the same place on every row.
         .child(div().flex_1().min_w(px(36.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
@@ -2085,9 +2104,9 @@ impl Shell {
             },
             Screen::Settings => self.open_settings(None, window, cx),
             Screen::Design => self.open_design(cx),
-            Screen::Overview => self.open_overview(cx),
             Screen::Roadmap => self.open_roadmap(cx),
             Screen::Metrics => self.open_metrics(cx),
+            Screen::Progress => self.open_progress(cx),
             Screen::Project => match self.board.project_page.clone() {
                 Some(name) => self.open_project_page(name, window, cx),
                 None => self.open_side(Side::Pm, window, cx),

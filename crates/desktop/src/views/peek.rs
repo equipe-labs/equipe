@@ -12,7 +12,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::board::{Flow, btn, dot, hue_of, kbd, live_activity, member_color};
+use super::board::{Flow, btn, kbd, live_activity, member_color};
 use super::icons;
 use crate::board::{self as rules, MergeWay, Tab};
 use super::yourturn::Place;
@@ -270,7 +270,7 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
     let who = rules::who(t).map(str::to_owned);
     let mut facts: Vec<AnyElement> = Vec::new();
     if let Some(project) = model.ticket_project_name(t) {
-        facts.push(h_flex().gap(px(6.)).items_center().child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.)).child(project).into_any_element());
+        facts.push(h_flex().gap(px(6.)).items_center().child(crate::theme::project_mark(p, 11.)).child(project).into_any_element());
     }
     if let Some(w) = &who {
         let member = model.members.iter().find(|m| m.name == *w || m.role == *w);

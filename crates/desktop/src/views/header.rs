@@ -12,7 +12,7 @@ use gpui_kit::*;
 
 use super::board::{Popover, dot, kbd};
 use crate::state::{Member, Model, Presence};
-use crate::theme::{PROJECT_HUES, Palette, R_MD, SMALL, Sans, key_face, look};
+use crate::theme::{Palette, R_MD, SMALL, Sans, key_face, look};
 use crate::Shell;
 use crate::tips::TipExt as _;
 
@@ -212,7 +212,7 @@ fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> A
     let at = project.as_ref().and_then(|name| names.iter().position(|n| n == name));
     let open = shell.board.popover == Some(Popover::Talk);
     let place = match (project.clone(), at) {
-        (Some(name), Some(at)) => {
+        (Some(name), Some(_)) => {
             let to = name.clone();
             h_flex()
                 .id("crumb-project")
@@ -228,7 +228,7 @@ fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> A
                 .hover(move |s| s.bg(p.wash).text_color(p.text))
                 .aria_label(t!("sidebar.open_project"))
                 .on_click(cx.listener(move |this, _, window, cx| this.open_project_page(to.clone(), window, cx)))
-                .child(dot(project_color(p, at), 8.))
+                .child(crate::theme::project_mark(p, 13.))
                 .child(div().max_w(px(200.)).truncate().child(name))
                 .into_any_element()
         }
@@ -293,7 +293,7 @@ fn talk_menu(shell: &Shell, current: Option<String>, cx: &mut Context<Shell>) ->
         let on = target == current;
         let label = target.clone().unwrap_or_else(|| t!("sidebar.outside").into());
         let mark = match at {
-            Some(at) => dot(project_color(p, at), 7.).into_any_element(),
+            Some(_) => crate::theme::project_mark(p, 12.),
             None => div().size(px(7.)).rounded_full().border_1().border_color(p.muted).into_any_element(),
         };
         let to = target.clone();
@@ -373,11 +373,6 @@ fn title(p: Palette, member: &Member) -> impl IntoElement + use<> {
         .child(div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(member.name.clone()))
 }
 
-/// A project's colour, by its place in the squad.
-pub fn project_color(p: Palette, at: usize) -> Rgba {
-    p.member(PROJECT_HUES[at % PROJECT_HUES.len()])
-}
-
 /// How a project stands: members at work on it, things waiting for the person.
 pub fn project_counts(model: &Model, name: Option<&str>) -> (usize, usize) {
     let here = |t: &equipe_core::protocol::Ticket| name.is_none() || model.ticket_project_name(t).as_deref() == name;
@@ -432,7 +427,7 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
             }
             cx.notify();
         }))
-        .when_some(at, |b, at| b.child(dot(project_color(p, at), 7.)))
+        .when(at.is_some(), |b| b.child(crate::theme::project_mark(p, 12.)))
         .child(div().min_w_0().flex_shrink(1.).max_w(px(160.)).truncate().text_color(if focus.is_some() { p.text } else { p.text2 }).child(label))
         .child(div().flex_none().child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted)));
     // It gives way too, after the title has: the title's words matter more.
@@ -468,7 +463,7 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 }
                 cx.notify();
             }))
-            .child(div().w(px(10.)).flex().justify_center().children(color.map(|c| dot(c, 7.))))
+            .child(div().w(px(14.)).flex().justify_center().children(color.map(|_| crate::theme::project_mark(p, 12.))))
             .child(
                 v_flex()
                     .flex_1()
@@ -493,7 +488,7 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             continue;
         }
         rows.push(
-            row(SharedString::from(format!("slice-{name}")), Some(project_color(p, i)), name.clone(), project_counts(model, Some(name)), keys.get(i).copied(), current.as_deref() == Some(name.as_str()), Some(name.clone()), cx)
+            row(SharedString::from(format!("slice-{name}")), Some(p.muted), name.clone(), project_counts(model, Some(name)), keys.get(i).copied(), current.as_deref() == Some(name.as_str()), Some(name.clone()), cx)
                 .into_any_element(),
         );
     }

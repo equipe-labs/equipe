@@ -283,14 +283,13 @@ fn card_element(shell: &Shell, card: &Proposal, cx: &mut Context<Shell>) -> AnyE
     let rows: Vec<AnyElement> = rules::rows(card)
         .into_iter()
         .map(|r| {
-            let (_, hue) = crate::theme::look(&r.role, &r.member);
             h_flex()
                 .w_full()
                 .h(px(28.))
                 .gap_3()
                 .items_center()
                 .text_size(px(12.5))
-                .child(h_flex().w(px(112.)).flex_none().gap(px(6.)).items_center().child(div().size(px(6.)).rounded_full().bg(p.member(hue))).child(div().truncate().text_color(p.text).child(r.member)))
+                .child(h_flex().w(px(112.)).flex_none().gap(px(6.)).items_center().child(crate::theme::avatar(p, &r.role, &r.member, 15.)).child(div().truncate().text_color(p.text).child(r.member)))
                 .child(div().w(px(168.)).flex_none().truncate().text_color(p.muted).child(r.now))
                 .child(icon(Icon::ArrowRight, 12., if r.moves_engine { p.accent } else { p.muted }))
                 .child(div().flex_1().min_w_0().truncate().text_color(if r.done { p.muted } else { p.text }).font_weight(if r.moves_engine { FontWeight::MEDIUM } else { FontWeight::NORMAL }).child(r.after))

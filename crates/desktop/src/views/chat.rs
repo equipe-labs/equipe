@@ -36,7 +36,7 @@ use crate::render::{self, Tones, hash_of, plugins, tools};
 use crate::state::{Model, Presence};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, BODY_LINE, CONTROL, ICON_SM, MEASURE, META, META_LINE, MONO, Palette, R_LG, R_MD, R_SM, SMALL, SMALL_LINE, TAIL_ROOM, look};
+use crate::theme::{BODY, BODY_LINE, CONTROL, ICON_SM, MEASURE, META, META_LINE, MONO, Palette, R_LG, R_MD, R_SM, SMALL, SMALL_LINE, TAIL_ROOM};
 use crate::tips::tip;
 
 /// Where text starts inside the column: the cards' and the composer's inner
@@ -621,7 +621,7 @@ fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> Div 
 #[derive(Clone)]
 struct Who {
     name: String,
-    color: Rgba,
+    role: String,
 }
 
 /// What every row of one frame draws with.
@@ -676,10 +676,9 @@ impl Rows {
     /// The project row `ix` is about, as its chip or dot shows it: its name
     /// and colour — while every project shows, or in a fold of other
     /// projects' talk opened.
-    fn project_of(&self, ix: usize) -> Option<(String, Rgba)> {
+    fn project_of(&self, ix: usize) -> Option<String> {
         let name = self.about.get(ix)?.as_ref().filter(|n| Some(*n) != self.focus.as_ref())?;
-        let at = self.projects.iter().position(|p| p == name)?;
-        Some((name.clone(), header::project_color(self.p, at)))
+        self.projects.contains(name).then(|| name.clone())
     }
 
     /// Whether `part` of row `key` is open: as it opens by itself
@@ -733,8 +732,7 @@ pub fn conversation_pane(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let Some(member) = shell.model.selected_member().filter(|_| !shell.chat.blocks.is_empty()) else {
         return Empty.into_any_element();
     };
-    let (_, hue) = look(&member.role, &member.name);
-    let who = Who { name: member.name.clone(), color: shell.palette.member(hue) };
+    let who = Who { name: member.name.clone(), role: member.role.clone() };
     v_flex().size_full().items_center().child(conversation(shell, who, cx)).into_any_element()
 }
 
@@ -1086,7 +1084,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
                     .items_center()
                     .text_size(px(META))
                     .text_color(p.muted)
-                    .child(div().size(px(6.)).rounded_full().bg(rows.who.color))
+                    .child(crate::theme::avatar(p, &rows.who.role, &rows.who.name, 15.))
                     .child(rows.who.name.clone()),
             )
         })
@@ -1098,7 +1096,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
 }
 
 /// The project a message of yours was about: a dot of its colour and its name.
-fn project_chip(p: Palette, name: String, color: Rgba) -> impl IntoElement {
+fn project_chip(p: Palette, name: String) -> impl IntoElement {
     h_flex()
         .h(px(20.))
         .px(px(7.))
@@ -1109,7 +1107,7 @@ fn project_chip(p: Palette, name: String, color: Rgba) -> impl IntoElement {
         .border_color(p.hair)
         .text_size(px(11.5))
         .text_color(p.text2)
-        .child(super::board::dot(color, 6.))
+        .child(crate::theme::project_mark(p, 11.))
         .child(name)
 }
 
@@ -1487,7 +1485,7 @@ fn diff_lines(rows: &Rows, id: u64, card: tools::DiffCard, path: Option<&str>) -
 /// in a row fold into one line that counts them.
 fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
-    // While every project shows: a dot of the project the news is about.
+    // While every project shows: the project the news is about, its folder.
     let project = rows.project_of((key & 0xFF_FFFF) as usize);
     let line = |n: usize, item: &crate::activity::News, cx: &mut App| {
         let line = h_flex()
@@ -1496,7 +1494,7 @@ fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut
             .items_center()
             .text_size(px(SMALL))
             .child(news_icon(rows, item.kind))
-            .children(project.as_ref().map(|(name, color)| tip(div().id(("news-project", key << 8 | n as u64)).child(super::board::dot(*color, 6.)), p, name.clone(), None)))
+            .children(project.as_ref().map(|name| tip(div().id(("news-project", key << 8 | n as u64)).child(crate::theme::project_mark(p, 11.)), p, name.clone(), None)))
             .child(linked(rows, ("news", key << 8 | n as u64), &item.text, p.muted, false))
             // The disk ran short: the way to make room, in a click.
             .when(item.kind == crate::activity::NewsKind::DiskShort, |r| {
@@ -1602,7 +1600,7 @@ fn news_icon(rows: &Rows, kind: crate::activity::NewsKind) -> impl IntoElement {
 /// is, quieter — a dashed outline — and under it what it waits for and when
 /// it was said, then on hover (or reached with ↑) copy, take it back and
 /// send it now. Taken back, it fades out.
-fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: Option<(String, Rgba)>, cx: &mut App) -> AnyElement {
+fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: Option<String>, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
@@ -1662,7 +1660,7 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
                 .text_color(p.muted)
                 .child(h_flex().gap(px(2.)).items_center().when(!picked, |r| r.invisible().group_hover(group.clone(), |s| s.visible())).child(copy).child(back).child(now))
                 .child(label)
-                .children(project.map(|(name, color)| project_chip(p, name, color))),
+                .children(project.map(|name| project_chip(p, name))),
         );
     if leaving {
         return row.with_animation(("pending-out", key), Animation::new(motion::BASE).with_easing(motion::ease_out), |el, t| el.opacity(1. - t)).into_any_element();
@@ -1691,7 +1689,7 @@ fn keyed_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: impl In
 /// attached just above it, its start only when it is long ("더 보기"), and on
 /// hover a small row of actions beneath.
 #[allow(clippy::too_many_arguments)]
-fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<(String, Rgba)>, heard: bool, cx: &mut App) -> AnyElement {
+fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<String>, heard: bool, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
     // Asked about words of the conversation: the quote over the words.
@@ -1780,7 +1778,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
                 .gap(px(6.))
                 .items_center()
                 .child(div().invisible().group_hover(group, |s| s.visible()).child(copy))
-                .children(project.map(|(name, color)| project_chip(p, name, color))),
+                .children(project.map(|name| project_chip(p, name))),
         )
         .into_any_element()
 }

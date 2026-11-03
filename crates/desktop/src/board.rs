@@ -673,6 +673,91 @@ pub fn project_talks<'a>(model: &'a Model, project: &str) -> (Vec<&'a crate::sta
     model.conversations().into_iter().filter(|l| l.project.as_deref() == Some(project)).partition(|l| l.presence != crate::state::Presence::Working)
 }
 
+/// How long work may go unheard from before it counts as stuck, not quiet.
+pub const STUCK_AFTER: u64 = 30 * 60;
+
+/// Why work under way needs a look: what 진행 상황 puts first, in red.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Risk {
+    /// Its member's last turn failed, or said something went wrong.
+    Failed,
+    /// Nothing heard from its member for this long (seconds).
+    Stuck(u64),
+    /// Past the time it was expected done by this much (seconds), and by
+    /// more than a fifth of the time it was given.
+    Late(u64),
+}
+
+/// Whether work under way needs a look, and why — the worst reason.
+pub fn risk(model: &Model, t: &Ticket) -> Option<Risk> {
+    if t.status != TicketStatus::InProgress {
+        return None;
+    }
+    if model.failed(t) {
+        return Some(Risk::Failed);
+    }
+    if let Some(quiet) = model.quiet_for(t).filter(|q| *q >= STUCK_AFTER) {
+        return Some(Risk::Stuck(quiet));
+    }
+    let eta = model.eta(t)?;
+    let over = model.unix.checked_sub(eta.at).filter(|o| *o > 0)?;
+    // A fifth of what it was given, from when it started — five minutes at least.
+    let given = model.since.get(&t.id).filter(|s| **s > 0 && **s < eta.at).map_or(0, |s| eta.at - s);
+    (over > (given / 5).max(5 * 60)).then_some(Risk::Late(over))
+}
+
+/// The step work is at, in a few words: what its member said it is doing,
+/// else what its last tool touched — a file by its name, not its path.
+pub fn step_words(what: Option<&str>, target: Option<&str>) -> Option<String> {
+    if let Some(what) = what.map(str::trim).filter(|w| !w.is_empty()) {
+        return Some(what.to_owned());
+    }
+    let target = target.map(str::trim).filter(|t| !t.is_empty())?;
+    // A path, alone: its last part. A command keeps its words.
+    if !target.contains(' ') && target.contains('/') {
+        return target.trim_end_matches('/').rsplit('/').next().map(str::to_owned);
+    }
+    Some(target.to_owned())
+}
+
+/// What 진행 상황 shows: work that needs a look first, then the rest under
+/// way by project, then what finished since `since`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Progress {
+    /// The worst first: failed, then the longest stuck, then the latest.
+    pub risks: Vec<(TicketId, Risk)>,
+    /// Under way and fine, by project in the sidebar's order (None: no
+    /// project), the soonest expected first.
+    pub working: Vec<(Option<String>, Vec<TicketId>)>,
+    /// Finished since then, the latest first.
+    pub done: Vec<TicketId>,
+}
+
+pub fn progress(model: &Model, since: u64) -> Progress {
+    let under_way: Vec<&Ticket> = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).collect();
+    let mut risks: Vec<(TicketId, Risk)> = under_way.iter().filter_map(|t| risk(model, t).map(|r| (t.id, r))).collect();
+    let rank = |r: &Risk| match *r {
+        Risk::Failed => (0, 0),
+        Risk::Stuck(s) => (1, u64::MAX - s),
+        Risk::Late(s) => (2, u64::MAX - s),
+    };
+    risks.sort_by_key(|(id, r)| (rank(r), *id));
+    let mut working: Vec<(Option<String>, Vec<TicketId>)> = Vec::new();
+    let mut names: Vec<Option<String>> = model.project_names().into_iter().map(Some).collect();
+    names.push(None);
+    for name in names {
+        let mut here: Vec<&&Ticket> = under_way.iter().filter(|t| !risks.iter().any(|(id, _)| *id == t.id) && model.ticket_project_name(t) == name).collect();
+        if here.is_empty() {
+            continue;
+        }
+        here.sort_by_key(|t| (model.eta(t).map_or(u64::MAX, |e| e.at), t.id));
+        working.push((name, here.into_iter().map(|t| t.id).collect()));
+    }
+    let mut done: Vec<&Ticket> = model.tickets.iter().filter(|t| t.status == TicketStatus::Done && crate::tickets::changed_at(model, t) >= since.max(1)).collect();
+    done.sort_by_key(|t| (std::cmp::Reverse(crate::tickets::changed_at(model, t)), std::cmp::Reverse(t.id)));
+    Progress { risks, working, done: done.into_iter().map(|t| t.id).collect() }
+}
+
 /// A project's conversations put away, the latest first: its page's 끝남.
 pub fn project_put_away<'a>(model: &'a Model, project: &str) -> Vec<&'a equipe_core::protocol::PutAway> {
     model.put_away.iter().filter(|c| c.project.as_deref() == Some(project)).collect()
@@ -1367,6 +1452,74 @@ mod tests {
         assert_eq!(work[3].1[0], 10, "the latest first");
         assert!(!work.iter().any(|(_, ids)| ids.contains(&4) || ids.contains(&5)), "ideas and what was cancelled are kept elsewhere");
         assert_eq!(project_work(&m, "api").iter().map(|(w, _)| *w).collect::<Vec<_>>(), [WorkPart::Working], "the empty parts left out");
+    }
+
+    fn at_work(session: u64, ticket: u32, last_seen: u64, failed: bool, done_at: Option<u64>) -> crate::state::Member {
+        crate::state::Member {
+            session,
+            name: format!("m{session}"),
+            role: "backend".into(),
+            presence: crate::state::Presence::Working,
+            verb: crate::state::Verb::Working,
+            ticket: Some(ticket),
+            memos: 0,
+            context: None,
+            model: None,
+            engine: None,
+            estimate: done_at.map(|at| equipe_core::protocol::Estimate { done_at: Some(at), ..Default::default() }),
+            target: None,
+            last_seen,
+            failed,
+        }
+    }
+
+    #[test]
+    fn work_under_way_needs_a_look_when_it_failed_went_quiet_or_ran_late() {
+        let now = 100_000;
+        let mut m = model((1..=6).map(|i| ticket(i, "in_progress", "/web", &[])).collect(), &["/web"]);
+        m.unix = now;
+        m.members = vec![
+            at_work(11, 1, now, true, None),                      // failed
+            at_work(12, 2, now - 31 * 60, false, None),           // stuck
+            at_work(13, 3, now - 12 * 60, false, None),           // quiet, not stuck
+            at_work(14, 4, now, false, Some(now - 20 * 60)),      // late: 20 minutes past an hour given
+            at_work(15, 5, now, false, Some(now - 6 * 60)),       // past, but within a fifth of the hour
+            at_work(16, 6, now, false, Some(now + 600)),          // on time
+        ];
+        for id in [4, 5] {
+            m.since.insert(id, now - 80 * 60);
+        }
+        let r = |id| risk(&m, m.tickets.iter().find(|t| t.id == id).unwrap());
+        assert_eq!(r(1), Some(Risk::Failed));
+        assert_eq!(r(2), Some(Risk::Stuck(31 * 60)));
+        assert_eq!(r(3), None, "ten minutes' quiet is a member thinking");
+        assert_eq!(r(4), Some(Risk::Late(20 * 60)));
+        assert_eq!(r(5), None, "a little over, on work given an hour");
+        assert_eq!(r(6), None);
+        let p = progress(&m, 0);
+        assert_eq!(p.risks.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [1, 2, 4], "the worst first");
+        assert_eq!(p.working, [(Some("web".to_owned()), vec![5, 6, 3])], "the rest, the soonest expected first, the unknown last");
+    }
+
+    #[test]
+    fn the_step_is_said_in_a_few_words_a_file_by_its_name() {
+        assert_eq!(step_words(Some("비교표 반응형"), Some("/a/b.tsx")).as_deref(), Some("비교표 반응형"), "the member's own words first");
+        assert_eq!(step_words(None, Some("/var/folders/x/equipe-fake/web/src/gallery.tsx")).as_deref(), Some("gallery.tsx"));
+        assert_eq!(step_words(Some("  "), Some("cargo test -p api")).as_deref(), Some("cargo test -p api"), "a command keeps its words");
+        assert_eq!(step_words(None, None), None);
+    }
+
+    #[test]
+    fn progress_lists_what_finished_since_the_person_last_looked() {
+        let mut m = model(vec![ticket(1, "done", "/web", &[]), ticket(2, "done", "/web", &[]), ticket(3, "done", "/api", &[]), ticket(4, "in_progress", "/api", &[]), ticket(5, "cancelled", "/web", &[])], &["/web", "/api"]);
+        m.unix = 10_000;
+        for (id, at) in [(1, 9_000), (2, 5_000), (3, 9_500), (5, 9_900)] {
+            m.since.insert(id, at);
+        }
+        let p = progress(&m, 8_000);
+        assert_eq!(p.done, [3, 1], "since then, the latest first; never what was cancelled");
+        assert_eq!(p.working, [(Some("api".to_owned()), vec![4])]);
+        assert_eq!(progress(&m, 0).done, [3, 1, 2]);
     }
 
     #[test]
