@@ -90,6 +90,7 @@ fn config(codex: &Path, home: &Path, nemotron: Option<equipe_core::nemotron::Con
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
         nemotron,
+        watch_disk: false,
     }
 }
 

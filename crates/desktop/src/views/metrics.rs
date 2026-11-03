@@ -655,7 +655,7 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label))
-                .child(div().w_full().h(px(CONTROL + 4.)).px_3().flex().items_center().rounded(px(R_MD)).border_1().border_color(if empty { p.red } else { p.hair }).id(SharedString::from(format!("metrics-box-{}", f.key))).track_focus(&focus).in_focus(move |s| s.border_color(ring.color).shadow(vec![ring])).bg(p.code_bg).text_size(px(13.)).font_family(if f.secret { MONO } else { MONO }).child(Input::new(input).appearance(false).bordered(false)))
+                .child(div().w_full().h(px(CONTROL + 4.)).px_3().flex().items_center().rounded(px(R_MD)).border_1().border_color(if empty { p.red } else { p.hair }).id(SharedString::from(format!("metrics-box-{}", f.key))).track_focus(&focus).in_focus(move |s| s.border_color(ring.color).shadow(vec![ring])).bg(p.code_bg).text_size(px(13.)).font_family(MONO).child(Input::new(input).appearance(false).bordered(false)))
                 .children(hint.map(|h| div().text_size(px(12.)).text_color(p.muted).child(h))),
         )
     });

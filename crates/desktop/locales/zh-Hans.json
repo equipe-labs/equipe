@@ -2000,6 +2000,7 @@
   "settings.section_privacy": "隐私",
   "settings.telemetry": "发送匿名使用数据",
   "settings.telemetry_desc": "只发送数字，比如创建的小队和工单数，绝不发送对话和名称。",
+  "settings.telemetry_words": "遥测 匿名 使用数据 telemetry analytics usage data anonymous",
   "settings.telemetry_held": "已开启，但被 {by} 拦下了",
   "settings.telemetry_foot": "这是守护进程所在电脑的设置。关闭后，这次安装的 ID 也会被清除。",
   "settings.telemetry_list": "发送的全部内容",

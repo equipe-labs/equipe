@@ -2052,6 +2052,7 @@
   "settings.section_privacy": "Datenschutz",
   "settings.telemetry": "Anonyme Nutzungsdaten senden",
   "settings.telemetry_desc": "Nur Zahlen, etwa erstellte Squads und Tickets. Nie Unterhaltungen oder Namen.",
+  "settings.telemetry_words": "telemetrie nutzungsdaten anonym telemetry analytics usage data anonymous",
   "settings.telemetry_held": "An, aber zurückgehalten durch {by}",
   "settings.telemetry_foot": "Das ist eine Einstellung des Computers, auf dem der Daemon läuft. Beim Ausschalten wird auch die ID dieser Installation vergessen.",
   "settings.telemetry_list": "Alles, was gesendet wird",

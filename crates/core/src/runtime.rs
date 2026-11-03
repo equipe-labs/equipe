@@ -165,6 +165,11 @@ pub struct Config {
     /// An NVIDIA Nemotron model on Nebius Token Factory reviews each code
     /// ticket handed in (`nemotron`); `None`: no `NEBIUS_API_KEY`, no review.
     pub nemotron: Option<crate::nemotron::Config>,
+    /// Look at the free space of the disk now and then, and on a short disk
+    /// hold code work back and trim build caches (the daemon). Off, the disk's
+    /// room is only what a write that failed or a screen's look says: a test's
+    /// runtime doesn't stall on the Mac's real disk running short.
+    pub watch_disk: bool,
 }
 
 impl Config {
@@ -187,6 +192,7 @@ impl Config {
             person_home: None,
             lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
             nemotron: crate::nemotron::Config::from_env_or_saved(&equipe_home()).ok(),
+            watch_disk: true,
         }
     }
 

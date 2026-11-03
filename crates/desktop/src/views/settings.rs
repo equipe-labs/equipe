@@ -498,7 +498,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     ]
 }
 
-/// "익명 사용 데이터": the switch (the daemon keeps it) and the page that lists every event.
+/// Anonymous usage data: the switch (the daemon keeps it) and the page that lists every event.
 fn telemetry_line(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
     let p = shell.palette;
     let status = shell.telemetry.status.as_ref();
@@ -508,7 +508,7 @@ fn telemetry_line(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
         None => t!("settings.telemetry_desc").to_owned(),
     };
     let send = Line::new(t!("settings.telemetry"), desc)
-        .words("telemetry analytics usage data anonymous 익명 사용 데이터")
+        .words(t!("settings.telemetry_words"))
         .control(switch(shell, "telemetry", shell.telemetry.on(), connected && status.is_some() && !shell.telemetry.saving, |this, on, _, cx| this.telemetry_answer(on, cx), cx));
     let list = Line::new(t!("settings.telemetry_list"), t!("settings.telemetry_list_desc"))
         .words("telemetry events list sent never")

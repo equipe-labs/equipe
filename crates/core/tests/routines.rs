@@ -53,6 +53,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::Ko,
         nemotron: None,
+        watch_disk: false,
     }
 }
 

@@ -2052,6 +2052,7 @@
   "settings.section_privacy": "Confidentialité",
   "settings.telemetry": "Envoyer des données d’usage anonymes",
   "settings.telemetry_desc": "Seulement des chiffres, comme les squads et tickets créés. Jamais de conversations ni de noms.",
+  "settings.telemetry_words": "télémétrie données d’usage anonyme telemetry analytics usage data anonymous",
   "settings.telemetry_held": "Activé, mais retenu par {by}",
   "settings.telemetry_foot": "C’est un réglage de l’ordinateur où tourne le daemon. Le désactiver oublie aussi l’identifiant de cette installation.",
   "settings.telemetry_list": "Tout ce qui est envoyé",

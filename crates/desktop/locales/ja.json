@@ -2000,6 +2000,7 @@
   "settings.section_privacy": "プライバシー",
   "settings.telemetry": "匿名の利用データを送る",
   "settings.telemetry_desc": "スクワッドやチケットを作った数などの数字だけです。会話や名前は送りません。",
+  "settings.telemetry_words": "テレメトリ 匿名 使用データ telemetry analytics usage data anonymous",
   "settings.telemetry_held": "オンですが、{by}のため送っていません",
   "settings.telemetry_foot": "デーモンが動くコンピュータの設定です。オフにすると、この環境のIDも消えます。",
   "settings.telemetry_list": "送る内容のすべて",
