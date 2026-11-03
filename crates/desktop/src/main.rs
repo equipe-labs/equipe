@@ -26,6 +26,7 @@ mod deck;
 mod daemon;
 mod disk;
 mod doc;
+mod compare;
 mod design;
 mod design_talk;
 mod dictation;
@@ -87,7 +88,7 @@ use std::time::Duration;
 use equipe_core::t;
 
 use equipe_providers::credentials::equipe_home;
-use gpui_kit::component::input::{Enter, InputEvent};
+use gpui_kit::component::input::{Enter, InputEvent, InputState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -225,6 +226,8 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// 디자인 시스템's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
+    /// 비교하며 검토's box for what to change, a draft sent back with it.
+    pub design_redo: Entity<InputState>,
     /// The routines' list on 진행 상황: which is being edited or deleted.
     pub routines_ui: views::routines::RoutinesUi,
     /// Each project's newest tag, as last found, and when it was asked.
@@ -384,6 +387,7 @@ impl Shell {
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
+            design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
             releases_asked: None,
@@ -544,6 +548,13 @@ impl Shell {
             }
         }));
         // Settings' search filters as it is typed.
+        // 비교하며 검토's words: ⏎ sends the draft back with them.
+        let design_redo = shell.design_redo.clone();
+        shell._subscriptions.push(cx.subscribe_in(&design_redo, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.design_redo_send(window, cx),
+            InputEvent::Change => cx.notify(),
+            _ => {}
+        }));
         let settings_search = shell.settings.search.clone();
         shell._subscriptions.push(cx.subscribe_in(&settings_search, window, |_, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
@@ -839,6 +850,10 @@ impl Shell {
                         let update = match update {
                             daemon::Update::Event(Event::Design { squad, systems, folder }) => {
                                 changed |= this.design_arrived(squad, systems, folder);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {
+                                changed |= this.design_versions_arrived(squad, project, versions);
                                 continue;
                             }
                             other => other,
@@ -1696,6 +1711,7 @@ impl Shell {
         }
         self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
+        self.design_redo.update(cx, |s, cx| s.set_placeholder(t!("design.compare_redo_placeholder"), window, cx));
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
 }

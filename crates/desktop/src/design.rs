@@ -12,7 +12,9 @@ use std::time::Instant;
 use equipe_core::design::contrast;
 use equipe_core::design::diff::{self, Change, Seen};
 use equipe_core::design::values;
-use equipe_core::protocol::design::{AssetKind, DesignSystem, Token};
+use equipe_core::protocol::design::{AssetKind, DesignSystem, DesignVersion, FlowMap, Token};
+
+use crate::compare::{self, Side};
 use gpui_kit::ScrollHandle;
 
 /// The screen's sections, in their order.
@@ -332,6 +334,19 @@ pub struct DesignUi {
     pub map: crate::flows::MapUi,
     /// 보면서 말하기: the conversation docked beside it (`views/design_talk.rs`).
     pub talk: crate::design_talk::TalkUi,
+    /// 비교하며 검토 under way: the draft held against the accepted system,
+    /// the side on show being `draft`'s.
+    pub compare: bool,
+    /// Its box for what to change, open.
+    pub redo_open: bool,
+    /// The window is wide enough for 지금 and 바뀐 뒤 side by side.
+    pub wide: bool,
+    /// 버전 기록 open.
+    pub versions_open: bool,
+    /// Each source's accepted versions, newest first, as the daemon last said.
+    pub versions: HashMap<String, Vec<DesignVersion>>,
+    /// The source asked for and not answered yet.
+    pub versions_asked: Option<String>,
 }
 
 impl Default for DesignUi {
@@ -360,6 +375,12 @@ impl Default for DesignUi {
             on_screen: false,
             map: Default::default(),
             talk: Default::default(),
+            compare: false,
+            redo_open: false,
+            wide: false,
+            versions_open: false,
+            versions: HashMap::new(),
+            versions_asked: None,
         }
     }
 }
@@ -412,6 +433,10 @@ impl DesignUi {
         }
         if self.draft_of(&self.source).is_none() {
             self.draft = false;
+        }
+        // The draft accepted, sent back or gone: nothing to compare.
+        if self.compare && !self.can_compare() {
+            self.end_compare();
         }
         for system in &self.systems {
             let key = seen_key(system);
@@ -478,6 +503,102 @@ impl DesignUi {
         let seen_loaded = self.seen_loaded;
         let fonts = self.fonts.take();
         *self = Self { seen, seen_loaded, fonts, ..Self::default() };
+    }
+
+    // ── 비교하며 검토 ──
+
+    /// The source's accepted system.
+    pub fn accepted_of(&self, source: &str) -> Option<&DesignSystem> {
+        self.systems.iter().find(|s| s.draft.is_none() && base_key(s) == source)
+    }
+
+    /// Whether the system on screen has a draft to compare: both are here.
+    pub fn can_compare(&self) -> bool {
+        self.accepted_of(&self.source).is_some() && self.draft_of(&self.source).is_some()
+    }
+
+    /// The side on show.
+    pub fn side(&self) -> Side {
+        if self.draft { Side::After } else { Side::Now }
+    }
+
+    /// Comparing begins on 바뀐 뒤, the draft.
+    pub fn begin_compare(&mut self) -> bool {
+        if !self.can_compare() {
+            return false;
+        }
+        self.compare = true;
+        self.show_side(Side::After);
+        true
+    }
+
+    pub fn end_compare(&mut self) {
+        self.compare = false;
+        self.redo_open = false;
+    }
+
+    /// 지금 or 바뀐 뒤 on show: the whole screen flips, the place in the map kept where it is.
+    pub fn show_side(&mut self, side: Side) {
+        self.draft = side == Side::After && self.draft_of(&self.source).is_some();
+        self.lightbox = None;
+        let map = self.current().and_then(|s| s.flows.clone());
+        self.map.arrived(map.as_ref());
+        if let Some(system) = self.current()
+            && count(system, self.section).is_none()
+        {
+            self.section = Section::Overview;
+        }
+    }
+
+    /// The UI maps compared: the accepted one's and the draft's (an empty one
+    /// for a side that has none).
+    pub fn compared_maps(&self) -> Option<(FlowMap, FlowMap)> {
+        let (now, after) = (self.accepted_of(&self.source)?, self.draft_of(&self.source)?);
+        Some((now.flows.clone().unwrap_or_default(), after.flows.clone().unwrap_or_default()))
+    }
+
+    /// What the draft changed in the UI map, while comparing.
+    pub fn compare_changes(&self) -> Option<compare::Changes> {
+        if !self.compare {
+            return None;
+        }
+        let (now, after) = self.compared_maps()?;
+        Some(compare::changes(&now, &after))
+    }
+
+    /// ←/→ while comparing: the changed screen after (or before) the one open,
+    /// in the map on show — across its flows. Whether one was.
+    pub fn step_changed(&mut self, forward: bool) -> bool {
+        let Some(changes) = self.compare_changes() else { return false };
+        let Some(map) = self.current().and_then(|s| s.flows.clone()) else { return false };
+        let flow = self.map.flow(&map).map(|f| f.id.clone());
+        let at = flow.as_deref().zip(self.map.screen.as_deref());
+        let Some((flow, screen)) = changes.step(&map, at, forward) else { return false };
+        self.map.pick_flow(&flow);
+        self.map.screen = Some(screen);
+        self.map.chip = None;
+        true
+    }
+
+    // ── 버전 기록 ──
+
+    /// The project the source is (`None`: the squad's own).
+    pub fn source_project(&self) -> Option<String> {
+        self.source.strip_prefix("project:").map(str::to_owned)
+    }
+
+    /// The daemon's list for a system: kept by its source.
+    pub fn versions_arrived(&mut self, project: Option<String>, versions: Vec<DesignVersion>) {
+        let source = project.map_or_else(|| "squad".to_owned(), |p| format!("project:{p}"));
+        if self.versions_asked.as_ref() == Some(&source) {
+            self.versions_asked = None;
+        }
+        self.versions.insert(source, versions);
+    }
+
+    /// The system on screen's versions; `None`: not said yet.
+    pub fn shown_versions(&self) -> Option<&[DesignVersion]> {
+        self.versions.get(&self.source).map(Vec::as_slice)
     }
 
     /// The asset kinds' order in the grid: logos, then the rest as they come.
@@ -630,5 +751,63 @@ mod tests {
             .map(|n| equipe_core::protocol::design::Asset { path: format!("/d/{n}"), name: (*n).into(), kind: if n.contains("logo") { AssetKind::Logo } else { AssetKind::Icon }, size: 1 })
             .collect();
         assert_eq!(DesignUi::logos(&with_logos), [1, 3, 0], "plain ones first");
+    }
+
+    fn mapped(project: Option<&str>, draft: Option<u32>, shots: &[(&str, &str)]) -> DesignSystem {
+        use equipe_core::protocol::design::{Flow, Picture, Screen, ScreenState};
+        let screens = shots
+            .iter()
+            .map(|(id, hash)| Screen {
+                id: (*id).into(),
+                title: (*id).into(),
+                states: vec![ScreenState { id: "default".into(), label: "기본".into(), kind: "default".into(), note: None, pictures: vec![Picture { path: format!("/d/{id}.png"), mode: "light".into(), width: 390, taken: 1, hash: Some((*hash).into()) }] }],
+                ..Default::default()
+            })
+            .collect();
+        DesignSystem { flows: Some(FlowMap { flows: vec![Flow { id: "app".into(), title: "App".into(), screens, ..Default::default() }], ..Default::default() }), ..system(project, draft, vec![]) }
+    }
+
+    #[test]
+    fn comparing_flips_the_whole_screen_between_now_and_after_and_steps_through_what_changed() {
+        let mut ui = DesignUi::default();
+        let key = |s: &DesignSystem| s.key();
+        ui.arrived(vec![mapped(None, None, &[("home", "a"), ("list", "b"), ("pay", "c")])], "/f".into(), &key);
+        assert!(!ui.can_compare() && !ui.begin_compare(), "no draft: nothing to compare");
+        assert!(ui.compare_changes().is_none());
+        ui.arrived(vec![mapped(None, None, &[("home", "a"), ("list", "b"), ("pay", "c")]), mapped(None, Some(170), &[("home", "A"), ("list", "b"), ("pay", "C")])], "/f".into(), &key);
+        assert!(ui.can_compare() && ui.begin_compare());
+        assert_eq!(ui.side(), Side::After, "begins on the draft");
+        assert_eq!(ui.current().unwrap().draft.as_ref().unwrap().ticket, 170);
+        assert_eq!(ui.compare_changes().unwrap().count(), 2);
+        assert!(ui.step_changed(true));
+        assert_eq!(ui.map.screen.as_deref(), Some("home"));
+        assert!(ui.step_changed(true));
+        assert_eq!(ui.map.screen.as_deref(), Some("pay"), "list didn't change: passed by");
+        assert!(!ui.step_changed(true), "the last changed one");
+        ui.show_side(Side::Now);
+        assert!(ui.current().unwrap().draft.is_none());
+        assert_eq!(ui.map.screen.as_deref(), Some("pay"), "the same screen, as it is now");
+        // Accepted: the draft goes, and so does the comparing.
+        ui.redo_open = true;
+        ui.arrived(vec![mapped(None, None, &[("home", "A"), ("list", "b"), ("pay", "C")])], "/f".into(), &key);
+        assert!(!ui.compare && !ui.redo_open && !ui.draft);
+    }
+
+    #[test]
+    fn versions_are_kept_by_the_system_they_are_of() {
+        let mut ui = DesignUi::default();
+        let key = |s: &DesignSystem| s.key();
+        ui.arrived(vec![system(None, None, vec![]), system(Some("web"), None, vec![])], "/f".into(), &key);
+        assert_eq!(ui.source_project(), None);
+        assert!(ui.shown_versions().is_none(), "not said yet");
+        let v = |c: &str| DesignVersion { commit: c.repeat(40), at: 1, subject: c.into(), ticket: None, parts: vec![] };
+        ui.versions_asked = Some("project:web".into());
+        ui.versions_arrived(Some("web".into()), vec![v("a"), v("b")]);
+        assert!(ui.versions_asked.is_none());
+        assert!(ui.shown_versions().is_none(), "the squad's still unsaid");
+        ui.versions_arrived(None, vec![]);
+        assert_eq!(ui.shown_versions().map(<[_]>::len), Some(0));
+        ui.source = "project:web".into();
+        assert_eq!((ui.source_project().as_deref(), ui.shown_versions().map(<[_]>::len)), (Some("web"), Some(2)));
     }
 }

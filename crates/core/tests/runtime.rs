@@ -3827,6 +3827,48 @@ async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designe
     assert!(systems[0].modes.is_empty());
 }
 
+#[tokio::test]
+async fn a_design_systems_versions_come_when_asked_and_going_back_is_a_ticket_for_review() {
+    let project = repo();
+    let home = squad_home(&[&project]);
+    let (handle, _all) = runtime::start(config(&fake_claude(true, &answering("hi")), &home, true));
+    let (_, mut screen) = handle.subscribe("acme").await.unwrap();
+    let folder = squad_home::path(&home, "acme");
+    let design = folder.join("design");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(&folder).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    if !folder.join(".git").exists() {
+        git(&["init", "-q", "-b", "main"]);
+    }
+    std::fs::create_dir_all(&design).unwrap();
+    std::fs::write(design.join("tokens.json"), r##"{ "color": { "$type": "color", "bg": { "$value": "#F6F5F1" } } }"##).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "designer: T-144 브랜드 가이드라인"]);
+    std::fs::write(design.join("guidelines.md"), "# Brand\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the person: guidelines"]);
+    handle.send(Command::DesignVersions { squad: "acme".into(), project: None });
+    let seen = until(&mut screen, |e| matches!(e, Event::DesignVersions { .. })).await;
+    let Some(Event::DesignVersions { project, versions, .. }) = seen.last() else { unreachable!() };
+    assert!(project.is_none());
+    let said: Vec<(Option<u32>, &str)> = versions.iter().map(|v| (v.ticket, v.subject.as_str())).collect();
+    assert_eq!(said, [(None, "the person: guidelines"), (Some(144), "브랜드 가이드라인")], "newest first");
+    // Back to T-144's: a new ticket, nothing rewritten.
+    let first = versions[1].commit.clone();
+    handle.send(Command::RestoreDesign { squad: "acme".into(), project: None, commit: first[..10].to_owned() });
+    let seen = until(&mut screen, |e| matches!(e, Event::TicketChanged { .. } | Event::Error { .. })).await;
+    let Some(Event::TicketChanged { ticket, .. }) = seen.last() else { panic!("{:?}", seen.last()) };
+    assert!(ticket.title.contains(&first[..7]) && ticket.body.contains(&first), "{ticket:?}");
+    assert_eq!(ticket.kind, equipe_core::protocol::TicketKind::Task);
+    assert_eq!(ticket.status, TicketStatus::Todo);
+    handle.send(Command::RestoreDesign { squad: "acme".into(), project: None, commit: "0000000deadbeef".into() });
+    let seen = until(&mut screen, |e| matches!(e, Event::Error { .. })).await;
+    let Some(Event::Error { message, .. }) = seen.last() else { unreachable!() };
+    assert!(message.contains("0000000dead"), "{message}");
+}
+
 // ── members' desktop calls: the lease, then the send gate, then the helper ──
 
 /// A Mac whose last input the test sets (seconds ago), unlocked.

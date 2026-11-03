@@ -4,10 +4,17 @@
 //! [`LOOK_EVERY`] — metadata only — and sent again when one changed, so the
 //! screen follows what the designer saves. Nothing is read for a squad no
 //! screen asked about.
+//!
+//! A system's accepted versions (`Command::DesignVersions`) are read from
+//! its history only when a screen asks — the history walk is the costly
+//! part, and `Event::Design` goes out on every save — and going back to one
+//! (`Command::RestoreDesign`) becomes a ticket for the designer, reviewed
+//! like any other change.
 
 use std::time::Duration;
 
-use equipe_protocol::design::DesignSystem;
+use equipe_protocol::design::{DesignSystem, DesignVersion};
+use equipe_protocol::TicketDraft;
 
 use super::*;
 use crate::design as ds;
@@ -74,5 +81,58 @@ impl Runtime {
         for squad in squads {
             self.look_at_design(&squad, false);
         }
+    }
+
+    /// A screen asked for a design system's accepted versions: read from
+    /// its history off the loop, and sent.
+    pub(super) fn design_versions_asked(&mut self, squad: String, project: Option<String>) {
+        if !crate::squads::valid_name(&squad) {
+            return;
+        }
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let versions = ds::folder::accepted_dir(&home, &squad, project.as_deref()).map(|dir| ds::versions::read(&dir)).unwrap_or_default();
+            let _ = internal.send(Internal::DesignVersions { squad, project, versions });
+        });
+    }
+
+    pub(super) fn on_design_versions(&mut self, squad: String, project: Option<String>, versions: Vec<DesignVersion>) {
+        self.publish(Event::DesignVersions { squad, project, versions });
+    }
+
+    /// The person asked for a design system's folder back as it was at a
+    /// version: the version is looked up off the loop, then becomes a ticket.
+    pub(super) fn restore_design_asked(&mut self, squad: String, project: Option<String>, commit: String) {
+        if !crate::squads::valid_name(&squad) {
+            return;
+        }
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let versions = ds::folder::accepted_dir(&home, &squad, project.as_deref()).map(|dir| ds::versions::read(&dir)).unwrap_or_default();
+            let version = ds::versions::find(&versions, &commit).cloned();
+            let _ = internal.send(Internal::DesignRestore { squad, project, commit, version });
+        });
+    }
+
+    /// The version found: a ticket for the designer (the PM picks someone
+    /// when the squad has none) that brings the folder back in its worktree —
+    /// a new change, for review like any other. Not found: said why.
+    pub(super) async fn on_design_restore(&mut self, squad: String, project: Option<String>, commit: String, version: Option<DesignVersion>) {
+        let Some(version) = version else {
+            let short: String = commit.chars().take(12).collect();
+            let message = say!(self, "error.design_version", version = short);
+            return self.squad_error(&squad, message);
+        };
+        let (title, body) = ds::versions::restore(&version, self.config.lang);
+        let designer = self.team(&squad).iter().any(|(_, _, role)| role == "designer");
+        let draft = TicketDraft {
+            title,
+            body,
+            kind: Some(if project.is_some() { TicketKind::Code } else { TicketKind::Task }),
+            project: project.map(std::path::PathBuf::from),
+            assignee: designer.then(|| "designer".to_owned()),
+            ..TicketDraft::default()
+        };
+        self.person_creates(&squad, draft).await;
     }
 }

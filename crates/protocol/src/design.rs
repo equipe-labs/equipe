@@ -264,6 +264,46 @@ pub struct Picture {
     /// When it was taken (its file's time), in Unix seconds.
     #[serde(default)]
     pub taken: u64,
+    /// What it holds, as a short hex digest of its bytes — worked out while
+    /// a draft of its system is in review, so a screen can tell the pictures
+    /// the draft changed from the copies it only kept. `None`: not worked out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+}
+
+/// An accepted version of a design folder: a commit on its repository's
+/// main branch that changed the folder (answered to
+/// [`Command::DesignVersions`](crate::Command::DesignVersions)).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignVersion {
+    /// The commit, whole.
+    pub commit: String,
+    /// When it landed (the commit's time), in Unix seconds.
+    pub at: u64,
+    /// Its subject line, without the ticket's mark when it names one.
+    pub subject: String,
+    /// The ticket its subject names (`T-144`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<TicketId>,
+    /// What it changed, in [`DesignPart`]'s order, each once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<DesignPart>,
+}
+
+/// A part of a design folder a version changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignPart {
+    /// `tokens.json`.
+    Tokens,
+    /// The logo (`assets/logo/`, or a picture named a logo, a wordmark or a mark).
+    Logo,
+    /// The UI map (`flows/`).
+    Flows,
+    /// `guidelines.md`.
+    Guidelines,
+    /// Anything else: other pictures, components, the brief, design QA.
+    Other,
 }
 
 /// A step of the designer's first setup, done or not.
@@ -306,5 +346,19 @@ mod tests {
         assert_eq!((token.group(), token.leaf()), ("color", "bg"));
         assert_eq!(token.value_in(Some("dark")), "#0A0A0C");
         assert_eq!(token.value_in(Some("high-contrast")), "#F6F5F1");
+    }
+
+    #[test]
+    fn a_version_says_when_what_and_which_ticket_and_a_picture_its_hash_only_when_known() {
+        let v = DesignVersion { commit: "a".repeat(40), at: 1_793_000_000, subject: "브랜드 리프레시".into(), ticket: Some(170), parts: vec![DesignPart::Tokens, DesignPart::Flows] };
+        let wire = serde_json::to_value(&v).unwrap();
+        assert_eq!(wire["parts"], serde_json::json!(["tokens", "flows"]));
+        assert_eq!(serde_json::from_value::<DesignVersion>(wire).unwrap(), v);
+        let bare: DesignVersion = serde_json::from_str(r#"{"commit":"b","at":1,"subject":"x"}"#).unwrap();
+        assert!(bare.ticket.is_none() && bare.parts.is_empty());
+        let picture = Picture { path: "/d/flows/a/b/default.light.390.png".into(), mode: "light".into(), width: 390, taken: 1, hash: None };
+        assert!(!serde_json::to_string(&picture).unwrap().contains("hash"), "an older screen reads it as before");
+        let hashed = Picture { hash: Some("9f2c".into()), ..picture };
+        assert_eq!(serde_json::from_str::<Picture>(&serde_json::to_string(&hashed).unwrap()).unwrap(), hashed);
     }
 }

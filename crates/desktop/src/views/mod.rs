@@ -17,6 +17,7 @@ pub mod composer;
 pub mod connect;
 pub mod decide;
 pub mod deck;
+pub mod compare;
 pub mod design;
 pub mod design_setup;
 pub mod design_talk;

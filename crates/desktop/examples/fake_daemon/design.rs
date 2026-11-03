@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use equipe_core::design::folder::{self, Place};
 use equipe_core::i18n::Lang;
-use equipe_core::protocol::design::DraftOf;
+use equipe_core::protocol::design::{DesignPart, DesignVersion, DraftOf};
 use equipe_core::protocol::rpc::{ImageRead, ReadImage};
 use equipe_core::protocol::{Command, Event, Ticket};
 use tokio::sync::broadcast;
@@ -40,13 +40,34 @@ fn places() -> Vec<Place> {
     match mode().as_deref() {
         Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "브랜드 가이드라인".into() }), dir: base().join("t144/design") }),
         Some("empty") | None => {}
-        Some(_) => out.push(Place { project: Some("web".into()), draft: None, dir: base().join("web/design") }),
+        Some(_) => {
+            out.push(Place { project: Some("web".into()), draft: None, dir: base().join("web/design") });
+            // T-170 in review: the site's refresh, its UI map shot again where it changed.
+            out.push(Place { project: Some("web".into()), draft: Some(DraftOf { ticket: 170, title: REFRESH_TITLE.into() }), dir: base().join("t170/design") });
+        }
     }
     out
 }
 
-/// T-144, in review, when its draft is shown.
+const REFRESH_TITLE: &str = "사이트 리프레시 — 강조색과 버튼";
+
+/// The ticket in review whose draft is shown: T-144 (`draft`), T-170 (`1`).
 pub fn ticket() -> Option<Ticket> {
+    if mode().as_deref() == Some("1") {
+        let mut t = super::ticket(
+            170,
+            "review",
+            "web",
+            "designer",
+            REFRESH_TITLE,
+            "- [ ] 강조색을 바이올렛으로\n- [ ] 주 버튼을 더 둥글게\n- [ ] 바뀐 화면 다시 찍기",
+            &[],
+            Some("equipe/t-170-refresh"),
+            Some("강조색을 #6D28D9로 바꾸고 주 버튼을 다듬었습니다. 바뀐 화면 다섯 개를 다시 찍었어요."),
+        );
+        t.kind = equipe_core::protocol::TicketKind::Code;
+        return Some(t);
+    }
     (mode().as_deref() == Some("draft")).then(|| {
         let mut t = super::ticket(
             144,
@@ -80,6 +101,8 @@ pub fn seed() {
         write_system(&squad, &tokens(&SIGNAL), GUIDELINES);
         write_system(&base().join("web/design"), &tokens(&SITE), GUIDELINES_WEB);
         super::flows::seed(&base().join("web/design"));
+        write_system(&base().join("t170/design"), &tokens(&REFRESH), GUIDELINES_WEB);
+        super::flows::seed_draft(&base().join("t170/design"), &base().join("web/design"));
     }
 }
 
@@ -130,6 +153,9 @@ const SITE: Palette = Palette {
     on_accent: ("#FFFFFF", "#0B1226"),
     dot: ("#1D4ED8", "#8FB0FF"),
 };
+
+/// T-170's: the site's, its accent violet.
+const REFRESH: Palette = Palette { accent: ("#6D28D9", "#C4B5FD"), dot: ("#6D28D9", "#C4B5FD"), ..SITE };
 
 /// `tokens.json` for a palette: colours as light and dark groups (as T-144
 /// wrote them), status colours with `$extensions.mode`, aliases, type, space,
@@ -308,6 +334,8 @@ fn social_card(dot: &str) -> image::RgbaImage {
 fn event() -> Event {
     let (mut systems, folder) = folder::catalog_of(&places(), Lang::Ko);
     super::flows::dress(&mut systems);
+    // As the daemon does while a draft is in review: what each picture holds.
+    folder::fingerprint(&mut systems);
     // The web project's designer is at its map: brief, logo and system done.
     for web in systems.iter_mut().filter(|s| s.project.as_deref() == Some("web")) {
         use equipe_core::protocol::design::{Setup, SetupStep};
@@ -318,7 +346,29 @@ fn event() -> Event {
 
 /// `design`: answered at once, and the folders watched from then on.
 pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool {
-    let Command::Design { .. } = command else { return false };
+    match command {
+        Command::DesignVersions { project, .. } => {
+            let _ = events.send(Event::DesignVersions { squad: "demo".into(), project: project.clone(), versions: versions(project.as_deref()) });
+            return true;
+        }
+        // Asked back: a ticket for the designer, as the daemon makes one.
+        Command::RestoreDesign { project, commit, .. } => {
+            let version = versions(project.as_deref()).into_iter().find(|v| v.commit.starts_with(commit.as_str()));
+            let event = match version {
+                Some(v) => {
+                    let (title, body) = equipe_core::design::versions::restore(&v, Lang::Ko);
+                    let mut t = super::ticket(171, "todo", project.as_deref().unwrap_or("app"), "designer", &title, &body, &[], None, None);
+                    t.kind = if project.is_some() { equipe_core::protocol::TicketKind::Code } else { equipe_core::protocol::TicketKind::Task };
+                    Event::TicketChanged { squad: "demo".into(), ticket: t }
+                }
+                None => Event::Error { session: None, message: format!("그 디자인 버전({commit})을 찾지 못했어요."), next: None },
+            };
+            let _ = events.send(event);
+            return true;
+        }
+        Command::Design { .. } => {}
+        _ => return false,
+    }
     let _ = events.send(event());
     static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !WATCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -350,6 +400,34 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         }
     }
     true
+}
+
+/// A system's accepted versions, newest first, as `git log` would have them.
+fn versions(project: Option<&str>) -> Vec<DesignVersion> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let v = |n: u8, days_ago: u64, subject: &str, ticket: Option<u32>, parts: &[DesignPart]| DesignVersion {
+        commit: format!("{:02x}{}", n, "7c1e9a4b3d".repeat(4)).chars().take(40).collect(),
+        at: now.saturating_sub(days_ago * 86_400 + u64::from(n) * 3_600),
+        subject: subject.into(),
+        ticket,
+        parts: parts.to_vec(),
+    };
+    use DesignPart::{Flows, Guidelines, Logo, Other, Tokens};
+    match project {
+        Some(_) => vec![
+            v(1, 1, "결제 화면 오류 상태 다시 찍기", Some(152), &[Flows]),
+            v(2, 3, "검색 결과 빈 상태와 로딩", Some(160), &[Flows]),
+            v(3, 6, "온보딩 화면 지도", Some(142), &[Flows, Guidelines]),
+            v(4, 9, "사이트 토큰을 스쿼드 이름으로 맞춤", Some(131), &[Tokens, Guidelines]),
+            v(5, 21, "the person: 바탕색 조금 따뜻하게", None, &[Tokens]),
+            v(6, 40, "사이트 디자인 토큰 처음", Some(98), &[Tokens, Logo, Other]),
+        ],
+        None => vec![
+            v(7, 2, "브랜드 가이드라인 v1", Some(144), &[Tokens, Logo, Guidelines]),
+            v(8, 12, "로고 세 가지", Some(120), &[Logo]),
+            v(9, 30, "equipe: the squad's folder", None, &[Other]),
+        ],
+    }
 }
 
 /// `read_image` for a design system's picture, as the daemon checks it:
