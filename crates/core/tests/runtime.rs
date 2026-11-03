@@ -390,6 +390,66 @@ async fn a_screen_attaching_sees_the_effort_each_member_thinks_at() {
     handle.shutdown().await;
 }
 
+/// A reply in Claude Code's stream that holds one fenced block: `body` its
+/// lines, `\n` between them (fences as ```: the stand-in's heredoc reads backticks).
+fn answering_block(info: &str, body: &str) -> String {
+    answering(&format!("The flow:\\n\\u0060\\u0060\\u0060{info}\\n{body}\\n\\u0060\\u0060\\u0060\\nThat is all."))
+}
+
+#[tokio::test]
+async fn a_replys_mermaid_goes_to_the_screens_drawn_light_and_dark() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering_block("mermaid", "flowchart LR\\n  A[Ask] --> B[Show]"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "how does it go?".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::VisualsRendered { .. })).await;
+    assert!(text_of(&seen).contains("```mermaid\nflowchart LR"), "the source goes as it was: {}", text_of(&seen));
+    let Some(Event::VisualsRendered { session: 1, visuals }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(visuals.len(), 1);
+    let drawn = &visuals[0];
+    assert_eq!((drawn.kind.as_str(), drawn.key.clone()), ("mermaid", equipe_core::visuals::diagram::key("flowchart LR\n  A[Ask] --> B[Show]")));
+    for image in [&drawn.light, &drawn.dark] {
+        assert!(image.path.starts_with(&*home.join("squads/acme/visuals").to_string_lossy()), "{}", image.path);
+        assert!(std::fs::read(&image.path).unwrap().starts_with(b"\x89PNG"));
+        // A phone reads it as any picture, no bigger than it asks.
+        let ask = equipe_core::protocol::rpc::ReadImage { squad: "acme".into(), path: image.path.clone(), max: Some(320) };
+        let read = equipe_core::visuals::serve(&home, &ask, Some(equipe_core::visuals::PHONE_SIDE)).unwrap();
+        assert_eq!(read.mime, "image/png");
+        let other = equipe_core::protocol::rpc::ReadImage { squad: "zeta".into(), ..ask };
+        assert!(equipe_core::visuals::serve(&home, &other, None).is_err(), "another squad's diagram isn't given");
+    }
+    // A screen attaching later has it too.
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.sessions.iter().find(|s| s.session == 1).unwrap().visuals, *visuals);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_mermaid_block_that_wont_draw_goes_as_its_source_only() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering_block("mermaid", "this is {{{ not --> a diagram"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "draw it".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(text_of(&seen).contains("```mermaid\nthis is {{{ not --> a diagram\n```"), "{}", text_of(&seen));
+    let later = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, Event::VisualsRendered { .. }) {
+                return event;
+            }
+        }
+        unreachable!()
+    })
+    .await;
+    assert!(later.is_err(), "nothing drawn is told: {later:?}");
+    assert!(handle.snapshot("acme").await.sessions.iter().all(|s| s.visuals.is_empty()));
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn said_while_it_works_it_reads_at_its_next_step_without_stopping() {
     // Claude Code reads a second message mid-turn, echoes it as it does, and carries on.

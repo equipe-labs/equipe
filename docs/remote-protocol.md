@@ -409,6 +409,10 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
 - `thread` `{ "session", "project" }` — what follows is about `project` (`null`: the whole
   squad): a message sent looking at it, news of its ticket, a ticket's work. Never shown itself;
   a screen shows one project's slice.
+- `visuals_rendered` `{ "session", "visuals": [{ "kind", "key", "light", "dark" }] }` — a reply's
+  Mermaid blocks, drawn by the daemon as PNGs (light and dark, each `{ "path", "width",
+  "height" }`, read with `read_image`) for a screen that can't draw them; the snapshot's sessions
+  carry the same as `visuals`. Not a line. See [VISUALS.md](VISUALS.md).
 - `model_known` `{ "session", "model" }` — the engine named its model, or the person changed it.
 - `branch_landed` `{ "session", "branch", "base", "stat" }` — an editing session closed with
   changes committed to `branch`, made from `base`; `stat` is `git diff --stat`.
@@ -448,7 +452,7 @@ screen that watched saw:
   Events that make no line and may come mid-sentence — `steer_queued`, `message_queued`,
   `queue_sent`, `memo_withdrawn`, `thinking`, `tool_result`, `output` (a token count),
   `model_known`, `subagent_*`, `compacting`, `compacted`, `compact_failed`, `estimated`,
-  `suggestion`, `browser_frame` — leave it open: a steer sent while the member writes
+  `suggestion`, `browser_frame`, `visuals_rendered` — leave it open: a steer sent while the member writes
   doesn't cut its answer; where it is read (`steered`) the reply so far ends and the steer
   follows it.
 - Lines: `user_message` and `steered` → `user`; `notice` → `note`; `thread` → `thread`;

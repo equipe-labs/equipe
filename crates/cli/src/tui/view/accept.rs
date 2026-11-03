@@ -114,6 +114,7 @@ mod tests {
             effort: None,
             subagents: Vec::new(),
             compacting: None,
+            visuals: Vec::new(),
         }
     }
 

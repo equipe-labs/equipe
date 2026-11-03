@@ -9,6 +9,9 @@
 //! so a member hears at once what won't show. A thumbnail is made here, so a
 //! phone never gets the whole of a 6 MB render.
 //!
+//! A reply's Mermaid diagrams are drawn here as PNGs for a screen that
+//! can't draw them (`diagram`); the daemon gives those by their path alone.
+//!
 //! A reply shows pictures too: each image its Markdown embeds, and the
 //! pictures right in a folder it points at (`markdown`) — given only when a
 //! line the daemon itself recorded for the squad names them, under the same
@@ -17,6 +20,7 @@
 //! still shows its hand-in: the pictures are read from its branch, or from
 //! main once merged, by the paths the ticket recorded and no others.
 
+pub mod diagram;
 pub mod markdown;
 
 use std::collections::{HashMap, HashSet};
@@ -403,6 +407,14 @@ fn scratch_folders() -> Vec<PathBuf> {
 /// [`serve`], with `scratch` as the scratch folders: a picture a line embeds
 /// by name is given from the squad's projects and those too.
 pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[PathBuf]) -> Result<ImageRead, String> {
+    let max = match (ask.max, cap) {
+        (Some(max), Some(cap)) => Some(max.min(cap)),
+        (max, cap) => max.or(cap),
+    };
+    // A diagram the daemon drew for the squad (`visuals_rendered`).
+    if diagram::is_drawn(home, &ask.squad, Path::new(&ask.path)) {
+        return read(Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);
+    }
     let mut shown = shown(home, &ask.squad);
     // A line that embeds a picture by its name alone, read against another
     // folder than the screen's: the same name said counts as said.
@@ -414,10 +426,6 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         shown.roots.extend(shown.projects.iter().cloned());
         shown.roots.extend(scratch.iter().cloned());
     }
-    let max = match (ask.max, cap) {
-        (Some(max), Some(cap)) => Some(max.min(cap)),
-        (max, cap) => max.or(cap),
-    };
     let asked = Path::new(&ask.path);
     // Not where it was read against (a member named a file it saved in a
     // ticket's worktree): the newest picture of that name in the squad's folders.

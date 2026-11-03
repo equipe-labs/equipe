@@ -12,6 +12,10 @@ base64 = "0.23.1"
 # Members' pictures, sent to screens as thumbnails (`visuals`).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 libc = "0.2.190"
+# Diagrams in replies, drawn for screens that can't draw them (`visuals::diagram`):
+# Mermaid to SVG, SVG to PNG with the Mac's fonts.
+mermaid-rs-renderer = { version = "0.3", default-features = false }
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts"] }
 # App Store sales reports come gzipped (`signal_sources`).
 flate2 = "1"
 # `rustls`: telemetry's, signals' and Nemotron's (`nemotron`) HTTPS to PostHog / App Store Connect (the CLI brings the same build).
