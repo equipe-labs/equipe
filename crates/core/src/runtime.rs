@@ -66,6 +66,7 @@ mod decide;
 mod room;
 mod engines;
 mod design;
+mod briefs;
 mod accept;
 mod secrets;
 mod design_qa;
@@ -807,6 +808,8 @@ enum Internal {
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
+    /// A squad's briefs and plans, read off the loop.
+    Docs(String, Vec<equipe_protocol::ProjectDoc>),
     /// A design system's accepted versions, read off the loop.
     DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
     /// The version the person asked to go back to, looked up off the loop (`None`: not one).
@@ -1025,6 +1028,7 @@ impl Wake {
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
+            Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
             Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
@@ -1214,6 +1218,7 @@ impl Runtime {
                     }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
+                Internal::Docs(squad, docs) => self.on_docs(squad, docs),
                 Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
@@ -1761,6 +1766,7 @@ impl Runtime {
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
             Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
             Command::Design { squad } => self.design_asked(squad),
+            Command::ProjectDocs { squad } => self.docs_asked(squad),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
@@ -5019,6 +5025,10 @@ there, end your turn, and carry on when they say they're done."
                 image: None,
             });
             return;
+        }
+        // A brief, committed off the loop: answered once it is in.
+        if call.name == crate::briefs::WRITE_BRIEF {
+            return self.write_brief(&call, reply);
         }
         let squad = call.squad.clone();
         // The PM accepting its team's work: it waits for the acceptance itself.
