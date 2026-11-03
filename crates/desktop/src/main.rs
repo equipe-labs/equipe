@@ -1907,6 +1907,7 @@ impl Render for Shell {
             .child(views::sidebar::title_buttons(self, cx))
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::quote::layer(self, window, cx))
+            .children(views::quote::peek(self))
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
             .children(views::design::lightbox(self, cx))

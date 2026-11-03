@@ -245,9 +245,18 @@ pub struct Composer {
     guard: EnterGuard,
     /// One quiet line over the box: what the last send did.
     pub flash: Option<String>,
-    /// Words of the conversation quoted to ask about ("Ask about this"),
-    /// over the box until sent — each a blockquote before the question.
-    pub quotes: Vec<String>,
+    /// The cards over the box until sent (`views/quote.rs`): passages of the
+    /// conversation replied to ("답글 달기"), or only quoted to ask about
+    /// ("Ask about this"). Kept with the draft.
+    pub replies: Vec<crate::quote::Reply>,
+    /// The card the keys are on (Tab from the box), the box keeping the focus.
+    pub card: Option<usize>,
+    /// The card under the pointer: its passage shows over it.
+    pub peek: Option<usize>,
+    /// The cards' row, scrolled sideways when they overflow it.
+    pub cards_scroll: ScrollHandle,
+    /// Where each card was last drawn: its passage and its box open from there.
+    pub card_rects: Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
     /// What the person pointed at on the design screen ("말하기"), over the
     /// box until sent — a block before the words (`crate::design_talk`).
     pub context: Vec<crate::design_talk::DesignContext>,
@@ -318,7 +327,11 @@ impl Composer {
             drafts: Drafts::load(Drafts::file(&equipe_providers::credentials::equipe_home())),
             guard: EnterGuard::default(),
             flash: None,
-            quotes: Vec::new(),
+            replies: Vec::new(),
+            card: None,
+            peek: None,
+            cards_scroll: ScrollHandle::new(),
+            card_rects: Rc::default(),
             context: Vec::new(),
             problem: None,
             send_when_ready: None,
@@ -354,6 +367,15 @@ impl Composer {
             dictating: None,
             _speech: heard,
             inbox_watch: None,
+        }
+    }
+
+    /// Card `n` scrolled into the row's view; the first, the row back at its start.
+    pub fn reveal_card(&self, n: usize) {
+        if n == 0 {
+            self.cards_scroll.set_offset(Point::default());
+        } else {
+            self.cards_scroll.scroll_to_item(n);
         }
     }
 
@@ -398,7 +420,7 @@ impl Composer {
 
     /// What the box holds now, as a draft.
     fn draft(&self, cx: &App) -> Draft {
-        Draft { text: self.text(cx), caret: self.caret(cx), attachments: self.strip.saved() }
+        Draft { text: self.text(cx), caret: self.caret(cx), attachments: self.strip.saved(), replies: self.replies.clone() }
     }
 
     /// Put what the box holds away under the key it belongs to.
@@ -441,6 +463,9 @@ impl Composer {
         let draft = key.as_ref().map(|k| self.drafts.get(k)).unwrap_or_default();
         self.set_text_at(&draft.text, draft.caret, window, cx);
         self.strip.restore(&draft.attachments);
+        self.replies = draft.replies;
+        self.card = None;
+        self.peek = None;
         self.holds = key;
         self.history.stop();
         self.choices.clear();
@@ -508,6 +533,7 @@ impl Shell {
                 self.composer.history.stop();
                 self.composer.flash = None;
                 self.composer.chip = None;
+                self.composer.card = None;
                 // Typing lets a waiting bubble reached with ↑ go.
                 self.chat.picked = None;
                 if self.composer.text(cx).contains('@') {
@@ -557,7 +583,7 @@ impl Shell {
     }
 
     /// Write the drafts down a moment after the last change, off the UI thread.
-    fn save_drafts_soon(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn save_drafts_soon(&mut self, cx: &mut Context<Self>) {
         if self.composer.save_task.is_some() {
             return;
         }
@@ -602,9 +628,10 @@ impl Shell {
         }
         self.composer.send_when_ready = None;
         let tags = self.composer.strip.tags();
-        // What was quoted goes first, a blockquote each; the question after.
-        let quoted = !self.composer.quotes.is_empty() && !typed.trim().starts_with('/');
-        let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.quotes, &typed) } else { typed.clone() };
+        // The cards go first, in order — each passage and the words to it —
+        // then what was typed in the box.
+        let quoted = !self.composer.replies.is_empty() && !typed.trim().starts_with('/');
+        let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.replies, &typed) } else { typed.clone() };
         // What was pointed at on the design screen goes before them, its pictures attached.
         let pointed = !self.composer.context.is_empty() && !typed.trim().starts_with('/') && (!typed_with_quotes.trim().is_empty() || !tags.is_empty());
         let (typed_with_quotes, all_tags) = if pointed {
@@ -626,9 +653,11 @@ impl Shell {
         if carries && plan.restore.is_none() && !plan.commands.is_empty() {
             self.composer.strip.clear();
         }
-        // So did the quotes.
+        // So did the cards.
         if quoted && plan.restore.is_none() && !plan.commands.is_empty() {
-            self.composer.quotes.clear();
+            self.composer.replies.clear();
+            self.composer.card = None;
+            self.composer.peek = None;
         }
         // And what was pointed at.
         if pointed && plan.restore.is_none() && !plan.commands.is_empty() {
@@ -1140,7 +1169,15 @@ impl Shell {
         if self.chat.leaving.contains(&text) {
             return;
         }
-        let said = self.composer.history.sent_as(&text).cloned().unwrap_or_else(|| compose::Said { text: crate::sent::parts(&text).text, attachments: attach::saved_of(&text) });
+        // Its cards come back over the box too, its own words into it.
+        let written = crate::sent::parts(&text).text;
+        let (cards, rest) = crate::quote::read(&crate::design_talk::split(&written).1);
+        let said = self.composer.history.sent_as(&text).cloned().unwrap_or_else(|| compose::Said { text: if cards.is_empty() { written.clone() } else { rest.clone() }, attachments: attach::saved_of(&text) });
+        for card in cards.into_iter().filter(|c| !c.quote.is_empty()) {
+            if !self.composer.replies.contains(&card) {
+                self.composer.replies.push(card);
+            }
+        }
         let mut now = self.composer.text(cx);
         if !now.trim().is_empty() {
             now.push('\n');
@@ -1440,6 +1477,33 @@ impl Shell {
             cx.notify();
             return true;
         }
+        // A card reached with Tab: Tab and the arrows walk the cards, ⏎ opens
+        // its box, Backspace removes it, Esc goes back to the box.
+        if let Some(at) = self.composer.card {
+            let n = self.composer.replies.len();
+            let unmodified = !modifiers.control && !modifiers.alt && !modifiers.platform;
+            match key {
+                "tab" if unmodified => self.composer.card = crate::quote::tab(Some(at), n, modifiers.shift),
+                "left" if plain => self.composer.card = Some(at.saturating_sub(1).min(n.saturating_sub(1))),
+                "right" if plain => self.composer.card = crate::quote::tab(Some(at), n, false).or(Some(at.min(n.saturating_sub(1)))),
+                "backspace" | "delete" if plain => self.remove_card(at, cx),
+                "enter" | "space" if plain => {
+                    self.composer.card = None;
+                    self.quote_edit(at, window, cx);
+                }
+                "escape" => self.composer.card = None,
+                _ => {
+                    self.composer.card = None;
+                    cx.notify();
+                    return false;
+                }
+            }
+            if let Some(at) = self.composer.card {
+                self.composer.reveal_card(at);
+            }
+            cx.notify();
+            return true;
+        }
         let text = self.composer.text(cx);
         // A bubble waiting, reached with ↑: Backspace takes it back, ⌘↵ sends
         // everything waiting now, Esc lets it go.
@@ -1548,6 +1612,20 @@ impl Shell {
                 if let Some(item) = self.composer.strip.items().last().map(|i| i.id) {
                     self.unattach(item, cx);
                 }
+                true
+            }
+            // Then the last card.
+            "backspace" if plain && text.is_empty() && !self.composer.replies.is_empty() => {
+                self.remove_card(self.composer.replies.len() - 1, cx);
+                true
+            }
+            // Tab from an empty box (⇧Tab from any) reaches the cards.
+            "tab" if !modifiers.control && !modifiers.alt && !modifiers.platform && !self.composer.open() && !self.composer.replies.is_empty() && (modifiers.shift || text.is_empty()) => {
+                self.composer.card = crate::quote::tab(None, self.composer.replies.len(), modifiers.shift);
+                if let Some(at) = self.composer.card {
+                    self.composer.reveal_card(at);
+                }
+                cx.notify();
                 true
             }
             // Tab with something written to a member at work: a memo for after.
@@ -1784,7 +1862,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .children(completion(shell, cx))
         .children(menu_layer(shell, cx))
         .children(super::design_talk::chips(shell, INSET, cx))
-        .children(quotes(shell, cx))
+        .children(super::quote::cards(shell, INSET, cx))
         .children(strip(shell, cx))
         .child(
             motion::SmoothHeight::new(
@@ -2051,7 +2129,8 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let working = model.viewed_presence() == Some(Presence::Working);
     let stopping = working && model.viewed().is_some_and(|s| composer.stopping == Some(s));
     let text = composer.text(cx);
-    let has_words = !text.trim().is_empty();
+    // The cards are words too: they send with an empty box.
+    let has_words = !text.trim().is_empty() || !composer.replies.is_empty();
     let has_any = has_words || composer.strip.ready() > 0;
     let steerable = member.is_some_and(|m| m.engine.is_some());
     let (to_label, to_color) = recipient(p, model, &text);
@@ -2373,36 +2452,6 @@ fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
 /// got, and (in red, until dismissed) why one couldn't be attached.
 /// How close to the attachment limit before the strip shows its count.
 const NEAR_LIMIT: usize = 5;
-
-/// What is quoted to ask about, over the box: a quiet bar at each one's
-/// left, its first two lines, and ✕.
-fn quotes(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
-    if shell.composer.quotes.is_empty() {
-        return None;
-    }
-    let p = shell.palette;
-    let rows = shell.composer.quotes.iter().enumerate().map(|(n, quote)| {
-        h_flex()
-            .id(("composer-quote", n))
-            .w_full()
-            .gap(px(9.))
-            .items_start()
-            .child(div().flex_none().w(px(2.)).h(px(38.)).rounded_full().bg(Rgba { a: 0.6, ..p.accent }))
-            .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(19.)).text_color(p.text2).line_clamp(2).text_ellipsis().child(quote.clone()))
-            .child(
-                crate::ui::x_box(("composer-unquote", n), p.muted, t!("composer.tip_remove"))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(p.wash))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if n < this.composer.quotes.len() {
-                            this.composer.quotes.remove(n);
-                        }
-                        cx.notify();
-                    })),
-            )
-    });
-    Some(v_flex().px(px(INSET)).pt(px(INSET)).gap_2().children(rows))
-}
 
 fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let strip = &shell.composer.strip;
