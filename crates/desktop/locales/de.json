@@ -1190,6 +1190,7 @@
   "flows.ticket": "Zuletzt geändert in",
   "flows.to_designer": "Designer",
   "flows.to_pm": "PM",
+  "flows.unlisted": "Ein Bild ohne Zustand: {name} — falsch benannt oder von einem entfernten Zustand übrig",
   "flows.video_ask": "Video anfragen",
   "flows.video_ask_message": "Bitte nimm ein Video auf, das den Ablauf „{flow}“ der UI-Karte von Anfang bis Ende durchläuft: equipe design flows record --flow {flow_id}. Markiere, wann jeder Screen kommt, damit er sich hier sofort finden lässt.",
   "flows.video_elsewhere": "Dieses Video läuft auf dem Mac, auf dem der Daemon läuft. Pfad kopiert: {path}",

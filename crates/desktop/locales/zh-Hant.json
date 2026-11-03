@@ -1149,6 +1149,7 @@
   "flows.ticket": "最後修改它的工單",
   "flows.to_designer": "設計師",
   "flows.to_pm": "PM",
+  "flows.unlisted": "沒有對應狀態的圖片：{name} — 名稱有誤，或是已刪除狀態留下的",
   "flows.video_ask": "請人錄製影片",
   "flows.video_ask_message": "請錄製一段從頭到尾走完介面地圖中「{flow}」流程的影片：equipe design flows record --flow {flow_id}。標出每個畫面出現的時間，就能在這裡直接找到。",
   "flows.video_elsewhere": "這部影片要在執行守護程式的 Mac 上播放。路徑已複製：{path}",

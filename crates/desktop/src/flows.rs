@@ -91,6 +91,13 @@ pub fn flow_counts(flow: &Flow) -> Counts {
     out
 }
 
+/// What couldn't be read, then each picture of no state the file lists —
+/// a line each, for the quiet list over the map.
+pub fn problems(map: &FlowMap) -> Vec<String> {
+    let words = crate::i18n::catalog();
+    map.problems.iter().cloned().chain(map.unlisted.iter().map(|name| words.fill("flows.unlisted", &[("name", name.clone())]))).collect()
+}
+
 /// A state's kind as the person reads it (빈 상태, 권한 없음); another word as it is.
 pub fn kind_label(kind: &str) -> String {
     if STATE_KINDS.contains(&kind) { crate::i18n::catalog().get(&format!("flows.kind_{kind}")).to_owned() } else { kind.to_owned() }
@@ -268,6 +275,8 @@ pub struct MapUi {
     /// (`None`: there is none to read here).
     pub posters: HashMap<String, Option<Arc<Image>>>,
     pub strip: ScrollHandle,
+    /// The tab's column, scrolled to the screen opened.
+    pub body: ScrollHandle,
 }
 
 impl MapUi {
@@ -413,7 +422,7 @@ mod tests {
                 Flow { id: "onboarding".into(), title: "온보딩".into(), screens: vec![login, home], ..Default::default() },
                 Flow { id: "checkout".into(), title: "결제".into(), screens: vec![pay], ..Default::default() },
             ],
-            problems: vec![],
+            ..Default::default()
         }
     }
 
@@ -424,6 +433,10 @@ mod tests {
         assert_eq!(flow_counts(&map.flows[0]), Counts { screens: 2, states: 5, missing: 2, stale: 1 });
         assert_eq!(flow_counts(&map.flows[1]).missing, 1);
         assert_eq!(counts(&FlowMap::default()), Counts::default());
+        let read = FlowMap { problems: vec!["flows.json: 7행".into()], unlisted: vec!["onboarding/login/eror.dark.390.png".into()], ..map };
+        let lines = problems(&read);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("onboarding/login/eror.dark.390.png"), "a stray picture is named: {lines:?}");
     }
 
     #[test]
@@ -538,7 +551,7 @@ mod tests {
         assert_eq!(ui.flow.as_deref(), Some("checkout"));
         // The flow goes: back to the first; the map goes: nothing open, the mode kept.
         ui.mode = Some("dark".into());
-        let fewer = FlowMap { flows: vec![map.flows[0].clone()], problems: vec![] };
+        let fewer = FlowMap { flows: vec![map.flows[0].clone()], ..Default::default() };
         ui.arrived(Some(&fewer));
         assert_eq!(ui.flow(&fewer).unwrap().id, "onboarding");
         ui.toggle_screen("login");

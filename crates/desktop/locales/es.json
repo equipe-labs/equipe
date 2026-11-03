@@ -1190,6 +1190,7 @@
   "flows.ticket": "Último cambio en",
   "flows.to_designer": "Diseñador",
   "flows.to_pm": "PM",
+  "flows.unlisted": "Una imagen de ningún estado: {name} — mal nombrada, o de un estado que ya no está",
   "flows.video_ask": "Pedir un vídeo",
   "flows.video_ask_message": "Graba un vídeo que recorra de principio a fin el flujo «{flow}» del mapa de pantallas: equipe design flows record --flow {flow_id}. Marca cuándo aparece cada pantalla para encontrarla aquí al momento.",
   "flows.video_elsewhere": "Este vídeo se reproduce en el Mac donde corre el daemon. Ruta copiada: {path}",

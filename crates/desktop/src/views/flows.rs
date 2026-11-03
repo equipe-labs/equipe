@@ -35,7 +35,7 @@ const LIST_W: f32 = 208.;
 const CARD_W: f32 = 168.;
 const THUMB_H: f32 = 212.;
 /// The open screen's picture.
-const STAGE_H: f32 = 440.;
+const STAGE_H: f32 = 380.;
 /// A walkthrough's poster.
 const POSTER_W: f32 = 104.;
 const POSTER_H: f32 = 64.;
@@ -160,9 +160,12 @@ fn main(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoEleme
     let ui_ = &shell.design.map;
     let flow = ui_.flow(map).expect("a map with flows");
     let open = ui_.screen(map).map(|s| s.id.clone());
-    let mut col = v_flex().px(px(PAD)).pt(px(20.)).pb(px(64.)).gap_4();
-    if !map.problems.is_empty() {
-        col = col.child(super::design::problems(shell, &map.problems, true, cx));
+    // Scrolled by its parts — the problems, the head, the strip, the open
+    // screen — so opening one brings it into view.
+    let mut col = v_flex().id("flows-main").flex_1().min_w_0().h_full().overflow_y_scroll().track_scroll(&ui_.body).px(px(PAD)).pt(px(20.)).pb(px(64.)).gap_4();
+    let problems = fm::problems(map);
+    if !problems.is_empty() {
+        col = col.child(super::design::problems(shell, &problems, true, cx));
     }
     col = col.child(flow_head(shell, flow, cx));
     // The screens, left to right, an arrow between each two.
@@ -181,7 +184,7 @@ fn main(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoEleme
         }
         None => col = col.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("flows.pick_hint"))),
     }
-    div().id("flows-main").flex_1().min_w_0().h_full().overflow_y_scroll().child(col)
+    col
 }
 
 /// The flow's title and summary, and its walkthrough.
@@ -360,8 +363,11 @@ fn card(shell: &Shell, n: usize, screen: &Screen, open: bool, cx: &mut Context<S
         .into_any_element()
 }
 
+/// What picking a segment does.
+type Pick = Box<dyn Fn(&mut Shell, &mut Context<Shell>)>;
+
 /// One of a few, as the header's sources are: a wash with the one picked raised.
-fn segment(p: Palette, id: &str, options: Vec<(String, bool, Box<dyn Fn(&mut Shell, &mut Context<Shell>)>)>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+fn segment(p: Palette, id: &str, options: Vec<(String, bool, Pick)>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let mut seg = h_flex().flex_none().h(px(26.)).p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash);
     for (n, (label, on, pick)) in options.into_iter().enumerate() {
         seg = seg.child(
@@ -404,7 +410,7 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Contex
             .iter()
             .map(|m| {
                 let m2 = m.clone();
-                let pick: Box<dyn Fn(&mut Shell, &mut Context<Shell>)> = Box::new(move |this, cx| this.flows_mode(&m2, cx));
+                let pick: Pick = Box::new(move |this, cx| this.flows_mode(&m2, cx));
                 (mode_word(m), picture.is_some_and(|pic| &pic.mode == m) || (picture.is_none() && &mode == m), pick)
             })
             .collect();
@@ -415,7 +421,7 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Contex
             .iter()
             .map(|w| {
                 let w = *w;
-                let pick: Box<dyn Fn(&mut Shell, &mut Context<Shell>)> = Box::new(move |this, cx| this.flows_width(w, cx));
+                let pick: Pick = Box::new(move |this, cx| this.flows_width(w, cx));
                 (format!("{w}"), picture.map_or(width == Some(w), |pic| pic.width == w), pick)
             })
             .collect();
@@ -638,7 +644,7 @@ fn empty(shell: &Shell, map: Option<&FlowMap>, cx: &mut Context<Shell>) -> AnyEl
     let p = shell.palette;
     let has_designer = recipients(shell).0.is_some();
     let point = |text: String| h_flex().gap_2().items_start().child(div().mt(px(9.)).size(px(4.)).flex_none().rounded_full().bg(p.muted)).child(div().flex_1().child(text));
-    let problems = map.map(|m| m.problems.clone()).unwrap_or_default();
+    let problems = map.map(fm::problems).unwrap_or_default();
     v_flex()
         .id("flows-empty")
         .flex_1()
@@ -729,7 +735,17 @@ impl Shell {
 
     pub fn flows_toggle_screen(&mut self, id: &str, cx: &mut Context<Self>) {
         self.design.map.toggle_screen(id);
+        self.flows_reveal();
         cx.notify();
+    }
+
+    /// The screen just opened, brought into view below the strip.
+    fn flows_reveal(&self) {
+        let Some(map) = self.flow_map() else { return };
+        if self.design.map.screen(map).is_some() {
+            let problems = usize::from(!fm::problems(map).is_empty());
+            self.design.map.body.scroll_to_item(problems + 2);
+        }
     }
 
     pub fn flows_chip(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -909,6 +925,7 @@ impl Shell {
                 if let Some(at) = self.design.map.step_screen(&map, key == "right") {
                     // The card and its arrow before it.
                     self.design.map.strip.scroll_to_item(at * 2);
+                    self.flows_reveal();
                 }
             }
             "up" | "down" => {

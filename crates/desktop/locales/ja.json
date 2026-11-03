@@ -1149,6 +1149,7 @@
   "flows.ticket": "最後に変更したチケット",
   "flows.to_designer": "デザイナー",
   "flows.to_pm": "PM",
+  "flows.unlisted": "どの状態にもない画像: {name} — 名前の誤りか、なくなった状態の画像です",
   "flows.video_ask": "動画を頼む",
   "flows.video_ask_message": "画面マップの「{flow}」フローを最初から最後まで通る動画を録画してください: equipe design flows record --flow {flow_id}。画面ごとに出てくるタイミングを記しておくと、ここですぐ探せます。",
   "flows.video_elsewhere": "この動画はデーモンのある Mac で再生されます。パスをコピーしました: {path}",

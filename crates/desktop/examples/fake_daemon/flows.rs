@@ -5,12 +5,12 @@
 //! designer keeps them. 온보딩 has a walkthrough (an MP4 made with
 //! `ffmpeg` when this Mac has it; else its path is absent, as one on another
 //! machine) and an older one; 결제's is on "another machine"; 검색 has none.
-//! Until the daemon reads `flows.json` itself, the map is put on the system
-//! here, with the designer's setup.
+//! No `flows.json` is written: the map is put on the system as the daemon
+//! would read it, so its counts and marks are exactly these.
 
 use std::path::{Path, PathBuf};
 
-use equipe_core::protocol::design::{DesignSystem, Flow, FlowMap, Mark, Picture, Screen, ScreenState, Setup, SetupStep, Walkthrough};
+use equipe_core::protocol::design::{DesignSystem, Flow, FlowMap, Mark, Picture, Screen, ScreenState, Walkthrough};
 
 /// How a state is pictured: not at all, light and dark at 390, or at 390 and 1280.
 #[derive(Clone, Copy, PartialEq)]
@@ -179,7 +179,7 @@ pub fn map(design: &Path) -> FlowMap {
             videos: videos(design, f.id),
         })
         .collect();
-    FlowMap { flows, problems: vec!["flows/search/results/loading.sepia.390.png: 모드는 light나 dark여야 해요".into()] }
+    FlowMap { flows, problems: vec!["flows/search/results/loading.sepia.390.png: 모드는 light나 dark여야 해요".into()], unlisted: vec!["onboarding/login/eror.dark.390.png".into()] }
 }
 
 fn video_path(design: &Path, flow: &str) -> PathBuf {
@@ -223,18 +223,10 @@ fn videos(design: &Path, flow: &str) -> Vec<Walkthrough> {
     }
 }
 
-/// The map on the web project's system and the setup on each, as the
-/// daemon will send them.
+/// The map on the web project's system, as the daemon will send it.
 pub fn dress(systems: &mut [DesignSystem]) {
-    for system in systems.iter_mut().filter(|s| s.draft.is_none()) {
-        let web = system.project.as_deref() == Some("web");
-        if web && system.flows.is_none() {
-            system.flows = Some(map(Path::new(&system.dir)));
-        }
-        if system.setup.is_empty() {
-            let done = [Setup::Brief, Setup::Logo, Setup::System];
-            system.setup = [Setup::Brief, Setup::Logo, Setup::System, Setup::Flows, Setup::Qa].into_iter().map(|step| SetupStep { step, done: done.contains(&step) || (web && step == Setup::Flows) }).collect();
-        }
+    for system in systems.iter_mut().filter(|s| s.draft.is_none() && s.project.as_deref() == Some("web") && s.flows.is_none()) {
+        system.flows = Some(map(Path::new(&system.dir)));
     }
 }
 

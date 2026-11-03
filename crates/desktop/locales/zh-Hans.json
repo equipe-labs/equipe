@@ -1149,6 +1149,7 @@
   "flows.ticket": "最后修改它的工单",
   "flows.to_designer": "设计师",
   "flows.to_pm": "PM",
+  "flows.unlisted": "没有对应状态的图片：{name} — 名称有误，或是已删除状态留下的",
   "flows.video_ask": "请人录制视频",
   "flows.video_ask_message": "请录制一段从头到尾走完界面地图中“{flow}”流程的视频：equipe design flows record --flow {flow_id}。标出每个界面出现的时间，就能在这里直接找到。",
   "flows.video_elsewhere": "这个视频要在运行守护进程的 Mac 上播放。路径已复制：{path}",

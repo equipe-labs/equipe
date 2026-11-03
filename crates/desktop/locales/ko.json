@@ -1149,6 +1149,7 @@
   "flows.ticket": "마지막으로 바꾼 티켓",
   "flows.to_designer": "디자이너",
   "flows.to_pm": "PM",
+  "flows.unlisted": "목록에 없는 그림: {name} — 이름이 틀렸거나 없어진 상태의 그림이에요",
   "flows.video_ask": "영상 만들어 달라고 하기",
   "flows.video_ask_message": "화면 지도의 ‘{flow}’ 흐름을 처음부터 끝까지 지나가는 영상을 녹화해 주세요: equipe design flows record --flow {flow_id}. 화면마다 나오는 때를 표시해 두면 여기서 바로 찾아볼 수 있어요.",
   "flows.video_elsewhere": "이 영상은 데몬이 있는 Mac에서 재생돼요. 경로를 복사했어요: {path}",

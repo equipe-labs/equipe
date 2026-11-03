@@ -1190,6 +1190,7 @@
   "flows.ticket": "Dernière modification par",
   "flows.to_designer": "Designer",
   "flows.to_pm": "PM",
+  "flows.unlisted": "Une image d’aucun état : {name} — mal nommée, ou restée d’un état supprimé",
   "flows.video_ask": "Demander une vidéo",
   "flows.video_ask_message": "Enregistrez une vidéo qui parcourt du début à la fin le parcours « {flow} » de la carte des écrans : equipe design flows record --flow {flow_id}. Marquez le moment où arrive chaque écran pour le retrouver ici tout de suite.",
   "flows.video_elsewhere": "Cette vidéo se lit sur le Mac où tourne le démon. Chemin copié : {path}",
