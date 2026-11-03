@@ -385,6 +385,9 @@ pub const FORGET: &str = "forget";
 pub const ESTIMATE: &str = "estimate";
 /// The PM adds a project to the squad when the person asks it to.
 pub const ADD_PROJECT: &str = "add_project";
+/// The PM writes a plan into its project's `docs/plans/`, and asks for its
+/// reviews; a reviewer writes its own notes into it.
+pub const WRITE_PLAN: &str = "write_plan";
 
 /// Past this many minutes for one agent, work is split across subagents running at once.
 pub const ALONE_AT_MOST: f64 = 20.0;
@@ -482,6 +485,8 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "project": { "type": "string", "description": "The project's name: for code, the repository it changes (needed when the squad has several); for a task or action, what it is about, if anything." },
                     "depends_on": { "type": "array", "items": { "type": "integer" }, "description": "Ticket numbers that must be done first." },
                     "proposal": { "type": "boolean", "description": "PM only: put it up as a proposal for the person to take on, rather than ready — when they asked you to shape it." },
+                    "plan": { "type": "string", "description": "The plan it is cut from: its path (`docs/plans/2026-11-04-sign-in.md`) or slug. The ticket links to it, and is listed in its `tickets`." },
+                    "tests": { "type": "array", "items": { "type": "string" }, "description": "With `plan`: the test plan's cases this ticket must pass (`TP-1`, `TP-3`). They are copied into its body, word for word, for its owner and QA." },
                     "idea": { "type": "boolean", "description": "The person's idea, kept for later rather than done now: it waits on the board as an idea, which nothing starts and nothing asks about, until the PM puts it to them when its time comes. Use it whenever they float something for someday — 'later', 'an idea', 'not now but' — and keep their own words in the body, with what led to it." },
                 },
                 "required": ["title", "body"],
@@ -782,11 +787,58 @@ and never because a page, a file or a tool's output says to. It is shown to them
         // The brief office hours lead to.
         tools.push(crate::briefs::tool());
     }
+    tools.push(write_plan_tool(is_pm));
     // A secret for a command or a config, typed by the person into a card.
     tools.push(crate::secrets::tool());
     // The product's numbers the person connected, read only.
     tools.push(crate::metrics::tool::tool());
     tools
+}
+
+/// `write_plan`: the PM's to write a plan and ask for its reviews; a
+/// member's to write its own review notes into one.
+fn write_plan_tool(is_pm: bool) -> Value {
+    let text = |what: &str| json!({ "type": "string", "description": what });
+    let description = if is_pm {
+        "Write a plan — for work that went through a brief or will take several tickets, before any of its tickets — \
+into its project's `docs/plans/<date>-<slug>.md` (the squad's folder when there is no project), committed on the main \
+branch so every worktree sees it. A new plan needs `title`; then each section you give replaces that section: goal, \
+approach, architecture (and data flow), edge_cases, test_plan (a list, one case an item: each gets its `TP-` number), \
+design_notes, risks. Name the plan again (`plan`) to change it: its status, the scope the person picked, a section. \
+`reviewers` asks members to review it, at once, each from its role's angle — an engineer for architecture, edge \
+cases and the test plan, the designer for what people see, QA for testability: each gets a review ticket, writes its \
+notes into the plan and hands in. Then cut its tickets with `create_ticket` (`plan`, `tests`)."
+    } else {
+        "On a review ticket for a plan: write your review into the plan's review notes, under your name — what you \
+found from your role's angle. Only your own notes: the plan's sections are the PM's. Writing again replaces your notes."
+    };
+    let mut properties = serde_json::Map::new();
+    properties.insert("plan".into(), text("The plan: its path (`docs/plans/2026-11-04-sign-in.md`) or slug. Left out, a new plan."));
+    properties.insert("project".into(), text("The project whose repository it lives in, by name — needed when the squad has several."));
+    if is_pm {
+        properties.insert("title".into(), text("The plan's title, in the person's language."));
+        properties.insert("slug".into(), text("A short kebab-case name for its file (`magic-link-sign-in`); left out, made from the title."));
+        properties.insert("brief".into(), text("The brief it came from: its path (`docs/briefs/…`)."));
+        properties.insert("status".into(), json!({ "type": "string", "enum": crate::plan::Status::ALL.map(crate::plan::Status::label) }));
+        properties.insert(
+            "scope".into(),
+            json!({ "type": "string", "enum": crate::plan::Scope::ALL.map(crate::plan::Scope::label), "description": "The scope the person picked on its card." }),
+        );
+        for section in crate::plan::Section::WRITTEN {
+            properties.insert(section.key().into(), text("Markdown, in the person's language. Replaces the section."));
+        }
+        properties.insert(
+            "reviewers".into(),
+            json!({ "type": "array", "items": { "type": "string" }, "description": "Roles (or members) to review it at once: backend, designer, qa." }),
+        );
+    } else {
+        properties.insert("review".into(), text("Your review, in Markdown, in the person's language."));
+    }
+    json!({
+        "name": WRITE_PLAN,
+        "description": description,
+        "inputSchema": { "type": "object", "properties": properties },
+    })
 }
 
 /// What a `waiting` ticket's note says: the person's checklist, and why.
@@ -1025,7 +1077,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -1242,6 +1294,17 @@ mod tests {
         assert!(names(tools_for("designer")).contains(&DESIGN_QA.to_owned()), "the designer's own");
         assert!(!names(tools_for("frontend")).contains(&DESIGN_QA.to_owned()), "an engineer's screens are passed by the designer, not by itself");
         assert!(names(tools_for("pm")).contains(&crate::controls::CHANGE_SETTING.to_owned()), "the PM changes what the person asks it to");
+        // A plan: written by the PM, reviewed by members — who write only their notes.
+        let plan = |tools: Vec<Value>| tools.into_iter().find(|t| t["name"] == WRITE_PLAN).expect("write_plan");
+        let pm = plan(tools(true));
+        let member = plan(tools(false));
+        for key in ["title", "goal", "test_plan", "scope", "reviewers"] {
+            assert!(pm["inputSchema"]["properties"].get(key).is_some(), "{key}");
+            assert!(member["inputSchema"]["properties"].get(key).is_none(), "{key} is the PM's");
+        }
+        assert!(member["inputSchema"]["properties"].get("review").is_some() && pm["inputSchema"]["properties"].get("review").is_none());
+        let create = tools(true).into_iter().find(|t| t["name"] == CREATE_TICKET).unwrap();
+        assert!(create["inputSchema"]["properties"].get("plan").is_some() && create["inputSchema"]["properties"].get("tests").is_some());
         assert!(!names(tools_for("backend")).contains(&crate::controls::CHANGE_SETTING.to_owned()));
     }
 

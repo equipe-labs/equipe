@@ -1038,7 +1038,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     worktree: None,
                     merged: None,
                     off_main: None,
-                    design_qa: None,
+                    design_qa: None, plan: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
@@ -1125,7 +1125,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     worktree: None,
                     merged: Some(false),
                     off_main: None,
-                    design_qa: None,
+                    design_qa: None, plan: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
@@ -4385,4 +4385,62 @@ async fn a_review_that_cant_run_says_why_and_never_the_key() {
     assert_eq!(text, "Nemotron couldn't review T-1: Nebius Token Factory didn't accept the API key");
     assert!(!said.iter().any(|e| format!("{e:?}").contains("sk-mock")));
     assert!(handle.snapshot("acme").await.reviews.is_empty());
+}
+
+// ── the plan step ──
+
+#[tokio::test]
+async fn a_plan_is_committed_on_main_reviewed_at_once_and_cut_into_tickets_carrying_their_cases() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    add(&handle, &mut events, 3, member(&repo, "qa")).await;
+    let wrote = tool(&handle, "pm", "write_plan", serde_json::json!({
+        "title": "Magic link", "goal": "Sign in without a password.", "test_plan": "- an expired link says so\n- a used link fails",
+        "reviewers": ["backend", "qa"],
+    }))
+    .await;
+    assert!(!wrote.is_error, "{}", wrote.text);
+    assert!(wrote.text.contains("Asked backend (T-1), qa (T-2)"), "{}", wrote.text);
+    let name = git(&repo, &["ls-tree", "--name-only", "main", "docs/plans/"]);
+    assert!(name.starts_with("docs/plans/") && name.ends_with("-magic-link.md"), "{name}");
+    let on_main = git(&repo, &["show", &format!("main:{name}")]);
+    assert!(on_main.contains("status: in_review") && on_main.contains("- TP-2: a used link fails"), "{on_main}");
+    // Each reviewer's ticket: ready at once, from its angle, naming the plan.
+    let board = handle.snapshot("acme").await.tickets;
+    let reviews: Vec<_> = board.iter().filter(|t| t.plan.as_deref() == Some(name.as_str())).collect();
+    assert_eq!(reviews.iter().map(|t| t.owner.as_deref().unwrap()).collect::<Vec<_>>(), ["backend", "qa"]);
+    assert!(reviews.iter().all(|t| t.kind == equipe_core::protocol::TicketKind::Task && t.body.contains(&name)));
+
+    // A reviewer writes only its own notes.
+    let refused = tool(&handle, "backend", "write_plan", serde_json::json!({ "plan": name, "goal": "mine" })).await;
+    assert!(refused.is_error && refused.text.contains("the PM's"), "{}", refused.text);
+    let noted = tool(&handle, "qa", "write_plan", serde_json::json!({ "plan": "magic-link", "review": "TP-2 needs two browsers." })).await;
+    assert!(!noted.is_error, "{}", noted.text);
+    let on_main = git(&repo, &["show", &format!("main:{name}")]);
+    assert!(on_main.contains("## Review notes\n\n### qa\n\nTP-2 needs two browsers."), "{on_main}");
+    assert!(on_main.contains("Sign in without a password."), "the rest stays: {on_main}");
+
+    // A ticket cut from it carries its slice of the test plan, and is listed in it.
+    let cut = tool(&handle, "pm", "create_ticket", serde_json::json!({
+        "title": "Expired links", "body": "Expired links say so.", "owner": "backend", "plan": name, "tests": ["TP-1"],
+    }))
+    .await;
+    assert!(!cut.is_error, "{}", cut.text);
+    let missing = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "body": "-", "owner": "backend", "plan": "magic-link", "tests": ["TP-9"] })).await;
+    assert!(missing.is_error && missing.text.contains("TP-9"), "{}", missing.text);
+    let made = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.title == "Expired links").unwrap();
+    assert_eq!(made.plan.as_deref(), Some(name.as_str()));
+    assert!(made.body.starts_with("Expired links say so.\n\nPlan: `") && made.body.contains("- TP-1: an expired link says so") && !made.body.contains("TP-2"), "{}", made.body);
+    let mut listed = String::new();
+    for _ in 0..50 {
+        listed = git(&repo, &["show", &format!("main:{name}")]);
+        if listed.contains("tickets: [") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(listed.contains(&format!("status: settled\ntickets: [{}]", made.id)), "{listed}");
 }

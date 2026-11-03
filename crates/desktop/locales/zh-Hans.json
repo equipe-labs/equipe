@@ -301,6 +301,7 @@
   "card.files.other": "{count} 个文件",
   "card.not_found": "找不到",
   "card.open": "打开",
+  "card.plan": "计划",
   "card.see_changes": "查看改动",
   "card.take": "接收",
   "card.unblocks": "完成后解锁：{list}",

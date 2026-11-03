@@ -891,6 +891,26 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     if let Some(since) = model.in_state_for(t) {
         facts.push(div().child(crate::activity::ago(since)).into_any_element());
     }
+    // The plan it was cut from, or reviews: opened beside the conversation.
+    if let Some(plan) = model.ticket_plan(t) {
+        let handle = handle.clone();
+        facts.push(
+            h_flex()
+                .id(("card-plan", id as u64))
+                .gap_1()
+                .items_center()
+                .cursor_pointer()
+                .text_color(p.accent)
+                .child(crate::icons::icon(crate::icons::Icon::FileText, 11., p.accent))
+                .child(t!("card.plan"))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    let _ = handle.update(cx, |shell, cx| shell.open_doc(plan.clone(), cx));
+                    put_away(cx);
+                })
+                .into_any_element(),
+        );
+    }
     let facts = (!facts.is_empty()).then(|| h_flex().flex_wrap().gap_x_3().gap_y_1().text_size(px(11.5)).text_color(p.muted).children(facts));
     // What can be done, or what was.
     let foot = match result {

@@ -50,6 +50,10 @@
 //! brand directions first instead, each on the product's home screen, with
 //! the aspects the person can mix.
 //!
+//! `FAKE_DECIDE=scope` puts the PM's scope card first: one question, the
+//! plan step's four modes, its recommendation first. `FAKE_PLAN=1` has T-42
+//! cut from a plan, its body ending in its slice of the test plan.
+//!
 //! `FAKE_REPLY_IMAGES=1`: the PM's last reply shows the designer's drafts
 //! for T-2 — three pictures it embeds and the folder they are in — from "the
 //! daemon's machine", through `read_image` and `list_images` only; and T-4's
@@ -380,6 +384,13 @@ fn board() -> Vec<Ticket> {
         clash.off_main = Some(equipe_core::protocol::OffMain::Conflict { detail: "equipe/t-49-banner conflicts with main in README.md — nothing was merged".into() });
         out.push(clash);
     }
+    if std::env::var("FAKE_PLAN").is_ok_and(|v| v == "1")
+        && let Some(t) = out.iter_mut().find(|t| t.id == 42)
+    {
+        let plan = "docs/plans/2026-11-04-checkout-payment.md";
+        t.plan = Some(plan.into());
+        t.body.push_str(&format!("\n\n계획: `{plan}`\n\n이 티켓의 테스트 계획:\n\n- TP-1: 카드를 고르고 결제하면 주문이 만들어진다\n- TP-3: 새로고침해도 고른 결제 수단이 남는다"));
+    }
     if your_turn().is_some() {
         out.push(turn_ticket());
     }
@@ -477,12 +488,38 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
             },
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
+        let sets = if deciding().as_deref() == Some("scope") { std::iter::once(scope_set(now)).chain(sets).collect() } else { sets };
         let mut waiting = if briefs::office() { vec![briefs::office_hours_set(now)] } else if deciding().is_some() { sets } else { Vec::new() };
         if review::on() {
             waiting.insert(0, review::set(now));
         }
         std::sync::Mutex::new(waiting)
     })
+}
+
+/// `FAKE_DECIDE=scope`: the plan step's scope card, as the PM puts it.
+fn scope_set(now: u64) -> QuestionSet {
+    let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), ..Choice::default() };
+    QuestionSet {
+        id: 9000,
+        session: 1,
+        member: "pm".into(),
+        ticket: None,
+        questions: vec![Question {
+            question: "체크아웃 결제 수단 계획, 범위를 어디까지 잡을까요?".into(),
+            header: "범위".into(),
+            options: vec![
+                choice("선택적으로 넓히기 (추천)", "요청한 카드·계좌이체에 간편결제 하나만 더해요 — 리뷰에서 가장 많이 나온 요청이에요"),
+                choice("넓히기", "간편결제 셋과 저장된 결제 수단까지 — 티켓 7개, 두 주쯤"),
+                choice("범위 유지", "카드와 계좌이체만, 요청한 그대로 — 티켓 4개"),
+                choice("줄이기", "카드 결제만 먼저 내보내고 계좌이체는 다음에 — 티켓 2개"),
+            ],
+            multi_select: false,
+            ..Question::default()
+        }],
+        asked_at: now.saturating_sub(20),
+        review: false,
+    }
 }
 
 /// A set answered or closed: the screens are told, and the member gets the

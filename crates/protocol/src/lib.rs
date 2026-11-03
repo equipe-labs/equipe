@@ -348,6 +348,11 @@ pub struct Ticket {
     /// out otherwise, and absent from an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub design_qa: Option<TicketId>,
+    /// The plan it was cut from, or reviews: its path in the ticket's project
+    /// (`docs/plans/2026-11-04-sign-in.md`), or an absolute one in the squad's
+    /// folder. Left out otherwise, and absent from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 /// The gap between two tickets' ranks when they are spread out again.
@@ -2325,7 +2330,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,

@@ -86,7 +86,18 @@ until you can state the goal, who it is for, what done looks like, the scope and
 plan in a few lines and start on their yes. When they say \"you decide\", decide, say what you chose and go. The work may be software, or \
 anything else the person needs — research, writing, numbers, paperwork, doing something in an app. Break bigger \
 work into small tickets, each with an owner (a role on the team, or yourself), a one-line goal and acceptance \
-criteria, written so its owner can start without asking. A design ticket says the problem, who it is for, the \
+criteria, written so its owner can start without asking. Work that went through a brief, or that will take several \
+tickets, gets a plan before any ticket: write it with `write_plan` — the goal, the approach, the architecture and data \
+flow, the edge cases, the test plan as concrete cases, design notes and risks, and the most ambitious version worth \
+building, so the scope is a real choice. In the same call ask for its reviews (`reviewers`), all at once: an engineer \
+for the architecture, edge cases and test plan, the designer for what people will see against the UI map, QA for \
+whether it can be tested; each writes its review into the plan. Take in what they found, then put the scope to the \
+person as one `ask_decision` question with four options — expand it, expand selectively, hold the scope, reduce it — \
+your recommendation first, each saying in a line what it adds or cuts; write their pick into the plan (`scope`). \
+Decide small things yourself by stated principles — the simpler way, what the code already does, what can be undone, \
+the smaller scope when in doubt — and note each in the plan: ask only what changes the outcome. Then cut its tickets \
+with `create_ticket`, each with `plan`, its acceptance criteria and its cases from the test plan (`tests`). A small \
+fix skips all of this. A design ticket says the problem, who it is for, the \
 constraints and how success shows — never the layout, the composition or the visual answer: those are the \
 designer's, and it brings you options to put to the person. On a new project with a designer, ask first for its \
 setup — brief, logo, design system, UI map, design QA — as tickets, a step each or the first two together. When an \
@@ -275,8 +286,9 @@ equipe deletes it when the ticket is done; keep one booted at a time and shut it
         title: "QA engineer",
         summary: "reviews changes, plans tests, finds what breaks",
         duties: "You protect quality: review changes, write test plans, find edge cases, \
-and say plainly whether work meets its acceptance criteria. In the projects you read and report; you don't \
-change their files.",
+and say plainly whether work meets its acceptance criteria. When a ticket carries test-plan cases (`TP-…`, in its \
+body), check the work by them, one by one: pass or fail each with what you saw; one you couldn't run is said so, \
+never passed. In the projects you read and report; you don't change their files.",
         edits: false,
         tier: Tier::Mid,
     },
@@ -802,6 +814,28 @@ than get round it."
     } else {
         ""
     };
+    // A plan the PM asks a member to review, from its role's angle.
+    let review = match role.id {
+        _ if !ctx.board_tools => "",
+        "frontend" | "backend" | "mobile" => {
+            "\n\nWhen the PM asks you to review a plan, read it as the one who will build it: what breaks — failure \
+paths, data, concurrency, what it does to what is there — a simpler way that does the same, and the test plan as \
+concrete cases (input, steps, what is expected), adding the ones it misses. Write it into the plan with `write_plan` \
+(`review`), then hand in."
+        }
+        "designer" => {
+            "\n\nWhen the PM asks you to review a plan, review what people will see against the UI map (`design/flows/`) \
+and the design system: the flows, screens and states it adds or changes and those the map lacks, the tokens and \
+components it should use — and score each design dimension 0–10 (hierarchy, states, fit with the system, copy, \
+accessibility) with what a 10 needs. Write it into the plan with `write_plan` (`review`), then hand in."
+        }
+        "qa" => {
+            "\n\nWhen the PM asks you to review a plan, say whether it can be tested: a way to check each acceptance \
+criterion, the test plan's cases concrete, and the cases it misses (empty, error, permission, offline, long text). \
+Write it into the plan with `write_plan` (`review`), then hand in."
+        }
+        _ => "",
+    };
     let desktop = if ctx.desktop {
         "\n\nYou can work the Mac's desktop apps (the `desktop` tools, experimental) on the person's own Mac, \
 where they may be working too. Look first: `screenshot`, then `elements` for the app's buttons and fields — \
@@ -954,7 +988,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{remix}{desktop}{pictures}{reports}{ideas}{office_hours}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{review}{home}{browser}{others}{render}{remix}{desktop}{pictures}{reports}{ideas}{office_hours}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -1025,6 +1059,66 @@ mod tests {
         assert!(!pm.edits);
         assert_eq!(pm.tier, Tier::Top);
         assert!(role("frontend").unwrap().edits);
+    }
+
+    #[test]
+    fn the_pm_plans_bigger_work_has_it_reviewed_at_once_puts_the_scope_on_one_card_then_cuts_tickets() {
+        let pm = role(PM).unwrap().duties;
+        for part in [
+            // When: after a brief or for several tickets, before any ticket; never for a small fix.
+            "Work that went through a brief, or that will take several tickets, gets a plan before any ticket",
+            "`write_plan`",
+            "the architecture and data flow, the edge cases, the test plan as concrete cases, design notes and risks",
+            "the most ambitious version worth building",
+            // Reviews: the right members, in parallel, each into the plan.
+            "(`reviewers`), all at once",
+            "an engineer for the architecture, edge cases and test plan",
+            "the designer for what people will see against the UI map",
+            "QA for whether it can be tested",
+            "each writes its review into the plan",
+            // The scope: one card, four modes, the recommendation first.
+            "one `ask_decision` question with four options",
+            "expand it, expand selectively, hold the scope, reduce it",
+            "your recommendation first",
+            "(`scope`)",
+            // Small things by principles; only what matters asked.
+            "Decide small things yourself by stated principles",
+            "ask only what changes the outcome",
+            // Then tickets: the plan, the criteria, the test plan's slice.
+            "`create_ticket`, each with `plan`, its acceptance criteria and its cases from the test plan (`tests`)",
+            "A small fix skips all of this",
+        ] {
+            assert!(pm.contains(part), "{part}: {pm}");
+        }
+        let at = |part: &str| pm.find(part).unwrap();
+        assert!(at("`reviewers`") < at("`ask_decision` question with four") && at("four options") < at("Then cut its tickets"), "reviews, then the scope, then tickets");
+    }
+
+    #[test]
+    fn members_review_a_plan_from_their_own_angle_and_qa_checks_work_by_its_cases() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "backend", role: "backend" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "qa", role: "qa" }];
+        let text = |id: &str| charter(role(id).unwrap(), id, &ctx(&team, &[], true));
+        for engineer in ["frontend", "backend", "mobile"] {
+            let t = text(engineer);
+            for part in ["review a plan", "what breaks", "a simpler way that does the same", "the test plan as \nconcrete cases", "`write_plan` \n(`review`)"] {
+                let part = part.replace(" \n", " ");
+                assert!(t.contains(&part), "{engineer}: {part}: {t}");
+            }
+        }
+        let designer = text("designer");
+        for part in ["review a plan", "against the UI map (`design/flows/`)", "and the design system", "score each design dimension 0–10", "what a 10 needs", "`write_plan` (`review`)"] {
+            assert!(designer.contains(part), "{part}: {designer}");
+        }
+        let qa = text("qa");
+        for part in ["say whether it can be tested", "a way to check each acceptance", "the cases it misses", "`write_plan` (`review`)"] {
+            assert!(qa.contains(part), "{part}: {qa}");
+        }
+        // QA checks work by the ticket's slice of the test plan, tools or not.
+        let duties = role("qa").unwrap().duties;
+        assert!(duties.contains("test-plan cases (`TP-…`, in its") && duties.contains("one by one: pass or fail each") && duties.contains("never passed"), "{duties}");
+        // Nobody else is asked; without board tools nobody can write one.
+        assert!(!text("data").contains("review a plan") && !text(PM).contains("When the PM asks you to review a plan"));
+        assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], false)).contains("`write_plan`"));
     }
 
     #[test]
