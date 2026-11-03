@@ -400,7 +400,8 @@ pub fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead
     serve_with(home, ask, cap, &scratch_folders())
 }
 
-/// A kept card page, as it is: `text/html`, its CSP inside (docs/VISUALS.md).
+/// A kept card page, as it is: `text/html`, its CSP inside (docs/VISUALS.md),
+/// while its card keeps the contract ([`card::kept_fragment`]).
 fn card_page(path: &Path) -> Result<ImageRead, String> {
     use base64::Engine as _;
     let meta = std::fs::symlink_metadata(path).map_err(|_| refused(path, "no such file"))?;
@@ -408,6 +409,8 @@ fn card_page(path: &Path) -> Result<ImageRead, String> {
         return Err(refused(path, "not a card's page"));
     }
     let bytes = std::fs::read(path).map_err(|_| refused(path, "couldn't be read"))?;
+    let html = std::str::from_utf8(&bytes).map_err(|_| refused(path, "not a card's page"))?;
+    card::kept_fragment(html).map_err(|why| refused(path, &format!("no longer keeps the card contract ({why})")))?;
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(ImageRead { mime: "text/html".into(), size: bytes.len() as u64, width: None, height: None, data, scaled: false })
 }
