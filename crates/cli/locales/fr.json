@@ -502,6 +502,7 @@
   "main.row_working": "au travail",
   "main.runs_as_service": "service de session — démarre à l'ouverture de session, revient après un plantage",
   "main.runs_on_demand": "à la demande · equipe daemon install le garde actif",
+  "main.runs_as_trial": "essai, dans un home temporaire — s'arrête après {mins} min sans écran ni membre au travail, ou dès que son home est supprimé",
   "main.screen_free": "libre",
   "main.service_installed": "Le démon tourne comme service de session : il démarre à l'ouverture de session et revient s'il plante.",
   "main.service_no_answer": "Le service a été installé mais le démon n'a pas répondu.",
