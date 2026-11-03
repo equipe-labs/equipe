@@ -1156,7 +1156,7 @@ pub(crate) mod tests {
         assert!(opened["seq"].as_u64().unwrap() >= 3);
         // A reply's diagram, drawn for it: the paths it reads with `read_image`.
         let image = |tone: &str| equipe_core::protocol::RenderedImage { path: format!("/h/squads/acme/visuals/558211ed72b2d696-{tone}.png"), width: 880, height: 724 };
-        let drawn = equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: image("light"), dark: image("dark") };
+        let drawn = equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: image("light"), dark: image("dark"), page: None };
         let out = core.on_event(&phone.id, "acme", &Event::VisualsRendered { session: 1, visuals: vec![drawn] });
         let params = &phone.open(&c, &out[0])["rpc"]["params"];
         assert_eq!((params["type"].as_str(), params["visuals"][0]["key"].as_str()), (Some("visuals_rendered"), Some("558211ed72b2d696")));

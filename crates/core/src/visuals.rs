@@ -20,6 +20,7 @@
 //! still shows its hand-in: the pictures are read from its branch, or from
 //! main once merged, by the paths the ticket recorded and no others.
 
+pub mod card;
 pub mod diagram;
 pub mod markdown;
 
@@ -399,6 +400,18 @@ pub fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead
     serve_with(home, ask, cap, &scratch_folders())
 }
 
+/// A kept card page, as it is: `text/html`, its CSP inside (docs/VISUALS.md).
+fn card_page(path: &Path) -> Result<ImageRead, String> {
+    use base64::Engine as _;
+    let meta = std::fs::symlink_metadata(path).map_err(|_| refused(path, "no such file"))?;
+    if !meta.is_file() || meta.len() > card::PAGE_MAX {
+        return Err(refused(path, "not a card's page"));
+    }
+    let bytes = std::fs::read(path).map_err(|_| refused(path, "couldn't be read"))?;
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(ImageRead { mime: "text/html".into(), size: bytes.len() as u64, width: None, height: None, data, scaled: false })
+}
+
 /// The folders a member drops a quick render or chart in: this Mac's temp folders.
 fn scratch_folders() -> Vec<PathBuf> {
     vec![std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
@@ -411,6 +424,10 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         (Some(max), Some(cap)) => Some(max.min(cap)),
         (max, cap) => max.or(cap),
     };
+    // A card's page the daemon kept, for a screen that opens the card itself.
+    if card::is_page(home, &ask.squad, Path::new(&ask.path)) {
+        return card_page(Path::new(&ask.path));
+    }
     // A diagram the daemon drew for the squad (`visuals_rendered`).
     if diagram::is_drawn(home, &ask.squad, Path::new(&ask.path)) {
         return read(Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);

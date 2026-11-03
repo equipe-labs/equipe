@@ -275,7 +275,8 @@ pub struct ReadImage {
 /// was asked for smaller, or too big to send whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageRead {
-    /// `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/svg+xml`.
+    /// `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/svg+xml`;
+    /// `text/html` for an HTML card's kept page (docs/VISUALS.md).
     pub mime: String,
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

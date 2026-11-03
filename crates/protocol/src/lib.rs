@@ -2077,12 +2077,16 @@ pub struct SessionInfo {
 /// light and dark, each a PNG a screen reads with `read_image`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rendered {
-    /// What the block was: `mermaid`.
+    /// What the block was: `mermaid`, or `card` (an HTML card).
     pub kind: String,
     /// The first 8 bytes of the SHA-256 of its source, trimmed, in lowercase hex.
     pub key: String,
     pub light: RenderedImage,
     pub dark: RenderedImage,
+    /// An HTML card's page, as drawn (`<key>.html` beside its PNGs): for a
+    /// screen that opens the card itself. Absent for a diagram.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

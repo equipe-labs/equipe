@@ -25,6 +25,14 @@ pub const PNG_MAX: usize = 4 << 20;
 /// more backticks or tildes, `mermaid` its first word, up to its closing
 /// fence. An unclosed block is still being written: not a diagram yet.
 pub fn blocks(text: &str) -> Vec<String> {
+    fenced(text, |info| info.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("mermaid")))
+}
+
+/// The source of each fenced block of `text` whose info string `wanted`
+/// takes, in order, as CommonMark has fences: three or more backticks or
+/// tildes, indented at most three spaces, closed by a fence of the same
+/// character at least as long with nothing after it. Unclosed: not yet.
+pub(crate) fn fenced(text: &str, wanted: impl Fn(&str) -> bool) -> Vec<String> {
     let mut found = Vec::new();
     let mut open: Option<(char, usize, bool, Vec<&str>)> = None;
     for line in text.lines() {
@@ -36,16 +44,13 @@ pub fn blocks(text: &str) -> Vec<String> {
         });
         match (&mut open, fence) {
             (Some((mark, n, _, _)), Some((m, k, info))) if m == *mark && k >= *n && info.is_empty() => {
-                let (_, _, mermaid, lines) = open.take().unwrap();
-                if mermaid {
+                let (_, _, keep, lines) = open.take().unwrap();
+                if keep {
                     found.push(lines.join("\n"));
                 }
             }
             (Some((_, _, _, lines)), _) => lines.push(line),
-            (None, Some((mark, n, info))) => {
-                let mermaid = info.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("mermaid"));
-                open = Some((mark, n, mermaid, Vec::new()));
-            }
+            (None, Some((mark, n, info))) => open = Some((mark, n, wanted(info), Vec::new())),
             (None, None) => {}
         }
     }
@@ -64,7 +69,7 @@ pub fn dir(home: &Path, squad: &str) -> PathBuf {
     crate::journal::squad_dir(home, squad).join("visuals")
 }
 
-fn file(home: &Path, squad: &str, key: &str, dark: bool) -> PathBuf {
+pub(crate) fn file(home: &Path, squad: &str, key: &str, dark: bool) -> PathBuf {
     dir(home, squad).join(format!("{key}-{}.png", if dark { "dark" } else { "light" }))
 }
 
@@ -160,7 +165,7 @@ fn draw_one(home: &Path, squad: &str, key: &str, source: &str, dark: bool) -> Re
 }
 
 /// A kept PNG's path and size, read from its header.
-fn read_size(path: &Path) -> Option<RenderedImage> {
+pub(crate) fn read_size(path: &Path) -> Option<RenderedImage> {
     use std::io::Read;
     let mut head = [0u8; 24];
     std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
@@ -182,7 +187,7 @@ pub fn draw(home: &Path, squad: &str, text: &str) -> Vec<Rendered> {
             continue;
         }
         match draw_one(home, squad, &key, &source, false).and_then(|light| Ok((light, draw_one(home, squad, &key, &source, true)?))) {
-            Ok((light, dark)) => drawn.push(Rendered { kind: "mermaid".into(), key, light, dark }),
+            Ok((light, dark)) => drawn.push(Rendered { kind: "mermaid".into(), key, light, dark, page: None }),
             Err(why) => crate::daemon_log!("equipe: a diagram of {squad} wasn't drawn ({why}); its source shows"),
         }
     }
@@ -201,7 +206,7 @@ pub fn kept(home: &Path, squad: &str, lines: &[Entry]) -> Vec<Rendered> {
                 continue;
             }
             if let (Some(light), Some(dark)) = (read_size(&file(home, squad, &key, false)), read_size(&file(home, squad, &key, true))) {
-                found.push(Rendered { kind: "mermaid".into(), key, light, dark });
+                found.push(Rendered { kind: "mermaid".into(), key, light, dark, page: None });
             }
         }
     }

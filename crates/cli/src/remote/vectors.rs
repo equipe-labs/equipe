@@ -1222,7 +1222,7 @@ fn message_vectors() -> Value {
 
     // A reply's Mermaid block, drawn by the daemon for a phone (docs/VISUALS.md): put in place of the block whose source has `key`.
     let drawn = |tone: &str| equipe_core::protocol::RenderedImage { path: format!("/Users/me/.equipe/squads/{SQUAD}/visuals/558211ed72b2d696-{tone}.png"), width: 880, height: 724 };
-    tell(&mut core, &mut examples, "event: visuals rendered", Event::VisualsRendered { session: pm, visuals: vec![equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: drawn("light"), dark: drawn("dark") }] });
+    tell(&mut core, &mut examples, "event: visuals rendered", Event::VisualsRendered { session: pm, visuals: vec![equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: drawn("light"), dark: drawn("dark"), page: None }] });
     // Pushes, to a phone away.
     core.on_relay(&json!({ "type": "presence", "device": device_id(), "online": false }), NOW);
     for (name, event) in [
