@@ -600,7 +600,7 @@ fn notes(shell: &Shell, screen: &Screen, chip: Option<&Chip>, taken: Option<u64>
 fn empty(shell: &Shell, map: Option<&FlowMap>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let has_designer = shell.design_talk_to().is_some_and(|(_, pm)| !pm);
-    let point = |text: String| h_flex().gap_2().items_start().child(div().mt(px(9.)).size(px(4.)).flex_none().rounded_full().bg(p.muted)).child(div().flex_1().child(text));
+    let point = |text: String| h_flex().gap_2().items_start().child(div().mt(px(9.)).size(px(4.)).flex_none().rounded_full().bg(p.muted)).child(div().flex_1().min_w_0().child(text));
     let problems = map.map(fm::problems).unwrap_or_default();
     v_flex()
         .id("flows-empty")
@@ -613,7 +613,10 @@ fn empty(shell: &Shell, map: Option<&FlowMap>, cx: &mut Context<Shell>) -> AnyEl
         .when(!problems.is_empty(), |d| d.child(div().w_full().max_w(px(560.)).child(super::design::problems(shell, &problems, true, cx))))
         .child(
             motion::rise(
+                // As wide as there is room, up to a measure: never wider than
+                // the pane, so nothing is centred off its edges.
                 v_flex()
+                    .w_full()
                     .max_w(px(520.))
                     .gap_4()
                     .child(div().size(px(44.)).rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).flex().items_center().justify_center().child(icon(Icon::AppWindow, 22., p.text2)))

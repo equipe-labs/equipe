@@ -28,6 +28,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::board::Popover;
 use crate::design::{self as ds, Section};
 use crate::design_talk::DesignContext;
 use crate::flows::Tab;
@@ -37,6 +38,11 @@ use crate::render::view::Look;
 use crate::theme::{BODY, BODY_LINE, CONTROL, ICON, ICON_SM, MEASURE, MONO, META, Palette, R_LG, R_MD, SMALL, UI};
 use crate::tips::TipExt as _;
 use crate::{Screen, Shell, motion, ui};
+
+/// The most systems shown as segments, and the pane they need; past
+/// either, a list.
+const SEGMENTS_MAX: usize = 2;
+const SEGMENTS_ROOM: f32 = 820.;
 
 /// The page's side margin and the widest its content goes.
 const PAD: f32 = 32.;
@@ -87,6 +93,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .child(header(shell, cx))
         .children(ui.compare.then(|| super::compare::bar(shell, cx)))
         .children((ui.loaded && !ui.compare).then(|| ui.current().filter(|s| s.draft.is_some()).map(|s| draft_banner(shell, s, cx))).flatten())
+        .children(draft_strip(shell, cx))
         .children(super::design_setup::band(shell, cx))
         .children((ui.loaded && tab == Tab::System).then(|| ui.current().map(|s| tabs(shell, s, cx))).flatten())
         .child(body)
@@ -121,15 +128,89 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .window_control_area(WindowControlArea::Drag)
         .when(!ui.loaded, |bar| bar.child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("design.title"))))
         .when(ui.loaded, |bar| bar.child(super::flows::tabs(shell, cx)));
-    // Projects with a look of their own: one segment each.
-    if sources.len() > 1 || accepted > 1 {
+    // Projects with a look of their own: one segment each while two fit;
+    // more, and a list opens from the one shown, so none is cut off.
+    let name_of = |key: &str| match key.strip_prefix("project:") {
+        Some(name) => name.to_owned(),
+        None => t!("design.source_squad").to_owned(),
+    };
+    if sources.len() > SEGMENTS_MAX || (sources.len() > 1 && ui.pane < SEGMENTS_ROOM) {
+        let open = shell.board.popover == Some(Popover::DesignSource);
+        let mark = |key: &str| if key.starts_with("project:") { crate::theme::project_mark(p, 12.) } else { div().size(px(7.)).rounded_full().border_1().border_color(p.muted).into_any_element() };
+        let rows: Vec<AnyElement> = sources
+            .iter()
+            .map(|key| {
+                let on = *key == ui.source;
+                let pick = key.clone();
+                h_flex()
+                    .id(SharedString::from(format!("design-src-{key}")))
+                    .h(px(30.))
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(6.))
+                    .text_size(px(SMALL))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.wash))
+                    .child(div().w(px(14.)).flex().justify_center().child(mark(key)))
+                    .child(div().flex_1().min_w_0().truncate().when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(name_of(key)))
+                    .when(on, |r| r.child(icon(Icon::Check, 13., p.text2)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.board.popover = None;
+                        this.design_pick_source(&pick, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let list = open.then(|| {
+            deferred(
+                v_flex()
+                    .id("design-src-list")
+                    .absolute()
+                    .top(px(30.))
+                    .left_0()
+                    .w(px(220.))
+                    .max_h(px(420.))
+                    .overflow_y_scroll()
+                    .p_1()
+                    .rounded(px(8.))
+                    .bg(p.raised)
+                    .border_1()
+                    .border_color(p.hair)
+                    .shadow_lg()
+                    .occlude()
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popover_outside(cx)))
+                    .children(rows),
+            )
+        });
+        bar = bar.child(
+            div().relative().flex_none().child(
+                h_flex()
+                    .id("design-src")
+                    .h(px(26.))
+                    .max_w(px(180.))
+                    .px_2()
+                    .gap_1p5()
+                    .items_center()
+                    .rounded(px(R_MD))
+                    .bg(p.wash)
+                    .text_size(px(SMALL))
+                    .text_color(p.text)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.side_hover))
+                    .aria_expanded(open)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_popover(Popover::DesignSource, cx)))
+                    .child(div().flex_none().child(mark(&ui.source)))
+                    .child(div().min_w_0().truncate().child(name_of(&ui.source)))
+                    .child(div().flex_none().child(icon(Icon::ChevronDown, 12., p.text2))),
+            )
+            .children(list),
+        );
+    } else if sources.len() > 1 || accepted > 1 {
         let mut seg = h_flex().flex_none().h(px(26.)).p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash);
         for key in sources {
             let on = key == ui.source;
-            let label = match key.strip_prefix("project:") {
-                Some(name) => name.to_owned(),
-                None => t!("design.source_squad").to_owned(),
-            };
+            let label = name_of(&key);
             let pick = key.clone();
             seg = seg.child(
                 div()
@@ -149,7 +230,9 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         }
         bar = bar.child(seg);
     }
-    if let Some(d) = draft {
+    // A narrow pane keeps the draft's pill and 비교하며 검토 on a strip of their
+    // own under the bar (`draft_strip`), so the bar's ends stay whole.
+    if let Some(d) = draft.filter(|_| !narrow(ui)) {
         let viewing = current.is_some_and(|s| s.draft.is_some());
         let pill = h_flex()
             .id("design-draft-pill")
@@ -260,6 +343,59 @@ fn digit(n: usize) -> &'static str {
     ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).copied().unwrap_or("")
 }
 
+/// Too narrow for the bar to hold the systems' segments and the draft's controls.
+fn narrow(ui: &ds::DesignUi) -> bool {
+    ui.pane < SEGMENTS_ROOM
+}
+
+/// A narrow pane, the accepted system on screen and a draft of it in review:
+/// the bar's pill and 비교하며 검토, on a strip under it.
+fn draft_strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let ui = &shell.design;
+    if !ui.loaded || ui.compare || !narrow(ui) || ui.current().is_none_or(|s| s.draft.is_some()) {
+        return None;
+    }
+    let d = ui.draft_of(&ui.source).and_then(|s| s.draft.clone())?;
+    Some(
+        h_flex()
+            .id("design-draft-strip")
+            .flex_none()
+            .min_h(px(40.))
+            .px(px(PAD))
+            .py_1()
+            .gap_3()
+            .items_center()
+            .bg(Rgba { a: 0.10, ..p.amber })
+            .border_b_1()
+            .border_color(Rgba { a: 0.3, ..p.amber })
+            .text_size(px(SMALL))
+            .child(div().size(px(7.)).flex_none().rounded_full().bg(p.amber))
+            .child(
+                div()
+                    .id("design-draft-strip-view")
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(p.text)
+                    .cursor_pointer()
+                    .child(t!("design.in_review", id = d.ticket))
+                    .on_click(cx.listener(|this, _, _, cx| this.design_toggle_draft(cx)))
+                    .tip(p, t!("design.view_draft", title = d.title), None),
+            )
+            .when(ui.can_compare(), |b| {
+                b.child(
+                    div().flex_none().child(
+                        ui::button(p, "design-compare", ui::Kind::Secondary, t!("design.compare_start"))
+                            .tip(t!("design.compare_start_tip"), None)
+                            .on_click(cx.listener(|this, _, _, cx| this.design_compare(true, cx))),
+                    ),
+                )
+            })
+            .into_any_element(),
+    )
+}
+
 /// A ticket's draft on screen: whose, and how to get back.
 fn draft_banner(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
@@ -279,6 +415,9 @@ fn draft_banner(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -
         .text_size(px(SMALL))
         .child(div().size(px(7.)).flex_none().rounded_full().bg(p.amber))
         .child(div().flex_1().min_w_0().text_color(p.text).child(t!("design.draft_banner", id = d.ticket, title = d.title)))
+        .when(narrow(&shell.design) && shell.design.can_compare(), |b| {
+            b.child(ui::button(p, "design-compare", ui::Kind::Secondary, t!("design.compare_start")).on_click(cx.listener(|this, _, _, cx| this.design_compare(true, cx))))
+        })
         .child(ui::button(p, "design-open-ticket", ui::Kind::Secondary, t!("design.open_ticket")).icon(Icon::Ticket).on_click(cx.listener(move |this, _, _, cx| this.open_ticket(ticket, cx))))
         .when(accepted, |b| b.child(ui::button(p, "design-accepted", ui::Kind::Ghost, t!("design.back_to_accepted")).on_click(cx.listener(|this, _, _, cx| this.design_toggle_draft(cx)))))
 }
@@ -1484,6 +1623,10 @@ impl Shell {
             return;
         }
         self.design.wide = crate::compare::side_by_side(f32::from(window.viewport_size().width));
+        // The design pane's own width: beside the sidebar, less the conversation docked at its side.
+        let room = self.design_talk_room(window, cx);
+        let docked = if self.design_talk_open(window, cx) { crate::design_talk::width(self.remembered.design_talk_width, room) } else { 0. };
+        self.design.pane = room - docked;
         if self.design.fonts.is_none() {
             self.design.fonts = Some(window.text_system().all_font_names().into_iter().map(|f| f.to_ascii_lowercase()).collect());
         }
