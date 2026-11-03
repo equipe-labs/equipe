@@ -1530,6 +1530,11 @@ impl Shell {
             cx.open_url(url);
             return;
         }
+        self.open_in_panel(url, window, cx);
+    }
+
+    /// `url` in a tab of equipe's browser panel, whatever the setting for links says.
+    pub fn open_in_panel(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.screen != Screen::Chat {
             self.show(Screen::Chat, cx);
         }

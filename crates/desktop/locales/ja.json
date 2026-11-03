@@ -3422,5 +3422,11 @@
   "moved.why_back": "{engine} のプランに余裕が戻った",
   "moved.mid_ticket": "作業の途中、T-{id} を引き継ぎ",
   "moved.between": "チケットの合間",
-  "moved.packet_note": "新しい会話が最初に受け取った内容そのままです。読み取り専用です。"
+  "moved.packet_note": "新しい会話が最初に受け取った内容そのままです。読み取り専用です。",
+  "render.card_waiting": "カードを描いています…",
+  "render.card_failed": "カードを描けなかったので、原文を表示します。",
+  "render.card_open": "ブラウザパネルで開く",
+  "render.card_big": "拡大して見る",
+  "render.card_label": "HTMLカード",
+  "render.card_hide": "たたむ"
 }

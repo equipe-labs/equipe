@@ -425,6 +425,88 @@ pub fn inline(shots: &Shots, row: u64, path: &str, alt: &str, pictures: &[(Strin
     div().py_1().child(tip(frame, p, label, None)).into_any_element()
 }
 
+/// An HTML card the daemon drew, in the tone the window is in: as wide as
+/// it was drawn at 1x (never wider than the column), whole. A click opens its
+/// page in the browser panel (the big view when it has none); "크게 보기",
+/// under the pointer, opens the picture big. `None`: the picture can't be had
+/// (the card's source is shown instead).
+pub fn card(shots: &Shots, row: u64, drawn: &equipe_core::protocol::Rendered, cx: &mut App) -> Option<AnyElement> {
+    let p = shots.p;
+    let tone = if is_dark(p) { &drawn.dark } else { &drawn.light };
+    shots.in_row(&tone.path, row);
+    let look = shots.ask(&tone.path, Size::Full, cx);
+    if matches!(look, Look::Gone(_)) {
+        return None;
+    }
+    let column = shots.column();
+    let natural = (tone.width.max(1) as f32 / 2., tone.height.max(1) as f32 / 2.);
+    let w = natural.0.min(column).max(80.);
+    let h = (natural.1 * w / natural.0).max(1.);
+    let id = row ^ rules_hash(&tone.path);
+    let face: AnyElement = match &look {
+        Look::Ready(shot) => {
+            let image = img(shot.image.clone()).w(px(w)).h(px(h)).object_fit(ObjectFit::Fill).rounded(px(R_LG));
+            if !shots.reduce && shot.at.elapsed() < FADE * 2 {
+                motion::fade(image, ElementId::NamedInteger("card-in".into(), id), FADE).into_any_element()
+            } else {
+                image.into_any_element()
+            }
+        }
+        _ => waiting(p, ElementId::NamedInteger("card-wait".into(), id), shots.reduce),
+    };
+    let handle = shots.handle();
+    let page = drawn.page.clone();
+    let viewer = Viewer::of_reply(row, &[(tone.path.clone(), t!("render.card_label").to_owned())], &tone.path);
+    let big = {
+        let (handle, viewer) = (handle.clone(), viewer.clone());
+        h_flex()
+            .id(("card-big", id))
+            .absolute()
+            .top(px(8.))
+            .right(px(8.))
+            .h(px(24.))
+            .px_2()
+            .items_center()
+            .rounded(px(R_SM))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.hair)
+            .text_size(px(12.))
+            .text_color(p.muted)
+            .cursor_pointer()
+            .opacity(0.)
+            .group_hover(SharedString::from(format!("card-{id}")), |s| s.opacity(1.))
+            .hover(move |s| s.text_color(p.text))
+            .child(t!("render.card_big"))
+            .on_click(opens(&handle, viewer))
+    };
+    let frame = div()
+        .id(("card", id))
+        .group(SharedString::from(format!("card-{id}")))
+        .relative()
+        .flex_none()
+        .w(px(w))
+        .h(px(h))
+        .rounded(px(R_LG))
+        .overflow_hidden()
+        .cursor_pointer()
+        .child(face)
+        .child(big)
+        .on_click(move |_, window, cx| match &page {
+            Some(page) => {
+                let url = format!("file://{page}");
+                handle.update(cx, |shell, cx| shell.open_in_panel(&url, window, cx)).ok();
+            }
+            None => {
+                if let Some(viewer) = viewer.clone() {
+                    handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                }
+            }
+        });
+    let label = if drawn.page.is_some() { t!("render.card_open") } else { t!("render.card_big") };
+    Some(div().py_1().child(tip(frame, p, label, None)).into_any_element())
+}
+
 /// The strip under a reply that names a folder of pictures: "N images",
 /// the folder's name, and its first pictures small — none of it when the
 /// folder isn't one of pictures the squad shows, or every one already shows

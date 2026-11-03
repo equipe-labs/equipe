@@ -3506,5 +3506,11 @@
   "moved.why_back": "el plan de {engine} volvió a tener margen",
   "moved.mid_ticket": "a mitad de ticket, T-{id} entregado",
   "moved.between": "entre tickets",
-  "moved.packet_note": "Exactamente lo que recibió la nueva conversación al empezar. Solo lectura."
+  "moved.packet_note": "Exactamente lo que recibió la nueva conversación al empezar. Solo lectura.",
+  "render.card_waiting": "Dibujando la tarjeta…",
+  "render.card_failed": "No se pudo dibujar esta tarjeta; este es su código.",
+  "render.card_open": "Abrir en el panel del navegador",
+  "render.card_big": "Ver más grande",
+  "render.card_label": "Tarjeta HTML",
+  "render.card_hide": "Plegar"
 }

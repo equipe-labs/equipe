@@ -3423,5 +3423,11 @@
   "moved.why_back": "{engine} 사용량에 여유가 생김",
   "moved.mid_ticket": "작업 중, T-{id} 넘김",
   "moved.between": "작업 사이",
-  "moved.packet_note": "새 대화가 처음 받은 내용 그대로예요. 읽기 전용이에요."
+  "moved.packet_note": "새 대화가 처음 받은 내용 그대로예요. 읽기 전용이에요.",
+  "render.card_waiting": "그림을 그리는 중…",
+  "render.card_failed": "카드를 그리지 못해 원문을 보여 드려요.",
+  "render.card_open": "브라우저 패널에서 열기",
+  "render.card_big": "크게 보기",
+  "render.card_label": "HTML 카드",
+  "render.card_hide": "접기"
 }

@@ -3506,5 +3506,11 @@
   "moved.why_back": "{engine}'s plan had room again",
   "moved.mid_ticket": "mid-ticket, T-{id} handed over",
   "moved.between": "between tickets",
-  "moved.packet_note": "Exactly what the new conversation opened with. Read-only."
+  "moved.packet_note": "Exactly what the new conversation opened with. Read-only.",
+  "render.card_waiting": "Drawing the card…",
+  "render.card_failed": "Couldn't draw this card; here is its source.",
+  "render.card_open": "Open in the browser panel",
+  "render.card_big": "View larger",
+  "render.card_label": "HTML card",
+  "render.card_hide": "Fold"
 }

@@ -3422,5 +3422,11 @@
   "moved.why_back": "{engine} 的額度又夠了",
   "moved.mid_ticket": "進行中，已交接 T-{id}",
   "moved.between": "在兩張工單之間",
-  "moved.packet_note": "這是新對話一開始收到的原文，唯讀。"
+  "moved.packet_note": "這是新對話一開始收到的原文，唯讀。",
+  "render.card_waiting": "正在繪製卡片…",
+  "render.card_failed": "無法繪製此卡片，以下是其原始碼。",
+  "render.card_open": "在瀏覽器面板中開啟",
+  "render.card_big": "放大檢視",
+  "render.card_label": "HTML 卡片",
+  "render.card_hide": "收合"
 }

@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use equipe_core::protocol::harness;
 use equipe_core::protocol::transcript::scope;
 use equipe_core::protocol::watch::CommandWatch;
-use equipe_core::protocol::{CompactTrigger, Engine, Entry, Event, SessionId, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
+use equipe_core::protocol::{
+    CompactTrigger, Engine, Entry, Event, Rendered, SessionId, SessionInfo, TicketId,
+    ToolOutcome, Transcript, TurnOutcome,
+};
 use equipe_core::t;
 
 use crate::activity::News;
@@ -118,6 +121,8 @@ pub struct Convo {
     pub suggestion: Option<String>,
     /// Subagents it handed work to this turn and that haven't handed back.
     pub subagents: Vec<Sub>,
+    /// Blocks of its replies the daemon drew (HTML cards' pictures, by key), told as `visuals_rendered`.
+    pub rendered: Vec<Rendered>,
     /// Its conversation being summarized, or just was.
     pub compact: Option<Compact>,
     /// Those that handed back (or stopped with a turn), the latest
@@ -171,6 +176,7 @@ impl Convo {
             queue: crate::queue::Queue::default(),
             suggestion: None,
             subagents: Vec::new(),
+            rendered: Vec::new(),
             compact: None,
             finished: Vec::new(),
             desk: base.clone(),
@@ -202,6 +208,7 @@ impl Convo {
                 ..Sub::new(s.id.clone(), s.what.clone(), s.brief.clone(), now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now))
             })
             .collect();
+        convo.rendered = info.visuals.clone();
         convo.compact = info.compacting.as_ref().map(|c| Compact::Running {
             manual: c.trigger == CompactTrigger::Manual,
             since: since_ms(c.started_at, now),
@@ -263,6 +270,12 @@ impl Convo {
                 self.queue.withdraw(text);
             }
             Event::QueueSent { texts, .. } => self.queue.sent(texts),
+            Event::VisualsRendered { visuals, .. } => {
+                for v in visuals {
+                    self.rendered.retain(|r| !(r.kind == v.kind && r.key == v.key));
+                    self.rendered.push(v.clone());
+                }
+            }
             Event::Suggestion { text, .. } => {
                 // Too late once it is at work again, or a memo is on its way.
                 if self.working_since.is_none() && !self.queue.has_memo() {
@@ -1776,6 +1789,17 @@ mod tests {
         assert_eq!(c.suggestion, None);
         feed(&mut c, &[Event::MessageQueued { session: 1, text: "m".into(), project: None }, Event::Suggestion { session: 1, text: "late".into() }]);
         assert_eq!(c.suggestion, None, "a memo is on its way");
+    }
+
+    #[test]
+    fn what_the_daemon_drew_is_kept_by_its_key_and_told_again_it_is_the_one_already_here() {
+        use equipe_core::protocol::RenderedImage;
+        let image = |path: &str| RenderedImage { path: path.into(), width: 880, height: 400 };
+        let card = |key: &str, page: &str| Rendered { kind: "card".into(), key: key.into(), light: image("/v/a-light.png"), dark: image("/v/a-dark.png"), page: Some(page.into()) };
+        let mut c = convo(false);
+        feed(&mut c, &[Event::VisualsRendered { session: 1, visuals: vec![card("aaaaaaaaaaaaaaaa", "/v/a.html")] }]);
+        feed(&mut c, &[Event::VisualsRendered { session: 1, visuals: vec![card("aaaaaaaaaaaaaaaa", "/v/b.html"), card("bbbbbbbbbbbbbbbb", "/v/c.html")] }]);
+        assert_eq!(c.rendered.iter().map(|r| (r.key.as_str(), r.page.as_deref().unwrap())).collect::<Vec<_>>(), [("aaaaaaaaaaaaaaaa", "/v/b.html"), ("bbbbbbbbbbbbbbbb", "/v/c.html")]);
     }
 
     #[test]

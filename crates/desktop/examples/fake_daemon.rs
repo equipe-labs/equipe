@@ -75,6 +75,8 @@
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
 //! `FAKE_HISTORY_PICTURES=<n>`: its screenshots are n different ones, and every
 //! other reply embeds one too — for measuring what pictures hold (`EQUIPE_SNAPSHOT_HIDDEN`, `snapshot.rs`).
+//! `FAKE_VISUALS=1`: it ends on a reply with a Mermaid flow, a table and two
+//! HTML cards, drawn by Chrome (`fake_daemon/visuals.rs`; `late`, `none`).
 //! `FAKE_READING=1`: it ends on a long reply with every kind of text
 //! (`fake_daemon/reading.rs`), to compare how the conversation reads.
 //!
@@ -1066,6 +1068,8 @@ mod torture;
 mod history;
 #[path = "fake_daemon/reading.rs"]
 mod reading;
+#[path = "fake_daemon/visuals.rs"]
+mod visuals;
 
 #[path = "fake_daemon/pictures.rs"]
 mod pictures;
@@ -1269,6 +1273,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::User { text: reading::ASKED.into(), kept: Vec::new() });
                             history.push(Entry::Reply { text: reading::REPLY.into() });
                         }
+                        if visuals::on() {
+                            history.push(Entry::User { text: visuals::ASKED.into() });
+                            history.push(Entry::Reply { text: visuals::reply() });
+                        }
                         if pictures::on() {
                             history.push(Entry::Note { undo: None, text: pictures::NEWS.into() });
                         }
@@ -1419,6 +1427,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: "Sure, I'm watching for a new commit and deploy. When it's up I'll check the screen and show you.".into() });
                         }
                         let mut pm_info = info(1, "pm", history);
+                        if visuals::on() {
+                            pm_info.visuals = visuals::visuals();
+                        }
                         if let Some(mode) = std::env::var("FAKE_COMPACT").ok().filter(|m| !m.is_empty()) {
                             let ago = |secs: u64| now_ms().saturating_sub(secs * 1000);
                             let (trigger, secs) = match mode.as_str() {
@@ -1533,6 +1544,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             ..Default::default()
                         };
                         team::on_hello(&events);
+                        visuals::on_hello(&events);
                         // `FAKE_VERSION=0.1.0`: an older daemon, for the update banner.
                         let hello = Hello { version: std::env::var("FAKE_VERSION").unwrap_or_else(|_| "fake".into()), snapshot };
                         writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
@@ -1602,7 +1614,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     // design system's, checked as the daemon checks it.
                     (Some(rpc::READ_IMAGE), Some(id)) => {
                         let ask: rpc::ReadImage = message.params_as().unwrap();
-                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)).or_else(|why| studio::read_image(&ask).map_err(|_| why)) {
+                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if visuals::on() { visuals::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)).or_else(|why| studio::read_image(&ask).map_err(|_| why)) {
                             Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };

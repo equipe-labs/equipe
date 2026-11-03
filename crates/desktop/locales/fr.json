@@ -3506,5 +3506,11 @@
   "moved.why_back": "le forfait {engine} avait de nouveau de la marge",
   "moved.mid_ticket": "en plein ticket, T-{id} transmis",
   "moved.between": "entre deux tickets",
-  "moved.packet_note": "Exactement ce que la nouvelle conversation a reçu au départ. En lecture seule."
+  "moved.packet_note": "Exactement ce que la nouvelle conversation a reçu au départ. En lecture seule.",
+  "render.card_waiting": "Dessin de la carte…",
+  "render.card_failed": "Impossible de dessiner cette carte ; voici sa source.",
+  "render.card_open": "Ouvrir dans le panneau navigateur",
+  "render.card_big": "Agrandir",
+  "render.card_label": "Carte HTML",
+  "render.card_hide": "Replier"
 }
