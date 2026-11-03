@@ -242,9 +242,9 @@ order of the connections and their sources' metrics.
 ```
 
 A tile's `error` is its connection's latest failed fetch: the value is the last
-one kept. The phone gets this through the relay like any other answer of the
-daemon (its wiring is the app's ticket); keys never go to the phone — the
-person reconnects on the Mac.
+one kept. The phone asks it through the relay (`docs/remote-protocol.md`, "The
+project's numbers"): `metrics.summary` is the only `metrics.*` a device may
+ask; keys never go to the phone — the person reconnects on the Mac.
 
 ## Errors
 
