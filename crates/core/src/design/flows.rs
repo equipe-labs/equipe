@@ -385,7 +385,7 @@ fn find(root: &Path, listed: &[Listed]) -> Found {
         };
         let Ok(real) = visuals::check(&path, &roots) else { continue };
         let Ok(modified) = std::fs::metadata(&real).and_then(|m| m.modified()) else { continue };
-        let picture = Picture { path: path.to_string_lossy().into_owned(), mode, width, taken: secs(modified) };
+        let picture = Picture { path: path.to_string_lossy().into_owned(), mode, width, taken: secs(modified), hash: None };
         found.pictures.entry([parts[0].clone(), parts[1].clone(), state]).or_default().push((picture, modified));
     }
     found
@@ -874,7 +874,7 @@ mod tests {
     }
 
     fn picture(mode: &str, width: u32) -> Picture {
-        Picture { path: format!("/d/{mode}.{width}.png"), mode: mode.into(), width, taken: 1 }
+        Picture { path: format!("/d/{mode}.{width}.png"), mode: mode.into(), width, taken: 1, hash: None }
     }
 
     fn state(id: &str, pictures: Vec<Picture>) -> ScreenState {

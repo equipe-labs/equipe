@@ -960,6 +960,26 @@ pub enum Command {
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
     Design { squad: SquadName },
+    /// The accepted versions of a design system's folder — the squad's own
+    /// (`project: None`) or a project's — newest first, the last 30: answered
+    /// by [`Event::DesignVersions`]. Read from git when asked, not with
+    /// [`Event::Design`], which goes out on every save.
+    DesignVersions {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// The person asks for a design system's folder back as it was at one of
+    /// its versions (`commit`, one [`Event::DesignVersions`] listed): a
+    /// ticket for the designer, which restores it in its worktree and hands
+    /// it in for review like any other change. Nothing is rewritten. Only
+    /// ever the person's.
+    RestoreDesign {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        commit: String,
+    },
 }
 
 /// Where the daemon's Nebius Token Factory key comes from.
@@ -1789,6 +1809,15 @@ pub enum Event {
         #[serde(default)]
         folder: String,
     },
+    /// A design system's accepted versions ([`Command::DesignVersions`]),
+    /// newest first; none when its folder has no history yet.
+    DesignVersions {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default)]
+        versions: Vec<design::DesignVersion>,
+    },
 }
 
 impl Event {
@@ -1821,7 +1850,8 @@ impl Event {
             | Event::IdleWakeChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
-            | Event::Design { squad, .. } => Some(squad),
+            | Event::Design { squad, .. }
+            | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
         }
@@ -1894,6 +1924,7 @@ impl Event {
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
+            | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
             // A browser's own: never part of a conversation.

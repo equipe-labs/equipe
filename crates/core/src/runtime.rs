@@ -805,6 +805,10 @@ enum Internal {
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
+    /// A design system's accepted versions, read off the loop.
+    DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
+    /// The version the person asked to go back to, looked up off the loop (`None`: not one).
+    DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
     /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
     Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
 }
@@ -1016,6 +1020,8 @@ impl Wake {
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
+            Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
+            Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
@@ -1203,6 +1209,8 @@ impl Runtime {
                     }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
+                Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
+                Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
             },
             Wake::Host(said) => self.on_host(said).await,
@@ -1748,6 +1756,8 @@ impl Runtime {
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
             Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
             Command::Design { squad } => self.design_asked(squad),
+            Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
+            Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
         }
     }
 

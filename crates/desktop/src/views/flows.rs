@@ -20,6 +20,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::compare::Changes;
 use crate::flows::{self as fm, Chip, Counts, Tab};
 use crate::icons::{Icon, icon};
 use crate::state::Presence;
@@ -68,6 +69,8 @@ pub fn tabs(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> 
 
 pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let map = shell.design.current().and_then(|s| s.flows.as_ref());
+    // Comparing a draft: what it changed, marked on the cards.
+    let changes = shell.design.compare_changes();
     match map {
         Some(map) if !map.flows.is_empty() => {
             v_flex()
@@ -75,7 +78,7 @@ pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .flex_1()
                 .min_h_0()
                 .child(counts_bar(shell, map))
-                .child(h_flex().flex_1().min_h_0().items_start().child(flow_list(shell, map, cx)).child(main(shell, map, cx)))
+                .child(h_flex().flex_1().min_h_0().items_start().child(flow_list(shell, map, changes.as_ref(), cx)).child(main(shell, map, changes.as_ref(), cx)))
                 .into_any_element()
         }
         _ => empty(shell, map, cx),
@@ -109,7 +112,7 @@ fn counts_bar(shell: &Shell, map: &FlowMap) -> impl IntoElement + use<> {
 }
 
 /// The flows, a row each: its title, and what it lacks or how many screens.
-fn flow_list(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+fn flow_list(shell: &Shell, map: &FlowMap, changes: Option<&Changes>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let on = shell.design.map.flow(map).map(|f| f.id.clone());
     let mut col = v_flex()
@@ -129,7 +132,10 @@ fn flow_list(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl Into
         let active = on.as_deref() == Some(flow.id.as_str());
         let c = fm::flow_counts(flow);
         let id = flow.id.clone();
-        let side: AnyElement = if c.missing > 0 {
+        let changed = changes.map_or(0, |c| c.in_flow(&flow.id));
+        let side: AnyElement = if changed > 0 {
+            super::compare::badge(p, t!("design.compare_flow_n", count = changed)).into_any_element()
+        } else if c.missing > 0 {
             div().flex_none().text_size(px(META)).text_color(p.danger()).child(t!("flows.missing_n", count = c.missing)).into_any_element()
         } else {
             div().flex_none().text_size(px(META)).text_color(p.muted).child(c.screens.to_string()).into_any_element()
@@ -155,7 +161,7 @@ fn flow_list(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl Into
 }
 
 /// The flow picked: its title and walkthrough, its screens, the one open.
-fn main(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+fn main(shell: &Shell, map: &FlowMap, changes: Option<&Changes>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let ui_ = &shell.design.map;
     let flow = ui_.flow(map).expect("a map with flows");
@@ -174,13 +180,14 @@ fn main(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoEleme
         if n > 0 {
             strip = strip.child(div().flex_none().h(px(THUMB_H)).flex().items_center().child(icon(Icon::ArrowRight, ICON_SM, p.muted)));
         }
-        strip = strip.child(card(shell, n, screen, open.as_deref() == Some(screen.id.as_str()), cx));
+        let changed = changes.is_some_and(|c| c.screen(&flow.id, &screen.id));
+        strip = strip.child(card(shell, n, screen, open.as_deref() == Some(screen.id.as_str()), changed, cx));
     }
     col = col.child(strip);
     match ui_.screen(map) {
         Some(screen) => {
             let n = flow.screens.iter().position(|s| s.id == screen.id).unwrap_or(0);
-            col = col.child(detail(shell, flow, n, screen, cx));
+            col = col.child(detail(shell, flow, n, screen, changes, cx));
         }
         None => col = col.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("flows.pick_hint"))),
     }
@@ -318,7 +325,7 @@ fn now_secs() -> u64 {
 
 /// A screen in the strip: its default state's picture, its number and name,
 /// how many states and what it lacks.
-fn card(shell: &Shell, n: usize, screen: &Screen, open: bool, cx: &mut Context<Shell>) -> AnyElement {
+fn card(shell: &Shell, n: usize, screen: &Screen, open: bool, changed: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let ui_ = &shell.design.map;
     let mode = ui_.mode(p.is_dark());
@@ -340,7 +347,21 @@ fn card(shell: &Shell, n: usize, screen: &Screen, open: bool, cx: &mut Context<S
         .bg(p.raised)
         .cursor_pointer()
         .when(!open, |d| d.hover(move |s| s.border_color(p.muted)))
-        .child(div().w_full().h(px(THUMB_H)).p_2().bg(p.wash).flex().items_center().justify_center().child(face))
+        .when(changed && !open, |d| d.border_color(Rgba { a: 0.6, ..p.amber }))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(THUMB_H))
+                .p_2()
+                .bg(p.wash)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(face)
+                // Comparing: what the draft changed says so.
+                .when(changed, |d| d.child(div().absolute().top(px(6.)).right(px(6.)).child(super::compare::badge(p, t!("design.compare_badge").into())))),
+        )
         .child(
             v_flex()
                 .px_2p5()
@@ -390,7 +411,7 @@ fn segment(p: Palette, id: &str, options: Vec<(String, bool, Pick)>, cx: &mut Co
 }
 
 /// The screen open below the strip.
-fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Context<Shell>) -> AnyElement {
+fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, changes: Option<&Changes>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let ui_ = &shell.design.map;
     let mode = ui_.mode(p.is_dark());
@@ -450,6 +471,8 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Contex
             })
             .when(!on, |d| d.hover(move |s| s.bg(p.wash)))
             .child(ui::steady(chip.label.clone(), FontWeight::MEDIUM, on, false))
+            // Comparing: a state the draft changed has the mark's dot.
+            .when(changes.is_some_and(|c| c.state(&flow.id, &screen.id, &chip.key)), |d| d.child(div().size(px(6.)).rounded_full().bg(p.amber)))
             .when(chip.missing, |d| d.tip(p, t!("flows.missing_tip"), None))
             .on_click(cx.listener(move |this, _, _, cx| this.flows_chip(&key, cx)));
         chips = chips.child(face);
@@ -465,7 +488,17 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Contex
         .bg(p.raised)
         .child(head)
         .child(chips)
-        .child(h_flex().flex_wrap().gap_4().items_start().child(stage(shell, flow, screen, shown.as_ref(), picture.map(|p| p.path.clone()), cx)).child(notes(shell, screen, shown.as_ref(), picture.map(|p| p.taken), cx)))
+        .child({
+            // Comparing: a state there is, as it is now and after; one it lacks, as always.
+            let both = changes.is_some() && shown.as_ref().is_some_and(|c| c.state.is_some());
+            let said = notes(shell, screen, shown.as_ref(), picture.map(|p| p.taken), cx);
+            if both {
+                // The two sides take the width; what the state is for, under them.
+                v_flex().gap_4().child(super::compare::stage(shell, flow, screen, shown.as_ref(), cx)).child(said)
+            } else {
+                h_flex().flex_wrap().gap_4().items_start().child(stage(shell, flow, screen, shown.as_ref(), picture.map(|p| p.path.clone()), cx)).child(said)
+            }
+        })
         .child(talk(shell, about, cx))
         .into_any_element()
 }
@@ -811,12 +844,14 @@ impl Shell {
             poster = fm::video(flow).map(|v| v.path.clone()).filter(|path| !ui_.posters.contains_key(path));
         }
         let zoomed = zoomed(self).map(|(path, ..)| path);
+        // Comparing side by side: the other side's picture of the state open too.
+        let beside = super::compare::other_picture(self);
         let wanted = {
             let mut shots = self.shots.borrow_mut();
             for path in &thumbs {
                 let _ = shots.look(path, Size::Thumb);
             }
-            if let Some(path) = &inline {
+            for path in inline.iter().chain(&beside) {
                 let _ = shots.look(path, Size::Thumb);
                 let _ = shots.look(path, Size::Inline);
             }

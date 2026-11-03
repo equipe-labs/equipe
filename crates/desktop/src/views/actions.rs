@@ -201,6 +201,10 @@ impl Shell {
                         if let equipe_core::protocol::Command::RemoveProject { path, .. } = &command {
                             self.board.removed_project = Some(super::sidebar::Removed { name: equipe_core::board::project_name(path), path: path.clone(), at: std::time::Instant::now() });
                         }
+                        // A design version asked back: said to come as a change for review.
+                        if let equipe_core::protocol::Command::RestoreDesign { .. } = &command {
+                            self.composer.flash = Some(equipe_core::t!("design.versions_sent").into());
+                        }
                         self.send_command(command);
                     }
                 }

@@ -19,6 +19,7 @@
 //! `metrics[:<dash|error|empty|connect|key|done>]` (지표, on a sample) · `mtype:<n>,<text>` (in its form's box n) ·
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
 //! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fto:<designer|pm>` · `ftalk:<words>` (in the box under the screen) · `fsend` · `fkey:<left|right|up|down|escape>` ·
+//! `dcompare[:off]` (비교하며 검토, begun or ended) · `dside:<now|after>` · `dstep[:prev]` (the next or previous changed screen) · `daccept` · `dredo[:<words>]` (다시 부탁's box, with words) · `dredosend` · `dversions` (버전 기록, opened or closed) · `drestore:<n>` (row n asked back: its confirmation) ·
 //! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
@@ -368,6 +369,23 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                         shell.design_set_tab(tab, cx);
                     }
                 }),
+                "dcompare" => shell.update(cx, |shell, cx| shell.design_compare(arg != "off", cx)),
+                "dside" => shell.update(cx, |shell, cx| {
+                    if let Some(side) = crate::compare::Side::parse(&arg) {
+                        shell.design_side(side, cx);
+                    }
+                }),
+                "dstep" => shell.update(cx, |shell, cx| shell.design_step_changed(arg != "prev", cx)),
+                "daccept" => shell.update(cx, |shell, cx| shell.design_accept_draft(cx)),
+                "dredo" => shell.update(cx, |shell, cx| {
+                    shell.design_redo(true, window, cx);
+                    if !arg.is_empty() {
+                        shell.design_redo.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    }
+                }),
+                "dredosend" => shell.update(cx, |shell, cx| shell.design_redo_send(window, cx)),
+                "dversions" => shell.update(cx, |shell, cx| shell.design_versions(!shell.design.versions_open, cx)),
+                "drestore" => shell.update(cx, |shell, cx| shell.design_restore_ask(arg.parse().unwrap_or(1), cx)),
                 "fflow" => shell.update(cx, |shell, cx| shell.flows_pick_flow(&arg, cx)),
                 "fscreen" => shell.update(cx, |shell, cx| shell.flows_toggle_screen(&arg, cx)),
                 "fstate" => shell.update(cx, |shell, cx| shell.flows_chip(&arg, cx)),

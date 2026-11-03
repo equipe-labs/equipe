@@ -26,6 +26,7 @@ mod deck;
 mod daemon;
 mod disk;
 mod doc;
+mod compare;
 mod design;
 mod dictation;
 mod flows;
@@ -226,6 +227,8 @@ pub struct Shell {
     pub design: design::DesignUi,
     /// 화면 지도's box for talking about the screen open (`views/flows.rs`).
     pub flow_talk: Entity<InputState>,
+    /// 비교하며 검토's box for what to change, a draft sent back with it.
+    pub design_redo: Entity<InputState>,
     /// The routines' list on 진행 상황: which is being edited or deleted.
     pub routines_ui: views::routines::RoutinesUi,
     /// Each project's newest tag, as last found, and when it was asked.
@@ -386,6 +389,7 @@ impl Shell {
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
             flow_talk: cx.new(|cx| InputState::new(window, cx).placeholder(t!("flows.talk_placeholder"))),
+            design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
             releases_asked: None,
@@ -550,6 +554,13 @@ impl Shell {
         let flow_talk = shell.flow_talk.clone();
         shell._subscriptions.push(cx.subscribe_in(&flow_talk, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } => this.flows_send(window, cx),
+            InputEvent::Change => cx.notify(),
+            _ => {}
+        }));
+        // 비교하며 검토's words: ⏎ sends the draft back with them.
+        let design_redo = shell.design_redo.clone();
+        shell._subscriptions.push(cx.subscribe_in(&design_redo, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.design_redo_send(window, cx),
             InputEvent::Change => cx.notify(),
             _ => {}
         }));
@@ -848,6 +859,10 @@ impl Shell {
                         let update = match update {
                             daemon::Update::Event(Event::Design { squad, systems, folder }) => {
                                 changed |= this.design_arrived(squad, systems, folder);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {
+                                changed |= this.design_versions_arrived(squad, project, versions);
                                 continue;
                             }
                             other => other,
@@ -1706,6 +1721,7 @@ impl Shell {
         self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
         self.flow_talk.update(cx, |s, cx| s.set_placeholder(t!("flows.talk_placeholder"), window, cx));
+        self.design_redo.update(cx, |s, cx| s.set_placeholder(t!("design.compare_redo_placeholder"), window, cx));
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
 }

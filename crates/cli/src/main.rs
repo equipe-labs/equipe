@@ -1532,7 +1532,8 @@ impl App {
                 | Event::SecretAsked { .. }
                 | Event::SecretClosed { .. }
                 | Event::Allowed { .. }
-                | Event::Design { .. } => {}
+                | Event::Design { .. }
+                | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
                     // A session that never opened won't send anything more.

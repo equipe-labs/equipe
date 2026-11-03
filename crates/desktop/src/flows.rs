@@ -397,7 +397,7 @@ mod tests {
     use super::*;
 
     fn picture(mode: &str, width: u32) -> Picture {
-        Picture { path: format!("/d/flows/x/{mode}.{width}.png"), mode: mode.into(), width, taken: 1 }
+        Picture { path: format!("/d/flows/x/{mode}.{width}.png"), mode: mode.into(), width, taken: 1, hash: None }
     }
 
     fn state(id: &str, kind: &str, pictures: Vec<Picture>) -> ScreenState {

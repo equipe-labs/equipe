@@ -168,7 +168,7 @@ pub fn map(design: &Path) -> FlowMap {
                             note: note.map(Into::into),
                             pictures: shots(*drawn)
                                 .into_iter()
-                                .map(|(mode, width)| Picture { path: picture_path(design, f.id, s.id, id, mode, width).to_string_lossy().into_owned(), mode: mode.into(), width, taken: if s.stale { taken - 12 * 86_400 } else { taken } })
+                                .map(|(mode, width)| Picture { path: picture_path(design, f.id, s.id, id, mode, width).to_string_lossy().into_owned(), mode: mode.into(), width, taken: if s.stale { taken - 12 * 86_400 } else { taken }, hash: None })
                                 .collect(),
                         })
                         .collect(),
@@ -223,11 +223,39 @@ fn videos(design: &Path, flow: &str) -> Vec<Walkthrough> {
     }
 }
 
-/// The map on the web project's system, as the daemon will send it.
+/// The map on the web project's system — and on T-170's draft of it — as
+/// the daemon will send it.
 pub fn dress(systems: &mut [DesignSystem]) {
-    for system in systems.iter_mut().filter(|s| s.draft.is_none() && s.project.as_deref() == Some("web") && s.flows.is_none()) {
+    for system in systems.iter_mut().filter(|s| s.project.as_deref() == Some("web") && s.flows.is_none()) {
         system.flows = Some(map(Path::new(&system.dir)));
     }
+}
+
+/// The screens T-170 shot again, its accent violet and its main button rounder.
+const REFRESHED: [&str; 5] = ["login", "welcome", "plans", "pay", "profile"];
+
+/// T-170's worktree: the map as the web project has it — copied, so the
+/// same pictures but saved at another time — and the screens it refreshed
+/// drawn again.
+pub fn seed_draft(draft: &Path, accepted: &Path) {
+    for (fi, f) in FLOWS.iter().enumerate() {
+        for (si, s) in f.screens.iter().enumerate() {
+            for (state, _, kind, _, drawn) in s.states {
+                for (mode, width) in shots(*drawn) {
+                    let path = picture_path(draft, f.id, s.id, state, mode, width);
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    // The refresh shows in the default states (and the welcome's first).
+                    let redrawn = REFRESHED.contains(&s.id) && matches!(*kind, "default" | "first" | "error");
+                    if redrawn {
+                        paint(kind, mode == "dark", width, fi * 7 + si * 3, true).save(&path).unwrap();
+                    } else {
+                        let _ = std::fs::copy(picture_path(accepted, f.id, s.id, state, mode, width), &path);
+                    }
+                }
+            }
+        }
+    }
+    let _ = std::fs::copy(video_path(accepted, "onboarding"), video_path(draft, "onboarding"));
 }
 
 /// Every picture the map names, for `read_image`.
@@ -278,10 +306,20 @@ pub fn seed(design: &Path) {
 /// state's own mark (an error's red line, an empty state's ring, loading's
 /// grey bars, a long text's many lines).
 fn draw(kind: &str, dark: bool, width: u32, seed: usize) -> image::RgbaImage {
+    paint(kind, dark, width, seed, false)
+}
+
+/// The same, `refreshed` as T-170 has it: violet, the main button rounder and narrower.
+fn paint(kind: &str, dark: bool, width: u32, seed: usize, refreshed: bool) -> image::RgbaImage {
     let (w, h) = if width < 600 { (390u32, 780u32) } else { (1280u32, 800u32) };
     let rgb = |c: u32| image::Rgba([(c >> 16) as u8, (c >> 8) as u8, c as u8, 255]);
     let (bg, surface, ink, soft) = if dark { (0x0A0A0C, 0x16171A, 0xEFEDE7, 0x3A3B40) } else { (0xF6F5F1, 0xFFFFFF, 0x15161A, 0xD9D6CF) };
-    let accent = if dark { 0x8FB0FF } else { 0x1D4ED8 };
+    let accent = match (refreshed, dark) {
+        (false, true) => 0x8FB0FF,
+        (false, false) => 0x1D4ED8,
+        (true, true) => 0xC4B5FD,
+        (true, false) => 0x6D28D9,
+    };
     let mut img = image::RgbaImage::from_pixel(w, h, rgb(bg));
     let rect = |img: &mut image::RgbaImage, x: u32, y: u32, rw: u32, rh: u32, c: u32| {
         for yy in y..(y + rh).min(h) {
@@ -331,7 +369,15 @@ fn draw(kind: &str, dark: bool, width: u32, seed: usize) -> image::RgbaImage {
             if kind == "permission" || kind == "offline" {
                 rect(&mut img, 0, 56, w, 40, if dark { 0x5C4A12 } else { 0xFFE58A });
             }
-            rect(&mut img, m, h - 120, cw, 48, if kind == "success" { 0x1F6B33 } else { accent });
+            let fill = if kind == "success" { 0x1F6B33 } else { accent };
+            if refreshed {
+                // A pill, centred, and the header's mark in the new colour.
+                let bw = cw * 3 / 5;
+                rect(&mut img, (w - bw) / 2, h - 124, bw, 56, fill);
+                rect(&mut img, m, 20, 72, 16, accent);
+            } else {
+                rect(&mut img, m, h - 120, cw, 48, fill);
+            }
         }
     }
     img

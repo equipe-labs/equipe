@@ -81,11 +81,15 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .relative()
         .bg(p.bg)
         .child(header(shell, cx))
-        .children(ui.loaded.then(|| ui.current().filter(|s| s.draft.is_some()).map(|s| draft_banner(shell, s, cx))).flatten())
+        .children(ui.compare.then(|| super::compare::bar(shell, cx)))
+        .children((ui.loaded && !ui.compare).then(|| ui.current().filter(|s| s.draft.is_some()).map(|s| draft_banner(shell, s, cx))).flatten())
         .children(super::design_setup::band(shell, cx))
         .children((ui.loaded && tab == Tab::System).then(|| ui.current().map(|s| tabs(shell, s, cx))).flatten())
         .child(body)
         .children(changes_popover(shell, cx))
+        .children(super::compare::versions_popover(shell, cx))
+        // 수락 and 다시 부탁 wait a moment, to be taken back, as on the board.
+        .children(super::board::toast(shell, cx))
         .into_any_element()
 }
 
@@ -163,8 +167,22 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             })
             .tip(p, if viewing { t!("design.back_to_accepted").to_owned() } else { t!("design.view_draft", title = d.title) }, None);
         bar = bar.child(pill);
+        if ui.can_compare() && !ui.compare {
+            bar = bar.child(
+                ui::button(p, "design-compare", ui::Kind::Secondary, t!("design.compare_start"))
+                    .tip(t!("design.compare_start_tip"), None)
+                    .on_click(cx.listener(|this, _, _, cx| this.design_compare(true, cx))),
+            );
+        }
     }
     bar = bar.child(div().flex_1());
+    if ui.loaded && ui.accepted_of(&ui.source).is_some() {
+        bar = bar.child(
+            ui::icon_button(p, "design-versions", Icon::Clock, t!("design.versions_title"), None)
+                .selected(ui.versions_open)
+                .on_click(cx.listener(|this, _, _, cx| this.design_versions(!this.design.versions_open, cx))),
+        );
+    }
     if !changes.is_empty() {
         let n = changes.len();
         bar = bar.child(
@@ -1382,6 +1400,7 @@ impl Shell {
         let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
         let key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
         self.design.arrived(systems, folder, &key);
+        self.design_versions_follow();
         true
     }
 
@@ -1400,11 +1419,13 @@ impl Shell {
                 self.design.lightbox = None;
                 self.design.map.zoomed = false;
                 self.design.changes_open = false;
+                self.design.versions_open = false;
             }
         }
         if !on {
             return;
         }
+        self.design.wide = crate::compare::side_by_side(f32::from(window.viewport_size().width));
         if self.design.fonts.is_none() {
             self.design.fonts = Some(window.text_system().all_font_names().into_iter().map(|f| f.to_ascii_lowercase()).collect());
         }
@@ -1481,24 +1502,24 @@ impl Shell {
             self.design_end_look();
             self.design.source = key.to_owned();
             self.design.draft = false;
+            self.design.end_compare();
             let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
             let seen_key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
             let systems = std::mem::take(&mut self.design.systems);
             let folder = self.design.folder.clone();
             self.design.arrived(systems, folder, &seen_key);
             self.design.scroll.set_offset(point(px(0.), px(0.)));
+            if self.design.versions_open {
+                self.design.versions_asked = None;
+                self.design_versions_follow();
+            }
         }
         cx.notify();
     }
 
     pub fn design_toggle_draft(&mut self, cx: &mut Context<Self>) {
-        self.design.draft = !self.design.draft;
-        self.design.lightbox = None;
-        if let Some(system) = self.design.current()
-            && ds::count(system, self.design.section).is_none()
-        {
-            self.design.section = Section::Overview;
-        }
+        let side = if self.design.draft { crate::compare::Side::Now } else { crate::compare::Side::After };
+        self.design.show_side(side);
         cx.notify();
     }
 
@@ -1634,14 +1655,35 @@ impl Shell {
             }
             return true;
         }
-        if key == "escape" && (self.design.changes_open || self.design.sources_open) {
+        if key == "escape" && (self.design.changes_open || self.design.sources_open || self.design.versions_open || self.design.redo_open) {
             self.design.changes_open = false;
             self.design.sources_open = false;
+            self.design.versions_open = false;
+            self.design.redo_open = false;
             cx.notify();
             return true;
         }
+        if self.design_redo.read(cx).focus_handle(cx).is_focused(window) {
+            return false;
+        }
+        // 수락 or 다시 부탁 held a moment: U takes it back, as on the board.
+        if key == "u" && !self.board.undo.pending.is_empty() {
+            self.board_undo(cx);
+            return true;
+        }
+        if self.design.compare && self.design_tab() == Tab::Map && matches!(key, "left" | "right") {
+            self.design_step_changed(key == "right", cx);
+            return true;
+        }
+        if self.design_tab() == Tab::Map && self.on_flows_key(key, window, cx) {
+            return true;
+        }
+        if key == "escape" && self.design.compare {
+            self.design_compare(false, cx);
+            return true;
+        }
         if self.design_tab() == Tab::Map {
-            return self.on_flows_key(key, window, cx);
+            return false;
         }
         let Some(system) = self.design.current() else { return false };
         let sections = ds::sections(system);
