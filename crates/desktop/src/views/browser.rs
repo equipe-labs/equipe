@@ -121,6 +121,7 @@ struct Gone {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Who {
     pub name: String,
+    pub role: String,
     pub hue: usize,
     pub working: bool,
 }
@@ -1431,7 +1432,11 @@ impl BrowserPanel {
                     .text_size(px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(p.text2)
-                    .child(div().size(px(7.)).flex_none().rounded_full().bg(dot))
+                    .child(match l.session.and_then(|s| self.who.get(&s)) {
+                        // A member's: its avatar, as everywhere else.
+                        Some(who) => crate::theme::avatar(p, &who.role, &who.name, 16.),
+                        None => div().size(px(7.)).flex_none().rounded_full().bg(dot),
+                    })
                     .child(div().whitespace_nowrap().child(label)),
             );
             for page in &l.pages {

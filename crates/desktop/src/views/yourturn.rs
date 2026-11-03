@@ -97,7 +97,8 @@ const FREE: u8 = 2;
 pub struct Card {
     pub ticket: TicketId,
     pub title: String,
-    pub who: Option<(String, Rgba)>,
+    /// Who it waits with: name, role, colour.
+    pub who: Option<(String, String, Rgba)>,
     pub why: Option<String>,
     pub asks: Vec<String>,
     pub wants: Vec<Want>,
@@ -141,8 +142,9 @@ impl Card {
         let keys = shell.turn.keys.iter().filter(|((t, ..), _)| *t == id).map(|((_, n, slot), f)| ((*n, *slot), f.clone())).collect();
         let who = t.and_then(|t| t.assignee.clone().or(t.owner.clone())).map(|name| {
             let member = model.members.iter().find(|m| m.name == name);
-            let (_, hue) = member.map_or_else(|| look(&name, &name), |m| look(&m.role, &m.name));
-            (name, shell.palette.member(hue))
+            let role = member.map_or_else(|| name.clone(), |m| m.role.clone());
+            let (_, hue) = look(&role, &name);
+            (name, role, shell.palette.member(hue))
         });
         Some(Rc::new(Card {
             ticket: id,
@@ -169,7 +171,7 @@ impl Card {
 
     /// The member's name, or a word for it.
     fn member(&self) -> String {
-        self.who.as_ref().map(|(name, _)| name.clone()).unwrap_or_default()
+        self.who.as_ref().map(|(name, ..)| name.clone()).unwrap_or_default()
     }
 
     /// Asks with nothing set, which go as not yet once something else is.
@@ -318,7 +320,7 @@ fn header(card: &Card, d: &Draw<'_>) -> impl IntoElement {
         .text_size(px(SMALL))
         .child(pill(p, d.tones))
         .child(ticket_link(p, card.ticket, d.key, &d.handle))
-        .children(card.who.clone().map(|(name, color)| h_flex().flex_none().gap(px(5.)).items_center().text_color(p.text2).child(div().size(px(6.)).rounded_full().bg(color)).child(name)))
+        .children(card.who.clone().map(|(name, role, _)| h_flex().flex_none().gap(px(5.)).items_center().text_color(p.text2).child(crate::theme::avatar(p, &role, &name, 15.)).child(name)))
         .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(card.title.clone()))
 }
 
@@ -647,7 +649,7 @@ fn foot(card: &Card, d: &Draw<'_>) -> impl IntoElement {
             handle.update(cx, |shell, cx| shell.open_ticket(id, cx)).ok();
         })
     });
-    let waiting = card.who.as_ref().map(|(name, _)| t!("turn.waiting", name = name));
+    let waiting = card.who.as_ref().map(|(name, ..)| t!("turn.waiting", name = name));
     let left = card.left();
     let partial = (card.can_send && left > 0).then(|| div().text_color(d.tones.warning).child(t!("turn.left", count = left)));
     // Narrow (a panel beside it), the buttons go on a line of their own

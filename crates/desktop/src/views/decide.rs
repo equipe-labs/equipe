@@ -174,7 +174,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap | Screen::Metrics | Screen::Project => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress => return Took::Pass,
         };
         if self.decide.drafts.get(&id).is_none_or(|d| d.collapsed) {
             return Took::Pass;
@@ -414,9 +414,10 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     let set = shell.model.asked.get(id)?.clone();
     let draft = shell.decide.drafts.get(&id).cloned().unwrap_or_else(|| Draft::new(&set));
     let handle = cx.entity().downgrade();
-    let (name, color) = who(shell, &set);
+    let (name, _) = who(shell, &set);
     if draft.collapsed && place == Place::Docked {
-        return Some(folded(p, id, &set, &name, color, more, &handle));
+        let mark = crate::theme::member_mark(p, &shell.model, &name, 15.).into_any_element();
+        return Some(folded(p, id, &set, &name, mark, more, &handle));
     }
     let q = draft.question(&set)?.clone();
     let total = set.questions.len();
@@ -582,7 +583,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
             handle.update(cx, |shell, cx| shell.decide_step(id, Step::Back, window, cx)).ok();
         })
     });
-    let mut said = vec![h_flex().gap(px(5.)).items_center().child(div().size(px(6.)).rounded_full().bg(color)).child(t!("decide.asks", name = name)).into_any_element()];
+    let mut said = vec![h_flex().gap(px(5.)).items_center().child(crate::theme::member_mark(shell.palette, &shell.model, &name, 15.)).child(t!("decide.asks", name = name)).into_any_element()];
     if !q.header.is_empty() && total > 1 {
         said.push(div().child(format!("· {}", q.header)).into_any_element());
     }
@@ -928,7 +929,7 @@ fn question_pictures(shots: &Shots, id: u64, step: usize, q: &Question, width: f
 }
 
 /// The card folded (Esc, ⌄): one line, who asks and how many; a click opens it.
-fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, color: Rgba, more: usize, handle: &WeakEntity<Shell>) -> AnyElement {
+fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, mark: AnyElement, more: usize, handle: &WeakEntity<Shell>) -> AnyElement {
     let open = handle.clone();
     let close = handle.clone();
     let mut words = t!("decide.folded", name = name, count = set.questions.len());
@@ -951,7 +952,7 @@ fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, color: Rgba, more:
         .cursor_pointer()
         .text_size(px(SMALL))
         .child(div().size(px(7.)).rounded_full().bg(p.accent))
-        .child(div().size(px(6.)).rounded_full().bg(color))
+        .child(mark)
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text2).child(words))
         .child(icon(Icon::ChevronUp, 14., p.muted))
         .child(ui::icon_button(p, ("decide-folded-close", id), Icon::X, t!("decide.close"), None).on_click(move |_, window, cx| {

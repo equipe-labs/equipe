@@ -189,6 +189,8 @@ pub enum Screen {
     Metrics,
     /// A project's page: its conversations and its work (`views/project.rs`).
     Project,
+    /// 진행 상황: what needs a look, what is under way, what finished (`views/progress.rs`).
+    Progress,
 }
 
 pub struct Shell {
@@ -705,7 +707,7 @@ impl Shell {
             .model
             .members
             .iter()
-            .map(|m| (m.session, views::browser::Who { name: m.name.clone(), hue: theme::look(&m.role, &m.name).1, working: m.presence == state::Presence::Working }))
+            .map(|m| (m.session, views::browser::Who { name: m.name.clone(), role: m.role.clone(), hue: theme::look(&m.role, &m.name).1, working: m.presence == state::Presence::Working }))
             .collect();
         for lane in &self.model.lanes {
             if let Some(member) = who.get(&lane.of).cloned() {
@@ -1470,6 +1472,7 @@ impl Shell {
                     Screen::Roadmap => views::roadmap::render(self, cx),
                     Screen::Metrics => views::metrics::render(self, cx),
                     Screen::Project => views::project::render(self, cx),
+                    Screen::Progress => views::progress::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }

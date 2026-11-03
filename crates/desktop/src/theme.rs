@@ -199,6 +199,13 @@ pub fn look(role: &str, name: &str) -> (crate::icons::Icon, usize) {
     }
 }
 
+/// Someone on the team beside their name, by name: their avatar, the role
+/// looked up among the members (one who left: by the name alone).
+pub fn member_mark(p: Palette, model: &crate::state::Model, name: &str, size: f32) -> gpui_kit::Div {
+    let role = model.members.iter().find(|m| m.name == name).map_or(name, |m| m.role.as_str());
+    avatar(p, role, name, size)
+}
+
 /// A member's avatar, `size` square: its role's icon in its colour, on a
 /// tint of it — one shape for every role, where the text marks were each
 /// their own size and weight.

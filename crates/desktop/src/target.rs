@@ -187,6 +187,10 @@ pub struct Remembered {
     /// their own height) — `side_split.rs`.
     pub side_usage: Option<f32>,
     pub side_team: Option<f32>,
+    /// When 진행 상황 was last opened (unix seconds): its "since you last looked".
+    pub progress_seen: Option<u64>,
+    /// The team shown row by row in the sidebar, not as one row of faces.
+    pub team_open: bool,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
@@ -420,6 +424,10 @@ impl Remembered {
                 }
             } else if let Some(rest) = line.strip_prefix("side-usage ") {
                 out.side_usage = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if let Some(rest) = line.strip_prefix("progress-seen ") {
+                out.progress_seen = rest.trim().parse::<u64>().ok().filter(|at| *at > 0);
+            } else if line == "team-open" {
+                out.team_open = true;
             } else if let Some(rest) = line.strip_prefix("side-team ") {
                 out.side_team = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
@@ -527,6 +535,12 @@ impl Remembered {
         }
         if let Some(height) = self.side_team {
             text.push_str(&format!("side-team {height:.0}\n"));
+        }
+        if let Some(at) = self.progress_seen {
+            text.push_str(&format!("progress-seen {at}\n"));
+        }
+        if self.team_open {
+            text.push_str("team-open\n");
         }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
@@ -727,6 +741,8 @@ mod tests {
         remembered.sidebar_width = Some(301.6);
         remembered.side_usage = Some(96.);
         remembered.side_team = Some(240.4);
+        remembered.progress_seen = Some(1_793_700_000);
+        remembered.team_open = true;
         remembered.lang = Some("ko".into());
         remembered.dictation = Some("ja".into());
         remembered.dictation_servers = true;
@@ -739,6 +755,8 @@ mod tests {
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
         assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
+        assert_eq!(loaded.progress_seen, Some(1_793_700_000), "진행 상황's last look, for \"since you last looked\"");
+        assert!(loaded.team_open, "the team as the person left it");
         assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
         assert!(loaded.dictation_servers, "the person's yes to Apple's servers is kept");
         assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");

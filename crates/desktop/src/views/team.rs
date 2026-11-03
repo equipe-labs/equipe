@@ -137,7 +137,7 @@ fn card(shell: &Shell, id: u64, place: Place, cx: &mut Context<Shell>) -> Option
     let model = &shell.model;
     let change = model.team.get(id)?.clone();
     let handle = cx.entity().downgrade();
-    let (name, color) = who(shell, &change);
+    let (name, _) = who(shell, &change);
 
     let head = h_flex()
         .gap_2()
@@ -176,7 +176,7 @@ fn card(shell: &Shell, id: u64, place: Place, cx: &mut Context<Shell>) -> Option
     });
 
     let more = model.team.ids().len().saturating_sub(1);
-    let mut said = vec![h_flex().gap(px(5.)).items_center().child(div().size(px(6.)).rounded_full().bg(color)).child(t!("team.by", name = name)).into_any_element()];
+    let mut said = vec![h_flex().gap(px(5.)).items_center().child(crate::theme::member_mark(shell.palette, &shell.model, &name, 15.)).child(t!("team.by", name = name)).into_any_element()];
     if more > 0 && place == Place::Docked {
         said.push(div().child(format!("· {}", t!("team.more", n = more))).into_any_element());
     }

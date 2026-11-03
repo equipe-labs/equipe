@@ -127,7 +127,7 @@ fn card(shell: &Shell, id: u64, place: Place, cx: &mut Context<Shell>) -> Option
     let p = shell.palette;
     let proposal = shell.model.routine_asks.get(id)?.clone();
     let handle = cx.entity().downgrade();
-    let (name, color) = who(shell, &proposal);
+    let (name, _) = who(shell, &proposal);
 
     let head = h_flex()
         .gap_2()
@@ -161,7 +161,7 @@ fn card(shell: &Shell, id: u64, place: Place, cx: &mut Context<Shell>) -> Option
         .child(div().flex_1().min_w_0().child(t!("routine_ask.note")));
 
     let more = shell.model.routine_asks.ids().len().saturating_sub(1);
-    let mut said = vec![h_flex().gap(px(5.)).items_center().child(div().size(px(6.)).rounded_full().bg(color)).child(t!("routine_ask.by", name = name)).into_any_element()];
+    let mut said = vec![h_flex().gap(px(5.)).items_center().child(crate::theme::member_mark(shell.palette, &shell.model, &name, 15.)).child(t!("routine_ask.by", name = name)).into_any_element()];
     if more > 0 && place == Place::Docked {
         said.push(div().child(format!("· {}", t!("routine_ask.more", n = more))).into_any_element());
     }

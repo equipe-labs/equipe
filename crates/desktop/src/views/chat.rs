@@ -36,7 +36,7 @@ use crate::render::{self, Tones, hash_of, plugins, tools};
 use crate::state::{Model, Presence};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, BODY_LINE, CONTROL, ICON_SM, MEASURE, META, META_LINE, MONO, Palette, R_LG, R_MD, R_SM, SMALL, SMALL_LINE, TAIL_ROOM, look};
+use crate::theme::{BODY, BODY_LINE, CONTROL, ICON_SM, MEASURE, META, META_LINE, MONO, Palette, R_LG, R_MD, R_SM, SMALL, SMALL_LINE, TAIL_ROOM};
 use crate::tips::tip;
 
 /// Where text starts inside the column: the cards' and the composer's inner
@@ -621,7 +621,7 @@ fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> Div 
 #[derive(Clone)]
 struct Who {
     name: String,
-    color: Rgba,
+    role: String,
 }
 
 /// What every row of one frame draws with.
@@ -733,8 +733,7 @@ pub fn conversation_pane(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let Some(member) = shell.model.selected_member().filter(|_| !shell.chat.blocks.is_empty()) else {
         return Empty.into_any_element();
     };
-    let (_, hue) = look(&member.role, &member.name);
-    let who = Who { name: member.name.clone(), color: shell.palette.member(hue) };
+    let who = Who { name: member.name.clone(), role: member.role.clone() };
     v_flex().size_full().items_center().child(conversation(shell, who, cx)).into_any_element()
 }
 
@@ -1086,7 +1085,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
                     .items_center()
                     .text_size(px(META))
                     .text_color(p.muted)
-                    .child(div().size(px(6.)).rounded_full().bg(rows.who.color))
+                    .child(crate::theme::avatar(p, &rows.who.role, &rows.who.name, 15.))
                     .child(rows.who.name.clone()),
             )
         })
