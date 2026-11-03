@@ -120,6 +120,13 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         if let Some(entry) = designer.then(|| crate::taste::decided(&set, &answers, &crate::squad_memory::date(now_secs()))).flatten() {
             self.learn_taste(squad, &entry);
         }
+        // Its visual picks: the brand's decision record, the chosen picture kept beside each.
+        if designer {
+            let project = set.ticket.and_then(|t| self.find_ticket(squad, t)).and_then(|t| t.project).filter(|p| crate::design::folder::is_design_dir(&p.join(crate::design::DIR))).map(|p| crate::board::project_name(&p));
+            for (decision, picture) in crate::taste::decisions::from_answers(&set, &answers, &crate::squad_memory::date(now_secs())) {
+                self.record_decision(squad, project.as_deref(), &decision, Some(std::path::Path::new(&picture)), crate::squad_home::PERSON);
+            }
+        }
         if let (Some(ticket), Some(journal)) = (set.ticket, self.journal(squad)) {
             let _ = journal.ticket_event(ticket, "you", "decided", &message);
         }

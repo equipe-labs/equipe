@@ -960,6 +960,15 @@ pub enum Command {
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
     Design { squad: SquadName },
+    /// The person adds, rewrites or removes a note of their design taste:
+    /// the squad's (`project` none) or a project's. Answered by
+    /// [`Event::Design`] with the notes as they are now, or an error.
+    Taste {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        change: design::TasteChange,
+    },
 }
 
 /// Where the daemon's Nebius Token Factory key comes from.
@@ -1788,6 +1797,10 @@ pub enum Event {
         systems: Vec<design::DesignSystem>,
         #[serde(default)]
         folder: String,
+        /// The person's taste and the decisions made: the squad's first,
+        /// then each project's with a design system of its own.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        taste: Vec<design::Taste>,
     },
 }
 

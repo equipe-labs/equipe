@@ -15,7 +15,7 @@ use crate::protocol::design::Token;
 const BRAND: &str = include_str!("../../assets/design/brand.md");
 const GUIDELINES: &str = include_str!("../../assets/design/guidelines.md");
 const TOKENS: &str = include_str!("../../assets/design/tokens.json");
-const TASTE: &str = include_str!("../../assets/design/taste.md");
+const TASTE: &str = crate::taste::store::TEMPLATE;
 
 /// Lay out `dir` to fill in: only what isn't there yet. What was written.
 pub fn init(dir: &Path) -> std::io::Result<Vec<PathBuf>> {

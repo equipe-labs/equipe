@@ -249,6 +249,16 @@ async fn a_visual_choice_shows_its_pictures_found_where_the_member_works_and_a_b
     // Asked in words alone: it goes, and the member is told to show them next time.
     let blind = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "로고 마스터는 어느 안으로 할까요?", "options": ["e. + 파란 원 점 (추천)", "e. 회색 점 유지"] }] })).await;
     assert!(!blind.is_error && blind.text.contains("Asked.") && blind.text.contains("choosing blind") && blind.text.contains("`images`"), "{blind:?}");
+
+    // The person picks a picture: a decision in the brand's record, the picture kept beside it.
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![1], other: Some("조용한 쪽이 좋아요".into()) }], about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let record = folder.join("design/decisions");
+    let files: Vec<String> = std::fs::read_dir(&record).expect("the record").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let md = files.iter().find(|f| f.ends_with("-which-logo.md")).unwrap_or_else(|| panic!("{files:?}"));
+    let text = std::fs::read_to_string(record.join(md)).unwrap();
+    assert!(text.contains("- Chose: Grey dot\n") && text.contains("- Passed over: Blue dot\n") && text.contains("조용한 쪽이 좋아요"), "{text}");
+    assert!(record.join(md.replace(".md", ".png")).is_file(), "{files:?}");
     handle.shutdown().await;
 }
 

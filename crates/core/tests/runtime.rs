@@ -3813,8 +3813,10 @@ async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designe
     let (_, mut screen) = handle.subscribe("acme").await.unwrap();
     handle.send(Command::Design { squad: "acme".into() });
     let seen = until(&mut screen, |e| matches!(e, Event::Design { .. })).await;
-    let Some(Event::Design { squad, systems, folder }) = seen.last() else { unreachable!() };
+    let Some(Event::Design { squad, systems, folder, taste }) = seen.last() else { unreachable!() };
     assert_eq!((squad.as_str(), folder.as_str()), ("acme", design.to_str().unwrap()));
+    assert_eq!(taste.len(), 1, "the squad's, empty as yet");
+    assert!(taste[0].notes.is_empty() && taste[0].project.is_none());
     assert_eq!(systems.len(), 1);
     assert_eq!(systems[0].modes, ["light", "dark"]);
     assert_eq!(systems[0].tokens[0].value_in(Some("dark")), "#0A0A0C");
@@ -3825,6 +3827,18 @@ async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designe
     let Some(Event::Design { systems, .. }) = seen.last() else { unreachable!() };
     assert_eq!(systems[0].tokens.len(), 2);
     assert!(systems[0].modes.is_empty());
+    // The person writes down a taste note: kept in the squad's memory, and the screen follows.
+    let add = |text: &str| Command::Taste { squad: "acme".into(), project: None, change: equipe_core::protocol::design::TasteChange::Add { text: text.into() } };
+    handle.send(add("모서리는 둥글게"));
+    let seen = until(&mut screen, |e| matches!(e, Event::Design { taste, .. } if !taste.is_empty() && !taste[0].notes.is_empty())).await;
+    let Some(Event::Design { taste, .. }) = seen.last() else { unreachable!() };
+    assert_eq!(taste[0].notes[0].text, "모서리는 둥글게");
+    assert!(squad_home::path(&home, "acme").join("memory/design-taste-notes.md").is_file());
+    // Two lines: refused, in words.
+    handle.send(add("둥글게\n그리고 밝게"));
+    let seen = until(&mut screen, |e| matches!(e, Event::Error { .. })).await;
+    let Some(Event::Error { message, .. }) = seen.last() else { unreachable!() };
+    assert!(!message.is_empty() && !message.contains("taste."), "{message}");
 }
 
 // ── members' desktop calls: the lease, then the send gate, then the helper ──

@@ -50,4 +50,6 @@ The brand's own values — kept, and not flagged by `equipe design check` as cli
 List each with where it comes from (e.g. `#C1262D` logo red · from the audit; Proxima Nova · site headings).
 
 ## 8. Decisions
-Dated, one line each: what was chosen, from which options, why. The person's taste goes in `taste.md`.
+Each decision is a file in `decisions/` (`decisions/<date>-<question>.md`): the question, what was
+chosen with its picture, what was passed over, why in the person's words, the ticket. The person's
+taste, a note a line, is `taste.md`.

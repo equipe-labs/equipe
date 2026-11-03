@@ -4,6 +4,18 @@
 //! one fact of the squad's memory — never left to the designer to remember.
 //! It had kept two of more than six decisions. Newest first, the oldest let
 //! go past a few dozen. No runtime types here.
+//!
+//! What it comes to is kept apart, for the person to see and edit on the
+//! design screen ("취향과 결정"): the notes the designer follows (`notes`),
+//! and the decisions made, each with why (`decisions`) — where both live
+//! and how they are read and written is `store`'s.
+
+pub mod decisions;
+pub mod evidence;
+pub mod notes;
+pub mod store;
+
+pub use store::{NOTES_NAME, record};
 
 use crate::protocol::decide::{Answer, QuestionSet};
 

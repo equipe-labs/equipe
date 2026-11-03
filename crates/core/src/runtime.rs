@@ -1748,6 +1748,7 @@ impl Runtime {
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
             Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
             Command::Design { squad } => self.design_asked(squad),
+            Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
         }
     }
 

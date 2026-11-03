@@ -29,8 +29,11 @@ pub const BRIEF: &str = "brand.md";
 pub const QA: &str = "qa";
 const PICTURE_DIRS: [&str; 2] = ["assets", "components"];
 /// Every folder the stamp follows: the pictures', then the UI map's and
-/// design QA's — walked last, so a big map never crowds the pictures out.
-const WATCHED_DIRS: [&str; 4] = [QA, super::flows::DIR, "assets", "components"];
+/// design QA's and the decisions' — walked last, so a big map never crowds
+/// the pictures out.
+const WATCHED_DIRS: [&str; 5] = [crate::taste::store::DECISIONS_DIR, QA, super::flows::DIR, "assets", "components"];
+/// The files right in the folder the stamp follows.
+const WATCHED_FILES: [&str; 5] = [TOKENS, GUIDELINES, BRIEF, crate::taste::store::NOTES_FILE, crate::taste::store::DECISIONS_FILE];
 /// The biggest `tokens.json` read.
 pub const TOKENS_MAX: u64 = 1 << 20;
 /// How much of `guidelines.md` is sent: past it, cut with a word.
@@ -85,7 +88,7 @@ pub fn places(home: &Path, squad: &str) -> Vec<Place> {
 /// listed, not followed.
 fn files(dir: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
     let mut out = Vec::new();
-    for name in [TOKENS, GUIDELINES, BRIEF] {
+    for name in WATCHED_FILES {
         if let Ok(meta) = std::fs::symlink_metadata(dir.join(name)) {
             out.push((dir.join(name), meta));
         }
@@ -134,14 +137,14 @@ pub fn stamp(places: &[Place]) -> u64 {
 }
 
 /// Where file `name` in `dir` really is, when it is one and stays in `dir`.
-pub(super) fn within(dir: &Path, name: &str) -> Option<PathBuf> {
+pub(crate) fn within(dir: &Path, name: &str) -> Option<PathBuf> {
     let root = std::fs::canonicalize(dir).ok()?;
     let real = std::fs::canonicalize(dir.join(name)).ok()?;
     (real.starts_with(&root) && std::fs::metadata(&real).is_ok_and(|m| m.is_file())).then_some(real)
 }
 
 /// A file inside `dir`, no bigger than `max` — a link only when it stays in `dir`.
-pub(super) fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
+pub(crate) fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
     use std::io::Read as _;
     let real = within(dir, name)?;
     let mut bytes = Vec::new();
@@ -275,7 +278,12 @@ pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
 pub fn shown(home: &Path, squad: &str) -> (Vec<String>, Vec<PathBuf>) {
     let mut paths = Vec::new();
     let mut roots = Vec::new();
-    for place in places(home, squad).into_iter().filter(|p| is_design_dir(&p.dir)) {
+    for place in places(home, squad) {
+        // Decisions' pictures: the squad's own folder's too, before it holds a system.
+        paths.extend(crate::taste::store::pictures(&place.dir));
+        if !is_design_dir(&place.dir) {
+            continue;
+        }
         paths.extend(assets(&place.dir).into_iter().map(|a| a.path));
         let map = super::flows::read(&place.dir, None, Lang::En).unwrap_or_default();
         let states = map.flows.into_iter().flat_map(|f| f.screens).flat_map(|s| s.states);

@@ -9,6 +9,11 @@
 //!   in review with its draft (signal blue) — the "검토 중" pill.
 //! - `empty`: none yet.
 //!
+//! With `1`, the person's taste too: four notes of the squad's (from each
+//! source), one of the web project's, and five decisions with their
+//! pictures; a note added, rewritten or removed on the screen is kept for
+//! the run (the squad's) or in the web project's `taste.md`.
+//!
 //! `FAKE_DESIGN_CHANGE_AFTER=<ms>`: the designer saves new tokens that long
 //! after the first ask — an accent moved, a colour added — for "바뀐 것".
 //! The folders are watched as the daemon watches them: edit them by hand and
@@ -19,7 +24,8 @@ use std::time::Duration;
 
 use equipe_core::design::folder::{self, Place};
 use equipe_core::i18n::Lang;
-use equipe_core::protocol::design::DraftOf;
+use equipe_core::protocol::design::{DraftOf, Taste, TasteFrom, TasteNote};
+use equipe_core::taste::{notes, store};
 use equipe_core::protocol::rpc::{ImageRead, ReadImage};
 use equipe_core::protocol::{Command, Event, Ticket};
 use tokio::sync::broadcast;
@@ -78,6 +84,110 @@ pub fn seed() {
     } else {
         write_system(&squad, &tokens(&SIGNAL), GUIDELINES);
         write_system(&base().join("web/design"), &tokens(&SITE), GUIDELINES_WEB);
+        write_decisions(&squad, &base().join("web/design"));
+    }
+}
+
+/// The squad's notes, kept for the run as its memory would keep them.
+static SQUAD_NOTES: std::sync::Mutex<Vec<TasteNote>> = std::sync::Mutex::new(Vec::new());
+
+fn seeded_notes() -> Vec<TasteNote> {
+    let note = |text: &str, from: TasteFrom, date: &str, confirmed: bool, seen: &[u32]| TasteNote { text: text.into(), from, date: Some(date.into()), confirmed, seen: seen.to_vec(), ..TasteNote::default() };
+    vec![
+        note("모서리는 둥글게 — 카드 12, 버튼 8", TasteFrom::Person, "2026-10-21", true, &[]),
+        note("채도 높은 파랑은 싫어함", TasteFrom::SentBack { ticket: 336 }, "2026-10-28", true, &[]),
+        note("여백은 넉넉하게, 한 화면에 하나만 강조", TasteFrom::Answered { ticket: 272 }, "2026-11-01", false, &[]),
+        note("숫자는 고정폭으로 맞춰 정렬", TasteFrom::Noticed { ticket: Some(288) }, "2026-11-03", false, &[301]),
+    ]
+}
+
+/// What equipe kept of the person's send-backs, as the memory would give it.
+fn sent_backs() -> Vec<equipe_core::protocol::design::Evidence> {
+    let body = "## 2026-10-27 · T-336 (designer)\n- Sent back \u{201c}요금제 페이지\u{201d}: \u{201c}파랑이 너무 쨍해요. 눈이 아파요\u{201d}\n\n## 2026-11-02 · T-288 (designer)\n- Sent back \u{201c}대시보드 표\u{201d}: \u{201c}숫자 줄이 안 맞아서 비교가 안 돼요\u{201d}";
+    equipe_core::taste::evidence::sent_backs(body)
+}
+
+/// Five decisions in the squad's record and one in the web project's, with their pictures.
+fn write_decisions(squad: &Path, web: &Path) {
+    use equipe_core::protocol::design::Decision;
+    let d = |date: &str, question: &str, chosen: &str, picture: &str, passed: &[&str], why: Option<&str>, ticket: u32| Decision {
+        date: date.into(),
+        question: question.into(),
+        chosen: chosen.into(),
+        picture: Some(format!("decisions/{picture}")),
+        passed: passed.iter().map(|p| (*p).to_owned()).collect(),
+        why: why.map(str::to_owned),
+        ticket: Some(ticket),
+    };
+    let pictures: [(&str, String); 5] = [
+        ("mark-dot.svg", mark("#0A0A0C", "#EFEDE7", "#3F6FF5")),
+        ("accent-signal.svg", button("#3F6FF5")),
+        ("hero-airy.svg", card()),
+        ("input-round.svg", input()),
+        ("four-dots.svg", four_dots("#3F6FF5")),
+    ];
+    for (dir, list) in [
+        (squad, vec![
+            d("2026-11-03", "로고 방향", "점 하나 — 소문자 e와 브랜드 점", "mark-dot.svg", &["네 점 그대로", "워드마크만"], Some("작아져도 알아볼 수 있으면 좋겠어요"), 144),
+            d("2026-11-01", "히어로 레이아웃", "B — 한 단, 여백 넉넉히", "hero-airy.svg", &["A — 두 단", "C — 꽉 찬 사진"], Some("좀 더 숨 쉬게"), 272),
+            d("2026-10-28", "강조 색", "Signal blue #3F6FF5", "accent-signal.svg", &["Steel #2E5C8A"], Some("너무 쨍한 파랑 말고, 점 하나에만"), 336),
+            d("2026-10-21", "입력창 모서리", "16 — 둥글게", "input-round.svg", &["8", "각지게"], None, 301),
+        ]),
+        (web, vec![d("2026-10-15", "사이트 일러스트", "네 점", "four-dots.svg", &["사진"], Some("우리 이야기를 점으로"), 120)]),
+    ] {
+        std::fs::create_dir_all(dir.join("decisions")).unwrap();
+        for (name, body) in &pictures {
+            std::fs::write(dir.join("decisions").join(name), body).unwrap();
+        }
+        for (i, decision) in list.iter().enumerate() {
+            std::fs::write(dir.join("decisions").join(format!("{}-{i}.md", decision.date)), equipe_core::taste::decisions::text(decision)).unwrap();
+        }
+    }
+    std::fs::write(web.join(store::NOTES_FILE), format!("{}
+- 사진보다 점과 선 _(the person, 2026-10-15)_
+", store::TEMPLATE)).unwrap();
+}
+
+/// The taste as the daemon would send it now.
+fn taste() -> Vec<Taste> {
+    if mode().as_deref() != Some("1") {
+        return vec![Taste { notes_at: "~/.equipe/squads/demo/home/memory/design-taste-notes.md".into(), ..Taste::default() }];
+    }
+    let mut notes = SQUAD_NOTES.lock().unwrap();
+    if notes.is_empty() && std::env::var("FAKE_TASTE_EMPTY").is_err() {
+        *notes = seeded_notes();
+    }
+    let web = base().join("web/design");
+    let decisions = store::decisions_in(&base().join("squad/design"));
+    let mut linked = notes.clone();
+    equipe_core::taste::evidence::link(&mut linked, &decisions, &sent_backs());
+    vec![
+        Taste { project: None, notes_at: "~/.equipe/squads/demo/home/memory/design-taste-notes.md".into(), notes: linked, decisions },
+        Taste {
+            project: Some("web".into()),
+            notes_at: web.join(store::NOTES_FILE).to_string_lossy().into_owned(),
+            notes: std::fs::read_to_string(web.join(store::NOTES_FILE)).map(|t| notes::parse(&t)).unwrap_or_default(),
+            decisions: store::decisions_in(&web),
+        },
+    ]
+}
+
+/// A note changed on the screen: the squad's for the run, the web project's in its file.
+fn change_taste(project: Option<&str>, change: &equipe_core::protocol::design::TasteChange) -> Result<(), String> {
+    let today = equipe_core::squad_memory::date(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+    match project {
+        None => {
+            let _ = taste();
+            let mut kept = SQUAD_NOTES.lock().unwrap();
+            *kept = notes::change(&kept, change, &today).map_err(|why| equipe_core::i18n::core(equipe_core::i18n::Lang::Ko).fill(why.key(), &[("max", equipe_core::protocol::design::NOTE_MAX.to_string())]))?;
+            Ok(())
+        }
+        Some(_) => {
+            let path = base().join("web/design").join(store::NOTES_FILE);
+            let before = std::fs::read_to_string(&path).unwrap_or_else(|_| store::TEMPLATE.into());
+            let now = notes::change(&notes::parse(&before), change, &today).map_err(|why| why.key().to_owned())?;
+            std::fs::write(&path, notes::write(&before, &now)).map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -310,11 +420,22 @@ fn event() -> Event {
         use equipe_core::protocol::design::{Setup, SetupStep};
         web.setup = [Setup::Brief, Setup::Logo, Setup::System, Setup::Flows, Setup::Qa].map(|step| SetupStep { step, done: !matches!(step, Setup::Flows | Setup::Qa) }).to_vec();
     }
-    Event::Design { squad: "demo".into(), systems, folder }
+    Event::Design { squad: "demo".into(), systems, folder, taste: taste() }
 }
 
 /// `design`: answered at once, and the folders watched from then on.
 pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool {
+    if let Command::Taste { project, change, .. } = command {
+        match change_taste(project.as_deref(), change) {
+            Ok(()) => {
+                let _ = events.send(event());
+            }
+            Err(message) => {
+                let _ = events.send(Event::Error { session: None, message, next: None });
+            }
+        }
+        return true;
+    }
     let Command::Design { .. } = command else { return false };
     let _ = events.send(event());
     static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -354,7 +475,8 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
 pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
     let places = places();
     let (systems, _) = folder::catalog_of(&places, Lang::En);
-    if !systems.iter().any(|s| s.assets.iter().any(|a| a.path == ask.path)) {
+    let decided = places.iter().flat_map(|p| store::pictures(&p.dir)).any(|p| p == ask.path);
+    if !decided && !systems.iter().any(|s| s.assets.iter().any(|a| a.path == ask.path)) {
         return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
     }
     let roots: Vec<PathBuf> = places.into_iter().map(|p| p.dir).collect();

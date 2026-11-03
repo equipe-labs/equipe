@@ -286,6 +286,168 @@ pub enum Setup {
     Qa,
 }
 
+/// The person's design taste for the squad or one project, as screens show
+/// it: the notes the designer follows, and the decisions made, each with
+/// why. The squad's notes are kept in its memory
+/// (`memory/design-taste-notes.md`), a project's in `design/taste.md` in its
+/// repository; decisions in `design/decisions/`, a file each.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Taste {
+    /// The project it is for, by name; `None`: the squad's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Where its notes are kept, on the daemon's machine.
+    #[serde(default)]
+    pub notes_at: String,
+    /// In the order they were written down.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<TasteNote>,
+    /// Newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<Decision>,
+}
+
+impl Taste {
+    /// The source it belongs to, as [`DesignSystem::key`] names it without a draft.
+    pub fn key(&self) -> String {
+        self.project.as_ref().map_or_else(|| "squad".to_owned(), |p| format!("project:{p}"))
+    }
+}
+
+/// The longest a taste note may be, in characters: a line, not a paragraph.
+pub const NOTE_MAX: usize = 120;
+
+/// One line of the person's taste: "모서리는 둥글게".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasteNote {
+    pub text: String,
+    /// Where it came from.
+    #[serde(default)]
+    pub from: TasteFrom,
+    /// When it was written down, `YYYY-MM-DD`; `None` when the file doesn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// The person stands behind it: they wrote it, or said "맞아요" to the
+    /// designer's. A note the designer proposed is "확인 전" until then, and
+    /// a confirmed note outranks it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confirmed: bool,
+    /// Other tickets it was seen on, beside its source's: a pattern's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen: Vec<TicketId>,
+    /// What it was learned from — the choices, send-backs and answers on its
+    /// tickets — newest first, for the person to check it against. Filled
+    /// by the daemon; never in the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<Evidence>,
+}
+
+impl TasteNote {
+    /// Whether the designer wrote it, rather than the person.
+    pub fn by_designer(&self) -> bool {
+        self.from != TasteFrom::Person
+    }
+
+    /// The tickets it was learned on: its source's, then those it was seen on.
+    pub fn tickets(&self) -> Vec<TicketId> {
+        let own = match self.from {
+            TasteFrom::Person | TasteFrom::Noticed { ticket: None } => None,
+            TasteFrom::SentBack { ticket } | TasteFrom::Answered { ticket } | TasteFrom::Noticed { ticket: Some(ticket) } => Some(ticket),
+        };
+        let mut out: Vec<TicketId> = own.into_iter().collect();
+        for t in &self.seen {
+            if !out.contains(t) {
+                out.push(*t);
+            }
+        }
+        out
+    }
+}
+
+/// One piece of what a note was learned from.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Evidence {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<TicketId>,
+    #[serde(default)]
+    pub kind: EvidenceKind,
+    /// What it was about: the question and what was chosen, or the work sent back.
+    pub what: String,
+    /// The person's own words, when they gave any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
+    /// The chosen option's picture, as `read_image` asks for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceKind {
+    /// The person chose an option (or answered in their own words).
+    #[default]
+    Chose,
+    /// The person sent the work back, saying why.
+    SentBack,
+}
+
+/// Where a taste note came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TasteFrom {
+    /// The person wrote it themselves.
+    #[default]
+    Person,
+    /// The person sent design work back on this ticket, saying so.
+    SentBack { ticket: TicketId },
+    /// The person answered the designer's question on this ticket.
+    Answered { ticket: TicketId },
+    /// The designer saw it in what the person picks and sends back, and the person agreed.
+    Noticed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<TicketId>,
+    },
+}
+
+/// A design decision kept with why: the brand's decision record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decision {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    /// What was asked: "히어로 레이아웃".
+    pub question: String,
+    /// What was chosen: "B — 한 단, 여백 넉넉히".
+    pub chosen: String,
+    /// The chosen option's picture, where it is on the daemon's machine, as
+    /// `read_image` asks for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    /// The options passed over.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passed: Vec<String>,
+    /// Why, in the person's words when they gave them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<TicketId>,
+}
+
+/// What the person does to a taste note on the screen
+/// ([`Command::Taste`](crate::Command::Taste)). A note is named by its words
+/// as the screen showed them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "do", rename_all = "snake_case")]
+pub enum TasteChange {
+    Add { text: String },
+    /// Rewritten by the person: theirs to stand behind from then on.
+    Edit { was: String, text: String },
+    Remove { text: String },
+    /// "맞아요": the designer's note is right.
+    Confirm { text: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +468,26 @@ mod tests {
         assert_eq!((token.group(), token.leaf()), ("color", "bg"));
         assert_eq!(token.value_in(Some("dark")), "#0A0A0C");
         assert_eq!(token.value_in(Some("high-contrast")), "#F6F5F1");
+    }
+
+    #[test]
+    fn taste_travels_without_what_it_lacks_and_a_note_says_where_it_came_from() {
+        let none = Taste { notes_at: "/m/design-taste-notes.md".into(), ..Default::default() };
+        assert_eq!(serde_json::to_string(&none).unwrap(), r#"{"notes_at":"/m/design-taste-notes.md"}"#);
+        assert_eq!(none.key(), "squad");
+        let note = TasteNote { text: "모서리는 둥글게".into(), from: TasteFrom::SentBack { ticket: 336 }, date: Some("2026-11-03".into()), ..Default::default() };
+        assert_eq!(serde_json::to_value(&note).unwrap()["from"], serde_json::json!({ "kind": "sent_back", "ticket": 336 }));
+        let bare: TasteNote = serde_json::from_str(r#"{"text":"여백은 넉넉하게"}"#).unwrap();
+        assert_eq!(bare.from, TasteFrom::Person);
+        assert!(!bare.by_designer() && bare.tickets().is_empty());
+        let noticed = TasteNote { from: TasteFrom::Noticed { ticket: Some(301) }, seen: vec![272, 301, 288], ..bare.clone() };
+        assert!(noticed.by_designer());
+        assert_eq!(noticed.tickets(), [301, 272, 288], "its own first, each once");
+        let decision = Decision { date: "2026-11-03".into(), question: "Hero".into(), chosen: "B".into(), ..Default::default() };
+        let web = Taste { project: Some("web".into()), notes: vec![note], decisions: vec![decision], ..none };
+        assert_eq!(web.key(), "project:web");
+        assert_eq!(serde_json::from_str::<Taste>(&serde_json::to_string(&web).unwrap()).unwrap(), web);
+        let change = TasteChange::Edit { was: "a".into(), text: "b".into() };
+        assert_eq!(serde_json::to_value(&change).unwrap(), serde_json::json!({ "do": "edit", "was": "a", "text": "b" }));
     }
 }

@@ -3,11 +3,12 @@
 //! while any screen follows the squad, their folders are looked at every
 //! [`LOOK_EVERY`] — metadata only — and sent again when one changed, so the
 //! screen follows what the designer saves. Nothing is read for a squad no
-//! screen asked about.
+//! screen asked about. The person's taste notes and the decisions made ride
+//! along (`crate::taste`); the person changes a note with `Command::Taste`.
 
 use std::time::Duration;
 
-use equipe_protocol::design::DesignSystem;
+use equipe_protocol::design::{Decision, DesignSystem, Taste, TasteChange};
 
 use super::*;
 use crate::design as ds;
@@ -18,8 +19,8 @@ pub(super) const LOOK_EVERY: Duration = Duration::from_millis(1500);
 /// A watched squad whose screen asked while a look was under way.
 const OWED: u64 = u64::MAX;
 
-/// A squad's design systems and where its own would be.
-pub(super) type Catalog = (Vec<DesignSystem>, String);
+/// A squad's design systems, where its own would be, and its taste.
+pub(super) type Catalog = (Vec<DesignSystem>, String, Vec<Taste>);
 
 impl Runtime {
     /// A screen asked: read and send them, and watch them from now on.
@@ -47,8 +48,11 @@ impl Runtime {
         let squad = squad.to_owned();
         tokio::task::spawn_blocking(move || {
             let places = ds::places(&home, &squad);
-            let stamp = ds::stamp(&places);
-            let catalog = (always || stamp != last).then(|| ds::folder::catalog_of(&places, lang));
+            let stamp = ds::stamp(&places) ^ crate::taste::store::stamp(&home, &squad).rotate_left(1);
+            let catalog = (always || stamp != last).then(|| {
+                let (systems, folder) = ds::folder::catalog_of(&places, lang);
+                (systems, folder, crate::taste::store::of(&home, &squad, &places))
+            });
             let _ = internal.send(Internal::Design(squad, stamp, catalog));
         });
     }
@@ -60,7 +64,7 @@ impl Runtime {
             *last = stamp;
         }
         match catalog {
-            Some((systems, folder)) => self.publish(Event::Design { squad, systems, folder }),
+            Some((systems, folder, taste)) => self.publish(Event::Design { squad, systems, folder, taste }),
             None if owed => self.look_at_design(&squad, true),
             None => {}
         }
@@ -73,6 +77,51 @@ impl Runtime {
         let squads: Vec<String> = self.design_watch.keys().cloned().collect();
         for squad in squads {
             self.look_at_design(&squad, false);
+        }
+    }
+
+    /// The person changed a note of their taste: made, and the screens told —
+    /// or told why not.
+    pub(super) fn taste_changed(&mut self, squad: String, project: Option<String>, change: TasteChange) {
+        if !crate::squads::valid_name(&squad) {
+            return;
+        }
+        let language = self.journals.get(&squad).and_then(Journal::language);
+        let today = squad_memory::date(now_secs());
+        match crate::taste::store::change(&self.config.home, &squad, project.as_deref(), &change, &today, language.as_deref()) {
+            Ok(()) => self.look_at_design(&squad, true),
+            Err(crate::taste::store::Refused::Invalid(why)) => {
+                let message = crate::i18n::core(self.config.lang).fill(why.key(), &[("max", equipe_protocol::design::NOTE_MAX.to_string())]);
+                self.squad_error(&squad, message);
+            }
+            Err(crate::taste::store::Refused::NoProject) => {
+                let message = say!(self, "taste.no_project", name = project.unwrap_or_default());
+                self.squad_error(&squad, message);
+            }
+            Err(crate::taste::store::Refused::Failed(why)) => {
+                let message = say!(self, "taste.not_saved", why = why);
+                self.squad_error(&squad, message);
+            }
+        }
+    }
+
+    /// Keep a design decision in the squad's record (`project` none) or a
+    /// project's, the chosen option's `picture` copied beside it, by `by`;
+    /// the screens following the squad see it at once. For a pick made on a
+    /// visual question: `decision.why` in the person's words when they gave
+    /// any, `decision.date` empty for today. What the disk refused is logged.
+    pub(super) fn record_decision(&mut self, squad: &str, project: Option<&str>, decision: &Decision, picture: Option<&Path>, by: &str) -> Option<PathBuf> {
+        match crate::taste::record(&self.config.home, squad, project, decision, picture, by) {
+            Ok(path) => {
+                if self.design_watch.contains_key(squad) {
+                    self.look_at_design(squad, true);
+                }
+                Some(path)
+            }
+            Err(why) => {
+                crate::daemon_log!("equipe: {squad}'s design decision wasn't kept: {why}");
+                None
+            }
         }
     }
 }
