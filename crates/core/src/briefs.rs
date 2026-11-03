@@ -405,6 +405,19 @@ says it is settled; settled only on their word; dropped when they let it go.",
     })
 }
 
+/// What the PM is told when the person starts an idea: it waits, held,
+/// until the PM releases it — at once when it is small, after office hours
+/// and a settled brief when it isn't.
+pub fn idea_start_message(id: TicketId, title: &str) -> String {
+    format!(
+        "[Idea start · T-{id}] The person started their idea T-{id} ({title}). It is on the board as todo but held: equipe hands \
+it to nobody until you release it with `update_ticket` (status todo). If it is small and clear — a fix, a tweak, a task you \
+can state in a line — release it now and say so in one line. If it is of real size, run office hours with them first, \
+one card at a time; write the brief with `write_brief` (ticket {id}); and release it, or replace it with the tickets the \
+settled brief leads to, only once they have settled it."
+    )
+}
+
 // ── a second opinion ──
 
 /// What the other engine is asked of a brief: to find where it is weak.
@@ -615,6 +628,15 @@ mod tests {
         let at = save(&Target::Repo(dir.clone()), Kind::Brief, "x", BRIEF, "2026-11-04").unwrap();
         assert!(at.is_file());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_started_idea_goes_to_the_pm_first_who_releases_it_when_small_or_settled() {
+        let text = idea_start_message(12, "One-tap checkout");
+        assert!(text.starts_with("[Idea start · T-12]") && text.contains("(One-tap checkout)"), "{text}");
+        for part in ["held", "`update_ticket` (status todo)", "small and clear", "release it now", "office hours", "one card at a time", "`write_brief` (ticket 12)", "settled"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
     }
 
     #[test]

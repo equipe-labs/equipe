@@ -28,6 +28,10 @@ pub mod signals;
 pub const COULD_NOT_START: &str = "Couldn't start: ";
 /// How an idea the PM put to the person says why its time has come, in its note.
 pub const WHY_NOW: &str = "Why now: ";
+/// How a started idea waits while the PM runs office hours with the person,
+/// in its note: equipe hands it to nobody until the PM releases it
+/// (`update_ticket`, status todo).
+pub const OFFICE_HOURS_FIRST: &str = "Office hours first: the PM releases it.";
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -362,6 +366,12 @@ impl Ticket {
     }
 
     /// Handed in and ready for the person's review: past design QA, if it had one.
+    /// A started idea held for office hours: ready, but handed to nobody
+    /// until the PM releases it.
+    pub fn office_hours_first(&self) -> bool {
+        self.status == TicketStatus::Todo && self.note.as_deref() == Some(OFFICE_HOURS_FIRST)
+    }
+
     /// An idea the PM put to the person as a proposal: why its time has come.
     pub fn why_now(&self) -> Option<&str> {
         self.note.as_deref().filter(|_| self.status == TicketStatus::Proposed)?.strip_prefix(WHY_NOW).map(str::trim)

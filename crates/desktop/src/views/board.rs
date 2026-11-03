@@ -660,7 +660,7 @@ impl Shell {
         let text = match t.status {
             TicketStatus::Waiting => t!("board.toast_resume", id = t.id),
             TicketStatus::Proposed => t!("board.toast_proposal", id = t.id),
-            TicketStatus::Idea => t!("board.toast_idea_start", id = t.id),
+            TicketStatus::Idea => crate::board::idea_start_toast(t.id, self.model.members.iter().any(Model::is_pm)),
             TicketStatus::Done if way == Some(MergeWay::Branch) => t!("board.toast_keep", id = t.id),
             TicketStatus::Done => t!("board.toast_merge", id = t.id, project = project, way = way.unwrap_or(MergeWay::Merge).label()),
             _ if Model::merges(t) => match way {

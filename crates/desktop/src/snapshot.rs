@@ -156,9 +156,13 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let click = if verb == "shead" { crate::board::HeadClick::Name } else { crate::board::HeadClick::Chevron };
                     shell.side_head_click(click, (!arg.is_empty()).then(|| arg.clone()), window, cx);
                 }),
-                // A project page's tab (`ptab:work`, `ptab:talks`).
+                // A project page's tab (`ptab:work`, `ptab:docs`, `ptab:talks`).
                 "ptab" => shell.update(cx, |shell, cx| {
-                    shell.board.project_tab = if arg == "work" { crate::board::ProjectTab::Work } else { crate::board::ProjectTab::Talks };
+                    shell.board.project_tab = match arg.as_str() {
+                        "work" => crate::board::ProjectTab::Work,
+                        "docs" => crate::board::ProjectTab::Docs,
+                        _ => crate::board::ProjectTab::Talks,
+                    };
                     cx.notify();
                 }),
                 "select" => shell.update(cx, |shell, cx| {

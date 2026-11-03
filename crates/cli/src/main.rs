@@ -8,6 +8,7 @@
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
 mod attach;
+mod brief;
 mod clip;
 mod daemon;
 mod design;
@@ -283,6 +284,11 @@ enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// The PM's briefs: a second opinion on one from the other engine
+    Brief {
+        #[command(subcommand)]
+        action: brief::BriefAction,
+    },
     /// The designer's tools: init, check, specimen, render, shoot, diff, critique, audit, flows
     Design {
         #[command(subcommand)]
@@ -474,6 +480,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Review { base, models, goal } => review::command(base, models, goal).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
+        Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
