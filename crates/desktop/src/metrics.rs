@@ -39,6 +39,8 @@ pub struct Draft {
     pub failed: Option<String>,
     /// The person pressed connect with a required box empty.
     pub missing: bool,
+    /// Opened from the North Star card: only its three boxes show.
+    pub north: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -407,13 +409,17 @@ pub mod demo {
         Field { key: key.into(), label: label.into(), secret, required: true, hint: hint.map(Into::into) }
     }
 
+    fn optional(key: &str, label: &str, hint: &str) -> Field {
+        Field { key: key.into(), label: label.into(), secret: false, required: false, hint: Some(hint.into()) }
+    }
+
     fn def(name: &str, label: &str, unit: &str, shape: Shape) -> MetricDef {
         MetricDef { name: name.into(), label: label.into(), unit: unit.into(), shape }
     }
 
     pub fn kinds() -> Vec<SourceSpec> {
         vec![
-            SourceSpec { kind: SourceKind::Posthog, label: "PostHog".into(), fields: vec![field("api_key", "Personal API key", true, None), field("project_id", "Project ID", false, None)], metrics: vec![def("visits", "Visits", "page_loads", Shape::Count), def("languages", "Languages", "page_loads", Shape::Breakdown)], keeps_days: None },
+            SourceSpec { kind: SourceKind::Posthog, label: "PostHog".into(), fields: vec![field("api_key", "Personal API key", true, None), field("project_id", "Project ID", false, None), optional("north_star_event", "North Star event", "The event of an approval: work_accepted when empty"), optional("north_star_property", "North Star counts", "The event property counted once each: squad when empty"), optional("north_star_where", "North Star only", "Event properties, comma-separated: by=person when empty")], metrics: vec![def("visits", "Visits", "page_loads", Shape::Count), def("languages", "Languages", "page_loads", Shape::Breakdown)], keeps_days: None },
             SourceSpec { kind: SourceKind::Github, label: "GitHub".into(), fields: vec![field("token", "Token", true, None), field("repo", "Repository", false, None)], metrics: vec![def("views", "Views", "views", Shape::Count), def("stars", "Stars", "stars", Shape::Total)], keeps_days: Some(14) },
             SourceSpec { kind: SourceKind::AppStore, label: "App Store Connect".into(), fields: vec![field("private_key", "Private key", true, None), field("app_id", "App ID", false, None)], metrics: vec![def("downloads", "Downloads", "downloads", Shape::Count)], keeps_days: None },
         ]

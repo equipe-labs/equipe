@@ -424,7 +424,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
             .text_color(p.accent)
             .hover(|s| s.underline())
             .child(lookup("metrics.ns.edit".into()))
-            .on_click(cx.listener(move |this, _, window, cx| this.metrics_open_connect(Some(SourceKind::Posthog), connection.clone(), window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.metrics_open_north(connection.clone(), window, cx)))
     };
     let about = |text: String, link: Option<Stateful<Div>>| h_flex().gap_1().flex_wrap().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(text).children(link.map(|l| h_flex().gap_1().child("·").child(l)));
     match state {
@@ -434,11 +434,12 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
             north_frame(p, p.hair, room).child(title_line(p, title, wait(p), t!("metrics.source", service = name, time = lookup("metrics.ns.loading".into())))).child(body).child(about(lookup("metrics.ns.def".into()), None)).into_any_element()
         }
         NorthStar::Undefined => {
-            let set = ui::button(p, "metrics-north-set", Kind::Primary, t!("metrics.ns.set")).on_click(cx.listener(move |this, _, window, cx| this.metrics_open_connect(Some(SourceKind::Posthog), connection.clone(), window, cx)));
+            let set = ui::button(p, "metrics-north-set", Kind::Primary, t!("metrics.ns.set")).on_click(cx.listener(move |this, _, window, cx| this.metrics_open_north(connection.clone(), window, cx)));
             north_frame(p, p.hair, room)
                 .child(title_line(p, lookup("metrics.ns.title_short".into()), wait(p), lookup("metrics.ns.none".into())))
                 .child(div().text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(lookup("metrics.ns.none_title".into())))
                 .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text).child(lookup("metrics.ns.none_body".into())))
+                .child(div().text_size(px(13.)).line_height(px(20.)).font_family(MONO).text_color(p.muted).child(lookup("metrics.ns.example".into())))
                 .child(h_flex().gap_2().child(set))
                 .into_any_element()
         }
@@ -639,7 +640,7 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
     let spec = sources.kinds.iter().find(|k| k.kind == kind);
     let name = service(kind, spec);
     let replacing = draft.replacing.is_some();
-    let boxes = spec.into_iter().flat_map(|s| s.fields.iter()).filter_map(|f| {
+    let boxes = spec.into_iter().flat_map(|s| s.fields.iter()).filter(|f| !draft.north || f.key.starts_with("north_star_")).filter_map(|f| {
         let (_, input) = shell.metrics_ui.boxes.iter().find(|(k, _)| *k == f.key)?;
         let label = word(format!("metrics.field.{}", f.key), &f.label);
         let hint = f.hint.as_deref().map(|h| word(format!("metrics.hint.{}", f.key), h));
@@ -654,7 +655,7 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
                 .children(hint.map(|h| div().text_size(px(12.)).text_color(p.muted).child(h))),
         )
     });
-    let how = lookup(format!("metrics.how.{}", kind.as_str()));
+    let how = if draft.north { lookup("metrics.ns.form_note".into()) } else { lookup(format!("metrics.how.{}", kind.as_str())) };
     let go = ui::button(p, "metrics-confirm", Kind::Primary, if draft.sending { t!("metrics.connecting") } else { t!("metrics.confirm") }).disabled(draft.sending).on_click(cx.listener(|this, _, window, cx| this.metrics_submit(window, cx)));
     let back = ui::button(p, "metrics-back", Kind::Ghost, t!("metrics.back")).on_click(cx.listener(|this, _, window, cx| this.metrics_pick_kind(None, None, window, cx)));
     card_frame(p, p.hair)
@@ -801,6 +802,18 @@ impl Shell {
             self.metrics_load(cx);
         }
         self.metrics_pick_kind(kind, replacing, window, cx);
+    }
+
+    /// The PostHog form with only the North Star's three boxes.
+    pub fn metrics_open_north(&mut self, replacing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.metrics_open_connect(Some(SourceKind::Posthog), replacing, window, cx);
+        if let Flow::Connect(draft) = &mut self.metrics.flow {
+            draft.north = true;
+        }
+        if let Some((_, input)) = self.metrics_ui.boxes.iter().find(|(k, _)| k == "north_star_event") {
+            input.update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
     }
 
     pub fn metrics_pick_kind(&mut self, kind: Option<SourceKind>, replacing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -959,6 +972,10 @@ impl Shell {
         };
         self.metrics.sources = Some(sources);
         self.metrics.query = Some(query);
+        if which == "ns-form" {
+            let id = self.metrics.sources.as_ref().and_then(|s| s.connections.iter().find(|c| c.kind == SourceKind::Posthog)).map(|c| c.id.clone());
+            self.metrics_open_north(id, window, cx);
+        }
         if matches!(which, "connect" | "key") {
             let kind = (which == "key").then_some(SourceKind::Posthog);
             self.metrics.sources = Some(demo::nothing());
