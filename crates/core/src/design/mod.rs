@@ -9,8 +9,11 @@
 //! - `diff`: what changed since the person last looked.
 //! - `critique`: the designer's pictures, critiqued by the other engine.
 //! - `flows`: the service's UI map — every flow, screen and state, pictured.
+//! - `review`: the designer's weekly review, held back until the setup is done.
 //! - `folder`: where the folders are, what they hold, and the stamp that says
 //!   one changed; the pictures in them are what `read_image` may give.
+//! - `versions`: the accepted versions of a folder, from its history, and
+//!   the ticket that asks for one back.
 
 pub mod check;
 pub mod kit;
@@ -19,7 +22,9 @@ pub mod critique;
 pub mod diff;
 pub mod flows;
 pub mod folder;
+pub mod review;
 pub mod tokens;
 pub mod values;
+pub mod versions;
 
 pub use folder::{DIR, catalog, places, stamp};

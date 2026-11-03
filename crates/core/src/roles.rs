@@ -185,6 +185,9 @@ is a defect: whenever a screen changes, its states and pictures, and its flow's 
 same hand-in, and you hand in only when `equipe design flows check` finds nothing missing or stale. When the person \
 talks about one screen (\"Onboarding › Sign in › Error\", its picture attached), answer about that screen and state, and \
 propose the change as a picture beside the one it replaces.\n\
+Show design options as they would live: each applied to the product's real screens — the UI map's pictures \
+(`design/flows/`) shot again or mocked up with that option's tokens, or `equipe design specimen --tokens <file> --png` \
+when no screen exists yet — never as swatches alone.\n\
 Keep the squad's reference library in its folder, `design/references/`: a folder for each reference worth \
 keeping — its pages shot with `shoot`, its link, what to take from it and what to leave — read it before you search \
 anew, and add to it whatever you find; with the `design` tools, the design library (`design_library_search`) is \
@@ -203,10 +206,16 @@ Then the details: hierarchy and density, alignment and spacing on the scale, typ
 colour roles and contrast, brand fidelity (\"hide the logo: could this be another company?\"), states and real copy, \
 and the stock looks — each finding tied to a region of the picture. Revise on its findings, at most three rounds, \
 each revision beside the one before (a fix that loses the whole is worse than the flaw it fixed), and keep the best \
-round, not the last; say in your hand-in what the critic found and what you changed. equipe keeps the \
-person's taste for you in the squad's memory, `design taste`: every design question they answer — what they chose, \
-what they passed over, their own words — and every piece of design work they send back, with why. Read it whole \
-before every new direction, and let it move you (denser or airier, quieter or louder, …). Among your options, always \
+round, not the last; say in your hand-in what the critic found and what you changed. The person's taste is a list \
+of notes, a line each — the squad's in its memory, `design taste notes`; a project's in its `design/taste.md`. Read \
+them before any proposal and follow them; where a proposal departs from one, say which and why. A note ending in \
+`confirmed` or written by the person outranks one still waiting for their yes; where they disagree, follow the \
+confirmed one. equipe also keeps, in `design taste`, every design question the person answers (what they chose, \
+what they passed over, their own words) and every piece of design work they send back, with why. When a pattern \
+shows there (the same pick or complaint twice), propose a new note: add it in one line, unconfirmed, naming the \
+tickets it was seen on — `- <note> _(noticed on T-<n>, <date>, seen on T-<a> T-<b>)_` — and leave the person's \
+lines as they are; they confirm it, correct it or remove it on the design screen. After each decision, record it in `design/decisions/<date>-<question>.md` — the question, `Chose:`, \
+`Picture:` (the chosen option's path), `Passed over:`, `Why:` in the person's words, `Ticket:`. Among your options, always \
 one bolder than your recommendation, said as such: a choice only teaches when there is one. Korean text: \
 `word-break: keep-all` with `overflow-wrap: anywhere`, body 15–17px at 1.5–1.7, Pretendard's letter spacing 0 in \
 body and slightly negative in large headings, `font-variant-numeric: tabular-nums` wherever numbers line up. Money \
@@ -688,7 +697,10 @@ choosing blind; work like that is handed in with its pictures in `images` too.{}
             if role.id == "designer" {
                 " You work in pictures: save each mockup, render and option as a PNG (or an SVG) in your worktree and show \
 it — on `ask_decision`'s options, and in `submit_for_review`'s `images` when you hand in. Say why in a sentence, but \
-never only describe what something looks like."
+never only describe what something looks like. Give each design option its `images` and its `aspects` (what of it \
+can go into another — type, colour, shape — in the person's language): they answer in one click. On a mix (one \
+option with an aspect of another), make the mixed option and ask again with it beside the two it came from; on \
+another round, bring a genuinely different round that takes their why into account."
             } else {
                 ""
             }
@@ -1032,6 +1044,10 @@ mod tests {
             "its flow's `walk` and video, change in the same hand-in",
             "you hand in only when `equipe design flows check` finds nothing missing or stale",
             "\"Onboarding › Sign in › Error\", its picture attached), answer about that screen",
+            // Options shown on the real screens, reacted to in one click.
+            "each applied to the product's real screens",
+            "`equipe design specimen --tokens <file> --png` when no screen exists yet",
+            "never as swatches alone",
         ] {
             assert!(text.contains(part), "{part}: {text}");
         }
@@ -1171,6 +1187,10 @@ mod tests {
         assert!(text.contains("this, not that") && text.contains("formal or casual"), "brand and voice first");
         assert!(!text.contains("{tools_at}"));
         for rule in ["## Locked", "sceptical", "`design taste`", "one bolder than your recommendation", "keep-all", "color.change.up", "(unit: 100M KRW)"] {
+            assert!(text.contains(rule), "{rule}");
+        }
+        // Taste: notes read before any proposal and followed, a departure said, a pattern proposed, a decision recorded.
+        for rule in ["`design taste notes`", "`design/taste.md`", "before any proposal and follow them", "departs from one, say which and why", "propose a new note", "unconfirmed, naming the tickets", "outranks one still waiting for their yes", "follow the confirmed one", "`design/decisions/<date>-<question>.md`", "`Why:` in the person's words"] {
             assert!(text.contains(rule), "{rule}");
         }
         let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
@@ -1329,10 +1349,24 @@ mod tests {
             }
         }
         let designer = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
-        for part in ["PNG", "`submit_for_review`", "never only describe"] {
+        for part in [
+            "PNG",
+            "`submit_for_review`",
+            "never only describe",
+            // Reacted to in one click: what to do with each reaction.
+            "Give each design option its `images` and its `aspects`",
+            "On a mix (one option with an aspect of another), make the mixed option and ask again with it beside the two it came from",
+            "on another round, bring a genuinely different round that takes their why into account",
+        ] {
             assert!(designer.contains(part), "{part}: {designer}");
         }
-        assert!(!charter(role("designer").unwrap(), "designer", &ctx(&team, &[], false)).contains("`images`"), "no tools, no such advice");
+        assert!(!text_has_aspects(&charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true))), "the designer's to give");
+        let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], false));
+        assert!(!bare.contains("`images`") && !text_has_aspects(&bare), "no tools, no such advice");
+    }
+
+    fn text_has_aspects(text: &str) -> bool {
+        text.contains("`aspects`")
     }
 
     #[test]

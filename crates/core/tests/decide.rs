@@ -167,11 +167,11 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     assert_eq!(snapshot.questions, std::slice::from_ref(&set));
 
     // The person answers: Postgres; Auth and Payments, with a note.
-    let answers = vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![1, 0], other: Some("SSO later".into()) }];
+    let answers = vec![Answer { picked: vec![0], ..Answer::default() }, Answer { picked: vec![1, 0], other: Some("SSO later".into()), ..Answer::default() }];
     handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers, about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { id, answers, .. } = e { Some((*id, answers.clone())) } else { None });
-    assert_eq!(closed, Some((set.id, Some(vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![0, 1], other: Some("SSO later".into()) }]))));
+    assert_eq!(closed, Some((set.id, Some(vec![Answer { picked: vec![0], ..Answer::default() }, Answer { picked: vec![0, 1], other: Some("SSO later".into()), ..Answer::default() }]))));
     let expected = "Answers to your questions:\n1) Which database should the API use? → Postgres (Recommended)\n2) Which features ship first? → Auth, Payments (+ note: SSO later)";
     assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { session: 2, text } if text == expected)), "{seen:#?}");
     let prompt = calls(&recorded).last().map(|c| arg(c, "-p").unwrap_or_default().to_owned()).unwrap_or_default();
@@ -196,7 +196,7 @@ async fn the_persons_answers_to_the_designer_are_kept_as_their_taste_for_every_d
     tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "Which hero layout?", "options": ["B: airy (Recommended)", "A: dense"] }] })).await;
     let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
     let set = asked(&seen);
-    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![1], other: Some("we're a tool, show more".into()) }], about: None });
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![1], other: Some("we're a tool, show more".into()), ..Answer::default() }], about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let folder = equipe_core::squad_home::path(&home, "acme");
     let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).expect("kept in the squad's memory");
@@ -207,10 +207,49 @@ async fn the_persons_answers_to_the_designer_are_kept_as_their_taste_for_every_d
     tool(&handle, "backend", "ask_decision", json!({ "questions": [{ "question": "Which database?", "options": ["Postgres", "SQLite"] }] })).await;
     let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
     let set = asked(&seen);
-    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![0], other: None }], about: None });
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![0], ..Answer::default() }], about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 3, .. })).await;
     let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).unwrap();
     assert!(!taste.body.contains("database"), "{}", taste.body);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_design_choice_reacted_to_in_one_click_goes_to_the_designer_and_into_the_taste() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    std::fs::create_dir_all(folder.join("brand")).unwrap();
+    for name in ["calm.png", "bold.png", "warm.png"] {
+        image::RgbaImage::new(8, 8).save(folder.join("brand").join(name)).unwrap();
+    }
+    let options = json!([
+        { "label": "Calm (Recommended)", "images": "brand/calm.png" },
+        { "label": "Bold", "images": "brand/bold.png" },
+        { "label": "Warm", "images": "brand/warm.png" },
+    ]);
+    let ask = json!({ "questions": [
+        { "question": "Which direction?", "aspects": ["type", "colour", "shape"], "options": options },
+        { "question": "Which home screen?", "aspects": ["type", "colour"], "options": options },
+    ] });
+    tool(&handle, "designer", "ask_decision", ask).await;
+    let set = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
+    assert_eq!(set.questions[0].options[2].aspects, ["type", "colour", "shape"], "the screen has what it can offer to mix");
+    // Calm with Warm's type; and another round of home screens, with why.
+    let answers = vec![Answer::mix(0, 2, "type"), Answer::again(Some("all too busy".into()))];
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: answers.clone(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { answers, .. } = e { answers.clone() } else { None });
+    assert_eq!(closed, Some(answers));
+    let message = seen.iter().find_map(|e| if let Event::UserMessage { session: 2, text } = e { Some(text.clone()) } else { None }).unwrap();
+    assert!(message.contains("1) Which direction? → mix — «Calm (Recommended)» with the type of «Warm»"), "{message}");
+    assert!(message.contains("2) Which home screen? → another round — none of these (+ note: all too busy)"), "{message}");
+    assert!(message.contains("For a mix: make it") && message.contains("For another round:"), "{message}");
+    let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).unwrap();
+    assert!(taste.body.contains("chose Calm with the type of Warm") && taste.body.contains("asked for another round"), "{}", taste.body);
     handle.shutdown().await;
 }
 
@@ -249,6 +288,16 @@ async fn a_visual_choice_shows_its_pictures_found_where_the_member_works_and_a_b
     // Asked in words alone: it goes, and the member is told to show them next time.
     let blind = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "로고 마스터는 어느 안으로 할까요?", "options": ["e. + 파란 원 점 (추천)", "e. 회색 점 유지"] }] })).await;
     assert!(!blind.is_error && blind.text.contains("Asked.") && blind.text.contains("choosing blind") && blind.text.contains("`images`"), "{blind:?}");
+
+    // The person picks a picture: a decision in the brand's record, the picture kept beside it.
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![1], other: Some("조용한 쪽이 좋아요".into()), ..Answer::default() }], about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let record = folder.join("design/decisions");
+    let files: Vec<String> = std::fs::read_dir(&record).expect("the record").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let md = files.iter().find(|f| f.ends_with("-which-logo.md")).unwrap_or_else(|| panic!("{files:?}"));
+    let text = std::fs::read_to_string(record.join(md)).unwrap();
+    assert!(text.contains("- Chose: Grey dot\n") && text.contains("- Passed over: Blue dot\n") && text.contains("조용한 쪽이 좋아요"), "{text}");
+    assert!(record.join(md.replace(".md", ".png")).is_file(), "{files:?}");
     handle.shutdown().await;
 }
 

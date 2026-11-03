@@ -14,11 +14,12 @@
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
-//! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) · `dview:<n>` (option n's picture of the card on show, big) · `tview:<ticket>,<n>` (a hand-in's nth picture, big; then `press:right`, `press:enter`) · `rview:<n>` (the nth picture the latest reply showing pictures embeds, big) · `tpick:<id>` (a change to the team in 나에게, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) · `rpick:<id>` (a routine the PM proposed in 나에게, peeking) · `ryes` / `rno` (turn on or decline the oldest) · `cpick:<id>` (a card to confirm in 나에게, peeking; `cpick` alone: the oldest) · `ctick:<ticket>` (tick or untick a ticket on the oldest card) · `cyes` / `cno` (confirm or decline the oldest card) · `eyes` / `eno` / `eundo` (the engine card: its yes, its no, undo) · `engines:<off|suggest|auto>` (the squad's engine switching) ·
+//! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) · `dview:<n>` (option n's picture of the card on show, big) · `dtake:<n>` / `dmix:<n>[,<k>]` / `dagain` (a design choice's one click: option n's 이걸로, its mix menu opened or its kth line, 다시) · `tview:<ticket>,<n>` (a hand-in's nth picture, big; then `press:right`, `press:enter`) · `rview:<n>` (the nth picture the latest reply showing pictures embeds, big) · `tpick:<id>` (a change to the team in 나에게, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) · `rpick:<id>` (a routine the PM proposed in 나에게, peeking) · `ryes` / `rno` (turn on or decline the oldest) · `cpick:<id>` (a card to confirm in 나에게, peeking; `cpick` alone: the oldest) · `ctick:<ticket>` (tick or untick a ticket on the oldest card) · `cyes` / `cno` (confirm or decline the oldest card) · `eyes` / `eno` / `eundo` (the engine card: its yes, its no, undo) · `engines:<off|suggest|auto>` (the squad's engine switching) ·
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
 //! `metrics[:<dash|error|empty|connect|key|done>]` (지표, on a sample) · `mtype:<n>,<text>` (in its form's box n) ·
-//! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
-//! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fto:<designer|pm>` · `ftalk:<words>` (in the box under the screen) · `fsend` · `fkey:<left|right|up|down|escape>` ·
+//! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines|taste>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
+//! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` (말하기 on the open state) · `dsay:<token>` / `dsay:asset:<n>` (말하기 on a colour or type style by name, or asset n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
+//! `dcompare[:off]` (비교하며 검토, begun or ended) · `dside:<now|after>` · `dstep[:prev]` (the next or previous changed screen) · `daccept` · `dredo[:<words>]` (다시 부탁's box, with words) · `dredosend` · `dversions` (버전 기록, opened or closed) · `drestore:<n>` (row n asked back: its confirmation) · `dtaste:<add|edit:<n>|type:<words>|save|cancel|remove:<n>|confirm:<n>|evidence:<n>>` (a taste note: write a new one, rewrite note n, type in its box, keep it, put the box away, remove note n, say 맞아요 to note n, open or close its evidence) ·
 //! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
@@ -368,6 +369,23 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                         shell.design_set_tab(tab, cx);
                     }
                 }),
+                "dcompare" => shell.update(cx, |shell, cx| shell.design_compare(arg != "off", cx)),
+                "dside" => shell.update(cx, |shell, cx| {
+                    if let Some(side) = crate::compare::Side::parse(&arg) {
+                        shell.design_side(side, cx);
+                    }
+                }),
+                "dstep" => shell.update(cx, |shell, cx| shell.design_step_changed(arg != "prev", cx)),
+                "daccept" => shell.update(cx, |shell, cx| shell.design_accept_draft(cx)),
+                "dredo" => shell.update(cx, |shell, cx| {
+                    shell.design_redo(true, window, cx);
+                    if !arg.is_empty() {
+                        shell.design_redo.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    }
+                }),
+                "dredosend" => shell.update(cx, |shell, cx| shell.design_redo_send(window, cx)),
+                "dversions" => shell.update(cx, |shell, cx| shell.design_versions(!shell.design.versions_open, cx)),
+                "drestore" => shell.update(cx, |shell, cx| shell.design_restore_ask(arg.parse().unwrap_or(1), cx)),
                 "fflow" => shell.update(cx, |shell, cx| shell.flows_pick_flow(&arg, cx)),
                 "fscreen" => shell.update(cx, |shell, cx| shell.flows_toggle_screen(&arg, cx)),
                 "fstate" => shell.update(cx, |shell, cx| shell.flows_chip(&arg, cx)),
@@ -378,17 +396,45 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.design.map.older_open = !shell.design.map.older_open;
                     cx.notify();
                 }),
-                "fto" => shell.update(cx, |shell, cx| {
-                    shell.design.map.to_pm = arg == "pm";
-                    cx.notify();
-                }),
-                "ftalk" => shell.update(cx, |shell, cx| {
-                    shell.flow_talk.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
-                    cx.notify();
-                }),
-                "fsend" => shell.update(cx, |shell, cx| shell.flows_send(window, cx)),
+                // 보면서 말하기: a thing pointed at, the panel folded or open, a chip taken off.
+                "fsay" => shell.update(cx, |shell, cx| shell.flows_point(window, cx)),
+                "dsay" => shell.update(cx, |shell, cx| shell.design_point_named(&arg, window, cx)),
+                "dtalk" => shell.update(cx, |shell, cx| shell.design_talk_fold(arg == "fold", window, cx)),
+                "dunpoint" => shell.update(cx, |shell, cx| shell.design_unpoint(arg.parse().unwrap_or(0), cx)),
                 "fkey" => shell.update(cx, |shell, cx| {
                     shell.on_flows_key(&arg, window, cx);
+                }),
+                // 취향과 결정: `dtaste:add`, `dtaste:edit:<n>`, `dtaste:type:<words>`, `dtaste:save`, `dtaste:cancel`, `dtaste:remove:<n>`, `dtaste:confirm:<n>`, `dtaste:evidence:<n>`.
+                "dtaste" => shell.update(cx, |shell, cx| {
+                    let (what, rest) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+                    let nth = |shell: &crate::Shell| shell.design.current_taste().and_then(|t| t.notes.get(rest.parse::<usize>().unwrap_or(0))).map(|n| n.text.clone());
+                    match what {
+                        "add" => shell.design_taste_begin(None, window, cx),
+                        "edit" => {
+                            if let Some(was) = nth(shell) {
+                                shell.design_taste_begin(Some(was), window, cx);
+                            }
+                        }
+                        "type" => shell.design_taste_type(rest, window, cx),
+                        "save" => shell.design_taste_save(window, cx),
+                        "cancel" => shell.design_taste_cancel(cx),
+                        "confirm" => {
+                            if let Some(text) = nth(shell) {
+                                shell.design_taste_send(equipe_core::protocol::design::TasteChange::Confirm { text }, cx);
+                            }
+                        }
+                        "evidence" => {
+                            if let Some(text) = nth(shell) {
+                                shell.design_taste_evidence(&text, cx);
+                            }
+                        }
+                        "remove" => {
+                            if let Some(text) = nth(shell) {
+                                shell.design_taste_send(equipe_core::protocol::design::TasteChange::Remove { text }, cx);
+                            }
+                        }
+                        _ => {}
+                    }
                 }),
                 "dtoc" => shell.update(cx, |shell, cx| {
                     let n: usize = arg.parse().unwrap_or(0);
@@ -524,6 +570,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("dkey {arg}: taken = {taken}");
                 }),
                 "dtype" => shell.update(cx, |shell, cx| shell.decide_type(&arg, window, cx)),
+                "dtake" | "dmix" | "dagain" => shell.update(cx, |shell, cx| shell.decide_script_react(&verb, &arg, window, cx)),
                 // A member's pictures big: option n's of the card on show, or a hand-in's nth.
                 "dview" => shell.update(cx, |shell, cx| shell.view_script(None, arg.parse().unwrap_or(1), cx)),
                 "rview" => shell.update(cx, |shell, cx| shell.reply_view_script(arg.parse().unwrap_or(1), cx)),

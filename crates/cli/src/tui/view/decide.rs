@@ -200,6 +200,7 @@ mod tests {
                 Question { question: "Which screens ship?".into(), header: String::new(), options: vec![choice("Onboarding", ""), choice("Orders", ""), choice("Settings", "")], multi_select: true, ..Question::default() },
             ],
             asked_at: 0,
+            review: false,
         }
     }
 
@@ -258,7 +259,7 @@ mod tests {
     #[test]
     fn the_answers_read_as_one_line_in_the_conversation() {
         let mut app = pm();
-        let message = decide::answer_message(&set(), &[Answer { picked: vec![0], other: None }, Answer::skipped()]);
+        let message = decide::answer_message(&set(), &[Answer { picked: vec![0], ..Default::default() }, Answer::skipped()]);
         app.on_event(Event::UserMessage { session: 1, text: message });
         app.on_event(Event::UserMessage { session: 1, text: decide::dismissed_message(&set()) });
         let shot = screen(&app, 110, 30);

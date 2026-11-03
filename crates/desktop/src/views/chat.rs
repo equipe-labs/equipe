@@ -65,6 +65,7 @@ const PART_MORE: u32 = 1 << 20;
 const PART_THOUGHT: u32 = PART_MORE + 1;
 const PART_NEWS: u32 = PART_MORE + 2;
 const PART_GROUP: u32 = PART_MORE + 3;
+const PART_ROUTINE: u32 = PART_MORE + 4;
 /// A call of an open group, by its number in it.
 const PART_ROW: u32 = 1 << 21;
 /// The side panel's width; the conversation keeps the rest.
@@ -889,6 +890,8 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             let decided = crate::decide::decided(text).unwrap_or(crate::decide::Decided::Closed);
             super::decide::decided_row(p, rows.tones, rows.handle.clone(), key, &decided, rows.is_open(key, super::decide::PART_DECIDED, false), window, cx)
         }
+        // A routine run: its heading, opening on what it asked.
+        Block::User(text) if crate::routine::ran(text).is_some() => routine_row(rows, key, text, window, cx),
         Block::User(text) => user_row(rows, ix, key, text, opened(PART_MORE), rows.project_of(ix), window.is_a11y_active(), cx),
         Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
         Block::Steps(lines) => group(rows, key, lines, window, cx),
@@ -1696,12 +1699,15 @@ fn keyed_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: impl In
 fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<String>, heard: bool, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
+    // Pointed at things on the design screen: their chips first.
+    let (pointed, after) = crate::design_talk::split(&parts.text);
+    let pointed = (!pointed.is_empty()).then(|| super::design_talk::in_bubble(p, &pointed));
     // Asked about words of the conversation: the quote over the words.
-    let (quotes, rest) = crate::quote::split_all(&parts.text);
+    let (quotes, rest) = crate::quote::split_all(&after);
     let quoted = (!quotes.is_empty()).then(|| {
         v_flex().gap_1().children(quotes.iter().enumerate().map(|(n, quote)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), ix, quote, rows.handle.clone()))).into_any_element()
     });
-    let text = if quotes.is_empty() { parts.text.as_str() } else { rest.as_str() };
+    let text = if quotes.is_empty() { after.as_str() } else { rest.as_str() };
     // The pictures it embeds show under it, their markup out of its words.
     let embedded = equipe_core::visuals::markdown::local_images(text);
     let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &rows.base).map(|p| p.to_string_lossy().into_owned());
@@ -1731,7 +1737,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
     let group: SharedString = format!("user-{key}").into();
     // What is copied is what is shown: the words (the tags only when there are none).
-    let copied = if parts.text.is_empty() { raw.to_owned() } else { parts.text.clone() };
+    let copied = if parts.text.is_empty() { raw.to_owned() } else { after.clone() };
     let copy = tool_button(p, ("user-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone())));
     let handle = rows.handle.clone();
     let more = long.then(|| {
@@ -1746,7 +1752,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
                 handle.update(cx, |shell, cx| shell.chat_toggle(key, PART_MORE, cx)).ok();
             })
     });
-    let bubble = (body.is_some() || quoted.is_some()).then(|| {
+    let bubble = (body.is_some() || quoted.is_some() || pointed.is_some()).then(|| {
         v_flex()
             .max_w(gpui_kit::relative(BUBBLE_SHARE))
             .px(px(BUBBLE_X))
@@ -1757,6 +1763,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
             .text_size(px(BODY))
             .line_height(px(BODY_LINE))
             .text_color(p.prose)
+            .children(pointed)
             .children(quoted)
             .children(body)
             .children(more)
@@ -1785,6 +1792,41 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
                 .children(project.map(|name| project_chip(p, name))),
         )
         .into_any_element()
+}
+
+/// A routine that ran — handed over as the person's message, on its schedule
+/// or their click: not their bubble but a heading, "정기 업무 · 디자인 리뷰", that
+/// opens on what it asked. What answers it comes under it.
+fn routine_row(rows: &Rows, key: u64, text: &str, window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let Some(ran) = crate::routine::ran(text) else { return div().into_any_element() };
+    let open = rows.is_open(key, PART_ROUTINE, false);
+    let progress = motion::openness(("routine-open", key), open, window, cx);
+    let head = disclosure_head(rows, ("routine", key), PART_ROUTINE, key, false, window, cx)
+        .child(icon(Icon::Clock, 13., p.accent))
+        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t!("chat.routine_ran", title = ran.title)))
+        .when(!ran.asked.is_empty(), |h| h.child(chevron(p.muted, progress)));
+    let body = (progress > 0. && !ran.asked.is_empty()).then(|| {
+        let state = rows.views.borrow_mut().get(view_key(key, 4), &escape_markdown(ran.asked), cx);
+        let look = Look { size: SMALL, line: SMALL_LINE, color: p.muted, live: false };
+        motion::Reveal::new(
+            ("routine-body", key),
+            progress,
+            div()
+                .opacity(progress)
+                .pt_1()
+                .ml(px(6.))
+                .pl(px(12.))
+                .border_l_1()
+                .border_color(p.hair)
+                .text_size(px(SMALL))
+                .line_height(px(SMALL_LINE))
+                .text_color(p.muted)
+                .child(view::configure(TextView::new(&state), p, look, key, Arc::default()))
+                .into_any_element(),
+        )
+    });
+    v_flex().id(("routine-ran", key)).role(Role::Article).aria_label(t!("chat.routine_ran", title = ran.title)).mt_4().child(head).children(body).into_any_element()
 }
 
 /// Your words as Markdown that shows them as typed: every mark escaped, every

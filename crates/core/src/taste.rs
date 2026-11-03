@@ -4,8 +4,20 @@
 //! one fact of the squad's memory — never left to the designer to remember.
 //! It had kept two of more than six decisions. Newest first, the oldest let
 //! go past a few dozen. No runtime types here.
+//!
+//! What it comes to is kept apart, for the person to see and edit on the
+//! design screen ("취향과 결정"): the notes the designer follows (`notes`),
+//! and the decisions made, each with why (`decisions`) — where both live
+//! and how they are read and written is `store`'s.
 
-use crate::protocol::decide::{Answer, QuestionSet};
+pub mod decisions;
+pub mod evidence;
+pub mod notes;
+pub mod store;
+
+pub use store::{NOTES_NAME, record};
+
+use crate::protocol::decide::{Answer, QuestionSet, Reaction};
 
 /// The fact's name in the squad's memory, and its line in the index.
 pub const NAME: &str = "design taste";
@@ -19,7 +31,18 @@ pub fn decided(set: &QuestionSet, answers: &[Answer], today: &str) -> Option<Str
     let mut lines = Vec::new();
     for (question, answer) in set.questions.iter().zip(answers) {
         let label = |i: &usize| question.options.get(*i).map(|o| o.label.trim().trim_end_matches("(Recommended)").trim().to_owned());
-        let chose: Vec<String> = answer.picked.iter().filter_map(label).collect();
+        let mut chose: Vec<String> = answer.picked.iter().filter_map(label).collect();
+        // A mix: the one taken, with what of another; another round: none.
+        match &answer.reaction {
+            Some(Reaction::Mix { base, from, aspect }) => chose = label(base).zip(label(from)).map(|(b, f)| format!("{b} with the {aspect} of {f}")).into_iter().collect(),
+            Some(Reaction::Again) => {
+                let all: Vec<String> = (0..question.options.len()).filter_map(|i| label(&i)).collect();
+                let said = answer.other.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| format!("; in their words: \u{201c}{s}\u{201d}")).unwrap_or_default();
+                lines.push(format!("- {} → none of {}: asked for another round{said}", question.question.trim(), all.join(", ")));
+                continue;
+            }
+            None => {}
+        }
         let passed: Vec<String> = (0..question.options.len()).filter(|i| !answer.picked.contains(i)).filter_map(|i| label(&i)).collect();
         let said = answer.other.as_deref().map(str::trim).filter(|s| !s.is_empty());
         if chose.is_empty() && said.is_none() {
@@ -86,15 +109,16 @@ mod tests {
                 Question { question: "Anything else?".into(), ..Default::default() },
             ],
             asked_at: 0,
+            review: false,
         }
     }
 
     #[test]
     fn what_the_person_chose_passed_over_and_said_is_kept_as_their_taste() {
         let answers = vec![
-            Answer { picked: vec![0], other: Some("좀 더 숨 쉬게".into()) },
-            Answer { picked: vec![1], other: None },
-            Answer { picked: vec![], other: Some("  ".into()) },
+            Answer { picked: vec![0], other: Some("좀 더 숨 쉬게".into()), ..Answer::default() },
+            Answer::pick(1),
+            Answer { other: Some("  ".into()), ..Answer::default() },
         ];
         let entry = decided(&set(), &answers, "2026-11-03").unwrap();
         assert!(entry.starts_with("## 2026-11-03 · T-272 (designer)"), "{entry}");
@@ -102,6 +126,14 @@ mod tests {
         assert!(entry.contains("Accent colour? → chose Clay; passed over Blue"), "{entry}");
         assert!(!entry.contains("Anything else?"), "nothing said, nothing kept");
         assert_eq!(decided(&set(), &[Answer::default(), Answer::default(), Answer::default()], "2026-11-03"), None);
+    }
+
+    #[test]
+    fn a_mix_and_another_round_are_kept_as_what_they_were() {
+        let answers = vec![Answer::mix(1, 2, "type"), Answer::again(Some("너무 차가워".into())), Answer::default()];
+        let entry = decided(&set(), &answers, "2026-11-04").unwrap();
+        assert!(entry.contains("Which hero layout? → chose A: dense, two columns with the type of C: full-bleed image; passed over B: airy, one column, C: full-bleed image"), "{entry}");
+        assert!(entry.contains("Accent colour? → none of Blue, Clay: asked for another round; in their words: \u{201c}너무 차가워\u{201d}"), "{entry}");
     }
 
     #[test]

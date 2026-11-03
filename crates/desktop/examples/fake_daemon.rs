@@ -46,7 +46,9 @@
 //! member as the person's message and it replies. `FAKE_DECIDE=logo` puts
 //! the designer's logo question first, each option its picture, and has the
 //! designer's brand guide (T-144) handed in with its pictures
-//! (`fake_daemon/pictures.rs`).
+//! (`fake_daemon/pictures.rs`); `FAKE_DECIDE=brand` puts the designer's three
+//! brand directions first instead, each on the product's home screen, with
+//! the aspects the person can mix.
 //!
 //! `FAKE_REPLY_IMAGES=1`: the PM's last reply shows the designer's drafts
 //! for T-2 — three pictures it embeds and the folder they are in — from "the
@@ -64,6 +66,10 @@
 //!
 //! `FAKE_ROUTINE=1`: the PM proposes a weekly routine, for the person to turn
 //! on from a card (`fake_daemon/routine.rs`; `daily`: a second one).
+//!
+//! `FAKE_DESIGN_REVIEW=1`: the designer's weekly design review has come — its
+//! routine's message and the review in the designer's conversation, its
+//! proposal waiting in 나에게 as a visual question (`fake_daemon/review.rs`).
 //!
 //! `FAKE_ACCEPT=1`: the PM puts T-42 and T-71 to the person on a card to
 //! confirm accepting them (`fake_daemon/accept.rs`; `merge`, `words`).
@@ -84,7 +90,7 @@
 //! `FAKE_DESIGN=1`: the squad's design system and the web project's own,
 //! modelled on T-144's brand guideline; `draft`: T-144 in review with its
 //! draft; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
-//! `read_image`, as from the daemon.
+//! `read_image`, as from the daemon. `FAKE_NO_DESIGNER=1`: a team with no designer.
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
@@ -452,6 +458,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                     },
                 ],
                 asked_at: now.saturating_sub(90),
+                review: false,
             },
             QuestionSet {
                 id: 9002,
@@ -466,10 +473,15 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                     ..Question::default()
                 }],
                 asked_at: now.saturating_sub(30),
+                review: false,
             },
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
-        std::sync::Mutex::new(if deciding().is_some() { sets } else { Vec::new() })
+        let mut waiting = if deciding().is_some() { sets } else { Vec::new() };
+        if review::on() {
+            waiting.insert(0, review::set(now));
+        }
+        std::sync::Mutex::new(waiting)
     })
 }
 
@@ -915,6 +927,9 @@ mod design;
 #[path = "fake_daemon/flows.rs"]
 mod flows;
 
+#[path = "fake_daemon/review.rs"]
+mod review;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -948,7 +963,7 @@ async fn main() {
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
     design::seed();
-    if pictures::on() {
+    if pictures::on() || review::on() {
         pictures::make();
     }
     replies::make();
@@ -1070,7 +1085,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             tokio::spawn(async move {
                                 let after = std::env::var("FAKE_DECIDE_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
                                 tokio::time::sleep(Duration::from_millis(after)).await;
-                                close_questions(9001, Some(vec![Answer { picked: vec![1], other: None }, Answer { picked: vec![0, 2], other: Some("설정은 알림만".into()) }]), &events);
+                                close_questions(9001, Some(vec![Answer { picked: vec![1], ..Default::default() }, Answer { picked: vec![0, 2], other: Some("설정은 알림만".into()), ..Default::default() }]), &events);
                             });
                         }
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
@@ -1080,6 +1095,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // Settings have something to show: a member on its own mode and effort, rules kept.
                         let mut designer = designer;
                         designer.mode = Some(equipe_core::protocol::Mode::Ask);
+                        if review::on() {
+                            designer.work = None;
+                            designer.recent = review::history();
+                        }
                         let mut backend = backend;
                         backend.effort = Some("high".into());
                         let mut frontend = frontend;
@@ -1137,6 +1156,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             pm_info.state = SessionState::Working;
                         }
                         let mut sessions = vec![pm_info, frontend, backend, designer];
+                        if std::env::var_os("FAKE_NO_DESIGNER").is_some() {
+                            sessions.pop();
+                        }
                         if busy() {
                             for (ticket, session, name, title) in BUSY {
                                 let role = name.split('-').next().unwrap_or(name);

@@ -3,7 +3,7 @@
 //! keeps them (`equipe_protocol::design::FlowMap`, in `Event::Design`) — what
 //! is counted, what is missing or stale, which picture of a state is shown
 //! for the mode and width picked, which recording of a flow to watch, and
-//! the message that talks about one. No UI types beyond the strip's scroll
+//! what a state is called when the person talks about it. No UI types beyond the strip's scroll
 //! and the recordings' first frames, so the rules can be tested.
 
 use std::collections::HashMap;
@@ -232,26 +232,10 @@ pub fn context(flow: &Flow, screen: &Screen, state: &str) -> String {
     format!("{} › {} › {}", flow.title, screen.title, state)
 }
 
-/// The message about a screen: what it is about as a quote (as asking about
-/// words of the conversation sends it, `quote::message`), the person's words,
-/// then the picture shown, attached as the composer attaches one (a tag on
-/// the daemon's machine's path). Nothing: no words.
-pub fn talk_message(about: &str, words: &str, picture: Option<&str>) -> Option<String> {
-    let words = words.trim();
-    if words.is_empty() {
-        return None;
-    }
-    let text = crate::quote::message(about, words);
-    Some(match picture {
-        Some(path) => crate::attach::message(&text, &format!("[image: {path}] ")),
-        None => text,
-    })
-}
-
 // ── the tab's state ──
 
 /// Where the person is in the map: the flow, the screen open below the
-/// strip and the state on show, the mode and width picked, who to talk to.
+/// strip and the state on show, the mode and width picked.
 #[derive(Default)]
 pub struct MapUi {
     /// The flow on show, by id; `None`: the first.
@@ -264,8 +248,6 @@ pub struct MapUi {
     pub mode: Option<String>,
     /// The width picked; `None`: the narrowest.
     pub width: Option<u32>,
-    /// Talking to the PM rather than the designer.
-    pub to_pm: bool,
     /// The state's picture shown big.
     pub zoomed: bool,
     pub problems_open: bool,
@@ -370,7 +352,7 @@ impl MapUi {
     /// The daemon's word: the place kept where it still is.
     pub fn arrived(&mut self, map: Option<&FlowMap>) {
         let Some(map) = map else {
-            *self = Self { mode: self.mode.take(), width: self.width, to_pm: self.to_pm, posters: std::mem::take(&mut self.posters), ..Self::default() };
+            *self = Self { mode: self.mode.take(), width: self.width, posters: std::mem::take(&mut self.posters), ..Self::default() };
             return;
         };
         if self.flow.as_ref().is_some_and(|id| !map.flows.iter().any(|f| &f.id == id)) {
@@ -397,7 +379,7 @@ mod tests {
     use super::*;
 
     fn picture(mode: &str, width: u32) -> Picture {
-        Picture { path: format!("/d/flows/x/{mode}.{width}.png"), mode: mode.into(), width, taken: 1 }
+        Picture { path: format!("/d/flows/x/{mode}.{width}.png"), mode: mode.into(), width, taken: 1, hash: None }
     }
 
     fn state(id: &str, kind: &str, pictures: Vec<Picture>) -> ScreenState {
@@ -484,17 +466,9 @@ mod tests {
     }
 
     #[test]
-    fn the_message_quotes_where_the_screen_is_then_the_words_and_the_picture() {
+    fn a_state_is_called_by_its_flow_its_screen_and_its_name() {
         let about = context(&map().flows[0], &map().flows[0].screens[0], "오류");
         assert_eq!(about, "온보딩 › login › 오류");
-        assert_eq!(
-            talk_message(&about, "  버튼이 너무 작아요 \n", Some("/h/design/flows/onboarding/login/error.dark.390.png")).unwrap(),
-            "> 온보딩 › login › 오류\n\n버튼이 너무 작아요 [image: /h/design/flows/onboarding/login/error.dark.390.png]"
-        );
-        assert_eq!(talk_message(&about, "그려 주세요", None).unwrap(), "> 온보딩 › login › 오류\n\n그려 주세요");
-        assert_eq!(talk_message(&about, "   ", Some("/p.png")), None, "nothing said: nothing sent");
-        let tags = equipe_core::protocol::tags::find(&talk_message(&about, "x", Some("/p.png")).unwrap());
-        assert_eq!(tags.len(), 1, "the picture reads as an attachment");
     }
 
     #[test]

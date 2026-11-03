@@ -1083,7 +1083,7 @@ pub(crate) mod tests {
         // A member's questions are the person's to answer, or close, from a phone too.
         let answer = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "answer_questions", "squad": "acme", "id": 5, "answers": [{ "picked": [1] }, {}] } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), answer, now), now);
-        let answers = vec![equipe_core::protocol::decide::Answer { picked: vec![1], other: None }, Default::default()];
+        let answers = vec![equipe_core::protocol::decide::Answer { picked: vec![1], ..Default::default() }, Default::default()];
         assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::AnswerQuestions { squad: "acme".into(), id: 5, answers, about: None } }]);
         let dismiss = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "acme", "id": 5 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), dismiss, now), now)[..], [Action::Command { command: Command::DismissQuestions { .. }, .. }]));
@@ -1218,6 +1218,7 @@ pub(crate) mod tests {
             ticket: Some(4),
             questions: vec![Question { question: long.clone(), header: "DB".into(), options: vec![option("Postgres"), option("SQLite")], multi_select: false, ..Question::default() }; 2],
             asked_at: 1,
+            review: false,
         };
         let out = core.on_squad_event("acme", &Event::QuestionsAsked { squad: "acme".into(), questions: set });
         let Action::Relay(push) = &out[0] else { panic!() };

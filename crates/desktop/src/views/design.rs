@@ -8,8 +8,10 @@
 //! here), 간격 · 모서리 · 그림자 · 모션 (specimens; a curve plays under the
 //! pointer), 에셋 (pictures on a checkerboard, big in a lightbox) and
 //! 가이드라인 (guidelines.md with its contents). With none yet, what one is
-//! and a way to ask the designer. ←/→ or 1–9 move between sections. Its
-//! other tab, 화면 지도, is `views/flows.rs`.
+//! and a way to ask the designer. Each colour, type style and picture has
+//! "말하기" on hover: it goes, as a chip, to the designer's conversation
+//! docked at the right (`views/design_talk.rs`). ←/→ or 1–9 move between
+//! sections. Its other tab, 화면 지도, is `views/flows.rs`.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -19,7 +21,7 @@ use std::time::{Duration, Instant};
 use equipe_core::design::contrast::{self, Grade};
 use equipe_core::design::diff::Change;
 use equipe_core::design::values::{self, Color};
-use equipe_core::protocol::design::{AssetKind, DesignSystem, Token};
+use equipe_core::protocol::design::{AssetKind, DesignSystem, Taste, Token};
 use equipe_core::protocol::Command;
 use equipe_core::t;
 use gpui_kit::component::*;
@@ -27,6 +29,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::design::{self as ds, Section};
+use crate::design_talk::DesignContext;
 use crate::flows::Tab;
 use crate::visuals::{Look as Shown, Size};
 use crate::icons::{Icon, icon};
@@ -71,6 +74,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let body: AnyElement = match ui.current() {
         _ if !ui.loaded => waiting(shell),
         _ if tab == Tab::Map => super::flows::page(shell, cx),
+        None if ui.section == Section::Taste => super::design_taste::page(shell, cx),
         None => empty(shell, cx),
         Some(system) => page(shell, system, cx),
     };
@@ -81,11 +85,15 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .relative()
         .bg(p.bg)
         .child(header(shell, cx))
-        .children(ui.loaded.then(|| ui.current().filter(|s| s.draft.is_some()).map(|s| draft_banner(shell, s, cx))).flatten())
+        .children(ui.compare.then(|| super::compare::bar(shell, cx)))
+        .children((ui.loaded && !ui.compare).then(|| ui.current().filter(|s| s.draft.is_some()).map(|s| draft_banner(shell, s, cx))).flatten())
         .children(super::design_setup::band(shell, cx))
         .children((ui.loaded && tab == Tab::System).then(|| ui.current().map(|s| tabs(shell, s, cx))).flatten())
         .child(body)
         .children(changes_popover(shell, cx))
+        .children(super::compare::versions_popover(shell, cx))
+        // 수락 and 다시 부탁 wait a moment, to be taken back, as on the board.
+        .children(super::board::toast(shell, cx))
         .into_any_element()
 }
 
@@ -163,8 +171,22 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             })
             .tip(p, if viewing { t!("design.back_to_accepted").to_owned() } else { t!("design.view_draft", title = d.title) }, None);
         bar = bar.child(pill);
+        if ui.can_compare() && !ui.compare {
+            bar = bar.child(
+                ui::button(p, "design-compare", ui::Kind::Secondary, t!("design.compare_start"))
+                    .tip(t!("design.compare_start_tip"), None)
+                    .on_click(cx.listener(|this, _, _, cx| this.design_compare(true, cx))),
+            );
+        }
     }
     bar = bar.child(div().flex_1());
+    if ui.loaded && ui.accepted_of(&ui.source).is_some() {
+        bar = bar.child(
+            ui::icon_button(p, "design-versions", Icon::Clock, t!("design.versions_title"), None)
+                .selected(ui.versions_open)
+                .on_click(cx.listener(|this, _, _, cx| this.design_versions(!this.design.versions_open, cx))),
+        );
+    }
     if !changes.is_empty() {
         let n = changes.len();
         bar = bar.child(
@@ -205,7 +227,8 @@ fn tabs(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> impl I
     let mut row = h_flex().id("design-tabs").flex_none().h(px(40.)).px(px(PAD)).gap_1().items_end().border_b_1().border_color(p.hair).overflow_x_scroll();
     for (n, section) in ds::sections(system).into_iter().enumerate() {
         let active = section == on;
-        let count = ds::count(system, section).filter(|c| *c > 0 && section != Section::Guidelines);
+        let count = if section == Section::Taste { shell.design.current_taste().map(|t| t.notes.len()) } else { ds::count(system, section) };
+        let count = count.filter(|c| *c > 0 && section != Section::Guidelines);
         row = row.child(
             v_flex()
                 .id(SharedString::from(format!("design-tab-{n}")))
@@ -319,11 +342,15 @@ fn empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                             .child(point(t!("design.empty_assets").into())),
                     )
                     .child(
-                        h_flex().pt_2().gap_2().child(
-                            ui::button(p, "design-ask", ui::Kind::Primary, if has_designer { t!("design.ask_designer") } else { t!("design.ask_pm") })
-                                .icon(Icon::Message)
-                                .on_click(cx.listener(|this, _, window, cx| this.design_ask_designer(window, cx))),
-                        ),
+                        h_flex()
+                            .pt_2()
+                            .gap_2()
+                            .child(
+                                ui::button(p, "design-ask", ui::Kind::Primary, if has_designer { t!("design.ask_designer") } else { t!("design.ask_pm") })
+                                    .icon(Icon::Message)
+                                    .on_click(cx.listener(|this, _, window, cx| this.design_ask_designer(window, cx))),
+                            )
+                            .child(ui::button(p, "design-taste-open", ui::Kind::Secondary, t!("design.taste_tab")).on_click(cx.listener(|this, _, _, cx| this.design_section(Section::Taste, cx)))),
                     )
                     .when(!folder.is_empty(), |d| {
                         d.child(
@@ -342,7 +369,7 @@ fn empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 }
 
 /// `~/…` for a path under the person's home.
-fn short_home(path: &str) -> String {
+pub(super) fn short_home(path: &str) -> String {
     match std::env::var("HOME") {
         Ok(home) if !home.is_empty() && path.starts_with(&home) => format!("~{}", &path[home.len()..]),
         _ => path.to_owned(),
@@ -355,6 +382,9 @@ fn page(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyEle
     if section == Section::Guidelines {
         return guidelines(shell, system, cx);
     }
+    if section == Section::Taste {
+        return super::design_taste::page(shell, cx);
+    }
     let content: AnyElement = match section {
         Section::Overview => overview(shell, system, cx),
         Section::Colors => colors(shell, system, cx),
@@ -364,7 +394,7 @@ fn page(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyEle
         Section::Shadow => shadows(shell, system, cx),
         Section::Motion => motion_section(shell, system, cx),
         Section::Assets => assets(shell, system, cx),
-        Section::Guidelines => unreachable!(),
+        Section::Guidelines | Section::Taste => unreachable!(),
     };
     div()
         .id("design-body")
@@ -460,7 +490,7 @@ fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> An
                 if !on {
                     continue;
                 }
-                row = row.child(logo_tile(shell, *ix, &logo.path, bg, mode, cx));
+                row = row.child(logo_tile(shell, *ix, logo, bg, mode, cx));
             }
         }
         col = col.child(v_flex().child(heading(p, t!("design.logos").into(), None)).child(row));
@@ -558,14 +588,17 @@ pub(super) fn problems(shell: &Shell, problems: &[String], map: bool, cx: &mut C
 }
 
 /// A logo on the system's own light or dark background.
-fn logo_tile(shell: &Shell, ix: usize, path: &str, bg: Color, mode: &str, cx: &mut Context<Shell>) -> AnyElement {
+fn logo_tile(shell: &Shell, ix: usize, logo: &equipe_core::protocol::design::Asset, bg: Color, mode: &str, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let face = picture(shell, path, if ds::is_dark(bg) { rgba(0xFFFFFF99) } else { rgba(0x00000080) });
+    let face = picture(shell, &logo.path, if ds::is_dark(bg) { rgba(0xFFFFFF99) } else { rgba(0x00000080) });
+    let group = SharedString::from(format!("logo-{ix}-{mode}"));
     v_flex()
         .gap_1p5()
         .child(
             div()
                 .id(SharedString::from(format!("design-logo-{ix}-{mode}")))
+                .group(group.clone())
+                .relative()
                 .w(px(260.))
                 .h(px(156.))
                 .p(px(32.))
@@ -578,6 +611,7 @@ fn logo_tile(shell: &Shell, ix: usize, path: &str, bg: Color, mode: &str, cx: &m
                 .justify_center()
                 .cursor_pointer()
                 .child(face)
+                .child(say_corner(p, format!("design-say-logo-{ix}-{mode}"), group, asset_context(logo), cx))
                 .on_click(cx.listener(move |this, _, _, cx| this.design_lightbox(Some(ix), cx))),
         )
         .child(div().text_size(px(META)).text_color(p.muted).child(if mode == "dark" { t!("design.on_dark") } else { t!("design.on_light") }))
@@ -593,7 +627,11 @@ fn lead_chip(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Conte
         block = block.child(color_cell(shell, &token.name, mode.as_deref(), *c, cx));
     }
     let hex = modes.first().map(|(_, c)| c.hex()).unwrap_or_default();
+    let group = SharedString::from(format!("lead-{}", token.name));
     v_flex()
+        .id(SharedString::from(format!("design-lead-{}", token.name)))
+        .group(group.clone())
+        .relative()
         .w(px(132.))
         .rounded(px(R_LG))
         .border_1()
@@ -601,6 +639,7 @@ fn lead_chip(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Conte
         .bg(p.raised)
         .child(block)
         .child(v_flex().px_2p5().py_2().gap_0p5().child(div().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).truncate().child(token.leaf().to_owned())).child(div().font_family(MONO).text_size(px(11.)).text_color(p.muted).child(hex)))
+        .child(say_corner(p, format!("design-say-lead-{}", token.name), group, token_context(system, token), cx))
         .into_any_element()
 }
 
@@ -708,9 +747,36 @@ fn color_cell(shell: &Shell, name: &str, mode: Option<&str>, c: Color, cx: &mut 
         .into_any_element()
 }
 
+/// A colour token as the person points at it: its value in light (or its
+/// one value) and in dark.
+fn token_context(system: &DesignSystem, token: &Token) -> DesignContext {
+    let modes = modes_of(system, token);
+    let dark = |m: &Option<String>| m.as_deref().is_some_and(|m| m.to_ascii_lowercase().contains("dark"));
+    let light = modes.iter().find(|(m, _)| !dark(m)).or(modes.first()).map(|(_, c)| c.hex()).unwrap_or_else(|| values::describe(&token.kind, &token.value));
+    let value_dark = modes.iter().find(|(m, _)| dark(m)).map(|(_, c)| c.hex());
+    DesignContext::Token { name: token.name.clone(), value_light: light, value_dark }
+}
+
+/// A type style as the person points at it.
+fn type_context(token: &Token) -> DesignContext {
+    DesignContext::TypeStyle { name: token.name.clone(), sample: values::describe(&token.kind, &token.value) }
+}
+
+/// A picture of the system's as the person points at it.
+fn asset_context(asset: &equipe_core::protocol::design::Asset) -> DesignContext {
+    DesignContext::Asset { name: asset.name.clone(), path: asset.path.clone() }
+}
+
+/// "말하기" in a thing's top right corner, on hover.
+fn say_corner(p: Palette, id: String, group: SharedString, ctx: DesignContext, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    div().absolute().top(px(8.)).right(px(8.)).child(super::design_talk::say(p, SharedString::from(id), group, ctx, cx))
+}
+
 fn swatch(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let modes = modes_of(system, token);
+    let group = SharedString::from(format!("swatch-{}", token.name));
+    let say = say_corner(p, format!("design-say-{}", token.name), group.clone(), token_context(system, token), cx);
     let mut block = h_flex().h(px(SWATCH_H)).border_b_1().border_color(p.hair);
     for (mode, c) in &modes {
         block = block.child(color_cell(shell, &token.name, mode.as_deref(), *c, cx));
@@ -749,6 +815,9 @@ fn swatch(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Context<
     }
     let changed = shell.design_changed(&token.name);
     v_flex()
+        .id(SharedString::from(format!("design-swatch-{}", token.name)))
+        .group(group)
+        .relative()
         .w(px(SWATCH_W))
         .rounded(px(R_LG))
         .overflow_hidden()
@@ -773,6 +842,7 @@ fn swatch(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Context<
                 .child(rows)
                 .children(token.alias.as_ref().map(|a| div().font_family(MONO).text_size(px(10.5)).text_color(p.muted).truncate().child(format!("→ {a}")))),
         )
+        .child(say)
         .into_any_element()
 }
 
@@ -830,8 +900,12 @@ fn typography(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> 
                 div().font_family(SharedString::from(shown.clone())).font_weight(FontWeight(f32::from(weight))).text_size(px(size)).line_height(px(line)).text_color(p.text).truncate().child(text)
             };
             let changed = shell.design_changed(&token.name);
+            let group = SharedString::from(format!("type-{}", token.name));
             col = col.child(
                 h_flex()
+                    .id(SharedString::from(format!("design-type-{}", token.name)))
+                    .group(group.clone())
+                    .relative()
                     .py_4()
                     .gap_6()
                     .items_start()
@@ -848,7 +922,8 @@ fn typography(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> 
                             .when(!exact && wanted.is_some(), |c| c.child(font_missing(p, wanted.clone().unwrap_or_default(), shown.clone())))
                             .children(token.description.clone().map(|d| div().text_size(px(META)).text_color(p.muted).child(d))),
                     )
-                    .child(v_flex().flex_1().min_w_0().gap_1().overflow_hidden().child(sample(local.to_owned())).when(!english_lang, |c| c.child(sample(english.to_owned())))),
+                    .child(v_flex().flex_1().min_w_0().gap_1().overflow_hidden().child(sample(local.to_owned())).when(!english_lang, |c| c.child(sample(english.to_owned()))))
+                    .child(say_corner(p, format!("design-say-type-{}", token.name), group, type_context(token), cx)),
             );
         }
     }
@@ -1111,6 +1186,7 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
                 .cursor_pointer()
                 .child(img(checkerboard(stage_dark)).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
                 .child(div().absolute().inset_0().p_5().flex().items_center().justify_center().child(picture(shell, &path, p.muted)))
+                .child(div().absolute().top(px(8.)).left(px(8.)).child(super::design_talk::say(p, SharedString::from(format!("design-say-asset-{ix}")), group.clone(), asset_context(asset), cx)))
                 .child(
                     h_flex()
                         .absolute()
@@ -1371,7 +1447,7 @@ impl Shell {
     }
 
     /// The daemon said what the squad's design systems are.
-    pub fn design_arrived(&mut self, squad: String, systems: Vec<DesignSystem>, folder: String) -> bool {
+    pub fn design_arrived(&mut self, squad: String, systems: Vec<DesignSystem>, folder: String, taste: Vec<Taste>) -> bool {
         if squad != self.model.squad {
             return false;
         }
@@ -1381,7 +1457,8 @@ impl Shell {
         }
         let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
         let key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
-        self.design.arrived(systems, folder, &key);
+        self.design.arrived(systems, folder, taste, &key);
+        self.design_versions_follow();
         true
     }
 
@@ -1400,11 +1477,13 @@ impl Shell {
                 self.design.lightbox = None;
                 self.design.map.zoomed = false;
                 self.design.changes_open = false;
+                self.design.versions_open = false;
             }
         }
         if !on {
             return;
         }
+        self.design.wide = crate::compare::side_by_side(f32::from(window.viewport_size().width));
         if self.design.fonts.is_none() {
             self.design.fonts = Some(window.text_system().all_font_names().into_iter().map(|f| f.to_ascii_lowercase()).collect());
         }
@@ -1425,6 +1504,11 @@ impl Shell {
         }
         self.design_load_pictures(cx);
         self.flows_load_pictures(cx);
+        // The conversation beside it is the designer's (or the PM's): once
+        // this frame is drawn, the one on screen and in the box becomes theirs.
+        if self.design_talk_open(window, cx) && self.design_talk_behind() {
+            cx.defer_in(window, |this, window, cx| this.design_talk_follow(window, cx));
+        }
     }
 
     /// The person looked: what is on screen is what they have seen.
@@ -1449,12 +1533,13 @@ impl Shell {
         if self.design_tab() != Tab::System {
             return;
         }
-        let Some(system) = self.design.current() else { return };
-        let big = self.design.lightbox.and_then(|at| system.assets.get(at)).map(|a| a.path.clone());
+        let decided = self.design_taste_pictures();
+        let system = self.design.current();
+        let big = self.design.lightbox.and_then(|at| system?.assets.get(at)).map(|a| a.path.clone());
         let wanted = {
             let mut shots = self.shots.borrow_mut();
-            for asset in &system.assets {
-                let _: Shown = shots.look(&asset.path, Size::Thumb);
+            for path in system.iter().flat_map(|s| s.assets.iter().map(|a| &a.path)).chain(&decided) {
+                let _: Shown = shots.look(path, Size::Thumb);
             }
             if let Some(path) = &big {
                 let _ = shots.look(path, Size::Full);
@@ -1481,24 +1566,26 @@ impl Shell {
             self.design_end_look();
             self.design.source = key.to_owned();
             self.design.draft = false;
+            self.design.end_compare();
             let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
             let seen_key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
             let systems = std::mem::take(&mut self.design.systems);
             let folder = self.design.folder.clone();
-            self.design.arrived(systems, folder, &seen_key);
+            let taste = std::mem::take(&mut self.design.taste);
+            self.design.arrived(systems, folder, taste, &seen_key);
+            self.design_taste_cancel(cx);
             self.design.scroll.set_offset(point(px(0.), px(0.)));
+            if self.design.versions_open {
+                self.design.versions_asked = None;
+                self.design_versions_follow();
+            }
         }
         cx.notify();
     }
 
     pub fn design_toggle_draft(&mut self, cx: &mut Context<Self>) {
-        self.design.draft = !self.design.draft;
-        self.design.lightbox = None;
-        if let Some(system) = self.design.current()
-            && ds::count(system, self.design.section).is_none()
-        {
-            self.design.section = Section::Overview;
-        }
+        let side = if self.design.draft { crate::compare::Side::Now } else { crate::compare::Side::After };
+        self.design.show_side(side);
         cx.notify();
     }
 
@@ -1634,14 +1721,43 @@ impl Shell {
             }
             return true;
         }
-        if key == "escape" && (self.design.changes_open || self.design.sources_open) {
+        if key == "escape" && self.design_taste.editing() {
+            self.design_taste_cancel(cx);
+            return true;
+        }
+        if key == "escape" && (self.design.changes_open || self.design.sources_open || self.design.versions_open || self.design.redo_open) {
             self.design.changes_open = false;
             self.design.sources_open = false;
+            self.design.versions_open = false;
+            self.design.redo_open = false;
             cx.notify();
             return true;
         }
+        // The words being written beside it keep their keys.
+        if self.composer.is_focused(window, cx) {
+            return false;
+        }
+        if self.design_redo.read(cx).focus_handle(cx).is_focused(window) {
+            return false;
+        }
+        // 수락 or 다시 부탁 held a moment: U takes it back, as on the board.
+        if key == "u" && !self.board.undo.pending.is_empty() {
+            self.board_undo(cx);
+            return true;
+        }
+        if self.design.compare && self.design_tab() == Tab::Map && matches!(key, "left" | "right") {
+            self.design_step_changed(key == "right", cx);
+            return true;
+        }
+        if self.design_tab() == Tab::Map && self.on_flows_key(key, window, cx) {
+            return true;
+        }
+        if key == "escape" && self.design.compare {
+            self.design_compare(false, cx);
+            return true;
+        }
         if self.design_tab() == Tab::Map {
-            return self.on_flows_key(key, window, cx);
+            return false;
         }
         let Some(system) = self.design.current() else { return false };
         let sections = ds::sections(system);
@@ -1656,6 +1772,20 @@ impl Shell {
             self.design_section(sections[to], cx);
         }
         true
+    }
+
+    /// Dev tool (`snapshot.rs`): "말하기" on a colour or type style by its
+    /// name, or on asset `asset:<n>`.
+    #[cfg(feature = "snapshot")]
+    pub fn design_point_named(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(system) = self.design.current() else { return };
+        let ctx = match what.strip_prefix("asset:") {
+            Some(n) => n.parse::<usize>().ok().and_then(|n| system.assets.get(n)).map(asset_context),
+            None => system.tokens.iter().find(|t| t.name == what).map(|t| if t.kind == "color" { token_context(system, t) } else { type_context(t) }),
+        };
+        if let Some(ctx) = ctx {
+            self.design_point_at(ctx, window, cx);
+        }
     }
 }
 

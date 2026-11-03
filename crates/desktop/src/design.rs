@@ -12,7 +12,9 @@ use std::time::Instant;
 use equipe_core::design::contrast;
 use equipe_core::design::diff::{self, Change, Seen};
 use equipe_core::design::values;
-use equipe_core::protocol::design::{AssetKind, DesignSystem, Token};
+use equipe_core::protocol::design::{AssetKind, DesignSystem, DesignVersion, FlowMap, Taste, TasteFrom, TasteNote, Token};
+
+use crate::compare::{self, Side};
 use gpui_kit::ScrollHandle;
 
 /// The screen's sections, in their order.
@@ -27,10 +29,12 @@ pub enum Section {
     Motion,
     Assets,
     Guidelines,
+    /// 취향과 결정: the person's taste notes and the decisions made.
+    Taste,
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [Section::Overview, Section::Colors, Section::Typography, Section::Spacing, Section::Radius, Section::Shadow, Section::Motion, Section::Assets, Section::Guidelines];
+    pub const ALL: [Section; 10] = [Section::Overview, Section::Colors, Section::Typography, Section::Spacing, Section::Radius, Section::Shadow, Section::Motion, Section::Assets, Section::Guidelines, Section::Taste];
 
     /// Its word in the locale files.
     pub fn key(self) -> &'static str {
@@ -44,6 +48,7 @@ impl Section {
             Section::Motion => "design.section_motion",
             Section::Assets => "design.section_assets",
             Section::Guidelines => "design.section_guidelines",
+            Section::Taste => "design.taste_tab",
         }
     }
 
@@ -64,6 +69,7 @@ impl Section {
             "motion" => Section::Motion,
             "assets" => Section::Assets,
             "guidelines" => Section::Guidelines,
+            "taste" => Section::Taste,
             _ => return None,
         })
     }
@@ -93,7 +99,8 @@ pub fn tokens_in(system: &DesignSystem, section: Section) -> Vec<&Token> {
 /// How many things a section shows; `None` for one that has nothing to.
 pub fn count(system: &DesignSystem, section: Section) -> Option<usize> {
     let n = match section {
-        Section::Overview => return Some(0),
+        // Always there, to invite the first note.
+        Section::Overview | Section::Taste => return Some(0),
         Section::Assets => system.assets.len(),
         Section::Guidelines => return system.guidelines.as_ref().map(|g| headings(g).len()),
         other => tokens_in(system, other).len(),
@@ -294,6 +301,10 @@ pub fn save_seen(home: &Path, seen: &BTreeMap<String, Seen>) {
 
 pub struct DesignUi {
     pub systems: Vec<DesignSystem>,
+    /// The person's taste and the decisions made, by source.
+    pub taste: Vec<Taste>,
+    /// The notes whose evidence is open, by their words.
+    pub evidence_open: HashSet<String>,
     /// Where the squad's own would be.
     pub folder: String,
     /// The daemon answered since the screen asked.
@@ -330,12 +341,29 @@ pub struct DesignUi {
     pub on_screen: bool,
     /// 화면 지도: where the person is in the system's map.
     pub map: crate::flows::MapUi,
+    /// 보면서 말하기: the conversation docked beside it (`views/design_talk.rs`).
+    pub talk: crate::design_talk::TalkUi,
+    /// 비교하며 검토 under way: the draft held against the accepted system,
+    /// the side on show being `draft`'s.
+    pub compare: bool,
+    /// Its box for what to change, open.
+    pub redo_open: bool,
+    /// The window is wide enough for 지금 and 바뀐 뒤 side by side.
+    pub wide: bool,
+    /// 버전 기록 open.
+    pub versions_open: bool,
+    /// Each source's accepted versions, newest first, as the daemon last said.
+    pub versions: HashMap<String, Vec<DesignVersion>>,
+    /// The source asked for and not answered yet.
+    pub versions_asked: Option<String>,
 }
 
 impl Default for DesignUi {
     fn default() -> Self {
         Self {
             systems: Vec::new(),
+            taste: Vec::new(),
+            evidence_open: HashSet::new(),
             folder: String::new(),
             loaded: false,
             asked: None,
@@ -357,6 +385,13 @@ impl Default for DesignUi {
             toc_at: 0,
             on_screen: false,
             map: Default::default(),
+            talk: Default::default(),
+            compare: false,
+            redo_open: false,
+            wide: false,
+            versions_open: false,
+            versions: HashMap::new(),
+            versions_asked: None,
         }
     }
 }
@@ -399,16 +434,21 @@ impl DesignUi {
 
     /// The daemon's word: keep it, keep the person's place where it still is,
     /// and note what each system was when first seen this look.
-    pub fn arrived(&mut self, systems: Vec<DesignSystem>, folder: String, seen_key: &dyn Fn(&DesignSystem) -> String) {
+    pub fn arrived(&mut self, systems: Vec<DesignSystem>, folder: String, taste: Vec<Taste>, seen_key: &dyn Fn(&DesignSystem) -> String) {
         self.loaded = true;
         self.folder = folder;
         self.systems = systems;
+        self.taste = taste;
         if !self.sources().contains(&self.source) {
             self.source = self.sources().into_iter().next().unwrap_or_else(|| "squad".into());
             self.draft = false;
         }
         if self.draft_of(&self.source).is_none() {
             self.draft = false;
+        }
+        // The draft accepted, sent back or gone: nothing to compare.
+        if self.compare && !self.can_compare() {
+            self.end_compare();
         }
         for system in &self.systems {
             let key = seen_key(system);
@@ -431,6 +471,12 @@ impl DesignUi {
         {
             self.section = Section::Overview;
         }
+    }
+
+    /// The taste of the source on screen: the squad's when it has no system yet.
+    pub fn current_taste(&self) -> Option<&Taste> {
+        let key = self.current().map_or_else(|| "squad".to_owned(), base_key);
+        self.taste.iter().find(|t| t.key() == key)
     }
 
     /// A look begins: what changed is counted from what each system was last seen as.
@@ -477,6 +523,102 @@ impl DesignUi {
         *self = Self { seen, seen_loaded, fonts, ..Self::default() };
     }
 
+    // ── 비교하며 검토 ──
+
+    /// The source's accepted system.
+    pub fn accepted_of(&self, source: &str) -> Option<&DesignSystem> {
+        self.systems.iter().find(|s| s.draft.is_none() && base_key(s) == source)
+    }
+
+    /// Whether the system on screen has a draft to compare: both are here.
+    pub fn can_compare(&self) -> bool {
+        self.accepted_of(&self.source).is_some() && self.draft_of(&self.source).is_some()
+    }
+
+    /// The side on show.
+    pub fn side(&self) -> Side {
+        if self.draft { Side::After } else { Side::Now }
+    }
+
+    /// Comparing begins on 바뀐 뒤, the draft.
+    pub fn begin_compare(&mut self) -> bool {
+        if !self.can_compare() {
+            return false;
+        }
+        self.compare = true;
+        self.show_side(Side::After);
+        true
+    }
+
+    pub fn end_compare(&mut self) {
+        self.compare = false;
+        self.redo_open = false;
+    }
+
+    /// 지금 or 바뀐 뒤 on show: the whole screen flips, the place in the map kept where it is.
+    pub fn show_side(&mut self, side: Side) {
+        self.draft = side == Side::After && self.draft_of(&self.source).is_some();
+        self.lightbox = None;
+        let map = self.current().and_then(|s| s.flows.clone());
+        self.map.arrived(map.as_ref());
+        if let Some(system) = self.current()
+            && count(system, self.section).is_none()
+        {
+            self.section = Section::Overview;
+        }
+    }
+
+    /// The UI maps compared: the accepted one's and the draft's (an empty one
+    /// for a side that has none).
+    pub fn compared_maps(&self) -> Option<(FlowMap, FlowMap)> {
+        let (now, after) = (self.accepted_of(&self.source)?, self.draft_of(&self.source)?);
+        Some((now.flows.clone().unwrap_or_default(), after.flows.clone().unwrap_or_default()))
+    }
+
+    /// What the draft changed in the UI map, while comparing.
+    pub fn compare_changes(&self) -> Option<compare::Changes> {
+        if !self.compare {
+            return None;
+        }
+        let (now, after) = self.compared_maps()?;
+        Some(compare::changes(&now, &after))
+    }
+
+    /// ←/→ while comparing: the changed screen after (or before) the one open,
+    /// in the map on show — across its flows. Whether one was.
+    pub fn step_changed(&mut self, forward: bool) -> bool {
+        let Some(changes) = self.compare_changes() else { return false };
+        let Some(map) = self.current().and_then(|s| s.flows.clone()) else { return false };
+        let flow = self.map.flow(&map).map(|f| f.id.clone());
+        let at = flow.as_deref().zip(self.map.screen.as_deref());
+        let Some((flow, screen)) = changes.step(&map, at, forward) else { return false };
+        self.map.pick_flow(&flow);
+        self.map.screen = Some(screen);
+        self.map.chip = None;
+        true
+    }
+
+    // ── 버전 기록 ──
+
+    /// The project the source is (`None`: the squad's own).
+    pub fn source_project(&self) -> Option<String> {
+        self.source.strip_prefix("project:").map(str::to_owned)
+    }
+
+    /// The daemon's list for a system: kept by its source.
+    pub fn versions_arrived(&mut self, project: Option<String>, versions: Vec<DesignVersion>) {
+        let source = project.map_or_else(|| "squad".to_owned(), |p| format!("project:{p}"));
+        if self.versions_asked.as_ref() == Some(&source) {
+            self.versions_asked = None;
+        }
+        self.versions.insert(source, versions);
+    }
+
+    /// The system on screen's versions; `None`: not said yet.
+    pub fn shown_versions(&self) -> Option<&[DesignVersion]> {
+        self.versions.get(&self.source).map(Vec::as_slice)
+    }
+
     /// The asset kinds' order in the grid: logos, then the rest as they come.
     pub fn assets_sorted(system: &DesignSystem) -> Vec<usize> {
         let mut ix: Vec<usize> = (0..system.assets.len()).collect();
@@ -493,6 +635,60 @@ impl DesignUi {
         });
         ix
     }
+}
+
+/// Who wrote a note, and where it came from: the person's own, or the
+/// designer's from what it saw — each its words' key and what fills them.
+pub fn note_origin(note: &TasteNote) -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+    if !note.by_designer() {
+        return vec![note_from(note)];
+    }
+    vec![("design.taste_by_designer", Vec::new()), note_from(note)]
+}
+
+/// Where a taste note came from, in a line: its words' key and what fills them.
+pub fn note_from(note: &TasteNote) -> (&'static str, Vec<(&'static str, String)>) {
+    let mut args = Vec::new();
+    let key = match note.from {
+        TasteFrom::Person => "design.taste_from_person",
+        TasteFrom::SentBack { ticket } => {
+            args.push(("id", ticket.to_string()));
+            "design.taste_from_sent_back"
+        }
+        TasteFrom::Answered { ticket } => {
+            args.push(("id", ticket.to_string()));
+            "design.taste_from_answered"
+        }
+        TasteFrom::Noticed { ticket: Some(ticket) } => {
+            args.push(("id", ticket.to_string()));
+            "design.taste_from_noticed_on"
+        }
+        TasteFrom::Noticed { ticket: None } => "design.taste_from_noticed",
+    };
+    (key, args)
+}
+
+/// A file's date, `2026-11-03`, as year, month and day.
+pub fn ymd(date: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = date.splitn(3, '-');
+    let year: i32 = parts.next()?.parse().ok()?;
+    let month: u32 = parts.next()?.parse().ok().filter(|m| (1..=12).contains(m))?;
+    let day: u32 = parts.next()?.get(..2)?.parse().ok().filter(|d| (1..=31).contains(d))?;
+    Some((year, month, day))
+}
+
+/// The decisions grouped by month, newest first: `(2026, 11)` and its
+/// entries' places in `decisions`.
+pub fn by_month(decisions: &[equipe_core::protocol::design::Decision]) -> Vec<((i32, u32), Vec<usize>)> {
+    let mut out: Vec<((i32, u32), Vec<usize>)> = Vec::new();
+    for (i, d) in decisions.iter().enumerate() {
+        let month = ymd(&d.date).map_or((0, 0), |(y, m, _)| (y, m));
+        match out.iter_mut().find(|(m, _)| *m == month) {
+            Some((_, list)) => list.push(i),
+            None => out.push((month, vec![i])),
+        }
+    }
+    out
 }
 
 /// A system's key without a draft's part: the source it belongs to.
@@ -538,7 +734,7 @@ mod tests {
     fn only_sections_with_something_show_and_colours_keep_their_groups() {
         let mut s = system(None, None, vec![token("color.brand.dot", "color", json!("#3F6FF5")), token("color.bg", "color", json!("#fff")), token("color.brand.ink", "color", json!("#000")), token("space.2", "dimension", json!("8px"))]);
         s.guidelines = Some("# Title\n\n## Logo\n\ntext\n\n```md\n## not a heading\n```\n\n### Colour\n".into());
-        assert_eq!(sections(&s), [Section::Overview, Section::Colors, Section::Spacing, Section::Guidelines]);
+        assert_eq!(sections(&s), [Section::Overview, Section::Colors, Section::Spacing, Section::Guidelines, Section::Taste]);
         let colors = tokens_in(&s, Section::Colors);
         let g = groups(&colors);
         assert_eq!(g.iter().map(|(n, l)| (n.as_str(), l.len())).collect::<Vec<_>>(), [("color.brand", 2), ("color", 1)]);
@@ -559,21 +755,21 @@ mod tests {
     fn the_accepted_system_is_shown_and_a_draft_on_asking_or_when_alone() {
         let mut ui = DesignUi::default();
         let key = |s: &DesignSystem| s.key();
-        ui.arrived(vec![system(None, None, vec![]), system(Some("web"), None, vec![]), system(None, Some(144), vec![])], "/f".into(), &key);
+        ui.arrived(vec![system(None, None, vec![]), system(Some("web"), None, vec![]), system(None, Some(144), vec![])], "/f".into(), vec![], &key);
         assert_eq!(ui.sources(), ["squad", "project:web"]);
         assert!(ui.current().unwrap().draft.is_none());
         assert_eq!(ui.draft_of("squad").unwrap().draft.as_ref().unwrap().ticket, 144);
         ui.draft = true;
         assert_eq!(ui.current().unwrap().draft.as_ref().unwrap().ticket, 144);
         // The draft is accepted: it is the system now, and the screen follows.
-        ui.arrived(vec![system(None, None, vec![])], "/f".into(), &key);
+        ui.arrived(vec![system(None, None, vec![])], "/f".into(), vec![], &key);
         assert!(!ui.draft && ui.current().unwrap().draft.is_none());
         // Only a draft: it shows.
-        ui.arrived(vec![system(None, Some(150), vec![])], "/f".into(), &key);
+        ui.arrived(vec![system(None, Some(150), vec![])], "/f".into(), vec![], &key);
         assert_eq!(ui.current().unwrap().draft.as_ref().unwrap().ticket, 150);
         // The project picked goes: back to the first.
         ui.source = "project:web".into();
-        ui.arrived(vec![system(None, None, vec![])], "/f".into(), &key);
+        ui.arrived(vec![system(None, None, vec![])], "/f".into(), vec![], &key);
         assert_eq!(ui.source, "squad");
     }
 
@@ -582,14 +778,14 @@ mod tests {
         let mut ui = DesignUi::default();
         let key = |s: &DesignSystem| s.key();
         let v1 = vec![token("color.accent", "color", json!("#2E5C8A"))];
-        ui.arrived(vec![system(None, None, v1)], "/f".into(), &key);
+        ui.arrived(vec![system(None, None, v1)], "/f".into(), vec![], &key);
         assert!(ui.changes("squad").is_empty(), "never looked: nothing called new");
         assert!(ui.looked(&key));
-        ui.arrived(vec![system(None, None, vec![token("color.accent", "color", json!("#1D4ED8")), token("color.dot", "color", json!("#3F6FF5"))])], "/f".into(), &key);
+        ui.arrived(vec![system(None, None, vec![token("color.accent", "color", json!("#1D4ED8")), token("color.dot", "color", json!("#3F6FF5"))])], "/f".into(), vec![], &key);
         let changes = ui.changes("squad");
         assert_eq!(changes.len(), 2, "{changes:?}");
         // Saved again live: still against what was seen when this look began.
-        ui.arrived(vec![system(None, None, vec![token("color.accent", "color", json!("#1D4ED8"))])], "/f".into(), &key);
+        ui.arrived(vec![system(None, None, vec![token("color.accent", "color", json!("#1D4ED8"))])], "/f".into(), vec![], &key);
         assert_eq!(ui.changes("squad"), [Change::Changed { name: "color.accent".into(), was: "#2E5C8A".into(), now: "#1D4ED8".into() }]);
         assert!(ui.looked(&key));
         assert!(ui.changes("squad").is_empty());
@@ -627,5 +823,94 @@ mod tests {
             .map(|n| equipe_core::protocol::design::Asset { path: format!("/d/{n}"), name: (*n).into(), kind: if n.contains("logo") { AssetKind::Logo } else { AssetKind::Icon }, size: 1 })
             .collect();
         assert_eq!(DesignUi::logos(&with_logos), [1, 3, 0], "plain ones first");
+    }
+
+    fn mapped(project: Option<&str>, draft: Option<u32>, shots: &[(&str, &str)]) -> DesignSystem {
+        use equipe_core::protocol::design::{Flow, Picture, Screen, ScreenState};
+        let screens = shots
+            .iter()
+            .map(|(id, hash)| Screen {
+                id: (*id).into(),
+                title: (*id).into(),
+                states: vec![ScreenState { id: "default".into(), label: "기본".into(), kind: "default".into(), note: None, pictures: vec![Picture { path: format!("/d/{id}.png"), mode: "light".into(), width: 390, taken: 1, hash: Some((*hash).into()) }] }],
+                ..Default::default()
+            })
+            .collect();
+        DesignSystem { flows: Some(FlowMap { flows: vec![Flow { id: "app".into(), title: "App".into(), screens, ..Default::default() }], ..Default::default() }), ..system(project, draft, vec![]) }
+    }
+
+    #[test]
+    fn comparing_flips_the_whole_screen_between_now_and_after_and_steps_through_what_changed() {
+        let mut ui = DesignUi::default();
+        let key = |s: &DesignSystem| s.key();
+        ui.arrived(vec![mapped(None, None, &[("home", "a"), ("list", "b"), ("pay", "c")])], "/f".into(), vec![], &key);
+        assert!(!ui.can_compare() && !ui.begin_compare(), "no draft: nothing to compare");
+        assert!(ui.compare_changes().is_none());
+        ui.arrived(vec![mapped(None, None, &[("home", "a"), ("list", "b"), ("pay", "c")]), mapped(None, Some(170), &[("home", "A"), ("list", "b"), ("pay", "C")])], "/f".into(), vec![], &key);
+        assert!(ui.can_compare() && ui.begin_compare());
+        assert_eq!(ui.side(), Side::After, "begins on the draft");
+        assert_eq!(ui.current().unwrap().draft.as_ref().unwrap().ticket, 170);
+        assert_eq!(ui.compare_changes().unwrap().count(), 2);
+        assert!(ui.step_changed(true));
+        assert_eq!(ui.map.screen.as_deref(), Some("home"));
+        assert!(ui.step_changed(true));
+        assert_eq!(ui.map.screen.as_deref(), Some("pay"), "list didn't change: passed by");
+        assert!(!ui.step_changed(true), "the last changed one");
+        ui.show_side(Side::Now);
+        assert!(ui.current().unwrap().draft.is_none());
+        assert_eq!(ui.map.screen.as_deref(), Some("pay"), "the same screen, as it is now");
+        // Accepted: the draft goes, and so does the comparing.
+        ui.redo_open = true;
+        ui.arrived(vec![mapped(None, None, &[("home", "A"), ("list", "b"), ("pay", "C")])], "/f".into(), vec![], &key);
+        assert!(!ui.compare && !ui.redo_open && !ui.draft);
+    }
+
+    #[test]
+    fn versions_are_kept_by_the_system_they_are_of() {
+        let mut ui = DesignUi::default();
+        let key = |s: &DesignSystem| s.key();
+        ui.arrived(vec![system(None, None, vec![]), system(Some("web"), None, vec![])], "/f".into(), vec![], &key);
+        assert_eq!(ui.source_project(), None);
+        assert!(ui.shown_versions().is_none(), "not said yet");
+        let v = |c: &str| DesignVersion { commit: c.repeat(40), at: 1, subject: c.into(), ticket: None, parts: vec![] };
+        ui.versions_asked = Some("project:web".into());
+        ui.versions_arrived(Some("web".into()), vec![v("a"), v("b")]);
+        assert!(ui.versions_asked.is_none());
+        assert!(ui.shown_versions().is_none(), "the squad's still unsaid");
+        ui.versions_arrived(None, vec![]);
+        assert_eq!(ui.shown_versions().map(<[_]>::len), Some(0));
+        ui.source = "project:web".into();
+        assert_eq!((ui.source_project().as_deref(), ui.shown_versions().map(<[_]>::len)), (Some("web"), Some(2)));
+    }
+
+    #[test]
+    fn the_taste_tab_is_always_there_and_shows_the_taste_of_the_source_on_screen() {
+        use equipe_core::protocol::design::Decision;
+        let s = system(None, None, vec![]);
+        assert_eq!(sections(&s), [Section::Overview, Section::Taste], "there with nothing in it, to invite the first note");
+        assert_eq!(Section::parse("taste"), Some(Section::Taste));
+        let taste = |project: Option<&str>, note: &str| Taste { project: project.map(str::to_owned), notes: vec![TasteNote { text: note.into(), ..Default::default() }], ..Default::default() };
+        let mut ui = DesignUi::default();
+        let key = |s: &DesignSystem| s.key();
+        ui.arrived(vec![], "/f".into(), vec![taste(None, "둥글게")], &key);
+        assert_eq!(ui.current_taste().unwrap().notes[0].text, "둥글게", "the squad's, before it has a system");
+        ui.arrived(vec![system(None, None, vec![]), system(Some("web"), None, vec![])], "/f".into(), vec![taste(None, "둥글게"), taste(Some("web"), "선은 얇게")], &key);
+        ui.source = "project:web".into();
+        assert_eq!(ui.current_taste().unwrap().notes[0].text, "선은 얇게");
+        // Who wrote it: the person's own says so once; the designer's says who, then where from.
+        let theirs = TasteNote { text: "x".into(), from: TasteFrom::SentBack { ticket: 336 }, ..Default::default() };
+        assert_eq!(note_origin(&theirs).iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["design.taste_by_designer", "design.taste_from_sent_back"]);
+        assert_eq!(note_origin(&TasteNote::default()).iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["design.taste_from_person"]);
+        // Where each came from has words in every language.
+        for from in [TasteFrom::Person, TasteFrom::SentBack { ticket: 336 }, TasteFrom::Answered { ticket: 272 }, TasteFrom::Noticed { ticket: Some(9) }, TasteFrom::Noticed { ticket: None }] {
+            let (key, args) = note_from(&TasteNote { text: "x".into(), from, ..Default::default() });
+            let said = crate::i18n::catalog().fill(key, &args);
+            assert!(!said.is_empty() && !said.contains('{') && !said.starts_with("design."), "{key}: {said}");
+            assert!(args.iter().all(|(_, v)| said.contains(v.as_str())), "{said}");
+        }
+        let d = |date: &str| Decision { date: date.into(), question: "q".into(), chosen: "c".into(), ..Default::default() };
+        assert_eq!(by_month(&[d("2026-11-03"), d("2026-11-01"), d("2026-10-30"), d("someday")]), [((2026, 11), vec![0, 1]), ((2026, 10), vec![2]), ((0, 0), vec![3])]);
+        assert_eq!(ymd("2026-11-03"), Some((2026, 11, 3)));
+        assert_eq!(ymd("2026-13-03"), None);
     }
 }

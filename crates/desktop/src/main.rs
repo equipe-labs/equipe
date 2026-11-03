@@ -26,7 +26,9 @@ mod deck;
 mod daemon;
 mod disk;
 mod doc;
+mod compare;
 mod design;
+mod design_talk;
 mod dictation;
 mod flows;
 mod failure;
@@ -224,8 +226,8 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// 디자인 시스템's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
-    /// 화면 지도's box for talking about the screen open (`views/flows.rs`).
-    pub flow_talk: Entity<InputState>,
+    /// 비교하며 검토's box for what to change, a draft sent back with it.
+    pub design_redo: Entity<InputState>,
     /// The routines' list on 진행 상황: which is being edited or deleted.
     pub routines_ui: views::routines::RoutinesUi,
     /// Each project's newest tag, as last found, and when it was asked.
@@ -234,6 +236,8 @@ pub struct Shell {
     /// 지표's state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
     pub metrics_ui: views::metrics::Inputs,
+    /// 취향과 결정's box for a note.
+    pub design_taste: views::design_taste::Inputs,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
     /// The terminal at the right, while one runs.
@@ -385,12 +389,13 @@ impl Shell {
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
-            flow_talk: cx.new(|cx| InputState::new(window, cx).placeholder(t!("flows.talk_placeholder"))),
+            design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
             releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
+            design_taste: Default::default(),
             browser,
             terminal: None,
             term_offered: None,
@@ -546,10 +551,10 @@ impl Shell {
             }
         }));
         // Settings' search filters as it is typed.
-        // 화면 지도's box: ⏎ sends; the send button follows what is typed.
-        let flow_talk = shell.flow_talk.clone();
-        shell._subscriptions.push(cx.subscribe_in(&flow_talk, window, |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::PressEnter { .. } => this.flows_send(window, cx),
+        // 비교하며 검토's words: ⏎ sends the draft back with them.
+        let design_redo = shell.design_redo.clone();
+        shell._subscriptions.push(cx.subscribe_in(&design_redo, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.design_redo_send(window, cx),
             InputEvent::Change => cx.notify(),
             _ => {}
         }));
@@ -586,7 +591,7 @@ impl Shell {
             }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
-            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.browser.read(cx).typing(window, cx)).unwrap_or(false) {
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
                 return;
             }
             // Writing to a member on its request: Esc closes the box; every other
@@ -846,8 +851,12 @@ impl Shell {
                     for update in batch {
                         // The squad's design system: the design screen's, never the model's.
                         let update = match update {
-                            daemon::Update::Event(Event::Design { squad, systems, folder }) => {
-                                changed |= this.design_arrived(squad, systems, folder);
+                            daemon::Update::Event(Event::Design { squad, systems, folder, taste }) => {
+                                changed |= this.design_arrived(squad, systems, folder, taste);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {
+                                changed |= this.design_versions_arrived(squad, project, versions);
                                 continue;
                             }
                             other => other,
@@ -1705,7 +1714,7 @@ impl Shell {
         }
         self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
-        self.flow_talk.update(cx, |s, cx| s.set_placeholder(t!("flows.talk_placeholder"), window, cx));
+        self.design_redo.update(cx, |s, cx| s.set_placeholder(t!("design.compare_redo_placeholder"), window, cx));
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
 }
@@ -1795,6 +1804,10 @@ impl Render for Shell {
                         this.remembered.save(&equipe_providers::credentials::equipe_home());
                     }
                 }
+                // The design screen's conversation too.
+                if this.design.talk.drag.is_some() {
+                    this.design_talk_dragged(f32::from(e.position.x), e.pressed_button == Some(MouseButton::Left), cx);
+                }
                 // The side panel grows as its left edge goes left.
                 if let Some((x0, w0)) = this.side_drag {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -1809,6 +1822,9 @@ impl Render for Shell {
                 this.sidebar_released(cx);
                 this.side_split_released(cx);
                 this.side_released(cx);
+                if this.design.talk.drag.is_some() {
+                    this.design_talk_dragged(0., false, cx);
+                }
                 if this.board.peek_drag.take().is_some() {
                     this.remembered.save(&equipe_providers::credentials::equipe_home());
                     cx.notify();
@@ -1881,9 +1897,11 @@ impl Render for Shell {
         let (below, terminal) = if self.remembered.term_below { (terminal, None) } else { (None, terminal) };
         let doc = doc.or(terminal);
         let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
+        // The design screen: the designer's conversation at its right (`views/design_talk.rs`).
+        let talk = if away { None } else { views::design_talk::panel(self, window, cx) };
         let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
         let middle = v_flex().flex_1().min_w_0().h_full().child(body).children(below);
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(browser))
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(talk).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))

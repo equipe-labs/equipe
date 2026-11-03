@@ -4,26 +4,25 @@
 //! the flows on the left and the one picked: its walkthrough to watch, its
 //! screens left to right as cards joined by arrows, and the one clicked
 //! open below them — big, in each state (the missing ones dashed), light or
-//! dark, at each width, its notes, and a box to talk about it with the
-//! designer or the PM, the picture going with the words. ←/→ move between
-//! screens, ↑/↓ between flows, Esc closes. With no map yet, what one is and
-//! a way to ask the designer.
+//! dark, at each width, its notes, and "말하기" to talk about it in the
+//! conversation beside (`views/design_talk.rs`), the picture going with the
+//! words. ←/→ move between screens, ↑/↓ between flows, Esc closes. With no
+//! map yet, what one is and a way to ask the designer.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use equipe_core::protocol::Command;
 use equipe_core::protocol::design::{Flow, FlowMap, Screen, Walkthrough};
 use equipe_core::t;
-use gpui_kit::component::input::Input;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::design_talk::DesignContext;
+use crate::compare::Changes;
 use crate::flows::{self as fm, Chip, Counts, Tab};
 use crate::icons::{Icon, icon};
-use crate::state::Presence;
-use crate::theme::{BODY, BODY_LINE, FIELD, ICON_SM, META, MONO, Palette, R_LG, R_MD, R_SM, SMALL, UI};
+use crate::theme::{BODY, BODY_LINE, ICON_SM, META, MONO, Palette, R_LG, R_MD, R_SM, SMALL, UI};
 use crate::tips::TipExt as _;
 use crate::visuals::Size;
 use crate::{Shell, motion, ui};
@@ -68,6 +67,8 @@ pub fn tabs(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> 
 
 pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let map = shell.design.current().and_then(|s| s.flows.as_ref());
+    // Comparing a draft: what it changed, marked on the cards.
+    let changes = shell.design.compare_changes();
     match map {
         Some(map) if !map.flows.is_empty() => {
             v_flex()
@@ -75,7 +76,7 @@ pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .flex_1()
                 .min_h_0()
                 .child(counts_bar(shell, map))
-                .child(h_flex().flex_1().min_h_0().items_start().child(flow_list(shell, map, cx)).child(main(shell, map, cx)))
+                .child(h_flex().flex_1().min_h_0().items_start().child(flow_list(shell, map, changes.as_ref(), cx)).child(main(shell, map, changes.as_ref(), cx)))
                 .into_any_element()
         }
         _ => empty(shell, map, cx),
@@ -109,7 +110,7 @@ fn counts_bar(shell: &Shell, map: &FlowMap) -> impl IntoElement + use<> {
 }
 
 /// The flows, a row each: its title, and what it lacks or how many screens.
-fn flow_list(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+fn flow_list(shell: &Shell, map: &FlowMap, changes: Option<&Changes>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let on = shell.design.map.flow(map).map(|f| f.id.clone());
     let mut col = v_flex()
@@ -129,7 +130,10 @@ fn flow_list(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl Into
         let active = on.as_deref() == Some(flow.id.as_str());
         let c = fm::flow_counts(flow);
         let id = flow.id.clone();
-        let side: AnyElement = if c.missing > 0 {
+        let changed = changes.map_or(0, |c| c.in_flow(&flow.id));
+        let side: AnyElement = if changed > 0 {
+            super::compare::badge(p, t!("design.compare_flow_n", count = changed)).into_any_element()
+        } else if c.missing > 0 {
             div().flex_none().text_size(px(META)).text_color(p.danger()).child(t!("flows.missing_n", count = c.missing)).into_any_element()
         } else {
             div().flex_none().text_size(px(META)).text_color(p.muted).child(c.screens.to_string()).into_any_element()
@@ -155,7 +159,7 @@ fn flow_list(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl Into
 }
 
 /// The flow picked: its title and walkthrough, its screens, the one open.
-fn main(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+fn main(shell: &Shell, map: &FlowMap, changes: Option<&Changes>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let ui_ = &shell.design.map;
     let flow = ui_.flow(map).expect("a map with flows");
@@ -174,13 +178,14 @@ fn main(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoEleme
         if n > 0 {
             strip = strip.child(div().flex_none().h(px(THUMB_H)).flex().items_center().child(icon(Icon::ArrowRight, ICON_SM, p.muted)));
         }
-        strip = strip.child(card(shell, n, screen, open.as_deref() == Some(screen.id.as_str()), cx));
+        let changed = changes.is_some_and(|c| c.screen(&flow.id, &screen.id));
+        strip = strip.child(card(shell, n, screen, open.as_deref() == Some(screen.id.as_str()), changed, cx));
     }
     col = col.child(strip);
     match ui_.screen(map) {
         Some(screen) => {
             let n = flow.screens.iter().position(|s| s.id == screen.id).unwrap_or(0);
-            col = col.child(detail(shell, flow, n, screen, cx));
+            col = col.child(detail(shell, flow, n, screen, changes, cx));
         }
         None => col = col.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("flows.pick_hint"))),
     }
@@ -318,7 +323,7 @@ fn now_secs() -> u64 {
 
 /// A screen in the strip: its default state's picture, its number and name,
 /// how many states and what it lacks.
-fn card(shell: &Shell, n: usize, screen: &Screen, open: bool, cx: &mut Context<Shell>) -> AnyElement {
+fn card(shell: &Shell, n: usize, screen: &Screen, open: bool, changed: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let ui_ = &shell.design.map;
     let mode = ui_.mode(p.is_dark());
@@ -340,7 +345,21 @@ fn card(shell: &Shell, n: usize, screen: &Screen, open: bool, cx: &mut Context<S
         .bg(p.raised)
         .cursor_pointer()
         .when(!open, |d| d.hover(move |s| s.border_color(p.muted)))
-        .child(div().w_full().h(px(THUMB_H)).p_2().bg(p.wash).flex().items_center().justify_center().child(face))
+        .when(changed && !open, |d| d.border_color(Rgba { a: 0.6, ..p.amber }))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(THUMB_H))
+                .p_2()
+                .bg(p.wash)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(face)
+                // Comparing: what the draft changed says so.
+                .when(changed, |d| d.child(div().absolute().top(px(6.)).right(px(6.)).child(super::compare::badge(p, t!("design.compare_badge").into())))),
+        )
         .child(
             v_flex()
                 .px_2p5()
@@ -390,7 +409,7 @@ fn segment(p: Palette, id: &str, options: Vec<(String, bool, Pick)>, cx: &mut Co
 }
 
 /// The screen open below the strip.
-fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Context<Shell>) -> AnyElement {
+fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, changes: Option<&Changes>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let ui_ = &shell.design.map;
     let mode = ui_.mode(p.is_dark());
@@ -427,6 +446,10 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Contex
             .collect();
         head = head.child(segment(p, "flows-width", options, cx));
     }
+    // 말하기: the state on show, its picture, as a chip in the conversation beside.
+    if shown.is_some() {
+        head = head.child(ui::button(p, "flows-say", ui::Kind::Secondary, t!("design.talk_say")).icon(Icon::Message).tip(t!("design.talk_say_screen"), None).on_click(cx.listener(|this, _, window, cx| this.flows_point(window, cx))));
+    }
     head = head.child(ui::icon_button(p, "flows-close", Icon::X, t!("flows.close"), Some("Esc")).on_click(cx.listener(|this, _, _, cx| this.flows_close(cx))));
     // A chip each state; those it lacks, dashed.
     let mut chips = h_flex().flex_wrap().gap_1p5();
@@ -450,11 +473,12 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Contex
             })
             .when(!on, |d| d.hover(move |s| s.bg(p.wash)))
             .child(ui::steady(chip.label.clone(), FontWeight::MEDIUM, on, false))
+            // Comparing: a state the draft changed has the mark's dot.
+            .when(changes.is_some_and(|c| c.state(&flow.id, &screen.id, &chip.key)), |d| d.child(div().size(px(6.)).rounded_full().bg(p.amber)))
             .when(chip.missing, |d| d.tip(p, t!("flows.missing_tip"), None))
             .on_click(cx.listener(move |this, _, _, cx| this.flows_chip(&key, cx)));
         chips = chips.child(face);
     }
-    let about = shown.as_ref().map_or_else(|| fm::context(flow, screen, ""), |c| fm::context(flow, screen, &c.label));
     v_flex()
         .id("flows-detail")
         .p_4()
@@ -465,9 +489,25 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, cx: &mut Contex
         .bg(p.raised)
         .child(head)
         .child(chips)
-        .child(h_flex().flex_wrap().gap_4().items_start().child(stage(shell, flow, screen, shown.as_ref(), picture.map(|p| p.path.clone()), cx)).child(notes(shell, screen, shown.as_ref(), picture.map(|p| p.taken), cx)))
-        .child(talk(shell, about, cx))
+        .child({
+            // Comparing: a state there is, as it is now and after; one it lacks, as always.
+            let both = changes.is_some() && shown.as_ref().is_some_and(|c| c.state.is_some());
+            let said = notes(shell, screen, shown.as_ref(), picture.map(|p| p.taken), cx);
+            if both {
+                // The two sides take the width; what the state is for, under them.
+                v_flex().gap_4().child(super::compare::stage(shell, flow, screen, shown.as_ref(), cx)).child(said)
+            } else {
+                h_flex().flex_wrap().gap_4().items_start().child(stage(shell, flow, screen, shown.as_ref(), picture.map(|p| p.path.clone()), cx)).child(said)
+            }
+        })
         .into_any_element()
+}
+
+/// A screen's state as the person points at it: the flow, the screen and
+/// the state by id, as read, and the picture on show.
+fn screen_context(flow: &Flow, screen: &Screen, chip: &Chip, picture: Option<String>) -> DesignContext {
+    let state = chip.state.map_or_else(|| chip.key.trim_start_matches('+').to_owned(), |s| s.id.clone());
+    DesignContext::Screen { flow: flow.id.clone(), screen: screen.id.clone(), state, title: fm::context(flow, screen, &chip.label), picture }
 }
 
 /// The state's picture, big — a click shows it bigger; for a state it
@@ -556,93 +596,10 @@ fn notes(shell: &Shell, screen: &Screen, chip: Option<&Chip>, taken: Option<u64>
     col.child(meta).into_any_element()
 }
 
-/// Who to talk to: the designer when the squad has one, else the PM.
-pub fn recipients(shell: &Shell) -> (Option<&crate::state::Member>, Option<&crate::state::Member>) {
-    let designer = shell.model.members.iter().find(|m| m.role == "designer" && m.presence != Presence::Closed);
-    let pm = shell.model.members.iter().find(|m| crate::state::Model::is_pm(m));
-    (designer, pm)
-}
-
-/// The box under the open screen: where it is, who to, the words.
-fn talk(shell: &Shell, about: String, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let (designer, pm) = recipients(shell);
-    let to_pm = shell.design.map.to_pm || designer.is_none();
-    let typed = !shell.flow_talk.read(cx).value().trim().is_empty();
-    let who = |m: &crate::state::Member, label: String, on: bool, pm: bool| {
-        div()
-            .id(SharedString::from(format!("flows-to-{}", if pm { "pm" } else { "designer" })))
-            .h_full()
-            .px_2()
-            .flex()
-            .gap_1p5()
-            .items_center()
-            .rounded(px(R_SM))
-            .text_size(px(META))
-            .cursor_pointer()
-            .when(on, |d| d.bg(p.raised).text_color(p.text).shadow_sm())
-            .when(!on, |d| d.text_color(p.text2).hover(move |s| s.bg(p.wash)))
-            .child(crate::theme::avatar(p, &m.role, &m.name, 16.))
-            .child(label)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.design.map.to_pm = pm;
-                cx.notify();
-            }))
-    };
-    let mut to = h_flex().flex_none().h(px(26.)).p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash);
-    if let Some(d) = designer {
-        to = to.child(who(d, t!("flows.to_designer").into(), !to_pm, false));
-    }
-    if let Some(m) = pm {
-        to = to.child(who(m, t!("flows.to_pm").into(), to_pm, true));
-    }
-    v_flex()
-        .pt_3()
-        .gap_2()
-        .border_t_1()
-        .border_color(p.hair)
-        .child(
-            h_flex()
-                .flex_wrap()
-                .gap_2()
-                .items_center()
-                .child(
-                    h_flex()
-                        .min_w_0()
-                        .h(px(22.))
-                        .px_2()
-                        .gap_1p5()
-                        .items_center()
-                        .rounded(px(R_SM))
-                        .bg(p.wash)
-                        .text_size(px(META))
-                        .text_color(p.text2)
-                        .child(icon(Icon::Message, 12., p.muted))
-                        .child(div().min_w_0().truncate().child(about)),
-                )
-                .child(div().flex_1())
-                .when(designer.is_some() || pm.is_some(), |r| r.child(to)),
-        )
-        .child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(div().flex_1().min_w_0().h(px(FIELD)).px_3().flex().items_center().rounded(px(R_MD)).border_1().border_color(p.hair).bg(p.bg).text_size(px(SMALL)).child(Input::new(&shell.flow_talk).appearance(false).bordered(false)))
-                .child(
-                    ui::button(p, "flows-send", ui::Kind::Primary, t!("flows.send"))
-                        .field()
-                        .key("⏎")
-                        .disabled(!typed || (designer.is_none() && pm.is_none()))
-                        .on_click(cx.listener(|this, _, window, cx| this.flows_send(window, cx))),
-                ),
-        )
-        .into_any_element()
-}
-
 /// No map yet: what it is, and a way to ask for one.
 fn empty(shell: &Shell, map: Option<&FlowMap>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let has_designer = recipients(shell).0.is_some();
+    let has_designer = shell.design_talk_to().is_some_and(|(_, pm)| !pm);
     let point = |text: String| h_flex().gap_2().items_start().child(div().mt(px(9.)).size(px(4.)).flex_none().rounded_full().bg(p.muted)).child(div().flex_1().child(text));
     let problems = map.map(fm::problems).unwrap_or_default();
     v_flex()
@@ -811,12 +768,14 @@ impl Shell {
             poster = fm::video(flow).map(|v| v.path.clone()).filter(|path| !ui_.posters.contains_key(path));
         }
         let zoomed = zoomed(self).map(|(path, ..)| path);
+        // Comparing side by side: the other side's picture of the state open too.
+        let beside = super::compare::other_picture(self);
         let wanted = {
             let mut shots = self.shots.borrow_mut();
             for path in &thumbs {
                 let _ = shots.look(path, Size::Thumb);
             }
-            if let Some(path) = &inline {
+            for path in inline.iter().chain(&beside) {
                 let _ = shots.look(path, Size::Thumb);
                 let _ = shots.look(path, Size::Inline);
             }
@@ -865,30 +824,16 @@ impl Shell {
         cx.notify();
     }
 
-    /// The words in the box, about the state on show, to the designer or
-    /// the PM — the picture shown with them — and their conversation opened.
-    pub fn flows_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let words = self.flow_talk.read(cx).value().to_string();
+    /// "말하기" on the open screen: the state on show, with the picture on
+    /// show, as a chip in the conversation beside.
+    pub fn flows_point(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(map) = self.flow_map() else { return };
         let ui_ = &self.design.map;
         let (Some(flow), Some(screen)) = (ui_.flow(map), ui_.screen(map)) else { return };
         let Some(chip) = ui_.chip(screen) else { return };
-        let picture = chip.state.and_then(|s| fm::pick(s, &ui_.mode(self.palette.is_dark()), ui_.width));
-        let about = match picture {
-            Some(pic) => t!("flows.talk_about", place = fm::context(flow, screen, &chip.label), look = format!("{} · {}px", mode_word(&pic.mode), pic.width)),
-            None => t!("flows.talk_about_missing", place = fm::context(flow, screen, &chip.label)),
-        };
-        let Some(text) = fm::talk_message(&about, &words, picture.map(|p| p.path.as_str())) else { return };
-        let (designer, pm) = recipients(self);
-        let to = if ui_.to_pm || designer.is_none() { pm } else { designer };
-        let Some(to) = to.map(|m| m.session) else {
-            self.composer.flash = Some(t!("design.no_one_to_ask").into());
-            cx.notify();
-            return;
-        };
-        self.send_command(Command::Submit { session: to, text, about: Some(self.model.focus.clone()) });
-        self.flow_talk.update(cx, |s, cx| s.set_value(String::new(), window, cx));
-        self.select_member(to, window, cx);
+        let picture = chip.state.and_then(|s| fm::pick(s, &ui_.mode(self.palette.is_dark()), ui_.width)).map(|p| p.path.clone());
+        let ctx = screen_context(flow, screen, &chip, picture);
+        self.design_point_at(ctx, window, cx);
     }
 
     /// "+ 빠진 상태"'s way to have it drawn: the request goes to the designer
@@ -913,7 +858,7 @@ impl Shell {
     /// 화면 지도's keys: ←/→ between screens, ↑/↓ between flows, Esc
     /// closes the open one — not while the box has the words.
     pub fn on_flows_key(&mut self, key: &str, window: &Window, cx: &mut Context<Self>) -> bool {
-        if self.design_tab() != Tab::Map || self.flow_talk.read(cx).focus_handle(cx).is_focused(window) {
+        if self.design_tab() != Tab::Map || self.composer.is_focused(window, cx) {
             return false;
         }
         let Some(map) = self.flow_map().cloned() else { return false };

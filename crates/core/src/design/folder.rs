@@ -13,7 +13,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::design::{Asset, AssetKind, DesignSystem, DraftOf};
+use equipe_protocol::design::{Asset, AssetKind, DesignSystem, DraftOf, FlowMap};
 use equipe_protocol::{TicketKind, TicketStatus};
 
 use super::tokens::{self, Problem};
@@ -29,8 +29,11 @@ pub const BRIEF: &str = "brand.md";
 pub const QA: &str = "qa";
 const PICTURE_DIRS: [&str; 2] = ["assets", "components"];
 /// Every folder the stamp follows: the pictures', then the UI map's and
-/// design QA's — walked last, so a big map never crowds the pictures out.
-const WATCHED_DIRS: [&str; 4] = [QA, super::flows::DIR, "assets", "components"];
+/// design QA's and the decisions' — walked last, so a big map never crowds
+/// the pictures out.
+const WATCHED_DIRS: [&str; 5] = [crate::taste::store::DECISIONS_DIR, QA, super::flows::DIR, "assets", "components"];
+/// The files right in the folder the stamp follows.
+const WATCHED_FILES: [&str; 5] = [TOKENS, GUIDELINES, BRIEF, crate::taste::store::NOTES_FILE, crate::taste::store::DECISIONS_FILE];
 /// The biggest `tokens.json` read.
 pub const TOKENS_MAX: u64 = 1 << 20;
 /// How much of `guidelines.md` is sent: past it, cut with a word.
@@ -80,12 +83,18 @@ pub fn places(home: &Path, squad: &str) -> Vec<Place> {
     out
 }
 
+/// Where `squad`'s accepted design system of `project` is (`None`: the
+/// squad's own, there or not) — not a draft's.
+pub fn accepted_dir(home: &Path, squad: &str, project: Option<&str>) -> Option<PathBuf> {
+    places(home, squad).into_iter().find(|p| p.draft.is_none() && p.project.as_deref() == project).map(|p| p.dir)
+}
+
 /// The files under `dir`'s picture folders, its UI map's and design QA's, and
 /// its own three files: path and what the disk says of each. Links are
 /// listed, not followed.
 fn files(dir: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
     let mut out = Vec::new();
-    for name in [TOKENS, GUIDELINES, BRIEF] {
+    for name in WATCHED_FILES {
         if let Ok(meta) = std::fs::symlink_metadata(dir.join(name)) {
             out.push((dir.join(name), meta));
         }
@@ -134,14 +143,14 @@ pub fn stamp(places: &[Place]) -> u64 {
 }
 
 /// Where file `name` in `dir` really is, when it is one and stays in `dir`.
-pub(super) fn within(dir: &Path, name: &str) -> Option<PathBuf> {
+pub(crate) fn within(dir: &Path, name: &str) -> Option<PathBuf> {
     let root = std::fs::canonicalize(dir).ok()?;
     let real = std::fs::canonicalize(dir.join(name)).ok()?;
     (real.starts_with(&root) && std::fs::metadata(&real).is_ok_and(|m| m.is_file())).then_some(real)
 }
 
 /// A file inside `dir`, no bigger than `max` — a link only when it stays in `dir`.
-pub(super) fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
+pub(crate) fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
     use std::io::Read as _;
     let real = within(dir, name)?;
     let mut bytes = Vec::new();
@@ -150,7 +159,7 @@ pub(super) fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
 }
 
 /// What a picture is, by where it is and what it is called.
-fn kind_of(name: &str) -> AssetKind {
+pub(super) fn kind_of(name: &str) -> AssetKind {
     let lower = name.to_ascii_lowercase();
     let mut parts = lower.split('/');
     let top = parts.next().unwrap_or_default();
@@ -243,10 +252,70 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
     system
 }
 
+/// The biggest picture a hash is worked out for; past it, none.
+const HASH_MAX: u64 = 32 << 20;
+/// How many pictures' hashes are kept before the list starts again.
+const HASHES_KEPT: usize = 20_000;
+
+/// What a picture holds, as a short hex digest of its bytes — read once
+/// while its length and time stay the same. `None`: not a file, or too big.
+pub fn picture_hash(path: &Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    type Kept = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, String)>;
+    static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file() && m.len() <= HASH_MAX)?;
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    if let Some((_, _, hash)) = KEPT.lock().ok()?.get_or_insert_with(HashMap::new).get(path).filter(|(l, m, _)| *l == len && *m == modified) {
+        return Some(hash.clone());
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let mut h = DefaultHasher::new();
+    bytes.hash(&mut h);
+    let hash = format!("{:016x}", h.finish());
+    let mut kept = KEPT.lock().ok()?;
+    let kept = kept.get_or_insert_with(HashMap::new);
+    if kept.len() >= HASHES_KEPT {
+        kept.clear();
+    }
+    kept.insert(path.to_owned(), (len, modified, hash.clone()));
+    Some(hash)
+}
+
+/// Each UI map picture's hash, in the systems that have a draft in review
+/// and in their drafts — so a screen can tell what a draft changed from the
+/// copies its worktree only kept. Nothing is read when there is no draft.
+pub fn fingerprint(systems: &mut [DesignSystem]) {
+    let drafted: Vec<Option<String>> = systems.iter().filter(|s| s.draft.is_some()).map(|s| s.project.clone()).collect();
+    for system in systems.iter_mut().filter(|s| drafted.contains(&s.project)) {
+        let Some(map) = system.flows.as_mut() else { continue };
+        for picture in map.flows.iter_mut().flat_map(|f| &mut f.screens).flat_map(|s| &mut s.states).flat_map(|s| &mut s.pictures) {
+            picture.hash = picture_hash(Path::new(&picture.path));
+        }
+    }
+}
+
+/// A UI map as what it shows: where its pictures are, when they were taken
+/// and its recordings left out, so a worktree's copy reads as the same.
+fn map_shown(map: Option<&FlowMap>) -> Option<FlowMap> {
+    let mut map = map.cloned()?;
+    for flow in &mut map.flows {
+        flow.videos.clear();
+        for screen in &mut flow.screens {
+            screen.stale = false;
+            for picture in screen.states.iter_mut().flat_map(|s| &mut s.pictures) {
+                picture.path.clear();
+                picture.taken = 0;
+            }
+        }
+    }
+    Some(map)
+}
+
 /// Whether two systems hold the same: a draft that changed nothing isn't one.
 fn same_content(a: &DesignSystem, b: &DesignSystem) -> bool {
     let pictures = |s: &DesignSystem| s.assets.iter().map(|a| (a.name.clone(), a.size)).collect::<Vec<_>>();
-    a.tokens == b.tokens && a.guidelines == b.guidelines && a.problems == b.problems && pictures(a) == pictures(b)
+    a.tokens == b.tokens && a.guidelines == b.guidelines && a.problems == b.problems && pictures(a) == pictures(b) && map_shown(a.flows.as_ref()) == map_shown(b.flows.as_ref())
 }
 
 /// `squad`'s design systems as screens show them, and where its own would be.
@@ -257,7 +326,8 @@ pub fn catalog(home: &Path, squad: &str, lang: Lang) -> (Vec<DesignSystem>, Stri
 /// The same, of places already found.
 pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
     let folder = places.first().map(|p| p.dir.to_string_lossy().into_owned()).unwrap_or_default();
-    let read: Vec<DesignSystem> = places.iter().filter(|p| is_design_dir(&p.dir)).map(|p| read(p, lang)).collect();
+    let mut read: Vec<DesignSystem> = places.iter().filter(|p| is_design_dir(&p.dir)).map(|p| read(p, lang)).collect();
+    fingerprint(&mut read);
     let systems = read
         .iter()
         .filter(|s| match &s.draft {
@@ -275,7 +345,12 @@ pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
 pub fn shown(home: &Path, squad: &str) -> (Vec<String>, Vec<PathBuf>) {
     let mut paths = Vec::new();
     let mut roots = Vec::new();
-    for place in places(home, squad).into_iter().filter(|p| is_design_dir(&p.dir)) {
+    for place in places(home, squad) {
+        // Decisions' pictures: the squad's own folder's too, before it holds a system.
+        paths.extend(crate::taste::store::pictures(&place.dir));
+        if !is_design_dir(&place.dir) {
+            continue;
+        }
         paths.extend(assets(&place.dir).into_iter().map(|a| a.path));
         let map = super::flows::read(&place.dir, None, Lang::En).unwrap_or_default();
         let states = map.flows.into_iter().flat_map(|f| f.screens).flat_map(|s| s.states);
@@ -429,6 +504,11 @@ mod tests {
             std::fs::create_dir_all(w.join(DIR)).unwrap();
             std::fs::write(w.join(DIR).join(TOKENS), tokens).unwrap();
             png(&w.join(DIR).join("assets/logo/mark.png"));
+            // Its copy of the UI map too, as a worktree has.
+            std::fs::create_dir_all(w.join(DIR).join("flows")).unwrap();
+            std::fs::copy(folder.join("flows/flows.json"), w.join(DIR).join("flows/flows.json")).unwrap();
+            png(&w.join(DIR).join("flows/app/home/default.light.390.png"));
+            png(&w.join(DIR).join("flows/app/home/stray.light.390.png"));
             w
         };
         let changed = worktree(144, r##"{ "color": { "$type": "color", "bg": { "$value": "#0A0A0C" } } }"##);
@@ -456,5 +536,42 @@ mod tests {
         assert!(!paths.iter().any(|p| p.ends_with("stray.light.390.png")), "not one of no state");
         assert_eq!(systems[0].flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures.len(), 1);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_draft_that_only_shot_its_screens_again_is_one_and_its_pictures_say_what_they_hold() {
+        const MAP: &str = r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default" } ] }, { "id": "pay", "title": "Pay", "states": [ { "id": "default" } ] } ] } ] }"#;
+        let root = dir("draft-map");
+        let folder = |name: &str, home_colour: [u8; 4]| {
+            let design = root.join(name).join(DIR);
+            std::fs::create_dir_all(design.join("flows")).unwrap();
+            std::fs::write(design.join(TOKENS), TOKENS_JSON).unwrap();
+            std::fs::write(design.join("flows/flows.json"), MAP).unwrap();
+            let shot = |path: PathBuf, c: [u8; 4]| image::RgbaImage::from_pixel(4, 4, image::Rgba(c)).save(path).unwrap();
+            for screen in ["home", "pay"] {
+                std::fs::create_dir_all(design.join(format!("flows/app/{screen}"))).unwrap();
+            }
+            shot(design.join("flows/app/home/default.light.390.png"), home_colour);
+            shot(design.join("flows/app/pay/default.light.390.png"), [9, 9, 9, 255]);
+            design
+        };
+        let accepted = folder("main", [20, 90, 250, 255]);
+        let reshot = folder("t170", [250, 90, 20, 255]);
+        let copy = folder("t171", [20, 90, 250, 255]);
+        let draft = |n: u32, dir: PathBuf| Place { project: None, draft: Some(DraftOf { ticket: n, title: format!("T{n}") }), dir };
+        let alone = [Place { project: None, draft: None, dir: accepted.clone() }];
+        let (systems, _) = catalog_of(&alone, Lang::En);
+        let pictures = |s: &DesignSystem| s.flows.as_ref().unwrap().flows[0].screens.iter().map(|sc| sc.states[0].pictures[0].hash.clone()).collect::<Vec<_>>();
+        assert!(pictures(&systems[0]).iter().all(Option::is_none), "no draft: nothing read for it");
+        let places = [alone[0].clone(), draft(170, reshot), draft(171, copy)];
+        let (systems, _) = catalog_of(&places, Lang::En);
+        assert_eq!(systems.iter().map(|s| s.key()).collect::<Vec<_>>(), ["squad", "squad#T-170"], "the copy that changed nothing isn't a draft");
+        let (now, after) = (pictures(&systems[0]), pictures(&systems[1]));
+        assert!(now.iter().chain(&after).all(|h| h.as_ref().is_some_and(|h| h.len() == 16)), "{now:?} {after:?}");
+        assert_ne!(now[0], after[0], "home was shot again");
+        assert_eq!(now[1], after[1], "pay is the same picture, in another folder");
+        assert_eq!(picture_hash(&accepted.join("flows/app/home/default.light.390.png")), now[0], "kept, and the same when asked again");
+        assert!(picture_hash(&accepted.join("nowhere.png")).is_none());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

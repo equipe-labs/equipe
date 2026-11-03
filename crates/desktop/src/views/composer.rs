@@ -248,6 +248,9 @@ pub struct Composer {
     /// Words of the conversation quoted to ask about ("Ask about this"),
     /// over the box until sent — each a blockquote before the question.
     pub quotes: Vec<String>,
+    /// What the person pointed at on the design screen ("말하기"), over the
+    /// box until sent — a block before the words (`crate::design_talk`).
+    pub context: Vec<crate::design_talk::DesignContext>,
     /// What went wrong with something the person asked for (a merge that
     /// didn't land): a notice over the box, framed, until closed.
     pub problem: Option<String>,
@@ -316,6 +319,7 @@ impl Composer {
             guard: EnterGuard::default(),
             flash: None,
             quotes: Vec::new(),
+            context: Vec::new(),
             problem: None,
             send_when_ready: None,
             choices: Vec::new(),
@@ -601,7 +605,14 @@ impl Shell {
         // What was quoted goes first, a blockquote each; the question after.
         let quoted = !self.composer.quotes.is_empty() && !typed.trim().starts_with('/');
         let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.quotes, &typed) } else { typed.clone() };
-        let text = attach::message(&typed_with_quotes, &tags);
+        // What was pointed at on the design screen goes before them, its pictures attached.
+        let pointed = !self.composer.context.is_empty() && !typed.trim().starts_with('/') && (!typed_with_quotes.trim().is_empty() || !tags.is_empty());
+        let (typed_with_quotes, all_tags) = if pointed {
+            (crate::design_talk::message(&self.composer.context, &typed_with_quotes), format!("{tags}{}", crate::design_talk::tags(&self.composer.context)))
+        } else {
+            (typed_with_quotes, tags.clone())
+        };
+        let text = attach::message(&typed_with_quotes, &all_tags);
         let carries = !tags.is_empty() && !typed.trim().starts_with('/');
         let plan = compose::plan(&self.model, &text, later);
         if plan.commands.is_empty() && plan.flash.is_none() && plan.effect.is_none() && plan.restore.is_none() {
@@ -618,6 +629,10 @@ impl Shell {
         // So did the quotes.
         if quoted && plan.restore.is_none() && !plan.commands.is_empty() {
             self.composer.quotes.clear();
+        }
+        // And what was pointed at.
+        if pointed && plan.restore.is_none() && !plan.commands.is_empty() {
+            self.composer.context.clear();
         }
         for command in plan.commands {
             self.send_command(command);
@@ -1768,6 +1783,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .on_action(cx.listener(|this, _: &SendInverted, window, cx| this.send_inverted(window, cx)))
         .children(completion(shell, cx))
         .children(menu_layer(shell, cx))
+        .children(super::design_talk::chips(shell, INSET, cx))
         .children(quotes(shell, cx))
         .children(strip(shell, cx))
         .child(

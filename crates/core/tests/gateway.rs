@@ -214,7 +214,10 @@ async fn a_screen_sees_only_its_own_squad() {
     let seen = until(&mut acme, |e| matches!(e, Event::SessionStarted { .. })).await;
     // The disk's level is every screen's, whichever squad: whatever this disk has.
     let seen: Vec<Event> = seen.into_iter().filter(|e| !matches!(e, Event::DiskLevel { .. })).collect();
-    assert!(matches!(seen.as_slice(), [Event::SessionStarted { session: 32, .. }]), "{seen:#?}");
+    // A designer joining brings its weekly review: acme's own routines, to acme's screen.
+    let (theirs, rest): (Vec<Event>, Vec<Event>) = seen.into_iter().partition(|e| matches!(e, Event::RoutinesChanged { .. }));
+    assert!(theirs.iter().all(|e| matches!(e, Event::RoutinesChanged { squad, .. } if squad == "acme")), "{theirs:#?}");
+    assert!(matches!(rest.as_slice(), [Event::SessionStarted { session: 32, .. }]), "{rest:#?}");
     gateway::shutdown(&socket).await.unwrap();
 }
 
@@ -365,6 +368,7 @@ async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
         ticket: None,
         questions: vec![Question { question: "Which logo?".into(), options: vec![option("A", vec![shown.clone()]), option("B", vec![])], ..Question::default() }],
         asked_at: 1,
+        review: false,
     };
     let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
     journal.set_questions(&[set]).unwrap();
