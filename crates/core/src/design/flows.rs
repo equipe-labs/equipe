@@ -82,6 +82,94 @@ pub fn parse_picture_name(name: &str) -> Option<(String, String, u32)> {
     (matches!(mode, "light" | "dark") && !state.is_empty()).then(|| (state.to_owned(), mode.to_owned(), width))
 }
 
+// --- STUBS for the CLI to build against, until the core's land: the merge
+// --- takes the real `Finding`, `FindingKind`, `check`, `Shot`, `shots` and
+// --- `starter` (same names and shapes) and drops these.
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Finding {
+    pub flow: String,
+    pub screen: Option<String>,
+    pub state: Option<String>,
+    pub kind: FindingKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingKind {
+    MissingState,
+    Stale,
+    NoDark,
+    Unlisted,
+    NoPictures,
+}
+
+pub fn check(map: &FlowMap) -> Vec<Finding> {
+    let _ = map;
+    Vec::new()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shot {
+    pub flow: String,
+    pub screen: String,
+    pub state: String,
+    pub url: Option<String>,
+    pub dir: std::path::PathBuf,
+}
+
+pub fn shots(design: &Path) -> Vec<Shot> {
+    let _ = design;
+    Vec::new()
+}
+
+pub fn starter(lang: Lang) -> String {
+    let _ = lang;
+    "{ \"flows\": [] }\n".to_owned()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    Go(String),
+    Click(String),
+    Fill(String, String),
+    Press(String),
+    Wait(u64),
+    Say(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalkStep {
+    pub screen: Option<String>,
+    pub step: Step,
+}
+
+pub fn walk(design: &Path, flow: &str, lang: Lang) -> Result<Vec<WalkStep>, String> {
+    let _ = (design, lang);
+    Err(format!("{flow}: no walk"))
+}
+
+pub const HISTORY: &str = "history";
+
+pub fn video_name(mode: &str, width: u32) -> String {
+    format!("walkthrough.{mode}.{width}.mp4")
+}
+
+pub fn history_name(stamp: &str, mode: &str, width: u32) -> String {
+    format!("walkthrough.{stamp}.{mode}.{width}.mp4")
+}
+
+pub fn parse_video_name(name: &str) -> Option<(Option<String>, String, u32)> {
+    let rest = name.strip_prefix("walkthrough.")?.strip_suffix(".mp4")?;
+    let mut parts = rest.rsplitn(3, '.');
+    let width = parts.next()?.parse().ok()?;
+    let mode = parts.next()?;
+    let stamp = parts.next().map(str::to_owned);
+    matches!(mode, "light" | "dark").then(|| (stamp, mode.to_owned(), width))
+}
+
+// --- END STUBS
+
 #[cfg(test)]
 mod tests {
     use super::*;
