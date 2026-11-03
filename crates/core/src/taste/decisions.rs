@@ -275,6 +275,7 @@ mod tests {
             ],
             asked_at: 0,
             review: false,
+            retro: None,
         };
         let answers = vec![Answer { picked: vec![1], other: Some(" 숨 쉬게 ".into()), ..Answer::default() }, Answer { picked: vec![0], other: None, ..Answer::default() }, Answer::default()];
         let found = from_answers(&set, &answers, "2026-11-04");

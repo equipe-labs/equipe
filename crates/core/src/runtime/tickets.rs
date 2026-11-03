@@ -172,7 +172,7 @@ impl Runtime {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "you".into(),
             note: None,
             asks: Vec::new(),
@@ -491,18 +491,35 @@ impl Runtime {
     /// A proposal taken on: ready for its owner (the person's yes — never a member's).
     pub(super) async fn take_on(&mut self, squad: &str, mut ticket: Ticket) {
         let was_idea = ticket.status == TicketStatus::Idea;
+        // A started idea waits for the PM: office hours first, unless it is small.
+        let pm = self.pm_of(squad).filter(|_| was_idea);
         ticket.status = TicketStatus::Todo;
-        ticket.note = None;
+        ticket.note = pm.map(|_| equipe_protocol::OFFICE_HOURS_FIRST.to_owned());
         let id = ticket.id;
         if let Some(journal) = self.journal(squad) {
             let _ = journal.save_ticket(&ticket);
             let _ = journal.ticket_event(id, "you", "taken on", "");
         }
-        let line = format!("The person took on T-{id} ({}): it is ready for its owner.", ticket.title);
+        let line = match pm {
+            Some(_) => format!("The person started their idea T-{id} ({}): the PM looks at it with them before it is built.", ticket.title),
+            None => format!("The person took on T-{id} ({}): it is ready for its owner.", ticket.title),
+        };
         let shown = if was_idea { say!(self, "news.idea_started", id = id, title = ticket.title) } else { say!(self, "news.taken_on", id = id, title = ticket.title) };
         let concerned = vec![ticket.owner.clone(), Some(ticket.created_by.clone())];
+        let (title, project) = (ticket.title.clone(), ticket.project.as_deref().map(crate::board::project_name));
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         self.tell_about(squad, &concerned, line, shown);
+        if let Some(pm) = pm {
+            let text = crate::briefs::idea_start_message(id, &title);
+            match self.sessions.get(&pm) {
+                Some(s) if s.is_working() => self.leave_memo_about(pm, text, project),
+                _ => {
+                    self.said_about = Some(project);
+                    self.submit(pm, text).await;
+                    self.said_about = None;
+                }
+            }
+        }
         self.dispatch(squad).await;
     }
 
@@ -536,9 +553,11 @@ impl Runtime {
 
     /// A ticket's record, to the screens following its squad.
     pub(super) fn send_history(&mut self, squad: &str, id: TicketId) {
-        let Some(entries) = self.journal(squad).and_then(|j| j.ticket_entries(id).ok()) else {
+        let Some(mut entries) = self.journal(squad).and_then(|j| j.ticket_entries(id).ok()) else {
             return;
         };
+        // When its member said it would be done is the retro's to read, not a line to show.
+        entries.retain(|e| e.kind != crate::retro::ESTIMATED);
         self.publish_in(Some(squad), Event::TicketHistory { squad: squad.to_owned(), ticket: id, entries });
     }
 }

@@ -792,6 +792,7 @@ mod tests {
             questions: vec![Question { question: "Which logo?".into(), options: vec![choice, Choice { label: "B".into(), ..Default::default() }], ..Default::default() }],
             asked_at: 0,
             review: false,
+            retro: None,
         };
         journal.set_questions(&[set]).unwrap();
         let ask = |path: &str, max| ReadImage { squad: "acme".into(), path: path.into(), max };
@@ -938,7 +939,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -1076,7 +1077,7 @@ mod tests {
             worktree: None,
             merged,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

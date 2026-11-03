@@ -156,9 +156,13 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let click = if verb == "shead" { crate::board::HeadClick::Name } else { crate::board::HeadClick::Chevron };
                     shell.side_head_click(click, (!arg.is_empty()).then(|| arg.clone()), window, cx);
                 }),
-                // A project page's tab (`ptab:work`, `ptab:talks`).
+                // A project page's tab (`ptab:work`, `ptab:docs`, `ptab:talks`).
                 "ptab" => shell.update(cx, |shell, cx| {
-                    shell.board.project_tab = if arg == "work" { crate::board::ProjectTab::Work } else { crate::board::ProjectTab::Talks };
+                    shell.board.project_tab = match arg.as_str() {
+                        "work" => crate::board::ProjectTab::Work,
+                        "docs" => crate::board::ProjectTab::Docs,
+                        _ => crate::board::ProjectTab::Talks,
+                    };
                     cx.notify();
                 }),
                 "select" => shell.update(cx, |shell, cx| {
@@ -190,6 +194,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                         view => crate::board::Menu::View(view.trim_start_matches("view").parse().unwrap_or(0)),
                     };
                     shell.open_side_menu(menu, cx);
+                }),
+                // `progress`: 진행 상황; `retro:<day>`: a past retro from its list, the PM's conversation at it.
+                "progress" => shell.update(cx, |shell, cx| shell.open_progress(cx)),
+                "retro" => shell.update(cx, |shell, cx| {
+                    // No day: the latest, as its row lists it first.
+                    let latest = || shell.model.pm().and_then(|pm| shell.model.convos.get(&pm)).and_then(|c| crate::retro::past(c.transcript.entries()).into_iter().next()).map(|p| p.to);
+                    let to = if arg.is_empty() { latest().unwrap_or_default() } else { arg.clone() };
+                    shell.open_retro(&to, window, cx);
                 }),
                 "size" => {
                     if let Some((w, h)) = arg.split_once('x').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))) {

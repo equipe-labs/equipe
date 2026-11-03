@@ -1255,8 +1255,8 @@ pub fn row_text(shell: &Shell, id: u64) -> Option<(String, Option<u32>, String, 
     let set = shell.model.asked.get(id)?;
     let first = set.questions.first().map(|q| q.question.clone()).unwrap_or_default();
     let title = match set.questions.len() {
-        // The weekly design review: called so, whatever it asks.
-        _ if set.review => crate::decide::review_title(set).unwrap_or(first),
+        // The weekly design review, the weekly retro: called so, whatever they ask.
+        _ if set.review || set.retro.is_some() => crate::decide::review_title(set).unwrap_or(first),
         0 | 1 => first,
         n => format!("{first} {}", t!("decide.and_more", count = n - 1)),
     };

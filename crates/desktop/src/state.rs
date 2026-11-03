@@ -5,7 +5,7 @@
 use equipe_core::t;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
@@ -1573,6 +1573,16 @@ impl Model {
         ticket.project.clone().or_else(|| self.projects.first().cloned())
     }
 
+    /// The plan a ticket was cut from, or reviews, on the daemon's machine:
+    /// its path in the ticket's project, or one of its own in the squad's folder.
+    pub fn ticket_plan(&self, ticket: &Ticket) -> Option<PathBuf> {
+        let plan = Path::new(ticket.plan.as_deref().map(str::trim).filter(|p| !p.is_empty())?);
+        if plan.is_absolute() {
+            return Some(plan.to_owned());
+        }
+        self.ticket_project(ticket).map(|project| project.join(plan))
+    }
+
     pub fn ticket_project_name(&self, ticket: &Ticket) -> Option<String> {
         self.ticket_project(ticket).map(|p| equipe_core::board::project_name(&p))
     }
@@ -2691,7 +2701,7 @@ mod tests {
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Working)]), T0);
         model.take_alerts();
         let q = Question { question: "Which?".into(), header: String::new(), options: vec![Choice { label: "a".into(), description: String::new(), ..Choice::default() }, Choice { label: "b".into(), description: String::new(), ..Choice::default() }], multi_select: false, ..Question::default() };
-        let set = QuestionSet { id: 40, session: 2, member: "backend".into(), ticket: None, questions: vec![q.clone(), q], asked_at: 1, review: false };
+        let set = QuestionSet { id: 40, session: 2, member: "backend".into(), ticket: None, questions: vec![q.clone(), q], asked_at: 1, review: false, retro: None };
         assert!(model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: set.clone() }), T0), "the card shows: a redraw");
         assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 2, member: "backend".into(), count: 2 }]);
         // Another squad's, or the same again: nothing.
@@ -2834,6 +2844,21 @@ mod tests {
         model.accepts.forget_sent();
         assert!(model.apply(Update::Event(Event::AcceptClosed { squad: "acme".into(), id: 80, confirmed: true, tickets: vec![7] }), T0));
         assert_eq!(model.accepts.ids(), [81]);
+    }
+
+    #[test]
+    fn a_tickets_plan_is_found_in_its_project_or_where_its_own_path_says() {
+        let mut model = needs_model();
+        model.projects = vec![PathBuf::from("/p/site")];
+        let mut cut = ticket(20, "todo", None);
+        assert_eq!(model.ticket_plan(&cut), None, "no plan, no link");
+        cut.plan = Some("docs/plans/2026-11-04-sign-in.md".into());
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/p/site/docs/plans/2026-11-04-sign-in.md")));
+        cut.kind = TicketKind::Task;
+        cut.project = Some(PathBuf::from("/p/app"));
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/p/app/docs/plans/2026-11-04-sign-in.md")), "a review is about its plan's project");
+        cut.plan = Some("/h/squads/acme/home/docs/plans/2026-11-04-trip.md".into());
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/h/squads/acme/home/docs/plans/2026-11-04-trip.md")));
     }
 
     #[test]

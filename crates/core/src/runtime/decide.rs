@@ -63,7 +63,8 @@ impl Runtime {
         let is_pm = self.sessions.get(&id).is_some_and(Session::is_pm);
         let ticket = self.sessions.get(&session).or(self.sessions.get(&id)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         let review = self.review_asked(id, now_secs());
-        let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs(), review };
+        let retro = self.retro_asked(id, now_secs(), args, questions.len());
+        let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs(), review, retro };
         let (count, first) = (set.questions.len(), set.questions[0].question.clone());
         self.question_sets(squad).push(set.clone());
         self.save_questions(squad);
@@ -131,6 +132,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         if let (Some(ticket), Some(journal)) = (set.ticket, self.journal(squad)) {
             let _ = journal.ticket_event(ticket, "you", "decided", &message);
         }
+        self.decision_settled(squad, &set, Some(&answers));
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers) });
         if let Some(to) = self.asker(squad, &set) {
             Box::pin(self.submit(to, message)).await;
@@ -153,6 +155,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
     /// Closed without an answer: the member goes on without one.
     pub(super) async fn dismiss_questions(&mut self, squad: &str, id: u64) {
         let Some(set) = self.take_questions(squad, id) else { return };
+        self.decision_settled(squad, &set, None);
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: None });
         if let Some(to) = self.asker(squad, &set) {
             Box::pin(self.submit(to, decide::dismissed_message(&set))).await;
@@ -221,7 +224,7 @@ mod tests {
             multi_select,
             ..Question::default()
         };
-        let set = QuestionSet { id: 1, session: 1, member: "pm".into(), ticket: None, questions: vec![q(false), q(true), q(false)], asked_at: 0, review: false };
+        let set = QuestionSet { id: 1, session: 1, member: "pm".into(), ticket: None, questions: vec![q(false), q(true), q(false)], asked_at: 0, review: false, retro: None };
         let fitted = fit(&set, vec![Answer { picked: vec![1, 0], other: Some("  ".into()), ..Answer::default() }, Answer { picked: vec![1, 9, 0, 1], other: Some(" x ".into()), ..Answer::default() }]);
         assert_eq!(
             fitted,
@@ -234,7 +237,7 @@ mod tests {
     fn a_mix_holds_between_two_options_on_an_aspect_one_has_and_another_round_picks_nothing() {
         let option = |label: &str| Choice { label: label.into(), aspects: vec!["type".into(), "colour".into()], ..Choice::default() };
         let design = Question { question: "Which?".into(), options: vec![option("A"), option("B"), Choice { label: "C".into(), ..Choice::default() }], ..Question::default() };
-        let set = QuestionSet { id: 1, session: 1, member: "designer".into(), ticket: None, questions: vec![design; 5], asked_at: 0, review: false };
+        let set = QuestionSet { id: 1, session: 1, member: "designer".into(), ticket: None, questions: vec![design; 5], asked_at: 0, review: false, retro: None };
         let mut stray = Answer::mix(0, 1, "type");
         stray.picked = vec![2];
         let fitted = fit(

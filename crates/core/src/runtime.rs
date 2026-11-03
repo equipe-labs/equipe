@@ -66,6 +66,8 @@ mod decide;
 mod room;
 mod engines;
 mod design;
+mod briefs;
+mod plans;
 mod accept;
 mod secrets;
 mod design_qa;
@@ -76,6 +78,7 @@ mod tickets;
 mod compact;
 mod controls;
 mod review;
+mod retro;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -513,6 +516,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         team_changes: HashMap::new(),
         routine_proposals: HashMap::new(),
         design_reviews: HashMap::new(),
+        retros: HashMap::new(),
+        approvals_asked: HashMap::new(),
         signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
@@ -807,6 +812,14 @@ enum Internal {
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
+    /// A squad's briefs and plans, read off the loop.
+    Docs(String, Vec<equipe_protocol::ProjectDoc>),
+    /// A plan written off the loop (`write_plan`): what follows, and the answer.
+    PlanWritten(Box<plans::Written>),
+    /// A plan read off the loop for a ticket cut from it (`create_ticket` with `plan`).
+    PlanCut(Box<plans::Cut>),
+    /// A ticket listed in its plan, off the loop: why not, if it wasn't.
+    PlanListed(String, Option<String>),
     /// A design system's accepted versions, read off the loop.
     DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
     /// The version the person asked to go back to, looked up off the loop (`None`: not one).
@@ -927,6 +940,12 @@ struct Runtime {
     /// Designers handed their weekly review, and when (`review`): the
     /// decision each puts next is the review's proposal.
     design_reviews: HashMap<SessionId, u64>,
+    /// PMs handed their weekly retro, and when (`retro`): the decision each
+    /// puts next is the retro's changes.
+    retros: HashMap<SessionId, u64>,
+    /// When each permission waiting for the person was asked, by its id: how
+    /// long it waited goes to the retro once answered.
+    approvals_asked: HashMap<u64, u64>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
@@ -1025,6 +1044,10 @@ impl Wake {
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
+            Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
+            Wake::Internal(Internal::PlanWritten(..)) => Borrowed("a plan written"),
+            Wake::Internal(Internal::PlanCut(..)) => Borrowed("a plan read for a ticket"),
+            Wake::Internal(Internal::PlanListed(..)) => Borrowed("a ticket listed in its plan"),
             Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
@@ -1214,6 +1237,10 @@ impl Runtime {
                     }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
+                Internal::Docs(squad, docs) => self.on_docs(squad, docs),
+                Internal::PlanWritten(written) => self.plan_written(*written),
+                Internal::PlanCut(cut) => self.plan_cut(*cut).await,
+                Internal::PlanListed(squad, error) => self.plan_listed(&squad, error),
                 Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
@@ -1268,6 +1295,10 @@ impl Runtime {
             Event::TicketChanged { squad, ticket } => Some((squad.clone(), ticket.id)),
             _ => None,
         };
+        // A permission put to the person: from now it waits on them.
+        if let Event::ApprovalRequested { approval, .. } = &event {
+            self.approvals_asked.insert(approval.id, now_secs());
+        }
         self.publish_in(None, event);
         // A card to confirm about it may have nothing left to confirm.
         if let Some((squad, ticket)) = changed {
@@ -1307,6 +1338,19 @@ impl Runtime {
         {
             squad = session.squad.clone();
             let finished = session.transcript.apply(&event);
+            // A member's turn, kept for the week's retro: who, on what, how long, how it ended.
+            let turn = match (&event, &session.member, session.turn_began) {
+                (Event::TurnEnded { outcome, usage, .. }, Some(member), Some(began)) => Some(crate::retro::Turn {
+                    member: member.name.clone(),
+                    role: member.role.clone(),
+                    ticket: session.work.as_ref().map(|w| w.ticket),
+                    began,
+                    ended: now_secs().max(began),
+                    outcome: serde_json::to_value(outcome).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
+                    tokens: usage.as_ref().map_or(0, |u| u.total()),
+                }),
+                _ => None,
+            };
             match &event {
                 Event::UserMessage { text, .. } if session.title.is_none() => {
                     session.title = text.lines().next().map(str::to_owned);
@@ -1361,6 +1405,9 @@ impl Runtime {
                 let title = session.title.clone();
                 if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
                     no_room = !record(journal, id, &event, &finished, title.as_deref());
+                    if let Some(turn) = &turn {
+                        let _ = journal.record_turn(turn);
+                    }
                 }
             }
         }
@@ -1761,6 +1808,7 @@ impl Runtime {
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
             Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
             Command::Design { squad } => self.design_asked(squad),
+            Command::ProjectDocs { squad } => self.docs_asked(squad),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
@@ -2064,6 +2112,11 @@ runbooks and reports live there, and work across the projects or on running them
         {
             crate::daemon_log!("equipe: {squad}: the design review wasn't marked: {err}");
         }
+        if role == crate::retro::ROLE
+            && let Err(err) = journal.set_retro_routine(Some(id))
+        {
+            crate::daemon_log!("equipe: {squad}: the weekly retro wasn't marked: {err}");
+        }
         self.keep_routines(squad, all);
     }
 
@@ -2105,13 +2158,18 @@ runbooks and reports live there, and work across the projects or on running them
             if let Some(journal) = self.journal(squad).filter(|j| j.design_review_routine() == Some(id)) {
                 let _ = journal.set_design_review_routine(None);
             }
+            // So with the retro.
+            if let Some(journal) = self.journal(squad).filter(|j| j.retro_routine() == Some(id)) {
+                let _ = journal.set_retro_routine(None);
+            }
             self.keep_routines(squad, all);
         }
     }
 
     /// A routine handed to the PM as the person's message — after its turn
-    /// if one runs — about the HQ when the squad has one; the design review,
-    /// to the designer instead (`review`). `false`: no PM to hand it to.
+    /// if one runs — about the HQ when the squad has one; the weekly retro
+    /// with the week's facts (`retro`); the design review, to the designer
+    /// instead (`review`). `false`: no PM to hand it to.
     async fn run_routine(&mut self, squad: &str, id: u32, now: u64) -> bool {
         let mut all = self.routines(squad);
         let Some(routine) = all.iter().find(|r| r.id == id).cloned() else {
@@ -2125,7 +2183,11 @@ runbooks and reports live there, and work across the projects or on running them
             };
             crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
             let about = self.hq(squad).map(|hq| board::project_name(&hq));
-            let mut text = routines::message(&routine);
+            let retro = self.journal(squad).and_then(|j| j.retro_routine()) == Some(id);
+            let mut text = if retro { self.retro_message(squad, &routine, now) } else { routines::message(&routine) };
+            if retro {
+                self.retros.insert(pm, now);
+            }
             let signals = self.journal(squad).map_or(0, |j| j.signals().len());
             if signals > 0 {
                 text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
@@ -4177,6 +4239,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
             prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
         }
+        if let Some(plan) = &ticket.plan {
+            let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());
+            // One quick look, beside the worktree this start already made.
+            let main = repo.and_then(|r| worktree::main_branch(r).ok());
+            prompt.push_str(&crate::plan::work_note(plan, repo.zip(main.as_deref())));
+        }
         if sandbox.is_some() && !after.is_empty() && fresh {
             let ids: Vec<&str> = after.iter().map(|(what, _)| what.as_str()).collect();
             prompt.push_str(&format!(
@@ -5020,6 +5088,17 @@ there, end your turn, and carry on when they say they're done."
             });
             return;
         }
+        // A brief, committed off the loop: answered once it is in.
+        if call.name == crate::briefs::WRITE_BRIEF {
+            return self.write_brief(&call, reply);
+        }
+        // A plan, committed off the loop; a ticket cut from one reads it first.
+        if call.name == board::WRITE_PLAN {
+            return self.write_plan(&call, reply);
+        }
+        if call.name == board::CREATE_TICKET && board::arg_str(&call.arguments, "plan").is_some_and(|p| !p.trim().is_empty()) {
+            return self.cut_from_plan(call, reply);
+        }
         let squad = call.squad.clone();
         // The PM accepting its team's work: it waits for the acceptance itself.
         if call.name == crate::accept::ACCEPT_WORK {
@@ -5251,6 +5330,19 @@ there, end your turn, and carry on when they say they're done."
             return;
         };
         let Pending { squad, approval, input, reply } = pending;
+        // How long it waited on the person, for the week's retro.
+        if let Some(asked) = self.approvals_asked.remove(&approval_id) {
+            let outcome = match decision {
+                _ if why == "Nobody answered in time." => "timed out",
+                Decision::Allow => "allowed",
+                Decision::Always => "always allowed",
+                Decision::Deny => "declined",
+            };
+            let wait = crate::retro::Wait { kind: "permission".into(), member: approval.member.clone(), ticket: approval.ticket, what: approval.action.clone(), asked, answered: Some(now_secs()), outcome: outcome.into() };
+            if let Some(journal) = self.journal(&squad) {
+                let _ = journal.record_wait(&wait);
+            }
+        }
         if approval.tool == SIGN_IN_TOOL {
             self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
             return self.sign_in_answered(squad, approval, input, decision, reply);
@@ -5990,6 +6082,8 @@ there, end your turn, and carry on when they say they're done."
                     merged: None,
                     off_main: None,
                     design_qa: None,
+                    // Read and checked off the loop before it gets here (`cut_from_plan`).
+                    plan: board::arg_str(&args, "plan").map(str::to_owned),
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
@@ -6235,6 +6329,11 @@ it back there once they have done it.{again} End your turn now with a short line
                 let estimate = Some(estimate).filter(|e| !e.is_empty());
                 session.estimate = estimate.clone();
                 let reply = board::estimate_reply(done, !session.subagents.is_empty(), session.engine == Engine::Claude);
+                // When it said a ticket would be done, on the ticket's record: the retro tells a miss.
+                let said = session.work.as_ref().map(|w| w.ticket).zip(done.and(estimate.as_ref().and_then(|e| e.done_at)));
+                if let (Some((ticket, at)), Some(journal)) = (said, self.journal(&squad)) {
+                    let _ = journal.ticket_event(ticket, &member, crate::retro::ESTIMATED, &at.to_string());
+                }
                 self.publish(Event::Estimated { session: id, estimate });
                 Ok(reply)
             }
@@ -6546,7 +6645,11 @@ it back there once they have done it.{again} End your turn now with a short line
                     self.sessions.insert(c.id, lane);
                 }
             }
-            self.journals.insert(squad, journal);
+            self.journals.insert(squad.clone(), journal);
+            // A squad whose PM joined before the weekly retro was: it comes now, once.
+            if pm.is_some() && self.config.persist {
+                self.add_joining_routine(&squad, crate::retro::ROLE);
+            }
         }
     }
 

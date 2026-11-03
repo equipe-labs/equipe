@@ -83,6 +83,19 @@ pub struct QuestionSet {
     /// the review. Left out when not (and from an older daemon).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub review: bool,
+    /// The PM's weekly retro's proposed changes: screens show it as the
+    /// retro. Left out when not (and from an older daemon).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retro: Option<Retro>,
+}
+
+/// What a retro's set carries beyond its questions: the lesson behind each
+/// change, question by question (empty: none) — kept in the squad's memory
+/// once the person takes the change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retro {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lessons: Vec<String>,
 }
 
 impl QuestionSet {
@@ -324,6 +337,7 @@ mod tests {
             ],
             asked_at: 1_760_000_000,
             review: false,
+            retro: None,
         }
     }
 
@@ -391,6 +405,10 @@ mod tests {
         let review = QuestionSet { review: true, ..set() };
         assert_eq!(wire_of(&review)["review"], true);
         assert_eq!(serde_json::from_value::<QuestionSet>(wire_of(&review)).unwrap(), review);
+        assert!(bare.retro.is_none() && wire_of(&s).get("retro").is_none(), "not the retro: left out");
+        let retro = QuestionSet { retro: Some(Retro { lessons: vec!["Small tickets land sooner".into(), String::new()] }), ..set() };
+        assert_eq!(wire_of(&retro)["retro"]["lessons"][0], "Small tickets land sooner");
+        assert_eq!(serde_json::from_value::<QuestionSet>(wire_of(&retro)).unwrap(), retro);
     }
 
     fn wire_of(set: &QuestionSet) -> serde_json::Value {

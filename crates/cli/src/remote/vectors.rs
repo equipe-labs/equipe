@@ -672,6 +672,7 @@ fn questions() -> QuestionSet {
         ],
         asked_at: NOW / 1000,
         review: false,
+        retro: None,
     }
 }
 
@@ -698,6 +699,7 @@ fn visual_questions() -> QuestionSet {
         }],
         asked_at: NOW / 1000,
         review: false,
+        retro: None,
     }
 }
 
@@ -843,7 +845,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         worktree: Some("/Users/you/.equipe/worktrees/api/t38-1a2b3c4d".into()),
         merged: None,
         off_main: None,
-        design_qa: None,
+        design_qa: None, plan: None,
         created_by: "pm".into(),
         note: None,
         asks: vec![],

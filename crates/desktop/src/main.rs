@@ -55,6 +55,7 @@ mod stream;
 mod target;
 mod theme;
 mod routine;
+mod retro;
 mod team;
 mod term;
 mod tailnet;
@@ -232,6 +233,8 @@ pub struct Shell {
     pub routines_ui: views::routines::RoutinesUi,
     /// Each project's newest tag, as last found, and when it was asked.
     pub releases: Vec<(std::path::PathBuf, releases::Release)>,
+    /// The squad's briefs and plans, as the daemon last sent them.
+    pub docs: Vec<equipe_core::protocol::briefs::ProjectDoc>,
     pub releases_asked: Option<std::time::Instant>,
     /// 지표's state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
@@ -392,6 +395,7 @@ impl Shell {
             design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
+            docs: Vec::new(),
             releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
@@ -857,6 +861,11 @@ impl Shell {
                             }
                             daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {
                                 changed |= this.design_versions_arrived(squad, project, versions);
+                                continue;
+                            }
+                            // Briefs and plans: the project pages'.
+                            daemon::Update::Event(Event::ProjectDocs { squad, docs }) => {
+                                changed |= this.docs_arrived(squad, docs);
                                 continue;
                             }
                             other => other,
@@ -1889,7 +1898,8 @@ impl Render for Shell {
         let away = matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting);
         let sidebar = if away { None } else { self.sidebar(window, cx) };
         // A document open takes the right side; closed, the browser is back.
-        let doc = (self.screen == Screen::Chat).then(|| views::doc::panel(self, window, cx)).flatten();
+        // A project's page opens its briefs and plans there too.
+        let doc = matches!(self.screen, Screen::Chat | Screen::Project).then(|| views::doc::panel(self, window, cx)).flatten();
         // Then the terminal, sized to the panel as the window is now.
         views::terminal::fit(self, window, cx);
         let terminal = (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten();

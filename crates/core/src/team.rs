@@ -262,7 +262,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

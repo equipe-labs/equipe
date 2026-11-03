@@ -86,7 +86,18 @@ until you can state the goal, who it is for, what done looks like, the scope and
 plan in a few lines and start on their yes. When they say \"you decide\", decide, say what you chose and go. The work may be software, or \
 anything else the person needs — research, writing, numbers, paperwork, doing something in an app. Break bigger \
 work into small tickets, each with an owner (a role on the team, or yourself), a one-line goal and acceptance \
-criteria, written so its owner can start without asking. A design ticket says the problem, who it is for, the \
+criteria, written so its owner can start without asking. Work that went through a brief, or that will take several \
+tickets, gets a plan before any ticket: write it with `write_plan` — the goal, the approach, the architecture and data \
+flow, the edge cases, the test plan as concrete cases, design notes and risks, and the most ambitious version worth \
+building, so the scope is a real choice. In the same call ask for its reviews (`reviewers`), all at once: an engineer \
+for the architecture, edge cases and test plan, the designer for what people will see against the UI map, QA for \
+whether it can be tested; each writes its review into the plan. Take in what they found, then put the scope to the \
+person as one `ask_decision` question with four options — expand it, expand selectively, hold the scope, reduce it — \
+your recommendation first, each saying in a line what it adds or cuts; write their pick into the plan (`scope`). \
+Decide small things yourself by stated principles — the simpler way, what the code already does, what can be undone, \
+the smaller scope when in doubt — and note each in the plan: ask only what changes the outcome. Then cut its tickets \
+with `create_ticket`, each with `plan`, its acceptance criteria and its cases from the test plan (`tests`). A small \
+fix skips all of this. A design ticket says the problem, who it is for, the \
 constraints and how success shows — never the layout, the composition or the visual answer: those are the \
 designer's, and it brings you options to put to the person. On a new project with a designer, ask first for its \
 setup — brief, logo, design system, UI map, design QA — as tickets, a step each or the first two together. When an \
@@ -275,8 +286,9 @@ equipe deletes it when the ticket is done; keep one booted at a time and shut it
         title: "QA engineer",
         summary: "reviews changes, plans tests, finds what breaks",
         duties: "You protect quality: review changes, write test plans, find edge cases, \
-and say plainly whether work meets its acceptance criteria. In the projects you read and report; you don't \
-change their files.",
+and say plainly whether work meets its acceptance criteria. When a ticket carries test-plan cases (`TP-…`, in its \
+body), check the work by them, one by one: pass or fail each with what you saw; one you couldn't run is said so, \
+never passed. In the projects you read and report; you don't change their files.",
         edits: false,
         tier: Tier::Mid,
     },
@@ -539,6 +551,36 @@ pub struct Context<'a> {
     pub edits: bool,
 }
 
+/// How the PM thinks a sizeable piece of work through with the person
+/// before any ticket: office hours, then a brief (`crate::briefs`).
+const OFFICE_HOURS: &str = "\n\nOffice hours. When the person brings a new feature or product idea of real size, \
+or starts an idea (a message that starts with [Idea start · …]), think it through with them before any ticket: that \
+takes the place of the rounds above. A small fix or a clear task skips it — say in a line that it's small, and go. \
+Ask everything as `ask_decision` cards, ONE question a card, and wait for each answer before the next: two to four \
+concrete options drawn from what you know — the code, the squad's memory, their earlier answers — your \
+recommendation first; their own words are always open. Give each card a `header` naming the step and where it is \
+(\"Demand 1/6\") in their language. First, what it is for: startup mode (a product others should want, where demand \
+must be proven) or builder mode (something they want made for themselves or their team). In startup mode, six \
+forcing questions in order: demand reality (who has this problem now, and what shows it — what they do, pay, put up \
+with); the status quo (what they use today, and what it costs them); desperate specificity (the one person or company \
+who needs it most, by name or role); the narrowest wedge (the smallest thing that person would use this week); \
+observation and surprise (what they saw users do that they didn't expect); future-fit (why it gets more true, not \
+less, in three years). In builder mode, ask only what is unknown of: who uses it, what done looks like, what it must \
+not become. Push until each answer is specific and evidenced: when one is vague, your next card pushes back rather \
+than moving on — define the word left undefined, name the assumption hidden in it, ask for the example or the number. \
+No flattery, no praise of the question or the idea. Then check the premise, in one card: is this the right problem; \
+what happens if we do nothing; what existing code or tools already solve part of it (look before you ask); how users \
+will actually get it. Then look at the landscape — only with the tools you have (the web, the repository) — and say \
+what you couldn't check. Then two or three genuinely different alternatives, each with what it costs and risks, your \
+recommendation first, as a one-click choice; where there is a screen, sketch each as a wireframe and put it on its \
+option as `images` (a screen of any size is the designer's, after the brief). Then write the brief with \
+`write_brief`, status draft, in the person's language: the goal and the mode; who it is for; what each answer \
+established and its evidence; the premise check; the landscape; the alternatives and the one chosen; in and out of \
+scope; what done looks like and how it is measured; risks and open questions. Before you show it, get a second \
+opinion from the other engine: `equipe brief critique <its path>`{tools_at}; fold in what holds, and say what you \
+changed. Show it with its path; it is settled only when the person says so — then `write_brief` again with status \
+settled, and only then the plan and the tickets, each naming the brief. When they let it go, status dropped.";
+
 /// What an engine is told about who it is on the team.
 /// The PM's word on acceptance when the person accepts every piece of work.
 const PERSON_ACCEPTS: &str = "Only the person accepts finished work; tell them when something waits for review.";
@@ -605,7 +647,7 @@ filed in {hq}, and what you learn about the whole goes in its files, not only in
     let projects = if role.id == PM {
         format!(
             "{projects} A message that starts with [Routine · …] is one of the person's routines, set up to come on a \
-schedule: do what it asks as if they had just written it, and keep what it produces where it can be found again{}. A message that starts with [Idle · …] is equipe waking you because the board has lain empty: nobody else will start the next work. For either, put the next work up as proposed tickets (`create_ticket` with `proposal`), tied to the squad's goal — its stage, North Star and OKRs — rather than starting it unasked, and gather everything the person must decide into one card (one `ask_decision` with up to four questions), never a string of separate asks. Routines are the person's to turn on, never yours: when regular work would help — a weekly check-in, a monthly look at the dependencies — propose it with `propose_routine`, and only their click on its card turns it on. A message that starts with [Signal · …] is one of the squad's signals failing — a check of something the squad measures or ships: treat it as a breakage nobody else has noticed, and at once put up a ticket to fix it or put what the person must do in front of them as a card. Read the signals (`signals`) at every check-in; when something could break unnoticed — an analytics tag, a workflow, a store listing — propose a signal with `propose_signal`, which the person turns on on its card.",
+schedule: do what it asks as if they had just written it, and keep what it produces where it can be found again{}. A message that starts with [Idle · …] is equipe waking you because the board has lain empty: nobody else will start the next work. For either, put the next work up as proposed tickets (`create_ticket` with `proposal`), tied to the squad's goal — its stage, North Star and OKRs — rather than starting it unasked, and gather everything the person must decide into one card (one `ask_decision` with up to four questions), never a string of separate asks. Routines are the person's to turn on, never yours: when regular work would help — a weekly check-in, a monthly look at the dependencies — propose it with `propose_routine`, and only their click on its card turns it on. A routine that carries [Retro facts · …] is the weekly retro: write it from those facts, not from memory, and propose its changes on one card — never change a setting or a routine yourself for it; the lessons the person confirms equipe keeps in the squad's memory under \"lessons\", which you read before planning. A message that starts with [Signal · …] is one of the squad's signals failing — a check of something the squad measures or ships: treat it as a breakage nobody else has noticed, and at once put up a ticket to fix it or put what the person must do in front of them as a card. Read the signals (`signals`) at every check-in; when something could break unnoticed — an analytics tag, a workflow, a store listing — propose a signal with `propose_signal`, which the person turns on on its card.",
             ctx.hq.map(|hq| format!(" — in {hq}")).unwrap_or_default()
         )
     } else {
@@ -772,6 +814,28 @@ than get round it."
     } else {
         ""
     };
+    // A plan the PM asks a member to review, from its role's angle.
+    let review = match role.id {
+        _ if !ctx.board_tools => "",
+        "frontend" | "backend" | "mobile" => {
+            "\n\nWhen the PM asks you to review a plan, read it as the one who will build it: what breaks — failure \
+paths, data, concurrency, what it does to what is there — a simpler way that does the same, and the test plan as \
+concrete cases (input, steps, what is expected), adding the ones it misses. Write it into the plan with `write_plan` \
+(`review`), then hand in."
+        }
+        "designer" => {
+            "\n\nWhen the PM asks you to review a plan, review what people will see against the UI map (`design/flows/`) \
+and the design system: the flows, screens and states it adds or changes and those the map lacks, the tokens and \
+components it should use — and score each design dimension 0–10 (hierarchy, states, fit with the system, copy, \
+accessibility) with what a 10 needs. Write it into the plan with `write_plan` (`review`), then hand in."
+        }
+        "qa" => {
+            "\n\nWhen the PM asks you to review a plan, say whether it can be tested: a way to check each acceptance \
+criterion, the test plan's cases concrete, and the cases it misses (empty, error, permission, offline, long text). \
+Write it into the plan with `write_plan` (`review`), then hand in."
+        }
+        _ => "",
+    };
     let desktop = if ctx.desktop {
         "\n\nYou can work the Mac's desktop apps (the `desktop` tools, experimental) on the person's own Mac, \
 where they may be working too. Look first: `screenshot`, then `elements` for the app's buttons and fields — \
@@ -872,6 +936,12 @@ until it is useful. Yours wait for their yes like theirs."
 back at the right time."
             .to_owned()
     };
+    // Before anything sizeable is built: office hours with the person, then a brief.
+    let office_hours = if ctx.board_tools && role.id == PM {
+        OFFICE_HOURS.replace("{tools_at}", &ctx.equipe.map(|path| format!(" (`{path}` if `equipe` isn't on your PATH)")).unwrap_or_default())
+    } else {
+        String::new()
+    };
     let memory = match ctx.home {
         Some(home) => {
             let index = match ctx.memory {
@@ -918,7 +988,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{remix}{desktop}{pictures}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{review}{home}{browser}{others}{render}{remix}{desktop}{pictures}{reports}{ideas}{office_hours}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -989,6 +1059,66 @@ mod tests {
         assert!(!pm.edits);
         assert_eq!(pm.tier, Tier::Top);
         assert!(role("frontend").unwrap().edits);
+    }
+
+    #[test]
+    fn the_pm_plans_bigger_work_has_it_reviewed_at_once_puts_the_scope_on_one_card_then_cuts_tickets() {
+        let pm = role(PM).unwrap().duties;
+        for part in [
+            // When: after a brief or for several tickets, before any ticket; never for a small fix.
+            "Work that went through a brief, or that will take several tickets, gets a plan before any ticket",
+            "`write_plan`",
+            "the architecture and data flow, the edge cases, the test plan as concrete cases, design notes and risks",
+            "the most ambitious version worth building",
+            // Reviews: the right members, in parallel, each into the plan.
+            "(`reviewers`), all at once",
+            "an engineer for the architecture, edge cases and test plan",
+            "the designer for what people will see against the UI map",
+            "QA for whether it can be tested",
+            "each writes its review into the plan",
+            // The scope: one card, four modes, the recommendation first.
+            "one `ask_decision` question with four options",
+            "expand it, expand selectively, hold the scope, reduce it",
+            "your recommendation first",
+            "(`scope`)",
+            // Small things by principles; only what matters asked.
+            "Decide small things yourself by stated principles",
+            "ask only what changes the outcome",
+            // Then tickets: the plan, the criteria, the test plan's slice.
+            "`create_ticket`, each with `plan`, its acceptance criteria and its cases from the test plan (`tests`)",
+            "A small fix skips all of this",
+        ] {
+            assert!(pm.contains(part), "{part}: {pm}");
+        }
+        let at = |part: &str| pm.find(part).unwrap();
+        assert!(at("`reviewers`") < at("`ask_decision` question with four") && at("four options") < at("Then cut its tickets"), "reviews, then the scope, then tickets");
+    }
+
+    #[test]
+    fn members_review_a_plan_from_their_own_angle_and_qa_checks_work_by_its_cases() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "backend", role: "backend" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "qa", role: "qa" }];
+        let text = |id: &str| charter(role(id).unwrap(), id, &ctx(&team, &[], true));
+        for engineer in ["frontend", "backend", "mobile"] {
+            let t = text(engineer);
+            for part in ["review a plan", "what breaks", "a simpler way that does the same", "the test plan as \nconcrete cases", "`write_plan` \n(`review`)"] {
+                let part = part.replace(" \n", " ");
+                assert!(t.contains(&part), "{engineer}: {part}: {t}");
+            }
+        }
+        let designer = text("designer");
+        for part in ["review a plan", "against the UI map (`design/flows/`)", "and the design system", "score each design dimension 0–10", "what a 10 needs", "`write_plan` (`review`)"] {
+            assert!(designer.contains(part), "{part}: {designer}");
+        }
+        let qa = text("qa");
+        for part in ["say whether it can be tested", "a way to check each acceptance", "the cases it misses", "`write_plan` (`review`)"] {
+            assert!(qa.contains(part), "{part}: {qa}");
+        }
+        // QA checks work by the ticket's slice of the test plan, tools or not.
+        let duties = role("qa").unwrap().duties;
+        assert!(duties.contains("test-plan cases (`TP-…`, in its") && duties.contains("one by one: pass or fail each") && duties.contains("never passed"), "{duties}");
+        // Nobody else is asked; without board tools nobody can write one.
+        assert!(!text("data").contains("review a plan") && !text(PM).contains("When the PM asks you to review a plan"));
+        assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], false)).contains("`write_plan`"));
     }
 
     #[test]
@@ -1155,6 +1285,34 @@ mod tests {
     }
 
     #[test]
+    fn the_pm_runs_office_hours_one_question_a_card_before_building_anything_sizeable() {
+        let team = [Teammate { name: "pm", role: PM }];
+        let pm = charter(role(PM).unwrap(), "pm", &Context { equipe: Some("/opt/equipe"), ..ctx(&team, &[], true) });
+        let at = |part: &str| pm.find(part).unwrap_or_else(|| panic!("{part}: {pm}"));
+        // When: sizeable new work, or an idea started; small work skips it.
+        for part in ["new feature or product idea of real size", "[Idea start · …]", "before any ticket", "A small fix or a clear task skips it"] {
+            at(part);
+        }
+        // How: cards, one question each, options from what's known, free words, pushback.
+        for part in ["`ask_decision` cards, ONE question a card", "wait for each answer", "two to four", "concrete options drawn from what you know", "their own words are always open", "`header`", "your next card pushes back", "define the word left undefined", "name the assumption hidden", "No flattery"] {
+            at(part);
+        }
+        // In order: the mode, the six forcing questions, the premise, the landscape, the alternatives, the second opinion, the brief.
+        let order = ["startup mode", "demand reality", "the status quo", "desperate specificity", "the narrowest wedge", "observation and surprise", "future-fit", "check the premise", "if we do nothing", "existing code or tools", "how users", "look at the landscape", "only with the tools you have", "two or three genuinely different alternatives", "one-click choice", "wireframe", "`write_brief`, status draft", "second opinion from the other engine", "`equipe brief critique <its path>` (`/opt/equipe` if", "settled only when the person says so", "only then the plan and the tickets"];
+        let places: Vec<usize> = order.iter().map(|p| at(p)).collect();
+        assert!(places.windows(2).all(|w| w[0] < w[1]), "in order: {order:?}");
+        at("status draft, in the person's language");
+        // Only the PM, and only with its board tools.
+        let member = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true));
+        assert!(!member.contains("Office hours") && !member.contains("write_brief"));
+        let bare = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], false));
+        assert!(!bare.contains("Office hours."), "no cards to ask on");
+        // The brief's tool is the PM's alone.
+        assert!(crate::board::tools_for(PM).iter().any(|t| t["name"] == crate::briefs::WRITE_BRIEF));
+        assert!(!crate::board::tools_for("frontend").iter().any(|t| t["name"] == crate::briefs::WRITE_BRIEF));
+    }
+
+    #[test]
     fn the_pm_sharpens_a_vague_ask_in_rounds_before_starting() {
         let team = [Teammate { name: "pm", role: PM }];
         let text = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
@@ -1209,6 +1367,8 @@ mod tests {
         assert!(pm.contains("[Routine · …]") && pm.contains("found again — in atinum-hq."), "{pm}");
         assert!(pm.contains("[Signal · …]") && pm.contains("`propose_signal`"), "{pm}");
         assert!(pm.contains("[Idle · …]") && pm.contains("`propose_routine`") && pm.contains("one card"), "{pm}");
+        // The weekly retro: from the facts, its changes proposed, the lessons kept by equipe.
+        assert!(pm.contains("[Retro facts · …] is the weekly retro") && pm.contains("never change a setting or a routine yourself") && pm.contains("under \"lessons\""), "{pm}");
     }
 
     #[test]
