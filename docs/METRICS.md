@@ -201,7 +201,8 @@ shows "last value, dimmed, with its time" from `last_ok` when `last.error` is se
 `{ "squad", "project"?, "kind", "settings": { every field, secret ones included } }` → `Connection`
 
 With `"id": "m1"` instead of `kind`: new settings or keys for that connection; a
-secret field left out keeps its key, a setting left out keeps its value. The
+secret field left out keeps its key, a setting left out keeps its value; an
+optional (not required, not secret) setting sent as `""` is cleared. The
 answer comes at once; the first fetch follows on its own — `metrics.sources`
 or `metrics.refresh` shows when it has.
 

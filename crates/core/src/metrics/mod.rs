@@ -358,8 +358,12 @@ impl Metrics {
             _ => BTreeMap::new(),
         };
         for field in &spec.fields {
+            // An empty value for a setting of a kept connection clears it.
+            let cleared = kept.is_some() && !field.secret && !field.required && p.settings.get(&field.key).is_some_and(|v| v.trim().is_empty());
             let value = given(&field.key).or_else(|| {
-                if field.secret {
+                if cleared {
+                    None
+                } else if field.secret {
                     old_keys.get(&field.key).cloned()
                 } else {
                     kept.as_ref().and_then(|c| c.settings.get(&field.key).cloned())

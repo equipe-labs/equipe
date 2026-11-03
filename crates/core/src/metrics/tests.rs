@@ -177,6 +177,11 @@ async fn connecting_again_keeps_the_key_left_out_and_checks_the_fields() {
     assert_eq!((c.id.as_str(), c.connected_at, c.settings["seed"].as_str()), ("m1", 1, "9"));
     assert_eq!(metrics.lock_keys().get("m1").unwrap()["token"], TOKEN, "the token left out is kept");
     assert_eq!(connections(&home).len(), 1);
+    let blank = ConnectParams { squad: "acme".into(), id: Some("m1".into()), settings: BTreeMap::from([("seed".into(), "".into())]), ..Default::default() };
+    let c = metrics.connect(blank, 2).unwrap();
+    assert!(!c.settings.contains_key("seed"), "an empty optional setting clears it");
+    assert_eq!(metrics.lock_keys().get("m1").unwrap()["token"], TOKEN);
+    metrics.connect(ConnectParams { settings: BTreeMap::from([("seed".into(), "9".into())]), ..ConnectParams { squad: "acme".into(), id: Some("m1".into()), ..Default::default() } }, 2).unwrap();
 
     let refused = |p: ConnectParams| metrics.connect(p, 3).unwrap_err().code;
     assert_eq!(refused(ConnectParams { settings: BTreeMap::new(), ..fake(&[]) }), BAD_SETTINGS, "no token");

@@ -439,7 +439,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
                 .child(title_line(p, lookup("metrics.ns.title_short".into()), wait(p), lookup("metrics.ns.none".into())))
                 .child(div().text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(lookup("metrics.ns.none_title".into())))
                 .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text).child(lookup("metrics.ns.none_body".into())))
-                .child(div().text_size(px(13.)).line_height(px(20.)).font_family(MONO).text_color(p.muted).child(lookup("metrics.ns.example".into())))
+                .child(h_flex().gap_1().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(lookup("metrics.ns.example".into())).child(div().font_family(MONO).child("signup · user_id")))
                 .child(h_flex().gap_2().child(set))
                 .into_any_element()
         }
@@ -581,16 +581,20 @@ fn connect_page(shell: &Shell, draft: &Draft, cx: &mut Context<Shell>) -> AnyEle
     let Some(sources) = &m.sources else {
         return note(p, t!("metrics.loading")).into_any_element();
     };
-    let mut row = h_flex().w_full().flex_wrap().gap_4().items_start().child(pick_card(shell, sources, draft, cx));
+    let mut row = h_flex().w_full().flex_wrap().gap_4().items_start();
+    if !draft.north {
+        row = row.child(pick_card(shell, sources, draft, cx));
+    }
     if let Some(kind) = draft.kind {
         row = row.child(key_card(shell, sources, kind, draft, cx));
     }
     if let Some(kind) = draft.done {
         row = row.child(done_card(shell, sources, kind, cx));
     }
+    let head = if draft.north { None } else { Some(v_flex().gap_1().child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("metrics.connect_title"))).child(note(p, t!("metrics.connect_sub")))) };
     v_flex()
         .gap_4()
-        .child(v_flex().gap_1().child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("metrics.connect_title"))).child(note(p, t!("metrics.connect_sub"))))
+        .children(head)
         .child(row)
         .into_any_element()
 }
@@ -656,16 +660,24 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
         )
     });
     let how = if draft.north { lookup("metrics.ns.form_note".into()) } else { lookup(format!("metrics.how.{}", kind.as_str())) };
-    let go = ui::button(p, "metrics-confirm", Kind::Primary, if draft.sending { t!("metrics.connecting") } else { t!("metrics.confirm") }).disabled(draft.sending).on_click(cx.listener(|this, _, window, cx| this.metrics_submit(window, cx)));
-    let back = ui::button(p, "metrics-back", Kind::Ghost, t!("metrics.back")).on_click(cx.listener(|this, _, window, cx| this.metrics_pick_kind(None, None, window, cx)));
+    let go_text = match (draft.north, draft.sending) {
+        (true, true) => t!("metrics.ns.saving"),
+        (true, false) => t!("metrics.ns.save"),
+        (false, true) => t!("metrics.connecting"),
+        (false, false) => t!("metrics.confirm"),
+    };
+    let go = ui::button(p, "metrics-confirm", Kind::Primary, go_text).disabled(draft.sending).on_click(cx.listener(|this, _, window, cx| this.metrics_submit(window, cx)));
+    let north = draft.north;
+    let back = ui::button(p, "metrics-back", Kind::Ghost, t!("metrics.back")).on_click(cx.listener(move |this, _, window, cx| if north { this.metrics_show_dash(cx) } else { this.metrics_pick_kind(None, None, window, cx) }));
+    let title = if draft.north { format!("{} · {name}", lookup("metrics.ns.set".into())) } else { t!("metrics.step2", service = name).to_string() };
     card_frame(p, p.hair)
-        .child(step(p, t!("metrics.step2", service = name)))
+        .child(step(p, title))
         .child(note(p, how).text_color(p.text2))
         .child(v_flex().gap_3().children(boxes))
         .children(draft.missing.then(|| div().text_size(px(13.)).text_color(p.red).child(t!("metrics.fill_required"))))
         .children(draft.failed.as_ref().map(|why| div().text_size(px(13.)).line_height(px(19.)).text_color(p.red).child(t!("metrics.connect_failed", why = why))))
         .child(h_flex().gap_2().items_center().child(go).child(back))
-        .child(h_flex().gap_1p5().items_start().child(div().pt(px(3.)).child(icon(Icon::Lock, 12., p.muted))).child(note(p, t!("metrics.key_where")).text_size(px(12.5))))
+        .children((!draft.north).then(|| h_flex().gap_1p5().items_start().child(div().pt(px(3.)).child(icon(Icon::Lock, 12., p.muted))).child(note(p, t!("metrics.key_where")).text_size(px(12.5)))))
         .into_any_element()
 }
 
@@ -825,7 +837,12 @@ impl Shell {
             let spec = self.metrics.spec(kind).cloned();
             let existing = replacing.as_ref().and_then(|id| self.metrics.connections().iter().find(|c| c.id == *id)).cloned();
             for field in spec.iter().flat_map(|s| s.fields.iter()) {
-                let placeholder = word(format!("metrics.field.{}", field.key), &field.label);
+                let placeholder = match field.key.as_str() {
+                    "north_star_event" => "work_accepted".to_owned(),
+                    "north_star_property" => "squad".to_owned(),
+                    "north_star_where" => "by=person".to_owned(),
+                    _ => word(format!("metrics.field.{}", field.key), &field.label),
+                };
                 let secret = field.secret;
                 let kept = existing.as_ref().is_some_and(|c| c.keys.contains(&field.key));
                 let input = cx.new(|cx| {
@@ -858,6 +875,7 @@ impl Shell {
         let Some(spec) = self.metrics.spec(kind).cloned() else { return };
         let replacing = draft.replacing.clone();
         let kept: Vec<String> = replacing.as_ref().and_then(|id| self.metrics.connections().iter().find(|c| c.id == *id)).map(|c| c.keys.clone()).unwrap_or_default();
+        let north_clear = draft.north && replacing.is_some();
         let values = self.metrics_ui.values(cx);
         let empty = metrics::missing(&spec, &values, &kept);
         if let Some(first) = empty.first() {
@@ -870,7 +888,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        let params = ConnectParams { squad: self.model.squad.clone(), project: self.model.focus.clone(), kind: replacing.is_none().then_some(kind), id: replacing, settings: metrics::settings(&values) };
+        let params = ConnectParams { squad: self.model.squad.clone(), project: self.model.focus.clone(), kind: replacing.is_none().then_some(kind), id: replacing, settings: { let mut sent = metrics::settings(&values); if north_clear { for k in ["north_star_event", "north_star_property", "north_star_where"] { sent.entry(k.to_owned()).or_default(); } } sent } };
         drop(values);
         self.metrics_ui.clear(window, cx);
         if let Flow::Connect(d) = &mut self.metrics.flow {
