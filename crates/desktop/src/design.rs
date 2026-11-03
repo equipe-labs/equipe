@@ -350,6 +350,8 @@ pub struct DesignUi {
     pub redo_open: bool,
     /// The window is wide enough for 지금 and 바뀐 뒤 side by side.
     pub wide: bool,
+    /// The design pane's width at the last frame: the header picks its switch by it.
+    pub pane: f32,
     /// 버전 기록 open.
     pub versions_open: bool,
     /// Each source's accepted versions, newest first, as the daemon last said.
@@ -389,6 +391,7 @@ impl Default for DesignUi {
             compare: false,
             redo_open: false,
             wide: false,
+            pane: f32::MAX,
             versions_open: false,
             versions: HashMap::new(),
             versions_asked: None,

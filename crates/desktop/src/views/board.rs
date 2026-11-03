@@ -63,6 +63,8 @@ pub enum Popover {
     Talk,
     Filter,
     Group,
+    /// The design screen's systems, when more than two: a list, not segments.
+    DesignSource,
 }
 
 type Seen = (Option<String>, String, Option<bool>);
@@ -1561,7 +1563,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .child(label)
     };
     let body: Vec<AnyElement> = match which {
-        Popover::Projects | Popover::Members | Popover::Talk => return None,
+        Popover::Projects | Popover::Members | Popover::Talk | Popover::DesignSource => return None,
         Popover::Group => {
             let mut rows: Vec<AnyElement> = GroupBy::ALL
                 .into_iter()

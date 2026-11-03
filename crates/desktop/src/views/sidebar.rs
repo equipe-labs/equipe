@@ -29,6 +29,9 @@ use crate::side_split::Divider;
 use crate::theme::{Palette, Sans, UI, key_face};
 use crate::{Screen, Shell, motion};
 
+/// The width a row's waiting count takes: two figures at its size.
+const COUNT_W: f32 = 15.;
+
 pub const WIDTH: f32 = 260.;
 pub const MIN_WIDTH: f32 = 200.;
 pub const MAX_WIDTH: f32 = 480.;
@@ -630,7 +633,9 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
                     .font_weight(FontWeight::SEMIBOLD)
                     .tip(p, t!("sidebar.work_needs_you", n = waiting), None)
                     .child(div().size(px(6.)).rounded_full().bg(p.orange))
-                    .child(waiting.to_string()),
+                    // Up to two figures in one width, right-aligned: the dots
+                    // line up down the list whether a row says 1 or 10.
+                    .child(div().min_w(px(COUNT_W)).flex().justify_end().child(waiting.to_string())),
             )
         });
     // On the pointer, in the counts' place: a new conversation here, and the project's menu.

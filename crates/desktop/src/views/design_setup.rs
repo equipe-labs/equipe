@@ -106,6 +106,9 @@ fn designer(model: &Model) -> Option<&Member> {
 
 /// The band, over the design screen's sections: `None` once every step is
 /// done, before the daemon has answered, or with no system to show.
+/// The narrowest the step's line goes before its ask moves under it.
+const STEP_LINE_MIN: f32 = 280.;
+
 pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let ui = &shell.design;
@@ -155,13 +158,17 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let line = now_line(at);
     let named = line.find(label(at)).map(|from| from..from + label(at).len());
     let words = StyledText::new(line).with_highlights(named.map(|r| (r, HighlightStyle { color: Some(p.text.into()), font_weight: Some(FontWeight::MEDIUM), ..Default::default() })));
+    // The ask beside what the step makes; when the screen is too narrow for
+    // both, under it, so the words keep a readable measure.
     let now = h_flex()
-        .gap_3()
+        .flex_wrap()
+        .gap_x_3()
+        .gap_y_2()
         .items_center()
         .child(
             h_flex()
                 .flex_1()
-                .min_w_0()
+                .min_w(px(STEP_LINE_MIN))
                 .gap_2()
                 .items_start()
                 .children(designer.map(|m| div().pt(px((SMALL_LINE - AVATAR) / 2.)).child(theme::avatar(p, &m.role, &m.name, AVATAR))))
@@ -176,9 +183,11 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 ),
         )
         .child(
-            ui::button(p, "design-setup-ask", ui::Kind::Primary, ask)
-                .icon(Icon::Message)
-                .on_click(cx.listener(|this, _, window, cx| this.design_ask_setup(window, cx))),
+            div().flex_none().child(
+                ui::button(p, "design-setup-ask", ui::Kind::Primary, ask)
+                    .icon(Icon::Message)
+                    .on_click(cx.listener(|this, _, window, cx| this.design_ask_setup(window, cx))),
+            ),
         );
     Some(v_flex().id("design-setup").flex_none().px(px(PAD)).py_3().gap_2().border_b_1().border_color(p.hair).child(steps).child(now).into_any_element())
 }
