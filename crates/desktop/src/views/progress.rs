@@ -111,22 +111,23 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(heading(shell, Some(p.danger()), t!("progress.risks").into(), risks.len()))
+                .child(heading(shell, Some(super::board::dot(p.danger(), 7.).into_any_element()), t!("progress.risks").into(), risks.len()))
                 .child(v_flex().w_full().p_1().rounded(px(R_LG)).bg(p.danger_bg()).children(rows)),
         );
     }
-    let names = model.project_names();
     for (project, ids) in &working {
-        let color = project.as_ref().and_then(|n| names.iter().position(|x| x == n)).map(|at| super::header::project_color(p, at));
+        let mark = project.is_some().then(|| crate::theme::project_mark(p, 12.));
         let label = project.clone().unwrap_or_else(|| t!("sidebar.outside").into());
         let rows = ids.iter().filter_map(|id| model.tickets.iter().find(|t| t.id == *id).map(|t| row(shell, t, None, cx)));
-        column = column.child(v_flex().w_full().gap_1().child(heading(shell, color, label, ids.len())).children(rows));
+        column = column.child(v_flex().w_full().gap_1().child(heading(shell, mark, label, ids.len())).children(rows));
     }
     if !done.is_empty() {
         let rows = done.iter().filter_map(|id| model.tickets.iter().find(|t| t.id == *id).map(|t| done_row(shell, t, cx)));
         column = column.child(v_flex().w_full().gap_1().child(heading(shell, None, t!("progress.done").into(), done.len())).children(rows));
     }
 
+    // What runs on its own, on a schedule: the routines, below the work.
+    column = column.child(super::routines::section(shell, cx));
     v_flex()
         .id("progress-page")
         .flex_1()
@@ -137,8 +138,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// A part's heading: its project's colour (or red), its name, how many.
-fn heading(shell: &Shell, color: Option<Rgba>, label: String, count: usize) -> Div {
+/// A part's heading: its mark (a project's folder, red for what needs a look), its name, how many.
+fn heading(shell: &Shell, mark: Option<AnyElement>, label: String, count: usize) -> Div {
     let p = shell.palette;
     h_flex()
         .gap_1p5()
@@ -146,7 +147,7 @@ fn heading(shell: &Shell, color: Option<Rgba>, label: String, count: usize) -> D
         .text_size(px(12.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(p.text2)
-        .children(color.map(|c| super::board::dot(c, 7.)))
+        .children(mark)
         .child(label)
         .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()))
 }

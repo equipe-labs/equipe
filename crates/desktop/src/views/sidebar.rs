@@ -23,7 +23,6 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::board::dot;
-use super::header::project_color;
 use crate::board::{HeadClick, Menu, SideGroup, ideas_view, recent_done_view, side_groups};
 use crate::state::{Conn, Member, Model, Side, Status};
 use crate::side_split::Divider;
@@ -383,7 +382,7 @@ enum Glyph {
 /// person sees where they are.
 fn on_more(shell: &Shell) -> bool {
     let menu = shell.board.view.menu;
-    matches!(shell.screen, Screen::Overview | Screen::Roadmap | Screen::Metrics | Screen::Design)
+    matches!(shell.screen, Screen::Roadmap | Screen::Metrics | Screen::Design)
         || (shell.screen == Screen::Board && matches!(menu, Menu::All | Menu::View(_)))
 }
 
@@ -429,15 +428,6 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Board, Menu::All)), window, cx) {
                     this.open_side_menu(Menu::All, cx);
-                }
-            }))
-            .into_any_element(),
-    );
-    rows.push(
-        tool("nav-overview", Glyph::Kit(IconName::ChartPie), t!("overview.title").into(), shell.screen == Screen::Overview)
-            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Overview, this.board.view.menu)), window, cx) {
-                    this.open_overview(cx);
                 }
             }))
             .into_any_element(),
@@ -599,7 +589,7 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
     let ident = match g.at {
         // The HQ: a building, not a dot — the squad's own place, not one of its products.
         Some(_) if hq => icon(IconName::Building2, 13., p.text2).into_any_element(),
-        Some(at) => dot(project_color(p, at), 8.).into_any_element(),
+        Some(_) => crate::theme::project_mark(p, 13.),
         // Outside every project: a ring, where a project has its colour.
         None => div().size(px(8.)).rounded_full().border_1().border_color(p.muted).into_any_element(),
     };
@@ -630,20 +620,16 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
         })
         .when(waiting > 0, |m| {
             m.child(
-                div()
+                h_flex()
                     .id(SharedString::from(format!("waiting-{key}")))
-                    .min_w(px(18.))
                     .h(px(18.))
-                    .px(px(5.))
-                    .flex()
+                    .gap(px(5.))
                     .items_center()
-                    .justify_center()
-                    .rounded(px(9.))
-                    .bg(p.orange)
-                    .text_color(p.on_accent)
-                    .text_size(px(11.))
+                    .text_color(p.orange)
+                    .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .tip(p, t!("sidebar.work_needs_you", n = waiting), None)
+                    .child(div().size(px(6.)).rounded_full().bg(p.orange))
                     .child(waiting.to_string()),
             )
         });
@@ -751,7 +737,7 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
         rows.push(
             row_shell(p, ("conv-draft", *draft as usize), on)
                 .pl(px(8. + indent))
-                .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Message, 13., p.text2)))
+                .child(div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none())
                 .child(row_title(p, t!("sidebar.new_conversation").into(), on, true))
                 .into_any_element(),
         );
@@ -2118,7 +2104,6 @@ impl Shell {
             },
             Screen::Settings => self.open_settings(None, window, cx),
             Screen::Design => self.open_design(cx),
-            Screen::Overview => self.open_overview(cx),
             Screen::Roadmap => self.open_roadmap(cx),
             Screen::Metrics => self.open_metrics(cx),
             Screen::Progress => self.open_progress(cx),

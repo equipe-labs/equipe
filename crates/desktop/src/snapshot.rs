@@ -297,14 +297,6 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     cx.notify();
                 }),
                 // 디자인 시스템: the screen at a section, another system, its draft, what changed, an asset big.
-                // 현황; `overview:<project>` marks that project the HQ here first (no daemon asked).
-                "overview" => shell.update(cx, |shell, cx| {
-                    if !arg.is_empty() {
-                        shell.model.hq = shell.model.projects.iter().find(|p| equipe_core::board::project_name(p) == arg).cloned();
-                        shell.model.order_projects();
-                    }
-                    shell.open_overview(cx);
-                }),
                 // Two routines on this screen alone (no daemon asked), the second off.
                 "rseed" => shell.update(cx, |shell, cx| {
                     use equipe_core::protocol::routines::{Routine, Schedule};

@@ -133,7 +133,7 @@ fn now_secs() -> u64 {
 /// The section: its head, the form or the rows, or what a routine is with presets.
 pub fn section(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let ui = &shell.overview.routines;
+    let ui = &shell.routines_ui;
     let routines = &shell.model.routines;
     let head = h_flex()
         .w_full()
@@ -176,7 +176,7 @@ fn empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 fn row(shell: &Shell, r: &Routine, rule: bool, now: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let id = r.id;
-    let deleting = shell.overview.routines.deleting == Some(id);
+    let deleting = shell.routines_ui.deleting == Some(id);
     let mut when = schedule_words(r.when);
     if let Some(next) = r.next_run.filter(|_| r.on) {
         when = format!("{when} · {}", t!("routines.next", when = next_words(next, now)));
@@ -215,7 +215,7 @@ fn row(shell: &Shell, r: &Routine, rule: bool, now: u64, cx: &mut Context<Shell>
         } else {
             ui::icon_button(p, SharedString::from(format!("routine-del-{id}")), Icon::X, t!("routines.delete"), None)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.overview.routines.deleting = Some(id);
+                    this.routines_ui.deleting = Some(id);
                     cx.notify();
                 }))
                 .into_any_element()
@@ -233,7 +233,7 @@ fn form(shell: &Shell, editor: &Editor, cx: &mut Context<Shell>) -> AnyElement {
         vec![(false, t!("routines.every_day").to_owned()), (true, t!("routines.every_week").to_owned())],
         editor.weekly,
         |this, weekly, _, cx| {
-            if let Some(e) = this.overview.routines.editor.as_mut() {
+            if let Some(e) = this.routines_ui.editor.as_mut() {
                 e.weekly = weekly;
             }
             cx.notify();
@@ -257,7 +257,7 @@ fn form(shell: &Shell, editor: &Editor, cx: &mut Context<Shell>) -> AnyElement {
                 .when(!on, |b| b.border_1().border_color(p.hair).text_color(p.text2).hover(move |s| s.bg(p.wash)))
                 .child(day_word(d))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(e) = this.overview.routines.editor.as_mut() {
+                    if let Some(e) = this.routines_ui.editor.as_mut() {
                         e.weekday = d;
                     }
                     cx.notify();
@@ -298,7 +298,7 @@ fn form(shell: &Shell, editor: &Editor, cx: &mut Context<Shell>) -> AnyElement {
                 .items_center()
                 .child(div().flex_1().text_size(px(12.)).text_color(p.muted).child(t!("routines.form_hint")))
                 .child(ui::button(p, "routine-cancel", ui::Kind::Ghost, t!("routines.cancel")).on_click(cx.listener(|this, _, _, cx| {
-                    this.overview.routines.editor = None;
+                    this.routines_ui.editor = None;
                     cx.notify();
                 })))
                 .child(ui::button(p, "routine-save", ui::Kind::Primary, t!("routines.save")).on_click(cx.listener(|this, _, _, cx| this.save_routine_form(cx)))),
@@ -323,15 +323,15 @@ impl Shell {
         let time = cx.new(|cx| InputState::new(window, cx).placeholder("09:00"));
         time.update(cx, |s, cx| s.set_value(clock(hour, minute), window, cx));
         let weekday = if let Schedule::Weekly { weekday, .. } = when { weekday } else { 1 };
-        self.overview.routines.editor = Some(Editor { id: existing.map_or(0, |r| r.id), title: title_input.clone(), prompt: prompt_input, time, weekly: matches!(when, Schedule::Weekly { .. }), weekday, on, problem: None });
-        self.overview.routines.deleting = None;
+        self.routines_ui.editor = Some(Editor { id: existing.map_or(0, |r| r.id), title: title_input.clone(), prompt: prompt_input, time, weekly: matches!(when, Schedule::Weekly { .. }), weekday, on, problem: None });
+        self.routines_ui.deleting = None;
         title_input.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
     }
 
     /// The form's routine to the daemon, when it reads right.
     fn save_routine_form(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = self.overview.routines.editor.as_mut() else { return };
+        let Some(editor) = self.routines_ui.editor.as_mut() else { return };
         let title = editor.title.read(cx).value().trim().to_owned();
         let prompt = editor.prompt.read(cx).value().trim().to_owned();
         let time = parse_time(&editor.time.read(cx).value());
@@ -348,7 +348,7 @@ impl Shell {
         let (hour, minute) = time.unwrap_or_default();
         let when = if editor.weekly { Schedule::Weekly { weekday: editor.weekday, hour, minute } } else { Schedule::Daily { hour, minute } };
         let routine = Routine { id: editor.id, title, prompt, when, on: editor.on, last_run: None, next_run: None };
-        self.overview.routines.editor = None;
+        self.routines_ui.editor = None;
         self.save_routine(routine, cx);
     }
 
@@ -365,7 +365,7 @@ impl Shell {
     }
 
     fn delete_routine(&mut self, id: u32, cx: &mut Context<Self>) {
-        self.overview.routines.deleting = None;
+        self.routines_ui.deleting = None;
         self.send_command(Command::DeleteRoutine { squad: self.model.squad.clone(), id });
         cx.notify();
     }

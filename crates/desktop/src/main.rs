@@ -37,7 +37,6 @@ mod mem;
 mod notify;
 mod pair;
 mod pane;
-mod portfolio;
 mod queue;
 mod quote;
 mod setup;
@@ -181,8 +180,6 @@ pub enum Screen {
     Settings,
     /// 디자인 시스템: the squad's design system (`views/design.rs`).
     Design,
-    /// 현황: every project at a glance, the HQ first (`views/overview.rs`).
-    Overview,
     /// 로드맵: the work as one picture, what waits on what (`views/roadmap.rs`).
     Roadmap,
     /// 지표: the product's numbers, from the services it reports to (`views/metrics.rs`).
@@ -225,6 +222,8 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// 디자인 시스템's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
+    /// The routines' list on 진행 상황: which is being edited or deleted.
+    pub routines_ui: views::routines::RoutinesUi,
     /// 지표's state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
     pub metrics_ui: views::metrics::Inputs,
@@ -247,7 +246,6 @@ pub struct Shell {
     /// The daemon's update was asked for with the app's: the app restarts once it is in.
     relaunch_after_daemon: bool,
     /// 현황's releases, as last found.
-    pub overview: views::overview::OverviewUi,
     /// The banner's "restart now" asked once: the next click restarts.
     pub(crate) daemon_restart_armed: bool,
     /// The ticket a `T-n` link asked the board to open.
@@ -380,6 +378,7 @@ impl Shell {
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
+            routines_ui: Default::default(),
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
             browser,
@@ -391,7 +390,6 @@ impl Shell {
             term_drag: None,
             daemon_update: None,
             relaunch_after_daemon: false,
-            overview: Default::default(),
             daemon_restart_armed: false,
             board_ticket: None,
             bell: Default::default(),
@@ -1468,7 +1466,6 @@ impl Shell {
                     Screen::Board => views::board::render(self, cx).into_any_element(),
                     Screen::Settings => views::settings::render(self, cx),
                     Screen::Design => views::design::render(self, cx),
-                    Screen::Overview => views::overview::render(self, cx),
                     Screen::Roadmap => views::roadmap::render(self, cx),
                     Screen::Metrics => views::metrics::render(self, cx),
                     Screen::Project => views::project::render(self, cx),
