@@ -1696,12 +1696,15 @@ fn keyed_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: impl In
 fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<String>, heard: bool, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
+    // Pointed at things on the design screen: their chips first.
+    let (pointed, after) = crate::design_talk::split(&parts.text);
+    let pointed = (!pointed.is_empty()).then(|| super::design_talk::in_bubble(p, &pointed));
     // Asked about words of the conversation: the quote over the words.
-    let (quotes, rest) = crate::quote::split_all(&parts.text);
+    let (quotes, rest) = crate::quote::split_all(&after);
     let quoted = (!quotes.is_empty()).then(|| {
         v_flex().gap_1().children(quotes.iter().enumerate().map(|(n, quote)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), ix, quote, rows.handle.clone()))).into_any_element()
     });
-    let text = if quotes.is_empty() { parts.text.as_str() } else { rest.as_str() };
+    let text = if quotes.is_empty() { after.as_str() } else { rest.as_str() };
     // The pictures it embeds show under it, their markup out of its words.
     let embedded = equipe_core::visuals::markdown::local_images(text);
     let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &rows.base).map(|p| p.to_string_lossy().into_owned());
@@ -1731,7 +1734,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
     let group: SharedString = format!("user-{key}").into();
     // What is copied is what is shown: the words (the tags only when there are none).
-    let copied = if parts.text.is_empty() { raw.to_owned() } else { parts.text.clone() };
+    let copied = if parts.text.is_empty() { raw.to_owned() } else { after.clone() };
     let copy = tool_button(p, ("user-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone())));
     let handle = rows.handle.clone();
     let more = long.then(|| {
@@ -1746,7 +1749,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
                 handle.update(cx, |shell, cx| shell.chat_toggle(key, PART_MORE, cx)).ok();
             })
     });
-    let bubble = (body.is_some() || quoted.is_some()).then(|| {
+    let bubble = (body.is_some() || quoted.is_some() || pointed.is_some()).then(|| {
         v_flex()
             .max_w(gpui_kit::relative(BUBBLE_SHARE))
             .px(px(BUBBLE_X))
@@ -1757,6 +1760,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
             .text_size(px(BODY))
             .line_height(px(BODY_LINE))
             .text_color(p.prose)
+            .children(pointed)
             .children(quoted)
             .children(body)
             .children(more)

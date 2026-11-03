@@ -330,6 +330,8 @@ pub struct DesignUi {
     pub on_screen: bool,
     /// 화면 지도: where the person is in the system's map.
     pub map: crate::flows::MapUi,
+    /// 보면서 말하기: the conversation docked beside it (`views/design_talk.rs`).
+    pub talk: crate::design_talk::TalkUi,
 }
 
 impl Default for DesignUi {
@@ -357,6 +359,7 @@ impl Default for DesignUi {
             toc_at: 0,
             on_screen: false,
             map: Default::default(),
+            talk: Default::default(),
         }
     }
 }

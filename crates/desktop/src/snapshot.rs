@@ -18,7 +18,7 @@
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
 //! `metrics[:<dash|error|empty|connect|key|done>]` (지표, on a sample) · `mtype:<n>,<text>` (in its form's box n) ·
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
-//! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fto:<designer|pm>` · `ftalk:<words>` (in the box under the screen) · `fsend` · `fkey:<left|right|up|down|escape>` ·
+//! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` (말하기 on the open state) · `dsay:<token>` / `dsay:asset:<n>` (말하기 on a colour or type style by name, or asset n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
 //! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
@@ -378,15 +378,11 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.design.map.older_open = !shell.design.map.older_open;
                     cx.notify();
                 }),
-                "fto" => shell.update(cx, |shell, cx| {
-                    shell.design.map.to_pm = arg == "pm";
-                    cx.notify();
-                }),
-                "ftalk" => shell.update(cx, |shell, cx| {
-                    shell.flow_talk.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
-                    cx.notify();
-                }),
-                "fsend" => shell.update(cx, |shell, cx| shell.flows_send(window, cx)),
+                // 보면서 말하기: a thing pointed at, the panel folded or open, a chip taken off.
+                "fsay" => shell.update(cx, |shell, cx| shell.flows_point(window, cx)),
+                "dsay" => shell.update(cx, |shell, cx| shell.design_point_named(&arg, window, cx)),
+                "dtalk" => shell.update(cx, |shell, cx| shell.design_talk_fold(arg == "fold", window, cx)),
+                "dunpoint" => shell.update(cx, |shell, cx| shell.design_unpoint(arg.parse().unwrap_or(0), cx)),
                 "fkey" => shell.update(cx, |shell, cx| {
                     shell.on_flows_key(&arg, window, cx);
                 }),
