@@ -1533,6 +1533,7 @@ impl App {
                 | Event::SecretClosed { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. }
+                | Event::ProjectDocs { .. }
                 | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });

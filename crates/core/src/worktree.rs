@@ -344,17 +344,78 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
         _ => return Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
     }
     let commit = with_identity(repo, &["commit-tree", &tree, "-p", &tip, "-p", branch, "-m", message])?;
+    move_main(repo, &main, &tip, &commit, "merged")?;
+    Ok(main)
+}
+
+/// Move `main` from `tip` to `commit`, which has it as a parent: where a
+/// checkout has it checked out, by a fast-forward there that keeps its
+/// uncommitted changes (or refuses, and nothing moves) — else the ref alone.
+fn move_main(repo: &Path, main: &str, tip: &str, commit: &str, done: &str) -> Result<()> {
     let checked_out = git(repo, &["worktree", "list", "--porcelain"])?
         .split("\n\n")
         .find(|entry| entry.lines().any(|l| l == format!("branch refs/heads/{main}")))
         .and_then(|entry| entry.lines().find_map(|l| l.strip_prefix("worktree ")).map(PathBuf::from));
     match checked_out {
-        Some(path) => git(&path, &["merge", "-q", "--ff-only", &commit]).map_err(|err| {
-            format!("{main} is checked out in {} and couldn't move without touching its changes — nothing was merged ({err})", path.display())
+        Some(path) => git(&path, &["merge", "-q", "--ff-only", commit]).map_err(|err| {
+            format!("{main} is checked out in {} and couldn't move without touching its changes — nothing was {done} ({err})", path.display())
         })?,
-        None => git(repo, &["update-ref", &format!("refs/heads/{main}"), &commit, &tip])?,
+        None => git(repo, &["update-ref", &format!("refs/heads/{main}"), commit, tip])?,
     };
+    Ok(())
+}
+
+/// Commit one file — `rel` from the top of `repo`, holding `bytes` — onto
+/// the main branch, and nothing else: worked out on a scratch index apart
+/// from any checkout, then main moves as a merge does ([`move_main`]). A file
+/// the checkout holds uncommitted at `rel` refuses it. Returns main's name;
+/// `Ok` with nothing done when main holds those bytes there already.
+pub fn commit_file_on_main(repo: &Path, rel: &str, bytes: &[u8], message: &str) -> Result<String> {
+    off_the_loop("commit_file_on_main");
+    if rel.is_empty() || rel.starts_with('/') || rel.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p == ".git") {
+        return Err(format!("{rel} isn't a path inside the repository"));
+    }
+    let main = main_branch(repo)?;
+    let tip = git(repo, &["rev-parse", &format!("refs/heads/{main}")])?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    let scratch = std::env::temp_dir().join(format!("equipe-doc-{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    let worked = (|| {
+        let file = scratch.join("file");
+        std::fs::write(&file, bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        let blob = git(repo, &["hash-object", "-w", "--", &file.to_string_lossy()])?;
+        let index = scratch.join("index");
+        let in_index = |args: &[&str]| -> Result<String> {
+            let mut command = git_command(repo);
+            command.env("GIT_INDEX_FILE", &index).args(args);
+            let out = output_within(command, GIT_TIMEOUT)?;
+            if out.status.success() {
+                Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            } else {
+                Err(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+            }
+        };
+        in_index(&["read-tree", &tip])?;
+        in_index(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},{rel}")])?;
+        in_index(&["write-tree"])
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    let tree = worked?;
+    if git(repo, &["rev-parse", &format!("{tip}^{{tree}}")]).is_ok_and(|t| t == tree) {
+        return Ok(main);
+    }
+    let commit = with_identity(repo, &["commit-tree", &tree, "-p", &tip, "-m", message])?;
+    move_main(repo, &main, &tip, &commit, "committed")?;
     Ok(main)
+}
+
+/// The names of the files right in folder `dir` (from the top of `repo`) on
+/// the main branch; none when it isn't there.
+pub fn names_on_main(repo: &Path, dir: &str) -> Result<Vec<String>> {
+    off_the_loop("names_on_main");
+    let main = main_branch(repo)?;
+    let listed = git(repo, &["-c", "core.quotepath=off", "ls-tree", "--name-only", &format!("refs/heads/{main}"), "--", &format!("{}/", dir.trim_end_matches('/'))])?;
+    Ok(listed.lines().filter_map(|l| l.rsplit('/').next()).filter(|n| !n.is_empty()).map(str::to_owned).collect())
 }
 
 /// Push the main branch to `origin`. When origin's main has moved on — pushed

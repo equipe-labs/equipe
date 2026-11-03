@@ -13,6 +13,7 @@
 pub mod accept;
 pub mod awake;
 pub mod board;
+pub mod briefs;
 pub mod controls;
 pub mod design_qa;
 pub mod taste;

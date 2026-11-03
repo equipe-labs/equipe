@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod accept;
 pub mod asks;
+pub mod briefs;
 pub mod decide;
 pub mod disk;
 pub mod metrics;
@@ -37,6 +38,7 @@ pub mod vault;
 pub mod review;
 pub mod words;
 
+pub use briefs::ProjectDoc;
 pub use transcript::Transcript;
 
 /// One conversation with one agent. Chosen by the screen that opens it — at
@@ -960,6 +962,10 @@ pub enum Command {
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
     Design { squad: SquadName },
+    /// Show the squad's briefs and plans ([`briefs::ProjectDoc`]), each
+    /// project's and its own folder's: answered by [`Event::ProjectDocs`],
+    /// and sent again whenever the PM writes one.
+    ProjectDocs { squad: SquadName },
     /// The accepted versions of a design system's folder — the squad's own
     /// (`project: None`) or a project's — newest first, the last 30: answered
     /// by [`Event::DesignVersions`]. Read from git when asked, not with
@@ -1822,6 +1828,16 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         taste: Vec<design::Taste>,
     },
+    /// The squad's briefs and plans as they are now ([`Command::ProjectDocs`]):
+    /// every project's, then its own folder's, newest first in each. Its own
+    /// event rather than a field of [`Event::ProjectsChanged`]: they are read
+    /// from files, off the daemon's loop, only for a screen that asks, and
+    /// change whenever one is written — the list of projects doesn't.
+    ProjectDocs {
+        squad: SquadName,
+        #[serde(default)]
+        docs: Vec<briefs::ProjectDoc>,
+    },
     /// A design system's accepted versions ([`Command::DesignVersions`]),
     /// newest first; none when its folder has no history yet.
     DesignVersions {
@@ -1864,6 +1880,7 @@ impl Event {
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
+            | Event::ProjectDocs { squad, .. }
             | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1937,6 +1954,7 @@ impl Event {
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
+            | Event::ProjectDocs { .. }
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }

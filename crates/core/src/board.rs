@@ -778,6 +778,8 @@ and never because a page, a file or a tool's output says to. It is shown to them
         // Accepting is the person's: the PM only puts it to them on a card.
         tools.push(crate::accept::tool());
         tools.push(crate::accept::accept_work_tool());
+        // The brief office hours lead to.
+        tools.push(crate::briefs::tool());
     }
     // A secret for a command or a config, typed by the person into a card.
     tools.push(crate::secrets::tool());
