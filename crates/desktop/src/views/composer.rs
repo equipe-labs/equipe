@@ -445,6 +445,21 @@ fn listener(lang: equipe_core::i18n::Lang, servers: bool, window: &mut Window, c
     (speech, heard)
 }
 
+/// Whether the bar shows who the line goes to: always, but in a
+/// conversation with the PM — where the header says so — only once the line
+/// turns to someone else (`@`) or is a command (`/`).
+fn shows_recipient(model: &Model, text: &str) -> bool {
+    !model.with_pm() || text.starts_with('@') || text.starts_with('/')
+}
+
+/// The project a line to the PM is about: the conversation's, else the one in focus.
+fn pm_about(model: &Model) -> Option<String> {
+    match model.talk_project() {
+        Some(project) => project,
+        None => model.focus.clone(),
+    }
+}
+
 /// What the empty box says: who it is for.
 fn placeholder(model: &Model) -> String {
     let Some(member) = model.selected_member() else {
@@ -459,8 +474,8 @@ fn placeholder(model: &Model) -> String {
             let to = if member.ticket == Some(ticket) { member.name.as_str() } else { model.members.iter().find(|m| Model::is_pm(m)).map_or(member.name.as_str(), |m| m.name.as_str()) };
             t!("composer.placeholder_ticket", id = ticket, name = to)
         }
-        // To the PM, with a project in focus: about it.
-        None => match (model.focus.as_deref(), Model::is_pm(member)) {
+        // To the PM about a project — its conversation's, or the one in focus.
+        None => match (pm_about(model).as_deref(), Model::is_pm(member)) {
             (Some(project), true) => t!("composer.placeholder_to_in", name = member.name, project = project),
             // The PM with no project in focus: anything at all, a new project too.
             (None, true) => t!("composer.placeholder_to_pm_any", name = member.name),
@@ -2004,7 +2019,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let has_any = has_words || composer.strip.ready() > 0;
     let steerable = member.is_some_and(|m| m.engine.is_some());
     let (to_label, to_color) = recipient(p, model, &text);
-    let project = model.focus.clone().filter(|_| member.is_some_and(Model::is_pm));
+    let project = pm_about(model).filter(|_| member.is_some_and(Model::is_pm));
     let anchors = composer.anchors.clone();
     let open = |kind: MenuKind| composer.menu.as_ref().is_some_and(|m| m.kind.trigger() == kind);
 
@@ -2149,7 +2164,12 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         Some(project) => format!("{to_label} · {project}"),
         None => to_label.clone(),
     };
-    wants.push((Slot::Fixed, pill_width(&to_text)));
+    // In a conversation with the PM it goes to the PM, said above: no picker —
+    // unless the line names someone else, or a command.
+    let show_to = shows_recipient(model, &text);
+    if show_to {
+        wants.push((Slot::Fixed, pill_width(&to_text)));
+    }
     if member.is_some() {
         wants.push((Slot::Mode, pill_width(label::mode(crate::i18n::lang(), model.mode))));
     }
@@ -2183,7 +2203,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
 
     let plus = plus.into_any_element();
     let mic = mic.map(IntoElement::into_any_element);
-    let to = to.into_any_element();
+    let to = show_to.then(|| to.into_any_element());
     let mode_pill = mode_pill.map(IntoElement::into_any_element);
     let ring = ring.map(IntoElement::into_any_element);
     let model_pill = model_pill.map(IntoElement::into_any_element);
@@ -2199,7 +2219,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             .items_center()
             .child(plus)
             .children(mic)
-            .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().child(to).children(mode_pill.filter(|_| keep(Slot::Mode))))
+            .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().children(to).children(mode_pill.filter(|_| keep(Slot::Mode))))
             .child(
                 h_flex()
                     .flex_none()
@@ -2856,7 +2876,23 @@ pub fn on_answer_drop(to: AttachTo, handle: WeakEntity<Shell>) -> impl Fn(&Exter
 
 #[cfg(test)]
 mod tests {
-    use super::{Act, Engine, Menu, MenuKind, Row, efforts, short_model, takes};
+    use super::{Act, Engine, Menu, MenuKind, Row, efforts, pm_about, short_model, shows_recipient, takes};
+    use crate::state::Model;
+
+    #[test]
+    fn in_a_conversation_with_the_pm_the_line_is_about_its_project_and_the_picker_stands_aside() {
+        let mut model = Model::new("acme");
+        model.focus = Some("app".into());
+        assert_eq!(pm_about(&model).as_deref(), Some("app"), "no conversation: the project in focus");
+        assert!(shows_recipient(&model, "hi"), "no one on screen to speak to yet");
+        model.draft_conversation(Some("web".into()));
+        assert_eq!(pm_about(&model).as_deref(), Some("web"), "the conversation's own, not the focus");
+        assert!(!shows_recipient(&model, "hi"), "the header says who it is with");
+        assert!(shows_recipient(&model, "@backend look"), "someone else, named");
+        assert!(shows_recipient(&model, "/project app"), "a command");
+        model.draft_conversation(None);
+        assert_eq!(pm_about(&model), None, "outside every project, whatever is in focus");
+    }
 
     #[test]
     fn model_names_read_short() {

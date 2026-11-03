@@ -3243,9 +3243,23 @@ async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through
     handle.send(Command::CloseConversation { session: 51 });
     until(&mut events, |e| matches!(e, Event::SessionClosed { session: 51 })).await;
     handle.shutdown().await;
-    let (handle, _events) = runtime::start(config(&claude, &home, true));
-    let left: Vec<_> = handle.snapshot("acme").await.sessions.iter().filter(|s| s.lane.is_some()).map(|s| s.session).collect();
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    let snapshot = handle.snapshot("acme").await;
+    let left: Vec<_> = snapshot.sessions.iter().filter(|s| s.lane.is_some()).map(|s| s.session).collect();
     assert_eq!(left, [50]);
+    // Listed as put away, to be taken up again as it was left.
+    let away: Vec<_> = snapshot.put_away.iter().map(|c| (c.session, c.project.clone(), c.title.clone())).collect();
+    assert_eq!(away, [(51, Some("app".to_owned()), Some("what next?".to_owned()))]);
+    handle.send(Command::ReopenConversation { squad: "acme".into(), session: 51 });
+    let seen = until(&mut events, |e| matches!(e, Event::PutAwayChanged { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { session: 51, of: 1, project: Some(p), kept: true } if p == "app")), "{seen:#?}");
+    let back = seen.iter().find_map(|e| if let Event::ConversationBack { session: 51, title, lines } = e { Some((title.clone(), text_entries(lines))) } else { None }).expect("its lines");
+    assert_eq!(back.0.as_deref(), Some("what next?"));
+    assert!(back.1.contains(&"user: what next?".to_owned()), "{:?}", back.1);
+    assert!(matches!(seen.last(), Some(Event::PutAwayChanged { list, .. }) if list.is_empty()));
+    handle.send(Command::Submit { session: 51, text: "and now?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 51, .. })).await;
+    assert!(arg(&said(&calls(&recorded), "and now?"), "--resume").is_some(), "carried on, not begun again");
     handle.shutdown().await;
 }
 

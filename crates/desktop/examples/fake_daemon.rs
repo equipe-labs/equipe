@@ -237,6 +237,17 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 
 type Branch = (&'static str, Vec<(&'static str, usize)>);
 
+/// Conversations with the PM put away, the latest first: taken up again
+/// from their project's page.
+fn put_away() -> &'static std::sync::Mutex<Vec<equipe_core::protocol::PutAway>> {
+    static AWAY: std::sync::OnceLock<std::sync::Mutex<Vec<equipe_core::protocol::PutAway>>> = std::sync::OnceLock::new();
+    AWAY.get_or_init(|| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default();
+        let away = |session, title: &str, ago: i64| equipe_core::protocol::PutAway { session, project: Some("web".into()), title: Some(title.into()), at: now - ago };
+        std::sync::Mutex::new(vec![away(90, "랜딩 문구 다듬기", 3 * 3600), away(91, "결제 오류 원인 찾기", 2 * 86400)])
+    })
+}
+
 /// `FAKE_REVIEW=1`: made-up Nemotron reviews of T-42 and T-71, to look at
 /// how the peek shows one — canned here, never a real model's answer.
 fn reviews() -> Vec<equipe_core::protocol::review::CodeReview> {
@@ -1172,6 +1183,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             browsers_shown: true,
                             disk: disk::status(),
                             reviews: reviews(),
+                            put_away: put_away().lock().unwrap().clone(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1327,6 +1339,21 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             Command::CloseConversation { session } => {
                                 routes.lock().await.kept.remove(&session);
                                 let _ = events.send(Event::SessionClosed { session });
+                            }
+                            Command::ReopenConversation { squad, session } => {
+                                let back = {
+                                    let mut away = put_away().lock().unwrap();
+                                    away.iter().position(|c| c.session == session).map(|at| (away.remove(at), away.clone()))
+                                };
+                                if let Some((c, left)) = back {
+                                    routes.lock().await.kept.insert(session);
+                                    let _ = events.send(Event::SessionStarted { session, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some(squad.clone()) });
+                                    let _ = events.send(Event::LaneOpened { session, of: 1, project: c.project.clone(), kept: true });
+                                    let title = c.title.clone().unwrap_or_default();
+                                    let lines = vec![Entry::User { text: title }, Entry::Reply { text: "지난번에 여기까지 했어요. 이어서 할까요?".into() }];
+                                    let _ = events.send(Event::ConversationBack { session, title: c.title, lines });
+                                    let _ = events.send(Event::PutAwayChanged { squad, list: left });
+                                }
                             }
                             Command::SubmitLater { session, text, about } => {
                                 let project = match about { Some(about) => about, None => routes.lock().await.focus.clone() };

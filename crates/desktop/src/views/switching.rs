@@ -76,6 +76,9 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         return None;
     }
     let waiting = model.engines.first().is_some();
+    if !crate::switching::worth_showing(&meters, waiting) {
+        return None;
+    }
     let head = h_flex()
         .h(px(22.))
         .mx_2()

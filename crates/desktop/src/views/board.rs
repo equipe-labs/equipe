@@ -59,6 +59,8 @@ pub enum Popover {
     Projects,
     /// The team, under the conversation's title.
     Members,
+    /// A conversation's ⋯: move it to another project, put it away.
+    Talk,
     Filter,
     Group,
 }
@@ -108,9 +110,15 @@ pub struct BoardUi {
     pub side_talks_all: std::collections::HashSet<String>,
     /// Every project shown, the quiet ones past the first few too.
     pub side_projects_all: bool,
+    /// The sidebar's other screens shown, named, under "더 보기".
+    pub side_more: bool,
+    /// The team shown row by row, not as one row of faces.
+    pub team_open: bool,
     /// The project whose page is open (or was last), and its tab.
     pub project_page: Option<String>,
     pub project_tab: crate::board::ProjectTab,
+    /// A conversation put away, asked back: opened when it is.
+    pub reopening: Option<equipe_core::protocol::SessionId>,
     /// A project's menu, open where its ⋯ or a right-click was.
     pub project_menu: Option<(String, Point<Pixels>)>,
     /// A project just taken off the squad, to put back while it is said.
@@ -198,7 +206,10 @@ impl BoardUi {
             side_talks_all: Default::default(),
             project_page: None,
             project_tab: Default::default(),
+            reopening: None,
             side_projects_all: false,
+            side_more: false,
+            team_open: false,
             project_menu: None,
             removed_project: None,
             sub_motion: Default::default(),
@@ -1553,7 +1564,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .child(label)
     };
     let body: Vec<AnyElement> = match which {
-        Popover::Projects | Popover::Members => return None,
+        Popover::Projects | Popover::Members | Popover::Talk => return None,
         Popover::Group => {
             let mut rows: Vec<AnyElement> = GroupBy::ALL
                 .into_iter()

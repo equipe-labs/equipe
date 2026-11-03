@@ -673,6 +673,11 @@ pub fn project_talks<'a>(model: &'a Model, project: &str) -> (Vec<&'a crate::sta
     model.conversations().into_iter().filter(|l| l.project.as_deref() == Some(project)).partition(|l| l.presence != crate::state::Presence::Working)
 }
 
+/// A project's conversations put away, the latest first: its page's 끝남.
+pub fn project_put_away<'a>(model: &'a Model, project: &str) -> Vec<&'a equipe_core::protocol::PutAway> {
+    model.put_away.iter().filter(|c| c.project.as_deref() == Some(project)).collect()
+}
+
 /// A part of a project's work on its page, in its order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkPart {
@@ -1362,6 +1367,15 @@ mod tests {
         assert_eq!(work[3].1[0], 10, "the latest first");
         assert!(!work.iter().any(|(_, ids)| ids.contains(&4) || ids.contains(&5)), "ideas and what was cancelled are kept elsewhere");
         assert_eq!(project_work(&m, "api").iter().map(|(w, _)| *w).collect::<Vec<_>>(), [WorkPart::Working], "the empty parts left out");
+    }
+
+    #[test]
+    fn a_projects_conversations_put_away_are_its_ended_ones() {
+        let mut m = Model::new("acme");
+        let away = |session, project: Option<&str>| equipe_core::protocol::PutAway { session, project: project.map(str::to_owned), title: None, at: 0 };
+        m.put_away = vec![away(9, Some("web")), away(8, None), away(7, Some("app")), away(6, Some("web"))];
+        assert_eq!(project_put_away(&m, "web").iter().map(|c| c.session).collect::<Vec<_>>(), [9, 6], "its own, the latest first");
+        assert!(project_put_away(&m, "api").is_empty());
     }
 
     #[test]

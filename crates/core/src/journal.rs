@@ -1073,6 +1073,25 @@ impl Journal {
         self.touch_conversation(id, "open", false)
     }
 
+    /// The conversations put away, the latest first: at most `limit`.
+    pub fn put_away(&self, limit: usize) -> Result<Vec<equipe_protocol::PutAway>> {
+        let mut stmt = self.conn.prepare("SELECT id, project, title, updated_at FROM conversations WHERE open = 0 ORDER BY updated_at DESC, id DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(equipe_protocol::PutAway { session: r.get::<_, i64>(0)? as u64, project: r.get(1)?, title: r.get(2)?, at: r.get(3)? })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// A conversation put away, taken up again: back on the list, as it was.
+    /// None if there is no such conversation, or it is open.
+    pub fn reopen_conversation(&self, id: SessionId) -> Result<Option<ConversationRecord>> {
+        let changed = self.conn.execute("UPDATE conversations SET open = 1, updated_at = ?1 WHERE id = ?2 AND open = 0", params![now(), id as i64])?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(self.conversations()?.into_iter().find(|c| c.id == id))
+    }
+
     /// The conversations with the PM still open, oldest first.
     pub fn conversations(&self) -> Result<Vec<ConversationRecord>> {
         let mut stmt = self.conn.prepare("SELECT id, project, engine_session, title FROM conversations WHERE open = 1 ORDER BY created_at, id")?;
@@ -1309,6 +1328,32 @@ mod tests {
         let said = j.said_with_paths(10).unwrap();
         let cwds: Vec<_> = said.iter().map(|(cwd, _)| cwd.to_string_lossy().into_owned()).collect();
         assert_eq!(cwds, ["/squad/pm", "/squad/pm"], "{said:?}");
+    }
+
+    #[test]
+    fn a_conversation_put_away_is_kept_listed_and_taken_up_again() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        j.record_conversation(50, Some("web"), Path::new("/squad/pm")).unwrap();
+        j.record_conversation(51, None, Path::new("/squad/pm")).unwrap();
+        j.record_conversation(52, Some("app"), Path::new("/squad/pm")).unwrap();
+        j.set_title_if_empty(50, "the pricing page").unwrap();
+        j.append(50, &Entry::User { text: "the pricing page".into() }).unwrap();
+        j.close_conversation(50).unwrap();
+        j.close_conversation(52).unwrap();
+        j.conn.execute("UPDATE conversations SET updated_at = 100 WHERE id = 50", []).unwrap();
+        j.conn.execute("UPDATE conversations SET updated_at = 200 WHERE id = 52", []).unwrap();
+        let away = j.put_away(10).unwrap();
+        assert_eq!(away.iter().map(|c| c.session).collect::<Vec<_>>(), [52, 50], "the latest first, open ones not");
+        assert_eq!(away[1].title.as_deref(), Some("the pricing page"));
+        assert_eq!(away[1].project.as_deref(), Some("web"));
+        assert_eq!(away[1].at, 100);
+        assert_eq!(j.put_away(1).unwrap().len(), 1);
+        let back = j.reopen_conversation(50).unwrap().expect("taken up");
+        assert_eq!((back.id, back.project.as_deref(), back.title.as_deref()), (50, Some("web"), Some("the pricing page")));
+        assert_eq!(j.conversation(50).unwrap(), [Entry::User { text: "the pricing page".into() }], "its lines, as they were");
+        assert_eq!(j.put_away(10).unwrap().iter().map(|c| c.session).collect::<Vec<_>>(), [52]);
+        assert!(j.reopen_conversation(50).unwrap().is_none(), "open already");
+        assert!(j.reopen_conversation(99).unwrap().is_none(), "no such one");
     }
 
     #[test]

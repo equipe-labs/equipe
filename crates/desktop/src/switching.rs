@@ -141,6 +141,12 @@ pub struct Meter {
     pub stale: bool,
 }
 
+/// Whether the sidebar shows the plans' use: only once a window is watched
+/// (70%) or worse, or a switch waits on the person — calm, it is Settings'.
+pub fn worth_showing(meters: &[Meter], waiting: bool) -> bool {
+    waiting || meters.iter().any(|m| m.gauges.iter().any(|g| g.tone != Tone::Calm))
+}
+
 /// One window of a plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gauge {
@@ -355,6 +361,15 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_760_000_000;
+
+    #[test]
+    fn the_sidebar_shows_the_plans_use_only_when_it_matters() {
+        let meter = |percent| Meter { engine: Engine::Claude, gauges: vec![Gauge { window: Window::Weekly, percent, resets_at: 0, tone: tone(percent) }], read_at: Some(NOW), stale: false };
+        assert!(!worth_showing(&[meter(3), meter(69)], false), "calm: Settings has it");
+        assert!(worth_showing(&[meter(3), meter(70)], false), "watched");
+        assert!(worth_showing(&[meter(3)], true), "a switch waits on the person");
+        assert!(!worth_showing(&[], false));
+    }
 
     fn shift(applied: bool) -> Proposal {
         let mv = |name: &str, model: &str| Move {

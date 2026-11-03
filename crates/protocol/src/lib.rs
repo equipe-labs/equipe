@@ -121,6 +121,18 @@ impl Estimate {
     }
 }
 
+/// A conversation with the PM the person put away ([`Command::CloseConversation`]):
+/// off the list, its lines kept, to be opened again ([`Command::ReopenConversation`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PutAway {
+    pub session: SessionId,
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// When it was put away (unix seconds).
+    pub at: i64,
+}
+
 /// A member's conversation about one project (`None`: the whole squad's),
 /// with turns of its own beside the member's other conversations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -740,6 +752,9 @@ pub enum Command {
     MoveConversation { session: SessionId, project: Option<String> },
     /// A conversation with the PM is put away: it leaves the list.
     CloseConversation { session: SessionId },
+    /// A conversation put away is taken up again, as it was left: answered
+    /// with [`Event::LaneOpened`] and [`Event::ConversationBack`].
+    ReopenConversation { squad: SquadName, session: SessionId },
     /// The person adds a project to the squad: a folder on the daemon's
     /// machine (a git repository; one with no history yet is started as one).
     /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
@@ -1376,6 +1391,17 @@ pub enum Event {
     },
     /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
     LaneMoved { session: SessionId, project: Option<String> },
+    /// A conversation taken up again ([`Command::ReopenConversation`]): what
+    /// was said in it, after its [`Event::LaneOpened`].
+    ConversationBack {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default)]
+        lines: Vec<Entry>,
+    },
+    /// The conversations put away, the latest first ([`Snapshot::put_away`]).
+    PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
     /// in `workspace` when it edits.
     WorkStarted {
@@ -1794,6 +1820,7 @@ impl Event {
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
+            | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1819,6 +1846,7 @@ impl Event {
             | Event::SteerQueued { session, .. }
             | Event::LaneOpened { session, .. }
             | Event::LaneMoved { session, .. }
+            | Event::ConversationBack { session, .. }
             | Event::Steered { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
@@ -1857,6 +1885,7 @@ impl Event {
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
             | Event::ProjectsChanged { .. }
+            | Event::PutAwayChanged { .. }
             | Event::RoutinesChanged { .. }
             | Event::RoutineProposed { .. }
             | Event::RoutineProposalClosed { .. }
@@ -2189,6 +2218,9 @@ pub struct Snapshot {
     /// Nemotron's reviews of the tickets in review ([`Event::CodeReviewed`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<review::CodeReview>,
+    /// Conversations with the PM put away, the latest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub put_away: Vec<PutAway>,
 }
 
 #[cfg(test)]
@@ -2458,6 +2490,7 @@ mod tests {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
             hq: Some("/repo".into()),
+            put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000 }],
             routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
             reviews: vec![review::CodeReview {

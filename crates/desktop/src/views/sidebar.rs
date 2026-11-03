@@ -201,7 +201,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(mark))
             .child(div().flex_1().min_w_0().truncate().text_color(if on { p.text } else { p.text2 }).child(label))
             .when(badge > 0, |r| {
-                r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.accent).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string()))
+                r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.orange).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string()))
             })
             .when(count > 0, |r| r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().text_size(px(12.)).text_color(p.muted).child(count.to_string())))
     };
@@ -222,8 +222,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 this.open_side_menu(Menu::Working, cx);
             }
         })))
-        // The squad's other screens, one row of icons under the three.
-        .child(tool_row(shell, cx));
+        // The squad's other screens, named, behind "더 보기".
+        .children(more_rows(shell, cx));
 
     // A group per project, its conversations under it; what is live in it
     // shows on its header, and its page (its name) holds the work.
@@ -260,8 +260,6 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         list.push(pm_row(shell, cx));
         list.extend(conversation_rows(shell, None, cx));
     }
-    list.push(done_row(shell, true, cx));
-    list.extend(ideas_row(shell, cx));
 
     // The three areas: what each was drawn as goes to the hairlines' drags.
     let drawn = shell.board.side_drawn.clone();
@@ -374,64 +372,99 @@ enum Glyph {
     Own(crate::icons::Icon),
 }
 
-/// The squad's other screens — every ticket, 현황, 로드맵, 지표, 디자인 — as
-/// one row of icons, each named on the pointer.
-fn tool_row(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
+/// Whether one of the screens behind "더 보기" is on: then they show, so the
+/// person sees where they are.
+fn on_more(shell: &Shell) -> bool {
     let menu = shell.board.view.menu;
-    let on_all = shell.screen == Screen::Board && matches!(menu, Menu::All | Menu::View(_));
-    let tool = |id: &'static str, name: Glyph, label: String, on: bool| {
-        div()
-            .id(id)
-            .flex_1()
+    matches!(shell.screen, Screen::Overview | Screen::Roadmap | Screen::Metrics | Screen::Design)
+        || (shell.screen == Screen::Board && matches!(menu, Menu::All | Menu::View(_)))
+}
+
+/// The squad's other screens — every ticket, 현황, 로드맵, 지표, 디자인, what
+/// was finished, the ideas kept — named, one row each, behind "더 보기".
+fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+    let p = shell.palette;
+    let open = shell.board.side_more || on_more(shell);
+    let words = if open { t!("sidebar.fewer") } else { t!("sidebar.more_screens") };
+    let mut rows = vec![
+        row_shell(p, "nav-more", false)
             .h(px(30.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(7.))
-            .cursor_pointer()
+            .aria_expanded(open)
+            .aria_label(words)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.board.side_more = !(this.board.side_more || on_more(this));
+                cx.notify();
+            }))
+            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(if open { IconName::ChevronDown } else { IconName::Ellipsis }, 14., p.muted)))
+            .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(words))
+            .into_any_element(),
+    ];
+    if !open {
+        return rows;
+    }
+    let menu = shell.board.view.menu;
+    let on_all = shell.screen == Screen::Board && matches!(menu, Menu::All);
+    let tool = |id: &'static str, name: Glyph, label: String, on: bool| {
+        row_shell(p, id, on)
+            .pl(px(8. + CHILD_INDENT))
             .role(Role::Tab)
             .aria_selected(on)
             .aria_label(label.clone())
-            .when(on, |b| b.bg(p.side_hover))
-            .hover(move |s| s.bg(p.side_hover))
-            .tip(p, label, None)
-            .child(match name {
-                Glyph::Kit(name) => icon(name, 16., if on { p.text } else { p.text2 }).into_any_element(),
-                Glyph::Own(name) => crate::icons::icon(name, 16., if on { p.text } else { p.text2 }).into_any_element(),
-            })
+            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(match name {
+                Glyph::Kit(name) => icon(name, 14., if on { p.text } else { p.text2 }).into_any_element(),
+                Glyph::Own(name) => crate::icons::icon(name, 14., if on { p.text } else { p.text2 }).into_any_element(),
+            }))
+            .child(row_title(p, label, on, false))
     };
     let place = |screen: Screen, menu: Menu| Place { screen, menu, member: None, ticket: None };
-    h_flex()
-        .mx_2()
-        .mt(px(4.))
-        .gap(px(2.))
-        .child(tool("nav-all", Glyph::Kit(IconName::LayoutDashboard), t!("board.menu_all").into(), on_all).on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Board, Menu::All)), window, cx) {
-                this.open_side_menu(Menu::All, cx);
-            }
-        })))
-        .child(tool("nav-overview", Glyph::Kit(IconName::ChartPie), t!("overview.title").into(), shell.screen == Screen::Overview).on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Overview, this.board.view.menu)), window, cx) {
-                this.open_overview(cx);
-            }
-        })))
-        .child(tool("nav-roadmap", Glyph::Kit(IconName::Map), t!("roadmap.title").into(), shell.screen == Screen::Roadmap).on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Roadmap, this.board.view.menu)), window, cx) {
-                this.open_roadmap(cx);
-            }
-        })))
-        .child(tool("nav-metrics", Glyph::Own(crate::icons::Icon::Chart), t!("metrics.title").into(), shell.screen == Screen::Metrics).on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Metrics, this.board.view.menu)), window, cx) {
-                this.open_metrics(cx);
-            }
-        })))
-        .child(tool("nav-design", Glyph::Kit(IconName::Palette), t!("design.title").into(), shell.screen == Screen::Design).on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Design, this.board.view.menu)), window, cx) {
-                this.open_design(cx);
-            }
-        })))
-        .into_any_element()
+    rows.push(
+        tool("nav-all", Glyph::Kit(IconName::LayoutDashboard), t!("board.menu_all").into(), on_all)
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Board, Menu::All)), window, cx) {
+                    this.open_side_menu(Menu::All, cx);
+                }
+            }))
+            .into_any_element(),
+    );
+    rows.push(
+        tool("nav-overview", Glyph::Kit(IconName::ChartPie), t!("overview.title").into(), shell.screen == Screen::Overview)
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Overview, this.board.view.menu)), window, cx) {
+                    this.open_overview(cx);
+                }
+            }))
+            .into_any_element(),
+    );
+    rows.push(
+        tool("nav-roadmap", Glyph::Kit(IconName::Map), t!("roadmap.title").into(), shell.screen == Screen::Roadmap)
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Roadmap, this.board.view.menu)), window, cx) {
+                    this.open_roadmap(cx);
+                }
+            }))
+            .into_any_element(),
+    );
+    rows.push(
+        tool("nav-metrics", Glyph::Own(crate::icons::Icon::Chart), t!("metrics.title").into(), shell.screen == Screen::Metrics)
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Metrics, this.board.view.menu)), window, cx) {
+                    this.open_metrics(cx);
+                }
+            }))
+            .into_any_element(),
+    );
+    rows.push(
+        tool("nav-design", Glyph::Kit(IconName::Palette), t!("design.title").into(), shell.screen == Screen::Design)
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Design, this.board.view.menu)), window, cx) {
+                    this.open_design(cx);
+                }
+            }))
+            .into_any_element(),
+    );
+    rows.push(done_row(shell, cx));
+    rows.extend(ideas_row(shell, cx));
+    rows
 }
 
 /// "프로젝트", over the squad's projects, and its "+" (the same as the
@@ -523,7 +556,7 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
     let quiet = !talks;
     // Its page open now.
     let focused = g.name.is_some() && shell.screen == Screen::Project && shell.board.project_page == g.name;
-    let label = g.name.clone().unwrap_or_else(|| t!("sidebar.squad").into());
+    let label = g.name.clone().unwrap_or_else(|| t!("sidebar.outside").into());
     let (fold_project, name_project) = (g.name.clone(), g.name.clone());
     // The chevron: open, always; folded, on the pointer — the name starts at one x either way.
     let chevron = div()
@@ -560,32 +593,29 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
         // The HQ: a building, not a dot — the squad's own place, not one of its products.
         Some(_) if hq => icon(IconName::Building2, 13., p.text2).into_any_element(),
         Some(at) => dot(project_color(p, at), 8.).into_any_element(),
-        None => crate::icons::icon(crate::icons::Icon::Users, 13., p.text2).into_any_element(),
+        // Outside every project: a ring, where a project has its colour.
+        None => div().size(px(8.)).rounded_full().border_1().border_color(p.muted).into_any_element(),
     };
     let name_color = if focused { p.text } else { p.text2 };
-    // Waiting on the person: as many as its page's 확인 필요 holds (the
-    // squad's own group: its live work's).
-    let waiting = match &g.name {
-        Some(name) => crate::board::project_work(&shell.model, name).into_iter().find(|(w, _)| *w == crate::board::WorkPart::NeedsYou).map_or(0, |(_, ids)| ids.len()),
-        None => g.waiting,
-    };
-    // What is live in it, at the end: at work (a quiet count), waiting on the person (an orange badge).
+    // Waiting on the person: its share of 확인 필요, so the rows add up to it.
+    let waiting = shell.model.needs_by_project().get(&g.name).copied().unwrap_or(0);
+    // One sign at the end: waiting on the person (an orange badge), else at work (a spinner).
+    let spin = shell.spin(cx);
     let meta = h_flex()
         .flex_none()
         .gap(px(6.))
         .items_center()
         .group_hover(group.clone(), |s| s.invisible())
-        .when(g.working > 0, |m| {
+        .when(waiting == 0 && g.working > 0, |m| {
             m.child(
-                h_flex()
+                div()
                     .id(SharedString::from(format!("working-{key}")))
-                    .gap(px(3.))
+                    .size(px(18.))
+                    .flex()
                     .items_center()
-                    .text_size(px(12.))
-                    .text_color(p.muted)
+                    .justify_center()
                     .tip(p, t!("sidebar.work_working", n = g.working), None)
-                    .child(icon(IconName::LoaderCircle, 12., p.muted))
-                    .child(g.working.to_string()),
+                    .child(icon(IconName::LoaderCircle, 13., p.muted).rotate(radians(spin))),
             )
         })
         .when(waiting > 0, |m| {
@@ -754,11 +784,9 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
     let id = lane.session;
     let on = shell.screen == Screen::Chat && shell.model.talk == Some(id) && shell.model.draft_talk.is_none();
     let group = SharedString::from(format!("conv-{id}"));
-    let mark = if lane.presence == crate::state::Presence::Working {
-        mark_element(p, Mark::Spinner, shell.spin(cx))
-    } else {
-        div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Message, 13., if on { p.text } else { p.muted })).into_any_element()
-    };
+    // Under its project's colour: a spinner while the PM answers, else
+    // nothing — the title lines up with the project's name above it.
+    let mark = if lane.presence == crate::state::Presence::Working { mark_element(p, Mark::Spinner, shell.spin(cx)) } else { div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none().into_any_element() };
     let title = lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into());
     row_shell(p, ("conv", id as usize), on)
         .pl(px(8. + indent))
@@ -1038,19 +1066,18 @@ fn mark_element(p: Palette, mark: Mark, turn: f32) -> AnyElement {
 /// The list's last line: "최근 끝남 · 오늘 N ›" — what finished today, local
 /// time — or, nothing yet today, "최근 끝남 ›", muted. It opens 모든 일 on the
 /// finished.
-fn done_row(shell: &Shell, after_rows: bool, cx: &mut Context<Shell>) -> AnyElement {
+fn done_row(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let today = shell.model.done_today();
     let on = shell.screen == Screen::Board && shell.board.view.menu == Menu::View(recent_done_view());
     let label = if today > 0 { t!("sidebar.recent_done_today", n = today) } else { t!("sidebar.recent_done").to_owned() };
     row_shell(p, "recent-done", on)
-        .mt(px(if after_rows { 10. } else { 14. }))
+        .pl(px(8. + CHILD_INDENT))
         .aria_label(label.clone())
         .aria_selected(on)
         .on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::View(recent_done_view()), cx)))
-        .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(IconName::Check, 12., if today > 0 { p.text2 } else { p.muted })))
-        .child(div().flex_none().text_size(px(TEXT)).text_color(if on { p.text } else if today > 0 { p.text2 } else { p.muted }).child(label))
-        .child(icon(IconName::ChevronRight, 11., p.muted))
+        .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(IconName::Check, 14., if today > 0 { p.text2 } else { p.muted })))
+        .child(div().flex_1().min_w_0().truncate().text_color(if on { p.text } else if today > 0 { p.text2 } else { p.muted }).child(label))
         .into_any_element()
 }
 
@@ -1066,10 +1093,10 @@ fn ideas_row(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let label = t!("sidebar.ideas", n = kept);
     Some(
         row_shell(p, "ideas", on)
+            .pl(px(8. + CHILD_INDENT))
             .on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::View(ideas_view()), cx)))
-            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Lightbulb, 12., p.text2)))
-            .child(div().flex_none().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(label))
-            .child(icon(IconName::ChevronRight, 11., p.muted))
+            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Lightbulb, 14., p.text2)))
+            .child(div().flex_1().min_w_0().truncate().text_color(if on { p.text } else { p.text2 }).child(label))
             .into_any_element(),
     )
 }
@@ -1123,29 +1150,83 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
         Some(_) => list.flex_1().min_h_0(),
         None => list.max_h(px(team_height(members.len(), child_rows))),
     };
+    // Folded, the usual: one row of faces, each with how it stands; a click
+    // on the heading shows the rows.
+    let open = shell.board.team_open;
+    let turns = members.iter().filter(|m| TeamState::of(model, m).waits()).count();
+    let heading = h_flex()
+        .id("team-heading")
+        .h(px(24.))
+        .mx_2()
+        .px_2()
+        .gap(px(8.))
+        .items_center()
+        .rounded(px(6.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.side_hover))
+        .aria_expanded(open)
+        .aria_label(t!("sidebar.team"))
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.board.team_open = !this.board.team_open;
+            cx.notify();
+        }))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.muted)
+        .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }, 12., p.muted)))
+        .child(t!("sidebar.team"))
+        .child(div().font_weight(FontWeight::NORMAL).child(members.len().to_string()))
+        .child(div().flex_1())
+        .when(turns > 0, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.orange).child(t!("sidebar.team_turns", n = turns))));
+    let body = if open { list.into_any_element() } else { faces(shell, &members, cx) };
     Some(
         v_flex()
             .flex_none()
-            .when_some(height, |b, h| b.h(px(h)))
+            .when(open, |b| b.when_some(height, |b, h| b.h(px(h))))
             .pt(px(6.))
             .pb_1()
-            .child(
-                h_flex()
-                    .h(px(22.))
-                    .mx_2()
-                    .px_2()
-                    .gap(px(8.))
-                    .items_center()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(p.muted)
-                    .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(IconName::User, 12., p.muted)))
-                    .child(t!("sidebar.team"))
-                    .child(div().text_color(p.muted).font_weight(FontWeight::NORMAL).child(members.len().to_string())),
-            )
-            .child(list)
+            .child(heading)
+            .child(body)
             .into_any_element(),
     )
+}
+
+/// The team folded: a face each, its dot saying how it stands — orange
+/// waiting on the person, the accent at work — its name on the pointer.
+fn faces(shell: &Shell, members: &[&Member], cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let row = members.iter().map(|m| {
+        let state = TeamState::of(&shell.model, m);
+        let session = m.session;
+        let dot = if state.waits() {
+            Some(p.orange)
+        } else if matches!(state, TeamState::Working(_) | TeamState::Compacting(_)) {
+            Some(p.accent)
+        } else {
+            None
+        };
+        div()
+            .id(("face", session as usize))
+            .relative()
+            .size(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.side_hover))
+            .aria_label(format!("{}, {}", m.name, state.words()))
+            .tip(p, format!("{} · {}", m.name, state.words()), None)
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: Some(session), ticket: None });
+                if !this.open_elsewhere(e, goal, window, cx) {
+                    this.select_member(session, window, cx);
+                }
+            }))
+            .child(crate::theme::avatar(p, &m.role, &m.name, 20.))
+            .children(dot.map(|c| div().absolute().right(px(0.)).bottom(px(0.)).size(px(8.)).rounded_full().border_1().border_color(p.side).bg(c)))
+    });
+    h_flex().mx_2().px_2().pt_1().flex_wrap().gap(px(4.)).children(row).into_any_element()
 }
 
 /// One of the sidebar's lower areas (usage, the team) under its hairline:
@@ -1834,6 +1915,13 @@ impl Shell {
     /// Put a conversation with the PM away: it leaves the list.
     pub fn put_away_conversation(&mut self, session: SessionId, cx: &mut Context<Self>) {
         self.send_command(equipe_core::protocol::Command::CloseConversation { session });
+        cx.notify();
+    }
+
+    /// A conversation put away, taken up again: it opens once it is back.
+    pub fn reopen_conversation(&mut self, session: SessionId, cx: &mut Context<Self>) {
+        self.board.reopening = Some(session);
+        self.send_command(equipe_core::protocol::Command::ReopenConversation { squad: self.model.squad.clone(), session });
         cx.notify();
     }
 

@@ -937,7 +937,16 @@ impl Shell {
                             daemon::Update::Event(Event::TurnEnded { session, .. }) => Some(*session),
                             _ => None,
                         };
+                        let back = match &update {
+                            daemon::Update::Event(Event::ConversationBack { session, .. }) => Some(*session),
+                            _ => None,
+                        };
                         changed |= this.model.apply(update, now);
+                        // A conversation taken up again from its project's page: opened.
+                        if let Some(session) = back.filter(|s| this.board.reopening == Some(*s)) {
+                            this.board.reopening = None;
+                            this.open_side(state::Side::Conversation(session), window, cx);
+                        }
                         // A card to confirm shows each ticket's size: asked of git once per look.
                         this.accept_stats();
                         // A reply asking the person to run something as the machine's

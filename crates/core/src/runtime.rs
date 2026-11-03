@@ -84,6 +84,8 @@ const BRIEF_REPLY_CHARS: usize = 400;
 
 /// Closed tickets a snapshot still shows, newest first.
 const CLOSED_TICKETS_SHOWN: usize = 20;
+/// Conversations put away a screen lists, the latest first.
+const PUT_AWAY_SHOWN: usize = 50;
 /// The routines one squad may keep.
 const MAX_ROUTINES: usize = 20;
 
@@ -1672,6 +1674,7 @@ impl Runtime {
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
             Command::MoveConversation { session, project } => self.move_conversation(session, project),
             Command::CloseConversation { session } => self.close_conversation(session).await,
+            Command::ReopenConversation { squad, session } => self.reopen_conversation(&squad, session),
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -3032,6 +3035,38 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.close_conversation(id);
         }
         self.close(id).await;
+        if let Some(squad) = squad {
+            self.publish_put_away(&squad);
+        }
+    }
+
+    /// A conversation put away is taken up again, its lines as they were left.
+    fn reopen_conversation(&mut self, squad: &str, id: SessionId) {
+        if self.sessions.contains_key(&id) {
+            return;
+        }
+        let Some(pm) = self.pm_of(squad) else {
+            return self.squad_error(squad, say!(self, "error.no_member", name = roles::PM));
+        };
+        let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad) else { return };
+        let Ok(Some(c)) = journal.reopen_conversation(id) else { return };
+        let lines = journal.conversation(id).unwrap_or_default();
+        let Some(m) = self.sessions.get(&pm) else { return };
+        let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
+        let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
+        let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { text.lines().next().map(str::to_owned) } else { None }));
+        lane.title = title.clone();
+        lane.transcript = Transcript::from_entries(lines.clone());
+        self.publish_lane(id, lane, pm, c.project, true);
+        self.publish(Event::ConversationBack { session: id, title, lines });
+        self.publish_put_away(squad);
+    }
+
+    /// The conversations put away, told to the screens again.
+    fn publish_put_away(&mut self, squad: &str) {
+        let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad) else { return };
+        let list = journal.put_away(PUT_AWAY_SHOWN).unwrap_or_default();
+        self.publish(Event::PutAwayChanged { squad: squad.to_owned(), list });
     }
 
     /// The project a conversation the person opened is about, if `id` is one.
@@ -6287,9 +6322,11 @@ it back there once they have done it.{again} End your turn now with a short line
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
         let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
+        let put_away = self.journals.get(squad).and_then(|j| j.put_away(PUT_AWAY_SHOWN).ok()).unwrap_or_default();
         Snapshot {
             signals,
             reviews,
+            put_away,
             routines,
             routine_proposals,
             idle_wake_hours,
