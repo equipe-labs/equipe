@@ -8,8 +8,10 @@
 //! here), 간격 · 모서리 · 그림자 · 모션 (specimens; a curve plays under the
 //! pointer), 에셋 (pictures on a checkerboard, big in a lightbox) and
 //! 가이드라인 (guidelines.md with its contents). With none yet, what one is
-//! and a way to ask the designer. ←/→ or 1–9 move between sections. Its
-//! other tab, 화면 지도, is `views/flows.rs`.
+//! and a way to ask the designer. Each colour, type style and picture has
+//! "말하기" on hover: it goes, as a chip, to the designer's conversation
+//! docked at the right (`views/design_talk.rs`). ←/→ or 1–9 move between
+//! sections. Its other tab, 화면 지도, is `views/flows.rs`.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -27,6 +29,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::design::{self as ds, Section};
+use crate::design_talk::DesignContext;
 use crate::flows::Tab;
 use crate::visuals::{Look as Shown, Size};
 use crate::icons::{Icon, icon};
@@ -460,7 +463,7 @@ fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> An
                 if !on {
                     continue;
                 }
-                row = row.child(logo_tile(shell, *ix, &logo.path, bg, mode, cx));
+                row = row.child(logo_tile(shell, *ix, logo, bg, mode, cx));
             }
         }
         col = col.child(v_flex().child(heading(p, t!("design.logos").into(), None)).child(row));
@@ -558,14 +561,17 @@ pub(super) fn problems(shell: &Shell, problems: &[String], map: bool, cx: &mut C
 }
 
 /// A logo on the system's own light or dark background.
-fn logo_tile(shell: &Shell, ix: usize, path: &str, bg: Color, mode: &str, cx: &mut Context<Shell>) -> AnyElement {
+fn logo_tile(shell: &Shell, ix: usize, logo: &equipe_core::protocol::design::Asset, bg: Color, mode: &str, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let face = picture(shell, path, if ds::is_dark(bg) { rgba(0xFFFFFF99) } else { rgba(0x00000080) });
+    let face = picture(shell, &logo.path, if ds::is_dark(bg) { rgba(0xFFFFFF99) } else { rgba(0x00000080) });
+    let group = SharedString::from(format!("logo-{ix}-{mode}"));
     v_flex()
         .gap_1p5()
         .child(
             div()
                 .id(SharedString::from(format!("design-logo-{ix}-{mode}")))
+                .group(group.clone())
+                .relative()
                 .w(px(260.))
                 .h(px(156.))
                 .p(px(32.))
@@ -578,6 +584,7 @@ fn logo_tile(shell: &Shell, ix: usize, path: &str, bg: Color, mode: &str, cx: &m
                 .justify_center()
                 .cursor_pointer()
                 .child(face)
+                .child(say_corner(p, format!("design-say-logo-{ix}-{mode}"), group, asset_context(logo), cx))
                 .on_click(cx.listener(move |this, _, _, cx| this.design_lightbox(Some(ix), cx))),
         )
         .child(div().text_size(px(META)).text_color(p.muted).child(if mode == "dark" { t!("design.on_dark") } else { t!("design.on_light") }))
@@ -593,7 +600,11 @@ fn lead_chip(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Conte
         block = block.child(color_cell(shell, &token.name, mode.as_deref(), *c, cx));
     }
     let hex = modes.first().map(|(_, c)| c.hex()).unwrap_or_default();
+    let group = SharedString::from(format!("lead-{}", token.name));
     v_flex()
+        .id(SharedString::from(format!("design-lead-{}", token.name)))
+        .group(group.clone())
+        .relative()
         .w(px(132.))
         .rounded(px(R_LG))
         .border_1()
@@ -601,6 +612,7 @@ fn lead_chip(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Conte
         .bg(p.raised)
         .child(block)
         .child(v_flex().px_2p5().py_2().gap_0p5().child(div().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).truncate().child(token.leaf().to_owned())).child(div().font_family(MONO).text_size(px(11.)).text_color(p.muted).child(hex)))
+        .child(say_corner(p, format!("design-say-lead-{}", token.name), group, token_context(system, token), cx))
         .into_any_element()
 }
 
@@ -708,9 +720,36 @@ fn color_cell(shell: &Shell, name: &str, mode: Option<&str>, c: Color, cx: &mut 
         .into_any_element()
 }
 
+/// A colour token as the person points at it: its value in light (or its
+/// one value) and in dark.
+fn token_context(system: &DesignSystem, token: &Token) -> DesignContext {
+    let modes = modes_of(system, token);
+    let dark = |m: &Option<String>| m.as_deref().is_some_and(|m| m.to_ascii_lowercase().contains("dark"));
+    let light = modes.iter().find(|(m, _)| !dark(m)).or(modes.first()).map(|(_, c)| c.hex()).unwrap_or_else(|| values::describe(&token.kind, &token.value));
+    let value_dark = modes.iter().find(|(m, _)| dark(m)).map(|(_, c)| c.hex());
+    DesignContext::Token { name: token.name.clone(), value_light: light, value_dark }
+}
+
+/// A type style as the person points at it.
+fn type_context(token: &Token) -> DesignContext {
+    DesignContext::TypeStyle { name: token.name.clone(), sample: values::describe(&token.kind, &token.value) }
+}
+
+/// A picture of the system's as the person points at it.
+fn asset_context(asset: &equipe_core::protocol::design::Asset) -> DesignContext {
+    DesignContext::Asset { name: asset.name.clone(), path: asset.path.clone() }
+}
+
+/// "말하기" in a thing's top right corner, on hover.
+fn say_corner(p: Palette, id: String, group: SharedString, ctx: DesignContext, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    div().absolute().top(px(8.)).right(px(8.)).child(super::design_talk::say(p, SharedString::from(id), group, ctx, cx))
+}
+
 fn swatch(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let modes = modes_of(system, token);
+    let group = SharedString::from(format!("swatch-{}", token.name));
+    let say = say_corner(p, format!("design-say-{}", token.name), group.clone(), token_context(system, token), cx);
     let mut block = h_flex().h(px(SWATCH_H)).border_b_1().border_color(p.hair);
     for (mode, c) in &modes {
         block = block.child(color_cell(shell, &token.name, mode.as_deref(), *c, cx));
@@ -749,6 +788,9 @@ fn swatch(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Context<
     }
     let changed = shell.design_changed(&token.name);
     v_flex()
+        .id(SharedString::from(format!("design-swatch-{}", token.name)))
+        .group(group)
+        .relative()
         .w(px(SWATCH_W))
         .rounded(px(R_LG))
         .overflow_hidden()
@@ -773,6 +815,7 @@ fn swatch(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Context<
                 .child(rows)
                 .children(token.alias.as_ref().map(|a| div().font_family(MONO).text_size(px(10.5)).text_color(p.muted).truncate().child(format!("→ {a}")))),
         )
+        .child(say)
         .into_any_element()
 }
 
@@ -830,8 +873,12 @@ fn typography(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> 
                 div().font_family(SharedString::from(shown.clone())).font_weight(FontWeight(f32::from(weight))).text_size(px(size)).line_height(px(line)).text_color(p.text).truncate().child(text)
             };
             let changed = shell.design_changed(&token.name);
+            let group = SharedString::from(format!("type-{}", token.name));
             col = col.child(
                 h_flex()
+                    .id(SharedString::from(format!("design-type-{}", token.name)))
+                    .group(group.clone())
+                    .relative()
                     .py_4()
                     .gap_6()
                     .items_start()
@@ -848,7 +895,8 @@ fn typography(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> 
                             .when(!exact && wanted.is_some(), |c| c.child(font_missing(p, wanted.clone().unwrap_or_default(), shown.clone())))
                             .children(token.description.clone().map(|d| div().text_size(px(META)).text_color(p.muted).child(d))),
                     )
-                    .child(v_flex().flex_1().min_w_0().gap_1().overflow_hidden().child(sample(local.to_owned())).when(!english_lang, |c| c.child(sample(english.to_owned())))),
+                    .child(v_flex().flex_1().min_w_0().gap_1().overflow_hidden().child(sample(local.to_owned())).when(!english_lang, |c| c.child(sample(english.to_owned()))))
+                    .child(say_corner(p, format!("design-say-type-{}", token.name), group, type_context(token), cx)),
             );
         }
     }
@@ -1111,6 +1159,7 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
                 .cursor_pointer()
                 .child(img(checkerboard(stage_dark)).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
                 .child(div().absolute().inset_0().p_5().flex().items_center().justify_center().child(picture(shell, &path, p.muted)))
+                .child(div().absolute().top(px(8.)).left(px(8.)).child(super::design_talk::say(p, SharedString::from(format!("design-say-asset-{ix}")), group.clone(), asset_context(asset), cx)))
                 .child(
                     h_flex()
                         .absolute()
@@ -1425,6 +1474,11 @@ impl Shell {
         }
         self.design_load_pictures(cx);
         self.flows_load_pictures(cx);
+        // The conversation beside it is the designer's (or the PM's): once
+        // this frame is drawn, the one on screen and in the box becomes theirs.
+        if self.design_talk_open(window, cx) && self.design_talk_behind() {
+            cx.defer_in(window, |this, window, cx| this.design_talk_follow(window, cx));
+        }
     }
 
     /// The person looked: what is on screen is what they have seen.
@@ -1640,6 +1694,10 @@ impl Shell {
             cx.notify();
             return true;
         }
+        // The words being written beside it keep their keys.
+        if self.composer.is_focused(window, cx) {
+            return false;
+        }
         if self.design_tab() == Tab::Map {
             return self.on_flows_key(key, window, cx);
         }
@@ -1656,6 +1714,20 @@ impl Shell {
             self.design_section(sections[to], cx);
         }
         true
+    }
+
+    /// Dev tool (`snapshot.rs`): "말하기" on a colour or type style by its
+    /// name, or on asset `asset:<n>`.
+    #[cfg(feature = "snapshot")]
+    pub fn design_point_named(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(system) = self.design.current() else { return };
+        let ctx = match what.strip_prefix("asset:") {
+            Some(n) => n.parse::<usize>().ok().and_then(|n| system.assets.get(n)).map(asset_context),
+            None => system.tokens.iter().find(|t| t.name == what).map(|t| if t.kind == "color" { token_context(system, t) } else { type_context(t) }),
+        };
+        if let Some(ctx) = ctx {
+            self.design_point_at(ctx, window, cx);
+        }
     }
 }
 

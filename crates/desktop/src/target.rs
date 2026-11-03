@@ -227,6 +227,11 @@ pub struct Remembered {
     /// The design screen's tab the person last picked (`map`, `system`);
     /// none: the map when there is one.
     pub design_tab: Option<String>,
+    /// The designer's conversation beside the design screen, open or folded
+    /// as the person left it; none: open where there is room.
+    pub design_talk: Option<bool>,
+    /// How wide it was dragged (px).
+    pub design_talk_width: Option<f32>,
 }
 
 /// The window's size in percent (`zoom.rs`): actual size unless the person
@@ -460,6 +465,14 @@ impl Remembered {
                 out.folded.insert(name.to_owned());
             } else if line.trim() == "tickets board" {
                 out.tickets_board = true;
+            } else if let Some(rest) = line.strip_prefix("design-talk-width ") {
+                out.design_talk_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("design-talk ") {
+                out.design_talk = match rest.trim() {
+                    "open" => Some(true),
+                    "folded" => Some(false),
+                    _ => None,
+                };
             } else if let Some(rest) = line.strip_prefix("design-tab ") {
                 out.design_tab = Some(rest.trim().to_owned()).filter(|t| !t.is_empty());
             } else if let Some((on, rest)) = line.strip_prefix("quiet ").map(|r| (false, r)).or_else(|| line.strip_prefix("ping ").map(|r| (true, r))) {
@@ -583,6 +596,12 @@ impl Remembered {
         }
         if let Some(tab) = &self.design_tab {
             text.push_str(&format!("design-tab {tab}\n"));
+        }
+        if let Some(open) = self.design_talk {
+            text.push_str(if open { "design-talk open\n" } else { "design-talk folded\n" });
+        }
+        if let Some(width) = self.design_talk_width {
+            text.push_str(&format!("design-talk-width {width:.0}\n"));
         }
         // Only what differs from the default: off as `quiet`, on as `ping`.
         for ping in Ping::ALL.into_iter().filter(|p| self.pings.get(*p) != p.default_on()) {
@@ -843,7 +862,7 @@ mod tests {
         assert!(!fresh.whole_conversation, "the conversation follows the project by default");
         assert!(!fresh.tickets_board, "티켓 opens as a list");
         assert_eq!(fresh.zoom, Zoom(100), "actual size");
-        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), design_tab: Some("system".into()), ..Remembered::default() };
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), design_tab: Some("system".into()), design_talk: Some(false), design_talk_width: Some(432.), ..Remembered::default() };
         prefs.pings.set(Ping::Failed, false);
         prefs.pings.set(Ping::Sound, false);
         prefs.set_merge_way("app", "push");
@@ -857,6 +876,8 @@ mod tests {
         assert_eq!(loaded.folded, prefs.folded, "the sidebar's folds, the shared folder's too");
         assert!(loaded.tickets_board, "the board, as last left");
         assert_eq!(loaded.design_tab.as_deref(), Some("system"), "the design screen's tab, as last picked");
+        assert_eq!((loaded.design_talk, loaded.design_talk_width), (Some(false), Some(432.)), "the conversation beside the design screen, folded as left, as wide");
+        assert_eq!(fresh.design_talk, None, "open where there is room until the person says");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 

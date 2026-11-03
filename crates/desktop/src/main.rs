@@ -27,6 +27,7 @@ mod daemon;
 mod disk;
 mod doc;
 mod design;
+mod design_talk;
 mod dictation;
 mod flows;
 mod failure;
@@ -86,7 +87,7 @@ use std::time::Duration;
 use equipe_core::t;
 
 use equipe_providers::credentials::equipe_home;
-use gpui_kit::component::input::{Enter, InputEvent, InputState};
+use gpui_kit::component::input::{Enter, InputEvent};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -224,8 +225,6 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// 디자인 시스템's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
-    /// 화면 지도's box for talking about the screen open (`views/flows.rs`).
-    pub flow_talk: Entity<InputState>,
     /// The routines' list on 진행 상황: which is being edited or deleted.
     pub routines_ui: views::routines::RoutinesUi,
     /// Each project's newest tag, as last found, and when it was asked.
@@ -385,7 +384,6 @@ impl Shell {
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
-            flow_talk: cx.new(|cx| InputState::new(window, cx).placeholder(t!("flows.talk_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
             releases_asked: None,
@@ -546,13 +544,6 @@ impl Shell {
             }
         }));
         // Settings' search filters as it is typed.
-        // 화면 지도's box: ⏎ sends; the send button follows what is typed.
-        let flow_talk = shell.flow_talk.clone();
-        shell._subscriptions.push(cx.subscribe_in(&flow_talk, window, |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::PressEnter { .. } => this.flows_send(window, cx),
-            InputEvent::Change => cx.notify(),
-            _ => {}
-        }));
         let settings_search = shell.settings.search.clone();
         shell._subscriptions.push(cx.subscribe_in(&settings_search, window, |_, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
@@ -1705,7 +1696,6 @@ impl Shell {
         }
         self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
-        self.flow_talk.update(cx, |s, cx| s.set_placeholder(t!("flows.talk_placeholder"), window, cx));
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
 }
@@ -1795,6 +1785,10 @@ impl Render for Shell {
                         this.remembered.save(&equipe_providers::credentials::equipe_home());
                     }
                 }
+                // The design screen's conversation too.
+                if this.design.talk.drag.is_some() {
+                    this.design_talk_dragged(f32::from(e.position.x), e.pressed_button == Some(MouseButton::Left), cx);
+                }
                 // The side panel grows as its left edge goes left.
                 if let Some((x0, w0)) = this.side_drag {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -1809,6 +1803,9 @@ impl Render for Shell {
                 this.sidebar_released(cx);
                 this.side_split_released(cx);
                 this.side_released(cx);
+                if this.design.talk.drag.is_some() {
+                    this.design_talk_dragged(0., false, cx);
+                }
                 if this.board.peek_drag.take().is_some() {
                     this.remembered.save(&equipe_providers::credentials::equipe_home());
                     cx.notify();
@@ -1881,9 +1878,11 @@ impl Render for Shell {
         let (below, terminal) = if self.remembered.term_below { (terminal, None) } else { (None, terminal) };
         let doc = doc.or(terminal);
         let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
+        // The design screen: the designer's conversation at its right (`views/design_talk.rs`).
+        let talk = if away { None } else { views::design_talk::panel(self, window, cx) };
         let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
         let middle = v_flex().flex_1().min_w_0().h_full().child(body).children(below);
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(browser))
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(talk).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))

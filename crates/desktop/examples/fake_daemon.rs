@@ -84,7 +84,7 @@
 //! `FAKE_DESIGN=1`: the squad's design system and the web project's own,
 //! modelled on T-144's brand guideline; `draft`: T-144 in review with its
 //! draft; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
-//! `read_image`, as from the daemon.
+//! `read_image`, as from the daemon. `FAKE_NO_DESIGNER=1`: a team with no designer.
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
@@ -1137,6 +1137,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             pm_info.state = SessionState::Working;
                         }
                         let mut sessions = vec![pm_info, frontend, backend, designer];
+                        if std::env::var_os("FAKE_NO_DESIGNER").is_some() {
+                            sessions.pop();
+                        }
                         if busy() {
                             for (ticket, session, name, title) in BUSY {
                                 let role = name.split('-').next().unwrap_or(name);

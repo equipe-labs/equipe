@@ -19,6 +19,7 @@ pub mod decide;
 pub mod deck;
 pub mod design;
 pub mod design_setup;
+pub mod design_talk;
 pub mod diffview;
 pub mod disk;
 pub mod doc;
