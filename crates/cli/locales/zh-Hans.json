@@ -486,6 +486,7 @@
   "main.row_working": "进行中",
   "main.runs_as_service": "登录服务 — 登录时启动，崩溃后自动恢复",
   "main.runs_on_demand": "按需运行 · equipe daemon install 可使其常驻",
+  "main.runs_as_trial": "临时主目录中的试用 — 无屏幕且无成员工作满 {mins} 分钟，或主目录被删除后自行退出",
   "main.screen_free": "空闲",
   "main.service_installed": "守护进程以登录服务运行：登录时启动，崩溃后自动恢复。",
   "main.service_no_answer": "服务已安装，但守护进程没有响应。",

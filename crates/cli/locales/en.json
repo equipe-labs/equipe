@@ -502,6 +502,7 @@
   "main.row_working": "working",
   "main.runs_as_service": "login service — starts at login, back after a crash",
   "main.runs_on_demand": "on demand · equipe daemon install keeps it up",
+  "main.runs_as_trial": "trial, in a temporary home — leaves after {mins} min with no screen and no one at work, or once its home is removed",
   "main.screen_free": "free",
   "main.service_installed": "The daemon runs as a login service: it starts when you log in and comes back if it crashes.",
   "main.service_no_answer": "The service was installed but the daemon didn't answer.",

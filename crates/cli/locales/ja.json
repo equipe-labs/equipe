@@ -486,6 +486,7 @@
   "main.row_working": "作業中",
   "main.runs_as_service": "ログインサービス — ログイン時に起動、クラッシュ後に復帰",
   "main.runs_on_demand": "必要時のみ · equipe daemon install で常駐",
+  "main.runs_as_trial": "一時ホームの試用 — 画面も作業中のメンバーもないまま {mins} 分経つか、ホームが消えると自分で終了します",
   "main.screen_free": "空き",
   "main.service_installed": "デーモンはログインサービスとして動きます: ログイン時に起動し、クラッシュしても復帰します。",
   "main.service_no_answer": "サービスはインストールしましたが、デーモンが応答しませんでした。",
