@@ -632,7 +632,7 @@ fn pick_card(shell: &Shell, sources: &Sources, draft: &Draft, cx: &mut Context<S
             .border_t_1()
             .border_color(p.hair)
             .child(div().flex_none().size(px(40.)).flex().items_center().justify_center().rounded(px(R_MD)).bg(p.wash).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(short(kind)))
-            .child(v_flex().flex_1().min_w_0().child(h_flex().gap_2().items_center().child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name)).children(connected.map(|_| div().px_1p5().rounded_full().bg(Rgba { a: 0.12, ..ok(p) }).text_size(px(11.)).text_color(ok(p)).child(t!("metrics.connected_badge"))))).child(div().text_size(px(12.5)).text_color(p.muted).child(about)))
+            .child(v_flex().flex_1().min_w_0().child(h_flex().flex_wrap().gap_x_2().gap_y_0p5().items_center().child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name)).children(connected.map(|_| div().flex_none().px_1p5().rounded_full().bg(Rgba { a: 0.12, ..ok(p) }).text_size(px(11.)).text_color(ok(p)).child(t!("metrics.connected_badge"))))).child(div().text_size(px(12.5)).text_color(p.muted).child(about)))
             .child(buttons)
     });
     card_frame(p, p.hair).child(step(p, t!("metrics.step1").into())).child(v_flex().children(rows)).child(note(p, t!("metrics.all_optional"))).into_any_element()
@@ -677,7 +677,7 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
         .children(draft.missing.then(|| div().text_size(px(13.)).text_color(p.red).child(t!("metrics.fill_required"))))
         .children(draft.failed.as_ref().map(|why| div().text_size(px(13.)).line_height(px(19.)).text_color(p.red).child(t!("metrics.connect_failed", why = why))))
         .child(h_flex().gap_2().items_center().child(go).child(back))
-        .children((!draft.north).then(|| h_flex().gap_1p5().items_start().child(div().pt(px(3.)).child(icon(Icon::Lock, 12., p.muted))).child(note(p, t!("metrics.key_where")).text_size(px(12.5)))))
+        .children((!draft.north).then(|| h_flex().gap_1p5().items_start().child(div().flex_none().pt(px(3.)).child(icon(Icon::Lock, 12., p.muted))).child(note(p, t!("metrics.key_where")).flex_1().min_w_0().text_size(px(12.5)))))
         .into_any_element()
 }
 
@@ -941,11 +941,13 @@ impl Shell {
     }
 
     /// The screen on a sample of the daemon's answers, no daemon asked
-    /// (`--features snapshot`): `dash`, `error`, `empty`, `connect`, `done`.
+    /// (`--features snapshot`): `dash`, `error`, `empty`, `connect`, `connected`, `key`, `keyed`, `done`.
     #[cfg(feature = "snapshot")]
     pub fn metrics_demo(&mut self, which: &str, window: &mut Window, cx: &mut Context<Self>) {
         use metrics::demo;
         self.metrics.demo = true;
+        // No daemon runs here: hold the connection as live, or its failure covers the screen.
+        self.model.conn = crate::state::Conn::Connected { last_event: None };
         self.show(Screen::Metrics, cx);
         self.metrics.flow = Flow::Dash;
         let (sources, query) = match which {
@@ -994,9 +996,14 @@ impl Shell {
             let id = self.metrics.sources.as_ref().and_then(|s| s.connections.iter().find(|c| c.kind == SourceKind::Posthog)).map(|c| c.id.clone());
             self.metrics_open_north(id, window, cx);
         }
-        if matches!(which, "connect" | "key") {
-            let kind = (which == "key").then_some(SourceKind::Posthog);
-            self.metrics.sources = Some(demo::nothing());
+        if matches!(which, "connect" | "key" | "connected" | "keyed") {
+            let kind = matches!(which, "key" | "keyed").then_some(SourceKind::Posthog);
+            // The plain ones start from nothing connected; the others keep the App Store connected, to show its badge.
+            if matches!(which, "connect" | "key") {
+                self.metrics.sources = Some(demo::nothing());
+            } else if let Some(s) = self.metrics.sources.as_mut() {
+                s.connections.retain(|c| c.kind == SourceKind::AppStore);
+            }
             self.metrics_pick_kind(kind, None, window, cx);
         }
         cx.notify();

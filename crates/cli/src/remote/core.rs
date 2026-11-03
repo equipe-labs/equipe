@@ -1040,6 +1040,7 @@ pub(crate) mod tests {
             mode: None,
             effort: None,
             compacting: None,
+            visuals: Vec::new(),
         };
         let snapshot = Snapshot { squad: "acme".into(), sessions: (1..=8).map(session).collect(), ..Snapshot::default() };
         assert!(serde_json::to_string(&snapshot).unwrap().len() > 2 * RELAY_FRAME_MAX);
@@ -1153,6 +1154,13 @@ pub(crate) mod tests {
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["squad"].as_str(), opened["rpc"]["method"].as_str()), (Some("acme"), Some("event")));
         assert!(opened["seq"].as_u64().unwrap() >= 3);
+        // A reply's diagram, drawn for it: the paths it reads with `read_image`.
+        let image = |tone: &str| equipe_core::protocol::RenderedImage { path: format!("/h/squads/acme/visuals/558211ed72b2d696-{tone}.png"), width: 880, height: 724 };
+        let drawn = equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: image("light"), dark: image("dark"), page: None };
+        let out = core.on_event(&phone.id, "acme", &Event::VisualsRendered { session: 1, visuals: vec![drawn] });
+        let params = &phone.open(&c, &out[0])["rpc"]["params"];
+        assert_eq!((params["type"].as_str(), params["visuals"][0]["key"].as_str()), (Some("visuals_rendered"), Some("558211ed72b2d696")));
+        assert_eq!(params["visuals"][0]["dark"]["path"], "/h/squads/acme/visuals/558211ed72b2d696-dark.png");
     }
 
     #[tokio::test]

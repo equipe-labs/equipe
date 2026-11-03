@@ -35,9 +35,8 @@ gpui-kit = { version = "=0.7.1", features = [
 ] }
 # Images a reply points at on the web: GPUI fetches them through this client.
 gpui-pre-reqwest-client = "=0.3.8"
-# Math and diagrams in replies: drawn to SVG, which GPUI rasterizes (resvg) at 2x.
+# Math in replies (diagrams: core's `visuals::diagram`): drawn to SVG, which GPUI rasterizes (resvg) at 2x.
 latex-rust = { version = "2.1", default-features = false, features = ["std"] }
-mermaid-rs-renderer = { version = "0.3", default-features = false }
 libc = "0.2"
 # Drafts and recent attachments, kept on disk between launches.
 serde = { version = "1.0.229", features = ["derive"] }

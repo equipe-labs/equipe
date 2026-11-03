@@ -650,6 +650,22 @@ async fn serve_local(stream: UnixStream, input: UnboundedSender<Input>) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_drawn_diagram_reaches_a_phone_in_one_frame() {
+        let home = std::env::temp_dir().join(format!("equipe-link-diagram-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let steps: String = (0..30).map(|i| format!("  S{i}[Step {i}] --> S{}[Step {}]\n", i + 1, i + 1)).collect();
+        let drawn = equipe_core::visuals::diagram::draw(&home, "acme", &format!("```mermaid\nflowchart TD\n{steps}```"));
+        assert_eq!(drawn.len(), 1);
+        for image in [&drawn[0].light, &drawn[0].dark] {
+            let ask = equipe_core::protocol::rpc::ReadImage { squad: "acme".into(), path: image.path.clone(), max: None };
+            let read = phone_image(&home, &ask).unwrap();
+            assert!(read.data.len() <= super::super::core::PHONE_IMAGE_MAX, "{} bytes", read.data.len());
+            assert_eq!(read.mime, "image/png", "a diagram keeps its transparent ground");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// A relay on this machine that opens every slot it's asked to; every
     /// frame the daemon sends it goes to the result.
     async fn fake_relay() -> (String, mpsc::UnboundedReceiver<Value>) {

@@ -909,6 +909,7 @@ fn snapshot() -> Snapshot {
                 effort: None,
                 subagents: Vec::new(),
                 compacting: None,
+                visuals: Vec::new(),
             },
             SessionInfo {
                 session: 4242,
@@ -942,6 +943,7 @@ fn snapshot() -> Snapshot {
                 subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48, ..Default::default() }],
                 // Its conversation being summarized: a screen attaching now says so, timed from `started_at`.
                 compacting: Some(CompactingInfo { trigger: CompactTrigger::Auto, started_at: NOW - 20_000, estimate_ms: 95_000 }),
+                visuals: Vec::new(),
             },
         ],
         tickets: vec![ticket(TicketStatus::InProgress)],
@@ -1217,6 +1219,10 @@ fn message_vectors() -> Value {
     examples.insert("metrics summary: nothing connected".into(), json!({ "receives": opened(&relay_frames(&core.metrics_summarized(&device_id(), SQUAD, 27, Ok(none)))[0]) }));
     ask(&mut core, &mut examples, "metrics summary: another squad than the frame's", Some(SQUAD), numbers(28, "home", "metrics.summary"));
     ask(&mut core, &mut examples, "metrics: connecting is not something a device may ask", Some(SQUAD), numbers(29, SQUAD, "metrics.connect"));
+
+    // A reply's Mermaid block, drawn by the daemon for a phone (docs/VISUALS.md): put in place of the block whose source has `key`.
+    let drawn = |tone: &str| equipe_core::protocol::RenderedImage { path: format!("/Users/me/.equipe/squads/{SQUAD}/visuals/558211ed72b2d696-{tone}.png"), width: 880, height: 724 };
+    tell(&mut core, &mut examples, "event: visuals rendered", Event::VisualsRendered { session: pm, visuals: vec![equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: drawn("light"), dark: drawn("dark"), page: None }] });
     // Pushes, to a phone away.
     core.on_relay(&json!({ "type": "presence", "device": device_id(), "online": false }), NOW);
     for (name, event) in [

@@ -1287,6 +1287,10 @@ impl Runtime {
         {
             squad = session.squad.clone();
             let finished = session.transcript.apply(&event);
+            // A reply's diagrams, drawn off the loop for the screens that can't.
+            if let Some(name) = &squad {
+                draw_visuals(&self.config.home, &self.internal, id, name, &finished);
+            }
             match &event {
                 Event::UserMessage { text, .. } if session.title.is_none() => {
                     session.title = text.lines().next().map(str::to_owned);
@@ -6151,6 +6155,9 @@ it back there once they have done it.{again} End your turn now with a short line
             .filter(|(_, s)| s.squad.as_deref() == Some(squad))
             .map(|(&id, s)| {
                 let entries = s.transcript.entries();
+                let recent = scope::from(entries, entries.len().saturating_sub(SNAPSHOT_LINES));
+                let mut visuals = crate::visuals::diagram::kept(&self.config.home, squad, &recent);
+                visuals.extend(crate::visuals::card::kept(&self.config.home, squad, &recent));
                 SessionInfo {
                     session: id,
                     project: s.project.clone(),
@@ -6163,7 +6170,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     title: s.title.clone(),
                     tokens: s.tokens,
                     context: s.context,
-                    recent: scope::from(entries, entries.len().saturating_sub(SNAPSHOT_LINES)),
+                    recent,
                     queued: s.queued.clone(),
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),
@@ -6191,6 +6198,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         })
                         .collect(),
                     compacting: s.compacting.as_ref().map(|(info, ..)| info.clone()),
+                    visuals,
                 }
             })
             .collect();
@@ -7029,6 +7037,29 @@ async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore, la
 }
 
 /// The journal of `squad`, opened on first use.
+/// The Mermaid blocks and HTML cards of replies just ended, drawn as PNGs off
+/// the loop and told as `visuals_rendered` (docs/VISUALS.md); one that won't
+/// draw is not told. Cards only while they are on (`visuals::card::enabled`).
+fn draw_visuals(home: &Path, internal: &UnboundedSender<Internal>, session: SessionId, squad: &str, finished: &[Entry]) {
+    let texts: Vec<String> = finished.iter().filter_map(|line| match line {
+        Entry::Reply { text } if crate::visuals::diagram::has_blocks(text) || crate::visuals::card::has_blocks(text) => Some(text.clone()),
+        _ => None,
+    }).collect();
+    if texts.is_empty() {
+        return;
+    }
+    let (home, squad, internal) = (home.to_owned(), squad.to_owned(), internal.clone());
+    tokio::task::spawn_blocking(move || {
+        for text in texts {
+            let mut visuals = crate::visuals::diagram::draw(&home, &squad, &text);
+            visuals.extend(crate::visuals::card::draw(&home, &squad, &text));
+            if !visuals.is_empty() {
+                let _ = internal.send(Internal::Event(Box::new(Event::VisualsRendered { session, visuals })));
+            }
+        }
+    });
+}
+
 fn journal_for<'a>(journals: &'a mut HashMap<String, Journal>, home: &Path, squad: &str) -> Option<&'a Journal> {
     if !journals.contains_key(squad) {
         let journal = Journal::for_squad(home, squad).ok()?;

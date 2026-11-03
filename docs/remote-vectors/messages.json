@@ -2026,6 +2026,37 @@
         "ts": 1760000000000
       }
     },
+    "event: visuals rendered": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "type": "visuals_rendered",
+            "visuals": [
+              {
+                "dark": {
+                  "height": 724,
+                  "path": "/Users/me/.equipe/squads/acme/visuals/558211ed72b2d696-dark.png",
+                  "width": 880
+                },
+                "key": "558211ed72b2d696",
+                "kind": "mermaid",
+                "light": {
+                  "height": 724,
+                  "path": "/Users/me/.equipe/squads/acme/visuals/558211ed72b2d696-light.png",
+                  "width": 880
+                }
+              }
+            ]
+          }
+        },
+        "seq": 70,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "hello": {
       "daemon": {
         "answers": {

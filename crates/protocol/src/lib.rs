@@ -1636,6 +1636,11 @@ pub enum Event {
         outcome: TurnOutcome,
         usage: Option<Usage>,
     },
+    /// Diagrams of a reply that just ended, drawn by the daemon as PNGs for a
+    /// screen that can't draw them (docs/VISUALS.md). Not a line: a screen
+    /// puts each in place of the block whose source has its `key`. A block
+    /// that didn't draw is not here; its source shows.
+    VisualsRendered { session: SessionId, visuals: Vec<Rendered> },
     /// An editing session closed with changes, committed to its branch.
     BranchLanded {
         session: SessionId,
@@ -1819,6 +1824,7 @@ impl Event {
             | Event::SubagentEntry { session, .. }
             | Event::SubagentEnded { session, .. }
             | Event::TurnEnded { session, .. }
+            | Event::VisualsRendered { session, .. }
             | Event::BranchLanded { session, .. }
             | Event::NothingChanged { session }
             | Event::SessionClosed { session }
@@ -2062,6 +2068,34 @@ pub struct SessionInfo {
     /// Its conversation being compacted now ([`Event::Compacting`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacting: Option<CompactingInfo>,
+    /// The diagrams of `recent`'s replies drawn so far ([`Event::VisualsRendered`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visuals: Vec<Rendered>,
+}
+
+/// A block of a reply drawn by the daemon ([`Event::VisualsRendered`]): in
+/// light and dark, each a PNG a screen reads with `read_image`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rendered {
+    /// What the block was: `mermaid`, or `card` (an HTML card).
+    pub kind: String,
+    /// The first 8 bytes of the SHA-256 of its source, trimmed, in lowercase hex.
+    pub key: String,
+    pub light: RenderedImage,
+    pub dark: RenderedImage,
+    /// An HTML card's page, as drawn (`<key>.html` beside its PNGs): for a
+    /// screen that opens the card itself. Absent for a diagram.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderedImage {
+    /// On the daemon's machine.
+    pub path: String,
+    /// In pixels, drawn at twice the size it is meant to be shown at.
+    pub width: u32,
+    pub height: u32,
 }
 
 /// A subagent at work for a member, for a screen that attaches mid-turn.
@@ -2545,6 +2579,7 @@ mod tests {
                 effort: Some("high".into()),
                 subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42, ..Default::default() }],
                 compacting: None,
+                visuals: Vec::new(),
             }],
             allowed: vec!["Bash(npm install:*)".into()],
             browsers_shown: true,
