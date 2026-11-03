@@ -283,7 +283,7 @@ enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
-    /// The designer's tools: init, check, specimen, render, shoot, diff, critique, audit
+    /// The designer's tools: init, check, specimen, render, shoot, diff, critique, audit, flows
     Design {
         #[command(subcommand)]
         action: design::DesignAction,
