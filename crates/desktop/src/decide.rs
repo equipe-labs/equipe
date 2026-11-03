@@ -84,9 +84,10 @@ impl Asked {
 
 /// What a set is called where it waits — 나에게's row, the card's line —
 /// when it is the designer's weekly design review: "주간 디자인 리뷰 · 3가지",
-/// the things the review brings. `None`: any other set, called by its question.
+/// the things the review brings; or the PM's weekly retro: "주간 회고 · 2가지",
+/// the changes it proposes. `None`: any other set, called by its question.
 pub fn review_title(set: &QuestionSet) -> Option<String> {
-    set.review.then(|| equipe_core::t!("decide.design_review", n = equipe_core::design::review::PARTS).to_string())
+    crate::retro::title(set).or_else(|| set.review.then(|| equipe_core::t!("decide.design_review", n = equipe_core::design::review::PARTS).to_string()))
 }
 
 // ── answering one set ──
@@ -477,6 +478,7 @@ mod tests {
             ],
             asked_at: 0,
             review: false,
+            retro: None,
         }
     }
 
@@ -484,6 +486,9 @@ mod tests {
     fn the_designers_weekly_review_is_called_so_where_it_waits() {
         assert_eq!(review_title(&QuestionSet { review: true, member: "designer".into(), ..set() }).as_deref(), Some("주간 디자인 리뷰 · 3가지"));
         assert_eq!(review_title(&set()), None, "any other set: by its question");
+        // The PM's weekly retro: by the changes it proposes.
+        let retro = QuestionSet { retro: Some(equipe_core::protocol::decide::Retro::default()), ..set() };
+        assert_eq!(review_title(&retro).as_deref(), Some(format!("주간 회고 · {}가지", retro.questions.len()).as_str()));
     }
 
     fn others(n: usize) -> Vec<String> {

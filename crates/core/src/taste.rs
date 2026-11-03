@@ -110,6 +110,7 @@ mod tests {
             ],
             asked_at: 0,
             review: false,
+            retro: None,
         }
     }
 

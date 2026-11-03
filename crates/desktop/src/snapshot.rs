@@ -195,6 +195,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     };
                     shell.open_side_menu(menu, cx);
                 }),
+                // `progress`: 진행 상황; `retro:<day>`: a past retro from its list, the PM's conversation at it.
+                "progress" => shell.update(cx, |shell, cx| shell.open_progress(cx)),
+                "retro" => shell.update(cx, |shell, cx| {
+                    // No day: the latest, as its row lists it first.
+                    let latest = || shell.model.pm().and_then(|pm| shell.model.convos.get(&pm)).and_then(|c| crate::retro::past(c.transcript.entries()).into_iter().next()).map(|p| p.to);
+                    let to = if arg.is_empty() { latest().unwrap_or_default() } else { arg.clone() };
+                    shell.open_retro(&to, window, cx);
+                }),
                 "size" => {
                     if let Some((w, h)) = arg.split_once('x').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))) {
                         window.resize(size(px(w), px(h)));

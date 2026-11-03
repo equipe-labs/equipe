@@ -470,6 +470,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                 ],
                 asked_at: now.saturating_sub(90),
                 review: false,
+                retro: None,
             },
             QuestionSet {
                 id: 9002,
@@ -485,6 +486,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                 }],
                 asked_at: now.saturating_sub(30),
                 review: false,
+                retro: None,
             },
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
@@ -492,6 +494,9 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
         let mut waiting = if briefs::office() { vec![briefs::office_hours_set(now)] } else if deciding().is_some() { sets } else { Vec::new() };
         if review::on() {
             waiting.insert(0, review::set(now));
+        }
+        if retro::on() {
+            waiting.insert(0, retro::set(now));
         }
         std::sync::Mutex::new(waiting)
     })
@@ -970,6 +975,9 @@ mod flows;
 #[path = "fake_daemon/review.rs"]
 mod review;
 
+#[path = "fake_daemon/retro.rs"]
+mod retro;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -1066,6 +1074,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history = history::history(n);
                         }
                         history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
+                        // `FAKE_RETRO=1`: last week's retro and this week's, in the PM's conversation.
+                        if retro::on() {
+                            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                            history.extend(retro::history(now));
+                        }
                         // `FAKE_ASKLIST=1`: the PM's last reply asks three things in a list of its own words.
                         if std::env::var("FAKE_ASKLIST").is_ok_and(|v| v == "1") {
                             history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
@@ -1240,7 +1253,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             questions: questions().lock().unwrap().clone(),
                             team_changes: team::changes(),
                             routine_proposals: routine::proposals(),
-                            routines: routine::routines(),
+                            routines: if retro::on() { retro::routines() } else { routine::routines() },
                             idle_wake_hours: Some(routine::idle_wake_hours()),
                             signals: signals::signals(),
                             accepts: accept::cards(),

@@ -190,6 +190,9 @@ pub struct TicketWork {
     pub engine_session: Option<String>,
 }
 
+/// How long turns and waits are kept for the retros: a quarter.
+const KEPT_FOR_RETROS: i64 = 92 * 24 * 60 * 60;
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -362,6 +365,25 @@ impl Journal {
              CREATE TABLE IF NOT EXISTS reviews (
                ticket INTEGER PRIMARY KEY,
                body TEXT
+             );
+             CREATE TABLE IF NOT EXISTS turns (
+               member TEXT NOT NULL,
+               role TEXT NOT NULL,
+               ticket INTEGER,
+               began INTEGER NOT NULL,
+               ended INTEGER NOT NULL,
+               outcome TEXT NOT NULL,
+               tokens INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS turns_ended ON turns(ended);
+             CREATE TABLE IF NOT EXISTS waits (
+               kind TEXT NOT NULL,
+               member TEXT NOT NULL,
+               ticket INTEGER,
+               what TEXT NOT NULL,
+               asked INTEGER NOT NULL,
+               answered INTEGER NOT NULL,
+               outcome TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS conversations (
                id INTEGER PRIMARY KEY,
@@ -750,6 +772,16 @@ impl Journal {
         self.set_meta("design_review_routine", &id.map(|id| id.to_string()).unwrap_or_default())
     }
 
+    /// The PM's weekly retro among the routines (`crate::retro`), by its id:
+    /// added with the PM, gone once the person deletes it.
+    pub fn retro_routine(&self) -> Option<u32> {
+        self.meta("retro_routine").and_then(|id| id.parse().ok())
+    }
+
+    pub fn set_retro_routine(&self, id: Option<u32>) -> Result<()> {
+        self.set_meta("retro_routine", &id.map(|id| id.to_string()).unwrap_or_default())
+    }
+
     /// When the PM was last woken over an empty board, in unix seconds.
     pub fn idle_woken_at(&self) -> Option<u64> {
         self.meta("idle_woken_at").and_then(|at| at.parse().ok())
@@ -988,6 +1020,69 @@ impl Journal {
     pub fn turn_times(&self, role: &str) -> Result<Vec<u64>> {
         let mut stmt = self.conn.prepare("SELECT seconds FROM turn_times WHERE role = ?1 ORDER BY at DESC, rowid DESC LIMIT 50")?;
         let rows = stmt.query_map([role], |r| Ok(r.get::<_, i64>(0)?.max(0) as u64))?;
+        rows.collect()
+    }
+
+    /// Keep a member's turn — who, on what, how long, how it ended, what it
+    /// used — for the weekly retro. A quarter's worth is kept.
+    pub fn record_turn(&self, t: &crate::retro::Turn) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![t.member, t.role, t.ticket, t.began as i64, t.ended as i64, t.outcome, t.tokens as i64],
+        )?;
+        self.conn.execute("DELETE FROM turns WHERE ended < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// The turns that ended at or after `since`, oldest first.
+    pub fn turns_since(&self, since: u64) -> Result<Vec<crate::retro::Turn>> {
+        let mut stmt = self.conn.prepare("SELECT member, role, ticket, began, ended, outcome, tokens FROM turns WHERE ended >= ?1 ORDER BY ended, rowid")?;
+        let rows = stmt.query_map([since as i64], |r| {
+            Ok(crate::retro::Turn {
+                member: r.get(0)?,
+                role: r.get(1)?,
+                ticket: r.get(2)?,
+                began: r.get::<_, i64>(3)?.max(0) as u64,
+                ended: r.get::<_, i64>(4)?.max(0) as u64,
+                outcome: r.get(5)?,
+                tokens: r.get::<_, i64>(6)?.max(0) as u64,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Keep what a member waited on the person for, once answered.
+    pub fn record_wait(&self, w: &crate::retro::Wait) -> Result<()> {
+        let answered = w.answered.unwrap_or(w.asked);
+        self.conn.execute(
+            "INSERT INTO waits (kind, member, ticket, what, asked, answered, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![w.kind, w.member, w.ticket, w.what, w.asked as i64, answered as i64, w.outcome],
+        )?;
+        self.conn.execute("DELETE FROM waits WHERE answered < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// The waits answered at or after `since`, oldest first.
+    pub fn waits_since(&self, since: u64) -> Result<Vec<crate::retro::Wait>> {
+        let mut stmt = self.conn.prepare("SELECT kind, member, ticket, what, asked, answered, outcome FROM waits WHERE answered >= ?1 ORDER BY answered, rowid")?;
+        let rows = stmt.query_map([since as i64], |r| {
+            Ok(crate::retro::Wait {
+                kind: r.get(0)?,
+                member: r.get(1)?,
+                ticket: r.get(2)?,
+                what: r.get(3)?,
+                asked: r.get::<_, i64>(4)?.max(0) as u64,
+                answered: Some(r.get::<_, i64>(5)?.max(0) as u64),
+                outcome: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Every ticket's record since `since`, oldest first, each with its ticket.
+    pub fn ticket_events_since(&self, since: u64) -> Result<Vec<(TicketId, TicketEntry)>> {
+        let mut stmt = self.conn.prepare("SELECT ticket, at, by, kind, text FROM ticket_events WHERE at >= ?1 ORDER BY at, ticket, seq")?;
+        let rows = stmt.query_map([since as i64], |r| Ok((r.get(0)?, TicketEntry { at: r.get::<_, i64>(1)?.max(0) as u64, by: r.get(2)?, kind: r.get(3)?, text: r.get(4)? })))?;
         rows.collect()
     }
 
@@ -1662,6 +1757,33 @@ mod tests {
         let entries = j.ticket_entries(2).unwrap();
         assert_eq!((entries[0].by.as_str(), entries[0].kind.as_str()), ("you", "edited"));
         assert!(entries[0].at > 0);
+    }
+
+    #[test]
+    fn turns_waits_and_the_weeks_ticket_records_are_kept_for_the_retro() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        let at = now() as u64;
+        let turn = |member: &str, ended: u64| crate::retro::Turn { member: member.into(), role: "backend".into(), ticket: Some(4), began: ended - 600, ended, outcome: "completed".into(), tokens: 1200 };
+        let failed = crate::retro::Turn { ticket: None, outcome: "failed".into(), ..turn("pm", at - 60) };
+        j.record_turn(&turn("backend", at - 3600)).unwrap();
+        j.record_turn(&failed).unwrap();
+        j.record_turn(&turn("old", at - 200 * 24 * 3600)).unwrap();
+        assert_eq!(j.turns_since(at - 7200).unwrap(), [turn("backend", at - 3600), failed]);
+        assert!(j.turns_since(0).unwrap().iter().all(|t| t.member != "old"), "past a quarter: let go");
+        let wait = crate::retro::Wait { kind: "permission".into(), member: "backend".into(), ticket: Some(4), what: "git push".into(), asked: at - 900, answered: Some(at - 300), outcome: "allowed".into() };
+        j.record_wait(&wait).unwrap();
+        assert_eq!(j.waits_since(at - 600).unwrap(), [wait]);
+        assert!(j.waits_since(at - 200).unwrap().is_empty());
+        j.ticket_event(4, "you", "reopened", "Reopened: wrong order").unwrap();
+        j.ticket_event(5, "equipe", "assigned", "frontend").unwrap();
+        let events = j.ticket_events_since(at.saturating_sub(10)).unwrap();
+        assert_eq!(events.iter().map(|(id, e)| (*id, e.kind.as_str())).collect::<Vec<_>>(), [(4, "reopened"), (5, "assigned")]);
+        assert!(j.ticket_events_since(at + 3600).unwrap().is_empty());
+        assert_eq!(j.retro_routine(), None);
+        j.set_retro_routine(Some(3)).unwrap();
+        assert_eq!(j.retro_routine(), Some(3));
+        j.set_retro_routine(None).unwrap();
+        assert_eq!(j.retro_routine(), None);
     }
 
     #[test]

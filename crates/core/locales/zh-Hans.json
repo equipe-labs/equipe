@@ -252,6 +252,8 @@
   "routine.design_review.step_qa": "设计 QA",
   "routine.design_review.step_system": "设计系统",
   "routine.design_review.title": "设计评审",
+  "routine.retro.prompt": "每周复盘。下面的 [Retro facts · …] 里是 equipe 从小队记录中收集的本周事实：请以此为依据，不要编造；事实里没有的，就说不知道。\n请用一条消息带来，以“每周复盘”为标题，按这个顺序：\n1. 已上线：合入 main 的工单，每个写上 T- 编号和标题。\n2. 卡住的和原因：卡住的回合、失败的工单、被退回的工作、错过的 ETA、成员等我审批的情况——在事实能说明的范围内附上原因。\n3. 各成员的时间：每个成员、每个工单的回合数、时间和用量，以及按成员或角色看哪里有摩擦。\n如果项目有简报（docs/briefs/），请把每份预期的和实际发生的并排列出。\n最后，教训最多三条，下周要改的也最多三条。把要改的用一次 `ask_decision` 问我，每项改动一个问题，一次点击就能回答：第一个选项是这项改动（推荐），最后一个选项是“本周不做”。给每个问题填上 `lesson`：它背后的教训，一行。只有我接受的改动的教训，equipe 才会连同日期记入小队记忆的 \"lessons\"；其余的会被舍弃——不要自己去记。\n不要自己改任何东西——设置和例行任务都不要：改为提议（提议工单、`propose_routine`），只有我的点击才会开启。",
+  "routine.retro.title": "每周复盘",
   "taste.invalid_already": "已经有同样的偏好备注。",
   "taste.invalid_empty": "偏好备注是空的。请用一行写下。",
   "taste.invalid_lines": "偏好备注只有一行。有几件事就分别添加。",

@@ -55,6 +55,7 @@ mod stream;
 mod target;
 mod theme;
 mod routine;
+mod retro;
 mod team;
 mod term;
 mod tailnet;
