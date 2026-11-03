@@ -328,6 +328,8 @@ pub struct DesignUi {
     pub toc_at: usize,
     /// The screen is on show: a look is under way.
     pub on_screen: bool,
+    /// 화면 지도: where the person is in the system's map.
+    pub map: crate::flows::MapUi,
 }
 
 impl Default for DesignUi {
@@ -354,6 +356,7 @@ impl Default for DesignUi {
             scroll: ScrollHandle::new(),
             toc_at: 0,
             on_screen: false,
+            map: Default::default(),
         }
     }
 }
@@ -420,6 +423,8 @@ impl DesignUi {
         {
             self.lightbox = None;
         }
+        let map = self.current().and_then(|s| s.flows.clone());
+        self.map.arrived(map.as_ref());
         // A section that has nothing now: back to the overview.
         if let Some(system) = self.current()
             && count(system, self.section).is_none()
