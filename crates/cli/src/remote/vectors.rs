@@ -682,7 +682,7 @@ const DRAFTS: &str = "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba
 
 /// A visual choice: the designer's logos, each option with its picture.
 fn visual_questions() -> QuestionSet {
-    let choice = |label: &str, description: &str, images: &[&str]| Choice { label: label.into(), description: description.into(), images: images.iter().map(|i| (*i).to_owned()).collect() };
+    let choice = |label: &str, description: &str, images: &[&str]| Choice { label: label.into(), description: description.into(), images: images.iter().map(|i| (*i).to_owned()).collect(), ..Choice::default() };
     QuestionSet {
         id: 5_000_002,
         session: 4243,
@@ -1037,7 +1037,7 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "answer questions", Some(SQUAD), answer(json!([{ "picked": [0] }, { "picked": [0, 1], "other": "Apple은 다음 달에" }])));
     ask(&mut core, &mut examples, "answer questions: one skipped", Some(SQUAD), answer(json!([{ "other": "세션 쿠키로" }, {}])));
     ask(&mut core, &mut examples, "dismiss questions", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": SQUAD, "id": 5_000_001 } }));
-    let answered = vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![0, 1], other: Some("Apple은 다음 달에".into()) }];
+    let answered = vec![Answer { picked: vec![0], ..Default::default() }, Answer { picked: vec![0, 1], other: Some("Apple은 다음 달에".into()), ..Default::default() }];
     tell(&mut core, &mut examples, "event: questions answered", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: Some(answered) });
     tell(&mut core, &mut examples, "event: questions closed", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: None });
     // A visual choice: each option with its pictures, which the phone asks for, as thumbnails.

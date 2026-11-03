@@ -6,7 +6,7 @@
 //! to go on without them; a member that leaves takes its questions with it.
 //! Never a way to permission: that stays [`Runtime::ask_permission`]'s.
 
-use equipe_protocol::decide::{self, Answer, QuestionSet};
+use equipe_protocol::decide::{self, Answer, QuestionSet, Reaction};
 
 use super::*;
 use crate::visuals;
@@ -168,13 +168,16 @@ with a short line, or carry on with work that doesn't depend on the answer.";
 
 /// Answers made to fit their questions: one each (missing ones skipped),
 /// picks that exist, once each, in order — one at most where only one may
-/// be picked — and words of their own trimmed, none when blank.
+/// be picked — and words of their own trimmed, none when blank. A mix holds
+/// only between two options of one-pick, the aspect one the other has (its
+/// base then what is picked); another round, only where there were options
+/// (nothing then picked).
 pub(super) fn fit(set: &QuestionSet, answers: Vec<Answer>) -> Vec<Answer> {
     let mut answers = answers.into_iter();
     set.questions
         .iter()
         .map(|q| {
-            let Answer { picked, other } = answers.next().unwrap_or_default();
+            let Answer { picked, other, reaction } = answers.next().unwrap_or_default();
             let mut picked: Vec<usize> = picked.into_iter().filter(|&i| i < q.options.len()).collect();
             if !q.multi_select {
                 picked.truncate(1);
@@ -182,7 +185,16 @@ pub(super) fn fit(set: &QuestionSet, answers: Vec<Answer>) -> Vec<Answer> {
             picked.sort_unstable();
             picked.dedup();
             let other = other.map(|o| o.trim().to_owned()).filter(|o| !o.is_empty());
-            Answer { picked, other }
+            let reaction = reaction.filter(|r| match r {
+                Reaction::Mix { base, from, aspect } => !q.multi_select && base != from && *base < q.options.len() && q.options.get(*from).is_some_and(|f| f.aspects.contains(aspect)),
+                Reaction::Again => !q.options.is_empty(),
+            });
+            match reaction {
+                Some(Reaction::Mix { base, .. }) => picked = vec![base],
+                Some(Reaction::Again) => picked.clear(),
+                None => {}
+            }
+            Answer { picked, other, reaction }
         })
         .collect()
 }
@@ -202,11 +214,29 @@ mod tests {
             ..Question::default()
         };
         let set = QuestionSet { id: 1, session: 1, member: "pm".into(), ticket: None, questions: vec![q(false), q(true), q(false)], asked_at: 0 };
-        let fitted = fit(&set, vec![Answer { picked: vec![1, 0], other: Some("  ".into()) }, Answer { picked: vec![1, 9, 0, 1], other: Some(" x ".into()) }]);
+        let fitted = fit(&set, vec![Answer { picked: vec![1, 0], other: Some("  ".into()), ..Answer::default() }, Answer { picked: vec![1, 9, 0, 1], other: Some(" x ".into()), ..Answer::default() }]);
         assert_eq!(
             fitted,
-            [Answer { picked: vec![1], other: None }, Answer { picked: vec![0, 1], other: Some("x".into()) }, Answer::skipped()],
+            [Answer::pick(1), Answer { picked: vec![0, 1], other: Some("x".into()), ..Answer::default() }, Answer::skipped()],
             "one pick where one may be picked, none out of range, the missing one skipped"
         );
+    }
+
+    #[test]
+    fn a_mix_holds_between_two_options_on_an_aspect_one_has_and_another_round_picks_nothing() {
+        let option = |label: &str| Choice { label: label.into(), aspects: vec!["type".into(), "colour".into()], ..Choice::default() };
+        let design = Question { question: "Which?".into(), options: vec![option("A"), option("B"), Choice { label: "C".into(), ..Choice::default() }], ..Question::default() };
+        let set = QuestionSet { id: 1, session: 1, member: "designer".into(), ticket: None, questions: vec![design; 5], asked_at: 0 };
+        let mut stray = Answer::mix(0, 1, "type");
+        stray.picked = vec![2];
+        let fitted = fit(
+            &set,
+            vec![stray, Answer::mix(1, 1, "type"), Answer::mix(0, 2, "type"), Answer::mix(0, 1, "shape"), Answer { picked: vec![1], other: Some(" too cold ".into()), reaction: Some(Reaction::Again) }],
+        );
+        assert_eq!(fitted[0], Answer::mix(0, 1, "type"), "its base is what is picked");
+        assert_eq!(fitted[1], Answer::pick(1), "not with itself");
+        assert_eq!(fitted[2], Answer::pick(0), "C names nothing to take");
+        assert_eq!(fitted[3], Answer::pick(0), "B has no shape to give");
+        assert_eq!(fitted[4], Answer::again(Some("too cold".into())), "another round: nothing picked, why kept");
     }
 }

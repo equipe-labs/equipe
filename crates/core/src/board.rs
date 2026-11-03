@@ -622,7 +622,9 @@ doesn't depend on it. When the ticket you are on can't go on without the answer,
 they can, that is block_on_person; never for a yes before acting in their name (ask_person) or for permissions. A \
 visual choice — a logo, colours, a layout, a screen, an icon, an illustration — is never asked in words alone: \
 render or mock up each option first (PNG, JPG, WebP, GIF or SVG, in your worktree or the squad's folder), then ask, \
-giving each option its `images`; the person sees them side by side and picks from the pictures.",
+giving each option its `images`; the person sees them side by side and picks from the pictures. Give a design \
+option its `aspects` too (its type, colour, shape — in the person's language) and the person can answer in one click: \
+this one, this one with an aspect of another (a mix), or another round.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -646,11 +648,13 @@ giving each option its `images`; the person sees them side by side and picks fro
                                         "label": { "type": "string", "description": "The option in 1 to 5 words." },
                                         "description": { "type": "string", "description": "One line: what it means, or what it costs." },
                                         "images": IMAGES_SCHEMA.clone(),
+                                        "aspects": ASPECTS_SCHEMA.clone(),
                                     },
                                     "required": ["label"],
                                 },
                             },
                             "multi_select": { "type": "boolean", "description": "Set when several options can be picked together." },
+                            "aspects": ASPECTS_SCHEMA.clone(),
                             "images": {
                                 "type": "array",
                                 "items": { "type": "string" },
@@ -822,12 +826,19 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
                     label: arg_str(o, "label")?.to_owned(),
                     description: arg_str(o, "description").unwrap_or_default().to_owned(),
                     images: arg_strs(o, "images"),
+                    aspects: aspects_arg(o),
                 }),
             })
             .filter(|c| !c.label.is_empty())
             .collect();
         // None: answered in the person's own words.
         let given = item.get("options").and_then(Value::as_array).is_some_and(|o| !o.is_empty());
+        // The question's aspects, for every option that names none of its own.
+        let mut options = options;
+        let shared = aspects_arg(item);
+        for option in options.iter_mut().filter(|o| o.aspects.is_empty()) {
+            option.aspects = shared.clone();
+        }
         if given && !OPTIONS.contains(&options.len()) {
             return Err(format!("Question {n} needs 2 to 4 options with a label each (or none, for an answer in the person's own words), not {}.", options.len()));
         }
@@ -841,6 +852,29 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
         out.push(Question { question: question.to_owned(), header, options, multi_select, images });
     }
     Ok(out)
+}
+
+/// What of a design option can be mixed into another, at most four, each a
+/// word or two, once each.
+const ASPECTS: usize = 4;
+static ASPECTS_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "maxItems": ASPECTS,
+        "description": "A design option's parts the person can take into another option in one click — its type, colour, shape — a word each, in the person's language. On `questions`' item: every option's.",
+    })
+});
+
+fn aspects_arg(item: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for aspect in arg_strs(item, "aspects") {
+        let aspect = aspect.chars().take(24).collect::<String>().trim_end().to_owned();
+        if !out.contains(&aspect) && out.len() < ASPECTS {
+            out.push(aspect);
+        }
+    }
+    out
 }
 
 /// A list of strings, blanks dropped; a single string counts as one item.
@@ -1264,6 +1298,7 @@ mod tests {
         assert_eq!(q.images, ["brand/now.png"], "one path given on its own counts");
         assert_eq!(q.options[0].images, ["brand/a.png", "brand/a-dark.png"], "blanks dropped");
         assert_eq!((q.options[1].images.len(), q.options[2].images.len()), (1, 0));
+        assert!(q.options.iter().all(|o| o.aspects.is_empty()), "none named, none kept");
         // The schema has them, and says why; for the PM and members alike.
         for is_pm in [true, false] {
             let tools = tools(is_pm);
@@ -1279,6 +1314,33 @@ mod tests {
             assert_eq!(hand_in["inputSchema"]["properties"]["images"]["type"], "array");
             let doc = hand_in["description"].as_str().unwrap();
             assert!(doc.contains("`images`") && doc.contains("visual"), "{doc}");
+        }
+    }
+
+    #[test]
+    fn a_design_option_names_what_of_it_can_be_mixed_and_the_tool_says_so() {
+        let asked = questions_arg(&json!({ "questions": [{
+            "question": "어느 방향으로 갈까요?",
+            "aspects": ["글꼴", "색", "모양"],
+            "options": [
+                { "label": "차분 (Recommended)", "images": "a.png" },
+                { "label": "선명", "images": "b.png", "aspects": ["색", " ", "색", "a very long aspect name past its limit", "모양", "여백", "더"] },
+                "따뜻",
+            ],
+        }] }))
+        .unwrap();
+        let q = &asked[0];
+        assert_eq!(q.options[0].aspects, ["글꼴", "색", "모양"], "the question's, for an option without its own");
+        assert_eq!(q.options[1].aspects, ["색", "a very long aspect name", "모양", "여백"], "its own: once each, short, four at most");
+        assert_eq!(q.options[2].aspects, ["글꼴", "색", "모양"]);
+        for is_pm in [true, false] {
+            let tools = tools(is_pm);
+            let decide = tools.iter().find(|t| t["name"] == ASK_DECISION).unwrap();
+            let item = &decide["inputSchema"]["properties"]["questions"]["items"];
+            assert_eq!(item["properties"]["options"]["items"]["properties"]["aspects"]["type"], "array");
+            assert_eq!(item["properties"]["aspects"]["maxItems"], 4);
+            let doc = decide["description"].as_str().unwrap();
+            assert!(doc.contains("`aspects`") && doc.contains("a mix") && doc.contains("another round"), "{doc}");
         }
     }
 

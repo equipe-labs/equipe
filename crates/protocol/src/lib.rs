@@ -2600,7 +2600,7 @@ mod tests {
 
     #[test]
     fn questions_are_asked_answered_and_closed_as_json_and_older_snapshots_have_none() {
-        let answers = vec![decide::Answer { picked: vec![0], other: None }, decide::Answer::skipped()];
+        let answers = vec![decide::Answer::pick(0), decide::Answer::skipped()];
         let cmd = Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: answers.clone(), about: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "answer_questions", "squad": "acme", "id": 7, "answers": [{ "picked": [0] }, {}] }));
         let dismiss = Command::DismissQuestions { squad: "acme".into(), id: 7 };

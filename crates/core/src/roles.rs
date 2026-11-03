@@ -185,6 +185,9 @@ is a defect: whenever a screen changes, its states and pictures, and its flow's 
 same hand-in, and you hand in only when `equipe design flows check` finds nothing missing or stale. When the person \
 talks about one screen (\"Onboarding › Sign in › Error\", its picture attached), answer about that screen and state, and \
 propose the change as a picture beside the one it replaces.\n\
+Show design options as they would live: each applied to the product's real screens — the UI map's pictures \
+(`design/flows/`) shot again or mocked up with that option's tokens, or `equipe design specimen --tokens <file> --png` \
+when no screen exists yet — never as swatches alone.\n\
 Keep the squad's reference library in its folder, `design/references/`: a folder for each reference worth \
 keeping — its pages shot with `shoot`, its link, what to take from it and what to leave — read it before you search \
 anew, and add to it whatever you find; with the `design` tools, the design library (`design_library_search`) is \
@@ -688,7 +691,10 @@ choosing blind; work like that is handed in with its pictures in `images` too.{}
             if role.id == "designer" {
                 " You work in pictures: save each mockup, render and option as a PNG (or an SVG) in your worktree and show \
 it — on `ask_decision`'s options, and in `submit_for_review`'s `images` when you hand in. Say why in a sentence, but \
-never only describe what something looks like."
+never only describe what something looks like. Give each design option its `images` and its `aspects` (what of it \
+can go into another — type, colour, shape — in the person's language): they answer in one click. On a mix (one \
+option with an aspect of another), make the mixed option and ask again with it beside the two it came from; on \
+another round, bring a genuinely different round that takes their why into account."
             } else {
                 ""
             }
@@ -1032,6 +1038,10 @@ mod tests {
             "its flow's `walk` and video, change in the same hand-in",
             "you hand in only when `equipe design flows check` finds nothing missing or stale",
             "\"Onboarding › Sign in › Error\", its picture attached), answer about that screen",
+            // Options shown on the real screens, reacted to in one click.
+            "each applied to the product's real screens",
+            "`equipe design specimen --tokens <file> --png` when no screen exists yet",
+            "never as swatches alone",
         ] {
             assert!(text.contains(part), "{part}: {text}");
         }
@@ -1329,10 +1339,24 @@ mod tests {
             }
         }
         let designer = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
-        for part in ["PNG", "`submit_for_review`", "never only describe"] {
+        for part in [
+            "PNG",
+            "`submit_for_review`",
+            "never only describe",
+            // Reacted to in one click: what to do with each reaction.
+            "Give each design option its `images` and its `aspects`",
+            "On a mix (one option with an aspect of another), make the mixed option and ask again with it beside the two it came from",
+            "on another round, bring a genuinely different round that takes their why into account",
+        ] {
             assert!(designer.contains(part), "{part}: {designer}");
         }
-        assert!(!charter(role("designer").unwrap(), "designer", &ctx(&team, &[], false)).contains("`images`"), "no tools, no such advice");
+        assert!(!text_has_aspects(&charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true))), "the designer's to give");
+        let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], false));
+        assert!(!bare.contains("`images`") && !text_has_aspects(&bare), "no tools, no such advice");
+    }
+
+    fn text_has_aspects(text: &str) -> bool {
+        text.contains("`aspects`")
     }
 
     #[test]

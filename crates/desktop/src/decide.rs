@@ -3,12 +3,15 @@
 //! set shows where, where the person is in it (the step, the row the keys are
 //! on, what is picked, what was skipped), what each key does, and the
 //! answers it sends. Then, in the conversation, the message those answers
-//! went in, read back as "decided". No UI types here, so the rules are
-//! tested without a window.
+//! went in, read back as "decided". A design choice's options are reacted to
+//! in one click — this one, this one with an aspect of another (its mix
+//! menu), another round — each sent at once. No UI types here, so the rules
+//! are tested without a window.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use equipe_core::protocol::decide::{self, Answer, Question, QuestionSet};
+use equipe_core::protocol::decide::{self, Answer, Question, QuestionSet, Reaction};
+use equipe_core::t;
 
 // ── the sets waiting ──
 
@@ -97,6 +100,8 @@ pub struct Draft {
     pub went: i8,
     /// Folded to its one line (Esc); the composer has the keys again.
     pub collapsed: bool,
+    /// A design choice reacted to beyond a pick — a mix, another round — by question.
+    pub reactions: BTreeMap<usize, Reaction>,
 }
 
 /// A key the card takes while it has them.
@@ -168,6 +173,7 @@ impl Draft {
         if self.picks.len() < set.questions.len() {
             self.picks.resize(set.questions.len(), BTreeSet::new());
         }
+        self.reactions.remove(&self.step);
         let picks = &mut self.picks[self.step];
         if multi {
             if !picks.remove(&n) {
@@ -185,7 +191,44 @@ impl Draft {
     /// Whether the question on show has an answer: a pick, or words of
     /// their own (`others`, by question).
     pub fn answered(&self, others: &[String]) -> bool {
-        self.picks.get(self.step).is_some_and(|p| !p.is_empty()) || others.get(self.step).is_some_and(|o| !o.trim().is_empty())
+        self.reactions.contains_key(&self.step) || self.picks.get(self.step).is_some_and(|p| !p.is_empty()) || others.get(self.step).is_some_and(|o| !o.trim().is_empty())
+    }
+
+    /// "This one": option `n` of a design choice, and on at once — the
+    /// answers to send, from the last question. `None` too when there is
+    /// no such option (then nothing moved).
+    pub fn take(&mut self, set: &QuestionSet, n: usize, others: &[String]) -> Option<Vec<Answer>> {
+        if !self.question(set).is_some_and(reacts) || !self.pick(set, n) {
+            return None;
+        }
+        self.skipped.remove(&self.step);
+        self.on(set, others)
+    }
+
+    /// Option `base` with option `from`'s `aspect` — one its mix menu
+    /// offers — and on at once.
+    pub fn mix(&mut self, set: &QuestionSet, base: usize, from: usize, aspect: &str, others: &[String]) -> Option<Vec<Answer>> {
+        let q = self.question(set)?;
+        if !reacts(q) || !mix_menu(q, base).iter().any(|m| m.from == from && m.aspect == aspect) || !self.pick(set, base) {
+            return None;
+        }
+        self.reactions.insert(self.step, Reaction::Mix { base, from, aspect: aspect.to_owned() });
+        self.skipped.remove(&self.step);
+        self.on(set, others)
+    }
+
+    /// "Again": none of these, another round — their words in the box as
+    /// why — and on at once.
+    pub fn again(&mut self, set: &QuestionSet, others: &[String]) -> Option<Vec<Answer>> {
+        if !self.question(set).is_some_and(reacts) {
+            return None;
+        }
+        if let Some(picks) = self.picks.get_mut(self.step) {
+            picks.clear();
+        }
+        self.reactions.insert(self.step, Reaction::Again);
+        self.skipped.remove(&self.step);
+        self.on(set, others)
     }
 
     /// On to the next question — or, from the last, the answers to send.
@@ -235,7 +278,11 @@ impl Draft {
                 }
                 let picked = self.picks.get(n).map(|p| p.iter().copied().collect()).unwrap_or_default();
                 let other = others.get(n).map(|o| o.trim().to_owned()).filter(|o| !o.is_empty());
-                Answer { picked, other }
+                match self.reactions.get(&n) {
+                    Some(Reaction::Mix { base, from, aspect }) => Answer { other, ..Answer::mix(*base, *from, aspect.clone()) },
+                    Some(Reaction::Again) => Answer::again(other),
+                    None => Answer { picked, other, reaction: None },
+                }
             })
             .collect()
     }
@@ -337,6 +384,54 @@ pub fn key_of(key: &str, cmd: bool, shift: bool) -> Option<Key> {
     }
 }
 
+// ── a design choice, reacted to ──
+
+/// Whether a question's options are reacted to in one click: a choice made
+/// by looking (its options pictures), one pick of several.
+pub fn reacts(q: &Question) -> bool {
+    q.is_visual() && !q.multi_select && q.options.len() > 1
+}
+
+/// One line of an option's mix menu: what goes into it, from which option.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MixItem {
+    pub from: usize,
+    pub aspect: String,
+    /// "A에 B의 글꼴".
+    pub label: String,
+}
+
+/// Option `base`'s mix menu: every other option's aspects, in order — none
+/// when nothing names any.
+pub fn mix_menu(q: &Question, base: usize) -> Vec<MixItem> {
+    let Some(taker) = q.options.get(base) else { return Vec::new() };
+    q.options
+        .iter()
+        .enumerate()
+        .filter(|(from, _)| *from != base)
+        .flat_map(|(from, giver)| {
+            giver.aspects.iter().map(move |aspect| MixItem { from, aspect: aspect.clone(), label: mix_label(&taker.label, &giver.label, aspect) })
+        })
+        .collect()
+}
+
+/// "A에 B의 글꼴": the labels without their "(추천)".
+pub fn mix_label(base: &str, from: &str, aspect: &str) -> String {
+    let (base, _) = crate::visuals::recommended(base);
+    let (from, _) = crate::visuals::recommended(from);
+    t!("decide.design_mix_item", base = base, from = from, aspect = aspect)
+}
+
+/// What a question was answered with, as the conversation shows it: a mix
+/// as "A에 B의 글꼴", another round as such (why beside it, as a note).
+pub fn answer_text(read: &decide::Read) -> String {
+    match &read.mix {
+        Some(mix) => mix_label(&mix.base, &mix.from, &mix.aspect),
+        None if read.again => t!("decide.design_again_said").to_owned(),
+        None => read.answer.clone(),
+    }
+}
+
 // ── read back in the conversation ──
 
 /// The person's answers, as their message to the member shows in the
@@ -409,7 +504,7 @@ mod tests {
         d.key(&s, Key::Space, &none, false);
         assert_eq!(d.picks[1].iter().copied().collect::<Vec<_>>(), [1, 2]);
         let sent = d.key(&s, Key::Next, &none, false);
-        assert_eq!(sent, Effect::Send(vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![1, 2], other: None }]));
+        assert_eq!(sent, Effect::Send(vec![Answer { picked: vec![0], ..Default::default() }, Answer { picked: vec![1, 2], ..Default::default() }]));
     }
 
     #[test]
@@ -421,7 +516,7 @@ mod tests {
         assert_eq!(d.key(&s, Key::Enter, &others(1), false), Effect::FocusOther, "⏎ goes to the box");
         assert_eq!(d.key(&s, Key::Pick(0), &others(1), false), Effect::Nothing, "nothing to pick");
         let typed = vec!["+82 10-1234-5678".to_owned()];
-        assert_eq!(d.key(&s, Key::Next, &typed, true), Effect::Send(vec![Answer { picked: vec![], other: Some("+82 10-1234-5678".into()) }]));
+        assert_eq!(d.key(&s, Key::Next, &typed, true), Effect::Send(vec![Answer { picked: vec![], other: Some("+82 10-1234-5678".into()), ..Default::default() }]));
     }
 
     #[test]
@@ -455,7 +550,7 @@ mod tests {
         assert_eq!(d.key(&s, Key::Esc, &both, true), Effect::LeaveOther, "Esc in the box gives the keys back");
         assert_eq!(
             d.key(&s, Key::Next, &both, false),
-            Effect::Send(vec![Answer { picked: vec![], other: Some("MariaDB, we run one".into()) }, Answer { picked: vec![0], other: Some("SSO later".into()) }])
+            Effect::Send(vec![Answer { picked: vec![], other: Some("MariaDB, we run one".into()), ..Default::default() }, Answer { picked: vec![0], other: Some("SSO later".into()), ..Default::default() }])
         );
     }
 
@@ -478,6 +573,95 @@ mod tests {
         assert_eq!(d.key(&s, Key::Esc, &none, false), Effect::Collapse);
         assert!(d.collapsed);
         assert_eq!(d.key(&s, Key::Pick(0), &none, false), Effect::Nothing, "folded: the keys are the composer's");
+    }
+
+    /// The designer's question: three screens, each naming what it can give.
+    fn design() -> QuestionSet {
+        let option = |label: &str, aspects: &[&str]| Choice { label: label.into(), images: vec![format!("/w/{label}.png")], aspects: aspects.iter().map(|a| (*a).into()).collect(), ..Choice::default() };
+        let mut s = set();
+        s.member = "designer".into();
+        s.questions = vec![
+            Question { question: "Which direction?".into(), options: vec![option("Calm (Recommended)", &["type", "colour"]), option("Bold", &["type", "colour"]), option("Warm", &["shape"])], ..Question::default() },
+            Question { question: "Which home?".into(), options: vec![option("Cards", &[]), option("List", &[])], ..Question::default() },
+        ];
+        s
+    }
+
+    #[test]
+    fn a_design_choice_reacts_in_one_click_and_a_plain_one_does_not() {
+        let s = design();
+        assert!(reacts(&s.questions[0]) && reacts(&s.questions[1]));
+        assert!(!reacts(&set().questions[0]), "words alone: the keys and Next as before");
+        let mut several = s.questions[0].clone();
+        several.multi_select = true;
+        assert!(!reacts(&several), "several picks are ticked, then sent");
+        // A plain question takes none of it.
+        let plain = set();
+        let mut d = Draft::new(&plain);
+        assert_eq!(d.take(&plain, 0, &others(2)), None);
+        assert_eq!((d.step, d.picked(0)), (0, false));
+    }
+
+    #[test]
+    fn this_one_picks_and_goes_on_at_once_and_sends_from_the_last() {
+        let s = design();
+        let mut d = Draft::new(&s);
+        let none = others(2);
+        assert_eq!(d.take(&s, 7, &none), None, "no such option");
+        assert_eq!(d.step, 0);
+        assert_eq!(d.take(&s, 1, &none), None, "on to the next question");
+        assert_eq!(d.step, 1);
+        let sent = d.take(&s, 0, &["".into(), " cards, but airy ".into()]);
+        assert_eq!(sent, Some(vec![Answer::pick(1), Answer { picked: vec![0], other: Some("cards, but airy".into()), ..Answer::default() }]), "their words go with it");
+    }
+
+    #[test]
+    fn the_mix_menu_offers_every_other_options_aspects_and_a_mix_is_sent() {
+        let s = design();
+        let menu = mix_menu(&s.questions[0], 0);
+        assert_eq!(menu.iter().map(|m| (m.from, m.aspect.as_str())).collect::<Vec<_>>(), [(1, "type"), (1, "colour"), (2, "shape")]);
+        for m in &menu {
+            assert!(m.label.contains("Calm") && !m.label.contains("Recommended") && m.label.contains(&m.aspect), "{}", m.label);
+        }
+        assert!(menu[0].label.contains("Bold") && menu[2].label.contains("Warm"));
+        assert!(mix_menu(&s.questions[1], 0).is_empty(), "nothing named: no menu");
+        assert!(mix_menu(&s.questions[0], 9).is_empty());
+        let mut d = Draft::new(&s);
+        let none = others(2);
+        assert_eq!(d.mix(&s, 0, 2, "type", &none), None, "Warm has no type to give");
+        assert_eq!(d.step, 0);
+        assert_eq!(d.mix(&s, 0, 0, "type", &none), None, "not with itself");
+        assert_eq!(d.mix(&s, 0, 2, "shape", &none), None);
+        assert_eq!(d.step, 1, "mixed: on at once");
+        let sent = d.take(&s, 1, &none).unwrap();
+        assert_eq!(sent, [Answer::mix(0, 2, "shape"), Answer::pick(1)]);
+        // Back, and a plain pick: the mix is gone.
+        let mut d = Draft::new(&s);
+        d.mix(&s, 1, 0, "colour", &none);
+        d.back();
+        d.pick(&s, 2);
+        assert_eq!(d.answers(&s, &none)[0], Answer::pick(2));
+    }
+
+    #[test]
+    fn again_asks_for_another_round_with_the_box_as_why() {
+        let s = design();
+        let mut d = Draft::new(&s);
+        d.pick(&s, 0);
+        assert_eq!(d.again(&s, &others(2)), None);
+        assert_eq!(d.step, 1);
+        let why = vec!["  너무 차가워요 ".to_owned(), String::new()];
+        let sent = d.again(&s, &why).unwrap();
+        assert_eq!(sent, [Answer::again(Some("너무 차가워요".into())), Answer::again(None)], "nothing picked; why when they said");
+        // The answers read back as what they were.
+        let message = decide::answer_message(&s, &sent);
+        let Some(Decided::Answered(read)) = decided(&message) else { panic!("{message}") };
+        assert!(read[0].again && read[0].note.as_deref() == Some("너무 차가워요"));
+        assert_eq!(answer_text(&read[1]), t!("decide.design_again_said"));
+        let message = decide::answer_message(&s, &[Answer::mix(0, 1, "type"), Answer::pick(0)]);
+        let Some(Decided::Answered(read)) = decided(&message) else { panic!("{message}") };
+        assert_eq!(answer_text(&read[0]), mix_label("Calm (Recommended)", "Bold", "type"));
+        assert_eq!(answer_text(&read[1]), "Cards");
     }
 
     #[test]
@@ -516,7 +700,7 @@ mod tests {
     #[test]
     fn the_answers_message_reads_back_as_decided() {
         let s = set();
-        let message = decide::answer_message(&s, &[Answer { picked: vec![0], other: None }, Answer::skipped()]);
+        let message = decide::answer_message(&s, &[Answer { picked: vec![0], ..Default::default() }, Answer::skipped()]);
         let Some(Decided::Answered(read)) = decided(&message) else { panic!("{message}") };
         assert_eq!(read.len(), 2);
         assert_eq!(read[0].answer, "Postgres (Recommended)");

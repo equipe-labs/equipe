@@ -46,7 +46,9 @@
 //! member as the person's message and it replies. `FAKE_DECIDE=logo` puts
 //! the designer's logo question first, each option its picture, and has the
 //! designer's brand guide (T-144) handed in with its pictures
-//! (`fake_daemon/pictures.rs`).
+//! (`fake_daemon/pictures.rs`); `FAKE_DECIDE=brand` puts the designer's three
+//! brand directions first instead, each on the product's home screen, with
+//! the aspects the person can mix.
 //!
 //! `FAKE_REPLY_IMAGES=1`: the PM's last reply shows the designer's drafts
 //! for T-2 — three pictures it embeds and the folder they are in — from "the
@@ -1070,7 +1072,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             tokio::spawn(async move {
                                 let after = std::env::var("FAKE_DECIDE_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
                                 tokio::time::sleep(Duration::from_millis(after)).await;
-                                close_questions(9001, Some(vec![Answer { picked: vec![1], other: None }, Answer { picked: vec![0, 2], other: Some("설정은 알림만".into()) }]), &events);
+                                close_questions(9001, Some(vec![Answer { picked: vec![1], ..Default::default() }, Answer { picked: vec![0, 2], other: Some("설정은 알림만".into()), ..Default::default() }]), &events);
                             });
                         }
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
