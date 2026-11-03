@@ -1316,6 +1316,7 @@
   "project.gone": "這個專案已不在小隊中",
   "project.menu_tip": "專案選單",
   "project.new_talk": "新對話",
+  "project.release": "最新發布 {tag} · {ago}",
   "project.reopen_tip": "重新開啟 — 從停下的地方繼續",
   "project.tab_talks": "對話",
   "project.tab_work": "工作",

@@ -26,7 +26,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let names = model.project_names();
     let at = names.iter().position(|n| *n == name);
     let hq = model.is_hq(&name);
-    let folder = model.projects.iter().find(|path| equipe_core::board::project_name(path) == name).map(|path| super::settings::short_path(path));
+    let path = model.projects.iter().find(|path| equipe_core::board::project_name(path) == name);
+    let folder = path.map(|path| super::settings::short_path(path));
+    let release = path.and_then(|path| crate::releases::release_of(&shell.releases, path)).cloned();
     let ident = match at {
         Some(_) if hq => super::sidebar::icon(IconName::Building2, 15., p.text2).into_any_element(),
         Some(_) => crate::theme::project_mark(p, 15.),
@@ -46,6 +48,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .child(div().flex_none().max_w(px(280.)).truncate().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(name.clone()))
         .when(hq, |h| h.child(super::sidebar::hq_badge(p)))
         .children(folder.map(|f| div().min_w_0().flex_shrink(1.).truncate().text_size(px(SMALL)).text_color(p.muted).child(f)))
+        // Its latest release: its newest tag, and how long ago.
+        .children(release.map(|r| div().flex_none().text_size(px(SMALL)).text_color(p.muted).child(format!("· {}", t!("project.release", tag = r.tag, ago = crate::activity::ago(model.unix.saturating_sub(r.at)))))))
         .child(div().flex_1())
         .when(at.is_some(), |h| {
             h.child(ui::button(p, "project-new-talk", ui::Kind::Primary, t!("project.new_talk")).icon(Icon::Plus).on_click(cx.listener(move |this, _, window, cx| this.start_conversation(Some(new_in.clone()), window, cx))))
@@ -295,7 +299,32 @@ fn ticket_row(shell: &Shell, id: TicketId, hot: bool, cx: &mut Context<Shell>) -
         .into_any_element()
 }
 
+/// How long the releases found stay fresh before a page asks again.
+const RELEASES_FRESH: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 impl Shell {
+    /// Each project's newest tag, asked again when it's been a while.
+    fn ask_releases(&mut self, cx: &mut Context<Self>) {
+        if self.releases_asked.is_some_and(|at| at.elapsed() < RELEASES_FRESH) {
+            return;
+        }
+        self.releases_asked = Some(std::time::Instant::now());
+        let (endpoint, projects) = (self.endpoint.clone(), self.model.projects.clone());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::releases::releases(&endpoint, &projects));
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(found)) = rx.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.releases = found;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     /// A project's page, from its name in the sidebar (or ⌃1–⌃9, 현황).
     pub fn open_project_page(&mut self, name: String, _window: &mut Window, cx: &mut Context<Self>) {
         // Another project: its conversations first — its work when it has none.
@@ -304,6 +333,7 @@ impl Shell {
             self.board.project_tab = if yours.is_empty() && answering.is_empty() && !project_work(&self.model, &name).is_empty() { ProjectTab::Work } else { ProjectTab::Talks };
         }
         self.board.project_page = Some(name);
+        self.ask_releases(cx);
         self.show(Screen::Project, cx);
         cx.notify();
     }

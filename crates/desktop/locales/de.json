@@ -1355,6 +1355,7 @@
   "project.gone": "Dieses Projekt gehört nicht mehr zum Squad",
   "project.menu_tip": "Projektmenü",
   "project.new_talk": "Neues Gespräch",
+  "project.release": "Letztes Release {tag} · {ago}",
   "project.reopen_tip": "Wieder öffnen — dort weitermachen, wo es aufhörte",
   "project.tab_talks": "Gespräche",
   "project.tab_work": "Arbeit",

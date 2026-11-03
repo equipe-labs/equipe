@@ -33,8 +33,10 @@ pub fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         div().h(px(2.)).w(px(if here { LONG } else { SHORT })).rounded_full().bg(if here { p.text } else { p.muted.opacity(0.6) })
     });
     let list = open.then(|| {
-        let rows = all.iter().enumerate().map(|(i, chapter)| entry(shell, i, chapter, Some(i) == current, cx));
-        motion::fade(
+        let rows: Vec<AnyElement> = all.iter().enumerate().map(|(i, chapter)| entry(shell, i, chapter, Some(i) == current, cx)).collect();
+        // Drawn over everything (never cut by the conversation's edge); it
+        // covers the bars, so it — not they — says when the pointer left.
+        deferred(motion::fade(
             v_flex()
                 .id("chapter-list")
                 .absolute()
@@ -53,10 +55,21 @@ pub fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .occlude()
                 .role(Role::List)
                 .aria_label(t!("chat.chapters"))
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if !*hovered && this.chat.rail_open {
+                        this.chat.rail_open = false;
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.chat.rail_open = false;
+                    cx.notify();
+                }))
                 .children(rows),
             "chapter-list-in",
             motion::FAST,
-        )
+        ))
+        .with_priority(1)
     });
     Some(
         div()
@@ -64,13 +77,14 @@ pub fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .absolute()
             .top(px(24.))
             .left(px(8.))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if this.chat.rail_open != *hovered {
-                    this.chat.rail_open = *hovered;
-                    cx.notify();
-                }
-            }))
-            .child(v_flex().id("chapter-bars").py_1().gap(px(9.)).cursor_pointer().role(Role::Button).aria_label(t!("chat.chapters")).aria_expanded(open).children(bars))
+            .child(v_flex().id("chapter-bars")
+                // The pointer on the bars opens the list; the list, once open, closes itself.
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if *hovered && !this.chat.rail_open {
+                        this.chat.rail_open = true;
+                        cx.notify();
+                    }
+                })).py_1().gap(px(9.)).cursor_pointer().role(Role::Button).aria_label(t!("chat.chapters")).aria_expanded(open).children(bars))
             .children(list)
             .into_any_element(),
     )

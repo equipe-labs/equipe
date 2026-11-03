@@ -67,6 +67,7 @@ use relaunch::DaemonUpdate;
 mod metrics;
 mod roadmap;
 mod sent;
+mod releases;
 mod render;
 mod settings;
 #[cfg(target_os = "macos")]
@@ -224,6 +225,9 @@ pub struct Shell {
     pub design: design::DesignUi,
     /// The routines' list on 진행 상황: which is being edited or deleted.
     pub routines_ui: views::routines::RoutinesUi,
+    /// Each project's newest tag, as last found, and when it was asked.
+    pub releases: Vec<(std::path::PathBuf, releases::Release)>,
+    pub releases_asked: Option<std::time::Instant>,
     /// 지표's state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
     pub metrics_ui: views::metrics::Inputs,
@@ -379,6 +383,8 @@ impl Shell {
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
             routines_ui: Default::default(),
+            releases: Vec::new(),
+            releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
             browser,

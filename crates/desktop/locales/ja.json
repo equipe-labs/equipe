@@ -1316,6 +1316,7 @@
   "project.gone": "このプロジェクトはスクワッドから外れました",
   "project.menu_tip": "プロジェクトメニュー",
   "project.new_talk": "新しい会話",
+  "project.release": "最新リリース {tag} · {ago}",
   "project.reopen_tip": "もう一度開く — 止めたところから続けます",
   "project.tab_talks": "会話",
   "project.tab_work": "作業",
