@@ -432,13 +432,19 @@ mod tests {
         }
     }
 
-    /// The main button is calm in the dark: no lighter than the text it
-    /// carries is dark, and nowhere near the white slab it was.
+    /// The main button is the text colour inverted, in both appearances: no
+    /// hue of its own (a deep slate read as a button switched off, and took
+    /// colour from what waits on the person), plainly apart from the cards.
     #[test]
-    fn the_dark_primary_is_a_fill_not_a_slab() {
-        let p = Palette::new(WindowAppearance::Dark);
-        assert!(contrast(p.primary, p.bg) < 3., "the main button glares: {:.2}", contrast(p.primary, p.bg));
-        assert!(contrast(p.primary, p.raised) > 1.3, "the main button vanishes into the card");
+    fn the_main_button_carries_no_hue() {
+        for p in [Palette::new(WindowAppearance::Dark), Palette::new(WindowAppearance::Light)] {
+            // The brand's warm neutral at most: its channels a few steps apart.
+            let c = p.primary;
+            let spread = c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b);
+            assert!(spread <= 12. / 255., "the main button has a hue: {c:?}");
+            assert!(contrast(p.primary, p.raised) >= 3., "the main button sinks into the card: {:.2}", contrast(p.primary, p.raised));
+            assert!(contrast(p.on_primary, p.primary) >= 4.5);
+        }
     }
 
     /// The knob reads on the track when on (3:1, a control's part), and the
