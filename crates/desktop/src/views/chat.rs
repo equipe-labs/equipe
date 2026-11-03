@@ -810,6 +810,8 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // Our own pill, not the kit's jump button: the kit's put a tooltip with the
     // same word on it, in its own white, over the conversation.
     let jump = (!following).then(|| jump_pill(p, shell.chat.scroller.clone()));
+    // The rows' room at each side: wider while the chapter rail shows in it.
+    let side = if super::chapters::shows(&shell.chat.blocks) { super::chapters::GUTTER.max(16. + TEXT_INSET) } else { 16. + TEXT_INSET };
     // Words selected in it are offered to quote (`views/quote.rs`).
     let scroller = div()
         .flex_1()
@@ -842,7 +844,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             h_flex().w_full().justify_center().child(div().flex_1().min_w_0().max_w(px(COLUMN - 32. - 2. * TEXT_INSET)).child(row(&rows, ix, window, cx))).into_any_element()
         })
             .jump_button(false)
-            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(16. + TEXT_INSET)).pr(px(16. + TEXT_INSET)))
+            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(side)).pr(px(side)))
             // Room under the last line, so it never sits on the composer's
             // edge; read back, the rows fade out there under the jump pill.
             .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
