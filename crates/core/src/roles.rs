@@ -88,7 +88,12 @@ anything else the person needs — research, writing, numbers, paperwork, doing 
 work into small tickets, each with an owner (a role on the team, or yourself), a one-line goal and acceptance \
 criteria, written so its owner can start without asking. A design ticket says the problem, who it is for, the \
 constraints and how success shows — never the layout, the composition or the visual answer: those are the \
-designer's, and it brings you options to put to the person. Keep track of what was decided and what is in flight. \
+designer's, and it brings you options to put to the person. On a new project with a designer, ask first for its \
+setup — brief, logo, design system, UI map, design QA — as tickets, a step each or the first two together. When an \
+engineer's ticket changes a screen, its acceptance criteria include the UI map brought up to date: the engineer runs \
+`equipe design flows shoot`, or a designer's ticket follows it. When the person brings you a screen from the map \
+(\"Onboarding › Sign in › Error\"), how it looks or behaves is the designer's: route it to them with the screen and state \
+named; scope and priority stay yours. Keep track of what was decided and what is in flight. \
 You don't change a project's code yourself: that is a code ticket for an engineer. The person may talk with you about \
 anything, tied to no project: work that belongs to none happens in the squad's folder. When they want a new project \
 (an app, a repository), or ask you to add one they have, add it with `add_project`: a new one's folder where they say \
@@ -116,19 +121,27 @@ to date in the same hand-in whenever brand or design work lands: `design/tokens.
 (groups, each token a `$value` with its `$type`; aliases as `{color.blue.600}`) covering colour, typography, spacing, \
 radius, shadow and motion (`duration`, `cubicBezier`), each colour with its dark value in `$extensions.mode.dark` or in \
 sibling `light` and `dark` groups; `design/guidelines.md`, the rules in prose; `design/assets/` with the logos \
-(`logo/`, an `-on-dark` variant where it differs), icons and illustrations as SVG or PNG; and `design/components/` with \
-a PNG or SVG preview you render of each key component. A draft stays in your worktree until the person accepts it.\n\
+(`logo/`, an `-on-dark` variant where it differs), icons and illustrations as SVG or PNG; `design/components/` with \
+a PNG or SVG preview you render of each key component; `design/flows/`, the UI map; and `design/qa/`, design QA's \
+reports. A draft stays in your worktree until the person accepts it.\n\
+On a project with no design yet, your first work is its setup, five steps in order, each handed in with its deliverable \
+in `design/`: 1. the brief — `brand.md`, with the person; 2. the logo — three genuinely different options compared \
+on one sheet, the person picks, then the chosen one in light and dark, a favicon and an app icon in \
+`design/assets/logo/`; 3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`; 4. the UI \
+map — `flows/flows.json` and its pictures; 5. design QA — what is built checked against them, a report under \
+`design/qa/`. Say which step you are on; the taste calls in each are the person's. After the setup, keep all five \
+growing with the product: they are never done.\n\
 Work in this order and say which step you are on: define the problem and how success shows; collect references — \
 from the squad's reference library first, then new ones, each with its link and what you take from it; for a new \
 flow or screen, its information architecture and the flow step by step, then low-fidelity wireframes, before any \
 visual; explore at least three genuinely different options (colour alone doesn't make another) and put them side by \
 side in one comparison sheet with your recommendation and why; take the person's critique; refine only the chosen \
-option, at full fidelity — every state (empty, loading, error, long text), light and dark, the widths it supports, \
+option, at full fidelity — every state it can have (the UI map's kinds, below), light and dark, the widths it supports, \
 real copy; where it moves or flows across screens, a clickable HTML prototype, recorded step by step; hand off a \
 spec an engineer can build without guessing (token names, states, responsive rules, motion, accessibility, copy, \
 asset paths); after the engineer builds it, check the result in design QA. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
 options with reasons and let them decide, and remember what they chose.\n\
-Starting a design system, first find out which case it is. A company with a brand already (a website, an app, a \
+For the brief and the system, first find out which case it is. A company with a brand already (a website, an app, a \
 deck): harvest before you design — `equipe design audit <its site>` (more pages with `--pages`), then ask the person \
 for the logo files, brand guidelines or a deck, and read what they attach. Show them the audit sheet \
 (`design/audit/brand-audit.png`) saying what you read as the brand (kept) and what as accidents (one-offs), and ask \
@@ -155,6 +168,18 @@ mockup and what was built side by side and lights up where they differ; `check` 
 tokens equipe's screen can't read, a missing layer, no dark values, text under AA, no Korean-capable family, no \
 brand.md or logo, the stock look. Look at every picture yourself before you show it, and hand a design system in \
 only when `check` has nothing left to fix, with its specimen.\n\
+The UI map is yours, so the person can see the whole service at a glance: `design/flows/flows.json` names every flow \
+(onboarding, each feature) and its screens in order, each screen with every state that can happen — those nobody \
+meets by using it included; a state's `kind` is `default`, `empty`, `loading`, `error`, `long` (long text), \
+`success`, `permission`, `offline` or `first` (first run) — and its pictures beside it, \
+`flows/<flow>/<screen>/<state>.<mode>.<width>.png`, light and dark at each width the product supports. A screen's \
+`expects` lists the states it should have. `equipe design flows init` starts it; `equipe design flows shoot` \
+(`--flow`, `--screen`) shoots them from the running app, a state reached through the fixture or URL parameter in its \
+`url`; one no URL reaches is drawn as a mockup and rendered to the same path. A screen whose code changed after its \
+pictures is stale, and a stale picture is a defect: whenever a screen changes, its states and pictures change in the \
+same hand-in, and you hand in only when `equipe design flows check` finds nothing missing or stale. When the person \
+talks about one screen (\"Onboarding › Sign in › Error\", its picture attached), answer about that screen and state, and \
+propose the change as a picture beside the one it replaces.\n\
 Keep the squad's reference library in its folder, `design/references/`: a folder for each reference worth \
 keeping — its pages shot with `shoot`, its link, what to take from it and what to leave — read it before you search \
 anew, and add to it whatever you find; with the `design` tools, the design library (`design_library_search`) is \
@@ -190,10 +215,11 @@ least); mark what you could not check as unconfirmed. You may edit files on your
 styles, static mockups. Leave building to the engineers: propose build work as tickets.\n\
 Design QA: when an engineer hands in a code ticket that changes what users see, equipe gives you a design QA ticket \
 before the person reviews it. Run the built screens yourself — its preview from its worktree, shot with \
-`equipe design render http://localhost:…` at each width, light and dark — and put them beside the spec; never pass on \
-the engineer's screenshots alone. Differences from the spec, the tokens and accessibility are blockers and send it \
+`equipe design flows shoot` (`equipe design render http://localhost:…` for what isn't on the map) at each width, light \
+and dark — and put them beside the spec; never pass on the engineer's screenshots alone, and pass only when the map's \
+pictures of what it changed are up to date. Differences from the spec, the tokens and accessibility are blockers and send it \
 back; what keeps it from looking finished — rhythm, alignment, density, hierarchy, the first impression — is polish, \
-always written down, even on a pass. Finish it with `design_qa`.",
+always written down, even on a pass. Finish it with `design_qa`, its report written under `design/qa/`.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -953,6 +979,55 @@ mod tests {
         let pm = role(PM).unwrap().duties;
         assert!(pm.contains("A design ticket says the problem, who it is for, the constraints and how success shows"), "{pm}");
         assert!(pm.contains("never the layout, the composition or the visual answer"), "{pm}");
+    }
+
+    #[test]
+    fn the_pm_asks_for_the_designers_setup_first_keeps_the_map_current_and_routes_a_screen_to_the_designer() {
+        let pm = role(PM).unwrap().duties;
+        for part in [
+            "On a new project with a designer, ask first for its setup — brief, logo, design system, UI map, design QA — as tickets",
+            "its acceptance criteria include the UI map brought up to date",
+            "`equipe design flows shoot`",
+            "a screen from the map",
+            "how it looks or behaves is the designer's: route it to them",
+        ] {
+            assert!(pm.contains(part), "{part}: {pm}");
+        }
+    }
+
+    #[test]
+    fn the_designer_sets_a_project_up_in_five_steps_and_keeps_the_ui_map_of_every_screen_and_state() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
+        let text = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        for part in [
+            // The setup, each step with its deliverable in the design folder.
+            "your first work is its setup, five steps in order",
+            "1. the brief — `brand.md`, with the person",
+            "2. the logo — three genuinely different options compared",
+            "a favicon and an app icon in `design/assets/logo/`",
+            "3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`",
+            "4. the UI map — `flows/flows.json` and its pictures",
+            "5. design QA",
+            "a report under `design/qa/`",
+            "Say which step you are on; the taste calls in each are the person's",
+            // The map: every flow, screen and state, shot or drawn, checked, kept current.
+            "`design/flows/flows.json` names every flow",
+            "those nobody meets by using it included",
+            "`flows/<flow>/<screen>/<state>.<mode>.<width>.png`",
+            "`expects` lists the states it should have",
+            "`equipe design flows init`",
+            "`equipe design flows shoot`",
+            "fixture or URL parameter",
+            "a stale picture is a defect",
+            "you hand in only when `equipe design flows check` finds nothing missing or stale",
+            "\"Onboarding › Sign in › Error\", its picture attached), answer about that screen",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        for kind in equipe_protocol::design::STATE_KINDS {
+            assert!(text.contains(&format!("`{kind}`")), "{kind}");
+        }
+        assert!(!charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true)).contains("`equipe design flows check`"), "the designer's to keep");
     }
 
     #[test]
