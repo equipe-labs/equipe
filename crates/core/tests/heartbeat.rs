@@ -266,3 +266,74 @@ async fn a_marketer_joining_brings_a_weekly_marketing_check_beside_securitys() {
     assert_eq!(handle.snapshot("acme").await.routines.len(), 3);
     handle.shutdown().await;
 }
+
+/// A design folder with its five setup steps done, in `project`.
+fn set_up_design(project: &Path) {
+    let design = project.join("design");
+    for (file, text) in [
+        ("brand.md", "# Brief"),
+        ("assets/logo/mark.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 4 4\"><rect width=\"4\" height=\"4\"/></svg>"),
+        ("tokens.json", "{}"),
+        ("guidelines.md", "# Guidelines"),
+        ("flows/flows.json", r#"{ "flows": [ { "id": "app", "title": "App" } ] }"#),
+        ("qa/2026-11-02/report.md", "# QA"),
+    ] {
+        let path = design.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+}
+
+/// What `to` was told, at once or left for after its turn.
+fn said_to(events: &[Event], to: u64) -> Option<String> {
+    events.iter().find_map(|e| match e {
+        Event::UserMessage { session, text } | Event::MessageQueued { session, text, .. } if *session == to => Some(text.clone()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn a_designer_brings_a_weekly_review_that_waits_for_the_setup_and_comes_to_the_designer() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&busy_claude(), &home));
+    start(&handle, &mut events, 1, "pm", &project).await;
+    start(&handle, &mut events, 2, "designer", &project).await;
+    let routines = handle.snapshot("acme").await.routines;
+    assert_eq!(routines.len(), 2, "{routines:?}");
+    let review = &routines[1];
+    assert_eq!((review.id, review.title.as_str(), review.when, review.on), (2, "디자인 리뷰", Schedule::Weekly { weekday: 1, hour: 10, minute: 0 }, true));
+    assert!(review.next_run.is_some_and(|at| at > now() && at <= now() + 7 * DAY), "{review:?}");
+
+    // No design folder yet: the designer is nudged on with the brief, not reviewed; the PM hears nothing.
+    handle.send(Command::RunRoutine { squad: "acme".into(), id: 2 });
+    let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
+    let nudge = said_to(&seen, 2).expect("the designer is nudged");
+    assert!(nudge.starts_with("[Routine · 디자인 리뷰]") && nudge.contains("브리프") && !nudge.contains("flows check"), "{nudge}");
+    assert_eq!(said_to(&seen, 1), None, "not the PM's");
+    // A decision put now is no review.
+    let asked = |text: &str| json!({ "questions": [{ "question": text, "options": ["A (Recommended)", "B"] }] });
+    tool(&handle, "designer", "ask_decision", asked("Which logo?")).await;
+    let set = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    assert!(set.iter().any(|e| matches!(e, Event::QuestionsAsked { questions, .. } if !questions.review)));
+
+    // Set up: the review itself, with where the folders are; the decision it puts is the review's, once.
+    set_up_design(&project);
+    handle.send(Command::RunRoutine { squad: "acme".into(), id: 2 });
+    let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
+    let handed = said_to(&seen, 2).expect("the review is handed to the designer");
+    assert!(handed.starts_with("[Routine · 디자인 리뷰]") && handed.contains("equipe design flows check"), "{handed}");
+    assert!(handed.contains(&format!("(Design folders: {}.)", project.join("design").display())), "{handed}");
+    tool(&handle, "designer", "ask_decision", asked("Which header?")).await;
+    tool(&handle, "designer", "ask_decision", asked("Which footer?")).await;
+    let sets = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.questions[0].question == "Which footer?")).await;
+    let reviews: Vec<(String, bool)> = sets.iter().filter_map(|e| if let Event::QuestionsAsked { questions, .. } = e { Some((questions.questions[0].question.clone(), questions.review)) } else { None }).collect();
+    assert_eq!(reviews, [("Which header?".to_owned(), true), ("Which footer?".to_owned(), false)]);
+
+    // Deleted, it is no review any more, and a designer joining again brings none.
+    handle.send(Command::DeleteRoutine { squad: "acme".into(), id: 2 });
+    until(&mut events, |e| matches!(e, Event::RoutinesChanged { routines, .. } if routines.len() == 1)).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().design_review_routine(), None);
+    start(&handle, &mut events, 3, "designer", &project).await;
+    assert_eq!(handle.snapshot("acme").await.routines.len(), 1);
+    handle.shutdown().await;
+}

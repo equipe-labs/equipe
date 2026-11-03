@@ -244,6 +244,7 @@ mod tests {
                 Question { question: "Which features first?".into(), header: String::new(), options: options(&["Auth", "Payments", "Search"]), multi_select: true, ..Question::default() },
             ],
             asked_at: 0,
+            review: false,
         }
     }
 

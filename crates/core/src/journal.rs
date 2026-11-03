@@ -738,6 +738,16 @@ impl Journal {
         self.set_meta(&format!("{role}_check_added"), "1")
     }
 
+    /// The designer's weekly review among the routines (`crate::design::review`),
+    /// by its id: added with the designer, gone once the person deletes it.
+    pub fn design_review_routine(&self) -> Option<u32> {
+        self.meta("design_review_routine").and_then(|id| id.parse().ok())
+    }
+
+    pub fn set_design_review_routine(&self, id: Option<u32>) -> Result<()> {
+        self.set_meta("design_review_routine", &id.map(|id| id.to_string()).unwrap_or_default())
+    }
+
     /// When the PM was last woken over an empty board, in unix seconds.
     pub fn idle_woken_at(&self) -> Option<u64> {
         self.meta("idle_woken_at").and_then(|at| at.parse().ok())

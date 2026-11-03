@@ -79,6 +79,13 @@ impl Asked {
     }
 }
 
+/// What a set is called where it waits — 나에게's row, the card's line —
+/// when it is the designer's weekly design review: "주간 디자인 리뷰 · 3가지",
+/// the things the review brings. `None`: any other set, called by its question.
+pub fn review_title(set: &QuestionSet) -> Option<String> {
+    set.review.then(|| equipe_core::t!("decide.design_review", n = equipe_core::design::review::PARTS).to_string())
+}
+
 // ── answering one set ──
 
 /// Where the person is in one set.
@@ -374,7 +381,14 @@ mod tests {
                 Question { question: "Which features first?".into(), header: "Scope".into(), options: options(&["Auth", "Payments", "Search"]), multi_select: true, ..Question::default() },
             ],
             asked_at: 0,
+            review: false,
         }
+    }
+
+    #[test]
+    fn the_designers_weekly_review_is_called_so_where_it_waits() {
+        assert_eq!(review_title(&QuestionSet { review: true, member: "designer".into(), ..set() }).as_deref(), Some("주간 디자인 리뷰 · 3가지"));
+        assert_eq!(review_title(&set()), None, "any other set: by its question");
     }
 
     fn others(n: usize) -> Vec<String> {

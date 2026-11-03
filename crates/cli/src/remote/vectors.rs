@@ -671,6 +671,7 @@ fn questions() -> QuestionSet {
             },
         ],
         asked_at: NOW / 1000,
+        review: false,
     }
 }
 
@@ -696,6 +697,7 @@ fn visual_questions() -> QuestionSet {
             images: Vec::new(),
         }],
         asked_at: NOW / 1000,
+        review: false,
     }
 }
 
