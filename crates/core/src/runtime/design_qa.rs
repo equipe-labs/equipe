@@ -76,7 +76,7 @@ screenshot of each changed screen in your worktree, name them in images, and han
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "equipe".to_owned(),
             note: None,
             asks: Vec::new(),

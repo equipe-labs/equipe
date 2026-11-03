@@ -34,6 +34,7 @@ pub mod language;
 pub mod mcp;
 pub mod metrics;
 pub mod permissions;
+pub mod plan;
 pub mod mock;
 pub mod nemotron;
 pub mod pairing;

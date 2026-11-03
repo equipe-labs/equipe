@@ -304,6 +304,7 @@
   "card.files.other": "{count} files",
   "card.not_found": "Not found",
   "card.open": "Open",
+  "card.plan": "Plan",
   "card.see_changes": "See changes",
   "card.take": "Take",
   "card.unblocks": "Unblocks {list}",

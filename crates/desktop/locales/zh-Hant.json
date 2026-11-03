@@ -300,6 +300,7 @@
   "card.files.other": "{count} 個檔案",
   "card.not_found": "找不到",
   "card.open": "開啟",
+  "card.plan": "計畫",
   "card.see_changes": "查看變更",
   "card.take": "接收",
   "card.unblocks": "完成後解鎖：{list}",

@@ -67,6 +67,7 @@ mod room;
 mod engines;
 mod design;
 mod briefs;
+mod plans;
 mod accept;
 mod secrets;
 mod design_qa;
@@ -810,6 +811,12 @@ enum Internal {
     Design(String, u64, Option<design::Catalog>),
     /// A squad's briefs and plans, read off the loop.
     Docs(String, Vec<equipe_protocol::ProjectDoc>),
+    /// A plan written off the loop (`write_plan`): what follows, and the answer.
+    PlanWritten(Box<plans::Written>),
+    /// A plan read off the loop for a ticket cut from it (`create_ticket` with `plan`).
+    PlanCut(Box<plans::Cut>),
+    /// A ticket listed in its plan, off the loop: why not, if it wasn't.
+    PlanListed(String, Option<String>),
     /// A design system's accepted versions, read off the loop.
     DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
     /// The version the person asked to go back to, looked up off the loop (`None`: not one).
@@ -1029,6 +1036,9 @@ impl Wake {
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
+            Wake::Internal(Internal::PlanWritten(..)) => Borrowed("a plan written"),
+            Wake::Internal(Internal::PlanCut(..)) => Borrowed("a plan read for a ticket"),
+            Wake::Internal(Internal::PlanListed(..)) => Borrowed("a ticket listed in its plan"),
             Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
@@ -1219,6 +1229,9 @@ impl Runtime {
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
                 Internal::Docs(squad, docs) => self.on_docs(squad, docs),
+                Internal::PlanWritten(written) => self.plan_written(*written),
+                Internal::PlanCut(cut) => self.plan_cut(*cut).await,
+                Internal::PlanListed(squad, error) => self.plan_listed(&squad, error),
                 Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
@@ -4183,6 +4196,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
             prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
         }
+        if let Some(plan) = &ticket.plan {
+            let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());
+            // One quick look, beside the worktree this start already made.
+            let main = repo.and_then(|r| worktree::main_branch(r).ok());
+            prompt.push_str(&crate::plan::work_note(plan, repo.zip(main.as_deref())));
+        }
         if sandbox.is_some() && !after.is_empty() && fresh {
             let ids: Vec<&str> = after.iter().map(|(what, _)| what.as_str()).collect();
             prompt.push_str(&format!(
@@ -5029,6 +5048,13 @@ there, end your turn, and carry on when they say they're done."
         // A brief, committed off the loop: answered once it is in.
         if call.name == crate::briefs::WRITE_BRIEF {
             return self.write_brief(&call, reply);
+        }
+        // A plan, committed off the loop; a ticket cut from one reads it first.
+        if call.name == board::WRITE_PLAN {
+            return self.write_plan(&call, reply);
+        }
+        if call.name == board::CREATE_TICKET && board::arg_str(&call.arguments, "plan").is_some_and(|p| !p.trim().is_empty()) {
+            return self.cut_from_plan(call, reply);
         }
         let squad = call.squad.clone();
         // The PM accepting its team's work: it waits for the acceptance itself.
@@ -6000,6 +6026,8 @@ there, end your turn, and carry on when they say they're done."
                     merged: None,
                     off_main: None,
                     design_qa: None,
+                    // Read and checked off the loop before it gets here (`cut_from_plan`).
+                    plan: board::arg_str(&args, "plan").map(str::to_owned),
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],

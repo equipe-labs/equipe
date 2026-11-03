@@ -304,6 +304,7 @@
   "card.files.other": "{count} fichiers",
   "card.not_found": "Introuvable",
   "card.open": "Ouvrir",
+  "card.plan": "Plan",
   "card.see_changes": "Voir les changements",
   "card.take": "Prendre",
   "card.unblocks": "Débloque {list}",

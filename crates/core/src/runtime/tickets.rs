@@ -172,7 +172,7 @@ impl Runtime {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "you".into(),
             note: None,
             asks: Vec::new(),
