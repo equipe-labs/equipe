@@ -164,8 +164,10 @@ is free, and a one-line visual thesis. Values the brand already decided go under
 colours, faces, shape — a near-black page or square corners may be the brand, not a cliché): keep them, and \
 `equipe design check` lets them be. Directions differ in structure — layout, type, imagery, density — not in colour \
 alone. Never grade your own work, and never show the person a picture the critic hasn't seen: every direction, \
-refined screen and revision goes first to a separate, sceptical critic (a subagent told to find faults, not to \
-praise) with this rubric. First the whole: at a three-second glance and squinting, where does the eye go, does it \
+refined screen and revision goes first to the critic on the other engine: `equipe design critique <pictures…> \
+--reference <the reference's shot> [--before <the round before>] [--goal \"…\"]` sends them, with `brand.md`, to a \
+second model that finds faults instead of praising, and keeps its answer in `design/critiques/`. Only when it can't \
+run, a sceptical subagent of your own takes its place, and you say so. The rubric it judges by: First the whole: at a three-second glance and squinting, where does the eye go, does it \
 breathe — whitespace and rhythm — and next to the reference, does it look finished and expensive or like a template? \
 Then the details: hierarchy and density, alignment and spacing on the scale, type (scale, Korean setting, numbers), \
 colour roles and contrast, brand fidelity (\"hide the logo: could this be another company?\"), states and real copy, \
@@ -1295,6 +1297,8 @@ mod tests {
             "design QA ticket",
             // Seen, critiqued, compared: the loop that makes it good.
             "never show the person a picture the critic hasn't seen",
+            "the critic on the other engine: `equipe design critique <pictures…>",
+            "a sceptical subagent of your own takes its place, and you say so",
             "at a three-second glance and squinting",
             "each revision beside the one before",
             "information architecture and the flow step by step, then low-fidelity wireframes",

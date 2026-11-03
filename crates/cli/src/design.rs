@@ -1,13 +1,15 @@
 //! `equipe design …`: the designer's tools (`equipe_core::design::{check,
 //! kit}`, and two scripts run in the Mac's own Chrome through Playwright —
-//! `assets/design/{audit,render}.mjs`). A member runs them in its worktree;
+//! `assets/design/{audit,render}.mjs`), and the critic on the other engine
+//! (`equipe_core::design::critique`). A member runs them in its worktree;
 //! so can the person.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use clap::Subcommand;
-use equipe_core::design::{check, kit, tokens};
+use equipe_core::design::{check, critique, kit, tokens};
+use equipe_core::protocol::Engine;
 
 #[derive(Subcommand)]
 pub enum DesignAction {
@@ -73,6 +75,27 @@ pub enum DesignAction {
         /// The sheet (default: diff.png)
         #[arg(long, default_value = "diff.png")]
         out: PathBuf,
+    },
+    /// Have the other engine critique pictures — the whole first, then each region — kept in design/critiques/
+    Critique {
+        /// The pictures: mockups, shots of what was built
+        #[arg(required = true)]
+        pictures: Vec<PathBuf>,
+        /// The reference it should stand beside (repeatable)
+        #[arg(long = "reference")]
+        references: Vec<PathBuf>,
+        /// The round before, to check the revision didn't lose the whole (repeatable)
+        #[arg(long)]
+        before: Vec<PathBuf>,
+        /// What the work is for
+        #[arg(long)]
+        goal: Option<String>,
+        /// The brief (default: design/brand.md, if there is one)
+        #[arg(long)]
+        brief: Option<PathBuf>,
+        /// Who critiques (default: the engine this isn't run on)
+        #[arg(long, value_parser = ["codex", "claude"])]
+        engine: Option<String>,
     },
     /// Harvest a brand from its site: colours by area, type and webfonts, logo files, voice — one audit sheet
     Audit {
@@ -159,11 +182,55 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
             run_script("render.mjs", &args.iter().map(String::as_str).collect::<Vec<_>>()).await
         }
         DesignAction::Diff { spec, built, out } => run_script("diff.mjs", &[&spec, &built, "--out", out.to_string_lossy().as_ref()]).await,
+        DesignAction::Critique { pictures, references, before, goal, brief, engine } => critique_command(critique::Ask { pictures, references, before, brief: None, goal }, brief, engine).await,
         DesignAction::Audit { url, pages, out } => {
             let out = out.unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR).join("audit"));
             run_script("audit.mjs", &[&url, "--pages", &pages.to_string(), "--out", out.to_string_lossy().as_ref()]).await
         }
     }
+}
+
+async fn critique_command(mut ask: critique::Ask, brief: Option<PathBuf>, engine: Option<String>) -> Result<(), String> {
+    for p in ask.images() {
+        if !p.is_file() {
+            return Err(format!("{}: no such picture", p.display()));
+        }
+    }
+    let design = PathBuf::from(equipe_core::design::DIR);
+    let brief = brief.or_else(|| Some(design.join("brand.md")).filter(|p| p.is_file()));
+    if let Some(file) = &brief {
+        ask.brief = Some(std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?);
+    }
+    let engine = match engine.as_deref() {
+        Some("claude") => Engine::Claude,
+        Some(_) => Engine::Codex,
+        None => critique::critic_engine(critique::caller_engine(|name| std::env::var(name).ok())),
+    };
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default().to_string();
+    let kept = critique::kept_at(&design, &stamp);
+    if let Some(parent) = kept.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let (program, args) = critique::command(engine, &ask, &kept);
+    eprintln!("{} is critiquing {} picture(s)…", engine.label(), ask.pictures.len());
+    let run = tokio::process::Command::new(&program).args(&args).stdin(Stdio::null()).stderr(Stdio::piped()).output().await.map_err(|e| format!("{program}: {e} — is {} installed and signed in?", engine.label()))?;
+    if !run.status.success() {
+        // Claude says why on stdout, Codex on stderr.
+        let said = [String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout)].join("\n");
+        let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
+        return Err(format!("{} couldn't critique ({}): {}", engine.label(), run.status, tail.into_iter().rev().collect::<Vec<_>>().join("\n")));
+    }
+    // Codex wrote its answer to the file; Claude printed it.
+    if engine == Engine::Claude {
+        std::fs::write(&kept, &run.stdout).map_err(|e| format!("{}: {e}", kept.display()))?;
+    }
+    let answer = std::fs::read_to_string(&kept).unwrap_or_default();
+    if answer.trim().is_empty() {
+        return Err(format!("{} answered nothing", engine.label()));
+    }
+    println!("{}", answer.trim_end());
+    println!("\nkept {}", kept.display());
+    Ok(())
 }
 
 /// Where the scripts and the Playwright they import live: the person's own,
