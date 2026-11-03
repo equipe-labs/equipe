@@ -9,6 +9,13 @@
 //! it, never guessed.
 //!
 //! Days are this Mac's days: events are cut by its time zone, not PostHog's.
+//!
+//! `north_star` is the squads that approved work in the 7 days up to each day
+//! (docs/TELEMETRY.md, "The North Star"): a distinct count, which days can't
+//! be added into, so PostHog counts each day's window itself (`rolling`).
+//! Without its event in the project — a maker's product doesn't send
+//! equipe's `work_accepted` — it isn't reported, and the screen says it has no
+//! definition.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +34,12 @@ const LABELS: usize = 30;
 const OTHER: &str = "(other)";
 /// Rows one query may bring back (HogQL's own limit is 100 unless asked).
 const ROWS: u32 = 50_000;
+/// The North Star's definition when the person names none (docs/TELEMETRY.md).
+const NORTH_EVENT: &str = "work_accepted";
+const NORTH_PROPERTY: &str = "squad";
+const NORTH_WHERE: &str = "by=person";
+/// Days of the North Star asked at most: 12 windows of 7 and the one before.
+const NORTH_DAYS: u32 = 91;
 
 impl Adapter for Posthog {
     fn spec(&self) -> SourceSpec {
@@ -43,6 +56,9 @@ impl Adapter for Posthog {
                 field("language_property", "Language property", false, false, "The event property with the page's language; $browser_language when empty"),
                 field("click_events", "Click events", false, false, "Events counted as clicks, comma-separated: download_click, cta_github_click"),
                 field("click_property", "Click place property", false, false, "The event property that says where it was clicked: location"),
+                field("north_star_event", "North Star event", false, false, "The event of an approval: work_accepted when empty"),
+                field("north_star_property", "North Star counts", false, false, "The event property counted once each: squad when empty"),
+                field("north_star_where", "North Star only", false, false, "Event properties, comma-separated: by=person when empty"),
             ],
             metrics: vec![
                 metric("visits", "Visits", "page_loads", Shape::Count),
@@ -50,6 +66,7 @@ impl Adapter for Posthog {
                 metric("referrers", "Referrers", "page_loads", Shape::Breakdown),
                 metric("utm_sources", "UTM sources", "page_loads", Shape::Breakdown),
                 metric("clicks", "Clicks", "clicks", Shape::Breakdown),
+                metric("north_star", "Squads approving each week", "squads", Shape::Rolling),
             ],
             keeps_days: None,
         }
@@ -84,6 +101,8 @@ impl Adapter for Posthog {
                 let rows = run(&fetch, key, &ask.query(&format!("event IN ({events})"), &place, "(unknown)")).await?;
                 points.extend(breakdowns("clicks", by_day(&rows)?));
             }
+            let rows = run(&fetch, key, &ask.north.query(&ask)).await?;
+            points.extend(ask.north.points(&rows, &ask)?);
             Ok(points)
         })
     }
@@ -98,6 +117,77 @@ struct Ask {
     language: String,
     clicks: Vec<String>,
     click_place: Option<String>,
+    north: North,
+}
+
+/// How the North Star is counted: distinct `property` of `event` where `only`.
+struct North {
+    event: String,
+    property: String,
+    only: String,
+    /// The person named the event: a day without one is 0, not unknown.
+    named: bool,
+    /// The first day asked (≤ the period's): no more than [`NORTH_DAYS`] back.
+    from: i64,
+}
+
+impl North {
+    fn new(setting: impl Fn(&str) -> Option<String>, today: i64, days: u32) -> Result<Self, String> {
+        let named = setting("north_star_event");
+        Ok(Self {
+            event: named.clone().unwrap_or_else(|| NORTH_EVENT.into()),
+            property: property(&setting("north_star_property").unwrap_or_else(|| NORTH_PROPERTY.into()))?,
+            only: filter(&setting("north_star_where").unwrap_or_else(|| NORTH_WHERE.into()))?,
+            named: named.is_some(),
+            from: today - i64::from(days.clamp(1, NORTH_DAYS)) + 1,
+        })
+    }
+
+    /// Each day `from..=to`, the distinct `property`s of the event in the 7
+    /// days up to it: each (day, value) the event was seen on stands for the
+    /// 7 days it is in the window of.
+    fn query(&self, ask: &Ask) -> String {
+        let day = format!("toDate(toTimeZone(timestamp, '{}'))", ask.zone);
+        let first = day_string(self.from - (crate::metrics::WINDOW - 1));
+        format!(
+            "SELECT toString(addDays(seen, k)) AS day, count(DISTINCT who) AS n FROM (\
+             SELECT DISTINCT {day} AS seen, toString({property}) AS who FROM events \
+             WHERE event = {event}{only} AND coalesce(toString({property}), '') != '' \
+             AND timestamp >= toDateTime('{first} 00:00:00') - INTERVAL 1 DAY \
+             AND {day} >= toDate('{first}') AND {day} <= toDate('{to}')\
+             ) ARRAY JOIN range(0, {window}) AS k \
+             WHERE addDays(seen, k) >= toDate('{from}') AND addDays(seen, k) <= toDate('{to}') \
+             GROUP BY day ORDER BY day LIMIT {ROWS}",
+            property = self.property,
+            event = quote(&self.event),
+            only = self.only,
+            from = day_string(self.from),
+            to = ask.to,
+            window = crate::metrics::WINDOW,
+        )
+    }
+
+    /// `[day, n]` rows as points. A day before the first one seen is left
+    /// out (not known yet); after it, a day without a row is 0. No rows at
+    /// all: 0 each day when the person named the event, else nothing — the
+    /// project has no North Star.
+    fn points(&self, rows: &[Value], ask: &Ask) -> Result<Vec<Point>, FetchError> {
+        let bad = || error(ErrorCode::BadResponse, "PostHog's rows weren't day, count");
+        let mut seen = BTreeMap::new();
+        for row in rows {
+            let (Some(day), Some(n)) = (row.get(0).and_then(Value::as_str).and_then(day_number), row.get(1).and_then(Value::as_f64)) else { return Err(bad()) };
+            seen.insert(day, n);
+        }
+        let to = day_number(&ask.to).ok_or_else(bad)?;
+        let first = match seen.keys().next() {
+            Some(first) => *first,
+            None if self.named => self.from,
+            None => return Ok(Vec::new()),
+        };
+        Ok((first.max(self.from)..=to)
+            .map(|n| Point { metric: "north_star".into(), day: day_string(n), value: seen.get(&n).copied().unwrap_or(0.0), breakdown: None })
+            .collect())
+    }
 }
 
 impl Ask {
@@ -113,7 +203,8 @@ impl Ask {
         let language = property(setting("language_property").unwrap_or("$browser_language")).map_err(bad)?;
         let clicks: Vec<String> = setting("click_events").unwrap_or_default().split(',').map(str::trim).filter(|e| !e.is_empty()).map(str::to_owned).collect();
         let click_place = setting("click_property").map(property).transpose().map_err(bad)?;
-        Ok(Self { from: day_string(today - i64::from(fetch.days.max(1)) + 1), to: day_string(today), zone, filter, language, clicks, click_place })
+        let north = North::new(|k| setting(k).map(str::to_owned), today, fetch.days).map_err(bad)?;
+        Ok(Self { from: day_string(today - i64::from(fetch.days.max(1)) + 1), to: day_string(today), zone, filter, language, clicks, click_place, north })
     }
 
     /// Per day and label, the count of events matching `which`.
@@ -260,7 +351,9 @@ mod tests {
 
     /// The recorded answer for the query `body` asks.
     fn recorded(body: &str) -> Reply {
-        let fixture: &[u8] = if body.contains("referring_domain") {
+        let fixture: &[u8] = if body.contains("ARRAY JOIN") {
+            include_bytes!("fixtures/posthog/north_star.json")
+        } else if body.contains("referring_domain") {
             include_bytes!("fixtures/posthog/referrers.json")
         } else if body.contains("utm_source") {
             include_bytes!("fixtures/posthog/utm_sources.json")
@@ -294,9 +387,13 @@ mod tests {
         assert!(points.iter().any(|p| p.metric == "clicks" && p.breakdown.as_ref().is_some_and(|b| !b.is_empty())));
 
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 4, "three page-load queries and one of clicks");
+        assert_eq!(seen.len(), 5, "three page-load queries, one of clicks and the North Star's");
         for r in seen.iter() {
             assert_eq!(r.path, "/api/projects/700951/query/");
+            if r.body.contains("ARRAY JOIN") {
+                assert!(!r.body.contains("properties.environment"), "the site's filter isn't the North Star's");
+                continue;
+            }
             assert_eq!(r.headers.get("authorization").map(String::as_str), Some(format!("Bearer {KEY}").as_str()));
             assert!(r.body.contains("coalesce(toString(properties.internal), '') != 'true'"), "{}", r.body);
             assert!(r.body.contains("coalesce(toString(properties.environment), '') = 'production'"));
@@ -313,7 +410,7 @@ mod tests {
     async fn without_click_events_no_clicks_are_asked() {
         let (url, seen) = serve(|s| recorded(&s.body)).await;
         let points = fetch_with(&settings(&url, &[]), 3).await.unwrap();
-        assert_eq!(seen.lock().unwrap().len(), 3);
+        assert_eq!(seen.lock().unwrap().len(), 4);
         assert!(!points.iter().any(|p| p.metric == "clicks"));
         assert!(seen.lock().unwrap().iter().any(|r| r.body.contains("properties.$browser_language")), "the browser's language when none is named");
     }
@@ -357,6 +454,87 @@ mod tests {
         let e = fetch_with(&settings("http://example.com", &[]), 7).await.unwrap_err();
         assert_eq!(e.code, ErrorCode::Other, "a plain http host isn't sent the key");
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    /// The rows PostHog answers the North Star's query with, worked out here
+    /// step by step as the query asks: each (day, squad) seen once, standing
+    /// for the 7 days whose window it is in, then the distinct squads a day.
+    fn as_the_query_counts(events: &[(i64, &str, &str)], north: &North, to: i64) -> Vec<Value> {
+        let first = north.from - 6;
+        let seen: std::collections::BTreeSet<(i64, &str)> =
+            events.iter().filter(|(d, _, by)| *by == "person" && (first..=to).contains(d)).map(|(d, squad, _)| (*d, *squad)).collect();
+        let mut days: BTreeMap<i64, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        for (d, squad) in seen {
+            for k in 0..7 {
+                if (north.from..=to).contains(&(d + k)) {
+                    days.entry(d + k).or_default().insert(squad);
+                }
+            }
+        }
+        days.into_iter().map(|(d, squads)| json!([day_string(d), squads.len()])).collect()
+    }
+
+    /// docs/TELEMETRY.md's North Star, taken literally: the distinct squads of
+    /// `work_accepted` with `by = person` in the 7 days up to `day`.
+    fn as_telemetry_defines(events: &[(i64, &str, &str)], day: i64) -> f64 {
+        events.iter().filter(|(d, _, by)| *by == "person" && (day - 6..=day).contains(d)).map(|(_, s, _)| *s).collect::<std::collections::BTreeSet<_>>().len() as f64
+    }
+
+    #[test]
+    fn the_north_star_is_telemetrys_count_each_day() {
+        let today = day_number("2026-11-02").unwrap();
+        // A squad from 100 days back on and off, two later, a PM's accepts that don't count.
+        let mut events = vec![(today - 100, "a", "person"), (today - 90, "a", "person"), (today - 60, "b", "pm"), (today - 45, "b", "person"), (today - 44, "a", "person")];
+        events.extend([(today - 20, "c", "person"), (today - 20, "c", "person"), (today - 14, "b", "person"), (today - 8, "a", "pm"), (today - 3, "c", "person"), (today, "a", "person")]);
+        let north = North::new(|_| None, today, 400).unwrap();
+        assert_eq!(north.from, today - 90, "91 days at most");
+        let ask = Ask { from: String::new(), to: day_string(today), zone: "UTC".into(), filter: String::new(), language: String::new(), clicks: vec![], click_place: None, north };
+        let points = ask.north.points(&as_the_query_counts(&events, &ask.north, today), &ask).unwrap();
+        assert_eq!(points.first().unwrap().day, day_string(today - 90), "the first day already has a squad in its window");
+        assert_eq!(points.len(), 91);
+        for p in &points {
+            let d = day_number(&p.day).unwrap();
+            assert_eq!(p.value, as_telemetry_defines(&events, d), "{}", p.day);
+        }
+        assert!(points.iter().any(|p| p.value == 0.0), "a quiet week is 0, not unknown");
+        assert_eq!(points.last().unwrap().value, 2.0, "c three days ago and a today; a's PM accept doesn't count");
+    }
+
+    #[test]
+    fn the_north_star_starts_at_its_first_squad_and_needs_its_event() {
+        let today = day_number("2026-11-02").unwrap();
+        let ask = |named: bool| {
+            let north = North::new(|k| (named && k == "north_star_event").then(|| "approved".to_owned()), today, 14).unwrap();
+            Ask { from: String::new(), to: day_string(today), zone: "UTC".into(), filter: String::new(), language: String::new(), clicks: vec![], click_place: None, north }
+        };
+        let rows = vec![json!(["2026-10-30", 1]), json!(["2026-11-02", 2])];
+        let points = ask(false).north.points(&rows, &ask(false)).unwrap();
+        let got: Vec<(&str, f64)> = points.iter().map(|p| (p.day.as_str(), p.value)).collect();
+        assert_eq!(got, [("2026-10-30", 1.0), ("2026-10-31", 0.0), ("2026-11-01", 0.0), ("2026-11-02", 2.0)], "before its first squad a day isn't known");
+        assert!(ask(false).north.points(&[], &ask(false)).unwrap().is_empty(), "no work_accepted: no North Star");
+        let named = ask(true);
+        let zeros = named.north.points(&[], &named).unwrap();
+        assert_eq!(zeros.len(), 14);
+        assert!(zeros.iter().all(|p| p.value == 0.0), "an event the person named: none is 0");
+        assert!(named.north.query(&named).contains("event = 'approved'"));
+        assert!(ask(true).north.points(&[json!(["2026-11-02"])], &named).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_north_star_asks_its_definition() {
+        let (url, seen) = serve(|s| recorded(&s.body)).await;
+        let s = settings(&url, &[("filter", "environment=production")]);
+        let points = fetch_with(&s, 400).await.unwrap();
+        let north: Vec<(&str, f64)> = points.iter().filter(|p| p.metric == "north_star").map(|p| (p.day.as_str(), p.value)).collect();
+        assert_eq!(north, [("2026-11-01", 1.0), ("2026-11-02", 1.0)], "PostHog 700951's own answer, 2026-11-03");
+        let q = seen.lock().unwrap().iter().find(|r| r.body.contains("ARRAY JOIN")).unwrap().body.clone();
+        for part in ["event = 'work_accepted'", "coalesce(toString(properties.by), '') = 'person'", "count(DISTINCT who)", "toString(properties.squad) AS who", "range(0, 7)", ">= toDate('2026-07-29')", ">= toDate('2026-08-04')", "toTimeZone(timestamp, 'Asia/Seoul')"] {
+            assert!(q.contains(part), "{part} in {q}");
+        }
+        let (url, _) = serve(|s| recorded(&s.body)).await;
+        for bad in [("north_star_property", "squad)"), ("north_star_where", "by")] {
+            assert_eq!(fetch_with(&settings(&url, &[bad]), 7).await.unwrap_err().code, ErrorCode::Other, "{bad:?}");
+        }
     }
 
     #[test]

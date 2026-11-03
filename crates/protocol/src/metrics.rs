@@ -71,6 +71,11 @@ pub enum Shape {
     Total,
     /// A count per day split by a label; a period sums each label (languages).
     Breakdown,
+    /// A distinct count over the 7 days up to each day (the North Star's
+    /// squads), which days can't be added into: a period is its last day's
+    /// value, beside the value 7 days before it, and its series is 12 such
+    /// values 7 days apart.
+    Rolling,
 }
 
 /// A metric a source reports.
