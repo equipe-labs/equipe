@@ -4,8 +4,8 @@
 //!
 //! - `metrics/connections.json` (the person's only): every connection, its
 //!   settings that aren't secret and the names of its keys — no key.
-//! - The keys: the daemon machine's Keychain (`equipe.metrics`, account = the
-//!   connection's id, the secret fields as one JSON object).
+//! - The keys: `credentials/metrics-keys.json` ([`KeyFile`]), the person's
+//!   only and out of members' reach — each connection's secret fields.
 //! - `metrics/<squad>/<connection>/<YYYY-MM-DD>.json`: what a fetch that day
 //!   brought ([`Snapshot`]). Read in day order, a later fetch's value of a day
 //!   wins, so days a service has forgotten (GitHub's past 14) stay.
@@ -28,8 +28,6 @@ use crate::routines::Clock;
 pub mod adapters;
 pub mod tool;
 
-/// The Keychain service the keys are kept under.
-pub const SERVICE: &str = "equipe.metrics";
 /// The hour (local) of the daily fetch.
 pub const DAILY_HOUR: u8 = 7;
 /// A failed fetch is tried again after this long, unless the service said when.
@@ -86,49 +84,71 @@ fn monday(n: i64) -> i64 {
 
 // ---- Keys ----
 
-/// Where keys go: the Keychain, or (in tests) memory.
+/// Where keys go: a private file, or (in tests) memory.
 pub trait Keys: Send {
     fn set(&mut self, id: &str, keys: &BTreeMap<String, String>) -> Result<(), String>;
     fn get(&self, id: &str) -> Result<BTreeMap<String, String>, String>;
     fn delete(&mut self, id: &str) -> Result<(), String>;
 }
 
-/// The daemon machine's Keychain.
-pub struct Keychain;
+/// The daemon machine's keys: `credentials/metrics-keys.json` in equipe's
+/// home, 0600 in a 0700 folder members' fences don't let them read —
+/// `{ "<connection id>": { "<field>": "<key>" } }`.
+///
+/// Not the Keychain: a login-keychain item trusts the binary that made it by
+/// its code hash, and an ad-hoc signed `equipe` (every build, and the
+/// install.sh and Homebrew ones) has a new hash each build, so after an
+/// update or a restart on a new build the daemon can't read its own keys
+/// back (errSecAuthFailed) and can't ask, being a background process.
+pub struct KeyFile {
+    file: PathBuf,
+}
 
-#[cfg(target_os = "macos")]
-impl Keys for Keychain {
-    fn set(&mut self, id: &str, keys: &BTreeMap<String, String>) -> Result<(), String> {
-        let text = serde_json::to_string(keys).map_err(|e| e.to_string())?;
-        security_framework::passwords::set_generic_password(SERVICE, id, text.as_bytes()).map_err(|e| e.to_string())
+impl KeyFile {
+    pub fn new(home: &Path) -> Self {
+        Self { file: home.join("credentials").join("metrics-keys.json") }
     }
 
-    fn get(&self, id: &str) -> Result<BTreeMap<String, String>, String> {
-        let bytes = security_framework::passwords::get_generic_password(SERVICE, id).map_err(|e| e.to_string())?;
-        serde_json::from_slice(&bytes).map_err(|_| "the kept keys aren't readable".into())
-    }
-
-    fn delete(&mut self, id: &str) -> Result<(), String> {
-        match security_framework::passwords::delete_generic_password(SERVICE, id) {
-            Ok(()) => Ok(()),
-            // Gone already.
-            Err(e) if e.code() == -25300 => Ok(()),
+    fn all(&self) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
+        match std::fs::read(&self.file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "the kept keys aren't readable".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(e) => Err(e.to_string()),
         }
     }
+
+    fn keep(&self, all: &BTreeMap<String, BTreeMap<String, String>>) -> Result<(), String> {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let dir = self.file.parent().unwrap_or(&self.file);
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        let text = serde_json::to_vec_pretty(all).map_err(|e| e.to_string())?;
+        let partial = self.file.with_extension("json.partial");
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&partial).map_err(|e| e.to_string())?;
+        // `mode` only holds for a new file; a leftover one is made private too.
+        std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+        f.write_all(&text).and_then(|()| f.sync_all()).map_err(|e| e.to_string())?;
+        std::fs::rename(&partial, &self.file).map_err(|e| e.to_string())
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
-impl Keys for Keychain {
-    fn set(&mut self, _: &str, _: &BTreeMap<String, String>) -> Result<(), String> {
-        Err("metrics keys need macOS's Keychain, which this machine doesn't have".into())
+impl Keys for KeyFile {
+    fn set(&mut self, id: &str, keys: &BTreeMap<String, String>) -> Result<(), String> {
+        let mut all = self.all()?;
+        all.insert(id.to_owned(), keys.clone());
+        self.keep(&all)
     }
 
-    fn get(&self, _: &str) -> Result<BTreeMap<String, String>, String> {
-        Err("metrics keys need macOS's Keychain, which this machine doesn't have".into())
+    fn get(&self, id: &str) -> Result<BTreeMap<String, String>, String> {
+        self.all()?.remove(id).ok_or_else(|| "no keys kept for it — connect it again".into())
     }
 
-    fn delete(&mut self, _: &str) -> Result<(), String> {
+    fn delete(&mut self, id: &str) -> Result<(), String> {
+        let mut all = self.all()?;
+        if all.remove(id).is_some() {
+            self.keep(&all)?;
+        }
         Ok(())
     }
 }
@@ -286,9 +306,9 @@ impl Metrics {
         }
     }
 
-    /// The daemon's: keys in the Keychain.
+    /// The daemon's: keys in [`KeyFile`].
     pub fn open(home: &Path) -> Self {
-        Self::new(home, Box::new(Keychain))
+        Self::new(home, Box::new(KeyFile::new(home)))
     }
 
     fn change<T>(&self, f: impl FnOnce(&mut Vec<Connection>) -> Result<T, Refused>) -> Result<T, Refused> {
@@ -390,7 +410,7 @@ impl Metrics {
                     format!("m{next}")
                 }
             };
-            self.lock_keys().set(&id, &keys).map_err(|e| refuse(KEYCHAIN, format!("the keys couldn't be kept in the Keychain: {}", redact(&e, &keys))))?;
+            self.lock_keys().set(&id, &keys).map_err(|e| refuse(KEYCHAIN, format!("the keys couldn't be kept: {}", redact(&e, &keys))))?;
             let connection = Connection {
                 id: id.clone(),
                 squad,
@@ -416,7 +436,7 @@ impl Metrics {
     pub fn disconnect(&self, p: &DisconnectParams) -> Result<Disconnected, Refused> {
         let gone = self.change(|all| {
             let at = all.iter().position(|c| c.id == p.id && c.squad == p.squad).ok_or_else(|| refuse(NOT_FOUND, format!("no connection {}", p.id)))?;
-            self.lock_keys().delete(&p.id).map_err(|e| refuse(KEYCHAIN, format!("the keys couldn't be taken out of the Keychain: {e}")))?;
+            self.lock_keys().delete(&p.id).map_err(|e| refuse(KEYCHAIN, format!("the keys couldn't be taken away: {e}")))?;
             Ok(all.remove(at))
         })?;
         if p.forget {
@@ -467,7 +487,7 @@ impl Metrics {
         let keys = self.lock_keys().get(id);
         let got = match (adapters::adapter(connection.kind), keys) {
             (None, _) => Err(fail(ErrorCode::Other, "this kind of source can't be read yet")),
-            (_, Err(e)) => Err(fail(ErrorCode::Keychain, &format!("the key couldn't be read from the Keychain ({e})"))),
+            (_, Err(e)) => Err(fail(ErrorCode::Keychain, &format!("the key couldn't be read ({e})"))),
             (Some(adapter), Ok(keys)) => {
                 let spec = adapter.spec();
                 let today_s = day_string(today);

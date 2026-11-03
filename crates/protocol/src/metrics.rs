@@ -2,7 +2,7 @@
 //! services their product reports to — PostHog, GitHub, App Store Connect —
 //! and the daemon on their Mac asks each one itself, once a day and on a
 //! `metrics.refresh`, and keeps what it hears as daily snapshots. Screens and
-//! members read the numbers; the keys stay in that Mac's Keychain and are in
+//! members read the numbers; the keys stay in that Mac's key file and are in
 //! none of these messages, except the one `metrics.connect` that hands them in.
 //!
 //! Days are the daemon machine's local calendar days, `YYYY-MM-DD`.
@@ -51,7 +51,7 @@ pub struct Field {
     pub key: String,
     /// How a screen names it, in English (screens translate by `key`).
     pub label: String,
-    /// A key or a token: typed hidden, kept in the Keychain only, never sent back.
+    /// A key or a token: typed hidden, kept in the daemon's key file only, never sent back.
     #[serde(default)]
     pub secret: bool,
     #[serde(default)]
@@ -114,7 +114,7 @@ pub enum ErrorCode {
     Network,
     /// The service answered something equipe couldn't read.
     BadResponse,
-    /// The key couldn't be read from the Keychain.
+    /// The key couldn't be read from the key file (named when it was the Keychain).
     Keychain,
     Other,
 }
@@ -151,7 +151,7 @@ pub struct Connection {
     /// The fields that aren't secret, as set.
     #[serde(default)]
     pub settings: BTreeMap<String, String>,
-    /// The secret fields kept in the Keychain — their names, never their values.
+    /// The secret fields kept in the key file — their names, never their values.
     #[serde(default)]
     pub keys: Vec<String>,
     /// Unix seconds.
@@ -219,7 +219,7 @@ pub struct ConnectParams {
     pub settings: BTreeMap<String, String>,
 }
 
-/// `metrics.disconnect` → [`Disconnected`]: its keys leave the Keychain; its
+/// `metrics.disconnect` → [`Disconnected`]: its keys leave the key file; its
 /// snapshots stay unless `forget`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DisconnectParams {

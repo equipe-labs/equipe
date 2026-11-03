@@ -331,3 +331,23 @@ fn a_rolling_metric_is_its_last_day_beside_seven_days_before_in_twelve_weeks() {
     assert!(q.values.iter().all(|v| v.metric != NORTH_STAR));
     assert!(q.values.iter().any(|v| v.metric == "visits"));
 }
+
+#[test]
+fn keys_outlive_the_store_that_kept_them() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let home = scratch("keyfile");
+    let keys = BTreeMap::from([("token".to_owned(), TOKEN.to_owned())]);
+    KeyFile::new(&home).set("m1", &keys).unwrap();
+    KeyFile::new(&home).set("m2", &BTreeMap::from([("api_key".to_owned(), "k2".to_owned())])).unwrap();
+    // A new daemon (a new build) reads what the last one kept.
+    assert_eq!(KeyFile::new(&home).get("m1").unwrap(), keys);
+    let file = home.join("credentials").join("metrics-keys.json");
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::metadata(file.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    KeyFile::new(&home).delete("m1").unwrap();
+    KeyFile::new(&home).delete("m1").unwrap();
+    assert!(KeyFile::new(&home).get("m1").is_err());
+    assert_eq!(KeyFile::new(&home).get("m2").unwrap()["api_key"], "k2");
+    // Nothing else of equipe's home holds a key.
+    assert!(!all_text(&home.join("metrics")).contains(TOKEN));
+}
