@@ -42,7 +42,7 @@ fn the_templates_keep_the_contract() {
     for (name, html) in TEMPLATES {
         assert_eq!(check(html), Ok(()), "{name}");
     }
-    assert_eq!(check("<p>see <a href=\"https://equipe.im\">equipe.im</a></p><img src=\"data:image/png;base64,AAAA\" alt=\"\"><div style=\"background:url('data:image/png;base64,AA')\"></div><a href=\"#x\">x</a>"), Ok(()));
+    assert_eq!(check("<p>see <a>equipe.im</a></p><img src=\"data:image/png;base64,AAAA\" alt=\"\"><div style=\"background:url('data:image/png;base64,AA')\"></div><a href=\"#x\">x</a>"), Ok(()));
 }
 
 #[test]
@@ -78,6 +78,91 @@ fn what_runs_or_loads_or_is_too_big_is_refused() {
     }
     let big = format!("<p>{}</p>", "\u{ac00}".repeat(SOURCE_MAX / 3 + 1));
     assert!(check(&big).is_err());
+}
+
+/// Links a click or a key would follow out of the page (T-357), every way
+/// HTML lets them be written.
+const LINKS_OUT: [&str; 34] = [
+    "<a href=\"https://equipe.im\">equipe.im</a>",
+    "<a href=\"http://127.0.0.1:9/\">x</a>",
+    "<a href=\"//evil.test/\">x</a>",
+    "<a href=\"file:///etc/passwd\">x</a>",
+    "<a href=\"FILE:///Users/\">x</a>",
+    "<a href=\"javascript:alert(1)\">x</a>",
+    "<a href=\"data:text/html,<p>x\">x</a>",
+    "<a href=\"data:image/svg+xml,<svg/>\">x</a>",
+    "<a href=\"other.html\">x</a>",
+    "<a href=\"\">x</a>",
+    "<a href>x</a>",
+    "<A HREF=\"https://x\">x</A>",
+    "<a href=https://x>x</a>",
+    "<a href = 'https://x'>x</a>",
+    "<a\nhref=\"https://x\">x</a>",
+    "<a\x0chref=https://x>x</a>",
+    "<a/href=https://x>x</a>",
+    "<a title=\"#\" href=\"https://x\">x</a>",
+    "<a href=\"#\" href=\"https://x\">x</a>",
+    "<a href=\"\tjava\nscript:alert(1)\">x</a>",
+    "<a href=\" \u{3000}#x\">x</a>",
+    "<a href=\"&#35;x\">x</a>",
+    "<a href=\"&#104;ttps://x\">x</a>",
+    "<a href=\"https:&#47;&#47;x\">x</a>",
+    "<svg><a href=\"https://x\"><text>x</text></a></svg>",
+    "<svg><a xlink:href=\"https://x\"><text>x</text></a></svg>",
+    "<map name=m><area href=\"https://x\" shape=default></map>",
+    "<a href=\"#x\" target=\"_blank\">x</a>",
+    "<a href=\"#x\" download>x</a>",
+    // Where a tag sits that a browser reads but an eye might not: after a
+    // comment `--!>` closes, past a `<style>` an attribute's quote seemed to hold.
+    "<!-- <p title=\" --!> <a href=https://x>x</a> \" -->",
+    "<!-- <p title=\" --> <a href=https://x>x</a> \" -->",
+    "<style><p title=\"</style><a href=https://x>x</a>\"</style>",
+    "<textarea><p title=\"</textarea><a href=https://x>x</a>\"",
+    "<p title=\"<a href=https://x>\">x</p><math href=\"https://x\">x</math>",
+];
+
+#[test]
+fn a_link_may_only_go_to_a_place_in_the_card() {
+    for html in LINKS_OUT {
+        assert!(check(html).is_err(), "let through: {html:?}");
+    }
+    for html in ["<a href=\"#x\">x</a>", "<a href='#'>top</a>", "<a href=#x>x</a>", "<a href=\" #x \">x</a>", "<a>plain</a>", "<svg><a href=\"#x\"><text>x</text></a></svg>"] {
+        assert_eq!(check(html), Ok(()), "{html}");
+    }
+}
+
+#[test]
+fn reading_every_tag_start_stays_quick() {
+    // Quotes that never close: each `<` is read to the end, no more.
+    let worst = "<a title=\"".repeat(SOURCE_MAX / 10);
+    let started = Instant::now();
+    let _ = check(&worst);
+    assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+}
+
+#[test]
+fn a_page_kept_under_the_old_contract_is_not_given_out() {
+    let home = temp_home("oldpage");
+    let old = "<p>see <a href=\"https://evil.test/\">this</a></p>";
+    let key = diagram::key(old);
+    let page_path = page_file(&home, "acme", &key);
+    keep(&page_path, page(old, None).as_bytes()).unwrap();
+    for dark in [false, true] {
+        keep(&diagram::file(&home, "acme", &key, dark), &tiny_png()).unwrap();
+    }
+    let text = format!("```html card\n{old}\n```");
+    assert!(kept(&home, "acme", &[Entry::Reply { text }]).is_empty());
+    let ask = crate::protocol::rpc::ReadImage { squad: "acme".into(), path: page_path.to_string_lossy().into_owned(), max: None };
+    let err = crate::visuals::serve_with(&home, &ask, None, &[]).unwrap_err();
+    assert!(err.contains("contract"), "{err}");
+    assert_eq!(kept_fragment(&page(TEMPLATES[0].1, None)), Ok(TEMPLATES[0].1));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn tiny_png() -> Vec<u8> {
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(2, 2).unwrap();
+    pixmap.fill(resvg::tiny_skia::Color::BLACK);
+    pixmap.encode_png().unwrap()
 }
 
 #[test]
@@ -331,3 +416,5 @@ fn many_replies_of_new_cards_at_once_stay_within_chromes_time_and_cache() {
     assert!(on_disk <= held.keys * 2, "{on_disk} PNGs for {held:?}");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+mod panel;

@@ -163,14 +163,21 @@ const TAGS: [&str; 24] = [
     "script", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "input", "button", "link", "meta", "base", "html",
     "head", "body", "portal", "audio", "video", "source", "track", "foreignobject", "animate", "set",
 ];
-/// Attributes that load something, on any element but `<a href>` (a link
-/// shows as text, nothing follows it): only `data:` or `#` in them.
+/// Attributes that load something: only `data:` or `#` in them.
 const LOADING: [&str; 13] =
     ["src", "srcset", "href", "xlink:href", "action", "formaction", "poster", "background", "data", "ping", "lowsrc", "dynsrc", "codebase"];
+/// Elements a click or a key follows — HTML's and SVG's `<a>`, `<area>` —
+/// whose `href` may only be a place in the page (`#…`): a card's page,
+/// opened in the browser panel, goes nowhere (T-357).
+const LINKS: [&str; 2] = ["a", "area"];
+/// Attributes that send what a link points at somewhere else: a new window,
+/// a download.
+const LEAVING: [&str; 2] = ["target", "download"];
 
 /// Whether `fragment` keeps the card contract (docs/VISUALS.md): small, one
-/// fragment, nothing that runs or loads. The first fence only — the page's
-/// CSP and Chrome's blocked network hold whatever gets past it.
+/// fragment, nothing that runs or loads, no link out of the page. The first
+/// fence only — the page's CSP and Chrome's blocked network hold whatever
+/// gets past it.
 pub fn check(fragment: &str) -> Result<(), String> {
     if fragment.len() > SOURCE_MAX {
         return Err(format!("{} bytes, more than {SOURCE_MAX}", fragment.len()));
@@ -184,8 +191,14 @@ pub fn check(fragment: &str) -> Result<(), String> {
             if attr.starts_with("on") {
                 return Err(format!("{attr}= on <{name}>"));
             }
-            let link = name == "a" && attr == "href";
-            if LOADING.contains(&attr.as_str()) && !link && !inline(&value) {
+            if LEAVING.contains(&attr.as_str()) {
+                return Err(format!("{attr}= on <{name}>"));
+            }
+            let link = LINKS.contains(&name.as_str()) && (attr == "href" || attr == "xlink:href");
+            if link && !url(&value).starts_with('#') {
+                return Err(format!("<{name} {attr}> goes to {value}"));
+            }
+            if LOADING.contains(&attr.as_str()) && !inline(&value) {
                 return Err(format!("{attr}= loads {value}"));
             }
         }
@@ -204,70 +217,81 @@ pub fn check(fragment: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A URL as a browser reads it: without the spaces and controls around it.
+/// Characters past ASCII stay — a browser keeps them too, so `\u{3000}#x`
+/// isn't `#x`.
+fn url(value: &str) -> &str {
+    value.trim_matches(|c: char| c <= ' ')
+}
+
 /// A value that loads nothing: a `data:` picture, or a place in the page.
 fn inline(value: &str) -> bool {
-    let value = value.trim();
+    let value = url(value);
     value.starts_with("data:image/") || value.starts_with('#')
 }
 
 /// Each start tag of `html` (lowercased): its name and its attributes.
+/// Every `<` and a letter is read as the start of a tag, even inside an
+/// attribute's value, a comment or a `<style>`: what a browser takes for a
+/// tag — a `<style>` that ends early, a comment closed by `--!>` — is among
+/// them, however this reads the rest.
 fn tags(html: &str) -> Vec<(String, Vec<(String, String)>)> {
     let bytes = html.as_bytes();
     let mut found = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'<' || !bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
-            i += 1;
-            continue;
+    for open in 0..bytes.len() {
+        if bytes[open] == b'<' && bytes.get(open + 1).is_some_and(u8::is_ascii_alphabetic) {
+            found.push(tag(html, open + 1));
         }
+    }
+    found
+}
+
+/// The tag whose name starts at `i`, read as HTML's tokenizer does.
+fn tag(html: &str, mut i: usize) -> (String, Vec<(String, String)>) {
+    let bytes = html.as_bytes();
+    let start = i;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'/') {
         i += 1;
-        let start = i;
-        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'/') {
+    }
+    let name = html[start..i].to_owned();
+    let mut attrs = Vec::new();
+    loop {
+        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
             i += 1;
         }
-        let name = html[start..i].to_owned();
-        let mut attrs = Vec::new();
-        loop {
-            while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
-                i += 1;
-            }
-            if i >= bytes.len() || bytes[i] == b'>' {
-                break;
-            }
-            let at = i;
-            while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'=' | b'/') {
-                i += 1;
-            }
-            let attr = html[at..i].to_owned();
+        if i >= bytes.len() || bytes[i] == b'>' {
+            break;
+        }
+        // A name may start with `=` (HTML keeps it in the name).
+        let at = i;
+        i += 1;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'=' | b'/') {
+            i += 1;
+        }
+        let attr = html[at..i].to_owned();
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let mut value = String::new();
+        if bytes.get(i) == Some(&b'=') {
+            i += 1;
             while i < bytes.len() && bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
-            let mut value = String::new();
-            if bytes.get(i) == Some(&b'=') {
+            let quote = bytes.get(i).copied().filter(|q| *q == b'"' || *q == b'\'');
+            let from = if quote.is_some() { i + 1 } else { i };
+            i = from;
+            while i < bytes.len() && quote.map_or(!bytes[i].is_ascii_whitespace() && bytes[i] != b'>', |q| bytes[i] != q) {
                 i += 1;
-                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                let quote = bytes.get(i).copied().filter(|q| *q == b'"' || *q == b'\'');
-                let from = if quote.is_some() { i + 1 } else { i };
-                i = from;
-                while i < bytes.len() && quote.map_or(!bytes[i].is_ascii_whitespace() && bytes[i] != b'>', |q| bytes[i] != q) {
-                    i += 1;
-                }
-                value = html[from..i].to_owned();
-                if quote.is_some() && i < bytes.len() {
-                    i += 1;
-                }
             }
-            if attr.is_empty() {
+            value = html[from..i].to_owned();
+            if quote.is_some() && i < bytes.len() {
                 i += 1;
-            } else {
-                attrs.push((attr, value));
             }
         }
-        found.push((name, attrs));
+        attrs.push((attr, value));
     }
-    found
+    (name, attrs)
 }
 
 /// The design system's tokens and card styles (T-336), the card's frame.
@@ -434,6 +458,16 @@ pub fn is_page(home: &Path, squad: &str, path: &Path) -> bool {
     named.is_some_and(|k| k.len() == 16 && k.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))) && path.parent() == Some(diagram::dir(home, squad).as_path())
 }
 
+/// The card in a kept page ([`page`]), if it still keeps the contract: a
+/// page kept under an older one (links out, before T-357) is not given out.
+pub fn kept_fragment(html: &str) -> Result<&str, String> {
+    let open = "<article class=\"vc-card\">";
+    let from = html.find(open).ok_or("not a card's page")? + open.len();
+    let fragment = html[from..].strip_suffix("</article></main></body></html>").ok_or("not a card's page")?;
+    check(fragment)?;
+    Ok(fragment)
+}
+
 /// Whole or not at all: a screen never reads half a file.
 fn keep(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(path.parent().ok_or("no folder")?).map_err(|e| e.to_string())?;
@@ -511,7 +545,8 @@ pub fn draw_within(home: &Path, squad: &str, text: &str, chrome: &Path, mut budg
 }
 
 /// The cards of these lines' replies drawn before, read back without
-/// drawing: for a screen that attaches later.
+/// drawing: for a screen that attaches later. Only those that keep the
+/// contract as it is now.
 pub fn kept(home: &Path, squad: &str, lines: &[Entry]) -> Vec<Rendered> {
     let mut found: Vec<Rendered> = Vec::new();
     for line in lines {
@@ -519,7 +554,8 @@ pub fn kept(home: &Path, squad: &str, lines: &[Entry]) -> Vec<Rendered> {
         for source in blocks(text).into_iter().take(diagram::PER_REPLY) {
             let key = diagram::key(&source);
             let page_path = page_file(home, squad, &key);
-            if found.iter().any(|r| r.key == key) || !page_path.is_file() {
+            // A page kept under an older, looser contract isn't offered (T-357).
+            if found.iter().any(|r| r.key == key) || !page_path.is_file() || check(&source).is_err() {
                 continue;
             }
             if let (Some(light), Some(dark)) = (diagram::read_size(&diagram::file(home, squad, &key, false)), diagram::read_size(&diagram::file(home, squad, &key, true))) {
