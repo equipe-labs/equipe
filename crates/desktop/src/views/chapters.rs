@@ -2,7 +2,8 @@
 //! each thing the person asked, the one being read longer and brighter.
 //! The pointer over it opens the list of them, in the margin it sits in; a
 //! click on one brings its message to the top. It sits in the rows' left
-//! padding, so it covers no words however narrow the window.
+//! padding, which widens while it shows, so it covers no words and keeps
+//! clear of them however narrow the window.
 
 use equipe_core::t;
 use gpui_kit::component::{h_flex, v_flex};
@@ -18,12 +19,26 @@ use crate::tips::tip_at;
 /// A bar's length: the one being read, and the rest.
 const LONG: f32 = 18.;
 const SHORT: f32 = 10.;
+/// Where the bars start, from the conversation's left edge.
+const LEFT: f32 = 8.;
+/// The air between the longest bar and the words.
+const CLEAR: f32 = 16.;
+/// The rows' padding on each side while the rail shows: past the longest
+/// bar, with air before the words (on both sides, so the column stays centred).
+pub const GUTTER: f32 = LEFT + LONG + CLEAR;
+// The longest bar ends well before the words.
+const _: () = assert!(GUTTER - (LEFT + LONG) >= 12.);
+
+/// Whether the rail shows: two things asked or more.
+pub fn shows(blocks: &[crate::convo::Block]) -> bool {
+    chapters::of(blocks).len() >= 2
+}
 
 pub fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
-    let all = chapters::of(&shell.chat.blocks);
-    if all.len() < 2 {
+    if !shows(&shell.chat.blocks) {
         return None;
     }
+    let all = chapters::of(&shell.chat.blocks);
     let p = shell.palette;
     let top = shell.chat.top_row(cx);
     let current = chapters::current(&all, top);
@@ -76,7 +91,7 @@ pub fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .id("chapters")
             .absolute()
             .top(px(24.))
-            .left(px(8.))
+            .left(px(LEFT))
             .child(v_flex().id("chapter-bars")
                 // The pointer on the bars opens the list; the list, once open, closes itself.
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
