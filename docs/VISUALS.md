@@ -75,7 +75,14 @@ where a card doesn't draw, a screen shows the block as code, like any other.
   them (`color: var(--fg)`); a card may also use `@media (prefers-color-scheme: dark)`.
 - As wide as the column (at most 640 CSS pixels), as tall as its content; a screen may cut it
   off past 1200 pixels with a "more" that shows the source.
-- Links are shown as text; a screen never follows one from inside a card.
+- Links are shown as text; a screen never follows one from inside a card. An `<a>` or
+  `<area>` (HTML's or SVG's) has no `href`, or one that is a place in the card (`#…`): anything
+  else — `http(s):`, `//`, `file:`, `javascript:`, `data:`, a relative path, an empty `href`,
+  one spelled with entities (`&#104;ttp…`) or whatever a browser strips around a URL — and any
+  `target` or `download` fails the check (T-357). The check reads every `<` and a letter as a
+  tag, inside a comment, a `<style>` or an attribute's value too, so a tag a browser finds where
+  an eye wouldn't (after `--!>`, past a `</style>` a quote seemed to hold) is read as well. The
+  card's page opened in the browser panel goes nowhere by click or key.
 
 ## Who draws what
 
@@ -175,6 +182,12 @@ same frame and CSP, without a fixed tone (it follows the screen's). A screen get
 The desktop shows the card's PNG; clicking it opens the page in equipe's browser panel as a
 `data:text/html;base64,<data>` URL (the panel opens `data:` URLs but not `file://` ones, and
 the desktop may be on another Mac). The CSP inside still holds there: nothing runs or loads.
+And nothing in it leads elsewhere: its links only go to a place in it (the check), and a page
+kept under an older, looser contract isn't given out (`read_image` refuses it) or listed in a
+snapshot. A test opens a kept page in a real Chrome, as a `data:` URL and as its file, clicks
+everything in it — plain, ⌘, ⇧, middle — and Tabs through it pressing Enter and Space: its top
+frame never asks for another URL, no tab opens elsewhere, nothing reaches the network, while the
+same page with a link out, past the check, is seen to go (`card/tests/panel.rs`).
 
 ### Limits
 
