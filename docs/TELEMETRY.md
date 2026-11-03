@@ -119,6 +119,11 @@ Or as an insight: Trends → `work_accepted` where `by = person`, aggregated
 by unique `squad` (a property count), weekly. A PM's accept doesn't count:
 the North Star is the person approving what the squad made.
 
+equipe's Metrics screen shows it from a PostHog connection to this project:
+the `posthog` source's `north_star`, counted for every day's 7 days up to it
+by this Mac's calendar days rather than `now()`'s 168 hours
+(docs/METRICS.md).
+
 ## Changing this contract
 
 Adding an event or a property means changing this page in the same change,

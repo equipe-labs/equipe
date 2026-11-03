@@ -82,7 +82,11 @@ in equipe's Metrics screen; ask them if you need one."
                 (Some(d), None) => format!(", {}{}", if d >= 0.0 { "+" } else { "" }, number(d)),
                 _ => String::new(),
             };
-            let total = if v.shape == Shape::Total { ", running total" } else { "" };
+            let total = match v.shape {
+                Shape::Total => ", running total",
+                Shape::Rolling => ", 7 days before; each value counts the 7 days up to its day",
+                _ => "",
+            };
             let as_of = v.as_of.as_deref().map(|d| format!(", latest day {d}")).unwrap_or_default();
             let _ = writeln!(out, "- {} `{}`: {value} {} (before: {previous}{change}{total}; {}/{} days known{as_of})", v.label, v.metric, v.unit, v.days_known, r.days);
             for s in v.breakdown.iter().take(SHARES) {
@@ -91,7 +95,12 @@ in equipe's Metrics screen; ask them if you need one."
             }
             if !v.series.is_empty() && v.shape != Shape::Breakdown {
                 let series: Vec<String> = v.series.iter().map(|s| format!("{} {}", &s.day[5..], s.value.map_or_else(|| "–".to_owned(), number))).collect();
-                let _ = writeln!(out, "  - by {}: {}", if r.bucket == Bucket::Week { "week" } else { "day" }, series.join(", "));
+                let by = match (v.shape, r.bucket) {
+                    (Shape::Rolling, _) => "7 days",
+                    (_, Bucket::Week) => "week",
+                    _ => "day",
+                };
+                let _ = writeln!(out, "  - by {by}: {}", series.join(", "));
             }
         }
     }

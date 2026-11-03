@@ -277,3 +277,52 @@ fn a_total_split_by_label_shows_its_last_days_split() {
     assert_eq!(split, BTreeMap::from([("github.com".into(), 12.0), ("t.co".into(), 3.0)]));
     assert_eq!(as_of, Some(day("2026-11-01")));
 }
+
+#[test]
+fn a_rolling_metric_is_its_last_day_beside_seven_days_before_in_twelve_weeks() {
+    let home = scratch("rolling");
+    let today = day("2026-11-02");
+    let c = Connection {
+        id: "m1".into(),
+        squad: "acme".into(),
+        project: None,
+        kind: SourceKind::Posthog,
+        settings: BTreeMap::new(),
+        keys: vec!["api_key".into()],
+        connected_at: noon(today - 100),
+        last: None,
+        last_ok: Some(noon(today)),
+    };
+    keep_connections(&home, &[c]).unwrap();
+    // Squads in the 7 days up to each day: known from 30 days back, today's not fetched yet.
+    let points: Vec<Point> = (today - 30..today).map(|n| Point { metric: NORTH_STAR.into(), day: day_string(n), value: (n - today + 40) as f64, breakdown: None }).collect();
+    let snapshot = Snapshot { schema: SCHEMA, connection: "m1".into(), kind: SourceKind::Posthog, fetched_at: noon(today), points };
+    private_write(&snapshots_dir(&home, "acme", "m1").join("2026-11-02.json"), &serde_json::to_string(&snapshot).unwrap()).unwrap();
+
+    for (days, bucket) in [(7, Bucket::Day), (30, Bucket::Week)] {
+        let q = query(&home, &QueryParams { squad: "acme".into(), days: Some(days), bucket, metrics: vec![NORTH_STAR.into()], ..Default::default() }, today).unwrap();
+        let v = &q.values[0];
+        assert_eq!((v.shape, v.unit.as_str()), (Shape::Rolling, "squads"));
+        assert_eq!(v.as_of.as_deref(), Some("2026-11-01"));
+        assert_eq!(v.value, Some(39.0), "the last day's, not a sum");
+        assert_eq!(v.previous, Some(32.0), "7 days before it, whatever the period");
+        assert_eq!((v.change, v.change_pct), (Some(7.0), Some(21.9)));
+        assert_eq!(v.series.len(), 12, "{days} days");
+        assert_eq!(v.series.last().unwrap().day, "2026-11-01");
+        assert_eq!(v.series[0].day, day_string(today - 1 - 77));
+        let values: Vec<Option<f64>> = v.series.iter().map(|s| s.value).collect();
+        assert_eq!(values[..7], [None; 7], "before it was known");
+        assert_eq!(values[7..], [Some(11.0), Some(18.0), Some(25.0), Some(32.0), Some(39.0)]);
+    }
+
+    let s = summary(&home, &SummaryParams { squad: "acme".into(), project: None }, today).unwrap();
+    assert_eq!(s.tiles[0].metric, NORTH_STAR, "the phone's first tile");
+    assert_eq!((s.tiles[0].value, s.tiles[0].previous), (Some(39.0), Some(32.0)));
+
+    // A source that never reported it (no work_accepted there): not answered at all.
+    let none = Snapshot { points: vec![], ..serde_json::from_str(&std::fs::read_to_string(snapshots_dir(&home, "acme", "m1").join("2026-11-02.json")).unwrap()).unwrap() };
+    private_write(&snapshots_dir(&home, "acme", "m1").join("2026-11-02.json"), &serde_json::to_string(&none).unwrap()).unwrap();
+    let q = query(&home, &QueryParams { squad: "acme".into(), ..Default::default() }, today).unwrap();
+    assert!(q.values.iter().all(|v| v.metric != NORTH_STAR));
+    assert!(q.values.iter().any(|v| v.metric == "visits"));
+}

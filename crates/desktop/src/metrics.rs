@@ -212,7 +212,7 @@ pub fn cards(query: &QueryResult, sources: &Sources) -> Vec<Card> {
                     let top = m.breakdown.iter().map(|s| s.value).fold(0., f64::max);
                     Body::Bars(m.breakdown.iter().map(|s| Bar { label: s.label.clone(), value: number(s.value), fill: if top > 0. { (s.value / top) as f32 } else { 0. } }).collect())
                 }
-                Shape::Count | Shape::Total => Body::Number { value: m.value.map(number), change: change_of(m), series: values_of(&m.series), previous: values_of(&m.previous_series) },
+                Shape::Count | Shape::Total | Shape::Rolling => Body::Number { value: m.value.map(number), change: change_of(m), series: values_of(&m.series), previous: values_of(&m.previous_series) },
             };
             Card {
                 connection: m.connection.clone(),
@@ -463,7 +463,7 @@ pub mod demo {
         let last = windows.iter().flatten().last().copied();
         let before = windows.len().checked_sub(2).and_then(|n| windows[n]);
         let series = windows.iter().enumerate().map(|(n, v)| Sample { day: format!("2026-w{n:02}"), value: *v }).collect();
-        MetricValue { connection: connection.into(), kind: SourceKind::Posthog, metric: NORTH_STAR.into(), label: "Squads approving each week".into(), unit: "squads".into(), shape: Shape::Total, value: last, previous: before, change: last.zip(before).map(|(a, b)| a - b), change_pct: last.zip(before).filter(|(_, b)| *b > 0.).map(|(a, b)| ((a - b) / b * 100.).round()), as_of: Some("2026-11-02".into()), days_known: 7, series, previous_series: vec![], breakdown: vec![] }
+        MetricValue { connection: connection.into(), kind: SourceKind::Posthog, metric: NORTH_STAR.into(), label: "Squads approving each week".into(), unit: "squads".into(), shape: Shape::Rolling, value: last, previous: before, change: last.zip(before).map(|(a, b)| a - b), change_pct: last.zip(before).filter(|(_, b)| *b > 0.).map(|(a, b)| ((a - b) / b * 100.).round()), as_of: Some("2026-11-02".into()), days_known: 7, series, previous_series: vec![], breakdown: vec![] }
     }
 
     pub fn north_full() -> Vec<Option<f64>> {
