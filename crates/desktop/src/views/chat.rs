@@ -1815,11 +1815,14 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
 fn routine_row(rows: &Rows, key: u64, text: &str, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let Some(ran) = crate::routine::ran(text) else { return div().into_any_element() };
+    // The weekly retro: headed by the day its week runs up to, whatever the routine is called now.
+    let retro = crate::retro::heading(text);
+    let title = retro.clone().unwrap_or_else(|| t!("chat.routine_ran", title = ran.title));
     let open = rows.is_open(key, PART_ROUTINE, false);
     let progress = motion::openness(("routine-open", key), open, window, cx);
     let head = disclosure_head(rows, ("routine", key), PART_ROUTINE, key, false, window, cx)
-        .child(icon(Icon::Clock, 13., p.accent))
-        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t!("chat.routine_ran", title = ran.title)))
+        .child(icon(if retro.is_some() { Icon::Flag } else { Icon::Clock }, 13., p.accent))
+        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(title.clone()))
         .when(!ran.asked.is_empty(), |h| h.child(chevron(p.muted, progress)));
     let body = (progress > 0. && !ran.asked.is_empty()).then(|| {
         let state = rows.views.borrow_mut().get(view_key(key, 4), &escape_markdown(ran.asked), cx);
@@ -1841,7 +1844,7 @@ fn routine_row(rows: &Rows, key: u64, text: &str, window: &mut Window, cx: &mut 
                 .into_any_element(),
         )
     });
-    v_flex().id(("routine-ran", key)).role(Role::Article).aria_label(t!("chat.routine_ran", title = ran.title)).mt_4().child(head).children(body).into_any_element()
+    v_flex().id(("routine-ran", key)).role(Role::Article).aria_label(title).mt_4().child(head).children(body).into_any_element()
 }
 
 /// Your words as Markdown that shows them as typed: every mark escaped, every

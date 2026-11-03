@@ -36,6 +36,7 @@ pub mod permissions;
 pub mod mock;
 pub mod nemotron;
 pub mod pairing;
+pub mod retro;
 pub mod roles;
 pub mod routines;
 pub mod secrets;

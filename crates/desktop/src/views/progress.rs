@@ -126,6 +126,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         column = column.child(v_flex().w_full().gap_1().child(heading(shell, None, t!("progress.done").into(), done.len())).children(rows));
     }
 
+    // The retros gone by: a day and a line each, opening the PM's conversation there.
+    let retros = shell.model.pm().and_then(|pm| model.convos.get(&pm)).map(|c| crate::retro::past(c.transcript.entries())).unwrap_or_default();
+    if !retros.is_empty() {
+        let rows = retros.iter().enumerate().map(|(i, r)| retro_row(shell, i, r, cx));
+        column = column.child(v_flex().w_full().gap_1().child(heading(shell, None, t!("progress.retros").into(), retros.len())).children(rows));
+    }
+
     // What runs on its own, on a schedule: the routines, below the work.
     column = column.child(super::routines::section(shell, cx));
     v_flex()
@@ -202,6 +209,30 @@ fn done_row(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
+/// A retro gone by: the day its week runs up to, and a line of what it said.
+fn retro_row(shell: &Shell, i: usize, past: &crate::retro::Past, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let to = past.to.clone();
+    h_flex()
+        .id(("progress-retro", i))
+        .w_full()
+        .min_h(px(36.))
+        .px_2()
+        .py_1()
+        .gap_3()
+        .items_center()
+        .rounded(px(R_MD))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .text_size(px(SMALL))
+        .role(Role::Button)
+        .aria_label(format!("{} · {}", past.to, past.line))
+        .child(div().w(px(88.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(past.to.clone()))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).text_color(p.text2).child(past.line.clone()))
+        .on_click(cx.listener(move |this, _, window, cx| this.open_retro(&to, window, cx)))
+        .into_any_element()
+}
+
 fn base(shell: &Shell, id: TicketId, cx: &mut Context<Shell>) -> Stateful<Div> {
     let p = shell.palette;
     h_flex()
@@ -224,6 +255,17 @@ fn base(shell: &Shell, id: TicketId, cx: &mut Context<Shell>) -> Stateful<Div> {
 }
 
 impl Shell {
+    /// A past retro's row: the PM's conversation, at the retro's run.
+    pub fn open_retro(&mut self, to: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pm) = self.model.pm() else { return };
+        self.select_member(pm, window, cx);
+        self.chat_sync(cx);
+        if let Some(row) = crate::retro::row_of(&self.chat.blocks, to) {
+            self.chat.scroll_to(row, cx);
+        }
+        cx.notify();
+    }
+
     /// 진행 상황, from 작업 중: "since you last looked" means since the last
     /// time it was opened on this Mac (the start of today, the first time).
     pub fn open_progress(&mut self, cx: &mut Context<Self>) {

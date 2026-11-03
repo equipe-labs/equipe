@@ -672,6 +672,7 @@ fn questions() -> QuestionSet {
         ],
         asked_at: NOW / 1000,
         review: false,
+        retro: None,
     }
 }
 
@@ -698,6 +699,7 @@ fn visual_questions() -> QuestionSet {
         }],
         asked_at: NOW / 1000,
         review: false,
+        retro: None,
     }
 }
 

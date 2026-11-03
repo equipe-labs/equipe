@@ -64,6 +64,7 @@ pub fn joining_routine(role: &str, lang: Lang, id: u32) -> Option<Routine> {
         crate::roles::SECURITY => Some(weekly_security_check(lang, id)),
         crate::roles::MARKETING => Some(weekly_marketing_check(lang, id)),
         crate::design::review::ROLE => Some(crate::design::review::routine(lang, id)),
+        crate::retro::ROLE => Some(crate::retro::routine(lang, id)),
         _ => None,
     }
 }

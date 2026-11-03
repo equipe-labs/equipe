@@ -1219,6 +1219,7 @@ pub(crate) mod tests {
             questions: vec![Question { question: long.clone(), header: "DB".into(), options: vec![option("Postgres"), option("SQLite")], multi_select: false, ..Question::default() }; 2],
             asked_at: 1,
             review: false,
+            retro: None,
         };
         let out = core.on_squad_event("acme", &Event::QuestionsAsked { squad: "acme".into(), questions: set });
         let Action::Relay(push) = &out[0] else { panic!() };

@@ -536,9 +536,11 @@ impl Runtime {
 
     /// A ticket's record, to the screens following its squad.
     pub(super) fn send_history(&mut self, squad: &str, id: TicketId) {
-        let Some(entries) = self.journal(squad).and_then(|j| j.ticket_entries(id).ok()) else {
+        let Some(mut entries) = self.journal(squad).and_then(|j| j.ticket_entries(id).ok()) else {
             return;
         };
+        // When its member said it would be done is the retro's to read, not a line to show.
+        entries.retain(|e| e.kind != crate::retro::ESTIMATED);
         self.publish_in(Some(squad), Event::TicketHistory { squad: squad.to_owned(), ticket: id, entries });
     }
 }

@@ -236,6 +236,8 @@
   "routine.design_review.step_qa": "設計 QA",
   "routine.design_review.step_system": "設計系統",
   "routine.design_review.title": "設計評審",
+  "routine.retro.prompt": "每週回顧。下面的 [Retro facts · …] 裡是 equipe 從小隊紀錄中收集的本週事實：請以此為依據，不要編造；事實裡沒有的，就說不知道。\n請用一則訊息帶來，以「每週回顧」為標題，依這個順序：\n1. 已上線：合入 main 的工單，每個寫上 T- 編號和標題。\n2. 卡住的和原因：卡住的回合、失敗的工單、被退回的工作、錯過的 ETA、成員等我核准的情況——在事實能說明的範圍內附上原因。\n3. 各成員的時間：每個成員、每張工單的回合數、時間和用量，以及按成員或角色看哪裡有摩擦。\n如果專案有簡報（docs/briefs/），請把每份預期的和實際發生的並排列出。\n最後，教訓最多三條，下週要改的也最多三條。把要改的用一次 `ask_decision` 問我，每項改動一個問題，點一下就能回答：第一個選項是這項改動（推薦），最後一個選項是「本週不做」。給每個問題填上 `lesson`：它背後的教訓，一行。只有我接受的改動的教訓，equipe 才會連同日期記入小隊記憶的 \"lessons\"；其餘的會被捨棄——不要自己去記。\n不要自己改任何東西——設定和例行工作都不要：改為提議（提議工單、`propose_routine`），只有我的點擊才會開啟。",
+  "routine.retro.title": "每週回顧",
   "taste.invalid_already": "已經有同樣的偏好備註。",
   "taste.invalid_empty": "偏好備註是空的。請用一行寫下。",
   "taste.invalid_lines": "偏好備註只有一行。有幾件事就分別新增。",

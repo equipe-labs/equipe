@@ -34,6 +34,7 @@ pub fn set(now: u64) -> QuestionSet {
         }],
         asked_at: now.saturating_sub(120),
         review: true,
+        retro: None,
     }
 }
 

@@ -369,6 +369,7 @@ async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
         questions: vec![Question { question: "Which logo?".into(), options: vec![option("A", vec![shown.clone()]), option("B", vec![])], ..Question::default() }],
         asked_at: 1,
         review: false,
+        retro: None,
     };
     let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
     journal.set_questions(&[set]).unwrap();
