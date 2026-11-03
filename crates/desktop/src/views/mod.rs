@@ -18,6 +18,7 @@ pub mod connect;
 pub mod decide;
 pub mod deck;
 pub mod design;
+pub mod design_setup;
 pub mod diffview;
 pub mod disk;
 pub mod doc;

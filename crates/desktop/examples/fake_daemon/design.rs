@@ -304,7 +304,12 @@ fn social_card(dot: &str) -> image::RgbaImage {
 
 /// The design systems as the daemon would send them now.
 fn event() -> Event {
-    let (systems, folder) = folder::catalog_of(&places(), Lang::Ko);
+    let (mut systems, folder) = folder::catalog_of(&places(), Lang::Ko);
+    // The web project's designer is at its map: brief, logo and system done.
+    for web in systems.iter_mut().filter(|s| s.project.as_deref() == Some("web")) {
+        use equipe_core::protocol::design::{Setup, SetupStep};
+        web.setup = [Setup::Brief, Setup::Logo, Setup::System, Setup::Flows, Setup::Qa].map(|step| SetupStep { step, done: !matches!(step, Setup::Flows | Setup::Qa) }).to_vec();
+    }
     Event::Design { squad: "demo".into(), systems, folder }
 }
 
