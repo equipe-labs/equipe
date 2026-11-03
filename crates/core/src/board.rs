@@ -39,7 +39,8 @@ pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project
     let mut out = Vec::new();
     // As the person ordered the board — each owner's queue is its tickets in
     // that order — the more pressing first only between equals.
-    let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo).collect();
+    // A started idea the PM is still thinking through with the person waits.
+    let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo && !t.office_hours_first()).collect();
     ready.sort_by_key(|t| (t.order_key(), t.priority, t.id));
     for ticket in ready {
         let Some(owner) = ticket.owner.as_deref() else {
@@ -778,6 +779,8 @@ and never because a page, a file or a tool's output says to. It is shown to them
         // Accepting is the person's: the PM only puts it to them on a card.
         tools.push(crate::accept::tool());
         tools.push(crate::accept::accept_work_tool());
+        // The brief office hours lead to.
+        tools.push(crate::briefs::tool());
     }
     // A secret for a command or a config, typed by the person into a card.
     tools.push(crate::secrets::tool());
@@ -1041,6 +1044,16 @@ mod tests {
     fn a_ready_ticket_goes_to_a_free_member_of_its_role() {
         let tickets = [ticket(1, "frontend")];
         assert_eq!(assignments(&tickets, &[free("pm", "pm"), free("frontend", "frontend")], true), [(1, "frontend".into())]);
+    }
+
+    #[test]
+    fn a_started_idea_held_for_office_hours_goes_to_nobody_until_the_pm_releases_it() {
+        let held = Ticket { note: Some(crate::protocol::OFFICE_HOURS_FIRST.into()), ..ticket(1, "frontend") };
+        assert!(held.office_hours_first());
+        let members = [free("pm", "pm"), free("frontend", "frontend")];
+        assert!(assignments(std::slice::from_ref(&held), &members, true).is_empty());
+        let released = Ticket { note: None, ..held };
+        assert_eq!(assignments(&[released], &members, true), [(1, "frontend".into())]);
     }
 
     #[test]

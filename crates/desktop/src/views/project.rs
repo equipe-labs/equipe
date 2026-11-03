@@ -1,15 +1,18 @@
 //! A project's page, where its name in the sidebar leads: its conversations
-//! with the PM (whose turn it is) and its work (what waits on the person
-//! first), in two tabs, with a new conversation about it one press away.
-//! Nothing here filters the rest of the window: the page is the project's.
+//! with the PM (whose turn it is), its work (what waits on the person first)
+//! and its briefs and plans (what was thought through before it was built),
+//! in three tabs, with a new conversation about it one press away — or office
+//! hours with the PM, where nothing has been thought through yet. Nothing
+//! here filters the rest of the window: the page is the project's.
 
-use equipe_core::protocol::{PutAway, TicketId};
+use equipe_core::protocol::briefs::ProjectDoc;
+use equipe_core::protocol::{Command, PutAway, TicketId};
 use equipe_core::t;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::board::{ProjectTab, WorkPart, project_put_away, project_talks, project_work};
+use crate::board::{DocTone, ProjectTab, WorkPart, doc_kind, doc_status, office_hours_ask, project_docs, project_put_away, project_talks, project_work};
 use crate::icons::Icon;
 use crate::state::{Lane, Presence, Side, status_word};
 use crate::theme::{MONO, R_MD, SMALL};
@@ -103,6 +106,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 )
             })
     };
+    let docs = project_docs(&shell.docs, &name);
     let talks_count = yours.len() + answering.len();
     let work_count = work.iter().filter(|(w, _)| *w != WorkPart::Done).map(|(_, ids)| ids.len()).sum::<usize>();
     let tabs = h_flex()
@@ -111,10 +115,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .border_b_1()
         .border_color(p.hair)
         .child(tab_button("project-tab-talks", ProjectTab::Talks, t!("project.tab_talks").into(), talks_count, false, cx))
-        .child(tab_button("project-tab-work", ProjectTab::Work, t!("project.tab_work").into(), if needs > 0 { needs } else { work_count }, needs > 0, cx));
+        .child(tab_button("project-tab-work", ProjectTab::Work, t!("project.tab_work").into(), if needs > 0 { needs } else { work_count }, needs > 0, cx))
+        .child(tab_button("project-tab-docs", ProjectTab::Docs, t!("project.tab_docs").into(), docs.len(), false, cx));
     let body = match tab {
         ProjectTab::Talks => talks(shell, &name, &yours, &answering, &project_put_away(model, &name), cx),
         ProjectTab::Work => work_list(shell, &work, cx),
+        ProjectTab::Docs => docs_list(shell, &name, &docs, cx),
     };
     page(shell, header, v_flex().w_full().gap_4().child(tabs).child(body).into_any_element())
 }
@@ -269,6 +275,8 @@ fn ticket_row(shell: &Shell, id: TicketId, hot: bool, cx: &mut Context<Shell>) -
     let asks = hot && model.approvals.open_items().any(|a| a.ticket == Some(id));
     let state = match model.section_of(t) {
         _ if asks => t!("state.section_permission"),
+        // A started idea the PM thinks through with the person first.
+        _ if t.office_hours_first() => t!("project.held_office_hours"),
         Some(section) if hot => section.label(),
         _ => status_word(t.status),
     };
@@ -299,6 +307,91 @@ fn ticket_row(shell: &Shell, id: TicketId, hot: bool, cx: &mut Context<Shell>) -
         .into_any_element()
 }
 
+/// The briefs and plans, newest first — or, none yet, office hours to start.
+fn docs_list(shell: &Shell, project: &str, docs: &[&ProjectDoc], cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let start = |id: &'static str, kind: ui::Kind, cx: &mut Context<Shell>| {
+        let project = project.to_owned();
+        ui::button(p, id, kind, t!("project.office_hours")).icon(Icon::Message).on_click(cx.listener(move |this, _, window, cx| this.start_office_hours(project.clone(), window, cx)))
+    };
+    if docs.is_empty() {
+        return v_flex()
+            .w_full()
+            .py_10()
+            .gap_1p5()
+            .items_center()
+            .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(t!("project.docs_empty_title")))
+            .child(div().max_w(px(420.)).text_center().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(t!("project.docs_empty")))
+            .child(div().pt_3().child(start("project-office-hours", ui::Kind::Primary, cx)))
+            .into_any_element();
+    }
+    let rows: Vec<AnyElement> = docs.iter().enumerate().map(|(i, d)| doc_row(shell, i, d, cx)).collect();
+    // The tab says what they are: the rows start at once, office hours after them.
+    v_flex().w_full().pt_2().gap_0p5().children(rows).child(h_flex().pt_4().child(start("project-office-hours-more", ui::Kind::Secondary, cx))).into_any_element()
+}
+
+/// A brief or plan: what it is, its title, its date and how it stands — opened beside the page.
+fn doc_row(shell: &Shell, i: usize, d: &ProjectDoc, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let path = std::path::PathBuf::from(&d.path);
+    let (status, tone) = doc_status(&d.status);
+    let (fill, ink) = match tone {
+        DocTone::Settled => (p.accent_bg, p.accent),
+        DocTone::Review => (Rgba { a: 0.18, ..p.amber }, p.text),
+        DocTone::Draft => (p.wash, p.text2),
+        DocTone::Dropped => (gpui_kit::transparent_black().into(), p.muted),
+    };
+    let dropped = tone == DocTone::Dropped;
+    h_flex()
+        .id(("project-doc", i))
+        .w_full()
+        .h(px(36.))
+        .px_2()
+        .ml(px(-8.))
+        .gap_2()
+        .items_center()
+        .rounded(px(R_MD))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .aria_label(d.title.clone())
+        .tip(p, t!("project.doc_open_tip"), None)
+        .on_click(cx.listener(move |this, _, _, cx| this.open_doc(path.clone(), cx)))
+        .child(div().w(px(44.)).flex_none().truncate().text_size(px(12.)).text_color(p.muted).child(doc_kind(d.kind)))
+        .child(div().flex_auto().min_w(px(64.)).truncate().text_size(px(14.)).text_color(if dropped { p.text2 } else { p.text }).child(d.title.clone()))
+        // Narrow, the date gives way to the title — whole, or not at all: past
+        // an empty first item it wraps onto a second line, out of sight.
+        .children((!d.date.is_empty()).then(|| {
+            h_flex()
+                .min_w_0()
+                // It shrinks long before the title does.
+                .flex_shrink(1000.)
+                .h(px(20.))
+                .flex_wrap()
+                .overflow_hidden()
+                .items_center()
+                .child(div().w(px(0.)).h(px(20.)))
+                .child(div().flex_none().whitespace_nowrap().font_family(MONO).text_size(px(12.)).line_height(px(20.)).text_color(p.muted).child(d.date.clone()))
+        }))
+        // In a column of its own, so the dates line up whatever the word.
+        .child(h_flex().flex_none().min_w(px(76.)).justify_end().child(
+            div()
+                .flex_none()
+                .h(px(20.))
+                .px(px(7.))
+                .flex()
+                .items_center()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(if dropped { p.hair } else { gpui_kit::transparent_black().into() })
+                .bg(fill)
+                .text_size(px(11.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(ink)
+                .child(status),
+        ))
+        .into_any_element()
+}
+
 /// How long the releases found stay fresh before a page asks again.
 const RELEASES_FRESH: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -325,6 +418,23 @@ impl Shell {
         .detach();
     }
 
+    /// Office hours on `project`: a new conversation about it, where the person
+    /// asks the PM, in their words, to think it through with them first.
+    pub fn start_office_hours(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_conversation(Some(project.clone()), window, cx);
+        self.run_line(&office_hours_ask(&project), window, cx);
+        self.chat.follow_tail(cx);
+    }
+
+    /// The briefs and plans the daemon read: kept for the project pages.
+    pub fn docs_arrived(&mut self, squad: String, docs: Vec<ProjectDoc>) -> bool {
+        if squad != self.model.squad || self.docs == docs {
+            return false;
+        }
+        self.docs = docs;
+        true
+    }
+
     /// A project's page, from its name in the sidebar (or ⌃1–⌃9, 현황).
     pub fn open_project_page(&mut self, name: String, _window: &mut Window, cx: &mut Context<Self>) {
         // Another project: its conversations first — its work when it has none.
@@ -334,6 +444,8 @@ impl Shell {
         }
         self.board.project_page = Some(name);
         self.ask_releases(cx);
+        // Its briefs and plans, as they are now.
+        self.send_command(Command::ProjectDocs { squad: self.model.squad.clone() });
         self.show(Screen::Project, cx);
         cx.notify();
     }

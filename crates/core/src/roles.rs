@@ -539,6 +539,36 @@ pub struct Context<'a> {
     pub edits: bool,
 }
 
+/// How the PM thinks a sizeable piece of work through with the person
+/// before any ticket: office hours, then a brief (`crate::briefs`).
+const OFFICE_HOURS: &str = "\n\nOffice hours. When the person brings a new feature or product idea of real size, \
+or starts an idea (a message that starts with [Idea start · …]), think it through with them before any ticket: that \
+takes the place of the rounds above. A small fix or a clear task skips it — say in a line that it's small, and go. \
+Ask everything as `ask_decision` cards, ONE question a card, and wait for each answer before the next: two to four \
+concrete options drawn from what you know — the code, the squad's memory, their earlier answers — your \
+recommendation first; their own words are always open. Give each card a `header` naming the step and where it is \
+(\"Demand 1/6\") in their language. First, what it is for: startup mode (a product others should want, where demand \
+must be proven) or builder mode (something they want made for themselves or their team). In startup mode, six \
+forcing questions in order: demand reality (who has this problem now, and what shows it — what they do, pay, put up \
+with); the status quo (what they use today, and what it costs them); desperate specificity (the one person or company \
+who needs it most, by name or role); the narrowest wedge (the smallest thing that person would use this week); \
+observation and surprise (what they saw users do that they didn't expect); future-fit (why it gets more true, not \
+less, in three years). In builder mode, ask only what is unknown of: who uses it, what done looks like, what it must \
+not become. Push until each answer is specific and evidenced: when one is vague, your next card pushes back rather \
+than moving on — define the word left undefined, name the assumption hidden in it, ask for the example or the number. \
+No flattery, no praise of the question or the idea. Then check the premise, in one card: is this the right problem; \
+what happens if we do nothing; what existing code or tools already solve part of it (look before you ask); how users \
+will actually get it. Then look at the landscape — only with the tools you have (the web, the repository) — and say \
+what you couldn't check. Then two or three genuinely different alternatives, each with what it costs and risks, your \
+recommendation first, as a one-click choice; where there is a screen, sketch each as a wireframe and put it on its \
+option as `images` (a screen of any size is the designer's, after the brief). Then write the brief with \
+`write_brief`, status draft, in the person's language: the goal and the mode; who it is for; what each answer \
+established and its evidence; the premise check; the landscape; the alternatives and the one chosen; in and out of \
+scope; what done looks like and how it is measured; risks and open questions. Before you show it, get a second \
+opinion from the other engine: `equipe brief critique <its path>`{tools_at}; fold in what holds, and say what you \
+changed. Show it with its path; it is settled only when the person says so — then `write_brief` again with status \
+settled, and only then the plan and the tickets, each naming the brief. When they let it go, status dropped.";
+
 /// What an engine is told about who it is on the team.
 /// The PM's word on acceptance when the person accepts every piece of work.
 const PERSON_ACCEPTS: &str = "Only the person accepts finished work; tell them when something waits for review.";
@@ -872,6 +902,12 @@ until it is useful. Yours wait for their yes like theirs."
 back at the right time."
             .to_owned()
     };
+    // Before anything sizeable is built: office hours with the person, then a brief.
+    let office_hours = if ctx.board_tools && role.id == PM {
+        OFFICE_HOURS.replace("{tools_at}", &ctx.equipe.map(|path| format!(" (`{path}` if `equipe` isn't on your PATH)")).unwrap_or_default())
+    } else {
+        String::new()
+    };
     let memory = match ctx.home {
         Some(home) => {
             let index = match ctx.memory {
@@ -918,7 +954,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{remix}{desktop}{pictures}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{remix}{desktop}{pictures}{reports}{ideas}{office_hours}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -1152,6 +1188,34 @@ mod tests {
         assert!(member.contains("`idea: true`") && member.contains("the PM brings it back"), "{member}");
         let no_tools = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], false));
         assert!(!no_tools.contains("`idea: true`"), "no board tools, no ideas to keep");
+    }
+
+    #[test]
+    fn the_pm_runs_office_hours_one_question_a_card_before_building_anything_sizeable() {
+        let team = [Teammate { name: "pm", role: PM }];
+        let pm = charter(role(PM).unwrap(), "pm", &Context { equipe: Some("/opt/equipe"), ..ctx(&team, &[], true) });
+        let at = |part: &str| pm.find(part).unwrap_or_else(|| panic!("{part}: {pm}"));
+        // When: sizeable new work, or an idea started; small work skips it.
+        for part in ["new feature or product idea of real size", "[Idea start · …]", "before any ticket", "A small fix or a clear task skips it"] {
+            at(part);
+        }
+        // How: cards, one question each, options from what's known, free words, pushback.
+        for part in ["`ask_decision` cards, ONE question a card", "wait for each answer", "two to four", "concrete options drawn from what you know", "their own words are always open", "`header`", "your next card pushes back", "define the word left undefined", "name the assumption hidden", "No flattery"] {
+            at(part);
+        }
+        // In order: the mode, the six forcing questions, the premise, the landscape, the alternatives, the second opinion, the brief.
+        let order = ["startup mode", "demand reality", "the status quo", "desperate specificity", "the narrowest wedge", "observation and surprise", "future-fit", "check the premise", "if we do nothing", "existing code or tools", "how users", "look at the landscape", "only with the tools you have", "two or three genuinely different alternatives", "one-click choice", "wireframe", "`write_brief`, status draft", "second opinion from the other engine", "`equipe brief critique <its path>` (`/opt/equipe` if", "settled only when the person says so", "only then the plan and the tickets"];
+        let places: Vec<usize> = order.iter().map(|p| at(p)).collect();
+        assert!(places.windows(2).all(|w| w[0] < w[1]), "in order: {order:?}");
+        at("status draft, in the person's language");
+        // Only the PM, and only with its board tools.
+        let member = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true));
+        assert!(!member.contains("Office hours") && !member.contains("write_brief"));
+        let bare = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], false));
+        assert!(!bare.contains("Office hours."), "no cards to ask on");
+        // The brief's tool is the PM's alone.
+        assert!(crate::board::tools_for(PM).iter().any(|t| t["name"] == crate::briefs::WRITE_BRIEF));
+        assert!(!crate::board::tools_for("frontend").iter().any(|t| t["name"] == crate::briefs::WRITE_BRIEF));
     }
 
     #[test]

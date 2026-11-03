@@ -477,7 +477,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
             },
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
-        let mut waiting = if deciding().is_some() { sets } else { Vec::new() };
+        let mut waiting = if briefs::office() { vec![briefs::office_hours_set(now)] } else if deciding().is_some() { sets } else { Vec::new() };
         if review::on() {
             waiting.insert(0, review::set(now));
         }
@@ -924,6 +924,9 @@ mod switching;
 #[path = "fake_daemon/design.rs"]
 mod design;
 
+#[path = "fake_daemon/briefs.rs"]
+mod briefs;
+
 #[path = "fake_daemon/flows.rs"]
 mod flows;
 
@@ -963,6 +966,7 @@ async fn main() {
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
     design::seed();
+    briefs::seed();
     if pictures::on() || review::on() {
         pictures::make();
     }
@@ -1497,7 +1501,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

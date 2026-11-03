@@ -187,7 +187,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Focus { .. }
         | Command::Refresh { .. }
         | Command::Engines
-        | Command::Design { .. }) => Some(c),
+        | Command::Design { .. }
+        | Command::ProjectDocs { .. }) => Some(c),
         _ => None,
     }
 }
@@ -220,7 +221,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
         | Command::ShowBrowser { squad, .. }
-        | Command::Design { squad } => Some(squad),
+        | Command::Design { squad }
+        | Command::ProjectDocs { squad } => Some(squad),
         _ => None,
     }
 }

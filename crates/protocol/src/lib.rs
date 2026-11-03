@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod accept;
 pub mod asks;
+pub mod briefs;
 pub mod decide;
 pub mod disk;
 pub mod metrics;
@@ -27,6 +28,10 @@ pub mod signals;
 pub const COULD_NOT_START: &str = "Couldn't start: ";
 /// How an idea the PM put to the person says why its time has come, in its note.
 pub const WHY_NOW: &str = "Why now: ";
+/// How a started idea waits while the PM runs office hours with the person,
+/// in its note: equipe hands it to nobody until the PM releases it
+/// (`update_ticket`, status todo).
+pub const OFFICE_HOURS_FIRST: &str = "Office hours first: the PM releases it.";
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -37,6 +42,7 @@ pub mod vault;
 pub mod review;
 pub mod words;
 
+pub use briefs::ProjectDoc;
 pub use transcript::Transcript;
 
 /// One conversation with one agent. Chosen by the screen that opens it — at
@@ -360,6 +366,12 @@ impl Ticket {
     }
 
     /// Handed in and ready for the person's review: past design QA, if it had one.
+    /// A started idea held for office hours: ready, but handed to nobody
+    /// until the PM releases it.
+    pub fn office_hours_first(&self) -> bool {
+        self.status == TicketStatus::Todo && self.note.as_deref() == Some(OFFICE_HOURS_FIRST)
+    }
+
     /// An idea the PM put to the person as a proposal: why its time has come.
     pub fn why_now(&self) -> Option<&str> {
         self.note.as_deref().filter(|_| self.status == TicketStatus::Proposed)?.strip_prefix(WHY_NOW).map(str::trim)
@@ -960,6 +972,10 @@ pub enum Command {
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
     Design { squad: SquadName },
+    /// Show the squad's briefs and plans ([`briefs::ProjectDoc`]), each
+    /// project's and its own folder's: answered by [`Event::ProjectDocs`],
+    /// and sent again whenever the PM writes one.
+    ProjectDocs { squad: SquadName },
     /// The accepted versions of a design system's folder — the squad's own
     /// (`project: None`) or a project's — newest first, the last 30: answered
     /// by [`Event::DesignVersions`]. Read from git when asked, not with
@@ -1822,6 +1838,16 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         taste: Vec<design::Taste>,
     },
+    /// The squad's briefs and plans as they are now ([`Command::ProjectDocs`]):
+    /// every project's, then its own folder's, newest first in each. Its own
+    /// event rather than a field of [`Event::ProjectsChanged`]: they are read
+    /// from files, off the daemon's loop, only for a screen that asks, and
+    /// change whenever one is written — the list of projects doesn't.
+    ProjectDocs {
+        squad: SquadName,
+        #[serde(default)]
+        docs: Vec<briefs::ProjectDoc>,
+    },
     /// A design system's accepted versions ([`Command::DesignVersions`]),
     /// newest first; none when its folder has no history yet.
     DesignVersions {
@@ -1864,6 +1890,7 @@ impl Event {
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
+            | Event::ProjectDocs { squad, .. }
             | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1937,6 +1964,7 @@ impl Event {
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
+            | Event::ProjectDocs { .. }
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }

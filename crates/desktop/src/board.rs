@@ -8,6 +8,7 @@ use equipe_core::t;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use equipe_core::protocol::briefs::{DocKind, ProjectDoc};
 use equipe_core::protocol::{Command, OffMain, Priority, Ticket, TicketId, TicketKind, TicketStatus};
 
 use crate::state::{Model, Need, Section, status_word};
@@ -656,7 +657,7 @@ pub fn head_click(click: HeadClick, project: Option<&str>, folded: &mut BTreeSet
     }
 }
 
-/// A project page's two tabs.
+/// A project page's tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProjectTab {
     /// Its conversations with the PM.
@@ -664,6 +665,60 @@ pub enum ProjectTab {
     Talks,
     /// Its tickets.
     Work,
+    /// Its briefs and plans: what was thought through before it was built.
+    Docs,
+}
+
+/// A project's briefs and plans, newest first — a brief before the plan of
+/// the same day.
+pub fn project_docs<'a>(docs: &'a [ProjectDoc], project: &str) -> Vec<&'a ProjectDoc> {
+    let mut out: Vec<&ProjectDoc> = docs.iter().filter(|d| d.project.as_deref() == Some(project)).collect();
+    out.sort_by(|a, b| b.date.cmp(&a.date).then(a.kind.cmp(&b.kind)).then_with(|| a.title.cmp(&b.title)));
+    out
+}
+
+/// How a brief's or plan's status chip looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocTone {
+    /// Still being written: a draft, or a word equipe doesn't know.
+    Draft,
+    /// Being reviewed (a plan).
+    Review,
+    /// Settled: what the work follows.
+    Settled,
+    /// Let go.
+    Dropped,
+}
+
+/// A status as its chip says it, in the person's words — an unknown one as
+/// it is written.
+pub fn doc_status(status: &str) -> (String, DocTone) {
+    match status.trim().to_ascii_lowercase().replace([' ', '-'], "_").as_str() {
+        "draft" | "" => (t!("project.doc_draft").to_owned(), DocTone::Draft),
+        "in_review" | "review" => (t!("project.doc_in_review").to_owned(), DocTone::Review),
+        "settled" => (t!("project.doc_settled").to_owned(), DocTone::Settled),
+        "dropped" => (t!("project.doc_dropped").to_owned(), DocTone::Dropped),
+        _ => (status.trim().to_owned(), DocTone::Draft),
+    }
+}
+
+/// What a brief or plan is, in a word.
+pub fn doc_kind(kind: DocKind) -> &'static str {
+    match kind {
+        DocKind::Brief => t!("project.doc_brief"),
+        DocKind::Plan => t!("project.doc_plan"),
+    }
+}
+
+/// The toast when an idea is started: with a PM, it thinks it through with
+/// the person first (`OFFICE_HOURS_FIRST`); without one, it is simply ready.
+pub fn idea_start_toast(id: TicketId, pm: bool) -> String {
+    if pm { t!("board.toast_idea_office_hours", id = id) } else { t!("board.toast_idea_start", id = id) }
+}
+
+/// What the person asks the PM, in their words, to start office hours on `project`.
+pub fn office_hours_ask(project: &str) -> String {
+    t!("project.office_hours_ask", project = project)
 }
 
 /// A project's conversations with the PM, by whose turn it is: the person's
@@ -1560,5 +1615,47 @@ mod tests {
         assert_eq!(ids(&rows(&m, &view, &views)), vec![1], "막힌 일");
         assert_eq!(effective(&view, &views).1, GroupBy::Deps);
         assert_eq!(GroupBy::parse("member"), GroupBy::Member);
+    }
+
+    fn doc(kind: DocKind, project: Option<&str>, date: &str, title: &str, status: &str) -> ProjectDoc {
+        ProjectDoc { kind, project: project.map(str::to_owned), path: format!("/r/{}/{date}-{title}.md", kind.dir()), title: title.into(), date: date.into(), status: status.into(), ticket: None, mode: None }
+    }
+
+    #[test]
+    fn a_projects_briefs_and_plans_list_newest_first_a_brief_before_its_plan() {
+        let docs = [
+            doc(DocKind::Plan, Some("web"), "2026-11-04", "checkout", "in_review"),
+            doc(DocKind::Brief, Some("web"), "2026-11-01", "search", "dropped"),
+            doc(DocKind::Brief, Some("web"), "2026-11-04", "checkout", "settled"),
+            doc(DocKind::Brief, Some("api"), "2026-11-09", "rate-limits", "draft"),
+            doc(DocKind::Brief, None, "2026-11-10", "taxes", "draft"),
+        ];
+        let listed: Vec<(DocKind, &str)> = project_docs(&docs, "web").iter().map(|d| (d.kind, d.title.as_str())).collect();
+        assert_eq!(listed, [(DocKind::Brief, "checkout"), (DocKind::Plan, "checkout"), (DocKind::Brief, "search")]);
+        assert!(project_docs(&docs, "shop").is_empty());
+    }
+
+    #[test]
+    fn a_docs_status_reads_in_the_persons_words_and_an_unknown_one_as_written() {
+        assert_eq!(doc_status("draft"), ("초안".into(), DocTone::Draft));
+        assert_eq!(doc_status("in_review"), ("검토 중".into(), DocTone::Review));
+        assert_eq!(doc_status("In review"), ("검토 중".into(), DocTone::Review));
+        assert_eq!(doc_status("settled"), ("확정".into(), DocTone::Settled));
+        assert_eq!(doc_status("dropped"), ("접음".into(), DocTone::Dropped));
+        assert_eq!(doc_status(""), ("초안".into(), DocTone::Draft));
+        assert_eq!(doc_status("parked"), ("parked".into(), DocTone::Draft));
+        assert_eq!((doc_kind(DocKind::Brief), doc_kind(DocKind::Plan)), ("브리프", "계획"));
+    }
+
+    #[test]
+    fn office_hours_are_asked_for_in_the_persons_words_about_the_project() {
+        let ask = office_hours_ask("web");
+        assert!(ask.contains("web") && ask.contains("오피스 아워") && ask.contains("브리프"), "{ask}");
+    }
+
+    #[test]
+    fn a_started_idea_held_for_office_hours_says_so() {
+        assert_eq!(idea_start_toast(7, true), "아이디어 T-7 시작 → PM이 먼저 오피스 아워");
+        assert_eq!(idea_start_toast(7, false), "아이디어 T-7 시작 → 할 일");
     }
 }
