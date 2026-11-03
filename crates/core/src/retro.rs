@@ -657,6 +657,7 @@ mod tests {
             design_qa: None,
             created_by: "pm".into(),
             note: None,
+            plan: None,
             asks: vec![],
             remaining: vec![],
             images: Vec::new(),

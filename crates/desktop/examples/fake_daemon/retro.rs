@@ -56,6 +56,7 @@ fn ticket(id: u32, title: &str, status: TicketStatus, who: &str, project: &str) 
         design_qa: None,
         created_by: "pm".into(),
         note: None,
+        plan: None,
         asks: vec![],
         remaining: vec![],
         images: Vec::new(),

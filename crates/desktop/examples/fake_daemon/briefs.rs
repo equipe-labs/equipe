@@ -102,5 +102,6 @@ pub fn office_hours_set(now: u64) -> QuestionSet {
         }],
         asked_at: now.saturating_sub(40),
         review: false,
+        retro: None,
     }
 }

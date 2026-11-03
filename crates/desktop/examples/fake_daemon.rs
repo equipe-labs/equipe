@@ -524,6 +524,7 @@ fn scope_set(now: u64) -> QuestionSet {
         }],
         asked_at: now.saturating_sub(20),
         review: false,
+        retro: None,
     }
 }
 
