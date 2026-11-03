@@ -486,6 +486,7 @@
   "main.row_working": "작업 중",
   "main.runs_as_service": "로그인 서비스 — 로그인 시 시작, 멈추면 다시 실행",
   "main.runs_on_demand": "필요할 때만 · equipe daemon install로 계속 띄워 둘 수 있어요",
+  "main.runs_as_trial": "임시 홈의 시험용 — 화면도 일하는 멤버도 없이 {mins}분이 지나거나 홈이 지워지면 스스로 꺼져요",
   "main.screen_free": "비어 있음",
   "main.service_installed": "데몬이 로그인 서비스로 실행돼요: 로그인하면 시작되고, 멈추면 다시 살아나요.",
   "main.service_no_answer": "서비스는 설치했지만 데몬이 응답하지 않았어요.",

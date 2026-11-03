@@ -284,7 +284,7 @@ async fn flows_command(action: FlowsAction) -> Result<(), String> {
             } else {
                 print!("{}", report(&map, &findings));
             }
-            if failing(&findings) { Err(t!("design.flows.check_failed").to_owned()) } else { Ok(()) }
+            if failing(&map, &findings) { Err(t!("design.flows.check_failed").to_owned()) } else { Ok(()) }
         }
         FlowsAction::Shoot { dir, flow, screen, widths: text, light } => {
             let dir = dir_or_default(dir);
@@ -772,9 +772,16 @@ fn draw_list(draw: &[(String, Vec<PathBuf>)]) -> String {
     text
 }
 
-/// Whether a state is missing or a screen stale: `flows check` fails.
-fn failing(findings: &[flows::Finding]) -> bool {
-    findings.iter().any(|f| matches!(f.kind, flows::FindingKind::MissingState | flows::FindingKind::Stale))
+/// The map's states missing and screens stale, as its screens say.
+fn missing_and_stale(map: &FlowMap) -> (usize, usize) {
+    let screens = map.flows.iter().flat_map(|f| &f.screens);
+    (screens.clone().map(|s| s.missing.len()).sum(), screens.filter(|s| s.stale).count())
+}
+
+/// Whether a state is missing (a screen with no pictures at all among them)
+/// or a screen stale: `flows check` fails.
+fn failing(map: &FlowMap, findings: &[flows::Finding]) -> bool {
+    missing_and_stale(map) != (0, 0) || findings.iter().any(|f| matches!(f.kind, flows::FindingKind::MissingState | flows::FindingKind::Stale | flows::FindingKind::NoPictures))
 }
 
 /// A finding in a line, under its flow › screen.
@@ -814,14 +821,14 @@ fn report(map: &FlowMap, findings: &[flows::Finding]) -> String {
     }
     let screens = map.flows.iter().flat_map(|f| &f.screens);
     let states = screens.clone().flat_map(|s| &s.states);
-    let count = |kind: flows::FindingKind| findings.iter().filter(|f| f.kind == kind).count();
+    let (missing, stale) = missing_and_stale(map);
     let summary = t!(
         "design.flows.summary",
         screens = screens.count(),
         states = states.clone().count(),
         pictures = states.map(|s| s.pictures.len()).sum::<usize>(),
-        missing = count(flows::FindingKind::MissingState),
-        stale = count(flows::FindingKind::Stale),
+        missing = missing,
+        stale = stale,
     );
     text.push_str(&format!("\n{summary}\n"));
     text
@@ -1150,10 +1157,28 @@ mod tests {
             report(&map, &findings),
             "onboarding › login\n  ✗ empty: not pictured\n  ✗ error: not pictured\n  ✗ its code changed after its pictures were taken\n  ! default: no dark picture beside a light one\n  ! eror: pictured, but not in flows.json\nonboarding › welcome\n  ! no pictures yet\nonboarding › signup\n  ! a folder of pictures not in flows.json\n\nscreens 2 · states 3 · pictures 3 · missing 2 · stale 1\n"
         );
-        assert!(failing(&findings));
-        assert!(!failing(&findings[4..]), "no dark and unlisted pictures don't fail the check");
+        assert!(failing(&map, &findings));
+        let pictured = map_of(&dir, &[], false);
+        assert!(!failing(&pictured, &[findings[4].clone(), findings[5].clone(), findings[6].clone()]), "no dark and unlisted pictures don't fail the check");
+        assert!(failing(&pictured, &findings[1..2]), "nor does a screen with no pictures pass");
+        assert!(failing(&map, &[]), "the map's own missing and stale fail it");
         let json = serde_json::to_value(&findings[0]).unwrap();
         assert_eq!(json, serde_json::json!({ "flow": "onboarding", "screen": "login", "state": "empty", "kind": "missing_state" }));
+    }
+
+    #[test]
+    fn the_folder_read_and_checked_as_flows_check_says_it() {
+        let dir = design(&["onboarding/login/default.light.390.png", "onboarding/login/default.dark.390.png", "onboarding/login/default.light.1280.png", "onboarding/login/eror.dark.390.png"]);
+        let map = read_map(&dir).unwrap();
+        let findings = flows::check(&map);
+        let said = report(&map, &findings);
+        for line in ["onboarding › login\n", "  ✗ empty: not pictured\n", "  ✗ error: not pictured\n", "  ! default: no dark picture beside a light one\n", "  ! eror: pictured, but not in flows.json\n", "onboarding › welcome\n", "  ! no pictures yet\n"] {
+            assert!(said.contains(line), "{line:?} in\n{said}");
+        }
+        assert!(said.ends_with("\nscreens 2 · states 3 · pictures 3 · missing 3 · stale 0\n"), "the welcome screen's state too\n{said}");
+        assert!(failing(&map, &findings));
+        let listed = outline(&map);
+        assert!(listed.contains("     default  Default · light 390 1280 · dark 390\n"), "{listed}");
     }
 
     #[test]

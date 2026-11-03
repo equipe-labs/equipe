@@ -486,6 +486,7 @@
   "main.row_working": "進行中",
   "main.runs_as_service": "登入服務 — 登入時啟動，當機後自動恢復",
   "main.runs_on_demand": "按需啟動 · equipe daemon install 可保持常駐",
+  "main.runs_as_trial": "臨時主目錄中的試用 — 無畫面且無成員工作滿 {mins} 分鐘，或主目錄被刪除後自行結束",
   "main.screen_free": "空閒",
   "main.service_installed": "常駐程式以登入服務執行：登入時啟動，當機後會自動恢復。",
   "main.service_no_answer": "服務已安裝，但常駐程式沒有回應。",

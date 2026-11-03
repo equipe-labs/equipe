@@ -502,6 +502,7 @@
   "main.row_working": "arbeitet",
   "main.runs_as_service": "Login-Dienst – startet beim Anmelden, kommt nach einem Absturz zurück",
   "main.runs_on_demand": "bei Bedarf · equipe daemon install hält ihn am Laufen",
+  "main.runs_as_trial": "Probelauf in einem temporären Home – beendet sich nach {mins} Min. ohne Bildschirm und ohne arbeitendes Mitglied oder sobald sein Home entfernt ist",
   "main.screen_free": "frei",
   "main.service_installed": "Der Daemon läuft als Login-Dienst: er startet, wenn du dich anmeldest, und kommt nach einem Absturz zurück.",
   "main.service_no_answer": "Der Dienst wurde installiert, aber der Daemon hat nicht geantwortet.",

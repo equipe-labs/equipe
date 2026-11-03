@@ -1003,8 +1003,14 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             };
             println!("{}", p.ok_line(t!("main.daemon_running")));
             println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
-            let how = if daemon::service::installed() { t!("main.runs_as_service") } else { t!("main.runs_on_demand") };
-            println!("{}", p.row(t!("main.row_runs_as"), how));
+            let how = if daemon::trial() {
+                t!("main.runs_as_trial", mins = daemon::TRIAL_IDLE.as_secs() / 60)
+            } else if daemon::service::installed() {
+                t!("main.runs_as_service").to_owned()
+            } else {
+                t!("main.runs_on_demand").to_owned()
+            };
+            println!("{}", p.row(t!("main.row_runs_as"), &how));
             if let Some(stall) = &busy.stalled {
                 let since = equipe_core::watchdog::clock(stall.since);
                 println!("{}", p.row(t!("main.row_stalled"), &t!("main.stalled_since", since = since, doing = stall.doing, secs = stall.secs)));

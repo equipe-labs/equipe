@@ -502,6 +502,7 @@
   "main.row_working": "trabajando",
   "main.runs_as_service": "servicio de inicio de sesión — arranca al iniciar sesión, vuelve tras un fallo",
   "main.runs_on_demand": "bajo demanda · equipe daemon install lo mantiene activo",
+  "main.runs_as_trial": "prueba, en un home temporal — se cierra tras {mins} min sin pantalla ni nadie trabajando, o al borrarse su home",
   "main.screen_free": "libre",
   "main.service_installed": "El daemon funciona como servicio de inicio de sesión: arranca cuando inicias sesión y vuelve si falla.",
   "main.service_no_answer": "El servicio se instaló, pero el daemon no respondió.",
