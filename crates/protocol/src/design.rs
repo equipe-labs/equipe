@@ -148,6 +148,11 @@ pub struct FlowMap {
     /// What couldn't be read, a line each; the rest still shows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub problems: Vec<String>,
+    /// The pictures in `flows/` of no state the file lists, by where they are
+    /// in it (`onboarding/login/eror.dark.390.png`): misnamed, or left from a
+    /// state that went.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlisted: Vec<String>,
 }
 
 /// A flow a person goes through: 온보딩, 결제 — its screens in the order met.
@@ -160,6 +165,42 @@ pub struct Flow {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screens: Vec<Screen>,
+    /// The designer's recordings of going through it, newest first: the
+    /// current one per mode and width, then the earlier ones kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub videos: Vec<Walkthrough>,
+}
+
+/// A recording of a flow gone through from start to end, to watch again
+/// any time: `flows/<flow>/walkthrough.<mode>.<width>.mp4`, the earlier ones
+/// in `flows/<flow>/history/`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Walkthrough {
+    /// Where it is on the daemon's machine.
+    pub path: String,
+    /// `light` or `dark`.
+    pub mode: String,
+    /// The width it was recorded at, in CSS px.
+    pub width: u32,
+    /// When it was recorded (its file's time), in Unix seconds.
+    pub taken: u64,
+    /// How long it runs, in milliseconds.
+    pub millis: u64,
+    /// Where in it each screen starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<Mark>,
+    /// The latest recording, not one kept from before.
+    #[serde(default)]
+    pub current: bool,
+}
+
+/// The moment a screen comes up in a walkthrough.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mark {
+    /// The screen's id in the flow: `login`.
+    pub screen: String,
+    /// From the start, in milliseconds.
+    pub at: u64,
 }
 
 /// One screen of a flow, in every state it has.

@@ -82,6 +82,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .bg(p.bg)
         .child(header(shell, cx))
         .children(ui.loaded.then(|| ui.current().filter(|s| s.draft.is_some()).map(|s| draft_banner(shell, s, cx))).flatten())
+        .children(super::design_setup::band(shell, cx))
         .children((ui.loaded && tab == Tab::System).then(|| ui.current().map(|s| tabs(shell, s, cx))).flatten())
         .child(body)
         .children(changes_popover(shell, cx))
