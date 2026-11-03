@@ -965,6 +965,7 @@ fn snapshot() -> Snapshot {
         browsers_shown: false,
         disk: Some(disk_status()),
         reviews: vec![code_review()],
+        put_away: Vec::new(),
     }
 }
 

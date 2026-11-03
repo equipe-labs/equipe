@@ -3,16 +3,17 @@
 //! first), in two tabs, with a new conversation about it one press away.
 //! Nothing here filters the rest of the window: the page is the project's.
 
-use equipe_core::protocol::TicketId;
+use equipe_core::protocol::{PutAway, TicketId};
 use equipe_core::t;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::board::{ProjectTab, WorkPart, project_talks, project_work};
+use crate::board::{ProjectTab, WorkPart, project_put_away, project_talks, project_work};
 use crate::icons::Icon;
 use crate::state::{Lane, Presence, Side, status_word};
 use crate::theme::{MONO, R_MD, SMALL};
+use crate::tips::TipExt as _;
 use crate::{Screen, Shell, ui};
 
 /// The page's column, at its widest.
@@ -108,7 +109,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .child(tab_button("project-tab-talks", ProjectTab::Talks, t!("project.tab_talks").into(), talks_count, false, cx))
         .child(tab_button("project-tab-work", ProjectTab::Work, t!("project.tab_work").into(), if needs > 0 { needs } else { work_count }, needs > 0, cx));
     let body = match tab {
-        ProjectTab::Talks => talks(shell, &name, &yours, &answering, cx),
+        ProjectTab::Talks => talks(shell, &name, &yours, &answering, &project_put_away(model, &name), cx),
         ProjectTab::Work => work_list(shell, &work, cx),
     };
     page(shell, header, v_flex().w_full().gap_4().child(tabs).child(body).into_any_element())
@@ -158,8 +159,8 @@ fn empty(shell: &Shell, title: String, text: String, project: Option<String>, cx
         .into_any_element()
 }
 
-fn talks(shell: &Shell, project: &str, yours: &[&Lane], answering: &[&Lane], cx: &mut Context<Shell>) -> AnyElement {
-    if yours.is_empty() && answering.is_empty() {
+fn talks(shell: &Shell, project: &str, yours: &[&Lane], answering: &[&Lane], ended: &[&PutAway], cx: &mut Context<Shell>) -> AnyElement {
+    if yours.is_empty() && answering.is_empty() && ended.is_empty() {
         return empty(shell, t!("project.talks_empty_title").into(), t!("project.talks_empty").into(), Some(project.to_owned()), cx);
     }
     let mut out = v_flex().w_full().gap_0p5();
@@ -169,7 +170,36 @@ fn talks(shell: &Shell, project: &str, yours: &[&Lane], answering: &[&Lane], cx:
         }
         out = out.child(heading(shell, label.into(), lanes.len(), false)).children(lanes.iter().map(|lane| talk_row(shell, lane, cx)));
     }
+    if !ended.is_empty() {
+        out = out.child(div().pt_2().child(heading(shell, t!("project.talks_done").into(), ended.len(), false))).children(ended.iter().map(|c| ended_row(shell, c, cx)));
+    }
     out.into_any_element()
+}
+
+/// A conversation put away: quieter, and taken up again where it was left.
+fn ended_row(shell: &Shell, c: &PutAway, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let id = c.session;
+    let title = c.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into());
+    let when = (c.at > 0 && shell.model.unix >= c.at as u64).then(|| crate::activity::ago(shell.model.unix - c.at as u64));
+    h_flex()
+        .id(("project-ended", id as usize))
+        .w_full()
+        .h(px(36.))
+        .px_2()
+        .ml(px(-8.))
+        .gap_3()
+        .items_center()
+        .rounded(px(R_MD))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .aria_label(title.clone())
+        .tip(p, t!("project.reopen_tip"), None)
+        .on_click(cx.listener(move |this, _, _, cx| this.reopen_conversation(id, cx)))
+        .child(div().w(px(16.)).flex_none().flex().justify_center().child(crate::icons::icon(Icon::Check, 14., p.muted)))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).text_color(p.text2).child(title))
+        .children(when.map(|w| div().flex_none().text_size(px(12.)).text_color(p.muted).child(w)))
+        .into_any_element()
 }
 
 /// A conversation: a spinner while the PM answers, its first words, when it last moved.

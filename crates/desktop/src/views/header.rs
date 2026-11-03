@@ -92,6 +92,18 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .text_color(if model.desktop.stopped { p.muted } else { p.text2 })
             .child(line)
     });
+    // A conversation with the PM: where it is, as a path — its project (to
+    // its page), then its name — and its ⋯. Who it is with goes without saying.
+    let talk = match talk_title.clone() {
+        Some(title) => Some(crumb(shell, title, true, cx)),
+        // The PM's own conversation: the same path, nothing to move or put away.
+        None if model.with_pm() => Some(crumb(shell, t!("sidebar.pm_talk").into(), false, cx)),
+        None => None,
+    };
+    let (who, slice) = match talk {
+        Some(_) => (None, None),
+        None => (who, Some(slice_control(shell, "chat", cx))),
+    };
     h_flex()
         .h(px(HEIGHT))
         .flex_none()
@@ -104,8 +116,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .overflow_hidden()
         .sans()
         .window_control_area(WindowControlArea::Drag)
+        .children(talk)
         .children(who)
-        .child(slice_control(shell, "chat", cx))
+        .children(slice)
         .child(crate::ui::title_gap())
         .children(screen)
         .children(context)
@@ -172,6 +185,148 @@ fn members(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .top(px(32.))
             .left_0()
             .w(px(220.))
+            .p_1()
+            .rounded(px(8.))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.hair)
+            .shadow_lg()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popover_outside(cx)))
+            .children(rows),
+    )
+    .into_any_element()
+}
+
+/// A conversation's path: its project (its colour and name, to its page; or
+/// "프로젝트 밖"), "/", its name — then its ⋯.
+fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let model = &shell.model;
+    // The conversation's project; the PM's own is about the one in focus.
+    let project = match model.talk_project() {
+        Some(project) => project,
+        None => model.focus.clone(),
+    };
+    let names = model.project_names();
+    let at = project.as_ref().and_then(|name| names.iter().position(|n| n == name));
+    let open = shell.board.popover == Some(Popover::Talk);
+    let place = match (project.clone(), at) {
+        (Some(name), Some(at)) => {
+            let to = name.clone();
+            h_flex()
+                .id("crumb-project")
+                .flex_none()
+                .h(px(PILL))
+                .px_2()
+                .gap(px(6.))
+                .items_center()
+                .rounded(px(R_MD))
+                .cursor_pointer()
+                .text_size(px(13.5))
+                .text_color(p.text2)
+                .hover(move |s| s.bg(p.wash).text_color(p.text))
+                .aria_label(t!("sidebar.open_project"))
+                .on_click(cx.listener(move |this, _, window, cx| this.open_project_page(to.clone(), window, cx)))
+                .child(dot(project_color(p, at), 8.))
+                .child(div().max_w(px(200.)).truncate().child(name))
+                .into_any_element()
+        }
+        _ => div().flex_none().px_2().text_size(px(13.5)).text_color(p.muted).child(t!("sidebar.outside")).into_any_element(),
+    };
+    let more = div()
+        .relative()
+        .flex_none()
+        .child(
+            div()
+                .id("talk-menu")
+                .size(px(PILL))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(R_MD))
+                .cursor_pointer()
+                .when(open, |b| b.bg(p.wash))
+                .hover(move |s| s.bg(p.wash))
+                .aria_label(t!("header.talk_menu"))
+                .aria_expanded(open)
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_popover(Popover::Talk, cx)))
+                .child(super::sidebar::icon(IconName::Ellipsis, 15., p.text2)),
+        )
+        .children(open.then(|| talk_menu(shell, project.clone(), cx)));
+    h_flex()
+        .min_w_0()
+        .flex_shrink(1.)
+        .gap_1()
+        .items_center()
+        .child(place)
+        .child(div().flex_none().text_color(p.muted).child("/"))
+        .child(div().min_w_0().flex_shrink(1.).max_w(px(420.)).truncate().px_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+        .when(menu, |c| c.child(more))
+        .into_any_element()
+}
+
+/// A conversation's ⋯: the projects to move it to (where it is, checked),
+/// and putting it away.
+fn talk_menu(shell: &Shell, current: Option<String>, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let model = &shell.model;
+    let item = |id: SharedString, mark: AnyElement, label: String, on: bool| {
+        h_flex()
+            .id(id)
+            .h(px(30.))
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded(px(6.))
+            .text_size(px(SMALL))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .child(div().w(px(14.)).flex().justify_center().child(mark))
+            .child(div().flex_1().min_w_0().truncate().when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
+            .when(on, |r| r.child(super::sidebar::icon(IconName::Check, 13., p.text2)))
+    };
+    let mut rows: Vec<AnyElement> = vec![div().px_2().pt_1().pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(t!("header.move_to")).into_any_element()];
+    let mut targets: Vec<(Option<String>, Option<usize>)> = model.project_names().into_iter().enumerate().map(|(i, n)| (Some(n), Some(i))).collect();
+    targets.push((None, None));
+    for (target, at) in targets {
+        let on = target == current;
+        let label = target.clone().unwrap_or_else(|| t!("sidebar.outside").into());
+        let mark = match at {
+            Some(at) => dot(project_color(p, at), 7.).into_any_element(),
+            None => div().size(px(7.)).rounded_full().border_1().border_color(p.muted).into_any_element(),
+        };
+        let to = target.clone();
+        rows.push(
+            item(SharedString::from(format!("move-to-{}", target.as_deref().unwrap_or(""))), mark, label, on)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.board.popover = None;
+                    this.move_conversation(to.clone(), cx);
+                }))
+                .into_any_element(),
+        );
+    }
+    // A conversation not yet begun has nothing to put away.
+    if let Some(session) = model.talk.filter(|_| model.draft_talk.is_none()) {
+        rows.push(div().my_1().h(px(1.)).bg(p.hair).into_any_element());
+        rows.push(
+            item("talk-put-away".into(), crate::icons::icon(crate::icons::Icon::X, 12., p.text2).into_any_element(), t!("sidebar.put_away").into(), false)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.board.popover = None;
+                    this.put_away_conversation(session, cx);
+                }))
+                .into_any_element(),
+        );
+    }
+    deferred(
+        v_flex()
+            .id("talk-menu-list")
+            .absolute()
+            .top(px(32.))
+            .left_0()
+            .w(px(240.))
+            .max_h(px(420.))
+            .overflow_y_scroll()
             .p_1()
             .rounded(px(8.))
             .bg(p.raised)
