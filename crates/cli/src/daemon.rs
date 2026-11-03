@@ -382,7 +382,11 @@ pub mod service {
 
     fn run(program: &str, args: &[&str]) -> bool {
         // Nothing on our standard output: `equipe attach --stdio` carries the protocol there.
-        Command::new(program).args(args).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+        // Nor launchctl's own words on standard error: a service is looked for
+        // in both domains, and the one it isn't in says so ("Could not find
+        // service…", "Boot-out failed: 3") though nothing went wrong; what did
+        // is told in our words, from the status.
+        Command::new(program).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
     }
 
     fn domains() -> [String; 2] {

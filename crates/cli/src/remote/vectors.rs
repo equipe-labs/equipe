@@ -727,6 +727,8 @@ fn design_system(draft: bool) -> equipe_core::protocol::design::DesignSystem {
         problems: vec![],
         guidelines: Some("# 브랜드 가이드라인\n\n## 1. 로고\n\n점은 브랜드 파랑 `#3F6FF5`.\n".into()),
         assets: vec![Asset { path: format!("{dir}/assets/logo/mark.svg"), name: "assets/logo/mark.svg".into(), kind: AssetKind::Logo, size: 1_204 }],
+        flows: None,
+        setup: vec![],
         stamp: if draft { 7_002 } else { 7_001 },
     }
 }

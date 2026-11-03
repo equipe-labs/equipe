@@ -226,6 +226,10 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
         system.guidelines = Some(text);
     }
     system.assets = assets(&place.dir);
+    // A project's folder is in its repository, where the screens' code is.
+    let repo = place.project.as_ref().and_then(|_| place.dir.parent());
+    system.flows = super::flows::read(&place.dir, repo, lang);
+    system.setup = super::flows::setup(&place.dir);
     system.stamp = stamp(std::slice::from_ref(place));
     system
 }

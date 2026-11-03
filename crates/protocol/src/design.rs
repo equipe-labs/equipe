@@ -41,6 +41,13 @@ pub struct DesignSystem {
     /// Its pictures: `assets/` and `components/`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<Asset>,
+    /// The service's every flow and screen, each in every state
+    /// (`flows/flows.json` and the pictures beside it). `None`: no map yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flows: Option<FlowMap>,
+    /// How far the designer's first setup has come, step by step, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<SetupStep>,
     /// Changes whenever anything in the folder does.
     #[serde(default)]
     pub stamp: u64,
@@ -128,6 +135,114 @@ pub enum AssetKind {
     Illustration,
     Component,
     Other,
+}
+
+/// The service's UI map, as the designer keeps it in `design/flows/`:
+/// `flows.json` names the flows, their screens in order and each screen's
+/// states; the pictures sit beside it, one per state, mode and width, at
+/// `flows/<flow>/<screen>/<state>.<mode>.<width>.png` (`login/error.dark.390.png`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowMap {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flows: Vec<Flow>,
+    /// What couldn't be read, a line each; the rest still shows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<String>,
+}
+
+/// A flow a person goes through: 온보딩, 결제 — its screens in the order met.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Flow {
+    /// Its folder's name, and how a screen names it: `onboarding`.
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screens: Vec<Screen>,
+}
+
+/// One screen of a flow, in every state it has.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Screen {
+    /// Its folder's name in the flow's: `login`.
+    pub id: String,
+    pub title: String,
+    /// What it is for and how it behaves, in a line or two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Where it runs, to shoot it again: `http://localhost:3000/login`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The code it is built from, relative to the repository: when one of
+    /// these is newer than its pictures, they are stale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source: Vec<String>,
+    /// The ticket that last changed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<TicketId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<ScreenState>,
+    /// The states it should have and has no picture of: its `expects` that
+    /// aren't drawn, and its states without a picture — by kind or id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+    /// Its code changed after its newest picture was taken.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+}
+
+/// A state of a screen: 기본, 빈 상태, 로딩, 오류 — with its pictures.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenState {
+    /// Its pictures' name: `error`.
+    pub id: String,
+    /// As the person reads it: 오류.
+    pub label: String,
+    /// What kind of state: one of [`STATE_KINDS`], or another word.
+    pub kind: String,
+    /// How it comes about or what is different in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<Picture>,
+}
+
+/// The kinds of state a screen is checked for, in the order shown.
+pub const STATE_KINDS: [&str; 9] = ["default", "empty", "loading", "error", "long", "success", "permission", "offline", "first"];
+
+/// One picture of a state: in a mode, at a width.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Picture {
+    /// Where it is on the daemon's machine, as `read_image` asks for it.
+    pub path: String,
+    /// `light` or `dark`.
+    pub mode: String,
+    /// The width it was shot at, in CSS px.
+    pub width: u32,
+    /// When it was taken (its file's time), in Unix seconds.
+    #[serde(default)]
+    pub taken: u64,
+}
+
+/// A step of the designer's first setup, done or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupStep {
+    pub step: Setup,
+    pub done: bool,
+}
+
+/// The designer's first setup, in order: the brief (`brand.md`), the logo
+/// (`assets/logo/`), the system (`tokens.json` and `guidelines.md`), the UI
+/// map (`flows/flows.json` with a flow), design QA (`qa/` with a report).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Setup {
+    Brief,
+    Logo,
+    System,
+    Flows,
+    Qa,
 }
 
 #[cfg(test)]
