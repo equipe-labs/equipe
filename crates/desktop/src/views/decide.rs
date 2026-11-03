@@ -557,7 +557,14 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .gap_2()
         .items_start()
         .child(div().pt(px(2.)).child(step_pill))
-        .child(div().flex_1().min_w_0().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.question.clone()))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                // The weekly design review's: said over its question.
+                .children(crate::decide::review_title(&set).map(|title| div().text_size(px(12.)).line_height(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(title)))
+                .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.question.clone())),
+        )
         .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().children(fold).child(close));
 
     // The question's own pictures; then the options — a visual question's
@@ -1153,6 +1160,9 @@ fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, mark: AnyElement, 
     let open = handle.clone();
     let close = handle.clone();
     let mut words = t!("decide.folded", name = name, count = set.questions.len());
+    if let Some(review) = crate::decide::review_title(set) {
+        words = format!("{review} · {words}");
+    }
     if more > 0 {
         words = format!("{words} · {}", t!("decide.more", count = more));
     }
@@ -1245,6 +1255,8 @@ pub fn row_text(shell: &Shell, id: u64) -> Option<(String, Option<u32>, String, 
     let set = shell.model.asked.get(id)?;
     let first = set.questions.first().map(|q| q.question.clone()).unwrap_or_default();
     let title = match set.questions.len() {
+        // The weekly design review: called so, whatever it asks.
+        _ if set.review => crate::decide::review_title(set).unwrap_or(first),
         0 | 1 => first,
         n => format!("{first} {}", t!("decide.and_more", count = n - 1)),
     };

@@ -200,6 +200,7 @@ mod tests {
                 Question { question: "Which screens ship?".into(), header: String::new(), options: vec![choice("Onboarding", ""), choice("Orders", ""), choice("Settings", "")], multi_select: true, ..Question::default() },
             ],
             asked_at: 0,
+            review: false,
         }
     }
 

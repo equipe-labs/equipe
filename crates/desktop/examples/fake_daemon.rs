@@ -67,6 +67,10 @@
 //! `FAKE_ROUTINE=1`: the PM proposes a weekly routine, for the person to turn
 //! on from a card (`fake_daemon/routine.rs`; `daily`: a second one).
 //!
+//! `FAKE_DESIGN_REVIEW=1`: the designer's weekly design review has come — its
+//! routine's message and the review in the designer's conversation, its
+//! proposal waiting in 나에게 as a visual question (`fake_daemon/review.rs`).
+//!
 //! `FAKE_ACCEPT=1`: the PM puts T-42 and T-71 to the person on a card to
 //! confirm accepting them (`fake_daemon/accept.rs`; `merge`, `words`).
 //!
@@ -454,6 +458,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                     },
                 ],
                 asked_at: now.saturating_sub(90),
+                review: false,
             },
             QuestionSet {
                 id: 9002,
@@ -468,10 +473,15 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                     ..Question::default()
                 }],
                 asked_at: now.saturating_sub(30),
+                review: false,
             },
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
-        std::sync::Mutex::new(if deciding().is_some() { sets } else { Vec::new() })
+        let mut waiting = if deciding().is_some() { sets } else { Vec::new() };
+        if review::on() {
+            waiting.insert(0, review::set(now));
+        }
+        std::sync::Mutex::new(waiting)
     })
 }
 
@@ -917,6 +927,9 @@ mod design;
 #[path = "fake_daemon/flows.rs"]
 mod flows;
 
+#[path = "fake_daemon/review.rs"]
+mod review;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -950,7 +963,7 @@ async fn main() {
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
     design::seed();
-    if pictures::on() {
+    if pictures::on() || review::on() {
         pictures::make();
     }
     replies::make();
@@ -1082,6 +1095,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // Settings have something to show: a member on its own mode and effort, rules kept.
                         let mut designer = designer;
                         designer.mode = Some(equipe_core::protocol::Mode::Ask);
+                        if review::on() {
+                            designer.work = None;
+                            designer.recent = review::history();
+                        }
                         let mut backend = backend;
                         backend.effort = Some("high".into());
                         let mut frontend = frontend;

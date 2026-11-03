@@ -75,6 +75,7 @@ mod signals;
 mod tickets;
 mod compact;
 mod controls;
+mod review;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -511,6 +512,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         questions: HashMap::new(),
         team_changes: HashMap::new(),
         routine_proposals: HashMap::new(),
+        design_reviews: HashMap::new(),
         signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
@@ -918,6 +920,9 @@ struct Runtime {
     team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
     /// Routines the PM proposed, waiting for the person, by squad (`heartbeat`).
     routine_proposals: HashMap<String, Vec<equipe_protocol::routines::RoutineProposal>>,
+    /// Designers handed their weekly review, and when (`review`): the
+    /// decision each puts next is the review's proposal.
+    design_reviews: HashMap<SessionId, u64>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
@@ -2043,6 +2048,11 @@ runbooks and reports live there, and work across the projects or on running them
         if let Err(err) = journal.set_role_routine_added(role) {
             crate::daemon_log!("equipe: {squad}: {role}'s routine wasn't marked added: {err}");
         }
+        if role == crate::design::review::ROLE
+            && let Err(err) = journal.set_design_review_routine(Some(id))
+        {
+            crate::daemon_log!("equipe: {squad}: the design review wasn't marked: {err}");
+        }
         self.keep_routines(squad, all);
     }
 
@@ -2080,33 +2090,42 @@ runbooks and reports live there, and work across the projects or on running them
         let before = all.len();
         all.retain(|r| r.id != id);
         if all.len() != before {
+            // The review deleted: a routine numbered as it was, later, is no review.
+            if let Some(journal) = self.journal(squad).filter(|j| j.design_review_routine() == Some(id)) {
+                let _ = journal.set_design_review_routine(None);
+            }
             self.keep_routines(squad, all);
         }
     }
 
     /// A routine handed to the PM as the person's message — after its turn
-    /// if one runs — about the HQ when the squad has one. `false`: no PM to hand it to.
+    /// if one runs — about the HQ when the squad has one; the design review,
+    /// to the designer instead (`review`). `false`: no PM to hand it to.
     async fn run_routine(&mut self, squad: &str, id: u32, now: u64) -> bool {
         let mut all = self.routines(squad);
         let Some(routine) = all.iter().find(|r| r.id == id).cloned() else {
             return false;
         };
-        let Some(pm) = self.pm_of(squad) else {
-            return false;
-        };
-        crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
-        let about = self.hq(squad).map(|hq| board::project_name(&hq));
-        let mut text = routines::message(&routine);
-        let signals = self.journal(squad).map_or(0, |j| j.signals().len());
-        if signals > 0 {
-            text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
+        if self.journal(squad).and_then(|j| j.design_review_routine()) == Some(id) {
+            self.run_design_review(squad, &routine, now).await;
+        } else {
+            let Some(pm) = self.pm_of(squad) else {
+                return false;
+            };
+            crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
+            let about = self.hq(squad).map(|hq| board::project_name(&hq));
+            let mut text = routines::message(&routine);
+            let signals = self.journal(squad).map_or(0, |j| j.signals().len());
+            if signals > 0 {
+                text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
+            }
+            self.said_about = Some(about);
+            match self.sessions.get(&pm) {
+                Some(s) if s.is_working() => self.leave_memo(pm, text),
+                _ => self.submit(pm, text).await,
+            }
+            self.said_about = None;
         }
-        self.said_about = Some(about);
-        match self.sessions.get(&pm) {
-            Some(s) if s.is_working() => self.leave_memo(pm, text),
-            _ => self.submit(pm, text).await,
-        }
-        self.said_about = None;
         if let Some(r) = all.iter_mut().find(|r| r.id == id) {
             r.last_run = Some(now);
             r.next_run = Some(routines::next_run(r.when, now, &routines::Local));

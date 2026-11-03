@@ -791,6 +791,7 @@ mod tests {
             ticket: None,
             questions: vec![Question { question: "Which logo?".into(), options: vec![choice, Choice { label: "B".into(), ..Default::default() }], ..Default::default() }],
             asked_at: 0,
+            review: false,
         };
         journal.set_questions(&[set]).unwrap();
         let ask = |path: &str, max| ReadImage { squad: "acme".into(), path: path.into(), max };

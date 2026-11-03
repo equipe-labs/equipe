@@ -40,7 +40,7 @@ pub fn dir() -> PathBuf {
     std::env::temp_dir().join("equipe-fake").join("pictures")
 }
 
-fn at(name: &str) -> String {
+pub fn at(name: &str) -> String {
     let dir = dir();
     let dir = dir.canonicalize().unwrap_or(dir);
     dir.join(name).to_string_lossy().into_owned()
@@ -428,12 +428,13 @@ pub fn question_set(now: u64) -> QuestionSet {
                 ..Question::default()
             }],
             asked_at: now.saturating_sub(120),
+            review: false,
         };
     }
     if let Some(cases) = std::env::var("FAKE_DECIDE_CASE").ok().filter(|c| !c.is_empty()) {
         let questions: Vec<Question> = cases.split(',').filter_map(|c| case(c.trim())).collect();
         if !questions.is_empty() {
-            return QuestionSet { id: 9003, session: 4, member: "designer".into(), ticket: Some(24), questions, asked_at: now.saturating_sub(300) };
+            return QuestionSet { id: 9003, session: 4, member: "designer".into(), ticket: Some(24), questions, asked_at: now.saturating_sub(300), review: false };
         }
     }
     QuestionSet {
@@ -460,6 +461,7 @@ pub fn question_set(now: u64) -> QuestionSet {
             },
         ],
         asked_at: now.saturating_sub(300),
+        review: false,
     }
 }
 

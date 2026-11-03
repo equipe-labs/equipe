@@ -71,10 +71,40 @@ impl Proposals {
     }
 }
 
+/// A routine's run as its conversation has it (`[Routine · title]`, a blank
+/// line, what it asks): the heading it is shown under, and what it asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ran<'a> {
+    pub title: &'a str,
+    pub asked: &'a str,
+}
+
+/// The routine run `text` is, if it is one (`routines::message` wrote it).
+pub fn ran(text: &str) -> Option<Ran<'_>> {
+    let rest = text.strip_prefix("[Routine · ")?;
+    let (title, asked) = rest.split_once(']')?;
+    let asked = asked.strip_prefix("\n\n").or_else(|| asked.is_empty().then_some(""))?;
+    (!title.trim().is_empty() && !title.contains('\n')).then(|| Ran { title: title.trim(), asked: asked.trim() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use equipe_core::protocol::routines::{Routine, Schedule};
+
+    #[test]
+    fn a_routine_run_is_read_back_as_its_heading_and_what_it_asked() {
+        let routine = Routine { id: 2, title: "디자인 리뷰".into(), prompt: "주간 디자인 리뷰예요.\n1. 어긋난 것".into(), when: Schedule::Weekly { weekday: 1, hour: 10, minute: 0 }, on: true, last_run: None, next_run: None };
+        let sent = equipe_core::routines::message(&routine);
+        assert_eq!(ran(&sent), Some(Ran { title: "디자인 리뷰", asked: "주간 디자인 리뷰예요.\n1. 어긋난 것" }));
+        let nudge = equipe_core::design::review::nudge(equipe_core::i18n::Lang::Ko, &routine, None, None, equipe_core::protocol::design::Setup::Logo);
+        assert_eq!(ran(&nudge).map(|r| r.title), Some("디자인 리뷰"), "the setup's nudge, under the same heading");
+        // The person's own words that only look like it are theirs.
+        assert_eq!(ran("[Routine · ] hi"), None);
+        assert_eq!(ran("[Routine · 주간 보고] 이건 제 말이에요"), None);
+        assert_eq!(ran("[Idle · 24h]\n\nThe board is empty"), None);
+        assert_eq!(ran("루틴 돌려 줘"), None);
+    }
 
     fn weekly() -> RoutineProposal {
         RoutineProposal {

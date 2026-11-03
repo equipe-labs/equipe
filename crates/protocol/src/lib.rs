@@ -2518,6 +2518,7 @@ mod tests {
                     ..Default::default()
                 }],
                 asked_at: 1,
+                review: false,
             }],
             team_changes: vec![team::TeamChange {
                 id: 5,
@@ -2608,7 +2609,7 @@ mod tests {
         for command in [cmd, dismiss] {
             assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&command).unwrap()).unwrap(), command);
         }
-        let set = decide::QuestionSet { id: 7, session: 2, member: "backend".into(), ticket: Some(3), questions: vec![], asked_at: 5 };
+        let set = decide::QuestionSet { id: 7, session: 2, member: "backend".into(), ticket: Some(3), questions: vec![], asked_at: 5, review: false };
         let events = [
             Event::QuestionsAsked { squad: "acme".into(), questions: set },
             Event::QuestionsClosed { squad: "acme".into(), id: 7, answers: Some(answers) },

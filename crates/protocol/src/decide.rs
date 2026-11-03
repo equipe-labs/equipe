@@ -79,6 +79,10 @@ pub struct QuestionSet {
     /// When it was asked, in unix seconds.
     #[serde(default)]
     pub asked_at: u64,
+    /// The designer's weekly design review's proposal: screens show it as
+    /// the review. Left out when not (and from an older daemon).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub review: bool,
 }
 
 impl QuestionSet {
@@ -319,6 +323,7 @@ mod tests {
                 Question { question: "Where to deploy?".into(), header: String::new(), options: vec![choice("Vercel", ""), choice("Fly", "")], multi_select: false, ..Default::default() },
             ],
             asked_at: 1_760_000_000,
+            review: false,
         }
     }
 
@@ -382,6 +387,14 @@ mod tests {
         let bare: QuestionSet = serde_json::from_value(json!({ "id": 1, "session": 2, "member": "pm", "questions": [{ "question": "?", "options": [{ "label": "a" }, { "label": "b" }] }] })).unwrap();
         assert_eq!((bare.ticket, bare.asked_at, bare.questions[0].multi_select), (None, 0, false));
         assert!(bare.images().next().is_none() && !bare.questions[0].is_visual(), "an older daemon's set: no pictures");
+        assert!(!bare.review && wire_of(&s).get("review").is_none(), "not the design review: left out");
+        let review = QuestionSet { review: true, ..set() };
+        assert_eq!(wire_of(&review)["review"], true);
+        assert_eq!(serde_json::from_value::<QuestionSet>(wire_of(&review)).unwrap(), review);
+    }
+
+    fn wire_of(set: &QuestionSet) -> serde_json::Value {
+        serde_json::to_value(set).unwrap()
     }
 
     /// The designer's question: three screens, each with what can be mixed.

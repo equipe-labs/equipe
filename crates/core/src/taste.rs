@@ -97,6 +97,7 @@ mod tests {
                 Question { question: "Anything else?".into(), ..Default::default() },
             ],
             asked_at: 0,
+            review: false,
         }
     }
 

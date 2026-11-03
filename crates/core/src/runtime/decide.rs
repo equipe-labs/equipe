@@ -62,7 +62,8 @@ impl Runtime {
         };
         let is_pm = self.sessions.get(&id).is_some_and(Session::is_pm);
         let ticket = self.sessions.get(&session).or(self.sessions.get(&id)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
-        let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs() };
+        let review = self.review_asked(id, now_secs());
+        let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs(), review };
         let (count, first) = (set.questions.len(), set.questions[0].question.clone());
         self.question_sets(squad).push(set.clone());
         self.save_questions(squad);
@@ -213,7 +214,7 @@ mod tests {
             multi_select,
             ..Question::default()
         };
-        let set = QuestionSet { id: 1, session: 1, member: "pm".into(), ticket: None, questions: vec![q(false), q(true), q(false)], asked_at: 0 };
+        let set = QuestionSet { id: 1, session: 1, member: "pm".into(), ticket: None, questions: vec![q(false), q(true), q(false)], asked_at: 0, review: false };
         let fitted = fit(&set, vec![Answer { picked: vec![1, 0], other: Some("  ".into()), ..Answer::default() }, Answer { picked: vec![1, 9, 0, 1], other: Some(" x ".into()), ..Answer::default() }]);
         assert_eq!(
             fitted,
@@ -226,7 +227,7 @@ mod tests {
     fn a_mix_holds_between_two_options_on_an_aspect_one_has_and_another_round_picks_nothing() {
         let option = |label: &str| Choice { label: label.into(), aspects: vec!["type".into(), "colour".into()], ..Choice::default() };
         let design = Question { question: "Which?".into(), options: vec![option("A"), option("B"), Choice { label: "C".into(), ..Choice::default() }], ..Question::default() };
-        let set = QuestionSet { id: 1, session: 1, member: "designer".into(), ticket: None, questions: vec![design; 5], asked_at: 0 };
+        let set = QuestionSet { id: 1, session: 1, member: "designer".into(), ticket: None, questions: vec![design; 5], asked_at: 0, review: false };
         let mut stray = Answer::mix(0, 1, "type");
         stray.picked = vec![2];
         let fitted = fit(
