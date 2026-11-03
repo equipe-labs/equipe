@@ -43,7 +43,7 @@ impl Picking {
                     return Answer::skipped();
                 }
                 let other = self.others.get(n).map(|o| o.trim().to_owned()).filter(|o| !o.is_empty());
-                Answer { picked: self.picks.get(n).map(|p| p.iter().copied().collect()).unwrap_or_default(), other }
+                Answer { picked: self.picks.get(n).map(|p| p.iter().copied().collect()).unwrap_or_default(), other, ..Answer::default() }
             })
             .collect()
     }
@@ -281,7 +281,7 @@ mod tests {
             vec![Command::AnswerQuestions {
                 squad: "acme".into(),
                 id: 7,
-                answers: vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![2], other: Some("SSO later".into()) }],
+                answers: vec![Answer { picked: vec![0], ..Default::default() }, Answer { picked: vec![2], other: Some("SSO later".into()), ..Default::default() }],
                 about: None,
             }]
         );
