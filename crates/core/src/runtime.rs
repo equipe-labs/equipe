@@ -1288,14 +1288,17 @@ impl Runtime {
         }
         let mut squad = squad.map(str::to_owned);
         let mut no_room = false;
+        let mut to_draw = None;
         if let Some(id) = event.session()
             && let Some(session) = self.sessions.get_mut(&id)
         {
             squad = session.squad.clone();
             let finished = session.transcript.apply(&event);
             // A reply's diagrams, drawn off the loop for the screens that can't.
-            if let Some(name) = &squad {
-                draw_visuals(&self.config.home, &self.internal, id, name, &finished);
+            if let Some(name) = &squad
+                && finished.iter().any(|line| matches!(line, Entry::Reply { text } if has_visuals(text)))
+            {
+                to_draw = Some((id, name.clone(), finished.clone()));
             }
             match &event {
                 Event::UserMessage { text, .. } if session.title.is_none() => {
@@ -1353,6 +1356,9 @@ impl Runtime {
                     no_room = !record(journal, id, &event, &finished, title.as_deref());
                 }
             }
+        }
+        if let Some((id, name, finished)) = to_draw {
+            self.draw_visuals(id, &name, &finished);
         }
         if let Some(name) = event.squad() {
             squad = Some(name.to_owned());
@@ -6148,6 +6154,43 @@ it back there once they have done it.{again} End your turn now with a short line
 
     // ── attach and restart ──
 
+    /// The Mermaid blocks and HTML cards of replies just ended, drawn as PNGs
+    /// off the loop and told as `visuals_rendered` (docs/VISUALS.md); one that
+    /// won't draw is not told. Cards only while they are on
+    /// (`visuals::card::enabled`), each reply within its own budget. Then the
+    /// squad's `visuals/` is brought within its quota, keeping what its open
+    /// conversations show (what a snapshot would list) and what was just drawn.
+    fn draw_visuals(&self, session: SessionId, squad: &str, finished: &[Entry]) {
+        let texts: Vec<String> = finished.iter().filter_map(|line| match line {
+            Entry::Reply { text } if has_visuals(text) => Some(text.clone()),
+            _ => None,
+        }).collect();
+        if texts.is_empty() {
+            return;
+        }
+        let mut shown: std::collections::HashSet<String> = self
+            .sessions
+            .values()
+            .filter(|s| s.squad.as_deref() == Some(squad))
+            .flat_map(|s| {
+                let entries = s.transcript.entries();
+                visual_keys(&entries[entries.len().saturating_sub(SNAPSHOT_LINES)..]).collect::<Vec<_>>()
+            })
+            .collect();
+        let (home, squad, internal) = (self.config.home.clone(), squad.to_owned(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            for text in texts {
+                let mut visuals = crate::visuals::diagram::draw(&home, &squad, &text);
+                visuals.extend(crate::visuals::card::draw(&home, &squad, &text));
+                shown.extend(visuals.iter().map(|v| v.key.clone()));
+                if !visuals.is_empty() {
+                    let _ = internal.send(Internal::Event(Box::new(Event::VisualsRendered { session, visuals })));
+                }
+            }
+            crate::visuals::cache::prune(&crate::visuals::diagram::dir(&home, &squad), &shown, crate::visuals::cache::Quota::default());
+        });
+    }
+
     fn snapshot(&mut self, squad: &str) -> Snapshot {
         let projects = self.projects(squad);
         let mut tickets = self.tickets(squad);
@@ -7042,30 +7085,20 @@ async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore, la
     }
 }
 
-/// The journal of `squad`, opened on first use.
-/// The Mermaid blocks and HTML cards of replies just ended, drawn as PNGs off
-/// the loop and told as `visuals_rendered` (docs/VISUALS.md); one that won't
-/// draw is not told. Cards only while they are on (`visuals::card::enabled`).
-fn draw_visuals(home: &Path, internal: &UnboundedSender<Internal>, session: SessionId, squad: &str, finished: &[Entry]) {
-    let texts: Vec<String> = finished.iter().filter_map(|line| match line {
-        Entry::Reply { text } if crate::visuals::diagram::has_blocks(text) || crate::visuals::card::has_blocks(text) => Some(text.clone()),
-        _ => None,
-    }).collect();
-    if texts.is_empty() {
-        return;
-    }
-    let (home, squad, internal) = (home.to_owned(), squad.to_owned(), internal.clone());
-    tokio::task::spawn_blocking(move || {
-        for text in texts {
-            let mut visuals = crate::visuals::diagram::draw(&home, &squad, &text);
-            visuals.extend(crate::visuals::card::draw(&home, &squad, &text));
-            if !visuals.is_empty() {
-                let _ = internal.send(Internal::Event(Box::new(Event::VisualsRendered { session, visuals })));
-            }
-        }
-    });
+/// Whether a reply has a Mermaid block or an HTML card in it.
+fn has_visuals(text: &str) -> bool {
+    crate::visuals::diagram::has_blocks(text) || crate::visuals::card::has_blocks(text)
 }
 
+/// The keys of the blocks in these lines' replies, Mermaid and cards.
+fn visual_keys(lines: &[Entry]) -> impl Iterator<Item = String> + '_ {
+    lines.iter().filter_map(|line| match line {
+        Entry::Reply { text } if has_visuals(text) => Some(text),
+        _ => None,
+    }).flat_map(|text| crate::visuals::diagram::blocks(text).into_iter().chain(crate::visuals::card::blocks(text))).map(|source| crate::visuals::diagram::key(&source))
+}
+
+/// The journal of `squad`, opened on first use.
 fn journal_for<'a>(journals: &'a mut HashMap<String, Journal>, home: &Path, squad: &str) -> Option<&'a Journal> {
     if !journals.contains_key(squad) {
         let journal = Journal::for_squad(home, squad).ok()?;

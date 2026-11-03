@@ -99,6 +99,15 @@ Chinese labels draw).
 Drawn files are kept in the squad's folder of the daemon's: `~/.equipe/squads/<squad>/visuals/
 <key>-light.png` and `<key>-dark.png`. A key drawn before is read back, not drawn again.
 
+**The cache has a quota**: at most 1000 keys and 256 MiB in a squad's `visuals/`. After each
+reply's drawing the daemon brings it back within both, the keys used longest ago first — a key's
+PNGs and its card page go together, never half of one. "Used" is a file's modified time: set as
+it is drawn, again as it is read back for a later reply and as a screen reads it (`read_image`).
+Never cleaned: a key in the last 200 lines of any open conversation of the squad (what a snapshot
+lists) or just drawn — these stay even past the quota. A `.part` left by a drawing that never
+finished goes after a minute; files not named like ours are left alone. A screen that asks for a
+file that went gets `no such file` and shows the source ([Showing it](#showing-it-and-when-it-fails), 3).
+
 Then every screen following the squad gets one event per reply that had a block drawn:
 
 ```json
@@ -155,7 +164,12 @@ picture** — Google Chrome, Chrome for Testing or Chromium where they are insta
   `@import`, fonts, `fetch`, frames and a refresh from a server of their own reaches neither it
   nor the proxy, and a page without the CSP doesn't either.
 - **Bounded.** 10 seconds per picture, then Chrome and all it started are killed (its process
-  group) and nothing is drawn. A window of 640×1200 CSS pixels at 2×: the PNG is cut to the
+  group) and nothing is drawn. **At most 2 Chromes at once in the whole daemon**, whatever the
+  number of sessions and replies: a drawing waits for one. **A reply** draws at most 4 new cards
+  (cards drawn before are read back and not counted), all in at most **30 seconds**, waiting for a
+  Chrome included: nothing is started past it, a Chrome running then is killed at it. If 8
+  replies are waiting for a Chrome already, the next draws no card. Whatever is past these shows
+  its source, like any card that didn't draw (the daemon's log says how many). A window of 640×1200 CSS pixels at 2×: the PNG is cut to the
   card's height, and what is below 1200 pixels is cut off.
 - Light and dark: the page is set to `data-theme="light"`/`"dark"` (the tokens' own switch) and,
   for dark, Chrome's `--force-dark-mode`, so a card's `prefers-color-scheme: dark` holds too. The
@@ -184,6 +198,9 @@ the desktop may be on another Mac). The CSP inside still holds there: nothing ru
 | Blocks drawn per reply | the first 8 (by key, repeats once) |
 | Drawn size | 2×, at most 2048 pixels on the longer side; a card 1280 wide, at most 2400 high |
 | Drawing a card | 10 s, then Chrome is killed |
+| Chromes at once | 2, the whole daemon; 8 replies waiting at most, the next draws no card |
+| New cards per reply | 4, in 30 s all together (waiting included); the rest show their source |
+| A squad's `visuals/` | 1000 keys and 256 MiB, used longest ago go first; what an open conversation shows stays |
 | One PNG | at most 4 MiB, else not kept and not told |
 | To a phone | ≤ 720 px a side, and one relay frame |
 
@@ -218,8 +235,12 @@ visuals, as before.
 - `crates/core/src/visuals/diagram.rs` — finding blocks, keys, the themes, Mermaid → SVG → PNG,
   the cache, what a snapshot lists.
 - `crates/core/src/visuals/card.rs` — HTML cards: finding them, the check, the page, Chrome,
-  the cache, `enabled`. Its tests draw the three templates and try to reach out.
-- `crates/core/src/runtime.rs` — `draw_visuals`: drawn off the loop as a reply line closes.
+  the cache, `enabled`, the Chromes at once and a reply's `Budget`. Its tests draw the three
+  templates, try to reach out, and end many sessions' replies of new cards at once against a
+  stand-in Chrome (Chromes at once, each reply's time, the cache after).
+- `crates/core/src/visuals/cache.rs` — a squad's `visuals/` within its quota (`prune`, `touch`).
+- `crates/core/src/runtime.rs` — `draw_visuals`: drawn off the loop as a reply line closes,
+  then the cache pruned, keeping what the squad's open conversations show.
 - `crates/core/src/visuals.rs` — `serve_with`: a drawn diagram or card given by its path, a
   card's page as `text/html`.
 - `crates/protocol/src/lib.rs` — `Event::VisualsRendered`, `Rendered`, `RenderedImage`,

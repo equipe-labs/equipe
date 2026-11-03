@@ -11,11 +11,17 @@
 //! and a window of [`WIDTH`]×[`HEIGHT`]; past them it is killed or cut.
 //! A card that breaks the contract ([`check`]) isn't drawn: its source shows.
 //!
+//! However many replies end at once, the daemon runs at most [`CHROMES`]
+//! of them together; a reply draws at most [`PER_REPLY`] new cards in at
+//! most [`REPLY_TIME`], waiting included, and what is past that shows its
+//! source.
+//!
 //! Off until it has been through a security review (T-340): on with
 //! `{"html_cards": true}` in `~/.equipe/visuals.json`, or `EQUIPE_HTML_CARDS=1`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use super::diagram;
@@ -32,6 +38,16 @@ const SCALE: u32 = 2;
 /// The longest a page kept for a screen to open may be.
 pub const PAGE_MAX: u64 = 64 * 1024;
 
+/// How many Chromes draw cards at once, in the whole daemon.
+pub const CHROMES: usize = 2;
+/// The most cards one reply has drawn (cards drawn before are read back,
+/// not counted)…
+pub const PER_REPLY: usize = 4;
+/// …and the longest all of it may take, waiting for a Chrome included.
+pub const REPLY_TIME: Duration = Duration::from_secs(30);
+/// Replies waiting for a Chrome at once: one more draws none.
+pub const WAITING_MAX: usize = 8;
+
 /// What one drawing may take.
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -47,6 +63,73 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self { time: Duration::from_secs(10), width: WIDTH, height: HEIGHT, proxy: "127.0.0.1:9".into() }
+    }
+}
+
+/// The Chromes running for cards, and the replies waiting for one.
+struct Pool {
+    running: usize,
+    waiting: usize,
+    /// The most that ever ran together: what the tests look at.
+    most: usize,
+}
+
+static POOL: Mutex<Pool> = Mutex::new(Pool { running: 0, waiting: 0, most: 0 });
+static FREED: Condvar = Condvar::new();
+
+/// One of the [`CHROMES`]: given back when dropped.
+struct Slot;
+
+impl Slot {
+    /// A Chrome to draw with, waiting no later than `until`; none past it,
+    /// or when [`WAITING_MAX`] replies are waiting already.
+    fn take(until: Instant) -> Option<Self> {
+        let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if pool.running >= CHROMES && pool.waiting >= WAITING_MAX {
+            return None;
+        }
+        pool.waiting += 1;
+        while pool.running >= CHROMES {
+            let Some(left) = until.checked_duration_since(Instant::now()).filter(|l| !l.is_zero()) else {
+                pool.waiting -= 1;
+                return None;
+            };
+            pool = FREED.wait_timeout(pool, left).unwrap_or_else(|e| e.into_inner()).0;
+        }
+        pool.waiting -= 1;
+        pool.running += 1;
+        pool.most = pool.most.max(pool.running);
+        Some(Self)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        POOL.lock().unwrap_or_else(|e| e.into_inner()).running -= 1;
+        FREED.notify_one();
+    }
+}
+
+/// The most Chromes that have drawn cards at once since the daemon started.
+pub fn most_at_once() -> usize {
+    POOL.lock().unwrap_or_else(|e| e.into_inner()).most
+}
+
+/// What one reply's cards may take, all together.
+#[derive(Debug, Clone)]
+pub struct Budget {
+    /// Nothing is started past it, and a Chrome running then is killed.
+    pub until: Instant,
+    /// New cards still to be drawn.
+    pub cards: usize,
+    /// For each drawing; its time no later than `until`.
+    pub limits: Limits,
+}
+
+impl Budget {
+    /// A reply's: [`PER_REPLY`] cards in [`REPLY_TIME`], from now.
+    pub fn reply() -> Self {
+        Self { until: Instant::now() + REPLY_TIME, cards: PER_REPLY, limits: Limits::default() }
     }
 }
 
@@ -358,38 +441,60 @@ fn keep(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(&partial, bytes).and_then(|()| std::fs::rename(&partial, path)).map_err(|e| e.to_string())
 }
 
-/// The card drawn in one tone and kept (once: a key drawn before is read back).
-fn draw_one(home: &Path, squad: &str, key: &str, source: &str, chrome: &Path, dark: bool) -> Result<RenderedImage, String> {
+/// The card drawn in one tone and kept (once: a key drawn before is read
+/// back), with one of the daemon's [`CHROMES`], within `budget`'s time.
+fn draw_one(home: &Path, squad: &str, key: &str, source: &str, chrome: &Path, dark: bool, budget: &Budget) -> Result<RenderedImage, String> {
     let path = diagram::file(home, squad, key, dark);
     if let Some(kept) = diagram::read_size(&path) {
+        super::cache::touch(&path);
         return Ok(kept);
     }
-    let (png, width, height) = render(chrome, &page(source, Some(dark)), dark, &Limits::default())?;
+    let _slot = Slot::take(budget.until).ok_or("no Chrome free in the reply's time")?;
+    let left = budget.until.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err("out of the reply's time".into());
+    }
+    let limits = Limits { time: budget.limits.time.min(left), ..budget.limits.clone() };
+    let (png, width, height) = render(chrome, &page(source, Some(dark)), dark, &limits)?;
     keep(&path, &png)?;
     Ok(RenderedImage { path: path.to_string_lossy().into_owned(), width, height })
 }
 
 /// Each card of `text` that drew, in both tones, with its page kept beside
 /// them. Nothing while cards are off ([`enabled`]) or there is no Chrome; a
-/// card too long, past [`diagram::PER_REPLY`], breaking the contract or
-/// failing to draw is left out: its source is shown.
+/// card too long, past [`diagram::PER_REPLY`], breaking the contract, failing
+/// to draw or past the reply's [`Budget`] is left out: its source is shown.
 pub fn draw(home: &Path, squad: &str, text: &str) -> Vec<Rendered> {
-    let mut drawn: Vec<Rendered> = Vec::new();
     if !enabled(home) {
-        return drawn;
+        return Vec::new();
     }
     let Some(chrome) = chrome() else {
         crate::daemon_log!("equipe: no Chrome to draw the cards of {squad}; their source shows");
-        return drawn;
+        return Vec::new();
     };
+    draw_within(home, squad, text, &chrome, Budget::reply())
+}
+
+/// [`draw`] with this Chrome, within `budget`.
+pub fn draw_within(home: &Path, squad: &str, text: &str, chrome: &Path, mut budget: Budget) -> Vec<Rendered> {
+    let mut drawn: Vec<Rendered> = Vec::new();
+    let mut over = 0;
     for source in blocks(text).into_iter().take(diagram::PER_REPLY) {
         let key = diagram::key(&source);
         if source.trim().is_empty() || drawn.iter().any(|r| r.key == key) {
             continue;
         }
+        let new = [false, true].iter().any(|&dark| !diagram::file(home, squad, &key, dark).is_file());
+        if new && (budget.cards == 0 || Instant::now() >= budget.until) {
+            over += 1;
+            continue;
+        }
         let made = check(&source).and_then(|()| {
-            let light = draw_one(home, squad, &key, &source, &chrome, false)?;
-            let dark = draw_one(home, squad, &key, &source, &chrome, true)?;
+            if new {
+                budget.cards -= 1;
+            }
+            let light = draw_one(home, squad, &key, &source, chrome, false, &budget)?;
+            let dark = draw_one(home, squad, &key, &source, chrome, true, &budget)?;
             let page_path = page_file(home, squad, &key);
             keep(&page_path, page(&source, None).as_bytes())?;
             Ok((light, dark, page_path))
@@ -398,6 +503,9 @@ pub fn draw(home: &Path, squad: &str, text: &str) -> Vec<Rendered> {
             Ok((light, dark, page_path)) => drawn.push(Rendered { kind: "card".into(), key, light, dark, page: Some(page_path.to_string_lossy().into_owned()) }),
             Err(why) => crate::daemon_log!("equipe: a card of {squad} wasn't drawn ({why}); its source shows"),
         }
+    }
+    if over > 0 {
+        crate::daemon_log!("equipe: {over} card(s) of a reply of {squad} past what a reply may draw; their source shows");
     }
     drawn
 }
