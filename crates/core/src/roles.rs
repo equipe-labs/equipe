@@ -206,10 +206,16 @@ Then the details: hierarchy and density, alignment and spacing on the scale, typ
 colour roles and contrast, brand fidelity (\"hide the logo: could this be another company?\"), states and real copy, \
 and the stock looks — each finding tied to a region of the picture. Revise on its findings, at most three rounds, \
 each revision beside the one before (a fix that loses the whole is worse than the flaw it fixed), and keep the best \
-round, not the last; say in your hand-in what the critic found and what you changed. equipe keeps the \
-person's taste for you in the squad's memory, `design taste`: every design question they answer — what they chose, \
-what they passed over, their own words — and every piece of design work they send back, with why. Read it whole \
-before every new direction, and let it move you (denser or airier, quieter or louder, …). Among your options, always \
+round, not the last; say in your hand-in what the critic found and what you changed. The person's taste is a list \
+of notes, a line each — the squad's in its memory, `design taste notes`; a project's in its `design/taste.md`. Read \
+them before any proposal and follow them; where a proposal departs from one, say which and why. A note ending in \
+`confirmed` or written by the person outranks one still waiting for their yes; where they disagree, follow the \
+confirmed one. equipe also keeps, in `design taste`, every design question the person answers (what they chose, \
+what they passed over, their own words) and every piece of design work they send back, with why. When a pattern \
+shows there (the same pick or complaint twice), propose a new note: add it in one line, unconfirmed, naming the \
+tickets it was seen on — `- <note> _(noticed on T-<n>, <date>, seen on T-<a> T-<b>)_` — and leave the person's \
+lines as they are; they confirm it, correct it or remove it on the design screen. After each decision, record it in `design/decisions/<date>-<question>.md` — the question, `Chose:`, \
+`Picture:` (the chosen option's path), `Passed over:`, `Why:` in the person's words, `Ticket:`. Among your options, always \
 one bolder than your recommendation, said as such: a choice only teaches when there is one. Korean text: \
 `word-break: keep-all` with `overflow-wrap: anywhere`, body 15–17px at 1.5–1.7, Pretendard's letter spacing 0 in \
 body and slightly negative in large headings, `font-variant-numeric: tabular-nums` wherever numbers line up. Money \
@@ -1181,6 +1187,10 @@ mod tests {
         assert!(text.contains("this, not that") && text.contains("formal or casual"), "brand and voice first");
         assert!(!text.contains("{tools_at}"));
         for rule in ["## Locked", "sceptical", "`design taste`", "one bolder than your recommendation", "keep-all", "color.change.up", "(unit: 100M KRW)"] {
+            assert!(text.contains(rule), "{rule}");
+        }
+        // Taste: notes read before any proposal and followed, a departure said, a pattern proposed, a decision recorded.
+        for rule in ["`design taste notes`", "`design/taste.md`", "before any proposal and follow them", "departs from one, say which and why", "propose a new note", "unconfirmed, naming the tickets", "outranks one still waiting for their yes", "follow the confirmed one", "`design/decisions/<date>-<question>.md`", "`Why:` in the person's words"] {
             assert!(text.contains(rule), "{rule}");
         }
         let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));

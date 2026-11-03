@@ -236,6 +236,8 @@ pub struct Shell {
     /// 지표's state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
     pub metrics_ui: views::metrics::Inputs,
+    /// 취향과 결정's box for a note.
+    pub design_taste: views::design_taste::Inputs,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
     /// The terminal at the right, while one runs.
@@ -393,6 +395,7 @@ impl Shell {
             releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
+            design_taste: Default::default(),
             browser,
             terminal: None,
             term_offered: None,
@@ -588,7 +591,7 @@ impl Shell {
             }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
-            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.browser.read(cx).typing(window, cx)).unwrap_or(false) {
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
                 return;
             }
             // Writing to a member on its request: Esc closes the box; every other
@@ -848,8 +851,8 @@ impl Shell {
                     for update in batch {
                         // The squad's design system: the design screen's, never the model's.
                         let update = match update {
-                            daemon::Update::Event(Event::Design { squad, systems, folder }) => {
-                                changed |= this.design_arrived(squad, systems, folder);
+                            daemon::Update::Event(Event::Design { squad, systems, folder, taste }) => {
+                                changed |= this.design_arrived(squad, systems, folder, taste);
                                 continue;
                             }
                             daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {

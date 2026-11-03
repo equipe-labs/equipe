@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use equipe_core::design::contrast::{self, Grade};
 use equipe_core::design::diff::Change;
 use equipe_core::design::values::{self, Color};
-use equipe_core::protocol::design::{AssetKind, DesignSystem, Token};
+use equipe_core::protocol::design::{AssetKind, DesignSystem, Taste, Token};
 use equipe_core::protocol::Command;
 use equipe_core::t;
 use gpui_kit::component::*;
@@ -74,6 +74,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let body: AnyElement = match ui.current() {
         _ if !ui.loaded => waiting(shell),
         _ if tab == Tab::Map => super::flows::page(shell, cx),
+        None if ui.section == Section::Taste => super::design_taste::page(shell, cx),
         None => empty(shell, cx),
         Some(system) => page(shell, system, cx),
     };
@@ -226,7 +227,8 @@ fn tabs(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> impl I
     let mut row = h_flex().id("design-tabs").flex_none().h(px(40.)).px(px(PAD)).gap_1().items_end().border_b_1().border_color(p.hair).overflow_x_scroll();
     for (n, section) in ds::sections(system).into_iter().enumerate() {
         let active = section == on;
-        let count = ds::count(system, section).filter(|c| *c > 0 && section != Section::Guidelines);
+        let count = if section == Section::Taste { shell.design.current_taste().map(|t| t.notes.len()) } else { ds::count(system, section) };
+        let count = count.filter(|c| *c > 0 && section != Section::Guidelines);
         row = row.child(
             v_flex()
                 .id(SharedString::from(format!("design-tab-{n}")))
@@ -340,11 +342,15 @@ fn empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                             .child(point(t!("design.empty_assets").into())),
                     )
                     .child(
-                        h_flex().pt_2().gap_2().child(
-                            ui::button(p, "design-ask", ui::Kind::Primary, if has_designer { t!("design.ask_designer") } else { t!("design.ask_pm") })
-                                .icon(Icon::Message)
-                                .on_click(cx.listener(|this, _, window, cx| this.design_ask_designer(window, cx))),
-                        ),
+                        h_flex()
+                            .pt_2()
+                            .gap_2()
+                            .child(
+                                ui::button(p, "design-ask", ui::Kind::Primary, if has_designer { t!("design.ask_designer") } else { t!("design.ask_pm") })
+                                    .icon(Icon::Message)
+                                    .on_click(cx.listener(|this, _, window, cx| this.design_ask_designer(window, cx))),
+                            )
+                            .child(ui::button(p, "design-taste-open", ui::Kind::Secondary, t!("design.taste_tab")).on_click(cx.listener(|this, _, _, cx| this.design_section(Section::Taste, cx)))),
                     )
                     .when(!folder.is_empty(), |d| {
                         d.child(
@@ -363,7 +369,7 @@ fn empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 }
 
 /// `~/…` for a path under the person's home.
-fn short_home(path: &str) -> String {
+pub(super) fn short_home(path: &str) -> String {
     match std::env::var("HOME") {
         Ok(home) if !home.is_empty() && path.starts_with(&home) => format!("~{}", &path[home.len()..]),
         _ => path.to_owned(),
@@ -376,6 +382,9 @@ fn page(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyEle
     if section == Section::Guidelines {
         return guidelines(shell, system, cx);
     }
+    if section == Section::Taste {
+        return super::design_taste::page(shell, cx);
+    }
     let content: AnyElement = match section {
         Section::Overview => overview(shell, system, cx),
         Section::Colors => colors(shell, system, cx),
@@ -385,7 +394,7 @@ fn page(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyEle
         Section::Shadow => shadows(shell, system, cx),
         Section::Motion => motion_section(shell, system, cx),
         Section::Assets => assets(shell, system, cx),
-        Section::Guidelines => unreachable!(),
+        Section::Guidelines | Section::Taste => unreachable!(),
     };
     div()
         .id("design-body")
@@ -1438,7 +1447,7 @@ impl Shell {
     }
 
     /// The daemon said what the squad's design systems are.
-    pub fn design_arrived(&mut self, squad: String, systems: Vec<DesignSystem>, folder: String) -> bool {
+    pub fn design_arrived(&mut self, squad: String, systems: Vec<DesignSystem>, folder: String, taste: Vec<Taste>) -> bool {
         if squad != self.model.squad {
             return false;
         }
@@ -1448,7 +1457,7 @@ impl Shell {
         }
         let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
         let key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
-        self.design.arrived(systems, folder, &key);
+        self.design.arrived(systems, folder, taste, &key);
         self.design_versions_follow();
         true
     }
@@ -1524,12 +1533,13 @@ impl Shell {
         if self.design_tab() != Tab::System {
             return;
         }
-        let Some(system) = self.design.current() else { return };
-        let big = self.design.lightbox.and_then(|at| system.assets.get(at)).map(|a| a.path.clone());
+        let decided = self.design_taste_pictures();
+        let system = self.design.current();
+        let big = self.design.lightbox.and_then(|at| system?.assets.get(at)).map(|a| a.path.clone());
         let wanted = {
             let mut shots = self.shots.borrow_mut();
-            for asset in &system.assets {
-                let _: Shown = shots.look(&asset.path, Size::Thumb);
+            for path in system.iter().flat_map(|s| s.assets.iter().map(|a| &a.path)).chain(&decided) {
+                let _: Shown = shots.look(path, Size::Thumb);
             }
             if let Some(path) = &big {
                 let _ = shots.look(path, Size::Full);
@@ -1561,7 +1571,9 @@ impl Shell {
             let seen_key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
             let systems = std::mem::take(&mut self.design.systems);
             let folder = self.design.folder.clone();
-            self.design.arrived(systems, folder, &seen_key);
+            let taste = std::mem::take(&mut self.design.taste);
+            self.design.arrived(systems, folder, taste, &seen_key);
+            self.design_taste_cancel(cx);
             self.design.scroll.set_offset(point(px(0.), px(0.)));
             if self.design.versions_open {
                 self.design.versions_asked = None;
@@ -1707,6 +1719,10 @@ impl Shell {
                 "escape" => self.design_lightbox(None, cx),
                 _ => return false,
             }
+            return true;
+        }
+        if key == "escape" && self.design_taste.editing() {
+            self.design_taste_cancel(cx);
             return true;
         }
         if key == "escape" && (self.design.changes_open || self.design.sources_open || self.design.versions_open || self.design.redo_open) {

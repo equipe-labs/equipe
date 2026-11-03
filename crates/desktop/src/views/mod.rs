@@ -21,6 +21,7 @@ pub mod compare;
 pub mod design;
 pub mod design_setup;
 pub mod design_talk;
+pub mod design_taste;
 pub mod diffview;
 pub mod disk;
 pub mod doc;

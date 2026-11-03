@@ -1706,7 +1706,7 @@ impl App {
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         match event {
             // The design system: a line of what it holds, when `/design` asked.
-            Event::Design { squad, systems, folder } if squad == self.squad => {
+            Event::Design { squad, systems, folder, .. } if squad == self.squad => {
                 if std::mem::take(&mut self.design_asked) {
                     self.flash = Some(design_summary(&systems, &folder));
                 }

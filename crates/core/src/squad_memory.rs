@@ -69,6 +69,11 @@ pub fn facts(folder: &Path) -> Vec<Fact> {
         .collect()
 }
 
+/// A fact's file, read: its frontmatter and its body.
+pub fn parse_fact(file: &str, text: &str) -> Fact {
+    parse(file, text)
+}
+
 fn parse(file: &str, text: &str) -> Fact {
     let stem = file.trim_end_matches(".md").to_owned();
     let mut fact = Fact { file: file.to_owned(), name: stem, description: String::new(), kind: "other".into(), updated: String::new(), body: String::new() };

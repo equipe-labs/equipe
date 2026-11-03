@@ -1070,8 +1070,8 @@ fn message_vectors() -> Value {
 
     // The squad's design system: asked for, sent as it is (and again when the designer saves), its pictures read like any other.
     ask(&mut core, &mut examples, "design", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "design", "squad": SQUAD } }));
-    tell(&mut core, &mut examples, "event: design", Event::Design { squad: SQUAD.into(), systems: vec![design_system(false), design_system(true)], folder: DESIGN.into() });
-    tell(&mut core, &mut examples, "event: design, none yet", Event::Design { squad: SQUAD.into(), systems: vec![], folder: DESIGN.into() });
+    tell(&mut core, &mut examples, "event: design", Event::Design { squad: SQUAD.into(), systems: vec![design_system(false), design_system(true)], folder: DESIGN.into(), taste: vec![] });
+    tell(&mut core, &mut examples, "event: design, none yet", Event::Design { squad: SQUAD.into(), systems: vec![], folder: DESIGN.into(), taste: vec![] });
     ask(&mut core, &mut examples, "design: another squad than the frame's", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "design", "squad": "home" } }));
 
     // A change to the team the PM proposed: approved or declined by the person.

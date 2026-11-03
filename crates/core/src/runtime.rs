@@ -1763,6 +1763,7 @@ impl Runtime {
             Command::Design { squad } => self.design_asked(squad),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
+            Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
         }
     }
 
