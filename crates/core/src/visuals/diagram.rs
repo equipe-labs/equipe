@@ -154,6 +154,7 @@ pub fn png_of_svg(svg: &str) -> Result<(Vec<u8>, u32, u32), String> {
 fn draw_one(home: &Path, squad: &str, key: &str, source: &str, dark: bool) -> Result<RenderedImage, String> {
     let path = file(home, squad, key, dark);
     if let Some(kept) = read_size(&path) {
+        super::cache::touch(&path);
         return Ok(kept);
     }
     let (png, width, height) = png_of_svg(&svg(source, dark)?)?;

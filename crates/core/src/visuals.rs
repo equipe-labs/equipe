@@ -20,6 +20,7 @@
 //! still shows its hand-in: the pictures are read from its branch, or from
 //! main once merged, by the paths the ticket recorded and no others.
 
+pub mod cache;
 pub mod card;
 pub mod diagram;
 pub mod markdown;
@@ -429,10 +430,12 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
     };
     // A card's page the daemon kept, for a screen that opens the card itself.
     if card::is_page(home, &ask.squad, Path::new(&ask.path)) {
+        cache::touch(Path::new(&ask.path));
         return card_page(Path::new(&ask.path));
     }
     // A diagram the daemon drew for the squad (`visuals_rendered`).
     if diagram::is_drawn(home, &ask.squad, Path::new(&ask.path)) {
+        cache::touch(Path::new(&ask.path));
         return read(Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);
     }
     let mut shown = shown(home, &ask.squad);

@@ -320,4 +320,101 @@ fn a_huge_card_is_refused_and_a_tall_one_is_cut_at_the_window() {
     assert!(started.elapsed() < Limits::default().time);
 }
 
+/// A stand-in for Chrome: writes `picture` where it is told after `wait`
+/// seconds, and notes in `<dir>/log` how many of it were running then
+/// (itself included), counting only those still alive.
+fn fake_chrome(dir: &Path, wait: f32) -> PathBuf {
+    use resvg::tiny_skia::{Color, Pixmap};
+    let run = dir.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    let mut pixmap = Pixmap::new(8, 8).unwrap();
+    pixmap.fill(Color::from_rgba8(10, 20, 30, 255));
+    std::fs::write(dir.join("picture.png"), pixmap.encode_png().unwrap()).unwrap();
+    let script = dir.join("chrome");
+    let body = format!(
+        "#!/bin/sh\nfor a; do case \"$a\" in --screenshot=*) out=\"${{a#--screenshot=}}\";; esac; done\n\
+touch '{run}/'$$\nn=0; for f in '{run}'/*; do kill -0 \"${{f##*/}}\" 2>/dev/null && n=$((n+1)); done\necho $n >> '{dir}/log'\n\
+sleep {wait}\nrm -f '{run}/'$$\ncp '{dir}/picture.png' \"$out\"\n",
+        run = run.display(),
+        dir = dir.display(),
+    );
+    std::fs::write(&script, body).unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+fn cards(prefix: &str, n: usize) -> String {
+    (0..n).map(|i| format!("```html card\n<p>{prefix} {i}</p>\n```\n")).collect()
+}
+
+#[test]
+fn a_reply_draws_its_first_cards_in_its_time_and_the_rest_show_their_source() {
+    let home = temp_home("budget");
+    let chrome = fake_chrome(&home, 0.05);
+    let text = cards("budget", PER_REPLY + 2);
+    let drawn = draw_within(&home, "acme", &text, &chrome, Budget::reply());
+    assert_eq!(drawn.len(), PER_REPLY, "past {PER_REPLY}, the source shows");
+    // Drawn before: read back, not counted, even with nothing left to spend.
+    let spent = Budget { cards: 0, ..Budget::reply() };
+    assert_eq!(draw_within(&home, "acme", &text, &chrome, spent.clone()), drawn);
+    // Out of time: nothing new is started.
+    let late = Budget { until: Instant::now(), ..Budget::reply() };
+    assert!(draw_within(&home, "acme", &cards("late", 2), &chrome, late).is_empty());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Many sessions' replies, each full of cards never drawn before, ending at
+/// once: never more than [`CHROMES`] Chromes, no reply past its time, and the
+/// squad's `visuals/` within its quota, what is shown kept.
+#[test]
+fn many_replies_of_new_cards_at_once_stay_within_chromes_time_and_cache() {
+    use crate::visuals::cache;
+    use std::collections::HashSet;
+    let home = temp_home("stress");
+    let chrome = fake_chrome(&home, 0.15);
+    let (sessions, replies, time) = (6, 3, Duration::from_millis(1500));
+    let quota = cache::Quota { keys: 10, bytes: u64::MAX };
+    let started = Instant::now();
+    let threads: Vec<_> = (0..sessions)
+        .map(|s| {
+            let (home, chrome) = (home.clone(), chrome.clone());
+            std::thread::spawn(move || {
+                let mut last = HashSet::new();
+                for r in 0..replies {
+                    let at = Instant::now();
+                    let budget = Budget { until: at + time, ..Budget::reply() };
+                    let drawn = draw_within(&home, "acme", &cards(&format!("s{s} r{r}"), 6), &chrome, budget);
+                    let took = at.elapsed();
+                    assert!(drawn.len() <= PER_REPLY, "{} drawn", drawn.len());
+                    assert!(took < time + Duration::from_millis(700), "a reply took {took:?}");
+                    last = drawn.iter().map(|d| d.key.clone()).collect();
+                    let held = cache::prune(&diagram::dir(&home, "acme"), &last, quota);
+                    assert!(held.keys <= quota.keys + last.len(), "{held:?}");
+                }
+                last
+            })
+        })
+        .collect();
+    let shown: HashSet<String> = threads.into_iter().flat_map(|t| t.join().unwrap()).collect();
+    assert!(started.elapsed() < (time + Duration::from_millis(700)) * replies, "{:?}", started.elapsed());
+    assert!(most_at_once() <= CHROMES, "{} at once", most_at_once());
+    let seen: Vec<usize> = std::fs::read_to_string(home.join("log")).unwrap().lines().map(|l| l.trim().parse().unwrap()).collect();
+    assert!(!seen.is_empty(), "nothing drawn at all");
+    assert!(seen.iter().all(|&n| n <= CHROMES), "Chromes at once: {seen:?}");
+    // What the last replies show stays; the rest within the quota.
+    let dir = diagram::dir(&home, "acme");
+    let held = cache::prune(&dir, &shown, quota);
+    assert!(held.keys <= quota.keys.max(shown.len()), "{held:?}");
+    for key in &shown {
+        assert!(dir.join(format!("{key}-dark.png")).is_file() && dir.join(format!("{key}.html")).is_file(), "{key} went");
+    }
+    let held = cache::prune(&dir, &HashSet::new(), quota);
+    assert!(held.keys <= quota.keys, "{held:?}");
+    let on_disk = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".png")).count();
+    // A key whose dark tone ran out of time keeps its light one, read back next time.
+    assert!(on_disk <= held.keys * 2, "{on_disk} PNGs for {held:?}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 mod panel;
