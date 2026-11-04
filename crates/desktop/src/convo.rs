@@ -716,6 +716,12 @@ pub enum Block {
     /// it from, and give it back; `live` on the member's latest (an earlier
     /// one is past).
     HandOver { name: String, why: String, live: bool },
+    /// A design check that ran to its end (`equipe design lint`): what it
+    /// said on its last line — the floor, habits, notes and widths.
+    DesignCheck(Box<equipe_core::design::lint::Summary>),
+    /// A second look's verdict (`equipe design second-look`): the screen
+    /// and what fresh eyes said of it.
+    SecondLook { screen: String, verdict: Box<equipe_core::design::lint::record::Verdict> },
 }
 
 impl Block {
@@ -732,6 +738,8 @@ impl Block {
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
             Block::YourTurn { news, .. } => Some(news.clone()),
             Block::HandOver { name, why, .. } => Some(format!("{name}\n{why}")),
+            Block::DesignCheck(s) => Some(format!("{}\n{}\n{}", t!("check.title"), s.screen.clone().unwrap_or_default(), crate::checks::details(s).iter().map(|d| format!("{} {}", d.rule, d.said)).collect::<Vec<_>>().join("\n"))),
+            Block::SecondLook { screen, verdict } => Some(format!("{}\n{screen}\n{}\n{}", t!("look.name"), verdict.summary, verdict.fixes.iter().map(crate::checks::fix).collect::<Vec<_>>().join("\n"))),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
@@ -784,6 +792,19 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
     let mut replied = false;
     for entry in entries {
         let entry = entry.as_ref();
+        // A design check or a second look that ran to its end: its own card.
+        if let Entry::Tool { tool, target: Some(target), outcome: Some(o), .. } = entry
+            && let Some(ran) = crate::checks::ran(tool, target, &o.output)
+        {
+            if !run.is_empty() {
+                blocks.extend(crate::activity::groups(std::mem::take(&mut run)).into_iter().map(Block::Steps));
+            }
+            blocks.push(match ran {
+                crate::checks::Ran::Check(summary) => Block::DesignCheck(summary),
+                crate::checks::Ran::Look { screen, verdict } => Block::SecondLook { screen, verdict },
+            });
+            continue;
+        }
         match entry {
             Entry::Thread { .. } => continue,
             // Claude Code loading tool descriptions: its business, not the person's.

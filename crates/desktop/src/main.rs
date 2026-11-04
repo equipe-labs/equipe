@@ -11,6 +11,7 @@ mod attach;
 mod beat;
 mod board;
 mod chapters;
+mod checks;
 mod browse;
 mod commands;
 mod diffs;

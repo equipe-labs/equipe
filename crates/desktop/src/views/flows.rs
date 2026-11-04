@@ -392,10 +392,30 @@ fn card(shell: &Shell, n: usize, screen: &Screen, open: bool, changed: bool, cx:
                         .child(t!("flows.states_n", count = screen.states.len()))
                         .when(missing > 0, |r| r.child("·").child(div().text_color(p.danger()).child(t!("flows.missing_short"))))
                         .when(screen.stale, |r| r.child("·").child(t!("flows.stale"))),
-                ),
+                )
+                .children(screen.check.as_ref().map(|c| check_line(p, c))),
         )
         .on_click(cx.listener(move |this, _, _, cx| this.flows_toggle_screen(&id, cx)))
         .into_any_element()
+}
+
+/// A screen's latest design check, on its card: a dot for where it stands
+/// (the floor failing, a second look still to come or asking for fixes, or
+/// done) and the words, in ink — colour only in the dot.
+fn check_line(p: Palette, c: &equipe_core::protocol::design::ScreenCheck) -> impl IntoElement {
+    let tones = crate::render::tones(&p);
+    let tone = match crate::checks::screen_state(c) {
+        crate::checks::State::Fails => tones.danger,
+        crate::checks::State::Waiting => p.amber,
+        crate::checks::State::Done => tones.added,
+    };
+    h_flex()
+        .gap_1()
+        .items_center()
+        .text_size(px(META))
+        .text_color(p.muted)
+        .child(crate::views::board::dot(tone, 6.))
+        .child(div().min_w_0().truncate().child(crate::checks::screen_line(c)))
 }
 
 /// What picking a segment does.

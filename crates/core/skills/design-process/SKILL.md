@@ -53,6 +53,40 @@ over:`, `Why:` in the person's words, `Ticket:`.
 
 Among your options, always one bolder than your recommendation, said
 as such: a choice only teaches when there is one.
+
+Record each direction you propose by its key choices, so one design doesn't drift into the last: `equipe design
+direction propose <name> --layout "…" --type "…" --palette "…" --density "…" --motion "…" --ticket T-<n>`. It refuses
+a direction that repeats one of the last three the person chose in every dimension the brand leaves free, or that
+differs from its fellow options only in colour; change it until it is taken, never reword it to pass. When the person
+chooses, `equipe design direction choose <name> --ticket T-<n>`.
+
+Before you redesign a screen that exists, write down what it offers: `equipe design kept record <its source or URL>
+--screen <flow/screen>`; after, `equipe design kept check <the new source or URL> --screen <flow/screen>` must find
+nothing gone. A link, field, action or heading goes only where the brief or a decision says so, as `Remove <kind>:
+<item>`.
+
+Every screen you make is checked in code before anyone sees it: `equipe design lint <mockup or source> --render
+--screen <flow/screen>` (`--url http://localhost:<port>/…` for one the app serves) holds it to the design system and
+draws it at 360, 390, 768, 1024, 1280, 1440 and 1920. The floor is never waived: colour, type and spacing only from
+the tokens, focus that shows, a still version of whatever moves, no invented figures, customers, quotes or logos,
+every control named, nothing running off the side, no clipped text, text contrast, and the screen's primary action
+— mark it `data-primary` — in the first screenful. The habits of generated screens (a label over every heading,
+spaced capitals, one coloured word, a gradient first screen, cards in cards, emoji as icons, everything centred, one
+radius and shadow everywhere, decorative dots, a form that pretends to send) are fixed, or kept with the person's or
+the brief's reason: `equipe design lint --waive <id> --why "…"` writes it in `design/decisions/`. Finishing notes are
+worth doing and never block. After each edit to a UI file the floor is read in what you just wrote and comes back
+to you by itself; fix it before you go on (where it doesn't come back, run `equipe design lint <file> --tier floor`
+after each edit).
+
+The last critique before you hand in is a second look by fresh eyes: `equipe design second-look <flow/screen>
+--criteria "<the ticket's acceptance criteria>"` gives a reviewer that saw none of your work only the pictures lint
+drew at each width, the brief, the criteria and the design system, and keeps its verdict on the screen's record. Fix
+every fix it lists, check again and ask again until it passes — never argue it into a pass, and never write its
+verdict yourself. For a new screen, its first screenful is looked at alone first (`--first`), before you build the
+rest on it. Only when no engine can run: start a subagent with nothing of your conversation, give it only what
+`equipe design second-look <flow/screen> --prompt` prints, and record its answer with `--answer <file>`. A hand-in is
+refused until every UI file you edited was checked this way, passed the floor and had a passing second look; say in
+it the floor's count, each habit kept and why, and what the second look asked for and you changed.
 {{#if board_tools}}
 
 Give each design option its `images` and its `aspects` (what of it can go into another — type, colour, shape — in the

@@ -744,6 +744,22 @@ fn git_out(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     output_within(command, GIT_TIMEOUT).ok().filter(|out| out.status.success()).map(|out| out.stdout)
 }
 
+/// A screen's latest design check, in short, from `design/checks/<flow>/<screen>.json`
+/// (`super::lint::record`): its second look counted only when it came after the check.
+pub fn check_of(design: &Path, flow: &str, screen: &str) -> Option<crate::protocol::design::ScreenCheck> {
+    let r = super::lint::record::read(design, &format!("{flow}/{screen}"))?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Some(crate::protocol::design::ScreenCheck {
+        floor: (count(r.summary.floor.0), count(r.summary.floor.1)),
+        habits: count(r.summary.habits),
+        kept: count(r.summary.waived.len()),
+        finish: count(r.summary.finish),
+        widths: r.summary.widths.clone(),
+        at: r.at,
+        look: r.verdict.filter(|v| v.at >= r.at).map(|v| crate::protocol::design::Look { pass: v.pass, fixes: count(v.fixes.len()) }),
+    })
+}
+
 /// The map in `design` (a design folder), its pictures found and its
 /// missing and stale screens worked out; `repo`, the repository it is in
 /// (`None` for the squad's own folder: nothing is stale). `None` when there
@@ -840,7 +856,8 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
                 }
             }
             let title = screen.title.unwrap_or_else(|| screen.id.clone());
-            screens.push(Screen { id: screen.id, title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, states, missing, stale, live_stale });
+            let check = check_of(design, &flow.id, &screen.id);
+            screens.push(Screen { id: screen.id, title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, states, missing, stale, live_stale, check });
         }
         let mut videos = found.videos.remove(&flow.id).unwrap_or_default();
         videos.sort_by_key(|(v, at)| (!v.current, std::cmp::Reverse(*at), v.mode != "light", v.width));

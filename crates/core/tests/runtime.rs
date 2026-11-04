@@ -2700,6 +2700,37 @@ async fn a_visual_hand_in_shows_the_images_its_branch_made_and_they_follow_it_in
     handle.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_designer_hands_a_screen_in_only_once_it_was_checked_and_seen_fresh() {
+    let site = named("site");
+    // Its edit-time check wrote down a mockup it edited and didn't check since.
+    let pending = r#"{"edited":[{"path":"design/mockups/home.html","at":1,"created":true}],"checked":[]}"#;
+    let (claude, _recorded) = recording_claude(&writing_turn("design/checks/pending.json", pending));
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Home", "body": "A first screen.", "owner": "designer", "kind": "task" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    let ledger = ws.path.join("design/checks/pending.json");
+    for _ in 0..100 {
+        if ledger.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let refused = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(refused.is_error && refused.text.contains("design/mockups/home.html was edited and not checked") && refused.text.contains("equipe design second-look"), "{refused:?}");
+
+    // Checked and seen: nothing is left in its ledger, and it hands in.
+    std::fs::remove_file(&ledger).unwrap();
+    let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    handle.shutdown().await;
+}
+
 /// A ticket's turn that writes `file` (relative to its worktree) with `text`.
 fn writing_turn(file: &str, text: &str) -> String {
     format!(
