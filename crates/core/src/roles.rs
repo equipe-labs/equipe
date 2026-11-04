@@ -1002,7 +1002,9 @@ A command whose output shows `<sandbox_violations>` was stopped by the fence equ
 prints (\"token not valid\", \"not logged in\"): the login is fine, so never log in again or touch tokens over it — \
 run it outside the fence, which asks the person once; their \"always\" stops it asking. Rust builds go to \
 `$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`. \
-Run one command at a time where you can: a single command can be allowed for good, a chain only once. Your memory \
+Run one command at a time where you can: a single command can be allowed for good, a chain only once. Never sleep \
+in the foreground to wait for something: run a long command in the background and wait for it with your engine's own \
+wait or monitor tool. Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
 lesson there — their taste, the project's conventions, what to avoid — and check it before new work. What the person attaches comes as tags with a path on this \
 machine; open each before you answer: `[image: <path>]` — look at it with Read; `[pdf: <path> · N pages]` — Read it \
@@ -1119,6 +1121,18 @@ mod tests {
         // Nobody else is asked; without board tools nobody can write one.
         assert!(!text("data").contains("review a plan") && !text(PM).contains("When the PM asks you to review a plan"));
         assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], false)).contains("`write_plan`"));
+    }
+
+    #[test]
+    fn every_member_waits_with_its_engines_tool_never_a_foreground_sleep() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }];
+        for (id, board) in [(PM, true), ("designer", true), ("frontend", false), (CUSTOM.id, true)] {
+            let text = charter(role_or_custom(id), id, &ctx(&team, &[], board));
+            assert!(
+                text.contains("Never sleep in the foreground to wait for something: run a long command in the background and wait for it with your engine's own wait or monitor tool."),
+                "{id}: {text}"
+            );
+        }
     }
 
     #[test]

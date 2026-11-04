@@ -19,6 +19,7 @@ pub mod decide;
 pub mod disk;
 pub mod metrics;
 pub mod engines;
+pub mod harness;
 pub mod design;
 pub mod routines;
 pub mod secrets;

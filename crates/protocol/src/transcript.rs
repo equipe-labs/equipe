@@ -232,7 +232,9 @@ pub mod scope {
     /// open with a private-use character).
     pub fn is_said(entry: &Entry) -> bool {
         match entry {
-            Entry::User { .. } | Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
+            // The harness's turns (a background task ending) are not said by anyone.
+            Entry::User { text } => !crate::harness::only_harness(text),
+            Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
             Entry::Note { text } => !text.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
             Entry::Tool { .. } | Entry::Thread { .. } => false,
         }
@@ -267,7 +269,11 @@ pub mod scope {
         }
         // Folds with only the project's news between them are one fold: a
         // row each, a news line between, read as clutter.
-        let news_only = |range: &Range<usize>| lines[range.clone()].iter().all(|(e, _)| !matches!(e.borrow(), Entry::User { .. } | Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. }));
+        let news_only = |range: &Range<usize>| lines[range.clone()].iter().all(|(e, _)| match e.borrow() {
+            Entry::User { text } => crate::harness::only_harness(text),
+            Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => false,
+            _ => true,
+        });
         let mut merged: Vec<Part> = Vec::with_capacity(parts.len());
         let mut rest = parts.into_iter().peekable();
         while let Some(part) = rest.next() {
@@ -297,7 +303,16 @@ pub fn markdown(entries: &[Entry], heading: &str) -> String {
     let mut out = format!("# {heading}\n\n");
     for entry in entries {
         match entry {
-            Entry::User { text } => out.push_str(&format!("**You:** {text}\n\n")),
+            Entry::User { text } => {
+                let said = crate::harness::read(text);
+                for task in &said.tasks {
+                    let how = if task.failed() { "failed" } else { "done" };
+                    out.push_str(&format!("_Background task {how}{}_\n\n", task.summary.as_ref().map(|s| format!(": {s}")).unwrap_or_default()));
+                }
+                if said.persons() {
+                    out.push_str(&format!("**You:** {}\n\n", said.words));
+                }
+            }
             Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
             Entry::Tool { tool, target, .. } => {
                 out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
@@ -457,6 +472,16 @@ mod tests {
         }
 
         #[test]
+        fn a_background_task_ending_is_not_something_said() {
+            let done = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into() };
+            assert!(!scope::is_said(&done));
+            assert!(scope::is_said(&user("go")));
+            let lines = vec![about(Some("site")), done.clone(), about(Some("app")), user("a")];
+            let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(scope::of(&lines)).collect();
+            assert_eq!(scope::slice(&pairs, "app", false), vec![Part::Here(2..4)], "nothing said there, nothing folded");
+        }
+
+        #[test]
         fn a_fold_with_nothing_said_is_left_out() {
             let lines = vec![about(Some("site")), tool(), Entry::Note { text: "\u{E001}3:10:00@1".into() }, about(Some("app")), user("a")];
             let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(scope::of(&lines)).collect();
@@ -481,6 +506,19 @@ mod tests {
             usage: Some(Usage { input_tokens: Some(1), output_tokens: Some(1), ..Default::default() }),
         });
         assert_eq!(done, vec![Entry::Reply { text: "Hello".into() }]);
+    }
+
+    #[test]
+    fn the_markdown_says_a_background_task_ended_never_that_you_said_it() {
+        let lines = vec![
+            Entry::User { text: "<task-notification><task-id>b1</task-id><status>failed</status><summary>tests exited 1</summary></task-notification>".into() },
+            Entry::User { text: "<system-reminder>for the model</system-reminder>".into() },
+            Entry::User { text: "go".into() },
+        ];
+        let md = markdown(&lines, "h");
+        assert!(md.contains("_Background task failed: tests exited 1_"), "{md}");
+        assert_eq!(md.matches("**You:**").count(), 1, "{md}");
+        assert!(!md.contains("task-notification") && !md.contains("system-reminder"), "{md}");
     }
 
     #[test]
