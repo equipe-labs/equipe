@@ -826,6 +826,7 @@
   "view.decide_closed": "回答せずに閉じました",
   "view.decide_images.other": "画像{count}枚",
   "view.decide_multi": "当てはまるものをすべて選んでください",
+  "view.decide_recommended": "おすすめ",
   "view.decide_next": "次へ",
   "view.decide_other": "自分で回答",
   "view.decide_pick": "選択",

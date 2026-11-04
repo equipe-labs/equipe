@@ -1,4 +1,5 @@
 {
   "match.answers": "？|教え|決め|選ん|どの|いつ|誰",
-  "match.confirms": "確認|確認して|問題な"
+  "match.confirms": "確認|確認して|問題な",
+  "match.recommended": "おすすめ|推奨"
 }

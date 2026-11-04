@@ -31,6 +31,37 @@ pub struct Choice {
     /// "shape" — in the person's language; left out when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aspects: Vec<String>,
+    /// The one the member recommends: screens mark it, in their own
+    /// language, beside a label that never says so itself. Left out when
+    /// not (and from an older daemon, whose labels may say it: [`recommended`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recommended: bool,
+}
+
+impl Choice {
+    /// Its label as shown, and whether it is the one recommended — by its
+    /// mark, or (from before the mark) by its label's own words.
+    pub fn shown(&self) -> (String, bool) {
+        let (label, said) = recommended(&self.label);
+        (label, self.recommended || said)
+    }
+}
+
+/// A label without the "(Recommended)" a member wrote at its end — in any
+/// language equipe speaks, in either kind of brackets — and whether it had one.
+pub fn recommended(label: &str) -> (String, bool) {
+    let trimmed = label.trim_end();
+    for (open, close) in [('(', ')'), ('\u{ff08}', '\u{ff09}')] {
+        if let Some(inner) = trimmed.strip_suffix(close)
+            && let Some(at) = inner.rfind(open)
+        {
+            let word = inner[at + open.len_utf8()..].trim().to_lowercase();
+            if crate::words::every("match.recommended").contains(&word.as_str()) {
+                return (inner[..at].trim_end().to_owned(), true);
+            }
+        }
+    }
+    (label.trim().to_owned(), false)
 }
 
 /// One question of a set.
@@ -310,6 +341,26 @@ pub fn is_dismissed(message: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_recommendation_written_into_a_label_comes_off_in_every_language_equipe_speaks() {
+        for written in ["Postgres (Recommended)", "Postgres (추천)", "Postgres (권장)", "Postgres（おすすめ）", "Postgres (推奨)", "Postgres (推荐)", "Postgres (推薦)", "Postgres (Empfohlen)", "Postgres (Recommandé)", "Postgres (recomendada)", "Postgres (Recommended) "] {
+            assert_eq!(recommended(written), ("Postgres".to_owned(), true), "{written}");
+        }
+        assert_eq!(recommended("Blue (navy)"), ("Blue (navy)".to_owned(), false), "brackets of its own stay");
+        assert_eq!(recommended("Speed (best)"), ("Speed (best)".to_owned(), false));
+        // Shown: the label clean, recommended by the mark or by the old words — once either way.
+        let marked = Choice { label: "Postgres".into(), recommended: true, ..Choice::default() };
+        assert_eq!(marked.shown(), ("Postgres".to_owned(), true));
+        let both = Choice { label: "Postgres (Recommended)".into(), recommended: true, ..Choice::default() };
+        assert_eq!(both.shown(), ("Postgres".to_owned(), true));
+        assert_eq!(Choice { label: "SQLite".into(), ..Choice::default() }.shown(), ("SQLite".to_owned(), false));
+        // On the wire only when set; an older daemon's choice reads as not marked.
+        assert_eq!(serde_json::to_value(&marked).unwrap()["recommended"], true);
+        assert!(serde_json::to_value(Choice { label: "x".into(), ..Choice::default() }).unwrap().get("recommended").is_none());
+        let old: Choice = serde_json::from_value(json!({ "label": "x" })).unwrap();
+        assert!(!old.recommended);
+    }
 
     fn set() -> QuestionSet {
         let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), ..Default::default() };

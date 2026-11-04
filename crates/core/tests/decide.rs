@@ -159,6 +159,9 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     let set = asked(&seen);
     assert_eq!((set.member.as_str(), set.session, set.ticket, set.questions.len()), ("backend", 2, None, 2));
     assert!(set.questions[1].multi_select && set.questions[0].options[0].description == "Relational, hosted on Supabase");
+    // "(Recommended)" written into a label comes off as the mark screens show in their own words: once.
+    let marks: Vec<(&str, bool)> = set.questions[0].options.iter().map(|o| (o.label.as_str(), o.recommended)).collect();
+    assert_eq!(marks, [("Postgres", true), ("SQLite", false)]);
     assert!(set.asked_at > 0);
     // The PM hears of it in its conversation.
     let news = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
@@ -173,7 +176,7 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { id, answers, .. } = e { Some((*id, answers.clone())) } else { None });
     assert_eq!(closed, Some((set.id, Some(vec![Answer { picked: vec![0], ..Answer::default() }, Answer { picked: vec![0, 1], other: Some("SSO later".into()), ..Answer::default() }]))));
-    let expected = "Answers to your questions:\n1) Which database should the API use? → Postgres (Recommended)\n2) Which features ship first? → Auth, Payments (+ note: SSO later)";
+    let expected = "Answers to your questions:\n1) Which database should the API use? → Postgres\n2) Which features ship first? → Auth, Payments (+ note: SSO later)";
     assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { session: 2, text } if text == expected)), "{seen:#?}");
     let prompt = calls(&recorded).last().map(|c| arg(c, "-p").unwrap_or_default().to_owned()).unwrap_or_default();
     assert!(prompt.ends_with(expected), "the member reads them as its next message: {prompt}");
@@ -246,7 +249,7 @@ async fn a_design_choice_reacted_to_in_one_click_goes_to_the_designer_and_into_t
     let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { answers, .. } = e { answers.clone() } else { None });
     assert_eq!(closed, Some(answers));
     let message = seen.iter().find_map(|e| if let Event::UserMessage { session: 2, text } = e { Some(text.clone()) } else { None }).unwrap();
-    assert!(message.contains("1) Which direction? → mix — «Calm (Recommended)» with the type of «Warm»"), "{message}");
+    assert!(message.contains("1) Which direction? → mix — «Calm» with the type of «Warm»"), "{message}");
     assert!(message.contains("2) Which home screen? → another round — none of these (+ note: all too busy)"), "{message}");
     assert!(message.contains("For a mix: make it") && message.contains("For another round:"), "{message}");
     let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).unwrap();

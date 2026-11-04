@@ -304,6 +304,7 @@ mod tests {
             facts: 0,
             edits: false,
             skills: Delivery::Inline,
+            guard: false,
         }
     }
 
