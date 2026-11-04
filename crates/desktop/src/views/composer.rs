@@ -317,7 +317,7 @@ pub struct Composer {
     dictating: Option<String>,
     _speech: Subscription,
     /// Keeps the inbox folder watched for as long as the window lives.
-    inbox_watch: Option<fs_notify::RecommendedWatcher>,
+    pub(crate) inbox_watch: Option<fs_notify::RecommendedWatcher>,
 }
 
 impl Composer {

@@ -45,6 +45,8 @@ pub struct Opts {
 pub struct Greeting {
     pub bridge: Option<Attached>,
     pub squads: Squads,
+    /// The squad this connection follows, as chosen among `squads`.
+    pub squad: String,
     pub hello: Hello,
 }
 
@@ -244,7 +246,7 @@ where
     // has no browser panel: the hello asks only to follow.
     let readonly = crate::readonly::on();
     let lang = (!readonly).then(|| crate::i18n::lang().code().to_owned());
-    let hello = Message::request(HELLO_ID, rpc::HELLO, HelloParams { version: opts.version.clone(), squad, lang, browser_panel: !readonly });
+    let hello = Message::request(HELLO_ID, rpc::HELLO, HelloParams { version: opts.version.clone(), squad: squad.clone(), lang, browser_panel: !readonly });
     if readonly {
         eprintln!("equipe readonly: sent request {} for {}", rpc::HELLO, hello.params.as_ref().and_then(|p| p.get("squad")).and_then(|s| s.as_str()).unwrap_or_default());
     }
@@ -300,6 +302,7 @@ where
         Greeting {
             bridge,
             squads,
+            squad,
             hello,
         },
         Wire {

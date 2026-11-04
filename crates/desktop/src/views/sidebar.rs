@@ -1701,11 +1701,30 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
                 .tip_at(p, tip, None, gpui_kit::base::Placement::Right)
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_popup(Popup::Account, cx)))
                 .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(dot(if connected { p.accent } else { p.muted }, 7.)))
-                .child(div().flex_none().text_size(px(TEXT)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(squad))
-                .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(shell.place_name()))
+                .child(div().flex_none().max_w(relative(0.6)).truncate().text_size(px(TEXT)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(squad))
+                .child(machine_label(p, shell))
                 .child(icon(IconName::ChevronsUpDown, 12., p.muted)),
         )
         .child(icon_button(p, "settings", IconName::Settings, true, None).tip(p, t!("sidebar.settings"), Some("⌘,")).on_click(cx.listener(|this, _, window, cx| this.open_settings(None, window, cx))))
+}
+
+/// The foot's machine: this Mac quietly; another machine plainly, with its
+/// mark — with windows on two machines, which one this is is never a guess.
+fn machine_label(p: Palette, shell: &Shell) -> AnyElement {
+    let name = shell.place_name();
+    if !shell.endpoint.is_remote() {
+        return div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(name).into_any_element();
+    }
+    h_flex()
+        .flex_1()
+        .min_w_0()
+        .gap(px(4.))
+        .items_center()
+        .text_size(px(12.))
+        .text_color(p.text2)
+        .child(div().flex_none().child(crate::icons::icon(crate::icons::Icon::Server, 11., p.text2)))
+        .child(div().min_w_0().truncate().child(name))
+        .into_any_element()
 }
 
 /// The squads and machines, or settings, over the foot.
@@ -1729,18 +1748,51 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
             .child(div().flex_1().min_w_0().truncate().child(label))
     };
     let label = |text: &'static str| div().px_2().pt_1().pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(text).into_any_element();
+    // A row's "open in a new window", on the pointer — what ⌘-click on the
+    // row does — so it is found without knowing the keys.
+    let away = |id: SharedString, group: SharedString| {
+        div()
+            .id(id)
+            .size(px(22.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(5.))
+            .invisible()
+            .group_hover(group, |s| s.visible())
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .aria_label(t!("sidebar.open_in_new_window"))
+            .tip_at(p, t!("sidebar.open_in_new_window"), Some(t!("sidebar.cmd_click")), gpui_kit::base::Placement::Right)
+            .child(crate::icons::icon(crate::icons::Icon::External, 12., p.text2))
+    };
     let mut rows: Vec<AnyElement> = Vec::new();
     match which {
         Popup::Account => {
             rows.push(label(t!("sidebar.squads")));
             for (ix, name) in shell.squads.iter().enumerate() {
-                let target = name.clone();
+                let (target, away_to) = (name.clone(), name.clone());
+                let group = SharedString::from(format!("squad-row-{ix}"));
                 rows.push(
                     item(SharedString::from(format!("squad-{ix}")), name.clone(), *name == shell.model.squad)
-                        .on_click(cx.listener(move |this, _, window, cx| {
+                        .group(group.clone())
+                        // ⌘-click: that squad in a new window; this one stays where it is.
+                        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                             this.board.popup = None;
-                            this.select_squad(&target, window, cx);
+                            if super::elsewhere::wants_window(&e.modifiers()) {
+                                this.new_window(Some(target.clone()), cx);
+                            } else {
+                                this.select_squad(&target, window, cx);
+                            }
+                            cx.notify();
                         }))
+                        .child(away(SharedString::from(format!("squad-away-{ix}")), group).on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.board.popup = None;
+                            this.new_window(Some(away_to.clone()), cx);
+                            cx.notify();
+                        })))
                         .into_any_element(),
                 );
             }
@@ -1765,12 +1817,47 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                     .into_any_element(),
             });
             rows.push(div().h(px(1.)).my_1().bg(p.hair).into_any_element());
+            // One more window, on this machine and squad, to point elsewhere.
+            rows.push(
+                h_flex()
+                    .id("new-window")
+                    .h(px(30.))
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(6.))
+                    .text_size(px(TEXT))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.side_hover))
+                    .child(div().w(px(14.)).flex_none().child(crate::icons::icon(crate::icons::Icon::AppWindow, 13., p.text2)))
+                    .child(div().flex_1().min_w_0().truncate().child(t!("sidebar.new_window")))
+                    .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child("⌘⇧N"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.board.popup = None;
+                        this.new_window(None, cx);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+            // Another machine — here, or (⌘-click, the row's button) in a new window.
             rows.push(
                 item("machine".into(), t!("sidebar.other_machine").into(), false)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .group("machine-row")
+                    .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
                         this.board.popup = None;
-                        this.open_chooser(window, cx);
+                        if super::elsewhere::wants_window(&e.modifiers()) {
+                            this.new_window_elsewhere(cx);
+                        } else {
+                            this.open_chooser(window, cx);
+                        }
+                        cx.notify();
                     }))
+                    .child(away("machine-away".into(), "machine-row".into()).on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.board.popup = None;
+                        this.new_window_elsewhere(cx);
+                        cx.notify();
+                    })))
                     .into_any_element(),
             );
             rows.push(
