@@ -67,10 +67,10 @@ pub struct Palette {
     pub accent_bg: Rgba,
     pub code_bg: Rgba,
     pub raised: Rgba,
-    /// The main action's fill (a button, the composer's send): in the dark a
-    /// deep slate of the accent's hue, a step above the cards, with the text
-    /// colour on it — emphasis that belongs to the window rather than a white
-    /// slab; in the light, the text colour, inverted.
+    /// The main action's fill (a button, the composer's send): the text
+    /// colour, inverted — the clearest thing on the screen, in no hue, so the
+    /// one colour that means something (what waits on the person) stays
+    /// theirs. A deep slate read as a button turned off.
     pub primary: Rgba,
     pub on_primary: Rgba,
     /// Words or a mark on an `accent` fill (a count badge, a tick).
@@ -133,11 +133,13 @@ impl Palette {
             accent_bg: rgba(0x7EB8F31F),
             code_bg: rgb(0x1B1A19),
             raised: rgb(0x1F1E1C),
-            primary: rgb(0x2B3F54),
-            on_primary: rgb(0xF3F0E9),
+            primary: rgb(0xECEAE4),
+            on_primary: rgb(0x151513),
             on_accent: rgb(0x151513),
             amber: rgb(0xEABA67),
-            orange: rgb(0xF19B65),
+            // What waits on the person: clear, not peach — and small, a
+            // number in it, one filled badge at most.
+            orange: rgb(0xFF7A45),
             red: rgb(0xF2857D),
             // One lightness and chroma (OKLCH 0.80, 0.11), so no member is louder.
             members: [0xE3B667, 0xF4A0C8, 0x7FC5FF, 0x89D298, 0xC3B0FD, 0x5AD5CB, 0xF7A97C, 0xBBC671].map(rgb),
@@ -166,7 +168,7 @@ impl Palette {
             // Darker than the dark appearance's, to be read as words (a
             // status in the sidebar) at 4.5:1 on any surface.
             amber: rgb(0x865901),
-            orange: rgb(0x9E4507),
+            orange: rgb(0xB83A0B),
             red: rgb(0xAA2A27),
             // OKLCH 0.49, 0.12: 4.5:1 even on the selected sidebar row.
             members: [0x835600, 0x943C6B, 0x0065A4, 0x0D7435, 0x674EA1, 0x006F68, 0x984500, 0x5F6700].map(rgb),
@@ -178,24 +180,56 @@ impl Palette {
     }
 }
 
-/// A member's mark and colour index, the same as the terminal console's.
-pub fn look(role: &str, name: &str) -> (&'static str, usize) {
+/// A member's mark — an icon for what its role does — and colour index (the
+/// terminal console's colours; its marks are its own, in text).
+pub fn look(role: &str, name: &str) -> (crate::icons::Icon, usize) {
+    use crate::icons::Icon;
     match role {
-        "pm" => ("◆", 0),
-        "designer" => ("✦", 1),
-        "frontend" => ("●", 2),
-        "backend" => ("■", 3),
-        "qa" => ("◎", 4),
-        "data" => ("▲", 5),
-        "mobile" => ("◈", 6),
-        "security" => ("⬢", 7),
-        "marketing" => ("✺", 1),
+        "pm" => (Icon::Compass, 0),
+        "designer" => (Icon::PenTool, 1),
+        "frontend" => (Icon::AppWindow, 2),
+        "backend" => (Icon::Server, 3),
+        "qa" => (Icon::Bug, 4),
+        "data" => (Icon::Chart, 5),
+        "mobile" => (Icon::Phone, 6),
+        "security" => (Icon::Shield, 7),
+        "marketing" => (Icon::Megaphone, 1),
         _ => {
-            const MARKS: [&str; 4] = ["◇", "★", "▼", "✚"];
             let h = name.bytes().fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
-            (MARKS[h % MARKS.len()], 6 + h % 2)
+            (Icon::Sparkles, 6 + h % 2)
         }
     }
+}
+
+/// A project, beside its name: a folder, in no colour — colour is kept for
+/// how things stand (what waits, what is stuck) and for the people.
+pub fn project_mark(p: Palette, size: f32) -> gpui_kit::AnyElement {
+    use gpui_kit::IntoElement as _;
+    crate::views::sidebar::icon(gpui_kit::component::IconName::Folder, size, p.muted).into_any_element()
+}
+
+/// Someone on the team beside their name, by name: their avatar, the role
+/// looked up among the members (one who left: by the name alone).
+pub fn member_mark(p: Palette, model: &crate::state::Model, name: &str, size: f32) -> gpui_kit::Div {
+    let role = model.members.iter().find(|m| m.name == name).map_or(name, |m| m.role.as_str());
+    avatar(p, role, name, size)
+}
+
+/// A member's avatar, `size` square: its role's icon in its colour, on a
+/// tint of it — one shape for every role, where the text marks were each
+/// their own size and weight.
+pub fn avatar(p: Palette, role: &str, name: &str, size: f32) -> gpui_kit::Div {
+    let (mark, hue) = look(role, name);
+    let color = p.member(hue);
+    div()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px((size * 0.3).round()))
+        .bg(Rgba { a: 0.16, ..color })
+        .child(crate::icons::icon(mark, (size * 0.62).round(), color))
 }
 
 /// The Mac's own interface face (SF): drawn for the screen at every size, in
@@ -283,10 +317,6 @@ pub const LINK_UNDERLINE_ALPHA: f32 = 0.35;
 /// The room under the conversation's last line, over the composer.
 pub const TAIL_ROOM: f32 = 20.;
 
-/// Project chips take the project's order and these colours (T-54 §2.1) —
-/// blue, violet, teal, pink, green: never the amber of work under way or the
-/// orange of what waits on the person, which a project's dot would be read as.
-pub const PROJECT_HUES: [usize; 5] = [2, 4, 5, 1, 3];
 pub const MONO: &str = ".AppleSystemUIFontMonospaced";
 
 // ── one scale for everything ──
@@ -333,6 +363,12 @@ impl Palette {
         if self.is_dark() { rgb(0x252422) } else { rgb(0xFFFFFF) }
     }
 
+    /// A popover under the pointer: a step from it, and as solid — a
+    /// floating control is never see-through to what scrolls beneath.
+    pub fn popover_hover(&self) -> Rgba {
+        if self.is_dark() { rgb(0x2F2E2B) } else { rgb(0xF2F1EE) }
+    }
+
     /// A tooltip: a small dark chip in either appearance.
     pub fn tip_bg(&self) -> Rgba {
         if self.is_dark() { rgb(0x2F2E2C) } else { rgb(0x232220) }
@@ -359,12 +395,12 @@ impl Palette {
 
     /// The main button under the pointer: a step lighter (dark) or softer (light).
     pub fn primary_hover(&self) -> Rgba {
-        if self.is_dark() { rgb(0x334A62) } else { rgb(0x2C2B27) }
+        if self.is_dark() { rgb(0xFFFFFF) } else { rgb(0x2C2B27) }
     }
 
     /// The main button held down: a step deeper.
     pub fn primary_press(&self) -> Rgba {
-        if self.is_dark() { rgb(0x233447) } else { rgb(0x050504) }
+        if self.is_dark() { rgb(0xD6D3CC) } else { rgb(0x050504) }
     }
 
     /// A key hint inside the main button (⌘↵): the label's colour, held back.
@@ -416,13 +452,21 @@ mod tests {
     use super::{Appearance, Palette, contrast};
     use gpui_kit::WindowAppearance;
 
+    #[test]
+    fn a_popover_under_the_pointer_stays_solid() {
+        for p in [Palette::new(WindowAppearance::Dark), Palette::new(WindowAppearance::Light)] {
+            assert_eq!(p.popover_hover().a, 1., "nothing beneath shows through");
+            assert_ne!(p.popover_hover(), p.popover());
+        }
+    }
+
     /// Every colour text is drawn in, on every surface it is drawn on, reads
     /// at WCAG AA for small text (4.5:1), in both appearances.
     #[test]
     fn text_colours_pass_aa_on_every_surface() {
         for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
             let p = Palette::new(appearance);
-            let surfaces = [("bg", p.bg), ("side", p.side), ("side_hover", p.side_hover), ("side_sel", p.side_sel), ("raised", p.raised), ("code_bg", p.code_bg), ("popover", p.popover())];
+            let surfaces = [("bg", p.bg), ("side", p.side), ("side_hover", p.side_hover), ("side_sel", p.side_sel), ("raised", p.raised), ("code_bg", p.code_bg), ("popover", p.popover()), ("popover_hover", p.popover_hover())];
             let inks = [("text", p.text), ("prose", p.prose), ("text2", p.text2), ("muted", p.muted), ("accent", p.accent), ("danger", p.danger()), ("amber", p.amber), ("orange", p.orange), ("red", p.red)];
             for (surface, bg) in surfaces {
                 for (ink, fg) in inks {
@@ -516,19 +560,5 @@ mod tests {
         assert!(Palette::new(Appearance::Dark.resolve(WindowAppearance::Light)).is_dark());
         assert!(Appearance::ALL.iter().all(|a| Appearance::parse(a.code()) == Some(*a)));
         assert_eq!(Appearance::parse("sepia"), None);
-    }
-
-    #[test]
-    fn no_projects_colour_reads_as_a_status() {
-        let hue = |c: gpui_kit::Rgba| gpui_kit::Hsla::from(c).h * 360.;
-        let apart = |a: f32, b: f32| (a - b).abs().min(360. - (a - b).abs());
-        for p in [Palette::new(WindowAppearance::Dark), Palette::new(WindowAppearance::Light)] {
-            for at in 0..12 {
-                let c = hue(p.member(super::PROJECT_HUES[at % super::PROJECT_HUES.len()]));
-                for status in [p.orange, p.amber] {
-                    assert!(apart(c, hue(status)) >= 40., "project {at}'s hue {c} is too near a status's {}", hue(status));
-                }
-            }
-        }
     }
 }

@@ -1,6 +1,6 @@
 //! Both engines' plans and the cards for moving members between them.
 //!
-//! `FAKE_USAGE`: what each plan says —
+//! `FAKE_USAGE`: what each plan says (`weekly`: a weekly window only) —
 //! - `healthy`: Claude 5h 34% · week 22%, Codex 5h 12% · week 9%;
 //! - `claude86`: Claude's five hours at 86% (resets in 2 hours), Codex roomy —
 //!   with a card proposing backend and frontend move to Codex;
@@ -52,6 +52,14 @@ pub fn plans() -> Vec<EnginePlan> {
         Some("claude86") => vec![plan(Engine::Claude, 86, 2 * H, 41, 3 * D, 60), plan(Engine::Codex, 12, 4 * H, 18, 5 * D, 300)],
         Some("claude_out") => vec![plan(Engine::Claude, 64, 3 * H, 100, 3 * D, 120), plan(Engine::Codex, 9, 4 * H, 14, 5 * D, 240)],
         Some("both_low") => vec![plan(Engine::Claude, 91, 3 * H, 58, 3 * D, 60), plan(Engine::Codex, 47, 2 * H, 88, 2 * D, 600)],
+        // Plans with a weekly window only, Claude's read half an hour ago.
+        Some("weekly") => [plan(Engine::Claude, 0, 0, 15, 3 * D, 31 * 60), plan(Engine::Codex, 0, 0, 4, 5 * D, 60)]
+            .into_iter()
+            .map(|mut p| {
+                p.usage.five_hour = None;
+                p
+            })
+            .collect(),
         Some(_) => vec![plan(Engine::Claude, 34, 3 * H, 22, 3 * D, 60), plan(Engine::Codex, 12, 4 * H, 9, 5 * D, 2400)],
     }
 }

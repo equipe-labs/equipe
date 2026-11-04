@@ -116,8 +116,8 @@ impl History {
 
 // ── drafts ──
 
-/// What was half written to one member: the words, where the caret was, and
-/// what was attached.
+/// What was half written to one member: the words, where the caret was,
+/// what was attached, and the cards replying to the conversation.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Draft {
     #[serde(default)]
@@ -127,11 +127,14 @@ pub struct Draft {
     pub caret: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Saved>,
+    /// The cards over the box: passages replied to, or asked about.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<crate::quote::Reply>,
 }
 
 impl Draft {
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.attachments.is_empty()
+        self.text.is_empty() && self.attachments.is_empty() && self.replies.is_empty()
     }
 }
 
@@ -205,6 +208,9 @@ impl Drafts {
 /// Write `text` at `path`, readable by its owner only, replacing what was there whole.
 pub fn write_private(path: &Path, text: &str) {
     use std::os::unix::fs::OpenOptionsExt as _;
+    if crate::readonly::blocked(&path.display().to_string()) {
+        return;
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -1547,8 +1553,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut d = Drafts::load(path.clone());
         let (all, site) = (Drafts::key("acme", "pm", None), Drafts::key("acme", "pm", Some("site")));
-        d.put(all.clone(), Draft { text: "all".into(), caret: 1, attachments: vec![] });
-        d.put(site.clone(), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")] });
+        d.put(all.clone(), Draft { text: "all".into(), caret: 1, attachments: vec![], replies: vec![] });
+        d.put(site.clone(), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")], replies: vec![] });
         assert_eq!(d.get(&all).text, "all");
         assert_eq!(d.get(&Drafts::key("acme", "frontend", None)), Draft::default());
         d.used(Path::new("/x/a.png"));
@@ -1556,12 +1562,38 @@ mod tests {
         d.used(Path::new("/x/a.png"));
         d.save();
         let again = Drafts::load(path.clone());
-        assert_eq!(again.get(&site), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")] });
+        assert_eq!(again.get(&site), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")], replies: vec![] });
         assert_eq!(again.recent, vec![PathBuf::from("/x/a.png"), PathBuf::from("/x/b.png")]);
         use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         d.put(all.clone(), Draft::default());
         assert_eq!(d.get(&all), Draft::default(), "an empty draft is forgotten");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_drafts_reply_cards_are_kept_with_it_in_order_and_survive_a_restart() {
+        use crate::quote::Reply;
+        let path = std::env::temp_dir().join(format!("equipe-drafts-cards-{}/composer.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut d = Drafts::load(path.clone());
+        let (pm, front) = (Drafts::key("acme", "pm", None), Drafts::key("acme", "frontend", None));
+        let cards = vec![Reply { quote: "T-12를 먼저".into(), words: "왜요?".into() }, Reply::asked("헤더 정리"), Reply { quote: "셋째".into(), words: "좋아요".into() }];
+        // Cards alone, nothing typed: still a draft.
+        let draft = Draft { replies: cards.clone(), ..Draft::default() };
+        assert!(!draft.is_empty());
+        d.put(pm.clone(), draft.clone());
+        d.put(front.clone(), Draft { text: "다른 사람".into(), caret: 0, ..Draft::default() });
+        d.save();
+        let again = Drafts::load(path.clone());
+        assert_eq!(again.get(&pm).replies, cards, "each member's own, in order");
+        assert!(again.get(&front).replies.is_empty());
+        // A draft written before cards existed reads as one without them.
+        std::fs::write(&path, r#"{"drafts":{"acme/pm/":{"text":"old","caret":3}},"recent":[]}"#).unwrap();
+        assert_eq!(Drafts::load(path.clone()).get(&pm), Draft { text: "old".into(), caret: 3, ..Draft::default() });
+        // Sent: the cards go with the words, and the draft with them.
+        d.put(pm.clone(), Draft::default());
+        assert_eq!(d.get(&pm), Draft::default());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

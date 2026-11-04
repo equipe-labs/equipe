@@ -520,6 +520,7 @@ pub mod label {
     pub fn status(lang: Lang, status: TicketStatus) -> &'static str {
         core(lang).get(match status {
             TicketStatus::Proposed => "status.proposed",
+            TicketStatus::Idea => "status.idea",
             TicketStatus::Todo => "status.todo",
             TicketStatus::InProgress => "status.in_progress",
             TicketStatus::Waiting => "status.waiting",

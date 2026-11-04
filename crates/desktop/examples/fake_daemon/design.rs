@@ -4,10 +4,20 @@
 //! folders written under `$EQUIPE_HOME/design-system` and read the
 //! daemon's way (`equipe_core::design`), pictures and all.
 //!
-//! - `1`: the squad's, and the web project's own (the site's older palette).
+//! - `1`: the squad's, and the web project's own (the site's older palette),
+//!   with its UI map (`fake_daemon/flows.rs`).
 //! - `draft`: the squad's as the desktop has it now (steel blue), and T-144
 //!   in review with its draft (signal blue) — the "검토 중" pill.
+//! - `working`: the squad's, its setup at the UI map, and T-378 still at work
+//!   on it in its worktree — two flows partly shot, the designer mid-turn
+//!   (`fake_daemon/flows.rs`, `seed_working`): the "만드는 중" chip and the
+//!   empty map that says who is making it.
 //! - `empty`: none yet.
+//!
+//! With `1`, the person's taste too: four notes of the squad's (from each
+//! source), one of the web project's, and five decisions with their
+//! pictures; a note added, rewritten or removed on the screen is kept for
+//! the run (the squad's) or in the web project's `taste.md`.
 //!
 //! `FAKE_DESIGN_CHANGE_AFTER=<ms>`: the designer saves new tokens that long
 //! after the first ask — an accent moved, a colour added — for "바뀐 것".
@@ -19,7 +29,8 @@ use std::time::Duration;
 
 use equipe_core::design::folder::{self, Place};
 use equipe_core::i18n::Lang;
-use equipe_core::protocol::design::DraftOf;
+use equipe_core::protocol::design::{DesignPart, DesignVersion, DraftOf, Taste, TasteFrom, TasteNote};
+use equipe_core::taste::{notes, store};
 use equipe_core::protocol::rpc::{ImageRead, ReadImage};
 use equipe_core::protocol::{Command, Event, Ticket};
 use tokio::sync::broadcast;
@@ -35,17 +46,58 @@ fn base() -> PathBuf {
 
 /// Where each fake design system lives.
 fn places() -> Vec<Place> {
-    let mut out = vec![Place { project: None, draft: None, dir: base().join("squad/design") }];
+    let mut out = vec![Place { project: None, draft: None, dir: base().join("squad/design"), live: None }];
     match mode().as_deref() {
-        Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "브랜드 가이드라인".into() }), dir: base().join("t144/design") }),
+        Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "브랜드 가이드라인".into(), working: false }), dir: base().join("t144/design"), live: None }),
+        Some("working") => out.push(Place { project: None, draft: Some(DraftOf { ticket: WORKING_TICKET, title: WORKING_TITLE.into(), working: true }), dir: base().join("t378/design"), live: None }),
         Some("empty") | None => {}
-        Some(_) => out.push(Place { project: Some("web".into()), draft: None, dir: base().join("web/design") }),
+        Some(_) => {
+            out.push(Place { project: Some("web".into()), draft: None, dir: base().join("web/design"), live: None });
+            // T-170 in review: the site's refresh, its UI map shot again where it changed.
+            out.push(Place { project: Some("web".into()), draft: Some(DraftOf { ticket: 170, title: REFRESH_TITLE.into(), working: false }), dir: base().join("t170/design"), live: None });
+        }
     }
     out
 }
 
-/// T-144, in review, when its draft is shown.
+const REFRESH_TITLE: &str = "사이트 리프레시 — 강조색과 버튼";
+/// `working`: the ticket making the squad's UI map.
+pub const WORKING_TICKET: u32 = 378;
+const WORKING_TITLE: &str = "화면 지도 만들기";
+
+/// The ticket in review whose draft is shown: T-144 (`draft`), T-170 (`1`).
 pub fn ticket() -> Option<Ticket> {
+    if mode().as_deref() == Some("working") {
+        let mut t = super::ticket(
+            WORKING_TICKET,
+            "in_progress",
+            "app",
+            "designer",
+            WORKING_TITLE,
+            "- [ ] 온보딩·결제 흐름을 flows/flows.json에\n- [ ] 화면마다 상태별로 라이트·다크 찍기",
+            &[],
+            None,
+            None,
+        );
+        t.kind = equipe_core::protocol::TicketKind::Task;
+        t.project = None;
+        return Some(t);
+    }
+    if mode().as_deref() == Some("1") {
+        let mut t = super::ticket(
+            170,
+            "review",
+            "web",
+            "designer",
+            REFRESH_TITLE,
+            "- [ ] 강조색을 바이올렛으로\n- [ ] 주 버튼을 더 둥글게\n- [ ] 바뀐 화면 다시 찍기",
+            &[],
+            Some("equipe/t-170-refresh"),
+            Some("강조색을 #6D28D9로 바꾸고 주 버튼을 다듬었습니다. 바뀐 화면 다섯 개를 다시 찍었어요."),
+        );
+        t.kind = equipe_core::protocol::TicketKind::Code;
+        return Some(t);
+    }
     (mode().as_deref() == Some("draft")).then(|| {
         let mut t = super::ticket(
             144,
@@ -75,9 +127,121 @@ pub fn seed() {
     if mode == "draft" {
         write_system(&squad, &tokens(&STEEL), GUIDELINES_STEEL);
         write_system(&base().join("t144/design"), &tokens(&SIGNAL), GUIDELINES);
+    } else if mode == "working" {
+        // The worktree starts as the squad's folder; the map lands in it.
+        write_system(&squad, &tokens(&SIGNAL), GUIDELINES);
+        write_system(&base().join("t378/design"), &tokens(&SIGNAL), GUIDELINES);
+        super::flows::seed_working(&base().join("t378/design"));
     } else {
         write_system(&squad, &tokens(&SIGNAL), GUIDELINES);
         write_system(&base().join("web/design"), &tokens(&SITE), GUIDELINES_WEB);
+        super::flows::seed(&base().join("web/design"));
+        write_system(&base().join("t170/design"), &tokens(&REFRESH), GUIDELINES_WEB);
+        super::flows::seed_draft(&base().join("t170/design"), &base().join("web/design"));
+        write_decisions(&squad, &base().join("web/design"));
+    }
+}
+
+/// The squad's notes, kept for the run as its memory would keep them.
+static SQUAD_NOTES: std::sync::Mutex<Vec<TasteNote>> = std::sync::Mutex::new(Vec::new());
+
+fn seeded_notes() -> Vec<TasteNote> {
+    let note = |text: &str, from: TasteFrom, date: &str, confirmed: bool, seen: &[u32]| TasteNote { text: text.into(), from, date: Some(date.into()), confirmed, seen: seen.to_vec(), ..TasteNote::default() };
+    vec![
+        note("모서리는 둥글게 — 카드 12, 버튼 8", TasteFrom::Person, "2026-10-21", true, &[]),
+        note("채도 높은 파랑은 싫어함", TasteFrom::SentBack { ticket: 336 }, "2026-10-28", true, &[]),
+        note("여백은 넉넉하게, 한 화면에 하나만 강조", TasteFrom::Answered { ticket: 272 }, "2026-11-01", false, &[]),
+        note("숫자는 고정폭으로 맞춰 정렬", TasteFrom::Noticed { ticket: Some(288) }, "2026-11-03", false, &[301]),
+    ]
+}
+
+/// What equipe kept of the person's send-backs, as the memory would give it.
+fn sent_backs() -> Vec<equipe_core::protocol::design::Evidence> {
+    let body = "## 2026-10-27 · T-336 (designer)\n- Sent back \u{201c}요금제 페이지\u{201d}: \u{201c}파랑이 너무 쨍해요. 눈이 아파요\u{201d}\n\n## 2026-11-02 · T-288 (designer)\n- Sent back \u{201c}대시보드 표\u{201d}: \u{201c}숫자 줄이 안 맞아서 비교가 안 돼요\u{201d}";
+    equipe_core::taste::evidence::sent_backs(body)
+}
+
+/// Five decisions in the squad's record and one in the web project's, with their pictures.
+fn write_decisions(squad: &Path, web: &Path) {
+    use equipe_core::protocol::design::Decision;
+    let d = |date: &str, question: &str, chosen: &str, picture: &str, passed: &[&str], why: Option<&str>, ticket: u32| Decision {
+        date: date.into(),
+        question: question.into(),
+        chosen: chosen.into(),
+        picture: Some(format!("decisions/{picture}")),
+        passed: passed.iter().map(|p| (*p).to_owned()).collect(),
+        why: why.map(str::to_owned),
+        ticket: Some(ticket),
+    };
+    let pictures: [(&str, String); 5] = [
+        ("mark-dot.svg", mark("#0A0A0C", "#EFEDE7", "#3F6FF5")),
+        ("accent-signal.svg", button("#3F6FF5")),
+        ("hero-airy.svg", card()),
+        ("input-round.svg", input()),
+        ("four-dots.svg", four_dots("#3F6FF5")),
+    ];
+    for (dir, list) in [
+        (squad, vec![
+            d("2026-11-03", "로고 방향", "점 하나 — 소문자 e와 브랜드 점", "mark-dot.svg", &["네 점 그대로", "워드마크만"], Some("작아져도 알아볼 수 있으면 좋겠어요"), 144),
+            d("2026-11-01", "히어로 레이아웃", "B — 한 단, 여백 넉넉히", "hero-airy.svg", &["A — 두 단", "C — 꽉 찬 사진"], Some("좀 더 숨 쉬게"), 272),
+            d("2026-10-28", "강조 색", "Signal blue #3F6FF5", "accent-signal.svg", &["Steel #2E5C8A"], Some("너무 쨍한 파랑 말고, 점 하나에만"), 336),
+            d("2026-10-21", "입력창 모서리", "16 — 둥글게", "input-round.svg", &["8", "각지게"], None, 301),
+        ]),
+        (web, vec![d("2026-10-15", "사이트 일러스트", "네 점", "four-dots.svg", &["사진"], Some("우리 이야기를 점으로"), 120)]),
+    ] {
+        std::fs::create_dir_all(dir.join("decisions")).unwrap();
+        for (name, body) in &pictures {
+            std::fs::write(dir.join("decisions").join(name), body).unwrap();
+        }
+        for (i, decision) in list.iter().enumerate() {
+            std::fs::write(dir.join("decisions").join(format!("{}-{i}.md", decision.date)), equipe_core::taste::decisions::text(decision)).unwrap();
+        }
+    }
+    std::fs::write(web.join(store::NOTES_FILE), format!("{}
+- 사진보다 점과 선 _(the person, 2026-10-15)_
+", store::TEMPLATE)).unwrap();
+}
+
+/// The taste as the daemon would send it now.
+fn taste() -> Vec<Taste> {
+    if mode().as_deref() != Some("1") {
+        return vec![Taste { notes_at: "~/.equipe/squads/demo/home/memory/design-taste-notes.md".into(), ..Taste::default() }];
+    }
+    let mut notes = SQUAD_NOTES.lock().unwrap();
+    if notes.is_empty() && std::env::var("FAKE_TASTE_EMPTY").is_err() {
+        *notes = seeded_notes();
+    }
+    let web = base().join("web/design");
+    let decisions = store::decisions_in(&base().join("squad/design"));
+    let mut linked = notes.clone();
+    equipe_core::taste::evidence::link(&mut linked, &decisions, &sent_backs());
+    vec![
+        Taste { project: None, notes_at: "~/.equipe/squads/demo/home/memory/design-taste-notes.md".into(), notes: linked, decisions },
+        Taste {
+            project: Some("web".into()),
+            notes_at: web.join(store::NOTES_FILE).to_string_lossy().into_owned(),
+            notes: std::fs::read_to_string(web.join(store::NOTES_FILE)).map(|t| notes::parse(&t)).unwrap_or_default(),
+            decisions: store::decisions_in(&web),
+        },
+    ]
+}
+
+/// A note changed on the screen: the squad's for the run, the web project's in its file.
+fn change_taste(project: Option<&str>, change: &equipe_core::protocol::design::TasteChange) -> Result<(), String> {
+    let today = equipe_core::squad_memory::date(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+    match project {
+        None => {
+            let _ = taste();
+            let mut kept = SQUAD_NOTES.lock().unwrap();
+            *kept = notes::change(&kept, change, &today).map_err(|why| equipe_core::i18n::core(equipe_core::i18n::Lang::Ko).fill(why.key(), &[("max", equipe_core::protocol::design::NOTE_MAX.to_string())]))?;
+            Ok(())
+        }
+        Some(_) => {
+            let path = base().join("web/design").join(store::NOTES_FILE);
+            let before = std::fs::read_to_string(&path).unwrap_or_else(|_| store::TEMPLATE.into());
+            let now = notes::change(&notes::parse(&before), change, &today).map_err(|why| why.key().to_owned())?;
+            std::fs::write(&path, notes::write(&before, &now)).map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -128,6 +292,9 @@ const SITE: Palette = Palette {
     on_accent: ("#FFFFFF", "#0B1226"),
     dot: ("#1D4ED8", "#8FB0FF"),
 };
+
+/// T-170's: the site's, its accent violet.
+const REFRESH: Palette = Palette { accent: ("#6D28D9", "#C4B5FD"), dot: ("#6D28D9", "#C4B5FD"), ..SITE };
 
 /// `tokens.json` for a palette: colours as light and dark groups (as T-144
 /// wrote them), status colours with `$extensions.mode`, aliases, type, space,
@@ -304,13 +471,56 @@ fn social_card(dot: &str) -> image::RgbaImage {
 
 /// The design systems as the daemon would send them now.
 fn event() -> Event {
-    let (systems, folder) = folder::catalog_of(&places(), Lang::Ko);
-    Event::Design { squad: "demo".into(), systems, folder }
+    let (mut systems, folder) = folder::catalog_of(&places(), Lang::Ko);
+    super::flows::dress(&mut systems);
+    // As the daemon does while a draft is in review: what each picture holds.
+    folder::fingerprint(&mut systems);
+    // The web project's designer is at its map: brief, logo and system done
+    // (`working`: the squad's, its map under way).
+    let at_map = if mode().as_deref() == Some("working") { None } else { Some("web") };
+    for web in systems.iter_mut().filter(|s| s.project.as_deref() == at_map && s.draft.is_none()) {
+        use equipe_core::protocol::design::{Setup, SetupStep};
+        web.setup = [Setup::Brief, Setup::Logo, Setup::System, Setup::Flows, Setup::Qa].map(|step| SetupStep { step, done: !matches!(step, Setup::Flows | Setup::Qa) }).to_vec();
+    }
+    Event::Design { squad: "demo".into(), systems, folder, taste: taste() }
 }
 
 /// `design`: answered at once, and the folders watched from then on.
 pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool {
-    let Command::Design { .. } = command else { return false };
+    if let Command::Taste { project, change, .. } = command {
+        match change_taste(project.as_deref(), change) {
+            Ok(()) => {
+                let _ = events.send(event());
+            }
+            Err(message) => {
+                let _ = events.send(Event::Error { session: None, message, next: None });
+            }
+        }
+        return true;
+    }
+    match command {
+        Command::DesignVersions { project, .. } => {
+            let _ = events.send(Event::DesignVersions { squad: "demo".into(), project: project.clone(), versions: versions(project.as_deref()) });
+            return true;
+        }
+        // Asked back: a ticket for the designer, as the daemon makes one.
+        Command::RestoreDesign { project, commit, .. } => {
+            let version = versions(project.as_deref()).into_iter().find(|v| v.commit.starts_with(commit.as_str()));
+            let event = match version {
+                Some(v) => {
+                    let (title, body) = equipe_core::design::versions::restore(&v, Lang::Ko);
+                    let mut t = super::ticket(171, "todo", project.as_deref().unwrap_or("app"), "designer", &title, &body, &[], None, None);
+                    t.kind = if project.is_some() { equipe_core::protocol::TicketKind::Code } else { equipe_core::protocol::TicketKind::Task };
+                    Event::TicketChanged { squad: "demo".into(), ticket: t }
+                }
+                None => Event::Error { session: None, message: format!("그 디자인 버전({commit})을 찾지 못했어요."), next: None },
+            };
+            let _ = events.send(event);
+            return true;
+        }
+        Command::Design { .. } => {}
+        _ => return false,
+    }
     let _ = events.send(event());
     static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !WATCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -344,12 +554,42 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
     true
 }
 
+/// A system's accepted versions, newest first, as `git log` would have them.
+fn versions(project: Option<&str>) -> Vec<DesignVersion> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let v = |n: u8, days_ago: u64, subject: &str, ticket: Option<u32>, parts: &[DesignPart]| DesignVersion {
+        commit: format!("{:02x}{}", n, "7c1e9a4b3d".repeat(4)).chars().take(40).collect(),
+        at: now.saturating_sub(days_ago * 86_400 + u64::from(n) * 3_600),
+        subject: subject.into(),
+        ticket,
+        parts: parts.to_vec(),
+    };
+    use DesignPart::{Flows, Guidelines, Logo, Other, Tokens};
+    match project {
+        Some(_) => vec![
+            v(1, 1, "결제 화면 오류 상태 다시 찍기", Some(152), &[Flows]),
+            v(2, 3, "검색 결과 빈 상태와 로딩", Some(160), &[Flows]),
+            v(3, 6, "온보딩 화면 지도", Some(142), &[Flows, Guidelines]),
+            v(4, 9, "사이트 토큰을 스쿼드 이름으로 맞춤", Some(131), &[Tokens, Guidelines]),
+            v(5, 21, "the person: 바탕색 조금 따뜻하게", None, &[Tokens]),
+            v(6, 40, "사이트 디자인 토큰 처음", Some(98), &[Tokens, Logo, Other]),
+        ],
+        None => vec![
+            v(7, 2, "브랜드 가이드라인 v1", Some(144), &[Tokens, Logo, Guidelines]),
+            v(8, 12, "로고 세 가지", Some(120), &[Logo]),
+            v(9, 30, "equipe: the squad's folder", None, &[Other]),
+        ],
+    }
+}
+
 /// `read_image` for a design system's picture, as the daemon checks it:
 /// only one an asset names, inside its folder.
 pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
     let places = places();
-    let (systems, _) = folder::catalog_of(&places, Lang::En);
-    if !systems.iter().any(|s| s.assets.iter().any(|a| a.path == ask.path)) {
+    let (mut systems, _) = folder::catalog_of(&places, Lang::En);
+    super::flows::dress(&mut systems);
+    let decided = places.iter().flat_map(|p| store::pictures(&p.dir)).any(|p| p == ask.path);
+    if !decided && !systems.iter().any(|s| s.assets.iter().any(|a| a.path == ask.path)) && !super::flows::pictures(&systems).contains(&ask.path) {
         return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
     }
     let roots: Vec<PathBuf> = places.into_iter().map(|p| p.dir).collect();

@@ -78,10 +78,7 @@ impl Shell {
         self.goal = None;
         match goal {
             Goal::Place(place) => self.go_to(place, window, cx),
-            Goal::Project(name) => {
-                self.focus_project(Some(name), window, cx);
-                self.open_side(crate::state::Side::Pm, window, cx);
-            }
+            Goal::Project(name) => self.open_project_page(name, window, cx),
             Goal::Ticket(id) => self.open_ticket(id, cx),
             Goal::Conversation(id) => self.open_side(crate::state::Side::Conversation(id), window, cx),
         }

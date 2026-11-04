@@ -46,7 +46,13 @@
 //! member as the person's message and it replies. `FAKE_DECIDE=logo` puts
 //! the designer's logo question first, each option its picture, and has the
 //! designer's brand guide (T-144) handed in with its pictures
-//! (`fake_daemon/pictures.rs`).
+//! (`fake_daemon/pictures.rs`); `FAKE_DECIDE=brand` puts the designer's three
+//! brand directions first instead, each on the product's home screen, with
+//! the aspects the person can mix.
+//!
+//! `FAKE_DECIDE=scope` puts the PM's scope card first: one question, the
+//! plan step's four modes, its recommendation first. `FAKE_PLAN=1` has T-42
+//! cut from a plan, its body ending in its slice of the test plan.
 //!
 //! `FAKE_REPLY_IMAGES=1`: the PM's last reply shows the designer's drafts
 //! for T-2 — three pictures it embeds and the folder they are in — from "the
@@ -64,6 +70,13 @@
 //!
 //! `FAKE_ROUTINE=1`: the PM proposes a weekly routine, for the person to turn
 //! on from a card (`fake_daemon/routine.rs`; `daily`: a second one).
+//!
+//! `FAKE_DESIGN_REVIEW=1`: the designer's weekly design review has come — its
+//! routine's message and the review in the designer's conversation, its
+//! proposal waiting in 나에게 as a visual question (`fake_daemon/review.rs`).
+//!
+//! `FAKE_NOISE=1`: the designer's conversation holds the engine's own turns —
+//! background tasks ending, a reminder, a `sleep` refused (`fake_daemon/noise.rs`).
 //!
 //! `FAKE_ACCEPT=1`: the PM puts T-42 and T-71 to the person on a card to
 //! confirm accepting them (`fake_daemon/accept.rs`; `merge`, `words`).
@@ -83,8 +96,9 @@
 //! `FAKE_ENGINES`: settings' AI platforms in each state (`fake_daemon/engines.rs`).
 //! `FAKE_DESIGN=1`: the squad's design system and the web project's own,
 //! modelled on T-144's brand guideline; `draft`: T-144 in review with its
-//! draft; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
-//! `read_image`, as from the daemon.
+//! draft; `working`: T-378 still making the squad's UI map, the designer at
+//! it; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
+//! `read_image`, as from the daemon. `FAKE_NO_DESIGNER=1`: a team with no designer.
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
@@ -238,6 +252,17 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 
 type Branch = (&'static str, Vec<(&'static str, usize)>);
 
+/// Conversations with the PM put away, the latest first: taken up again
+/// from their project's page.
+fn put_away() -> &'static std::sync::Mutex<Vec<equipe_core::protocol::PutAway>> {
+    static AWAY: std::sync::OnceLock<std::sync::Mutex<Vec<equipe_core::protocol::PutAway>>> = std::sync::OnceLock::new();
+    AWAY.get_or_init(|| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default();
+        let away = |session, title: &str, ago: i64| equipe_core::protocol::PutAway { session, project: Some("web".into()), title: Some(title.into()), at: now - ago };
+        std::sync::Mutex::new(vec![away(90, "랜딩 문구 다듬기", 3 * 3600), away(91, "결제 오류 원인 찾기", 2 * 86400)])
+    })
+}
+
 /// `FAKE_REVIEW=1`: made-up Nemotron reviews of T-42 and T-71, to look at
 /// how the peek shows one — canned here, never a real model's answer.
 fn reviews() -> Vec<equipe_core::protocol::review::CodeReview> {
@@ -347,6 +372,10 @@ fn board() -> Vec<Ticket> {
             ticket(73, "waiting", "api", "backend", "운영 DB 읽기 전용 계정", "", &[], None, Some("Waiting on you:\n- [ ] 운영 DB 읽기 전용 비밀번호 알려 주기")),
             ticket(52, "proposed", "web", "frontend", "다크 모드 토글", "사용자 설정에 다크 모드를 넣으면 야간 이용 시간이 늘 것 같습니다.\n\n- [ ] 시스템 설정을 따른다\n- [ ] 직접 고를 수 있다", &[], None, None),
             ticket(64, "proposed", "app", "designer", "빈 화면 일러스트 세트", "", &[], None, None),
+            // The person's ideas, kept for later — and one the PM brought back.
+            ticket(80, "idea", "app", "pm", "클라우드 서버에서 equipe 돌리기", "맥미니 없이도 쓸 수 있게, 서버를 빌려 컴퓨터 전체를 맡기는 방식.", &[], None, None),
+            ticket(81, "idea", "web", "marketing", "온보딩 영상 가이드", "처음 쓰는 사람이 3분 영상으로 따라 할 수 있게.", &[], None, None),
+            ticket(82, "proposed", "web", "frontend", "주간 리포트 이메일", "매주 월요일, 지난주 지표를 메일로 받아 보기.", &[], None, Some("Why now: 지난주 지표 대시보드가 막 출시돼서, 같은 데이터로 바로 만들 수 있어요. 지금 손이 비는 멤버도 있어요.")),
         ]);
         let mut task = ticket(63, "review", "app", "designer", "경쟁 앱 온보딩 조사", "", &[], None, Some("다섯 개 앱의 온보딩을 정리했습니다. `research/onboarding.md`"));
         task.kind = equipe_core::protocol::TicketKind::Task;
@@ -359,6 +388,13 @@ fn board() -> Vec<Ticket> {
         clash.merged = Some(false);
         clash.off_main = Some(equipe_core::protocol::OffMain::Conflict { detail: "equipe/t-49-banner conflicts with main in README.md — nothing was merged".into() });
         out.push(clash);
+    }
+    if std::env::var("FAKE_PLAN").is_ok_and(|v| v == "1")
+        && let Some(t) = out.iter_mut().find(|t| t.id == 42)
+    {
+        let plan = "docs/plans/2026-11-04-checkout-payment.md";
+        t.plan = Some(plan.into());
+        t.body.push_str(&format!("\n\n계획: `{plan}`\n\n이 티켓의 테스트 계획:\n\n- TP-1: 카드를 고르고 결제하면 주문이 만들어진다\n- TP-3: 새로고침해도 고른 결제 수단이 남는다"));
     }
     if your_turn().is_some() {
         out.push(turn_ticket());
@@ -438,6 +474,8 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                     },
                 ],
                 asked_at: now.saturating_sub(90),
+                review: false,
+                retro: None,
             },
             QuestionSet {
                 id: 9002,
@@ -452,11 +490,47 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                     ..Question::default()
                 }],
                 asked_at: now.saturating_sub(30),
+                review: false,
+                retro: None,
             },
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
-        std::sync::Mutex::new(if deciding().is_some() { sets } else { Vec::new() })
+        let sets = if deciding().as_deref() == Some("scope") { std::iter::once(scope_set(now)).chain(sets).collect() } else { sets };
+        let mut waiting = if briefs::office() { vec![briefs::office_hours_set(now)] } else if deciding().is_some() { sets } else { Vec::new() };
+        if review::on() {
+            waiting.insert(0, review::set(now));
+        }
+        if retro::on() {
+            waiting.insert(0, retro::set(now));
+        }
+        std::sync::Mutex::new(waiting)
     })
+}
+
+/// `FAKE_DECIDE=scope`: the plan step's scope card, as the PM puts it.
+fn scope_set(now: u64) -> QuestionSet {
+    let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), ..Choice::default() };
+    QuestionSet {
+        id: 9000,
+        session: 1,
+        member: "pm".into(),
+        ticket: None,
+        questions: vec![Question {
+            question: "체크아웃 결제 수단 계획, 범위를 어디까지 잡을까요?".into(),
+            header: "범위".into(),
+            options: vec![
+                choice("선택적으로 넓히기 (추천)", "요청한 카드·계좌이체에 간편결제 하나만 더해요 — 리뷰에서 가장 많이 나온 요청이에요"),
+                choice("넓히기", "간편결제 셋과 저장된 결제 수단까지 — 티켓 7개, 두 주쯤"),
+                choice("범위 유지", "카드와 계좌이체만, 요청한 그대로 — 티켓 4개"),
+                choice("줄이기", "카드 결제만 먼저 내보내고 계좌이체는 다음에 — 티켓 2개"),
+            ],
+            multi_select: false,
+            ..Question::default()
+        }],
+        asked_at: now.saturating_sub(20),
+        review: false,
+        retro: None,
+    }
 }
 
 /// A set answered or closed: the screens are told, and the member gets the
@@ -790,6 +864,7 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
                 Move::Cancel => TicketStatus::Cancelled,
                 Move::Resume | Move::SendBack | Move::TakeOn => TicketStatus::Todo,
                 Move::BackToProposal => TicketStatus::Proposed,
+                Move::Shelve => TicketStatus::Idea,
                 Move::Restore(s) => s,
             };
             if t.status != found.status {
@@ -897,6 +972,21 @@ mod switching;
 #[path = "fake_daemon/design.rs"]
 mod design;
 
+#[path = "fake_daemon/briefs.rs"]
+mod briefs;
+
+#[path = "fake_daemon/flows.rs"]
+mod flows;
+
+#[path = "fake_daemon/review.rs"]
+mod review;
+
+#[path = "fake_daemon/retro.rs"]
+mod retro;
+
+#[path = "fake_daemon/noise.rs"]
+mod noise;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -930,7 +1020,8 @@ async fn main() {
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
     design::seed();
-    if pictures::on() {
+    briefs::seed();
+    if pictures::on() || review::on() {
         pictures::make();
     }
     replies::make();
@@ -992,6 +1083,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history = history::history(n);
                         }
                         history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
+                        // `FAKE_RETRO=1`: last week's retro and this week's, in the PM's conversation.
+                        if retro::on() {
+                            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                            history.extend(retro::history(now));
+                        }
                         // `FAKE_ASKLIST=1`: the PM's last reply asks three things in a list of its own words.
                         if std::env::var("FAKE_ASKLIST").is_ok_and(|v| v == "1") {
                             history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
@@ -1052,16 +1148,32 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             tokio::spawn(async move {
                                 let after = std::env::var("FAKE_DECIDE_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
                                 tokio::time::sleep(Duration::from_millis(after)).await;
-                                close_questions(9001, Some(vec![Answer { picked: vec![1], other: None }, Answer { picked: vec![0, 2], other: Some("설정은 알림만".into()) }]), &events);
+                                close_questions(9001, Some(vec![Answer { picked: vec![1], ..Default::default() }, Answer { picked: vec![0, 2], other: Some("설정은 알림만".into()), ..Default::default() }]), &events);
                             });
                         }
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                         let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", working() >= 1, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
                         let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", working() >= 2, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
                         let designer = on(info(4, "designer", vec![]), 60, "app", "온보딩 세 화면 시안", false, ("Read", "brief.md"), Some(Estimate { done_at: Some(now.saturating_sub(12 * 60)), ..Default::default() }));
+                        // `FAKE_DESIGN=working`: the designer mid-turn on T-378, shooting the map.
+                        let designer = if design::mode().as_deref() == Some("working") {
+                            let what = Estimate { done_at: Some(now + 18 * 60), what: Some("결제 흐름 상태 찍는 중".into()), ..Default::default() };
+                            on(info(4, "designer", vec![]), design::WORKING_TICKET, "app", "화면 지도 만들기", true, ("Write", "design/flows/checkout/pay/default.light.390.png"), Some(what))
+                        } else {
+                            designer
+                        };
                         // Settings have something to show: a member on its own mode and effort, rules kept.
                         let mut designer = designer;
                         designer.mode = Some(equipe_core::protocol::Mode::Ask);
+                        if review::on() {
+                            designer.work = None;
+                            designer.recent = review::history();
+                        }
+                        // `FAKE_NOISE=1`: the engine's own turns in the designer's conversation.
+                        if noise::on() {
+                            designer.work = None;
+                            designer.recent = noise::history();
+                        }
                         let mut backend = backend;
                         backend.effort = Some("high".into());
                         let mut frontend = frontend;
@@ -1119,6 +1231,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             pm_info.state = SessionState::Working;
                         }
                         let mut sessions = vec![pm_info, frontend, backend, designer];
+                        if std::env::var_os("FAKE_NO_DESIGNER").is_some() {
+                            sessions.pop();
+                        }
                         if busy() {
                             for (ticket, session, name, title) in BUSY {
                                 let role = name.split('-').next().unwrap_or(name);
@@ -1159,7 +1274,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             questions: questions().lock().unwrap().clone(),
                             team_changes: team::changes(),
                             routine_proposals: routine::proposals(),
-                            routines: routine::routines(),
+                            routines: if retro::on() { retro::routines() } else { routine::routines() },
                             idle_wake_hours: Some(routine::idle_wake_hours()),
                             signals: signals::signals(),
                             accepts: accept::cards(),
@@ -1168,6 +1283,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             browsers_shown: true,
                             disk: disk::status(),
                             reviews: reviews(),
+                            put_away: put_away().lock().unwrap().clone(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1324,6 +1440,21 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 routes.lock().await.kept.remove(&session);
                                 let _ = events.send(Event::SessionClosed { session });
                             }
+                            Command::ReopenConversation { squad, session } => {
+                                let back = {
+                                    let mut away = put_away().lock().unwrap();
+                                    away.iter().position(|c| c.session == session).map(|at| (away.remove(at), away.clone()))
+                                };
+                                if let Some((c, left)) = back {
+                                    routes.lock().await.kept.insert(session);
+                                    let _ = events.send(Event::SessionStarted { session, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some(squad.clone()) });
+                                    let _ = events.send(Event::LaneOpened { session, of: 1, project: c.project.clone(), kept: true });
+                                    let title = c.title.clone().unwrap_or_default();
+                                    let lines = vec![Entry::User { text: title }, Entry::Reply { text: "지난번에 여기까지 했어요. 이어서 할까요?".into() }];
+                                    let _ = events.send(Event::ConversationBack { session, title: c.title, lines });
+                                    let _ = events.send(Event::PutAwayChanged { squad, list: left });
+                                }
+                            }
                             Command::SubmitLater { session, text, about } => {
                                 let project = match about { Some(about) => about, None => routes.lock().await.focus.clone() };
                                 waiting().lock().await.entry(session).or_default().push((text.clone(), project.clone()));
@@ -1441,7 +1572,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

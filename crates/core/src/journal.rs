@@ -190,6 +190,9 @@ pub struct TicketWork {
     pub engine_session: Option<String>,
 }
 
+/// How long turns and waits are kept for the retros: a quarter.
+const KEPT_FOR_RETROS: i64 = 92 * 24 * 60 * 60;
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -220,6 +223,7 @@ fn mode_str(mode: Mode) -> &'static str {
 fn status_str(status: TicketStatus) -> &'static str {
     match status {
         TicketStatus::Proposed => "proposed",
+        TicketStatus::Idea => "idea",
         TicketStatus::Todo => "todo",
         TicketStatus::InProgress => "in_progress",
         TicketStatus::Waiting => "waiting",
@@ -232,6 +236,7 @@ fn status_str(status: TicketStatus) -> &'static str {
 fn status_from(s: &str) -> TicketStatus {
     match s {
         "proposed" => TicketStatus::Proposed,
+        "idea" => TicketStatus::Idea,
         "in_progress" => TicketStatus::InProgress,
         "waiting" => TicketStatus::Waiting,
         "review" => TicketStatus::Review,
@@ -361,6 +366,25 @@ impl Journal {
                ticket INTEGER PRIMARY KEY,
                body TEXT
              );
+             CREATE TABLE IF NOT EXISTS turns (
+               member TEXT NOT NULL,
+               role TEXT NOT NULL,
+               ticket INTEGER,
+               began INTEGER NOT NULL,
+               ended INTEGER NOT NULL,
+               outcome TEXT NOT NULL,
+               tokens INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS turns_ended ON turns(ended);
+             CREATE TABLE IF NOT EXISTS waits (
+               kind TEXT NOT NULL,
+               member TEXT NOT NULL,
+               ticket INTEGER,
+               what TEXT NOT NULL,
+               asked INTEGER NOT NULL,
+               answered INTEGER NOT NULL,
+               outcome TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS conversations (
                id INTEGER PRIMARY KEY,
                project TEXT,
@@ -388,6 +412,8 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN images TEXT", []);
         // The design QA ticket a hand-in waits on before the person's review.
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN design_qa INTEGER", []);
+        // The plan it was cut from, or reviews: its path.
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN plan TEXT", []);
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -736,6 +762,26 @@ impl Journal {
         self.set_meta(&format!("{role}_check_added"), "1")
     }
 
+    /// The designer's weekly review among the routines (`crate::design::review`),
+    /// by its id: added with the designer, gone once the person deletes it.
+    pub fn design_review_routine(&self) -> Option<u32> {
+        self.meta("design_review_routine").and_then(|id| id.parse().ok())
+    }
+
+    pub fn set_design_review_routine(&self, id: Option<u32>) -> Result<()> {
+        self.set_meta("design_review_routine", &id.map(|id| id.to_string()).unwrap_or_default())
+    }
+
+    /// The PM's weekly retro among the routines (`crate::retro`), by its id:
+    /// added with the PM, gone once the person deletes it.
+    pub fn retro_routine(&self) -> Option<u32> {
+        self.meta("retro_routine").and_then(|id| id.parse().ok())
+    }
+
+    pub fn set_retro_routine(&self, id: Option<u32>) -> Result<()> {
+        self.set_meta("retro_routine", &id.map(|id| id.to_string()).unwrap_or_default())
+    }
+
     /// When the PM was last woken over an empty board, in unix seconds.
     pub fn idle_woken_at(&self) -> Option<u64> {
         self.meta("idle_woken_at").and_then(|at| at.parse().ok())
@@ -743,6 +789,15 @@ impl Journal {
 
     pub fn set_idle_woken_at(&self, at: u64) -> Result<()> {
         self.set_meta("idle_woken_at", &at.to_string())
+    }
+
+    /// When the PM was last asked to look at the person's ideas, in unix seconds.
+    pub fn ideas_woken_at(&self) -> Option<u64> {
+        self.meta("ideas_woken_at").and_then(|at| at.parse().ok())
+    }
+
+    pub fn set_ideas_woken_at(&self, at: u64) -> Result<()> {
+        self.set_meta("ideas_woken_at", &at.to_string())
     }
 
     pub fn set_hq(&self, path: Option<&Path>) -> Result<()> {
@@ -757,8 +812,8 @@ impl Journal {
         let at = now();
         self.conn.execute(
             "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
-                                  note, created_at, updated_at, kind, priority, rank)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15)",
+                                  note, created_at, updated_at, kind, priority, rank, plan)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16)",
             params![
                 id,
                 t.title,
@@ -775,6 +830,7 @@ impl Journal {
                 t.kind.label(),
                 t.priority.label(),
                 t.rank,
+                t.plan,
             ],
         )?;
         Ok(id as TicketId)
@@ -785,7 +841,7 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20
              WHERE id = ?11",
             params![
                 t.title,
@@ -807,6 +863,7 @@ impl Journal {
                 remaining_str(&t.remaining),
                 remaining_str(&t.images),
                 t.design_qa,
+                t.plan,
             ],
         )?;
         Ok(())
@@ -844,7 +901,7 @@ impl Journal {
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
-                    priority, rank, remaining, images, design_qa
+                    priority, rank, remaining, images, design_qa, plan
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -871,6 +928,7 @@ impl Journal {
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
                 updated_at: r.get::<_, Option<i64>>(15)?.map(|at| at.max(0) as u64),
                 design_qa: r.get(20)?,
+                plan: r.get(21)?,
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -962,6 +1020,69 @@ impl Journal {
     pub fn turn_times(&self, role: &str) -> Result<Vec<u64>> {
         let mut stmt = self.conn.prepare("SELECT seconds FROM turn_times WHERE role = ?1 ORDER BY at DESC, rowid DESC LIMIT 50")?;
         let rows = stmt.query_map([role], |r| Ok(r.get::<_, i64>(0)?.max(0) as u64))?;
+        rows.collect()
+    }
+
+    /// Keep a member's turn — who, on what, how long, how it ended, what it
+    /// used — for the weekly retro. A quarter's worth is kept.
+    pub fn record_turn(&self, t: &crate::retro::Turn) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![t.member, t.role, t.ticket, t.began as i64, t.ended as i64, t.outcome, t.tokens as i64],
+        )?;
+        self.conn.execute("DELETE FROM turns WHERE ended < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// The turns that ended at or after `since`, oldest first.
+    pub fn turns_since(&self, since: u64) -> Result<Vec<crate::retro::Turn>> {
+        let mut stmt = self.conn.prepare("SELECT member, role, ticket, began, ended, outcome, tokens FROM turns WHERE ended >= ?1 ORDER BY ended, rowid")?;
+        let rows = stmt.query_map([since as i64], |r| {
+            Ok(crate::retro::Turn {
+                member: r.get(0)?,
+                role: r.get(1)?,
+                ticket: r.get(2)?,
+                began: r.get::<_, i64>(3)?.max(0) as u64,
+                ended: r.get::<_, i64>(4)?.max(0) as u64,
+                outcome: r.get(5)?,
+                tokens: r.get::<_, i64>(6)?.max(0) as u64,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Keep what a member waited on the person for, once answered.
+    pub fn record_wait(&self, w: &crate::retro::Wait) -> Result<()> {
+        let answered = w.answered.unwrap_or(w.asked);
+        self.conn.execute(
+            "INSERT INTO waits (kind, member, ticket, what, asked, answered, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![w.kind, w.member, w.ticket, w.what, w.asked as i64, answered as i64, w.outcome],
+        )?;
+        self.conn.execute("DELETE FROM waits WHERE answered < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// The waits answered at or after `since`, oldest first.
+    pub fn waits_since(&self, since: u64) -> Result<Vec<crate::retro::Wait>> {
+        let mut stmt = self.conn.prepare("SELECT kind, member, ticket, what, asked, answered, outcome FROM waits WHERE answered >= ?1 ORDER BY answered, rowid")?;
+        let rows = stmt.query_map([since as i64], |r| {
+            Ok(crate::retro::Wait {
+                kind: r.get(0)?,
+                member: r.get(1)?,
+                ticket: r.get(2)?,
+                what: r.get(3)?,
+                asked: r.get::<_, i64>(4)?.max(0) as u64,
+                answered: Some(r.get::<_, i64>(5)?.max(0) as u64),
+                outcome: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Every ticket's record since `since`, oldest first, each with its ticket.
+    pub fn ticket_events_since(&self, since: u64) -> Result<Vec<(TicketId, TicketEntry)>> {
+        let mut stmt = self.conn.prepare("SELECT ticket, at, by, kind, text FROM ticket_events WHERE at >= ?1 ORDER BY at, ticket, seq")?;
+        let rows = stmt.query_map([since as i64], |r| Ok((r.get(0)?, TicketEntry { at: r.get::<_, i64>(1)?.max(0) as u64, by: r.get(2)?, kind: r.get(3)?, text: r.get(4)? })))?;
         rows.collect()
     }
 
@@ -1060,6 +1181,25 @@ impl Journal {
     /// Put away: it leaves the list; its lines stay as long as any.
     pub fn close_conversation(&self, id: SessionId) -> Result<()> {
         self.touch_conversation(id, "open", false)
+    }
+
+    /// The conversations put away, the latest first: at most `limit`.
+    pub fn put_away(&self, limit: usize) -> Result<Vec<equipe_protocol::PutAway>> {
+        let mut stmt = self.conn.prepare("SELECT id, project, title, updated_at FROM conversations WHERE open = 0 ORDER BY updated_at DESC, id DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(equipe_protocol::PutAway { session: r.get::<_, i64>(0)? as u64, project: r.get(1)?, title: r.get(2)?, at: r.get(3)? })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// A conversation put away, taken up again: back on the list, as it was.
+    /// None if there is no such conversation, or it is open.
+    pub fn reopen_conversation(&self, id: SessionId) -> Result<Option<ConversationRecord>> {
+        let changed = self.conn.execute("UPDATE conversations SET open = 1, updated_at = ?1 WHERE id = ?2 AND open = 0", params![now(), id as i64])?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(self.conversations()?.into_iter().find(|c| c.id == id))
     }
 
     /// The conversations with the PM still open, oldest first.
@@ -1301,6 +1441,32 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_put_away_is_kept_listed_and_taken_up_again() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        j.record_conversation(50, Some("web"), Path::new("/squad/pm")).unwrap();
+        j.record_conversation(51, None, Path::new("/squad/pm")).unwrap();
+        j.record_conversation(52, Some("app"), Path::new("/squad/pm")).unwrap();
+        j.set_title_if_empty(50, "the pricing page").unwrap();
+        j.append(50, &Entry::User { text: "the pricing page".into() }).unwrap();
+        j.close_conversation(50).unwrap();
+        j.close_conversation(52).unwrap();
+        j.conn.execute("UPDATE conversations SET updated_at = 100 WHERE id = 50", []).unwrap();
+        j.conn.execute("UPDATE conversations SET updated_at = 200 WHERE id = 52", []).unwrap();
+        let away = j.put_away(10).unwrap();
+        assert_eq!(away.iter().map(|c| c.session).collect::<Vec<_>>(), [52, 50], "the latest first, open ones not");
+        assert_eq!(away[1].title.as_deref(), Some("the pricing page"));
+        assert_eq!(away[1].project.as_deref(), Some("web"));
+        assert_eq!(away[1].at, 100);
+        assert_eq!(j.put_away(1).unwrap().len(), 1);
+        let back = j.reopen_conversation(50).unwrap().expect("taken up");
+        assert_eq!((back.id, back.project.as_deref(), back.title.as_deref()), (50, Some("web"), Some("the pricing page")));
+        assert_eq!(j.conversation(50).unwrap(), [Entry::User { text: "the pricing page".into() }], "its lines, as they were");
+        assert_eq!(j.put_away(10).unwrap().iter().map(|c| c.session).collect::<Vec<_>>(), [52]);
+        assert!(j.reopen_conversation(50).unwrap().is_none(), "open already");
+        assert!(j.reopen_conversation(99).unwrap().is_none(), "no such one");
+    }
+
+    #[test]
     fn a_session_and_its_conversation_survive_reopening() {
         let home = temp_home();
         {
@@ -1462,7 +1628,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -1532,6 +1698,19 @@ mod tests {
     }
 
     #[test]
+    fn the_plan_a_ticket_was_cut_from_is_kept_from_its_making() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let plan = Some("docs/plans/2026-11-04-sign-in.md".to_owned());
+        j.create_ticket(&Ticket { plan: plan.clone(), ..ticket("Magic link") }).unwrap();
+        let mut t = j.ticket(1).unwrap().unwrap();
+        assert_eq!(t.plan, plan);
+        t.plan = None;
+        j.save_ticket(&t).unwrap();
+        assert_eq!(j.ticket(1).unwrap().unwrap().plan, None);
+    }
+
+    #[test]
     fn the_design_qa_a_hand_in_waits_on_is_kept() {
         let home = temp_home();
         let j = Journal::for_squad(&home, "acme").unwrap();
@@ -1578,6 +1757,33 @@ mod tests {
         let entries = j.ticket_entries(2).unwrap();
         assert_eq!((entries[0].by.as_str(), entries[0].kind.as_str()), ("you", "edited"));
         assert!(entries[0].at > 0);
+    }
+
+    #[test]
+    fn turns_waits_and_the_weeks_ticket_records_are_kept_for_the_retro() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        let at = now() as u64;
+        let turn = |member: &str, ended: u64| crate::retro::Turn { member: member.into(), role: "backend".into(), ticket: Some(4), began: ended - 600, ended, outcome: "completed".into(), tokens: 1200 };
+        let failed = crate::retro::Turn { ticket: None, outcome: "failed".into(), ..turn("pm", at - 60) };
+        j.record_turn(&turn("backend", at - 3600)).unwrap();
+        j.record_turn(&failed).unwrap();
+        j.record_turn(&turn("old", at - 200 * 24 * 3600)).unwrap();
+        assert_eq!(j.turns_since(at - 7200).unwrap(), [turn("backend", at - 3600), failed]);
+        assert!(j.turns_since(0).unwrap().iter().all(|t| t.member != "old"), "past a quarter: let go");
+        let wait = crate::retro::Wait { kind: "permission".into(), member: "backend".into(), ticket: Some(4), what: "git push".into(), asked: at - 900, answered: Some(at - 300), outcome: "allowed".into() };
+        j.record_wait(&wait).unwrap();
+        assert_eq!(j.waits_since(at - 600).unwrap(), [wait]);
+        assert!(j.waits_since(at - 200).unwrap().is_empty());
+        j.ticket_event(4, "you", "reopened", "Reopened: wrong order").unwrap();
+        j.ticket_event(5, "equipe", "assigned", "frontend").unwrap();
+        let events = j.ticket_events_since(at.saturating_sub(10)).unwrap();
+        assert_eq!(events.iter().map(|(id, e)| (*id, e.kind.as_str())).collect::<Vec<_>>(), [(4, "reopened"), (5, "assigned")]);
+        assert!(j.ticket_events_since(at + 3600).unwrap().is_empty());
+        assert_eq!(j.retro_routine(), None);
+        j.set_retro_routine(Some(3)).unwrap();
+        assert_eq!(j.retro_routine(), Some(3));
+        j.set_retro_routine(None).unwrap();
+        assert_eq!(j.retro_routine(), None);
     }
 
     #[test]

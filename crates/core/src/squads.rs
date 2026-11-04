@@ -234,6 +234,29 @@ pub fn add_folder(home: &Path, squad: &str, typed: &str, user_home: Option<&Path
     Ok(repo)
 }
 
+/// A project the PM adds when the person asks it to in words: a repository
+/// already there, or a new folder for a new one — never a folder of the
+/// person's files that would be committed as a repository without them, nor
+/// a hidden one. Otherwise as [`add_folder`].
+pub fn add_folder_asked(home: &Path, squad: &str, typed: &str, user_home: Option<&Path>) -> Result<PathBuf, String> {
+    let shown = typed.trim();
+    if Path::new(shown).components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')) {
+        return Err(format!("{shown}: a hidden folder isn't a project"));
+    }
+    let path = match (shown.strip_prefix("~"), user_home) {
+        (Some(rest), Some(user)) if rest.is_empty() || rest.starts_with('/') => user.join(rest.trim_start_matches('/')),
+        _ => PathBuf::from(shown),
+    };
+    if path.exists() && crate::worktree::repo_root(&path).is_err() {
+        return Err(format!(
+            "{}: a folder that isn't a git repository yet — adding it would commit its files as one. The person adds it \
+themselves with the + beside the sidebar's projects.",
+            path.display()
+        ));
+    }
+    add_folder(home, squad, shown, user_home)
+}
+
 /// Take a project off a squad. Its tickets and branches stay.
 pub fn remove_project(home: &Path, name: &str, project: &Path) -> Result<(), String> {
     let journal = Journal::for_squad(home, name).map_err(|err| err.to_string())?;
@@ -321,6 +344,28 @@ mod tests {
         assert_eq!(last_squad(&home).as_deref(), Some("acme"), "one remembered thing keeps the other");
         let text = std::fs::read_to_string(home.join("state.json")).unwrap();
         assert_eq!(text.matches("/code/site").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn the_pm_adds_a_repository_or_a_new_folder_but_never_a_folder_of_the_persons_files_or_a_hidden_one() {
+        let home = home();
+        let user = home.with_file_name(format!("{}-pmuser", home.file_name().unwrap().to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&user);
+        std::fs::create_dir_all(user.join("code/site")).unwrap();
+        git(&user.join("code/site"), &["init", "-q", "-b", "main"]).unwrap();
+        std::fs::create_dir_all(user.join("Documents/taxes")).unwrap();
+        std::fs::write(user.join("Documents/taxes/2026.pdf"), "x").unwrap();
+        std::fs::create_dir_all(user.join(".ssh")).unwrap();
+        crate::squad_home::ensure(&home, "acme", None).ok();
+        let site = add_folder_asked(&home, "acme", "~/code/site", Some(&user)).unwrap();
+        assert_eq!(site, user.join("code/site").canonicalize().unwrap());
+        let fresh = add_folder_asked(&home, "acme", "~/code/new-app", Some(&user)).unwrap();
+        assert!(git(&fresh, &["rev-parse", "HEAD"]).is_ok(), "a new project, started");
+        let plain = add_folder_asked(&home, "acme", "~/Documents/taxes", Some(&user)).unwrap_err();
+        assert!(plain.contains("isn't a git repository yet") && plain.contains("+"), "{plain}");
+        assert!(!user.join("Documents/taxes/.git").exists(), "its files weren't committed");
+        assert!(add_folder_asked(&home, "acme", "~/.ssh", Some(&user)).unwrap_err().contains("hidden"));
+        assert!(add_folder_asked(&home, "acme", "~", Some(&user)).is_err(), "too wide, as ever");
     }
 
     #[test]

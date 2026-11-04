@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use equipe_protocol::harness;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
@@ -66,6 +67,8 @@ mod decide;
 mod room;
 mod engines;
 mod design;
+mod briefs;
+mod plans;
 mod accept;
 mod secrets;
 mod design_qa;
@@ -74,6 +77,9 @@ mod heartbeat;
 mod signals;
 mod tickets;
 mod compact;
+mod controls;
+mod review;
+mod retro;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -83,6 +89,8 @@ const BRIEF_REPLY_CHARS: usize = 400;
 
 /// Closed tickets a snapshot still shows, newest first.
 const CLOSED_TICKETS_SHOWN: usize = 20;
+/// Conversations put away a screen lists, the latest first.
+const PUT_AWAY_SHOWN: usize = 50;
 /// The routines one squad may keep.
 const MAX_ROUTINES: usize = 20;
 
@@ -514,6 +522,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         questions: HashMap::new(),
         team_changes: HashMap::new(),
         routine_proposals: HashMap::new(),
+        design_reviews: HashMap::new(),
+        retros: HashMap::new(),
+        approvals_asked: HashMap::new(),
         signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
@@ -764,6 +775,8 @@ enum Internal {
     Done(TurnDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
+    /// What the person said yes to on a card, done as their screen would ask.
+    Apply(Box<Command>),
     /// Codex asks before it acts, as Claude Code does through `approve`.
     Ask(ToolCall, oneshot::Sender<ToolResult>),
     /// The Codex plan's limits, as just read or reported; `None`: they couldn't be read.
@@ -806,6 +819,18 @@ enum Internal {
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
+    /// A squad's briefs and plans, read off the loop.
+    Docs(String, Vec<equipe_protocol::ProjectDoc>),
+    /// A plan written off the loop (`write_plan`): what follows, and the answer.
+    PlanWritten(Box<plans::Written>),
+    /// A plan read off the loop for a ticket cut from it (`create_ticket` with `plan`).
+    PlanCut(Box<plans::Cut>),
+    /// A ticket listed in its plan, off the loop: why not, if it wasn't.
+    PlanListed(String, Option<String>),
+    /// A design system's accepted versions, read off the loop.
+    DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
+    /// The version the person asked to go back to, looked up off the loop (`None`: not one).
+    DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
     /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
     Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
 }
@@ -919,6 +944,15 @@ struct Runtime {
     team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
     /// Routines the PM proposed, waiting for the person, by squad (`heartbeat`).
     routine_proposals: HashMap<String, Vec<equipe_protocol::routines::RoutineProposal>>,
+    /// Designers handed their weekly review, and when (`review`): the
+    /// decision each puts next is the review's proposal.
+    design_reviews: HashMap<SessionId, u64>,
+    /// PMs handed their weekly retro, and when (`retro`): the decision each
+    /// puts next is the retro's changes.
+    retros: HashMap<SessionId, u64>,
+    /// When each permission waiting for the person was asked, by its id: how
+    /// long it waited goes to the retro once answered.
+    approvals_asked: HashMap<u64, u64>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
@@ -995,6 +1029,7 @@ impl Wake {
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
+            Wake::Internal(Internal::Apply(_)) => Borrowed("a change the person said yes to"),
             Wake::Internal(Internal::Ask(..)) => Borrowed("codex asking for approval"),
             Wake::Internal(Internal::CodexLimits(_)) => Borrowed("codex's plan usage"),
             Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
@@ -1016,6 +1051,12 @@ impl Wake {
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
+            Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
+            Wake::Internal(Internal::PlanWritten(..)) => Borrowed("a plan written"),
+            Wake::Internal(Internal::PlanCut(..)) => Borrowed("a plan read for a ticket"),
+            Wake::Internal(Internal::PlanListed(..)) => Borrowed("a ticket listed in its plan"),
+            Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
+            Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
@@ -1159,6 +1200,7 @@ impl Runtime {
                 },
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
+                Internal::Apply(command) => Box::pin(self.handle(*command)).await,
                 Internal::Ask(call, reply) => self.ask_permission(call, reply),
                 Internal::CodexLimits(limits) => self.on_codex_limits(limits),
                 Internal::Frame(session, frame) => {
@@ -1202,6 +1244,12 @@ impl Runtime {
                     }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
+                Internal::Docs(squad, docs) => self.on_docs(squad, docs),
+                Internal::PlanWritten(written) => self.plan_written(*written),
+                Internal::PlanCut(cut) => self.plan_cut(*cut).await,
+                Internal::PlanListed(squad, error) => self.plan_listed(&squad, error),
+                Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
+                Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
             },
             Wake::Host(said) => self.on_host(said).await,
@@ -1254,6 +1302,10 @@ impl Runtime {
             Event::TicketChanged { squad, ticket } => Some((squad.clone(), ticket.id)),
             _ => None,
         };
+        // A permission put to the person: from now it waits on them.
+        if let Event::ApprovalRequested { approval, .. } = &event {
+            self.approvals_asked.insert(approval.id, now_secs());
+        }
         self.publish_in(None, event);
         // A card to confirm about it may have nothing left to confirm.
         if let Some((squad, ticket)) = changed {
@@ -1300,6 +1352,19 @@ impl Runtime {
             {
                 to_draw = Some((id, name.clone(), finished.clone()));
             }
+            // A member's turn, kept for the week's retro: who, on what, how long, how it ended.
+            let turn = match (&event, &session.member, session.turn_began) {
+                (Event::TurnEnded { outcome, usage, .. }, Some(member), Some(began)) => Some(crate::retro::Turn {
+                    member: member.name.clone(),
+                    role: member.role.clone(),
+                    ticket: session.work.as_ref().map(|w| w.ticket),
+                    began,
+                    ended: now_secs().max(began),
+                    outcome: serde_json::to_value(outcome).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
+                    tokens: usage.as_ref().map_or(0, |u| u.total()),
+                }),
+                _ => None,
+            };
             match &event {
                 Event::UserMessage { text, .. } if session.title.is_none() => {
                     session.title = text.lines().next().map(str::to_owned);
@@ -1354,6 +1419,9 @@ impl Runtime {
                 let title = session.title.clone();
                 if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
                     no_room = !record(journal, id, &event, &finished, title.as_deref());
+                    if let Some(turn) = &turn {
+                        let _ = journal.record_turn(turn);
+                    }
                 }
             }
         }
@@ -1683,6 +1751,7 @@ impl Runtime {
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
             Command::MoveConversation { session, project } => self.move_conversation(session, project),
             Command::CloseConversation { session } => self.close_conversation(session).await,
+            Command::ReopenConversation { squad, session } => self.reopen_conversation(&squad, session),
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -1756,6 +1825,10 @@ impl Runtime {
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
             Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
             Command::Design { squad } => self.design_asked(squad),
+            Command::ProjectDocs { squad } => self.docs_asked(squad),
+            Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
+            Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
+            Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
         }
     }
 
@@ -2051,6 +2124,16 @@ runbooks and reports live there, and work across the projects or on running them
         if let Err(err) = journal.set_role_routine_added(role) {
             crate::daemon_log!("equipe: {squad}: {role}'s routine wasn't marked added: {err}");
         }
+        if role == crate::design::review::ROLE
+            && let Err(err) = journal.set_design_review_routine(Some(id))
+        {
+            crate::daemon_log!("equipe: {squad}: the design review wasn't marked: {err}");
+        }
+        if role == crate::retro::ROLE
+            && let Err(err) = journal.set_retro_routine(Some(id))
+        {
+            crate::daemon_log!("equipe: {squad}: the weekly retro wasn't marked: {err}");
+        }
         self.keep_routines(squad, all);
     }
 
@@ -2088,33 +2171,51 @@ runbooks and reports live there, and work across the projects or on running them
         let before = all.len();
         all.retain(|r| r.id != id);
         if all.len() != before {
+            // The review deleted: a routine numbered as it was, later, is no review.
+            if let Some(journal) = self.journal(squad).filter(|j| j.design_review_routine() == Some(id)) {
+                let _ = journal.set_design_review_routine(None);
+            }
+            // So with the retro.
+            if let Some(journal) = self.journal(squad).filter(|j| j.retro_routine() == Some(id)) {
+                let _ = journal.set_retro_routine(None);
+            }
             self.keep_routines(squad, all);
         }
     }
 
     /// A routine handed to the PM as the person's message — after its turn
-    /// if one runs — about the HQ when the squad has one. `false`: no PM to hand it to.
+    /// if one runs — about the HQ when the squad has one; the weekly retro
+    /// with the week's facts (`retro`); the design review, to the designer
+    /// instead (`review`). `false`: no PM to hand it to.
     async fn run_routine(&mut self, squad: &str, id: u32, now: u64) -> bool {
         let mut all = self.routines(squad);
         let Some(routine) = all.iter().find(|r| r.id == id).cloned() else {
             return false;
         };
-        let Some(pm) = self.pm_of(squad) else {
-            return false;
-        };
-        crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
-        let about = self.hq(squad).map(|hq| board::project_name(&hq));
-        let mut text = routines::message(&routine);
-        let signals = self.journal(squad).map_or(0, |j| j.signals().len());
-        if signals > 0 {
-            text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
+        if self.journal(squad).and_then(|j| j.design_review_routine()) == Some(id) {
+            self.run_design_review(squad, &routine, now).await;
+        } else {
+            let Some(pm) = self.pm_of(squad) else {
+                return false;
+            };
+            crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
+            let about = self.hq(squad).map(|hq| board::project_name(&hq));
+            let retro = self.journal(squad).and_then(|j| j.retro_routine()) == Some(id);
+            let mut text = if retro { self.retro_message(squad, &routine, now) } else { routines::message(&routine) };
+            if retro {
+                self.retros.insert(pm, now);
+            }
+            let signals = self.journal(squad).map_or(0, |j| j.signals().len());
+            if signals > 0 {
+                text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
+            }
+            self.said_about = Some(about);
+            match self.sessions.get(&pm) {
+                Some(s) if s.is_working() => self.leave_memo(pm, text),
+                _ => self.submit(pm, text).await,
+            }
+            self.said_about = None;
         }
-        self.said_about = Some(about);
-        match self.sessions.get(&pm) {
-            Some(s) if s.is_working() => self.leave_memo(pm, text),
-            _ => self.submit(pm, text).await,
-        }
-        self.said_about = None;
         if let Some(r) = all.iter_mut().find(|r| r.id == id) {
             r.last_run = Some(now);
             r.next_run = Some(routines::next_run(r.when, now, &routines::Local));
@@ -3043,6 +3144,38 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.close_conversation(id);
         }
         self.close(id).await;
+        if let Some(squad) = squad {
+            self.publish_put_away(&squad);
+        }
+    }
+
+    /// A conversation put away is taken up again, its lines as they were left.
+    fn reopen_conversation(&mut self, squad: &str, id: SessionId) {
+        if self.sessions.contains_key(&id) {
+            return;
+        }
+        let Some(pm) = self.pm_of(squad) else {
+            return self.squad_error(squad, say!(self, "error.no_member", name = roles::PM));
+        };
+        let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad) else { return };
+        let Ok(Some(c)) = journal.reopen_conversation(id) else { return };
+        let lines = journal.conversation(id).unwrap_or_default();
+        let Some(m) = self.sessions.get(&pm) else { return };
+        let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
+        let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
+        let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
+        lane.title = title.clone();
+        lane.transcript = Transcript::from_entries(lines.clone());
+        self.publish_lane(id, lane, pm, c.project, true);
+        self.publish(Event::ConversationBack { session: id, title, lines });
+        self.publish_put_away(squad);
+    }
+
+    /// The conversations put away, told to the screens again.
+    fn publish_put_away(&mut self, squad: &str) {
+        let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad) else { return };
+        let list = journal.put_away(PUT_AWAY_SHOWN).unwrap_or_default();
+        self.publish(Event::PutAwayChanged { squad: squad.to_owned(), list });
     }
 
     /// The project a conversation the person opened is about, if `id` is one.
@@ -3281,6 +3414,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = std::fs::create_dir_all(dir);
         }
         let mut env: Vec<(String, String)> = builds.iter().map(|d| ("CARGO_TARGET_DIR".to_owned(), d.to_string_lossy().into_owned())).collect();
+        // No incremental state: it was most of a member's build folder (up to
+        // 11 GB of one), for faster rebuilds of what it changes, and the disk
+        // ran out for it.
+        if builds.is_some() {
+            env.push(("CARGO_INCREMENTAL".to_owned(), "0".to_owned()));
+        }
         // Leaner Rust builds unless the squad says otherwise: debug info is most of a target's size.
         if builds.is_some()
             && let Some(debug) = squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::build_debug).and_then(|d| d.cargo_value())
@@ -3316,7 +3455,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let binary = self.config.codex_binary.clone();
                 let lang = self.config.lang;
                 let model = session.model.clone();
-                let mut effort = session.effort.clone();
+                let mut effort = effort_of(session);
                 // NVIDIA's models: Codex's agent with Token Factory as its provider.
                 let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
                 let provider = match (&self.config.nemotron, nebius) {
@@ -3442,7 +3581,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     return self.error(Some(id), say!(self, "error.codex_signed_out"), Some("equipe login codex"));
                 };
                 let model = session.model.clone().unwrap_or_default();
-                let effort = session.effort.clone();
+                let effort = effort_of(session);
                 let version = self.config.client_version.clone();
                 // Codex gets no conversation of its own: equipe sends the recent
                 // part of it each turn, never more than fits.
@@ -3471,7 +3610,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             Engine::Claude => {
                 let binary = self.config.claude_binary.clone();
                 let model = session.model.clone();
-                let effort = session.effort.clone();
+                let effort = effort_of(session);
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
@@ -4116,6 +4255,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
             prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
+        }
+        if let Some(plan) = &ticket.plan {
+            let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());
+            // One quick look, beside the worktree this start already made.
+            let main = repo.and_then(|r| worktree::main_branch(r).ok());
+            prompt.push_str(&crate::plan::work_note(plan, repo.zip(main.as_deref())));
         }
         if sandbox.is_some() && !after.is_empty() && fresh {
             let ids: Vec<&str> = after.iter().map(|(what, _)| what.as_str()).collect();
@@ -4818,6 +4963,11 @@ them with `propose_accept`. Then carry on with what else waits.]"
             return self.squad_error(squad, message);
         }
         let said = note.clone();
+        // Design work sent back with a reason: the person's taste, in their words.
+        let by_designer = [found.assignee.as_deref(), found.owner.as_deref()].into_iter().flatten().any(|who| who == "designer" || self.member_id(squad, who).and_then(|id| self.sessions.get(&id)).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == "designer"));
+        if let Some(entry) = by_designer.then(|| crate::taste::sent_back(found.id, &found.title, &said, &squad_memory::date(now_secs()))).flatten() {
+            self.learn_taste(squad, &entry);
+        }
         let note = if note.trim().is_empty() { "Reopened.".to_owned() } else { format!("Reopened: {}", note.trim()) };
         found.owner = found.assignee.take().or(found.owner);
         found.status = TicketStatus::Todo;
@@ -4911,6 +5061,9 @@ them with `propose_accept`. Then carry on with what else waits.]"
         if call.name == board::ASK_PERSON {
             return self.ask_person(call, reply);
         }
+        if call.name == crate::controls::CHANGE_SETTING {
+            return self.change_setting(call, reply).await;
+        }
         if call.name == crate::signals::PROPOSE_SIGNAL {
             return self.propose_signal(call, reply);
         }
@@ -4951,6 +5104,17 @@ there, end your turn, and carry on when they say they're done."
                 image: None,
             });
             return;
+        }
+        // A brief, committed off the loop: answered once it is in.
+        if call.name == crate::briefs::WRITE_BRIEF {
+            return self.write_brief(&call, reply);
+        }
+        // A plan, committed off the loop; a ticket cut from one reads it first.
+        if call.name == board::WRITE_PLAN {
+            return self.write_plan(&call, reply);
+        }
+        if call.name == board::CREATE_TICKET && board::arg_str(&call.arguments, "plan").is_some_and(|p| !p.trim().is_empty()) {
+            return self.cut_from_plan(call, reply);
         }
         let squad = call.squad.clone();
         // The PM accepting its team's work: it waits for the acceptance itself.
@@ -5183,9 +5347,26 @@ there, end your turn, and carry on when they say they're done."
             return;
         };
         let Pending { squad, approval, input, reply } = pending;
+        // How long it waited on the person, for the week's retro.
+        if let Some(asked) = self.approvals_asked.remove(&approval_id) {
+            let outcome = match decision {
+                _ if why == "Nobody answered in time." => "timed out",
+                Decision::Allow => "allowed",
+                Decision::Always => "always allowed",
+                Decision::Deny => "declined",
+            };
+            let wait = crate::retro::Wait { kind: "permission".into(), member: approval.member.clone(), ticket: approval.ticket, what: approval.action.clone(), asked, answered: Some(now_secs()), outcome: outcome.into() };
+            if let Some(journal) = self.journal(&squad) {
+                let _ = journal.record_wait(&wait);
+            }
+        }
         if approval.tool == SIGN_IN_TOOL {
             self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
             return self.sign_in_answered(squad, approval, input, decision, reply);
+        }
+        if approval.tool == crate::controls::SETTING_TOOL {
+            self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
+            return self.setting_answered(squad, approval, input, decision, reply);
         }
         let mut decision = decision;
         let rule = (decision == Decision::Always).then(|| permissions::rule_for(&approval.tool, &approval.action)).flatten();
@@ -5891,6 +6072,7 @@ there, end your turn, and carry on when they say they're done."
                     return Err(format!("There is no T-{missing} to depend on."));
                 }
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
+                let idea = args.get("idea").and_then(Value::as_bool).unwrap_or(false);
                 // Where the PM runs the work, a member's proposal is simply done:
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
@@ -5900,7 +6082,13 @@ there, end your turn, and carry on when they say they're done."
                     title: title.to_owned(),
                     body: body.to_owned(),
                     // The PM's are ready, unless it puts one up for the person to take on.
-                    status: if (is_pm && !proposal) || just_do { TicketStatus::Todo } else { TicketStatus::Proposed },
+                    status: if idea {
+                        TicketStatus::Idea
+                    } else if (is_pm && !proposal) || just_do {
+                        TicketStatus::Todo
+                    } else {
+                        TicketStatus::Proposed
+                    },
                     kind,
                     owner: owner.clone(),
                     assignee: None,
@@ -5911,6 +6099,8 @@ there, end your turn, and carry on when they say they're done."
                     merged: None,
                     off_main: None,
                     design_qa: None,
+                    // Read and checked off the loop before it gets here (`cut_from_plan`).
+                    plan: board::arg_str(&args, "plan").map(str::to_owned),
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
@@ -5928,7 +6118,13 @@ there, end your turn, and carry on when they say they're done."
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
                 }
-                if is_pm && proposal {
+                if idea {
+                    reply = format!("Kept T-{new_id} as an idea — nothing starts it. Tell the person in one line it's kept; when the board is light you'll be asked to look at the ideas again.");
+                    if !is_pm {
+                        let line = format!("{member} kept the person's idea T-{new_id}: {title}");
+                        self.brief_pm(&squad, line, None);
+                    }
+                } else if is_pm && proposal {
                     reply = format!("Proposed T-{new_id} — it waits for the person to take it on.");
                 } else if just_do {
                     reply = format!("T-{new_id} is on the board and starts as soon as its owner is free; the PM is told.");
@@ -5964,7 +6160,7 @@ there, end your turn, and carry on when they say they're done."
                     .collect();
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let mut ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
-                if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Todo | TicketStatus::Waiting) {
+                if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Idea | TicketStatus::Todo | TicketStatus::Waiting) {
                     let status = ticket.status.label();
                     return Err(format!("T-{ticket_id} is {status} — from here it's the person's to change."));
                 }
@@ -5994,7 +6190,20 @@ there, end your turn, and carry on when they say they're done."
                     ticket.depends_on = ids;
                 }
                 let waiting = ticket.status == TicketStatus::Waiting;
+                let was_idea = ticket.status == TicketStatus::Idea;
                 match board::arg_str(&args, "status") {
+                    // An idea's time has come: the person is asked, on its card.
+                    Some("proposed") if was_idea => {
+                        let why = board::arg_str(&args, "why").map(str::trim).filter(|w| !w.is_empty()).ok_or("Say `why` now — what makes this idea timely — in the person's language; it shows on the card that asks them.")?;
+                        ticket.status = TicketStatus::Proposed;
+                        ticket.note = Some(format!("{}{why}", equipe_protocol::WHY_NOW));
+                    }
+                    Some("proposed") => return Err("Only an idea is put up as a proposal; a ready ticket goes back to one by the person's hand.".into()),
+                    Some("idea") if waiting => return Err(format!("T-{ticket_id} waits on the person; it can't be kept for later until that's settled.")),
+                    Some("idea") => {
+                        ticket.status = TicketStatus::Idea;
+                        ticket.note = None;
+                    }
                     // Back to the member that put it down, where it left off.
                     Some("todo") if waiting => {
                         back_to_its_member(&mut ticket, &present, "Resumed: the PM says what you were waiting for is done.");
@@ -6004,12 +6213,16 @@ there, end your turn, and carry on when they say they're done."
                         ticket.note = None;
                     }
                     Some("cancelled") => ticket.status = TicketStatus::Cancelled,
-                    Some(other) => return Err(format!("A ticket's status can be set to todo or cancelled, not {other}.")),
+                    Some(other) => return Err(format!("A ticket's status can be set to todo, cancelled, proposed (an idea) or idea, not {other}.")),
                     None => {}
                 }
                 journal.save_ticket(&ticket).map_err(|e| e.to_string())?;
                 let _ = journal.ticket_event(ticket_id, &member, "updated", &args.to_string());
+                let pitched = was_idea && ticket.status == TicketStatus::Proposed;
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
+                if pitched {
+                    return Ok(format!("Put idea T-{ticket_id} to the person: its card asks whether to start it now. Tell them in a line or two why now; their click starts it."));
+                }
                 Ok(format!("Updated T-{ticket_id}."))
             }
             board::COMMENT => {
@@ -6080,7 +6293,23 @@ it back there once they have done it.{again} End your turn now with a short line
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),
+            board::ADD_PROJECT => {
+                if !is_pm {
+                    return Err("Only the PM adds projects; tell the PM which folder the person wants added.".into());
+                }
+                let typed = board::arg_str(&args, "path").ok_or("Which folder? Give its `path`.")?;
+                let user_home = std::env::var_os("HOME").map(PathBuf::from);
+                let path = crate::squads::add_folder_asked(&self.config.home, &squad, typed, user_home.as_deref())?;
+                let name = board::project_name(&path);
+                crate::daemon_log!("equipe: {squad} has a new project the PM added, {name} ({})", path.display());
+                self.publish_projects(&squad);
+                let shown = say!(self, "news.project_added", name = name, path = path.display().to_string());
+                self.show_news(id, shown);
+                Ok(format!("Added {name} at {} — tickets can name it now. Tell the person in one line; they can take it off from the sidebar.", path.display()))
+            }
             crate::signals::SIGNALS => self.read_signals(&squad, id, &args),
+            crate::controls::SETTINGS if is_pm => Ok(self.settings_text(&squad)),
+            crate::controls::SETTINGS => Err("Only the PM reads the squad's settings; ask the PM.".into()),
             crate::metrics::tool::METRICS => {
                 let today = crate::metrics::day_of(&crate::routines::Local, now_secs());
                 crate::metrics::tool::answer(&self.config.home, &squad, &args, today)
@@ -6117,6 +6346,11 @@ it back there once they have done it.{again} End your turn now with a short line
                 let estimate = Some(estimate).filter(|e| !e.is_empty());
                 session.estimate = estimate.clone();
                 let reply = board::estimate_reply(done, !session.subagents.is_empty(), session.engine == Engine::Claude);
+                // When it said a ticket would be done, on the ticket's record: the retro tells a miss.
+                let said = session.work.as_ref().map(|w| w.ticket).zip(done.and(estimate.as_ref().and_then(|e| e.done_at)));
+                if let (Some((ticket, at)), Some(journal)) = (said, self.journal(&squad)) {
+                    let _ = journal.ticket_event(ticket, &member, crate::retro::ESTIMATED, &at.to_string());
+                }
                 self.publish(Event::Estimated { session: id, estimate });
                 Ok(reply)
             }
@@ -6275,9 +6509,11 @@ it back there once they have done it.{again} End your turn now with a short line
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
         let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
+        let put_away = self.journals.get(squad).and_then(|j| j.put_away(PUT_AWAY_SHOWN).ok()).unwrap_or_default();
         Snapshot {
             signals,
             reviews,
+            put_away,
             routines,
             routine_proposals,
             idle_wake_hours,
@@ -6339,7 +6575,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 let history = conversation
                     .iter()
                     .filter_map(|entry| match entry {
-                        Entry::User { text } => Some(responses::Message { role: responses::Role::User, text: text.clone() }),
+                        Entry::User { text } => harness::words(text).map(|text| responses::Message { role: responses::Role::User, text: text.into_owned() }),
                         Entry::Reply { text } => {
                             Some(responses::Message { role: responses::Role::Assistant, text: text.clone() })
                         }
@@ -6462,12 +6698,16 @@ it back there once they have done it.{again} End your turn now with a short line
                     let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
                     let mut lane = lane_of(pm, &self.sessions[&pm], c.project, thread, true);
                     let lines = journal.conversation(c.id).unwrap_or_default();
-                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { text.lines().next().map(str::to_owned) } else { None }));
+                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
                     lane.transcript = Transcript::from_entries(lines);
                     self.sessions.insert(c.id, lane);
                 }
             }
-            self.journals.insert(squad, journal);
+            self.journals.insert(squad.clone(), journal);
+            // A squad whose PM joined before the weekly retro was: it comes now, once.
+            if pm.is_some() && self.config.persist {
+                self.add_joining_routine(&squad, crate::retro::ROLE);
+            }
         }
     }
 
@@ -6547,7 +6787,7 @@ check what is already done in your worktree first."
             .entries()
             .iter()
             .filter_map(|e| match e {
-                Entry::User { text } => Some(format!("- the person: {}", clip(text, 600))),
+                Entry::User { text } => harness::words(text).map(|text| format!("- the person: {}", clip(&text, 600))),
                 Entry::Reply { text } => Some(format!("- you: {}", clip(text, 600))),
                 _ => None,
             })
@@ -6600,7 +6840,7 @@ check what is already done in your worktree first."
             .collect();
         let home = self.config.home.clone();
         std::thread::spawn(move || {
-            for line in worktree::trim_builds(&home, &busy, BUILD_CAP) {
+            for line in worktree::trim_builds(&home, &busy, BUILD_CAP, BUILDS_BUDGET) {
                 crate::daemon_log!("equipe: {line}");
             }
         });
@@ -6949,6 +7189,12 @@ and carry on where you left off.]"
 /// How many of the last messages a fresh conversation is handed.
 const REFRESH_TAIL: usize = 12;
 
+/// A conversation's title from a message in it: its first line, when the
+/// person said it (a background task ending is the engine's).
+fn first_said_line(text: &str) -> Option<String> {
+    harness::words(text).and_then(|words| words.lines().next().map(str::to_owned))
+}
+
 /// `text` cut to about `max` characters, on a character boundary.
 fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -7201,7 +7447,7 @@ fn suggestion_context(member: &str, entries: &[Entry]) -> Option<String> {
     let said: Vec<(bool, &str)> = entries
         .iter()
         .filter_map(|e| match e {
-            Entry::User { text } => Some((true, text.as_str())),
+            Entry::User { text } if !harness::only_harness(text) => Some((true, text.as_str())),
             Entry::Reply { text } if !text.trim().is_empty() => Some((false, text.as_str())),
             _ => None,
         })
@@ -7445,10 +7691,19 @@ const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
 /// to guess from.
 const GUESSED_AFTER: Duration = Duration::from_secs(60);
 
-/// How big a member's build cache may grow before it is trimmed, and how often
+/// The effort a member's turn runs at: the person's choice, else its role's
+/// ([`roles::default_effort`]), else its engine's default.
+fn effort_of(session: &Session) -> Option<String> {
+    session.effort.clone().or_else(|| session.member.as_ref().and_then(|m| roles::default_effort(&m.role)).map(str::to_owned))
+}
+
+/// How big a member's build cache may grow before it is trimmed; how big all
+/// of them together, every squad's — each member building on its own made it
+/// members × the cap, and filled the disk within the hour; and how often
 /// that is looked at.
 const BUILD_CAP: u64 = 10 * 1024 * 1024 * 1024;
-const BUILDS_TRIM_EVERY: Duration = Duration::from_secs(30 * 60);
+const BUILDS_BUDGET: u64 = 20 * 1024 * 1024 * 1024;
+const BUILDS_TRIM_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// How long past its expected time something to go live is still waited for.
 const LIVE_STALE: Duration = Duration::from_secs(30 * 60);
@@ -7528,6 +7783,16 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_task_ending_is_never_the_persons_title_nor_their_last_word() {
+        let done = "<task-notification><task-id>b1</task-id><status>completed</status><summary>built</summary></task-notification>";
+        assert_eq!(first_said_line(done), None);
+        assert_eq!(first_said_line("fix the header\nplease").as_deref(), Some("fix the header"));
+        let talk = [Entry::User { text: "go".into() }, Entry::Reply { text: "Started the build.".into() }, Entry::User { text: done.into() }];
+        let context = suggestion_context("frontend", &talk).expect("the member answered last");
+        assert!(!context.contains("task-notification"), "{context}");
+    }
 
     #[test]
     fn a_turn_on_token_factory_logs_its_requests_never_its_text() {

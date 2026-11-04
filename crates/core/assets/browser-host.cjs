@@ -73,6 +73,8 @@ const PLACEHOLDER = 'data:text/html;charset=utf-8,' + encodeURIComponent(
   + 'equipe — members’ tabs are behind this one</body>');
 // A person who stops touching a member's page hands it back after this long.
 const IDLE_CONTROL_MS = 120000;
+// …and this long while a page of it waits for them (`__equipeWaits`).
+const IDLE_WAITING_MS = 600000;
 
 /// One message on the binary channel; `false` when the pipe is full.
 const send = (kind, payload) => {
@@ -203,7 +205,7 @@ const startProfile = async (name, profile, STATE) => {
     };
     const big = (e) => { const r = e.getBoundingClientRect(); return r.width >= 60 && r.height >= 40; };
     const all = (sel) => Array.from(document.querySelectorAll(sel));
-    const captcha = /challenges\.cloudflare\.com|hcaptcha\.com|\/recaptcha\/(api2|enterprise)\/|recaptcha\.net\/recaptcha/;
+    const captcha = /challenges\.cloudflare\.com|hcaptcha\.com|\/recaptcha\/(api2|enterprise)\/|recaptcha\.net\/recaptcha|arkoselabs\.com|funcaptcha\.com/;
     const widget = all('iframe').some((f) => captcha.test(f.src) && !/size=invisible/.test(f.src) && seen(f) && big(f))
       || all('.cf-turnstile, .g-recaptcha, .h-captcha, #challenge-form, #cf-challenge-running, #turnstile-wrapper')
         .some((e) => e.getAttribute('data-size') !== 'invisible' && seen(e) && big(e));
@@ -231,9 +233,16 @@ const startProfile = async (name, profile, STATE) => {
       const { icon, ...signals } = probed;
       out.signals = { ...signals, frames };
       page.__equipeSig = signature(signals, frames);
+      // Whether it waits for a person, roughly as the daemon tells
+      // (`human_check`): for how long the person's hand on it lasts.
+      page.__equipeWaits = !!(signals.password || signals.otp || signals.code || (signals.widget && !signals.solved)) || CHALLENGE_PATH.test(url);
     }
     return out;
   };
+  // A site's own check after a password (LinkedIn's checkpoint, Google's
+  // challenge): the person's, whatever is on it. Kept with `CHALLENGE_PATHS`
+  // in browser.rs.
+  const CHALLENGE_PATH = /\/checkpoint\/(challenge|lg)|\/(signin|login|auth)\/challenge/i;
   // What, changing in place, may change whether a page waits for a person.
   const signature = (s, frames) => [s.widget, s.solved, s.password, s.otp, s.code, frames.filter((f) => /captcha|challenge/.test(f)).join(' ')].join('|');
   // A title a page changes in place (a count of unread mail, a dialog's
@@ -829,7 +838,12 @@ const startProfile = async (name, profile, STATE) => {
     for (const [id, lane] of lanes) {
       // Waiting for a person who hasn't come yet: not handed back for that.
       if (lane.reason === 'check' && !lane.touched) continue;
-      if (lane.control === 'person' && Date.now() - lane.lastInput > IDLE_CONTROL_MS) setControl(id, null);
+      // A page of it that waits for a person — a sign-in, a code from their
+      // phone or mail — gives them longer: handed back at two idle minutes
+      // while they fetched a code, a half-done sign-in was lost to its
+      // member's next step.
+      const waits = lane.reason === 'check' || tabsOf(id).some((p) => p.__equipeWaits);
+      if (lane.control === 'person' && Date.now() - lane.lastInput > (waits ? IDLE_WAITING_MS : IDLE_CONTROL_MS)) setControl(id, null);
     }
   }, 10000);
 
@@ -914,9 +928,17 @@ const startProfile = async (name, profile, STATE) => {
   const newtab = async ({ url }) => { await openTab(PERSON, url ? address(url) : 'about:blank'); };
   const closetab = async ({ page }) => pages.get(page)?.close().catch(() => {});
   // `ifUntouched`: handed back only if the person never put a hand on it (a
-  // check that passed by itself).
+  // check that passed by itself). Passed under their hand, it stays theirs as
+  // anything they took does — back when they give it, or after idle minutes.
   const control = ({ lane, by, why, ifUntouched, page }) => {
-    if (!by && ifUntouched && lanes.get(lane)?.touched) return undefined;
+    const held = lanes.get(lane);
+    if (!by && ifUntouched && held?.touched) {
+      if (held.reason === 'check') {
+        held.reason = 'hand';
+        held.lastInput = Date.now();
+      }
+      return undefined;
+    }
     return setControl(lane, by || null, why, page);
   };
   const dialog = async ({ page, accept, text }) => {

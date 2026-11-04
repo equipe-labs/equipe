@@ -672,6 +672,8 @@ fn questions() -> QuestionSet {
             },
         ],
         asked_at: NOW / 1000,
+        review: false,
+        retro: None,
     }
 }
 
@@ -683,7 +685,7 @@ const DRAFTS: &str = "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba
 
 /// A visual choice: the designer's logos, each option with its picture.
 fn visual_questions() -> QuestionSet {
-    let choice = |label: &str, description: &str, images: &[&str]| Choice { label: label.into(), description: description.into(), images: images.iter().map(|i| (*i).to_owned()).collect() };
+    let choice = |label: &str, description: &str, images: &[&str]| Choice { label: label.into(), description: description.into(), images: images.iter().map(|i| (*i).to_owned()).collect(), ..Choice::default() };
     QuestionSet {
         id: 5_000_002,
         session: 4243,
@@ -697,6 +699,8 @@ fn visual_questions() -> QuestionSet {
             images: Vec::new(),
         }],
         asked_at: NOW / 1000,
+        review: false,
+        retro: None,
     }
 }
 
@@ -722,12 +726,14 @@ fn design_system(draft: bool) -> equipe_core::protocol::design::DesignSystem {
     DesignSystem {
         project: None,
         dir: dir.into(),
-        draft: draft.then(|| DraftOf { ticket: 144, title: "브랜드 가이드라인".into() }),
+        draft: draft.then(|| DraftOf { ticket: 144, title: "브랜드 가이드라인".into(), working: false }),
         modes: tokens.modes,
         tokens: tokens.tokens,
         problems: vec![],
         guidelines: Some("# 브랜드 가이드라인\n\n## 1. 로고\n\n점은 브랜드 파랑 `#3F6FF5`.\n".into()),
         assets: vec![Asset { path: format!("{dir}/assets/logo/mark.svg"), name: "assets/logo/mark.svg".into(), kind: AssetKind::Logo, size: 1_204 }],
+        flows: None,
+        setup: vec![],
         stamp: if draft { 7_002 } else { 7_001 },
     }
 }
@@ -840,7 +846,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         worktree: Some("/Users/you/.equipe/worktrees/api/t38-1a2b3c4d".into()),
         merged: None,
         off_main: None,
-        design_qa: None,
+        design_qa: None, plan: None,
         created_by: "pm".into(),
         note: None,
         asks: vec![],
@@ -968,6 +974,7 @@ fn snapshot() -> Snapshot {
         browsers_shown: false,
         disk: Some(disk_status()),
         reviews: vec![code_review()],
+        put_away: Vec::new(),
     }
 }
 
@@ -1068,7 +1075,7 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "answer questions", Some(SQUAD), answer(json!([{ "picked": [0] }, { "picked": [0, 1], "other": "Apple은 다음 달에" }])));
     ask(&mut core, &mut examples, "answer questions: one skipped", Some(SQUAD), answer(json!([{ "other": "세션 쿠키로" }, {}])));
     ask(&mut core, &mut examples, "dismiss questions", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": SQUAD, "id": 5_000_001 } }));
-    let answered = vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![0, 1], other: Some("Apple은 다음 달에".into()) }];
+    let answered = vec![Answer { picked: vec![0], ..Default::default() }, Answer { picked: vec![0, 1], other: Some("Apple은 다음 달에".into()), ..Default::default() }];
     tell(&mut core, &mut examples, "event: questions answered", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: Some(answered) });
     tell(&mut core, &mut examples, "event: questions closed", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: None });
     // A visual choice: each option with its pictures, which the phone asks for, as thumbnails.
@@ -1099,8 +1106,8 @@ fn message_vectors() -> Value {
 
     // The squad's design system: asked for, sent as it is (and again when the designer saves), its pictures read like any other.
     ask(&mut core, &mut examples, "design", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "design", "squad": SQUAD } }));
-    tell(&mut core, &mut examples, "event: design", Event::Design { squad: SQUAD.into(), systems: vec![design_system(false), design_system(true)], folder: DESIGN.into() });
-    tell(&mut core, &mut examples, "event: design, none yet", Event::Design { squad: SQUAD.into(), systems: vec![], folder: DESIGN.into() });
+    tell(&mut core, &mut examples, "event: design", Event::Design { squad: SQUAD.into(), systems: vec![design_system(false), design_system(true)], folder: DESIGN.into(), taste: vec![] });
+    tell(&mut core, &mut examples, "event: design, none yet", Event::Design { squad: SQUAD.into(), systems: vec![], folder: DESIGN.into(), taste: vec![] });
     ask(&mut core, &mut examples, "design: another squad than the frame's", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "design", "squad": "home" } }));
 
     // A change to the team the PM proposed: approved or declined by the person.

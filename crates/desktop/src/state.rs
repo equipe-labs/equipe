@@ -5,7 +5,7 @@
 use equipe_core::t;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
@@ -211,6 +211,7 @@ pub fn status_word(status: TicketStatus) -> &'static str {
         TicketStatus::Waiting => t!("state.status_waiting"),
         TicketStatus::Review => t!("state.status_review"),
         TicketStatus::Proposed => t!("state.status_proposed"),
+        TicketStatus::Idea => t!("state.status_idea"),
         TicketStatus::Todo => t!("state.status_todo"),
         TicketStatus::InProgress => t!("state.status_in_progress"),
         TicketStatus::Done => t!("state.status_done"),
@@ -308,6 +309,8 @@ pub struct Model {
     pub idle_wake_hours: u32,
     /// The squad's signals, each with its latest readings.
     pub signals: Vec<equipe_core::protocol::signals::SignalView>,
+    /// Conversations with the PM the person put away, the latest first.
+    pub put_away: Vec<equipe_core::protocol::PutAway>,
     /// Secrets members asked the person to type, oldest first.
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
     /// The browser profiles besides the main one (other people's accounts).
@@ -468,6 +471,7 @@ impl Model {
             pm_accepts: false,
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
             signals: Vec::new(),
+            put_away: Vec::new(),
             secret_asks: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
@@ -571,6 +575,12 @@ impl Model {
     }
 
     /// The conversation open now, if it is one the person opened.
+    /// On screen, a conversation with the PM: one the person opened (or is
+    /// starting), or the PM's own — no ticket open over it.
+    pub fn with_pm(&self) -> bool {
+        self.talk_project().is_some() || (self.side_open() == Some(Side::Pm) && self.opened.is_none())
+    }
+
     pub fn talking(&self) -> Option<&Lane> {
         self.talk.and_then(|t| self.lanes.iter().find(|l| l.session == t))
     }
@@ -922,6 +932,7 @@ impl Model {
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
         self.signals = snapshot.signals.clone();
+        self.put_away = snapshot.put_away.clone();
         self.secret_asks = snapshot.secret_asks.clone();
         self.routines = snapshot.routines.clone();
         self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
@@ -1042,6 +1053,10 @@ impl Model {
             }
             Event::SignalsChanged { squad, signals } if *squad == self.squad => {
                 self.signals = signals.clone();
+                self.revision += 1;
+            }
+            Event::PutAwayChanged { squad, list } if *squad == self.squad => {
+                self.put_away = list.clone();
                 self.revision += 1;
             }
             Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
@@ -1181,6 +1196,16 @@ impl Model {
                 self.desktop = desktop;
             }
             Event::LaneOpened { session, of, project, kept } => self.open_lane(session, of, project, kept),
+            // Taken up again: its name and what was said, as it was left.
+            Event::ConversationBack { session, title, lines } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
+                    lane.title = title;
+                }
+                if let Some(convo) = self.convos.get_mut(&session) {
+                    convo.transcript = equipe_core::protocol::Transcript::from_entries(lines);
+                }
+                self.revision += 1;
+            }
             Event::LaneMoved { session, project } => {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
                     lane.project = project;
@@ -1548,6 +1573,16 @@ impl Model {
         ticket.project.clone().or_else(|| self.projects.first().cloned())
     }
 
+    /// The plan a ticket was cut from, or reviews, on the daemon's machine:
+    /// its path in the ticket's project, or one of its own in the squad's folder.
+    pub fn ticket_plan(&self, ticket: &Ticket) -> Option<PathBuf> {
+        let plan = Path::new(ticket.plan.as_deref().map(str::trim).filter(|p| !p.is_empty())?);
+        if plan.is_absolute() {
+            return Some(plan.to_owned());
+        }
+        self.ticket_project(ticket).map(|project| project.join(plan))
+    }
+
     pub fn ticket_project_name(&self, ticket: &Ticket) -> Option<String> {
         self.ticket_project(ticket).map(|p| equipe_core::board::project_name(&p))
     }
@@ -1585,6 +1620,32 @@ impl Model {
         self.needs_you().len()
     }
 
+    /// The project each thing waiting for the person is about: its ticket's,
+    /// else the conversation it was asked in; None for the squad's own.
+    pub fn need_project(&self, need: &Need) -> Option<String> {
+        let ticket = |id: TicketId| self.tickets.iter().find(|t| t.id == id).and_then(|t| self.ticket_project_name(t));
+        let asked_in = |session: SessionId| self.lanes.iter().find(|l| l.session == session).and_then(|l| l.project.clone());
+        let by = |ticket_id: Option<TicketId>, session: SessionId| ticket_id.and_then(ticket).or_else(|| asked_in(session));
+        match *need {
+            Need::Permission(id) => self.approvals.open_items().find(|a| a.id == id).and_then(|a| by(a.ticket, a.session)),
+            Need::Questions(id) => self.asked.open().find(|s| s.id == id).and_then(|s| by(s.ticket, s.session)),
+            Need::Accept(id) => self.accepts.open().find(|c| c.id == id).and_then(|c| c.tickets.first().copied()).and_then(ticket),
+            Need::Secret(id) => self.secret_asks.iter().find(|a| a.id == id).and_then(|a| by(a.ticket, a.session)),
+            Need::Ticket(id) => ticket(id),
+            _ => None,
+        }
+    }
+
+    /// What waits for the person, counted by project (None: the squad's own):
+    /// the counts add up to [`Model::needs_you_count`].
+    pub fn needs_by_project(&self) -> std::collections::BTreeMap<Option<String>, usize> {
+        let mut out = std::collections::BTreeMap::new();
+        for (_, need) in self.needs_you() {
+            *out.entry(self.need_project(&need)).or_insert(0) += 1;
+        }
+        out
+    }
+
     /// Whether a ticket waits for the person, and under which section.
     pub fn section_of(&self, t: &Ticket) -> Option<Section> {
         match t.status {
@@ -1595,8 +1656,9 @@ impl Model {
             // only what it puts to them, on a card.
             TicketStatus::Review if self.pm_accepts => None,
             TicketStatus::Review => Some(Section::Review),
-            // …and so are members' proposals; the PM's own are for the person.
-            TicketStatus::Proposed if self.pm_accepts && (!self.is_pm_name(&t.created_by) || t.could_not_start()) => None,
+            // …and so are members' proposals; the PM's own are for the person,
+            // as is an idea of theirs the PM brings back, whoever kept it.
+            TicketStatus::Proposed if self.pm_accepts && t.why_now().is_none() && (!self.is_pm_name(&t.created_by) || t.could_not_start()) => None,
             TicketStatus::Proposed => Some(Section::Proposed),
             // A conflict its owner is resolving comes back through the PM.
             TicketStatus::Done if self.pm_accepts && matches!(t.off_main, Some(equipe_core::protocol::OffMain::Conflict { .. })) => None,
@@ -2200,6 +2262,30 @@ mod tests {
     }
 
     #[test]
+    fn what_waits_is_counted_by_its_project_and_the_counts_add_up() {
+        let mut model = Model::new("acme");
+        model.projects = vec!["/r/web".into(), "/r/app".into()];
+        let in_project = |id, project: &str| Ticket { project: Some(format!("/r/{project}").into()), ..ticket(id, "waiting", None) };
+        model.tickets = vec![in_project(3, "web"), in_project(4, "web"), in_project(5, "app")];
+        // Asked about T-3 (web); asked in a conversation about app; asked in the PM's own.
+        let mut on_web = approval(7, 2);
+        on_web.ticket = Some(3);
+        let mut in_talk = approval(8, 40);
+        in_talk.ticket = None;
+        let mut squad_wide = approval(9, 1);
+        squad_wide.ticket = None;
+        model.lanes.push(Lane { session: 40, of: 1, project: Some("app".into()), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active: 0 });
+        for a in [on_web, in_talk, squad_wide] {
+            model.apply(Update::Event(Event::ApprovalRequested { squad: "acme".into(), approval: a }), T0);
+        }
+        let counts = model.needs_by_project();
+        assert_eq!(counts.get(&Some("web".to_owned())), Some(&3), "two tickets and the request on one: {counts:?}");
+        assert_eq!(counts.get(&Some("app".to_owned())), Some(&2), "its ticket, and the request in its conversation");
+        assert_eq!(counts.get(&None), Some(&1), "the squad's own");
+        assert_eq!(counts.values().sum::<usize>(), model.needs_you_count(), "the sidebar's numbers add up to 확인 필요");
+    }
+
+    #[test]
     fn a_new_request_or_a_ticket_turning_to_review_or_waiting_is_announced_once() {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(2, "backend", "backend", SessionState::Working)]), T0);
@@ -2616,7 +2702,7 @@ mod tests {
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Working)]), T0);
         model.take_alerts();
         let q = Question { question: "Which?".into(), header: String::new(), options: vec![Choice { label: "a".into(), description: String::new(), ..Choice::default() }, Choice { label: "b".into(), description: String::new(), ..Choice::default() }], multi_select: false, ..Question::default() };
-        let set = QuestionSet { id: 40, session: 2, member: "backend".into(), ticket: None, questions: vec![q.clone(), q], asked_at: 1 };
+        let set = QuestionSet { id: 40, session: 2, member: "backend".into(), ticket: None, questions: vec![q.clone(), q], asked_at: 1, review: false, retro: None };
         assert!(model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: set.clone() }), T0), "the card shows: a redraw");
         assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 2, member: "backend".into(), count: 2 }]);
         // Another squad's, or the same again: nothing.
@@ -2759,6 +2845,21 @@ mod tests {
         model.accepts.forget_sent();
         assert!(model.apply(Update::Event(Event::AcceptClosed { squad: "acme".into(), id: 80, confirmed: true, tickets: vec![7] }), T0));
         assert_eq!(model.accepts.ids(), [81]);
+    }
+
+    #[test]
+    fn a_tickets_plan_is_found_in_its_project_or_where_its_own_path_says() {
+        let mut model = needs_model();
+        model.projects = vec![PathBuf::from("/p/site")];
+        let mut cut = ticket(20, "todo", None);
+        assert_eq!(model.ticket_plan(&cut), None, "no plan, no link");
+        cut.plan = Some("docs/plans/2026-11-04-sign-in.md".into());
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/p/site/docs/plans/2026-11-04-sign-in.md")));
+        cut.kind = TicketKind::Task;
+        cut.project = Some(PathBuf::from("/p/app"));
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/p/app/docs/plans/2026-11-04-sign-in.md")), "a review is about its plan's project");
+        cut.plan = Some("/h/squads/acme/home/docs/plans/2026-11-04-trip.md".into());
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/h/squads/acme/home/docs/plans/2026-11-04-trip.md")));
     }
 
     #[test]

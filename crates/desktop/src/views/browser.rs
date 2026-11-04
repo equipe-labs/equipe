@@ -121,6 +121,7 @@ struct Gone {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Who {
     pub name: String,
+    pub role: String,
     pub hue: usize,
     pub working: bool,
 }
@@ -142,6 +143,8 @@ pub struct BrowserPanel {
     talk: Entity<InputState>,
     /// Whom the words box's hint names now.
     talk_to: Option<String>,
+    /// The handed-over card's words opened past their first lines.
+    handed_open: bool,
     lanes: BTreeMap<String, Lane>,
     /// Who has each member's browser in hand.
     hands: HashMap<String, Hand>,
@@ -215,6 +218,9 @@ pub struct BrowserPanel {
 
 impl EventEmitter<PanelEvent> for BrowserPanel {}
 
+/// An ask longer than this shows its first two lines until opened.
+const LONG_ASK: usize = 110;
+
 impl BrowserPanel {
     /// Whether page `page` is on screen now: the panel open on it.
     pub fn showing(&self, page: u64) -> bool {
@@ -279,6 +285,7 @@ impl BrowserPanel {
             prompt,
             talk,
             talk_to: None,
+            handed_open: false,
             lanes: BTreeMap::new(),
             hands: HashMap::new(),
             dialogs: Vec::new(),
@@ -1373,6 +1380,7 @@ impl BrowserPanel {
                 .flex_none()
                 .px_3()
                 .pt_2()
+                .pb_2()
                 .child(
                     div()
                         .flex_1()
@@ -1424,7 +1432,11 @@ impl BrowserPanel {
                     .text_size(px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(p.text2)
-                    .child(div().size(px(7.)).flex_none().rounded_full().bg(dot))
+                    .child(match l.session.and_then(|s| self.who.get(&s)) {
+                        // A member's: its avatar, as everywhere else.
+                        Some(who) => crate::theme::avatar(p, &who.role, &who.name, 16.),
+                        None => div().size(px(7.)).flex_none().rounded_full().bg(dot),
+                    })
                     .child(div().whitespace_nowrap().child(label)),
             );
             for page in &l.pages {
@@ -1985,58 +1997,57 @@ impl BrowserPanel {
         let lane = self.lane_of_selected()?.to_owned();
         let name = self.member_name(&lane);
         let hue = self.lane_color(&lane);
-        // A card over the page: a stripe in the member's colour, who and what
-        // it asks in its own words (as a quote), then the one button.
+        // Small, so the page keeps the room: who, and the one button, on one
+        // line; what it asks under it in two lines, the rest a click away.
+        let done = ui::button(p, "browser-handed-done", Kind::Primary, t!("browser.done_give_back_short"))
+            .icon(Icon::Check)
+            .tip(t!("browser.handed_then", name = name), Some("Esc"))
+            .on_click(cx.listener(|this, _, _, cx| this.give_back(cx)));
         let head = h_flex()
             .gap_2()
             .items_center()
             .child(div().size(px(8.)).flex_none().rounded_full().bg(hue))
-            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(hue).child(name.clone()))
-            .child(div().text_size(px(12.)).text_color(p.muted).child("·"))
+            .child(div().flex_none().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(hue).child(name.clone()))
             .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.text2).child(t!("browser.handed_title")))
-            .child(
-                h_flex()
-                    .flex_none()
-                    .h(px(20.))
-                    .px(px(8.))
-                    .gap(px(5.))
-                    .items_center()
-                    .rounded_full()
-                    .bg(p.amber.alpha(0.14))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(p.amber)
-                    .child(div().size(px(6.)).rounded_full().bg(p.amber))
-                    .child(t!("browser.handed_badge")),
-            );
+            .child(div().flex_none().child(done));
+        let long = why.chars().count() > LONG_ASK;
+        let open = self.handed_open;
         let ask = div()
-            .pl(px(12.))
-            .border_l_2()
-            .border_color(hue.alpha(0.5))
-            .text_size(px(14.))
-            .line_height(px(21.))
+            .text_size(px(13.))
+            .line_height(px(19.))
             .text_color(p.text)
+            .when(long && !open, |d| d.line_clamp(2).text_ellipsis())
             .child(why);
-        let actions = h_flex()
-            .gap_3()
-            .items_center()
-            .flex_wrap()
-            .child(ui::button(p, "browser-handed-done", Kind::Primary, t!("browser.done_give_back", name = name)).icon(Icon::Check).field().on_click(cx.listener(|this, _, _, cx| this.give_back(cx))))
-            .child(div().text_size(px(12.)).text_color(p.muted).child(t!("browser.handed_then", name = name)));
+        let more = long.then(|| {
+            div()
+                .id("browser-handed-more")
+                .text_size(px(12.))
+                .text_color(p.muted)
+                .cursor_pointer()
+                .hover(move |s| s.text_color(p.text))
+                .child(if open { t!("browser.handed_less") } else { t!("browser.handed_more") })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.handed_open = !this.handed_open;
+                    cx.notify();
+                }))
+        });
         Some(
             motion::rise(
-                h_flex()
+                v_flex()
                     .id("browser-handed")
                     .mx_2()
                     .mb_2()
+                    .px_3()
+                    .py_2p5()
+                    .gap_1p5()
                     .rounded(px(R_LG))
-                    .overflow_hidden()
                     .bg(p.popover())
                     .border_1()
                     .border_color(p.hair)
                     .shadow_lg()
-                    .child(div().w(px(3.)).flex_none().h_full().bg(hue))
-                    .child(v_flex().flex_1().min_w_0().px_4().py_3().gap(px(10.)).child(head).child(ask).child(actions)),
+                    .child(head)
+                    .child(ask)
+                    .children(more),
                 "browser-handed-rise",
             )
             .into_any_element(),
@@ -2117,10 +2128,8 @@ impl BrowserPanel {
                 .child(dot(p.accent))
                 .child(line(t!("browser.bar_mine_hand").to_owned(), p.accent))
                 .child(back(Kind::Secondary, t!("browser.give_back", name = name))),
-            Mode::Asked(why) => bar
-                .child(dot(color))
-                .child(line(t!("browser.status_asked", name = name, why = why), p.text))
-                .child(back(Kind::Secondary, t!("browser.give_back", name = name))),
+            // The card over the page has the ask and the button: here, only where things stand.
+            Mode::Asked(_) => bar.child(dot(color)).child(line(t!("browser.bar_asked", name = name), p.text2)),
             Mode::Waiting { touched, .. } => {
                 let b = bar
                     .child(dot(p.amber))

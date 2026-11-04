@@ -19,7 +19,7 @@ use crate::tailnet;
 use crate::target::{Endpoint, SshHost};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, FIELD, ICON, ICON_SM, MONO, Palette, R_MD, R_XL, S3, S6, SMALL, UI};
+use crate::theme::{BODY, FIELD, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_XL, S3, S6, SMALL, UI};
 use crate::ui::{self, Kind};
 use crate::Shell;
 
@@ -38,6 +38,9 @@ pub struct ConnectUi {
     pub reach: HashMap<String, tailnet::Reach>,
     /// The hidden `~/.ssh/config` hosts are listed too, to show them again.
     pub show_hidden: bool,
+    /// The machine being named, by what connecting to it is given, and its box.
+    pub naming: Option<String>,
+    pub name_input: Entity<InputState>,
     pub _probe: Option<Task<()>>,
 }
 
@@ -72,7 +75,7 @@ pub struct Choice {
 /// destination not in the list), the recent hosts, the tailnet's devices not
 /// among them, `~/.ssh/config`'s hosts (the hidden ones only with
 /// `show_hidden`).
-pub fn choices(recent: &[SshHost], config: &[String], hidden: &[String], peers: &[tailnet::Peer], query: &str, show_hidden: bool) -> Vec<Choice> {
+pub fn choices(recent: &[SshHost], config: &[String], hidden: &[String], peers: &[tailnet::Peer], names: &[(String, String)], query: &str, show_hidden: bool) -> Vec<Choice> {
     let mut out = Vec::new();
     for host in recent.iter().filter(|h| !config.contains(&h.spec())) {
         let spec = host.spec();
@@ -98,6 +101,15 @@ pub fn choices(recent: &[SshHost], config: &[String], hidden: &[String], peers: 
             continue;
         }
         out.push(Choice { spec: host.clone(), title: host.clone(), detail: String::new(), source: if hid { Source::Hidden } else { Source::Config } });
+    }
+    // A machine the person named: their name first, the address under it.
+    for c in &mut out {
+        if let Some((_, name)) = names.iter().find(|(spec, _)| *spec == c.spec) {
+            if c.detail.is_empty() || c.title != c.spec {
+                c.detail = if c.title == c.spec { c.spec.clone() } else { format!("{} · {}", c.title, c.spec) };
+            }
+            c.title = name.clone();
+        }
     }
     let q = query.trim().to_lowercase();
     if q.is_empty() {
@@ -214,15 +226,34 @@ pub fn connecting_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .items_center()
         .justify_center()
         .py_8()
+        .px_4()
         .child(motion::rise(
+            // A card, so it stands in the window rather than floats in it:
+            // where to, then each step, then what to do if it is slow.
             v_flex()
                 .w_full()
                 .max_w(px(440.))
-                .px_4()
-                .gap_3()
-                .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("connect.connecting_title", name = shell.endpoint.label())))
-                .children(c.door.clone().map(|door| div().text_size(px(SMALL)).text_color(p.muted).font_family(MONO).child(t!("connect.door", door = door))))
-                .child(v_flex().gap_1().pt_1().children(rows))
+                .p_6()
+                .gap_4()
+                .rounded(px(R_LG))
+                .bg(p.popover())
+                .border_1()
+                .border_color(p.hair)
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(div().size(px(36.)).flex_none().rounded(px(R_MD)).bg(p.wash).border_1().border_color(p.hair).flex().items_center().justify_center().child(icon(Icon::Server, 18., p.text)))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(div().truncate().text_size(px(17.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("connect.connecting_title", name = shell.place_name())))
+                                .children(c.door.clone().map(|door| div().truncate().text_size(px(12.)).text_color(p.muted).font_family(MONO).child(t!("connect.door", door = door)))),
+                        ),
+                )
+                .child(v_flex().gap_1p5().children(rows))
                 .children(c.slow(now).map(|why| {
                     h_flex()
                         .gap_2()
@@ -236,7 +267,7 @@ pub fn connecting_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                         .child(div().pt(px(3.)).flex_none().child(icon(Icon::Info, ICON_SM, p.muted)))
                         .child(div().flex_1().min_w_0().child(why))
                 }))
-                .child(h_flex().pt_2().child(ui::button(p, "switch", Kind::Secondary, t!("connect.switch_target")).field().on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx))))),
+                .child(h_flex().border_t_1().border_color(p.hair).pt_4().justify_end().child(ui::button(p, "switch", Kind::Secondary, t!("connect.switch_target")).on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx))))),
             "connecting-in",
         ))
         .into_any_element()
@@ -274,7 +305,8 @@ fn suggestion(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 impl ConnectUi {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>, hosts: Vec<String>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("connect.host_placeholder")));
-        Self { open: false, input, hosts, error: None, peers: Vec::new(), reach: HashMap::new(), show_hidden: false, _probe: None }
+        let name_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("connect.name_placeholder")));
+        Self { open: false, input, hosts, error: None, peers: Vec::new(), reach: HashMap::new(), show_hidden: false, naming: None, name_input, _probe: None }
     }
 }
 
@@ -476,7 +508,7 @@ pub fn chooser(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let ui = &shell.connect;
     let query = ui.input.read(cx).value().to_string();
-    let rows = choices(&shell.remembered.recent, &ui.hosts, &shell.remembered.hidden_hosts, &ui.peers, &query, ui.show_hidden);
+    let rows = choices(&shell.remembered.recent, &ui.hosts, &shell.remembered.hidden_hosts, &ui.peers, &shell.remembered.host_names, &query, ui.show_hidden);
     let this_mac = Endpoint::this_mac();
     let on_mac = matches!(shell.endpoint, Endpoint::Local { .. });
     let mac = row(p, "this-mac", Icon::Laptop, t!("connect.this_mac").into(), t!("connect.this_mac_note"), on_mac).on_click(cx.listener(move |this, _, window, cx| this.connect_to(this_mac.clone(), window, cx)));
@@ -577,6 +609,17 @@ fn choice_row(shell: &Shell, ix: usize, choice: &Choice, cx: &mut Context<Shell>
         Source::Typed => t!("connect.typed", host = choice.title),
         _ => choice.title.clone(),
     };
+    // Naming it: the title gives way to a box; ⏎ keeps the name, esc leaves it.
+    let naming = shell.connect.naming.as_deref() == Some(choice.spec.as_str());
+    let rename = (choice.source != Source::Typed && !naming).then(|| {
+        let spec = choice.spec.clone();
+        row_action(p, ("rename", ix), Icon::Pencil, t!("connect.rename"), &group)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.start_naming(&spec, window, cx);
+            }))
+            .into_any_element()
+    });
     let action: Option<AnyElement> = match choice.source {
         Source::Recent => {
             let host = choice.spec.clone();
@@ -637,12 +680,35 @@ fn choice_row(shell: &Shell, ix: usize, choice: &Choice, cx: &mut Context<Shell>
                 .gap_2()
                 .items_baseline()
                 .overflow_hidden()
-                .child(div().flex_none().max_w(px(260.)).overflow_hidden().whitespace_nowrap().text_ellipsis().when(current, |d| d.font_weight(FontWeight::SEMIBOLD)).child(title))
-                .when(!choice.detail.is_empty(), |r| r.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(choice.detail.clone()))),
+                .when(naming, |r| {
+                    r.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(28.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(R_MD))
+                            .bg(p.code_bg)
+                            .border_1()
+                            .border_color(p.accent)
+                            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                                if e.keystroke.key == "escape" {
+                                    cx.stop_propagation();
+                                    this.connect.naming = None;
+                                    cx.notify();
+                                }
+                            }))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(Input::new(&shell.connect.name_input).appearance(false).bordered(false)),
+                    )
+                })
+                .when(!naming, |r| r.child(div().flex_none().max_w(px(260.)).overflow_hidden().whitespace_nowrap().text_ellipsis().when(current, |d| d.font_weight(FontWeight::SEMIBOLD)).child(title)))
+                .when(!naming && !choice.detail.is_empty(), |r| r.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(choice.detail.clone()))),
         )
         .children(answer)
         // The same slot on every row, so the answers line up.
-        .child(div().min_w(px(22.)).flex_none().flex().justify_end().children(action));
+        .child(h_flex().min_w(px(22.)).flex_none().gap(px(2.)).justify_end().children(rename).children(action));
     let chosen = choice.clone();
     let row = row.on_click(cx.listener(move |this, _, window, cx| this.choose(&chosen, window, cx)));
     hoverable(p, row, ("host-fill", ix), current)
@@ -680,7 +746,7 @@ impl Shell {
             let Some(specs) = this
                 .update(cx, |this, cx| {
                     this.connect.peers = peers;
-                    let rows = choices(&this.remembered.recent, &this.connect.hosts, &this.remembered.hidden_hosts, &this.connect.peers, "", true);
+                    let rows = choices(&this.remembered.recent, &this.connect.hosts, &this.remembered.hidden_hosts, &this.connect.peers, &this.remembered.host_names, "", true);
                     let specs: Vec<String> = rows.into_iter().map(|c| c.spec).collect();
                     for spec in &specs {
                         this.connect.reach.insert(spec.clone(), tailnet::Reach::Checking);
@@ -729,6 +795,40 @@ impl Shell {
 
     /// A row of the chooser, clicked (or the first one, on Enter): connect —
     /// or, a Tailscale device, put it in the box for the user to go before it.
+    /// Name a machine in the picker: its row's title becomes a box with its name.
+    pub fn start_naming(&mut self, spec: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let now = self.remembered.host_name(spec).unwrap_or_default().to_owned();
+        self.connect.naming = Some(spec.to_owned());
+        self.connect.name_input.update(cx, |s, cx| {
+            s.set_value(now, window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// ⏎ in the naming box: the name kept (an empty one taken away), on this Mac.
+    pub fn finish_naming(&mut self, cx: &mut Context<Self>) {
+        let Some(spec) = self.connect.naming.take() else { return };
+        let name = self.connect.name_input.read(cx).value().to_string();
+        self.remembered.set_host_name(&spec, &name);
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        cx.notify();
+    }
+
+    /// What the window calls the machine it is connected to: the person's
+    /// name for it, else its Tailscale device's, else its address.
+    pub fn place_name(&self) -> String {
+        match &self.endpoint {
+            Endpoint::Ssh(host) => self
+                .remembered
+                .host_name(&host.spec())
+                .map(str::to_owned)
+                .or_else(|| tailnet::peer_for(&self.connect.peers, &host.host).map(|peer| peer.name.clone()))
+                .unwrap_or_else(|| self.endpoint.label()),
+            Endpoint::Local { .. } => self.endpoint.label(),
+        }
+    }
+
     pub fn choose(&mut self, choice: &Choice, window: &mut Window, cx: &mut Context<Self>) {
         if choice.source != Source::Tailnet {
             return self.connect_typed(&choice.spec, window, cx);
@@ -754,7 +854,7 @@ impl Shell {
             self.connect.error = Some(t!("connect.need_user").into());
             return cx.notify();
         }
-        let rows = choices(&self.remembered.recent, &self.connect.hosts, &self.remembered.hidden_hosts, &self.connect.peers, &query, self.connect.show_hidden);
+        let rows = choices(&self.remembered.recent, &self.connect.hosts, &self.remembered.hidden_hosts, &self.connect.peers, &self.remembered.host_names, &query, self.connect.show_hidden);
         match rows.first() {
             Some(first) if first.source != Source::Tailnet || !query.contains('@') => {
                 let first = first.clone();
@@ -878,7 +978,7 @@ mod tests {
     fn the_list_is_recent_then_tailnet_then_config_each_named_once() {
         let recent = [host("atinumai@100.66.18.3"), host("atinumai@110.66.18.3"), host("macmini")];
         let config = ["macmini".to_owned(), "vision".to_owned(), "ironact-prod".to_owned()];
-        let rows = choices(&recent, &config, &["ironact-prod".to_owned()], &peers(), "", false);
+        let rows = choices(&recent, &config, &["ironact-prod".to_owned()], &peers(), &[], "", false);
         let seen: Vec<(Source, &str, &str)> = rows.iter().map(|c| (c.source, c.title.as_str(), c.detail.as_str())).collect();
         assert_eq!(
             seen,
@@ -891,7 +991,7 @@ mod tests {
             ],
             "a recent address is named by its device; that device isn't offered again; a hidden host is left out; a config host isn't listed twice"
         );
-        let all = choices(&recent, &config, &["ironact-prod".to_owned()], &peers(), "", true);
+        let all = choices(&recent, &config, &["ironact-prod".to_owned()], &peers(), &[], "", true);
         assert_eq!(all.last().map(|c| (c.source, c.spec.as_str())), Some((Source::Hidden, "ironact-prod")), "shown again on asking");
     }
 
@@ -899,12 +999,27 @@ mod tests {
     fn typing_narrows_the_list_and_a_whole_destination_comes_first() {
         let recent = [host("atinumai@100.66.18.3")];
         let config = ["macmini".to_owned(), "vision".to_owned()];
-        let rows = choices(&recent, &config, &[], &peers(), "tinums", false);
+        let rows = choices(&recent, &config, &[], &peers(), &[], "tinums", false);
         assert_eq!(rows.iter().map(|c| c.spec.as_str()).collect::<Vec<_>>(), ["atinumai@100.66.18.3"], "found by its device's name");
-        let rows = choices(&recent, &config, &[], &peers(), "me@new-box:2222", false);
+        let rows = choices(&recent, &config, &[], &peers(), &[], "me@new-box:2222", false);
         assert_eq!(rows.first().map(|c| (c.source, c.spec.as_str())), Some((Source::Typed, "me@new-box:2222")));
-        let rows = choices(&recent, &config, &[], &peers(), "atinumai@100.66.18.3", false);
+        let rows = choices(&recent, &config, &[], &peers(), &[], "atinumai@100.66.18.3", false);
         assert_eq!(rows.iter().map(|c| c.source).collect::<Vec<_>>(), [Source::Recent], "one already listed isn't offered twice");
-        assert!(choices(&recent, &config, &[], &peers(), "zzz", false).is_empty());
+        assert!(choices(&recent, &config, &[], &peers(), &[], "zzz", false).is_empty());
+    }
+
+    #[test]
+    fn a_machine_the_person_named_is_listed_and_found_by_that_name() {
+        let recent = [host("atinumai@100.66.18.3"), host("me@100.106.17.55")];
+        let config = ["vision".to_owned()];
+        let names = [("me@100.106.17.55".to_owned(), "사무실 맥미니".to_owned()), ("atinumai@100.66.18.3".to_owned(), "Tinum 서버".to_owned())];
+        let rows = choices(&recent, &config, &[], &peers(), &names, "", false);
+        let seen: Vec<(&str, &str)> = rows.iter().map(|c| (c.title.as_str(), c.detail.as_str())).collect();
+        assert_eq!(seen[0], ("Tinum 서버", "tinums-mac-mini · atinumai@100.66.18.3"), "the device's name kept beside the address");
+        assert_eq!(seen[1], ("사무실 맥미니", "me@100.106.17.55"), "the address under the name");
+        let vision = rows.iter().find(|c| c.spec == "vision").map(|c| (c.title.as_str(), c.detail.as_str()));
+        assert_eq!(vision, Some(("vision", "")), "a machine not named keeps its own");
+        let found = choices(&recent, &config, &[], &peers(), &names, "사무실", false);
+        assert_eq!(found.iter().map(|c| c.spec.as_str()).collect::<Vec<_>>(), ["me@100.106.17.55"], "found by the person's name");
     }
 }

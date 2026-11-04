@@ -287,7 +287,9 @@ fn card(shell: &Shell, id: u64, place: Place, cx: &mut Context<Shell>) -> Option
         .child(div().flex_1().min_w_0().child(t!("accept.only_click")));
 
     let more = model.accepts.ids().len().saturating_sub(1);
-    let mut said = vec![h_flex().gap(px(5.)).items_center().child(div().size(px(6.)).rounded_full().bg(color)).child(name).into_any_element()];
+    // The member who raised it, by their avatar; the person's own words, by a dot.
+    let by = if card.from_words() { div().size(px(6.)).rounded_full().bg(color) } else { crate::theme::member_mark(shell.palette, &shell.model, &card.by, 15.) };
+    let mut said = vec![h_flex().gap(px(5.)).items_center().child(by).child(name).into_any_element()];
     if more > 0 && place == Place::Docked {
         said.push(div().child(format!("· {}", t!("accept.more", n = more))).into_any_element());
     }

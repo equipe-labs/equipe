@@ -2387,6 +2387,7 @@ pub fn priority_mark(priority: Priority, theme: Theme) -> Span<'static> {
 pub fn status_mark(status: TicketStatus) -> &'static str {
     match status {
         TicketStatus::Proposed => ".",
+        TicketStatus::Idea => "~",
         TicketStatus::Todo => "o",
         TicketStatus::InProgress => "*",
         TicketStatus::Waiting => "!",
@@ -2653,6 +2654,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             actions.push(("a", t!("view.action_take").into()));
             actions.push(("n", t!("view.action_drop").into()));
         }
+        TicketStatus::Idea => actions.push(("n", t!("view.action_drop").into())),
         TicketStatus::Done => {
             if t.not_on_main() {
                 actions.push(("m", t!("view.action_merge").into()));
@@ -3138,7 +3140,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,

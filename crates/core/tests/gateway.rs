@@ -215,7 +215,10 @@ async fn a_screen_sees_only_its_own_squad() {
     let seen = until(&mut acme, |e| matches!(e, Event::SessionStarted { .. })).await;
     // The disk's level is every screen's, whichever squad: whatever this disk has.
     let seen: Vec<Event> = seen.into_iter().filter(|e| !matches!(e, Event::DiskLevel { .. })).collect();
-    assert!(matches!(seen.as_slice(), [Event::SessionStarted { session: 32, .. }]), "{seen:#?}");
+    // A designer joining brings its weekly review: acme's own routines, to acme's screen.
+    let (theirs, rest): (Vec<Event>, Vec<Event>) = seen.into_iter().partition(|e| matches!(e, Event::RoutinesChanged { .. }));
+    assert!(theirs.iter().all(|e| matches!(e, Event::RoutinesChanged { squad, .. } if squad == "acme")), "{theirs:#?}");
+    assert!(matches!(rest.as_slice(), [Event::SessionStarted { session: 32, .. }]), "{rest:#?}");
     gateway::shutdown(&socket).await.unwrap();
 }
 
@@ -366,6 +369,8 @@ async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
         ticket: None,
         questions: vec![Question { question: "Which logo?".into(), options: vec![option("A", vec![shown.clone()]), option("B", vec![])], ..Question::default() }],
         asked_at: 1,
+        review: false,
+        retro: None,
     };
     let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
     journal.set_questions(&[set]).unwrap();
@@ -649,4 +654,78 @@ async fn a_screen_connects_metrics_and_a_member_reads_them_without_the_key() {
     }
     assert!(home.join("metrics/acme").join(&connection.id).read_dir().unwrap().count() == 1, "today's snapshot");
     gateway::shutdown(&socket).await.unwrap();
+}
+
+/// A daemon serving `home` that leaves by `leave`.
+async fn daemon_leaving(home: &Path, claude: &Path, leave: gateway::Leave) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let config = config(home, claude);
+    let socket = gateway::socket_path(&config.home);
+    let task = tokio::spawn({
+        let socket = socket.clone();
+        async move { gateway::serve_leaving(config, &socket, "test", leave).await }
+    });
+    for _ in 0..100 {
+        if gateway::is_running(&socket).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    (socket, task)
+}
+
+/// Whether `task` ends within `wait`.
+async fn ends_within(task: &mut tokio::task::JoinHandle<std::io::Result<()>>, wait: Duration) -> bool {
+    tokio::time::timeout(wait, task).await.is_ok_and(|done| done.unwrap().is_ok())
+}
+
+const QUICK_TRIAL: gateway::Leave = gateway::Leave { home_gone: true, idle: Some(Duration::from_millis(400)), every: Duration::from_millis(50) };
+
+#[tokio::test]
+async fn a_trial_daemon_leaves_once_no_screen_has_come_for_a_while() {
+    let home = scratch("home");
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, mut trial) = daemon_leaving(&home, &claude, QUICK_TRIAL).await;
+    // The person's own daemon, beside it, never does.
+    let own_home = scratch("home");
+    let (own_socket, mut own) = daemon_leaving(&own_home, &claude, gateway::Leave::NEVER).await;
+
+    // A screen attached keeps it, however long it stays.
+    let (screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    assert!(!ends_within(&mut trial, Duration::from_millis(900)).await, "a screen is attached");
+    drop(screen);
+
+    assert!(ends_within(&mut trial, Duration::from_secs(5)).await, "no screen for a while: it leaves");
+    assert!(!socket.exists(), "and cleans up its socket");
+    assert!(!ends_within(&mut own, Duration::from_millis(200)).await, "the person's daemon stays");
+    assert!(gateway::is_running(&own_socket).await);
+    gateway::shutdown(&own_socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_trial_daemon_waits_for_a_member_mid_turn() {
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("2"));
+    let (socket, mut trial) = daemon_leaving(&home, &claude, QUICK_TRIAL).await;
+
+    let (mut a, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    a.send(Command::Start { session: 11, spec: spec(&project) });
+    until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
+    a.send(Command::Submit { session: 11, text: "keep going without me".into(), about: None });
+    until(&mut a, |e| matches!(e, Event::UserMessage { .. })).await;
+    drop(a);
+
+    // No screen, but a member is at work: it stays until the turn is done.
+    assert!(!ends_within(&mut trial, Duration::from_millis(1200)).await, "a member is mid-turn");
+    assert!(ends_within(&mut trial, Duration::from_secs(10)).await, "the turn over and no screen: it leaves");
+}
+
+#[tokio::test]
+async fn a_trial_daemon_whose_home_is_removed_leaves() {
+    let home = scratch("home");
+    let claude = fake_claude(&slow_answer("0"));
+    let leave = gateway::Leave { idle: None, ..QUICK_TRIAL };
+    let (_socket, mut trial) = daemon_leaving(&home, &claude, leave).await;
+    assert!(!ends_within(&mut trial, Duration::from_millis(600)).await, "no idle rule: it stays while its home is there");
+    std::fs::remove_dir_all(&home).unwrap();
+    assert!(ends_within(&mut trial, Duration::from_secs(5)).await, "its home gone: it leaves");
 }

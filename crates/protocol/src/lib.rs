@@ -14,10 +14,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod accept;
 pub mod asks;
+pub mod briefs;
 pub mod decide;
 pub mod disk;
 pub mod metrics;
 pub mod engines;
+pub mod harness;
 pub mod design;
 pub mod routines;
 pub mod secrets;
@@ -25,6 +27,12 @@ pub mod signals;
 
 /// How a ticket that couldn't start says why, in its note.
 pub const COULD_NOT_START: &str = "Couldn't start: ";
+/// How an idea the PM put to the person says why its time has come, in its note.
+pub const WHY_NOW: &str = "Why now: ";
+/// How a started idea waits while the PM runs office hours with the person,
+/// in its note: equipe hands it to nobody until the PM releases it
+/// (`update_ticket`, status todo).
+pub const OFFICE_HOURS_FIRST: &str = "Office hours first: the PM releases it.";
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -35,6 +43,7 @@ pub mod vault;
 pub mod review;
 pub mod words;
 
+pub use briefs::ProjectDoc;
 pub use transcript::Transcript;
 
 /// One conversation with one agent. Chosen by the screen that opens it — at
@@ -119,6 +128,18 @@ impl Estimate {
     }
 }
 
+/// A conversation with the PM the person put away ([`Command::CloseConversation`]):
+/// off the list, its lines kept, to be opened again ([`Command::ReopenConversation`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PutAway {
+    pub session: SessionId,
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// When it was put away (unix seconds).
+    pub at: i64,
+}
+
 /// A member's conversation about one project (`None`: the whole squad's),
 /// with turns of its own beside the member's other conversations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +165,9 @@ pub type TicketId = u32;
 pub enum TicketStatus {
     /// Suggested by a member; the PM or the person makes it real.
     Proposed,
+    /// The person's idea, kept for later: nothing starts it and nothing asks
+    /// about it, until the PM finds its time and puts it to them as a proposal.
+    Idea,
     /// Ready to be picked up once its dependencies are done.
     Todo,
     InProgress,
@@ -161,6 +185,7 @@ impl TicketStatus {
     pub fn label(self) -> &'static str {
         match self {
             TicketStatus::Proposed => "proposed",
+            TicketStatus::Idea => "idea",
             TicketStatus::Todo => "todo",
             TicketStatus::InProgress => "in progress",
             TicketStatus::Waiting => "waiting",
@@ -324,6 +349,11 @@ pub struct Ticket {
     /// out otherwise, and absent from an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub design_qa: Option<TicketId>,
+    /// The plan it was cut from, or reviews: its path in the ticket's project
+    /// (`docs/plans/2026-11-04-sign-in.md`), or an absolute one in the squad's
+    /// folder. Left out otherwise, and absent from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 /// The gap between two tickets' ranks when they are spread out again.
@@ -342,6 +372,17 @@ impl Ticket {
     }
 
     /// Handed in and ready for the person's review: past design QA, if it had one.
+    /// A started idea held for office hours: ready, but handed to nobody
+    /// until the PM releases it.
+    pub fn office_hours_first(&self) -> bool {
+        self.status == TicketStatus::Todo && self.note.as_deref() == Some(OFFICE_HOURS_FIRST)
+    }
+
+    /// An idea the PM put to the person as a proposal: why its time has come.
+    pub fn why_now(&self) -> Option<&str> {
+        self.note.as_deref().filter(|_| self.status == TicketStatus::Proposed)?.strip_prefix(WHY_NOW).map(str::trim)
+    }
+
     /// A ticket that was taken on but couldn't start (its workplace couldn't
     /// be made): back among the proposals, its reason in its note.
     pub fn could_not_start(&self) -> bool {
@@ -729,6 +770,9 @@ pub enum Command {
     MoveConversation { session: SessionId, project: Option<String> },
     /// A conversation with the PM is put away: it leaves the list.
     CloseConversation { session: SessionId },
+    /// A conversation put away is taken up again, as it was left: answered
+    /// with [`Event::LaneOpened`] and [`Event::ConversationBack`].
+    ReopenConversation { squad: SquadName, session: SessionId },
     /// The person adds a project to the squad: a folder on the daemon's
     /// machine (a git repository; one with no history yet is started as one).
     /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
@@ -934,6 +978,39 @@ pub enum Command {
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
     Design { squad: SquadName },
+    /// Show the squad's briefs and plans ([`briefs::ProjectDoc`]), each
+    /// project's and its own folder's: answered by [`Event::ProjectDocs`],
+    /// and sent again whenever the PM writes one.
+    ProjectDocs { squad: SquadName },
+    /// The accepted versions of a design system's folder — the squad's own
+    /// (`project: None`) or a project's — newest first, the last 30: answered
+    /// by [`Event::DesignVersions`]. Read from git when asked, not with
+    /// [`Event::Design`], which goes out on every save.
+    DesignVersions {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// The person asks for a design system's folder back as it was at one of
+    /// its versions (`commit`, one [`Event::DesignVersions`] listed): a
+    /// ticket for the designer, which restores it in its worktree and hands
+    /// it in for review like any other change. Nothing is rewritten. Only
+    /// ever the person's.
+    RestoreDesign {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        commit: String,
+    },
+    /// The person adds, rewrites or removes a note of their design taste:
+    /// the squad's (`project` none) or a project's. Answered by
+    /// [`Event::Design`] with the notes as they are now, or an error.
+    Taste {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        change: design::TasteChange,
+    },
 }
 
 /// Where the daemon's Nebius Token Factory key comes from.
@@ -1365,6 +1442,17 @@ pub enum Event {
     },
     /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
     LaneMoved { session: SessionId, project: Option<String> },
+    /// A conversation taken up again ([`Command::ReopenConversation`]): what
+    /// was said in it, after its [`Event::LaneOpened`].
+    ConversationBack {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default)]
+        lines: Vec<Entry>,
+    },
+    /// The conversations put away, the latest first ([`Snapshot::put_away`]).
+    PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
     /// in `workspace` when it edits.
     WorkStarted {
@@ -1756,6 +1844,29 @@ pub enum Event {
         systems: Vec<design::DesignSystem>,
         #[serde(default)]
         folder: String,
+        /// The person's taste and the decisions made: the squad's first,
+        /// then each project's with a design system of its own.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        taste: Vec<design::Taste>,
+    },
+    /// The squad's briefs and plans as they are now ([`Command::ProjectDocs`]):
+    /// every project's, then its own folder's, newest first in each. Its own
+    /// event rather than a field of [`Event::ProjectsChanged`]: they are read
+    /// from files, off the daemon's loop, only for a screen that asks, and
+    /// change whenever one is written — the list of projects doesn't.
+    ProjectDocs {
+        squad: SquadName,
+        #[serde(default)]
+        docs: Vec<briefs::ProjectDoc>,
+    },
+    /// A design system's accepted versions ([`Command::DesignVersions`]),
+    /// newest first; none when its folder has no history yet.
+    DesignVersions {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default)]
+        versions: Vec<design::DesignVersion>,
     },
 }
 
@@ -1788,7 +1899,10 @@ impl Event {
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
-            | Event::Design { squad, .. } => Some(squad),
+            | Event::PutAwayChanged { squad, .. }
+            | Event::Design { squad, .. }
+            | Event::ProjectDocs { squad, .. }
+            | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
         }
@@ -1813,6 +1927,7 @@ impl Event {
             | Event::SteerQueued { session, .. }
             | Event::LaneOpened { session, .. }
             | Event::LaneMoved { session, .. }
+            | Event::ConversationBack { session, .. }
             | Event::Steered { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
@@ -1852,6 +1967,7 @@ impl Event {
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
             | Event::ProjectsChanged { .. }
+            | Event::PutAwayChanged { .. }
             | Event::RoutinesChanged { .. }
             | Event::RoutineProposed { .. }
             | Event::RoutineProposalClosed { .. }
@@ -1860,6 +1976,8 @@ impl Event {
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
+            | Event::ProjectDocs { .. }
+            | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
             // A browser's own: never part of a conversation.
@@ -2212,6 +2330,9 @@ pub struct Snapshot {
     /// Nemotron's reviews of the tickets in review ([`Event::CodeReviewed`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<review::CodeReview>,
+    /// Conversations with the PM put away, the latest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub put_away: Vec<PutAway>,
 }
 
 #[cfg(test)]
@@ -2244,7 +2365,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -2481,6 +2602,7 @@ mod tests {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
             hq: Some("/repo".into()),
+            put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000 }],
             routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
             reviews: vec![review::CodeReview {
@@ -2508,6 +2630,8 @@ mod tests {
                     ..Default::default()
                 }],
                 asked_at: 1,
+                review: false,
+                retro: None,
             }],
             team_changes: vec![team::TeamChange {
                 id: 5,
@@ -2591,7 +2715,7 @@ mod tests {
 
     #[test]
     fn questions_are_asked_answered_and_closed_as_json_and_older_snapshots_have_none() {
-        let answers = vec![decide::Answer { picked: vec![0], other: None }, decide::Answer::skipped()];
+        let answers = vec![decide::Answer::pick(0), decide::Answer::skipped()];
         let cmd = Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: answers.clone(), about: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "answer_questions", "squad": "acme", "id": 7, "answers": [{ "picked": [0] }, {}] }));
         let dismiss = Command::DismissQuestions { squad: "acme".into(), id: 7 };
@@ -2599,7 +2723,7 @@ mod tests {
         for command in [cmd, dismiss] {
             assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&command).unwrap()).unwrap(), command);
         }
-        let set = decide::QuestionSet { id: 7, session: 2, member: "backend".into(), ticket: Some(3), questions: vec![], asked_at: 5 };
+        let set = decide::QuestionSet { id: 7, session: 2, member: "backend".into(), ticket: Some(3), questions: vec![], asked_at: 5, review: false, retro: None };
         let events = [
             Event::QuestionsAsked { squad: "acme".into(), questions: set },
             Event::QuestionsClosed { squad: "acme".into(), id: 7, answers: Some(answers) },

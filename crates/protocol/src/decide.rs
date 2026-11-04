@@ -8,6 +8,9 @@
 //! reads back ([`read_answers`]) to show it as "decided". A visual choice
 //! carries its pictures: paths on the daemon's machine, in the member's
 //! worktree or the squad's folder, which screens ask for (`read_image`).
+//! A design choice's options also name their aspects (type, colour, shape),
+//! so the person can react in one click: this one, this one with one aspect
+//! of another (a mix), or another round.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +27,10 @@ pub struct Choice {
     /// none (and absent from an older daemon).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// What of it can be taken into another option — "type", "colour",
+    /// "shape" — in the person's language; left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aspects: Vec<String>,
 }
 
 /// One question of a set.
@@ -72,6 +79,23 @@ pub struct QuestionSet {
     /// When it was asked, in unix seconds.
     #[serde(default)]
     pub asked_at: u64,
+    /// The designer's weekly design review's proposal: screens show it as
+    /// the review. Left out when not (and from an older daemon).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub review: bool,
+    /// The PM's weekly retro's proposed changes: screens show it as the
+    /// retro. Left out when not (and from an older daemon).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retro: Option<Retro>,
+}
+
+/// What a retro's set carries beyond its questions: the lesson behind each
+/// change, question by question (empty: none) — kept in the squad's memory
+/// once the person takes the change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retro {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lessons: Vec<String>,
 }
 
 impl QuestionSet {
@@ -82,13 +106,28 @@ impl QuestionSet {
 }
 
 /// The person's answer to one question: the options they picked (by index),
-/// and words of their own. Neither: skipped — the member's call.
+/// and words of their own. Neither: skipped — the member's call. A design
+/// choice may be answered with a reaction beyond a plain pick.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Answer {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub picked: Vec<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub other: Option<String>,
+    /// A mix, or another round; left out for a plain pick (and from an
+    /// older screen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaction: Option<Reaction>,
+}
+
+/// How the person reacted to a design choice's options, beyond a pick.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reaction {
+    /// Option `base`, with option `from`'s `aspect` (one of its `aspects`).
+    Mix { base: usize, from: usize, aspect: String },
+    /// None of these: another round, why in the answer's own words.
+    Again,
 }
 
 impl Answer {
@@ -97,8 +136,24 @@ impl Answer {
         Self::default()
     }
 
+    /// Option `n`, as it is.
+    pub fn pick(n: usize) -> Self {
+        Self { picked: vec![n], ..Self::default() }
+    }
+
+    /// Option `base` with option `from`'s `aspect`: `base` is what is
+    /// picked, so a reader that knows no mixes still sees the choice.
+    pub fn mix(base: usize, from: usize, aspect: impl Into<String>) -> Self {
+        Self { picked: vec![base], other: None, reaction: Some(Reaction::Mix { base, from, aspect: aspect.into() }) }
+    }
+
+    /// None of these: another round, with why if they said.
+    pub fn again(why: Option<String>) -> Self {
+        Self { picked: Vec::new(), other: why.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()), reaction: Some(Reaction::Again) }
+    }
+
     pub fn is_skipped(&self) -> bool {
-        self.picked.is_empty() && self.other.as_deref().is_none_or(|o| o.trim().is_empty())
+        self.reaction.is_none() && self.picked.is_empty() && self.other.as_deref().is_none_or(|o| o.trim().is_empty())
     }
 }
 
@@ -113,6 +168,15 @@ pub const SKIPPED: &str = "skipped — your call";
 /// What the person's own words are marked with when nothing was picked.
 const OWN: &str = "their own answer: ";
 const NOTE: &str = " (+ note: ";
+/// What a mix is written as: `mix — «A» with the type of «B»`.
+const MIX: &str = "mix — «";
+const MIX_WITH: &str = "» with the ";
+const MIX_OF: &str = " of «";
+/// What another round is written as; why beside it, as a note.
+const AGAIN: &str = "another round — none of these";
+/// What the member is told to do with a mix, and with another round.
+const MIX_THEN: &str = "For a mix: make it, and ask again with it beside the two it came from.";
+const AGAIN_THEN: &str = "For another round: bring options genuinely different from these, minding why.";
 /// The first words of the message a set the person closed goes back in.
 pub const DISMISSED_HEAD: &str = "The person closed your question without answering";
 
@@ -129,20 +193,45 @@ fn one_line(text: &str) -> String {
 /// 2) Which features? → Auth, Payments (+ note: SSO later)
 /// 3) Where to deploy? → skipped — your call
 /// ```
+///
+/// A design choice reacted to says so, and the member what to do next:
+///
+/// ```text
+/// 1) Which logo? → mix — «Blue dot» with the type of «Grey dot»
+/// 2) Which palette? → another round — none of these (+ note: too cold)
+/// For a mix: make it, and ask again with it beside the two it came from.
+/// For another round: …
+/// ```
 pub fn answer_message(set: &QuestionSet, answers: &[Answer]) -> String {
     let many = set.questions.len() > 1;
     let mut out = format!("{ANSWERS_HEAD}{}:", if many { "s" } else { "" });
+    let (mut mixed, mut again) = (false, false);
     for (n, q) in set.questions.iter().enumerate() {
         let answer = answers.get(n).cloned().unwrap_or_default();
         let labels: Vec<String> = answer.picked.iter().filter_map(|&i| q.options.get(i)).map(|c| one_line(&c.label)).collect();
         let other = answer.other.as_deref().map(one_line).filter(|o| !o.is_empty());
-        let said = match (labels.is_empty(), other) {
-            (true, None) => SKIPPED.to_owned(),
-            (true, Some(other)) => format!("{OWN}{other}"),
-            (false, None) => labels.join(", "),
-            (false, Some(other)) => format!("{}{NOTE}{other})", labels.join(", ")),
+        let mix = match &answer.reaction {
+            Some(Reaction::Mix { base, from, aspect }) => q.options.get(*base).zip(q.options.get(*from)).map(|(b, f)| format!("{MIX}{}{MIX_WITH}{}{MIX_OF}{}»", one_line(&b.label), one_line(aspect), one_line(&f.label))),
+            _ => None,
         };
+        let said = match (answer.reaction == Some(Reaction::Again), mix, other) {
+            (true, _, None) => AGAIN.to_owned(),
+            (true, _, Some(why)) => format!("{AGAIN}{NOTE}{why})"),
+            (false, Some(mix), None) => mix,
+            (false, Some(mix), Some(other)) => format!("{mix}{NOTE}{other})"),
+            (false, None, None) if labels.is_empty() => SKIPPED.to_owned(),
+            (false, None, Some(other)) if labels.is_empty() => format!("{OWN}{other}"),
+            (false, None, None) => labels.join(", "),
+            (false, None, Some(other)) => format!("{}{NOTE}{other})", labels.join(", ")),
+        };
+        mixed |= said.starts_with(MIX);
+        again |= said.starts_with(AGAIN);
         out.push_str(&format!("\n{}) {} → {said}", n + 1, one_line(&q.question)));
+    }
+    for (then, says) in [(mixed, MIX_THEN), (again, AGAIN_THEN)] {
+        if then {
+            out.push_str(&format!("\n{says}"));
+        }
     }
     out
 }
@@ -165,6 +254,26 @@ pub struct Read {
     /// Their words beside what they picked.
     pub note: Option<String>,
     pub skipped: bool,
+    /// A mix: the option taken, the one an aspect came from, and the aspect.
+    pub mix: Option<Mixed>,
+    /// Another round asked for (why in `note`).
+    pub again: bool,
+}
+
+/// A mix, read back: the two labels and the aspect, as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mixed {
+    pub base: String,
+    pub from: String,
+    pub aspect: String,
+}
+
+/// `mix — «A» with the type of «B»`, read back.
+fn read_mix(said: &str) -> Option<Mixed> {
+    let rest = said.strip_prefix(MIX)?.strip_suffix('»')?;
+    let (base, rest) = rest.split_once(MIX_WITH)?;
+    let (aspect, from) = rest.split_once(MIX_OF)?;
+    Some(Mixed { base: base.to_owned(), from: from.to_owned(), aspect: aspect.to_owned() })
 }
 
 /// The answers a message of [`answer_message`]'s carries, question by
@@ -186,7 +295,8 @@ pub fn read_answers(message: &str) -> Option<Vec<Read>> {
             None if skipped => (String::new(), None),
             None => (said.strip_prefix(OWN).unwrap_or(said).to_owned(), None),
         };
-        out.push(Read { question: question.to_owned(), answer, note, skipped });
+        let (mix, again) = (read_mix(&answer), answer == AGAIN);
+        out.push(Read { question: question.to_owned(), answer, note, skipped, mix, again });
     }
     (!out.is_empty()).then_some(out)
 }
@@ -226,14 +336,16 @@ mod tests {
                 Question { question: "Where to deploy?".into(), header: String::new(), options: vec![choice("Vercel", ""), choice("Fly", "")], multi_select: false, ..Default::default() },
             ],
             asked_at: 1_760_000_000,
+            review: false,
+            retro: None,
         }
     }
 
     #[test]
     fn the_answers_go_back_in_one_message_a_question_a_line() {
         let answers = [
-            Answer { picked: vec![0], other: None },
-            Answer { picked: vec![0, 1], other: Some("SSO\nlater".into()) },
+            Answer::pick(0),
+            Answer { picked: vec![0, 1], other: Some("SSO\nlater".into()), ..Default::default() },
             Answer::skipped(),
         ];
         let message = answer_message(&set(), &answers);
@@ -252,7 +364,7 @@ mod tests {
         // Only their own words; one question.
         let mut one = set();
         one.questions.truncate(1);
-        let message = answer_message(&one, &[Answer { picked: vec![], other: Some("MySQL, we have one".into()) }]);
+        let message = answer_message(&one, &[Answer { other: Some("MySQL, we have one".into()), ..Default::default() }]);
         assert_eq!(message, "Answers to your question:\n1) Which database should the API use? → their own answer: MySQL, we have one");
         assert_eq!(read_answers(&message).unwrap()[0].answer, "MySQL, we have one");
         assert_eq!(read_answers("hello"), None);
@@ -269,11 +381,11 @@ mod tests {
     #[test]
     fn a_skipped_answer_is_nothing_picked_and_nothing_said() {
         assert!(Answer::skipped().is_skipped());
-        assert!(Answer { picked: vec![], other: Some("  ".into()) }.is_skipped());
-        assert!(!Answer { picked: vec![1], other: None }.is_skipped());
+        assert!(Answer { other: Some("  ".into()), ..Default::default() }.is_skipped());
+        assert!(!Answer::pick(1).is_skipped());
         // On the wire: what is there, nothing more.
         assert_eq!(serde_json::to_value(Answer::skipped()).unwrap(), json!({}));
-        assert_eq!(serde_json::to_value(Answer { picked: vec![1], other: Some("x".into()) }).unwrap(), json!({ "picked": [1], "other": "x" }));
+        assert_eq!(serde_json::to_value(Answer { picked: vec![1], other: Some("x".into()), ..Default::default() }).unwrap(), json!({ "picked": [1], "other": "x" }));
         assert_eq!(serde_json::from_value::<Answer>(json!({ "picked": [0, 2] })).unwrap().picked, [0, 2]);
     }
 
@@ -289,6 +401,78 @@ mod tests {
         let bare: QuestionSet = serde_json::from_value(json!({ "id": 1, "session": 2, "member": "pm", "questions": [{ "question": "?", "options": [{ "label": "a" }, { "label": "b" }] }] })).unwrap();
         assert_eq!((bare.ticket, bare.asked_at, bare.questions[0].multi_select), (None, 0, false));
         assert!(bare.images().next().is_none() && !bare.questions[0].is_visual(), "an older daemon's set: no pictures");
+        assert!(!bare.review && wire_of(&s).get("review").is_none(), "not the design review: left out");
+        let review = QuestionSet { review: true, ..set() };
+        assert_eq!(wire_of(&review)["review"], true);
+        assert_eq!(serde_json::from_value::<QuestionSet>(wire_of(&review)).unwrap(), review);
+        assert!(bare.retro.is_none() && wire_of(&s).get("retro").is_none(), "not the retro: left out");
+        let retro = QuestionSet { retro: Some(Retro { lessons: vec!["Small tickets land sooner".into(), String::new()] }), ..set() };
+        assert_eq!(wire_of(&retro)["retro"]["lessons"][0], "Small tickets land sooner");
+        assert_eq!(serde_json::from_value::<QuestionSet>(wire_of(&retro)).unwrap(), retro);
+    }
+
+    fn wire_of(set: &QuestionSet) -> serde_json::Value {
+        serde_json::to_value(set).unwrap()
+    }
+
+    /// The designer's question: three screens, each with what can be mixed.
+    fn design() -> QuestionSet {
+        let option = |label: &str| Choice { label: label.into(), images: vec![format!("/w/{label}.png")], aspects: vec!["type".into(), "colour".into()], ..Default::default() };
+        let mut s = set();
+        s.questions = vec![Question { question: "Which direction?".into(), options: vec![option("Calm (Recommended)"), option("Bold"), option("Warm")], ..Default::default() }];
+        s
+    }
+
+    #[test]
+    fn a_mix_says_which_option_takes_what_from_which_and_reads_back() {
+        let message = answer_message(&design(), &[Answer::mix(0, 2, "type")]);
+        assert_eq!(
+            message,
+            "Answers to your question:\n\
+             1) Which direction? → mix — «Calm (Recommended)» with the type of «Warm»\n\
+             For a mix: make it, and ask again with it beside the two it came from."
+        );
+        let read = read_answers(&message).unwrap();
+        assert_eq!(read.len(), 1, "the line on what to do isn't an answer");
+        assert_eq!(read[0].mix, Some(Mixed { base: "Calm (Recommended)".into(), from: "Warm".into(), aspect: "type".into() }));
+        assert!(!read[0].again && !read[0].skipped);
+        // With words beside it.
+        let mut with_words = Answer::mix(1, 0, "colour");
+        with_words.other = Some("a bit softer".into());
+        let read = read_answers(&answer_message(&design(), &[with_words])).unwrap();
+        assert_eq!((read[0].mix.as_ref().map(|m| m.from.as_str()), read[0].note.as_deref()), (Some("Calm (Recommended)"), Some("a bit softer")));
+    }
+
+    #[test]
+    fn another_round_says_none_of_these_and_why_and_reads_back() {
+        let message = answer_message(&design(), &[Answer::again(Some(" too\ncold ".into()))]);
+        assert_eq!(
+            message,
+            "Answers to your question:\n\
+             1) Which direction? → another round — none of these (+ note: too cold)\n\
+             For another round: bring options genuinely different from these, minding why."
+        );
+        let read = read_answers(&message).unwrap();
+        assert!(read[0].again && read[0].mix.is_none() && !read[0].skipped);
+        assert_eq!(read[0].note.as_deref(), Some("too cold"));
+        // Without why; a plain pick says nothing more.
+        let read = read_answers(&answer_message(&design(), &[Answer::again(Some("  ".into()))])).unwrap();
+        assert!(read[0].again && read[0].note.is_none());
+        assert_eq!(answer_message(&design(), &[Answer::pick(1)]), "Answers to your question:\n1) Which direction? → Bold");
+    }
+
+    #[test]
+    fn a_reaction_is_not_a_skip_and_the_wire_is_as_before_without_one() {
+        assert!(!Answer::again(None).is_skipped());
+        assert_eq!(serde_json::to_value(Answer::pick(2)).unwrap(), json!({ "picked": [2] }));
+        assert_eq!(serde_json::to_value(Answer::mix(0, 2, "type")).unwrap(), json!({ "picked": [0], "reaction": { "mix": { "base": 0, "from": 2, "aspect": "type" } } }));
+        assert_eq!(serde_json::to_value(Answer::again(None)).unwrap(), json!({ "reaction": "again" }));
+        assert_eq!(serde_json::from_value::<Answer>(json!({ "picked": [0], "reaction": { "mix": { "base": 0, "from": 2, "aspect": "type" } } })).unwrap(), Answer::mix(0, 2, "type"));
+        // The options' aspects: on the wire when there are any.
+        let wire = serde_json::to_value(design()).unwrap();
+        assert_eq!(wire["questions"][0]["options"][0]["aspects"], json!(["type", "colour"]));
+        assert!(serde_json::to_value(set()).unwrap()["questions"][0]["options"][0].get("aspects").is_none());
+        assert_eq!(serde_json::from_value::<QuestionSet>(wire).unwrap(), design());
     }
 
     #[test]

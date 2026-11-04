@@ -179,6 +179,9 @@ pub struct Remembered {
     pub term_height: Option<f32>,
     /// What accepting lands, per project (by name), once the person said.
     pub merge_ways: Vec<(String, String)>,
+    /// The person's own names for the machines they connect to, by what
+    /// connecting is given (`user@host`, an address): read, not an IP.
+    pub host_names: Vec<(String, String)>,
     /// The views the person saved (⌥V), in their order.
     pub views: Vec<KeptView>,
     /// How wide the sidebar was left (px).
@@ -187,6 +190,13 @@ pub struct Remembered {
     /// their own height) — `side_split.rs`.
     pub side_usage: Option<f32>,
     pub side_team: Option<f32>,
+    /// When 진행 상황 was last opened (unix seconds): its "since you last looked".
+    pub progress_seen: Option<u64>,
+    /// The team shown row by row in the sidebar, not as one row of faces.
+    pub team_open: bool,
+    /// The plans' meters folded to their heading (the tightest window alone);
+    /// they start open.
+    pub usage_folded: bool,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
@@ -217,6 +227,16 @@ pub struct Remembered {
     pub tickets_board: bool,
     /// How large the window draws, in percent (⌘+ / ⌘-, settings ▸ 일반).
     pub zoom: Zoom,
+    /// The design screen's tab the person last picked (`map`, `system`);
+    /// none: the map when there is one.
+    pub design_tab: Option<String>,
+    /// The designer's conversation beside the design screen, open or folded
+    /// as the person left it; none: open where there is room.
+    pub design_talk: Option<bool>,
+    /// How wide it was dragged (px).
+    pub design_talk_width: Option<f32>,
+    /// The window's size as the person left it, in points: what it opens at.
+    pub window: Option<(f32, f32)>,
 }
 
 /// The window's size in percent (`zoom.rs`): actual size unless the person
@@ -413,6 +433,10 @@ impl Remembered {
                     out.merge_ways.retain(|(p, _)| p != project);
                     out.merge_ways.push((project.to_owned(), way.to_owned()));
                 }
+            } else if let Some(rest) = line.strip_prefix("host-name ") {
+                if let Some((spec, name)) = rest.split_once('\t') {
+                    out.set_host_name(spec, name);
+                }
             } else if let Some(rest) = line.strip_prefix("view ") {
                 let mut parts = rest.splitn(4, '\t');
                 if let (Some(pinned), Some(group), Some(name), Some(query)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
@@ -420,10 +444,19 @@ impl Remembered {
                 }
             } else if let Some(rest) = line.strip_prefix("side-usage ") {
                 out.side_usage = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if let Some(rest) = line.strip_prefix("progress-seen ") {
+                out.progress_seen = rest.trim().parse::<u64>().ok().filter(|at| *at > 0);
+            } else if line == "team-open" {
+                out.team_open = true;
+            } else if line == "usage-folded" {
+                out.usage_folded = true;
             } else if let Some(rest) = line.strip_prefix("side-team ") {
                 out.side_team = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("window-size ") {
+                let size = |n: &str| n.trim().parse::<f32>().ok().filter(|n| n.is_finite() && *n > 0.);
+                out.window = rest.split_once('x').and_then(|(w, h)| Some((size(w)?, size(h)?)));
             } else if let Some(rest) = line.strip_prefix("lang ") {
                 out.lang = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
             } else if line.trim() == "dictation-servers on" {
@@ -442,6 +475,16 @@ impl Remembered {
                 out.folded.insert(name.to_owned());
             } else if line.trim() == "tickets board" {
                 out.tickets_board = true;
+            } else if let Some(rest) = line.strip_prefix("design-talk-width ") {
+                out.design_talk_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("design-talk ") {
+                out.design_talk = match rest.trim() {
+                    "open" => Some(true),
+                    "folded" => Some(false),
+                    _ => None,
+                };
+            } else if let Some(rest) = line.strip_prefix("design-tab ") {
+                out.design_tab = Some(rest.trim().to_owned()).filter(|t| !t.is_empty());
             } else if let Some((on, rest)) = line.strip_prefix("quiet ").map(|r| (false, r)).or_else(|| line.strip_prefix("ping ").map(|r| (true, r))) {
                 if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
                     out.pings.set(ping, on);
@@ -522,11 +565,23 @@ impl Remembered {
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar-width {width:.0}\n"));
         }
+        if let Some((width, height)) = self.window {
+            text.push_str(&format!("window-size {width:.0}x{height:.0}\n"));
+        }
         if let Some(height) = self.side_usage {
             text.push_str(&format!("side-usage {height:.0}\n"));
         }
         if let Some(height) = self.side_team {
             text.push_str(&format!("side-team {height:.0}\n"));
+        }
+        if let Some(at) = self.progress_seen {
+            text.push_str(&format!("progress-seen {at}\n"));
+        }
+        if self.team_open {
+            text.push_str("team-open\n");
+        }
+        if self.usage_folded {
+            text.push_str("usage-folded\n");
         }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
@@ -555,6 +610,15 @@ impl Remembered {
         if self.tickets_board {
             text.push_str("tickets board\n");
         }
+        if let Some(tab) = &self.design_tab {
+            text.push_str(&format!("design-tab {tab}\n"));
+        }
+        if let Some(open) = self.design_talk {
+            text.push_str(if open { "design-talk open\n" } else { "design-talk folded\n" });
+        }
+        if let Some(width) = self.design_talk_width {
+            text.push_str(&format!("design-talk-width {width:.0}\n"));
+        }
         // Only what differs from the default: off as `quiet`, on as `ping`.
         for ping in Ping::ALL.into_iter().filter(|p| self.pings.get(*p) != p.default_on()) {
             text.push_str(&format!("{} {}\n", if self.pings.get(ping) { "ping" } else { "quiet" }, ping.code()));
@@ -568,6 +632,9 @@ impl Remembered {
         for (project, way) in &self.merge_ways {
             text.push_str(&format!("merge {project} {way}\n"));
         }
+        for (spec, name) in &self.host_names {
+            text.push_str(&format!("host-name {spec}\t{}\n", name.replace(['\t', '\n'], " ")));
+        }
         for view in &self.views {
             let clean = |s: &str| s.replace(['\t', '\n'], " ");
             text.push_str(&format!("view {}\t{}\t{}\t{}\n", u8::from(view.pinned), clean(&view.group), clean(&view.name), clean(&view.query)));
@@ -578,6 +645,20 @@ impl Remembered {
     /// What accepting lands in `project`, if the person said.
     pub fn merge_way(&self, project: &str) -> Option<&str> {
         self.merge_ways.iter().find(|(p, _)| p == project).map(|(_, w)| w.as_str())
+    }
+
+    /// The person's name for the machine `spec` connects to, if they gave one.
+    pub fn host_name(&self, spec: &str) -> Option<&str> {
+        self.host_names.iter().find(|(s, _)| s == spec).map(|(_, n)| n.as_str())
+    }
+
+    /// Name a machine; an empty name takes the name away.
+    pub fn set_host_name(&mut self, spec: &str, name: &str) {
+        self.host_names.retain(|(s, _)| s != spec);
+        let name = name.trim();
+        if !name.is_empty() {
+            self.host_names.push((spec.to_owned(), name.to_owned()));
+        }
     }
 
     pub fn set_merge_way(&mut self, project: &str, way: &str) {
@@ -614,6 +695,9 @@ impl Remembered {
     }
 
     pub fn save(&self, home: &Path) {
+        if crate::readonly::blocked(&Self::path(home).display().to_string()) {
+            return;
+        }
         let _ = std::fs::create_dir_all(home);
         let _ = std::fs::write(Self::path(home), self.render());
     }
@@ -725,8 +809,15 @@ mod tests {
         remembered.board_split = Some(212.4);
         remembered.peek_width = Some(560.);
         remembered.sidebar_width = Some(301.6);
+        remembered.window = Some((1440.2, 899.6));
         remembered.side_usage = Some(96.);
         remembered.side_team = Some(240.4);
+        remembered.progress_seen = Some(1_793_700_000);
+        remembered.team_open = true;
+        remembered.usage_folded = true;
+        remembered.set_host_name("me@100.106.17.55", "  사무실 맥미니 ");
+        remembered.set_host_name("vision", "vision");
+        remembered.set_host_name("vision", "");
         remembered.lang = Some("ko".into());
         remembered.dictation = Some("ja".into());
         remembered.dictation_servers = true;
@@ -738,7 +829,14 @@ mod tests {
 
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
+        assert_eq!(loaded.window, Some((1440., 900.)), "the window's size, as left");
         assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
+        assert_eq!(loaded.progress_seen, Some(1_793_700_000), "진행 상황's last look, for \"since you last looked\"");
+        assert!(loaded.team_open, "the team as the person left it");
+        assert!(loaded.usage_folded, "the plans' meters folded, as left");
+        assert!(!Remembered::default().usage_folded, "they start open");
+        assert_eq!(loaded.host_name("me@100.106.17.55"), Some("사무실 맥미니"), "a machine's name, trimmed");
+        assert_eq!(loaded.host_name("vision"), None, "an empty name takes it away");
         assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
         assert!(loaded.dictation_servers, "the person's yes to Apple's servers is kept");
         assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");
@@ -788,7 +886,7 @@ mod tests {
         assert!(!fresh.whole_conversation, "the conversation follows the project by default");
         assert!(!fresh.tickets_board, "티켓 opens as a list");
         assert_eq!(fresh.zoom, Zoom(100), "actual size");
-        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), ..Remembered::default() };
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), design_tab: Some("system".into()), design_talk: Some(false), design_talk_width: Some(432.), ..Remembered::default() };
         prefs.pings.set(Ping::Failed, false);
         prefs.pings.set(Ping::Sound, false);
         prefs.set_merge_way("app", "push");
@@ -801,6 +899,9 @@ mod tests {
         assert_eq!(loaded.zoom, Zoom(125), "the window's size, from one launch to the next");
         assert_eq!(loaded.folded, prefs.folded, "the sidebar's folds, the shared folder's too");
         assert!(loaded.tickets_board, "the board, as last left");
+        assert_eq!(loaded.design_tab.as_deref(), Some("system"), "the design screen's tab, as last picked");
+        assert_eq!((loaded.design_talk, loaded.design_talk_width), (Some(false), Some(432.)), "the conversation beside the design screen, folded as left, as wide");
+        assert_eq!(fresh.design_talk, None, "open where there is room until the person says");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 

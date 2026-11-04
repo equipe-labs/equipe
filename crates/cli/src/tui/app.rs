@@ -207,6 +207,7 @@ pub fn status_word(status: TicketStatus) -> &'static str {
         TicketStatus::Waiting => t!("app.status_waiting"),
         TicketStatus::Review => t!("app.status_review"),
         TicketStatus::Proposed => t!("app.status_proposed"),
+        TicketStatus::Idea => t!("app.status_idea"),
         TicketStatus::Todo => t!("app.status_todo"),
         TicketStatus::InProgress => t!("app.status_in_progress"),
         TicketStatus::Done => t!("app.status_done"),
@@ -1432,14 +1433,14 @@ impl App {
             BoardMenu::All => {
                 // Work not yet started folds past a screenful, unless shown whole (e).
                 let fold = |mut ids: Vec<TicketId>, status: TicketStatus| -> Vec<TicketId> {
-                    if !self.board_expanded && matches!(status, TicketStatus::Todo | TicketStatus::Proposed) {
+                    if !self.board_expanded && matches!(status, TicketStatus::Todo | TicketStatus::Proposed | TicketStatus::Idea) {
                         ids.truncate(SECTION_ROWS);
                     }
                     ids
                 };
                 let group = |statuses: &[TicketStatus]| -> Vec<TicketId> { self.tickets.iter().filter(|t| statuses.contains(&t.status) && self.in_focus(t)).map(|t| t.id).collect() };
                 let mut order = Vec::new();
-                for status in [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed] {
+                for status in [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Idea] {
                     order.extend(fold(group(&[status]), status));
                 }
                 if self.board_expanded {
@@ -1613,7 +1614,7 @@ impl App {
             }
             KeyCode::Char('n') => {
                 let ticket = ticket.filter(|t| !t.status.is_closed())?;
-                if ticket.status == TicketStatus::Proposed {
+                if matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Idea) {
                     self.flash = Some(t!("app.dropped", id = ticket.id));
                     self.next_after(ticket.id);
                     return Some(vec![Command::Cancel { squad: self.squad.clone(), ticket: ticket.id }]);
@@ -1705,7 +1706,7 @@ impl App {
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         match event {
             // The design system: a line of what it holds, when `/design` asked.
-            Event::Design { squad, systems, folder } if squad == self.squad => {
+            Event::Design { squad, systems, folder, .. } if squad == self.squad => {
                 if std::mem::take(&mut self.design_asked) {
                     self.flash = Some(design_summary(&systems, &folder));
                 }
@@ -3510,7 +3511,7 @@ pub fn needs_way(t: &Ticket) -> bool {
 
 /// The order statuses are listed in, the person's calls first.
 pub fn status_rank(s: TicketStatus) -> usize {
-    [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done, TicketStatus::Cancelled].iter().position(|x| *x == s).unwrap_or(6)
+    [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Idea, TicketStatus::Done, TicketStatus::Cancelled].iter().position(|x| *x == s).unwrap_or(7)
 }
 
 /// The files the latest reply or note that embeds pictures shows, where they
@@ -3767,7 +3768,7 @@ pub fn design_summary(systems: &[equipe_core::protocol::design::DesignSystem], f
     if !main.assets.is_empty() {
         parts.push(t!("app.design_assets", count = main.assets.len()));
     }
-    let drafts: Vec<String> = systems.iter().filter_map(|s| s.draft.as_ref()).map(|d| t!("app.design_draft", id = d.ticket)).collect();
+    let drafts: Vec<String> = systems.iter().filter_map(|s| s.draft.as_ref()).filter(|d| !d.working).map(|d| t!("app.design_draft", id = d.ticket)).collect();
     parts.extend(drafts);
     if !main.problems.is_empty() {
         parts.push(t!("app.design_problems", count = main.problems.len()));
@@ -3863,7 +3864,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,

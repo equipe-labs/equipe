@@ -5,7 +5,10 @@
 //! person's own; Skip, Back and Next ⌘↵ (Submit on the last). A visual
 //! question's options are a grid of tiles instead — balanced rows of one
 //! size, fewer columns when narrow, nothing moving when one is picked — each
-//! picture opening big. The same card answers a set picked in 나에게's peek.
+//! picture opening big. A design choice's tiles each have "이걸로", sent at
+//! once, and "섞기", a menu of what the other options can give ("A에 B의
+//! 글꼴"); the card has "다시", another round, the box's words as why. The
+//! same card answers a set picked in 나에게's peek.
 //! Sent, the answers' message folds in the conversation to one line, "결정함 ·
 //! 2개", that opens to each question and what was decided. The rules are `crate::decide`'s.
 
@@ -21,7 +24,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::decide::{self as rules, Decided, Draft, Effect, Key};
+use crate::decide::{self as rules, Decided, Draft, Effect, Key, MixItem};
 use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::render;
@@ -60,7 +63,15 @@ pub struct DecideUi {
     /// Each set's options, scrolled — and the step and key position last
     /// brought into sight, so a key moving to a tile below the fold shows it.
     scrolls: HashMap<u64, (ScrollHandle, Seen)>,
+    /// The mix menu open: set, question, and the option it mixes into.
+    pub mixing: Option<Mixing>,
+    /// The menu last closed by a press outside it, and when: that press on
+    /// its own button closes it rather than opening it again.
+    mix_closed: Option<(Mixing, std::time::Instant)>,
 }
+
+/// Which mix menu: set, question, option.
+pub type Mixing = (u64, usize, usize);
 
 /// The step and key position last brought into sight.
 type Seen = Rc<Cell<Option<(usize, usize)>>>;
@@ -95,7 +106,13 @@ impl Shell {
                     continue;
                 }
                 // A question without options is answered in this box alone.
-                let placeholder = if set.questions[n].options.is_empty() { t!("decide.free_placeholder") } else { t!("decide.other_placeholder") };
+                let placeholder = if set.questions[n].options.is_empty() {
+                    t!("decide.free_placeholder")
+                } else if rules::reacts(&set.questions[n]) {
+                    t!("decide.design_why_placeholder")
+                } else {
+                    t!("decide.other_placeholder")
+                };
                 let field = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 4).submit_on_enter(false).placeholder(placeholder));
                 let id = set.id;
                 let subscription = cx.subscribe_in(&field, window, move |this, _, event: &InputEvent, window, cx| match event {
@@ -174,7 +191,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap | Screen::Metrics => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress => return Took::Pass,
         };
         if self.decide.drafts.get(&id).is_none_or(|d| d.collapsed) {
             return Took::Pass;
@@ -280,6 +297,86 @@ impl Shell {
         if let Some(draft) = self.decide.drafts.get_mut(&id) {
             draft.pick(&set, n);
             cx.notify();
+        }
+    }
+
+    /// A design choice reacted to in one click — this one, a mix, another
+    /// round: on at once, sent from the last question.
+    fn decide_react(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>, how: impl FnOnce(&mut Draft, &QuestionSet, &[String]) -> Option<Vec<Answer>>) {
+        self.decide.mixing = None;
+        if !self.can_act() {
+            return;
+        }
+        let Some(set) = self.model.asked.get(id).cloned() else { return };
+        let others = self.decide_others(id, cx);
+        let Some(draft) = self.decide.drafts.get_mut(&id) else { return };
+        match how(draft, &set, &others) {
+            Some(answers) => self.decide_send(id, answers, window, cx),
+            None => {
+                self.decide_give_back(window, cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// "이걸로" on option `n`.
+    pub fn decide_take(&mut self, id: u64, n: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.decide_react(id, window, cx, |draft, set, others| draft.take(set, n, others));
+    }
+
+    /// A line of option `base`'s mix menu: it, with `from`'s `aspect`.
+    pub fn decide_mix(&mut self, id: u64, base: usize, from: usize, aspect: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.decide_react(id, window, cx, |draft, set, others| draft.mix(set, base, from, &aspect, others));
+    }
+
+    /// "다시": another round, the box's words as why.
+    pub fn decide_again(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.decide_react(id, window, cx, |draft, set, others| draft.again(set, others));
+    }
+
+    /// "섞기": option `base`'s mix menu, opened or closed.
+    pub fn decide_mix_menu(&mut self, id: u64, base: usize, cx: &mut Context<Self>) {
+        let step = self.decide.drafts.get(&id).map_or(0, |d| d.step);
+        let which = (id, step, base);
+        let just_closed = self.decide.mix_closed.take().is_some_and(|(m, at)| m == which && at.elapsed() < std::time::Duration::from_millis(400));
+        self.decide.mixing = if self.decide.mixing == Some(which) || just_closed { None } else { Some(which) };
+        cx.notify();
+    }
+
+    /// A press outside the mix menu closes it.
+    pub fn decide_mix_outside(&mut self, cx: &mut Context<Self>) {
+        if let Some(which) = self.decide.mixing.take() {
+            self.decide.mix_closed = Some((which, std::time::Instant::now()));
+            cx.notify();
+        }
+    }
+
+    /// Dev tool (`snapshot.rs`): a design choice's one-click actions on the
+    /// card on show — `dtake:<n>` (option n's 이걸로), `dmix:<n>` (its mix
+    /// menu opened) or `dmix:<n>,<k>` (that menu's kth line), `dagain`.
+    #[cfg(feature = "snapshot")]
+    pub fn decide_script_react(&mut self, verb: &str, arg: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let id = match self.screen {
+            Screen::Board => match self.picked_need() {
+                Some(Need::Questions(id)) => Some(id),
+                _ => None,
+            },
+            _ => self.decide_shown(),
+        };
+        let Some(id) = id else { return };
+        let mut numbers = arg.split(',').filter_map(|n| n.trim().parse::<usize>().ok()).map(|n| n.saturating_sub(1));
+        match (verb, numbers.next(), numbers.next()) {
+            ("dtake", Some(n), _) => self.decide_take(id, n, window, cx),
+            ("dmix", Some(base), None) => self.decide_mix_menu(id, base, cx),
+            ("dmix", Some(base), Some(k)) => {
+                let step = self.decide.drafts.get(&id).map_or(0, |d| d.step);
+                let item = self.model.asked.get(id).and_then(|s| s.questions.get(step)).and_then(|q| rules::mix_menu(q, base).into_iter().nth(k));
+                if let Some(item) = item {
+                    self.decide_mix(id, base, item.from, item.aspect, window, cx);
+                }
+            }
+            ("dagain", ..) => self.decide_again(id, window, cx),
+            _ => {}
         }
     }
 
@@ -414,9 +511,10 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     let set = shell.model.asked.get(id)?.clone();
     let draft = shell.decide.drafts.get(&id).cloned().unwrap_or_else(|| Draft::new(&set));
     let handle = cx.entity().downgrade();
-    let (name, color) = who(shell, &set);
+    let (name, _) = who(shell, &set);
     if draft.collapsed && place == Place::Docked {
-        return Some(folded(p, id, &set, &name, color, more, &handle));
+        let mark = crate::theme::member_mark(p, &shell.model, &name, 15.).into_any_element();
+        return Some(folded(p, id, &set, &name, mark, more, &handle));
     }
     let q = draft.question(&set)?.clone();
     let total = set.questions.len();
@@ -459,7 +557,14 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .gap_2()
         .items_start()
         .child(div().pt(px(2.)).child(step_pill))
-        .child(div().flex_1().min_w_0().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.question.clone()))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                // The weekly design review's: said over its question.
+                .children(crate::decide::review_title(&set).map(|title| div().text_size(px(12.)).line_height(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(title)))
+                .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.question.clone())),
+        )
         .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().children(fold).child(close));
 
     // The question's own pictures; then the options — a visual question's
@@ -474,19 +579,23 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     };
     let width = shots.width(key, guess);
     let described = q.options.iter().any(|o| !o.description.trim().is_empty());
+    // A design choice: each tile has its one-click actions under its caption.
+    let reacts = rules::reacts(&q);
+    let actions_h = if reacts { ACTIONS_H } else { 0. };
     // A whole row of tiles fits what the card has left for its options: the
     // card's height less its question, its box, its attachments and its foot.
-    let tiles_room = (card_tallest(shell, place) - 280.).max(0.);
+    let tiles_room = (card_tallest(shell, place) - 280. - actions_h).max(0.);
     let layout = visual::grid_within(width, q.options.len(), described, tiles_room);
     let own = (!q.images.is_empty()).then(|| question_pictures(&shots, id, draft.step, &q, width, &layout, cx));
-    let tile_h = visual::tile_height(layout.tile, described);
+    let tile_h = visual::tile_height(layout.tile, described) + actions_h;
     let grid = q.is_visual().then(|| {
         // Each tile where the layout puts it, in whatever state: nothing reflows.
         let tiles: Vec<AnyElement> = (0..q.options.len())
             .filter_map(|n| {
                 let state = visual::TileState { picked: draft.picked(n), cursor: draft.cursor == n, hover: 0. };
                 let (x, y, _, _) = layout.rect(n, tile_h, state)?;
-                let tile = option_tile(&shots, id, draft.step, n, &q, state.picked, state.cursor, layout.tile, described, &handle, cx);
+                let actions = reacts.then(|| Actions { menu: rules::mix_menu(&q, n), open: shell.decide.mixing == Some((id, draft.step, n)), can_act: shell.can_act() });
+                let tile = option_tile(&shots, id, draft.step, n, &q, state.picked, state.cursor, layout.tile, described, actions, &handle, cx);
                 Some(div().absolute().left(px(x)).top(px(y)).child(tile).into_any_element())
             })
             .collect();
@@ -564,9 +673,10 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
 
     // The foot: who asks, the keys, and Skip / Back / Next.
     let send_label = if last { t!("decide.submit") } else { t!("decide.next") };
+    // A design choice's tiles send at once: Next is the quieter way.
     let next = {
         let handle = handle.clone();
-        ui::button(p, ("decide-next", id), Kind::Primary, send_label).key("⌘↵").disabled(!answered || !shell.can_act()).on_click(move |_, window, cx| {
+        ui::button(p, ("decide-next", id), if reacts { Kind::Secondary } else { Kind::Primary }, send_label).key("⌘↵").disabled(!answered || !shell.can_act()).on_click(move |_, window, cx| {
             handle.update(cx, |shell, cx| shell.decide_step(id, Step::Next, window, cx)).ok();
         })
     };
@@ -576,13 +686,19 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
             handle.update(cx, |shell, cx| shell.decide_step(id, Step::Skip, window, cx)).ok();
         })
     };
+    let again = reacts.then(|| {
+        let handle = handle.clone();
+        ui::button(p, ("decide-again", id), Kind::Secondary, t!("decide.design_again")).icon(Icon::Retry).tip(t!("decide.design_again_tip"), None).disabled(!shell.can_act()).on_click(move |_, window, cx| {
+            handle.update(cx, |shell, cx| shell.decide_again(id, window, cx)).ok();
+        })
+    });
     let back = (draft.step > 0).then(|| {
         let handle = handle.clone();
         ui::button(p, ("decide-back", id), Kind::Ghost, t!("decide.back")).key("←").on_click(move |_, window, cx| {
             handle.update(cx, |shell, cx| shell.decide_step(id, Step::Back, window, cx)).ok();
         })
     });
-    let mut said = vec![h_flex().gap(px(5.)).items_center().child(div().size(px(6.)).rounded_full().bg(color)).child(t!("decide.asks", name = name)).into_any_element()];
+    let mut said = vec![h_flex().gap(px(5.)).items_center().child(crate::theme::member_mark(shell.palette, &shell.model, &name, 15.)).child(t!("decide.asks", name = name)).into_any_element()];
     if !q.header.is_empty() && total > 1 {
         said.push(div().child(format!("· {}", q.header)).into_any_element());
     }
@@ -594,6 +710,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     }
     let keys = match place {
         _ if q.options.is_empty() => t!("decide.keys_free"),
+        Place::Docked if reacts => t!("decide.design_keys"),
         Place::Docked if q.is_visual() => t!("decide.keys_visual"),
         Place::Docked if q.multi_select => t!("decide.keys_multi"),
         Place::Docked => t!("decide.keys"),
@@ -618,7 +735,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
                 .child(h_flex().gap(px(5.)).items_center().flex_wrap().children(said))
                 .child(div().opacity(0.8).overflow_hidden().whitespace_nowrap().text_ellipsis().child(keys)),
         )
-        .child(h_flex().flex_none().ml_auto().gap_2().children(back).child(skip).child(next));
+        .child(h_flex().flex_none().ml_auto().gap_2().children(back).children(again).child(skip).child(next));
     let inner = v_flex().w_full().min_h_0().gap_3().child(body).child(foot.flex_none());
     // Never taller than the window has room for: past it, the options scroll.
     let tallest = card_tallest(shell, place);
@@ -768,7 +885,7 @@ fn card_tallest(shell: &Shell, place: Place) -> f32 {
 /// picture, its number filled and a faint tint, the words as legible as
 /// ever; under the pointer, a shadow. Nothing moves.
 #[allow(clippy::too_many_arguments)]
-fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, picked: bool, cursor: bool, w: f32, described: bool, handle: &WeakEntity<Shell>, cx: &mut App) -> AnyElement {
+fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, picked: bool, cursor: bool, w: f32, described: bool, actions: Option<Actions>, handle: &WeakEntity<Shell>, cx: &mut App) -> AnyElement {
     let p = shots.p;
     let option = &q.options[n];
     let (label, recommended) = visual::recommended(&option.label);
@@ -859,13 +976,14 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
     } else {
         p.hair
     };
+    let actions = actions.map(|a| tile_actions(p, id, n, key, w, a, picked || cursor, handle));
     let handle = handle.clone();
     let tile = v_flex()
         .id(("decide-option-tile", key))
         .relative()
         .flex_none()
         .w(px(w))
-        .h(px(visual::tile_height(w, described)))
+        .h(px(visual::tile_height(w, described) + if actions.is_some() { ACTIONS_H } else { 0. }))
         .rounded(px(R_LG))
         .border(px(frame.border))
         .border_color(border)
@@ -874,12 +992,122 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
         .cursor_pointer()
         .child(face)
         .child(caption)
+        .children(actions)
         // The ring, inside the border: the tile is the size it was.
         .when(frame.ring > 0., |t| t.child(super::visuals::ring(p, R_LG - frame.border, frame.ring)))
         .on_click(move |_, _, cx| {
             handle.update(cx, |shell, cx| shell.decide_pick(id, n, cx)).ok();
         });
     super::visuals::lift(tile, ("decide-lift", key), p).into_any_element()
+}
+
+/// How tall a design choice's tile's actions are, under its caption.
+const ACTIONS_H: f32 = 38.;
+
+/// A design choice's tile's actions: what its mix menu offers, whether it is
+/// open, and whether anything can be sent.
+struct Actions {
+    menu: Vec<MixItem>,
+    open: bool,
+    can_act: bool,
+}
+
+/// About how wide words are on a small button, to know whether two fit.
+fn words_width(words: &str) -> f32 {
+    words.chars().map(|c| if c.is_ascii() { 7.4 } else { 13.5 }).sum()
+}
+
+/// "이걸로" — filled on the tile picked or under the keys, else outlined —
+/// and "섞기" with its menu ("A에 B의 글꼴"), only when another option has
+/// something to give; on a tile too narrow for both words, "섞기" is its
+/// chevron alone, named in a tip.
+#[allow(clippy::too_many_arguments)]
+fn tile_actions(p: Palette, id: u64, n: usize, key: u64, w: f32, actions: Actions, on: bool, handle: &WeakEntity<Shell>) -> AnyElement {
+    let take = {
+        let handle = handle.clone();
+        ui::button(p, ("decide-take", key), if on { Kind::Primary } else { Kind::Secondary }, t!("decide.design_take")).tip(t!("decide.design_take_tip"), None).disabled(!actions.can_act).on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            handle.update(cx, |shell, cx| shell.decide_take(id, n, window, cx)).ok();
+        })
+    };
+    let mix = (!actions.menu.is_empty()).then(|| {
+        let mix_words = t!("decide.design_mix");
+        let both = words_width(t!("decide.design_take")) + words_width(mix_words) + 20. + 34. + 6. + 20.;
+        let open = {
+            let handle = handle.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                cx.stop_propagation();
+                handle.update(cx, |shell, cx| shell.decide_mix_menu(id, n, cx)).ok();
+            }
+        };
+        let button = if both <= w {
+            ui::button(p, ("decide-mix", key), Kind::Ghost, mix_words).icon(Icon::ChevronDown).tip(t!("decide.design_mix_tip"), None)
+        } else {
+            ui::icon_button(p, ("decide-mix", key), Icon::ChevronDown, t!("decide.design_mix_tip"), None)
+        };
+        let button = button.selected(actions.open).disabled(!actions.can_act).on_click(open);
+        let menu = actions.open.then(|| mix_menu(p, id, n, key, &actions.menu, handle));
+        div().relative().flex_none().child(button).children(menu)
+    });
+    h_flex()
+        .id(("decide-actions", key))
+        .flex_none()
+        .w_full()
+        .h(px(ACTIONS_H))
+        .px(px(10.))
+        .pb(px(10.))
+        .gap(px(6.))
+        .items_center()
+        .child(take)
+        .children(mix)
+        .into_any_element()
+}
+
+/// Option `base`'s mix menu, under its button: a line for each aspect
+/// another option can give, a click sending the mix.
+fn mix_menu(p: Palette, id: u64, base: usize, key: u64, items: &[MixItem], handle: &WeakEntity<Shell>) -> AnyElement {
+    let lines = items.iter().enumerate().map(|(k, item)| {
+        let (handle, from, aspect) = (handle.clone(), item.from, item.aspect.clone());
+        h_flex()
+            .id(("decide-mix-item", render::hash_of((key, k))))
+            .w_full()
+            .min_h(px(30.))
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded(px(R_SM))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .text_size(px(13.))
+            .text_color(p.text)
+            .child(div().flex_1().min_w_0().child(item.label.clone()))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                handle.update(cx, |shell, cx| shell.decide_mix(id, base, from, aspect.clone(), window, cx)).ok();
+            })
+    });
+    let close = handle.clone();
+    let surface = v_flex()
+        .id(("decide-mix-menu", key))
+        .min_w(px(220.))
+        .max_w(px(340.))
+        .p_1()
+        .rounded(px(R_MD + 2.))
+        .bg(p.raised)
+        .border_1()
+        .border_color(p.hair)
+        .shadow_lg()
+        .occlude()
+        .on_mouse_down_out(move |_, _, cx| {
+            close.update(cx, |shell, cx| shell.decide_mix_outside(cx)).ok();
+        })
+        .children(lines);
+    div()
+        .absolute()
+        .top(px(crate::theme::CONTROL + 4.))
+        .left_0()
+        .child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(motion::pop(surface, ("decide-mix-in", key), true))).with_priority(2))
+        .into_any_element()
 }
 
 /// The question's own pictures (what is there now, say), a click opens one
@@ -928,10 +1156,13 @@ fn question_pictures(shots: &Shots, id: u64, step: usize, q: &Question, width: f
 }
 
 /// The card folded (Esc, ⌄): one line, who asks and how many; a click opens it.
-fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, color: Rgba, more: usize, handle: &WeakEntity<Shell>) -> AnyElement {
+fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, mark: AnyElement, more: usize, handle: &WeakEntity<Shell>) -> AnyElement {
     let open = handle.clone();
     let close = handle.clone();
     let mut words = t!("decide.folded", name = name, count = set.questions.len());
+    if let Some(review) = crate::decide::review_title(set) {
+        words = format!("{review} · {words}");
+    }
     if more > 0 {
         words = format!("{words} · {}", t!("decide.more", count = more));
     }
@@ -951,7 +1182,7 @@ fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, color: Rgba, more:
         .cursor_pointer()
         .text_size(px(SMALL))
         .child(div().size(px(7.)).rounded_full().bg(p.accent))
-        .child(div().size(px(6.)).rounded_full().bg(color))
+        .child(mark)
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text2).child(words))
         .child(icon(Icon::ChevronUp, 14., p.muted))
         .child(ui::icon_button(p, ("decide-folded-close", id), Icon::X, t!("decide.close"), None).on_click(move |_, window, cx| {
@@ -980,7 +1211,7 @@ pub fn decided_row(p: Palette, tones: render::Tones, handle: WeakEntity<Shell>, 
             .into_any_element();
     };
     let progress = motion::openness(("decided-open", key), open, window, cx);
-    let summary = read.iter().map(|r| if r.skipped { t!("decide.skipped_short").to_owned() } else { r.answer.clone() }).collect::<Vec<_>>().join(" · ");
+    let summary = read.iter().map(|r| if r.skipped { t!("decide.skipped_short").to_owned() } else { rules::answer_text(r) }).collect::<Vec<_>>().join(" · ");
     let line = h_flex()
         .id(("decided", key))
         .min_h(px(28.))
@@ -999,7 +1230,7 @@ pub fn decided_row(p: Palette, tones: render::Tones, handle: WeakEntity<Shell>, 
         .child(icon(Icon::ChevronRight, 12., p.muted).with_transformation(Transformation::rotate(radians(progress * std::f32::consts::FRAC_PI_2))));
     let body = (progress > 0.).then(|| {
         let items = read.iter().enumerate().map(|(n, r)| {
-            let answer = if r.skipped { t!("decide.skipped").to_owned() } else { r.answer.clone() };
+            let answer = if r.skipped { t!("decide.skipped").to_owned() } else { rules::answer_text(r) };
             v_flex()
                 .gap_0p5()
                 .child(h_flex().gap_1p5().items_baseline().child(div().flex_none().font_family(MONO).text_size(px(11.5)).text_color(p.muted).child(format!("{}.", n + 1))).child(div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text2).child(r.question.clone())))
@@ -1024,6 +1255,8 @@ pub fn row_text(shell: &Shell, id: u64) -> Option<(String, Option<u32>, String, 
     let set = shell.model.asked.get(id)?;
     let first = set.questions.first().map(|q| q.question.clone()).unwrap_or_default();
     let title = match set.questions.len() {
+        // The weekly design review, the weekly retro: called so, whatever they ask.
+        _ if set.review || set.retro.is_some() => crate::decide::review_title(set).unwrap_or(first),
         0 | 1 => first,
         n => format!("{first} {}", t!("decide.and_more", count = n - 1)),
     };

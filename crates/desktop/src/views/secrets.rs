@@ -117,8 +117,8 @@ pub fn row_text(shell: &Shell, id: u64) -> Option<(String, String, Rgba)> {
 
 fn who(shell: &Shell, ask: &SecretAsk) -> (String, Rgba) {
     let role = shell.model.members.iter().find(|m| m.session == ask.session).map_or("", |m| m.role.as_str());
-    let (mark, hue) = look(role, &ask.member);
-    (format!("{mark} {}", ask.member), shell.palette.member(hue))
+    let (_, hue) = look(role, &ask.member);
+    (ask.member.clone(), shell.palette.member(hue))
 }
 
 /// The card for ask `id`.
