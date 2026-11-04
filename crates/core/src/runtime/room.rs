@@ -69,7 +69,7 @@ impl Runtime {
 
     /// How much room there is, looked at off the loop; one look at a time.
     pub(super) fn look_at_disk(&mut self) {
-        if self.disk.looking {
+        if self.disk.looking || !self.config.watch_disk {
             return;
         }
         self.disk.looking = true;

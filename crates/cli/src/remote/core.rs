@@ -51,6 +51,10 @@ pub enum Action {
     /// List the pictures of a folder a reply points at, which `device` asked
     /// for (`id`); the answer goes back through [`Core::images_listed`].
     ListImages { device: String, squad: String, id: u64, ask: rpc::ListImages },
+    /// Work out the project's numbers `device` asked for (`id`), of `squad`:
+    /// read-only, never a key or a setting; the answer goes back through
+    /// [`Core::metrics_summarized`].
+    MetricsSummary { device: String, squad: String, id: u64, ask: equipe_core::protocol::metrics::SummaryParams },
     /// The device left: stop following squads for it.
     Close { device: String },
     /// For `equipe pair`, waiting at the terminal.
@@ -586,6 +590,19 @@ impl Core {
                 }
                 vec![Action::ListImages { device: device.to_owned(), squad: ask.squad.clone(), id, ask }]
             }
+            // The project's numbers, for the phone's card: only the summary —
+            // connecting, keys and the other `metrics.*` stay at the Mac.
+            Some(equipe_core::protocol::metrics::SUMMARY) => {
+                let Some(id) = id else { return vec![] };
+                let Some(ask) = message.params_as::<equipe_core::protocol::metrics::SummaryParams>() else {
+                    return fail(self, -32602, "metrics.summary needs { squad, project? }");
+                };
+                let followed = self.following.contains(&(device.to_owned(), ask.squad.clone()));
+                if squad.as_deref() != Some(ask.squad.as_str()) || !followed {
+                    return fail(self, -32002, "say hello to that squad first");
+                }
+                vec![Action::MetricsSummary { device: device.to_owned(), squad: ask.squad.clone(), id, ask }]
+            }
             Some(rpc::COMMAND) => {
                 let Some(command) = message.params_as::<Command>() else {
                     return vec![];
@@ -666,6 +683,15 @@ impl Core {
     pub fn images_listed(&mut self, device: &str, squad: &str, id: u64, listed: Result<rpc::ImageList, String>) -> Vec<Action> {
         let message = match listed {
             Ok(list) => Message::response(id, list),
+            Err(why) => Message::failure(id, -32000, why),
+        };
+        self.frame_for(device, Some(squad), &message).into_iter().collect()
+    }
+
+    /// The project's numbers a device asked for (`metrics.summary`): back to it.
+    pub fn metrics_summarized(&mut self, device: &str, squad: &str, id: u64, summary: Result<equipe_core::protocol::metrics::Summary, String>) -> Vec<Action> {
+        let message = match summary {
+            Ok(summary) => Message::response(id, summary),
             Err(why) => Message::failure(id, -32000, why),
         };
         self.frame_for(device, Some(squad), &message).into_iter().collect()
@@ -1016,6 +1042,7 @@ pub(crate) mod tests {
             mode: None,
             effort: None,
             compacting: None,
+            visuals: Vec::new(),
         };
         let snapshot = Snapshot { squad: "acme".into(), sessions: (1..=8).map(session).collect(), ..Snapshot::default() };
         assert!(serde_json::to_string(&snapshot).unwrap().len() > 2 * RELAY_FRAME_MAX);
@@ -1129,6 +1156,75 @@ pub(crate) mod tests {
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["squad"].as_str(), opened["rpc"]["method"].as_str()), (Some("acme"), Some("event")));
         assert!(opened["seq"].as_u64().unwrap() >= 3);
+        // A reply's diagram, drawn for it: the paths it reads with `read_image`.
+        let image = |tone: &str| equipe_core::protocol::RenderedImage { path: format!("/h/squads/acme/visuals/558211ed72b2d696-{tone}.png"), width: 880, height: 724 };
+        let drawn = equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: image("light"), dark: image("dark"), page: None };
+        let out = core.on_event(&phone.id, "acme", &Event::VisualsRendered { session: 1, visuals: vec![drawn] });
+        let params = &phone.open(&c, &out[0])["rpc"]["params"];
+        assert_eq!((params["type"].as_str(), params["visuals"][0]["key"].as_str()), (Some("visuals_rendered"), Some("558211ed72b2d696")));
+        assert_eq!(params["visuals"][0]["dark"]["path"], "/h/squads/acme/visuals/558211ed72b2d696-dark.png");
+    }
+
+    #[tokio::test]
+    async fn a_phone_reads_a_projects_numbers_but_connects_nothing() {
+        use equipe_core::metrics::{InMemory, Metrics};
+        use equipe_core::protocol::metrics::{ConnectParams, RefreshParams, SourceKind, SummaryParams};
+        const TOKEN: &str = "tok-SECRET-4815162342";
+        const SEED: &str = "90210";
+        let home = std::env::temp_dir().join(format!("equipe-remote-metrics-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // Two connections of the project: one that works, one whose key the service refuses.
+        let mut metrics = Metrics::new(&home, Box::new(InMemory::default()));
+        metrics.with_fake = true;
+        let fake = |extra: &[(&str, &str)]| {
+            let mut settings = std::collections::BTreeMap::from([("token".to_owned(), TOKEN.to_owned()), ("seed".to_owned(), SEED.to_owned())]);
+            settings.extend(extra.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
+            ConnectParams { squad: "acme".into(), project: Some("site".into()), kind: Some(SourceKind::Fake), id: None, settings }
+        };
+        let at = 1_793_000_000;
+        metrics.connect(fake(&[]), at).unwrap();
+        metrics.connect(fake(&[("fail", "auth")]), at).unwrap();
+        let today = equipe_core::metrics::day_of(&equipe_core::routines::Local, at);
+        metrics.refresh(&RefreshParams { squad: "acme".into(), ..Default::default() }, at, today).await.unwrap();
+
+        let (mut core, mut phone, now) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let ask = |id: u64, squad: &str, method: &str| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": { "squad": squad, "project": "site" } });
+        // Not followed yet: refused, with why.
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(1, "acme", "metrics.summary"), now), now);
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["error"]["code"], -32002);
+        core.on_relay(&phone.send(&c, Some("acme"), json!({ "jsonrpc": "2.0", "id": 2, "method": "hello", "params": { "version": "app", "squad": "acme" } }), now), now);
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(3, "acme", "metrics.summary"), now), now);
+        let wanted = SummaryParams { squad: "acme".into(), project: Some("site".into()) };
+        assert_eq!(out, vec![Action::MetricsSummary { device: phone.id.clone(), squad: "acme".into(), id: 3, ask: wanted.clone() }]);
+        // Another squad than the frame's.
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(4, "zeta", "metrics.summary"), now), now);
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["error"]["code"], -32002);
+        // The rest of metrics stays at the Mac.
+        for (id, method) in (5..).zip(["metrics.connect", "metrics.disconnect", "metrics.refresh", "metrics.query", "metrics.sources"]) {
+            let out = core.on_relay(&phone.send(&c, Some("acme"), ask(id, "acme", method), now), now);
+            let error = &phone.open(&c, &out[0])["rpc"]["error"];
+            assert_eq!((error["code"].as_i64(), error["message"].as_str()), (Some(-32601), Some("not something a device may ask")), "{method}");
+        }
+
+        // Worked out as the daemon does, back to the phone: the numbers, never a key or a setting.
+        let summary = super::super::link::phone_summary(&home, &wanted, at);
+        let out = core.metrics_summarized(&phone.id, "acme", 3, summary);
+        let opened = phone.open(&c, &out[0]);
+        let result = &opened["rpc"]["result"];
+        let tiles = result["tiles"].as_array().unwrap();
+        assert!(tiles.len() >= 2, "{result}");
+        assert!(tiles.iter().any(|t| t["value"].is_number() && t.get("error").is_none()), "{result}");
+        assert!(tiles.iter().any(|t| t["error"]["code"] == "auth"), "{result}");
+        let text = opened.to_string();
+        for kept in [TOKEN, SEED, "\"settings\"", "\"keys\"", "\"token\"", "\"seed\""] {
+            assert!(!text.contains(kept), "the answer holds {kept}: {text}");
+        }
+        // Why not, when it can't.
+        let out = core.metrics_summarized(&phone.id, "acme", 9, Err("gone".into()));
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["error"]["message"], "gone");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

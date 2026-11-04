@@ -47,7 +47,7 @@ hard-code fields. A kind is offered only once its adapter exists.
 | kind | status | fields (`*` secret, kept in the Keychain) | metrics |
 |---|---|---|---|
 | `fake` | here (tests, screens; offered when `EQUIPE_METRICS_FAKE` is set) | `token`*, `seed`, `fail` | `visits`, `stars`, `languages` |
-| `posthog` | here (`adapters/posthog.rs`) | `api_key`* (Query: Read), `project_id`, `host` (default `https://us.posthog.com`), `filter`, `language_property`, `click_events`, `click_property` | `visits`, `languages`, `referrers`, `utm_sources`, `clicks` |
+| `posthog` | here (`adapters/posthog.rs`) | `api_key`* (Query: Read), `project_id`, `host` (default `https://us.posthog.com`), `filter`, `language_property`, `click_events`, `click_property`, `north_star_event`, `north_star_property`, `north_star_where` | `visits`, `languages`, `referrers`, `utm_sources`, `clicks`, `north_star` |
 | `github` | here (`adapters/github.rs`) | `token`* (Administration: read), `repo` (`owner/name`) | `views`, `visitors`, `clones`, `stars`, `referrers` |
 | `app_store` | here (`adapters/app_store.rs`) | `issuer_id`, `key_id`, `private_key`* (the .p8's text), `vendor_number`, `app_id` | `downloads` |
 
@@ -60,6 +60,18 @@ there say where in the service each one is found.
   the person's to set, never guessed. A breakdown keeps a day's 30 biggest
   labels and adds the rest up as `(other)`. Without `click_events` no clicks
   are asked.
+- **PostHog's `north_star`** is docs/TELEMETRY.md's North Star: the distinct
+  `squad`s of `work_accepted` events with `by = person` in the 7 days up to
+  each day (`rolling`). `north_star_event` (default `work_accepted`),
+  `north_star_property` (default `squad`) and `north_star_where` (default
+  `by=person`, written like `filter`) change what is counted; `filter` isn't
+  applied to it — those are the site's page loads' properties. One HogQL query
+  a fetch counts every day (each day and squad seen stands for the 7 days
+  whose window it is in), asking 91 days at most (12 windows of 7 and the one
+  before), 14 later. A day before the first squad seen is left out (unknown);
+  after it, a day with none is 0. With no event at all and none named (a
+  maker's product doesn't send equipe's `work_accepted`), it isn't reported
+  and the screen shows "no definition"; a named event with none is 0.
 - **GitHub** traffic (`views`, `visitors`, `clones`) is the API's last 14
   days (`keeps_days` 14); `stars` is a day's running total from the
   stargazers' dates when they fit in 10 pages (1,000), else today's count
@@ -96,8 +108,9 @@ Each source reports metrics by **name** (unique within the source), with a
 | `count` | that day's count | the sum of its days |
 | `total` | a running total that day (stars), maybe split by label | its last known day (and that day's split) |
 | `breakdown` | that day's count, split by label (`breakdown`) | each label summed, biggest first |
+| `rolling` | the distinct count of the 7 days up to that day (squads) | its last known day; `previous` is the day 7 days before it, and `series` 12 days 7 apart ending there (`previous_series` empty), whatever `days` and `bucket` |
 
-Units: `page_loads`, `clicks`, `views`, `clones`, `stars`, `downloads`. Screens
+Units: `page_loads`, `clicks`, `views`, `clones`, `stars`, `downloads`, `squads`. Screens
 word them ("페이지 로드"). PostHog gives each page load a new ID, so `visits` is
 page loads, not people.
 
@@ -120,7 +133,8 @@ rounded to 0.1, absent when there is no previous value or it is 0.
 
 The daemon fetches each connection
 
-- right after `metrics.connect` (asking up to 400 days back on the first fetch);
+- right after `metrics.connect` (asking up to 400 days back on the first fetch;
+  an adapter may ask less — PostHog's `north_star` 91);
 - once a day from **07:00 local** (asking the last 14 days);
 - after a failed fetch, again when the service said (`retry_at`) or an hour later;
 - on `metrics.refresh`.
@@ -187,7 +201,8 @@ shows "last value, dimmed, with its time" from `last_ok` when `last.error` is se
 `{ "squad", "project"?, "kind", "settings": { every field, secret ones included } }` → `Connection`
 
 With `"id": "m1"` instead of `kind`: new settings or keys for that connection; a
-secret field left out keeps its key, a setting left out keeps its value. The
+secret field left out keeps its key, a setting left out keeps its value; an
+optional (not required, not secret) setting sent as `""` is cleared. The
 answer comes at once; the first fetch follows on its own — `metrics.sources`
 or `metrics.refresh` shows when it has.
 
@@ -229,7 +244,8 @@ service nor reads a key.
 
 `{ "squad", "project"? }` → `Summary`: the phone's card — the last 7 days
 beside the 7 before, the first four metrics that aren't breakdowns, in the
-order of the connections and their sources' metrics.
+order of the connections and their sources' metrics, but `north_star` first
+(its tile: the last day's squads beside 7 days before).
 
 ```json
 {
@@ -242,9 +258,9 @@ order of the connections and their sources' metrics.
 ```
 
 A tile's `error` is its connection's latest failed fetch: the value is the last
-one kept. The phone gets this through the relay like any other answer of the
-daemon (its wiring is the app's ticket); keys never go to the phone — the
-person reconnects on the Mac.
+one kept. The phone asks it through the relay (`docs/remote-protocol.md`, "The
+project's numbers"): `metrics.summary` is the only `metrics.*` a device may
+ask; keys never go to the phone — the person reconnects on the Mac.
 
 ## Errors
 

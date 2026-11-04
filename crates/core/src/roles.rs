@@ -70,6 +70,16 @@ pub fn starting_team() -> Vec<String> {
     std::iter::once(PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
 }
 
+/// Visuals in a conversation's answers, where they help (docs/VISUALS.md):
+/// the same for every member and squad — no path or name of one.
+const VISUALS: &str = "\n\nIn the conversation, add a visual to an answer only where it is quicker to grasp than words: where \
+things stand, a comparison, a flow or an order of steps, or numbers — a Markdown table, or a ```mermaid block (a \
+flowchart, a sequenceDiagram, a timeline, an xychart-beta or a pie). A short answer stays short, without one. A visual \
+never stands in for the words: say the point in a line or two, then show it. Keep it small — one diagram of a dozen \
+boxes or so — with short labels in the person's language. Every number in it comes from a source you name; never \
+invent one. Every screen shows it as a picture — equipe draws it for a phone — and where it can't be drawn its source \
+shows instead, so it should still read as text.";
+
 pub const ROLES: [Role; 9] = [
     Role {
         id: PM,
@@ -893,6 +903,7 @@ absolute path ending in `/`, and its first pictures show as a strip.{}",
             _ => "",
         }
     );
+    let visuals = VISUALS;
     let report_folder = match ctx.home {
         Some(home) => format!(" in the squad's folder, under `{home}/notes/reports/<date> <topic>/`"),
         None => " in a folder of its own".to_owned(),
@@ -999,7 +1010,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{review}{home}{browser}{others}{render}{remix}{desktop}{pictures}{reports}{ideas}{office_hours}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{review}{home}{browser}{others}{render}{remix}{desktop}{pictures}{visuals}{reports}{ideas}{office_hours}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -1290,6 +1301,27 @@ mod tests {
         assert!(screen.contains("in the language they write in; until they have written, in Japanese"), "{screen}");
         let both = charter(role(PM).unwrap(), "pm", &Context { language: Some("Korean"), screen_language: Some("Japanese"), ..ctx(&team, &[], true) });
         assert!(both.contains("writes in Korean") && !both.contains("Japanese"), "what they write wins: {both}");
+    }
+
+    #[test]
+    fn every_member_adds_a_visual_to_an_answer_only_where_it_helps() {
+        let team = [Teammate { name: "pm", role: PM }];
+        for role in ROLES {
+            let id = role.id;
+            for context in [ctx(&team, &[], true), Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) }] {
+                let text = charter(&role, id, &context);
+                assert!(text.contains("add a visual to an answer only where it is quicker to grasp than words"), "{id}: when");
+                assert!(text.contains("where \
+things stand, a comparison, a flow or an order of steps, or numbers"), "{id}: what for");
+                assert!(text.contains("a Markdown table, or a ```mermaid block"), "{id}: in what form");
+                assert!(text.contains("A short answer stays short, without one."), "{id}: not on short answers");
+                assert!(text.contains("never stands in for the words: say the point in a line or two"), "{id}: with the words");
+                assert!(text.contains("Every number in it comes from a source you name; never \
+invent one."), "{id}: true numbers");
+            }
+        }
+        // Nothing of one squad's own in it: no path, no name.
+        assert!(!VISUALS.contains('/') && !VISUALS.contains("acme") && !VISUALS.contains("equipe-squad"), "{VISUALS}");
     }
 
     #[test]

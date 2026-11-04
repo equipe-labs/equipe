@@ -424,7 +424,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
             .text_color(p.accent)
             .hover(|s| s.underline())
             .child(lookup("metrics.ns.edit".into()))
-            .on_click(cx.listener(move |this, _, window, cx| this.metrics_open_connect(Some(SourceKind::Posthog), connection.clone(), window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.metrics_open_north(connection.clone(), window, cx)))
     };
     let about = |text: String, link: Option<Stateful<Div>>| h_flex().gap_1().flex_wrap().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(text).children(link.map(|l| h_flex().gap_1().child("·").child(l)));
     match state {
@@ -434,11 +434,12 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
             north_frame(p, p.hair, room).child(title_line(p, title, wait(p), t!("metrics.source", service = name, time = lookup("metrics.ns.loading".into())))).child(body).child(about(lookup("metrics.ns.def".into()), None)).into_any_element()
         }
         NorthStar::Undefined => {
-            let set = ui::button(p, "metrics-north-set", Kind::Primary, t!("metrics.ns.set")).on_click(cx.listener(move |this, _, window, cx| this.metrics_open_connect(Some(SourceKind::Posthog), connection.clone(), window, cx)));
+            let set = ui::button(p, "metrics-north-set", Kind::Primary, t!("metrics.ns.set")).on_click(cx.listener(move |this, _, window, cx| this.metrics_open_north(connection.clone(), window, cx)));
             north_frame(p, p.hair, room)
                 .child(title_line(p, lookup("metrics.ns.title_short".into()), wait(p), lookup("metrics.ns.none".into())))
                 .child(div().text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(lookup("metrics.ns.none_title".into())))
                 .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text).child(lookup("metrics.ns.none_body".into())))
+                .child(h_flex().gap_1().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(lookup("metrics.ns.example".into())).child(div().font_family(MONO).child("signup · user_id")))
                 .child(h_flex().gap_2().child(set))
                 .into_any_element()
         }
@@ -580,16 +581,20 @@ fn connect_page(shell: &Shell, draft: &Draft, cx: &mut Context<Shell>) -> AnyEle
     let Some(sources) = &m.sources else {
         return note(p, t!("metrics.loading")).into_any_element();
     };
-    let mut row = h_flex().w_full().flex_wrap().gap_4().items_start().child(pick_card(shell, sources, draft, cx));
+    let mut row = h_flex().w_full().flex_wrap().gap_4().items_start();
+    if !draft.north {
+        row = row.child(pick_card(shell, sources, draft, cx));
+    }
     if let Some(kind) = draft.kind {
         row = row.child(key_card(shell, sources, kind, draft, cx));
     }
     if let Some(kind) = draft.done {
         row = row.child(done_card(shell, sources, kind, cx));
     }
+    let head = if draft.north { None } else { Some(v_flex().gap_1().child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("metrics.connect_title"))).child(note(p, t!("metrics.connect_sub")))) };
     v_flex()
         .gap_4()
-        .child(v_flex().gap_1().child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("metrics.connect_title"))).child(note(p, t!("metrics.connect_sub"))))
+        .children(head)
         .child(row)
         .into_any_element()
 }
@@ -627,7 +632,7 @@ fn pick_card(shell: &Shell, sources: &Sources, draft: &Draft, cx: &mut Context<S
             .border_t_1()
             .border_color(p.hair)
             .child(div().flex_none().size(px(40.)).flex().items_center().justify_center().rounded(px(R_MD)).bg(p.wash).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(short(kind)))
-            .child(v_flex().flex_1().min_w_0().child(h_flex().gap_2().items_center().child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name)).children(connected.map(|_| div().px_1p5().rounded_full().bg(Rgba { a: 0.12, ..ok(p) }).text_size(px(11.)).text_color(ok(p)).child(t!("metrics.connected_badge"))))).child(div().text_size(px(12.5)).text_color(p.muted).child(about)))
+            .child(v_flex().flex_1().min_w_0().child(h_flex().flex_wrap().gap_x_2().gap_y_0p5().items_center().child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name)).children(connected.map(|_| div().flex_none().px_1p5().rounded_full().bg(Rgba { a: 0.12, ..ok(p) }).text_size(px(11.)).text_color(ok(p)).child(t!("metrics.connected_badge"))))).child(div().text_size(px(12.5)).text_color(p.muted).child(about)))
             .child(buttons)
     });
     card_frame(p, p.hair).child(step(p, t!("metrics.step1").into())).child(v_flex().children(rows)).child(note(p, t!("metrics.all_optional"))).into_any_element()
@@ -639,7 +644,7 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
     let spec = sources.kinds.iter().find(|k| k.kind == kind);
     let name = service(kind, spec);
     let replacing = draft.replacing.is_some();
-    let boxes = spec.into_iter().flat_map(|s| s.fields.iter()).filter_map(|f| {
+    let boxes = spec.into_iter().flat_map(|s| s.fields.iter()).filter(|f| !draft.north || f.key.starts_with("north_star_")).filter_map(|f| {
         let (_, input) = shell.metrics_ui.boxes.iter().find(|(k, _)| *k == f.key)?;
         let label = word(format!("metrics.field.{}", f.key), &f.label);
         let hint = f.hint.as_deref().map(|h| word(format!("metrics.hint.{}", f.key), h));
@@ -654,17 +659,25 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
                 .children(hint.map(|h| div().text_size(px(12.)).text_color(p.muted).child(h))),
         )
     });
-    let how = lookup(format!("metrics.how.{}", kind.as_str()));
-    let go = ui::button(p, "metrics-confirm", Kind::Primary, if draft.sending { t!("metrics.connecting") } else { t!("metrics.confirm") }).disabled(draft.sending).on_click(cx.listener(|this, _, window, cx| this.metrics_submit(window, cx)));
-    let back = ui::button(p, "metrics-back", Kind::Ghost, t!("metrics.back")).on_click(cx.listener(|this, _, window, cx| this.metrics_pick_kind(None, None, window, cx)));
+    let how = if draft.north { lookup("metrics.ns.form_note".into()) } else { lookup(format!("metrics.how.{}", kind.as_str())) };
+    let go_text = match (draft.north, draft.sending) {
+        (true, true) => t!("metrics.ns.saving"),
+        (true, false) => t!("metrics.ns.save"),
+        (false, true) => t!("metrics.connecting"),
+        (false, false) => t!("metrics.confirm"),
+    };
+    let go = ui::button(p, "metrics-confirm", Kind::Primary, go_text).disabled(draft.sending).on_click(cx.listener(|this, _, window, cx| this.metrics_submit(window, cx)));
+    let north = draft.north;
+    let back = ui::button(p, "metrics-back", Kind::Ghost, t!("metrics.back")).on_click(cx.listener(move |this, _, window, cx| if north { this.metrics_show_dash(cx) } else { this.metrics_pick_kind(None, None, window, cx) }));
+    let title = if draft.north { format!("{} · {name}", lookup("metrics.ns.set".into())) } else { t!("metrics.step2", service = name).to_string() };
     card_frame(p, p.hair)
-        .child(step(p, t!("metrics.step2", service = name)))
+        .child(step(p, title))
         .child(note(p, how).text_color(p.text2))
         .child(v_flex().gap_3().children(boxes))
         .children(draft.missing.then(|| div().text_size(px(13.)).text_color(p.red).child(t!("metrics.fill_required"))))
         .children(draft.failed.as_ref().map(|why| div().text_size(px(13.)).line_height(px(19.)).text_color(p.red).child(t!("metrics.connect_failed", why = why))))
         .child(h_flex().gap_2().items_center().child(go).child(back))
-        .child(h_flex().gap_1p5().items_start().child(div().pt(px(3.)).child(icon(Icon::Lock, 12., p.muted))).child(note(p, t!("metrics.key_where")).text_size(px(12.5))))
+        .children((!draft.north).then(|| h_flex().gap_1p5().items_start().child(div().flex_none().pt(px(3.)).child(icon(Icon::Lock, 12., p.muted))).child(note(p, t!("metrics.key_where")).flex_1().min_w_0().text_size(px(12.5)))))
         .into_any_element()
 }
 
@@ -803,6 +816,18 @@ impl Shell {
         self.metrics_pick_kind(kind, replacing, window, cx);
     }
 
+    /// The PostHog form with only the North Star's three boxes.
+    pub fn metrics_open_north(&mut self, replacing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.metrics_open_connect(Some(SourceKind::Posthog), replacing, window, cx);
+        if let Flow::Connect(draft) = &mut self.metrics.flow {
+            draft.north = true;
+        }
+        if let Some((_, input)) = self.metrics_ui.boxes.iter().find(|(k, _)| k == "north_star_event") {
+            input.update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
+    }
+
     pub fn metrics_pick_kind(&mut self, kind: Option<SourceKind>, replacing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.metrics_ui.disconnecting = None;
         self.metrics_ui.boxes.clear();
@@ -812,7 +837,12 @@ impl Shell {
             let spec = self.metrics.spec(kind).cloned();
             let existing = replacing.as_ref().and_then(|id| self.metrics.connections().iter().find(|c| c.id == *id)).cloned();
             for field in spec.iter().flat_map(|s| s.fields.iter()) {
-                let placeholder = word(format!("metrics.field.{}", field.key), &field.label);
+                let placeholder = match field.key.as_str() {
+                    "north_star_event" => "work_accepted".to_owned(),
+                    "north_star_property" => "squad".to_owned(),
+                    "north_star_where" => "by=person".to_owned(),
+                    _ => word(format!("metrics.field.{}", field.key), &field.label),
+                };
                 let secret = field.secret;
                 let kept = existing.as_ref().is_some_and(|c| c.keys.contains(&field.key));
                 let input = cx.new(|cx| {
@@ -845,6 +875,7 @@ impl Shell {
         let Some(spec) = self.metrics.spec(kind).cloned() else { return };
         let replacing = draft.replacing.clone();
         let kept: Vec<String> = replacing.as_ref().and_then(|id| self.metrics.connections().iter().find(|c| c.id == *id)).map(|c| c.keys.clone()).unwrap_or_default();
+        let north_clear = draft.north && replacing.is_some();
         let values = self.metrics_ui.values(cx);
         let empty = metrics::missing(&spec, &values, &kept);
         if let Some(first) = empty.first() {
@@ -857,7 +888,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        let params = ConnectParams { squad: self.model.squad.clone(), project: self.model.focus.clone(), kind: replacing.is_none().then_some(kind), id: replacing, settings: metrics::settings(&values) };
+        let params = ConnectParams { squad: self.model.squad.clone(), project: self.model.focus.clone(), kind: replacing.is_none().then_some(kind), id: replacing, settings: { let mut sent = metrics::settings(&values); if north_clear { for k in ["north_star_event", "north_star_property", "north_star_where"] { sent.entry(k.to_owned()).or_default(); } } sent } };
         drop(values);
         self.metrics_ui.clear(window, cx);
         if let Flow::Connect(d) = &mut self.metrics.flow {
@@ -910,11 +941,13 @@ impl Shell {
     }
 
     /// The screen on a sample of the daemon's answers, no daemon asked
-    /// (`--features snapshot`): `dash`, `error`, `empty`, `connect`, `done`.
+    /// (`--features snapshot`): `dash`, `error`, `empty`, `connect`, `connected`, `key`, `keyed`, `done`.
     #[cfg(feature = "snapshot")]
     pub fn metrics_demo(&mut self, which: &str, window: &mut Window, cx: &mut Context<Self>) {
         use metrics::demo;
         self.metrics.demo = true;
+        // No daemon runs here: hold the connection as live, or its failure covers the screen.
+        self.model.conn = crate::state::Conn::Connected { last_event: None };
         self.show(Screen::Metrics, cx);
         self.metrics.flow = Flow::Dash;
         let (sources, query) = match which {
@@ -959,9 +992,18 @@ impl Shell {
         };
         self.metrics.sources = Some(sources);
         self.metrics.query = Some(query);
-        if matches!(which, "connect" | "key") {
-            let kind = (which == "key").then_some(SourceKind::Posthog);
-            self.metrics.sources = Some(demo::nothing());
+        if which == "ns-form" {
+            let id = self.metrics.sources.as_ref().and_then(|s| s.connections.iter().find(|c| c.kind == SourceKind::Posthog)).map(|c| c.id.clone());
+            self.metrics_open_north(id, window, cx);
+        }
+        if matches!(which, "connect" | "key" | "connected" | "keyed") {
+            let kind = matches!(which, "key" | "keyed").then_some(SourceKind::Posthog);
+            // The plain ones start from nothing connected; the others keep the App Store connected, to show its badge.
+            if matches!(which, "connect" | "key") {
+                self.metrics.sources = Some(demo::nothing());
+            } else if let Some(s) = self.metrics.sources.as_mut() {
+                s.connections.retain(|c| c.kind == SourceKind::AppStore);
+            }
             self.metrics_pick_kind(kind, None, window, cx);
         }
         cx.notify();

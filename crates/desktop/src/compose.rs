@@ -1090,6 +1090,7 @@ mod tests {
             lane: None,
             estimate: None,
             compacting: None,
+            visuals: Vec::new(),
         }
     }
 

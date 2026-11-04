@@ -184,6 +184,7 @@ mod tests {
             effort: None,
             subagents: Vec::new(),
             compacting: None,
+            visuals: Vec::new(),
         };
         App::from_snapshot("/repo".into(), Snapshot { squad: "acme".into(), projects: vec!["/repo".into()], sessions: vec![info], ..Snapshot::default() }, &[]).0
     }

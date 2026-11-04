@@ -70,6 +70,7 @@ Plaintext is UTF-8 JSON:
 | `{ "id", "method": "hello", "params": { "version", "squad" } }`, `squad` set too | `result`: `{ "version", "snapshot" }`; from then on the squad's `event`s, with `squad` set. A device may follow several squads; a second `hello` for one replaces the first. Error `-32602` "no such squad"; `-32000` when the daemon couldn't follow it |
 | `{ "id", "method": "read_image", "params": { "squad", "path", "max"? } }`, `squad` set too | `result`: a member's picture — see "A member's pictures" |
 | `{ "id", "method": "list_images", "params": { "squad", "folder", "max"? } }`, `squad` set too | `result`: the pictures in a folder a reply names — see "A member's pictures" |
+| `{ "id", "method": "metrics.summary", "params": { "squad", "project"? } }`, `squad` set too | `result`: the project's numbers this week beside the last — see "The project's numbers" |
 | `{ "method": "command", "params": <Command> }` — a notification, no `id` | none: what it did shows in events. Dropped without a word when it isn't one a device may send, its squad isn't the frame's, or the frame's squad isn't followed |
 | `{ "id", "method": "upload", "params": <chunk> }` (no `squad` needed) | `result`: `{ "received" }`, and once the whole file is in, `path` and `tag` — see [Attachments](#attachments) |
 | `{ "method": "upload_cancel", "params": { "upload_id" } }` — a notification | none |
@@ -154,6 +155,20 @@ below it), by name, each passing the same checks, at most 12 (`max` fewer), `tot
 (at most 2000 looked at); each path is one `read_image` then gives. Given only for a folder
 such a recorded line names, inside the same roots. Errors as for `read_image`. A daemon older
 than this answers `-32601`; a screen then shows no strip.
+
+### The project's numbers
+
+The board's card (T-314) reads what the daemon keeps of the services the person connected on the
+Mac (`docs/METRICS.md`): `metrics.summary` `{ "squad", "project"? }` — `squad` the frame's, one
+the phone follows — answers the daemon's `Summary` (`crates/protocol/src/metrics.rs`):
+`{ "squad", "project"?, "from", "to", "tiles": [{ "connection", "kind", "metric", "label",
+"unit", "value"?, "previous"?, "change_pct"?, "as_of"?, "error"? }], "updated_at"? }` — at most
+four tiles, `error` (`{ "code", "message" }`, `code` e.g. `auth`) when the connection's latest
+fetch failed and the number is the last one kept; `tiles` empty when nothing is connected. It is
+read from what the daemon kept: no key and no setting is in it, and nothing is fetched for it.
+Another squad than the frame's, or one not followed: `-32002`; the daemon couldn't read the
+numbers: `-32000`. The other `metrics.*` — `sources`, `connect`, `disconnect`, `refresh`,
+`query` — stay at the Mac: `-32601`.
 
 ### A change to the team
 
@@ -394,6 +409,10 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
 - `thread` `{ "session", "project" }` — what follows is about `project` (`null`: the whole
   squad): a message sent looking at it, news of its ticket, a ticket's work. Never shown itself;
   a screen shows one project's slice.
+- `visuals_rendered` `{ "session", "visuals": [{ "kind", "key", "light", "dark" }] }` — a reply's
+  Mermaid blocks, drawn by the daemon as PNGs (light and dark, each `{ "path", "width",
+  "height" }`, read with `read_image`) for a screen that can't draw them; the snapshot's sessions
+  carry the same as `visuals`. Not a line. See [VISUALS.md](VISUALS.md).
 - `model_known` `{ "session", "model" }` — the engine named its model, or the person changed it.
 - `branch_landed` `{ "session", "branch", "base", "stat" }` — an editing session closed with
   changes committed to `branch`, made from `base`; `stat` is `git diff --stat`.
@@ -433,7 +452,7 @@ screen that watched saw:
   Events that make no line and may come mid-sentence — `steer_queued`, `message_queued`,
   `queue_sent`, `memo_withdrawn`, `thinking`, `tool_result`, `output` (a token count),
   `model_known`, `subagent_*`, `compacting`, `compacted`, `compact_failed`, `estimated`,
-  `suggestion`, `browser_frame` — leave it open: a steer sent while the member writes
+  `suggestion`, `browser_frame`, `visuals_rendered` — leave it open: a steer sent while the member writes
   doesn't cut its answer; where it is read (`steered`) the reply so far ends and the steer
   follows it.
 - Lines: `user_message` and `steered` → `user`; `notice` → `note`; `thread` → `thread`;
@@ -654,7 +673,8 @@ its secrets. Without them configured, a push answers `push_result` `ok: false`.
 The daemon follows a device like one more screen, with less reach than the terminal:
 
 - **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` and
-  `list_images` (a member's pictures, of a squad it follows: see A member's pictures), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
+  `list_images` (a member's pictures, of a squad it follows: see A member's pictures),
+  `metrics.summary` (the project's numbers, of a squad it follows: see The project's numbers), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
   `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
   `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`, `focus`, `refresh`,
@@ -664,7 +684,8 @@ The daemon follows a device like one more screen, with less reach than the termi
   (the last `focus` any screen sent). Said while the member works, a message steers it
   (`steer_queued`, with its `project`); `send_now` stops the turn and sends what waits — the
   `texts` first, in that order — as one message (`queue_sent`, then the turn's end).
-- **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
+- **may not:** any other `metrics.*` (`sources`, `connect`, `disconnect`, `refresh`, `query`:
+  keys and connections stay at the Mac), `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
   `set_engine_switching`, `show_engine_setup`, `propose_accept` — nor the person's
   own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a

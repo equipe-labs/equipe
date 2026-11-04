@@ -2026,6 +2026,37 @@
         "ts": 1760000000000
       }
     },
+    "event: visuals rendered": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "type": "visuals_rendered",
+            "visuals": [
+              {
+                "dark": {
+                  "height": 724,
+                  "path": "/Users/me/.equipe/squads/acme/visuals/558211ed72b2d696-dark.png",
+                  "width": 880
+                },
+                "key": "558211ed72b2d696",
+                "kind": "mermaid",
+                "light": {
+                  "height": 724,
+                  "path": "/Users/me/.equipe/squads/acme/visuals/558211ed72b2d696-light.png",
+                  "width": 880
+                }
+              }
+            ]
+          }
+        },
+        "seq": 70,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "hello": {
       "daemon": {
         "answers": {
@@ -2579,6 +2610,164 @@
           }
         },
         "seq": 37,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "metrics summary": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "id": 26,
+            "jsonrpc": "2.0",
+            "result": {
+              "from": "2026-10-27",
+              "project": "site",
+              "squad": "acme",
+              "tiles": [
+                {
+                  "as_of": "2026-11-02",
+                  "change_pct": 8.2,
+                  "connection": "m1",
+                  "kind": "posthog",
+                  "label": "Visits",
+                  "metric": "visits",
+                  "previous": 1187.0,
+                  "unit": "page_loads",
+                  "value": 1284.0
+                },
+                {
+                  "as_of": "2026-11-02",
+                  "change_pct": 13.6,
+                  "connection": "m3",
+                  "kind": "github",
+                  "label": "Stars",
+                  "metric": "stars",
+                  "previous": 22.0,
+                  "unit": "stars",
+                  "value": 25.0
+                },
+                {
+                  "as_of": "2026-11-01",
+                  "change_pct": -6.0,
+                  "connection": "m2",
+                  "error": {
+                    "code": "auth",
+                    "message": "key ••• was refused"
+                  },
+                  "kind": "app_store",
+                  "label": "Downloads",
+                  "metric": "downloads",
+                  "previous": 67.0,
+                  "unit": "downloads",
+                  "value": 63.0
+                }
+              ],
+              "to": "2026-11-02",
+              "updated_at": 1793520000
+            }
+          },
+          "seq": 66,
+          "squad": "acme",
+          "ts": 1760000000000
+        },
+        "asked": {
+          "project": "site",
+          "squad": "acme"
+        },
+        "sums_up_numbers_of": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "id": 26,
+          "jsonrpc": "2.0",
+          "method": "metrics.summary",
+          "params": {
+            "project": "site",
+            "squad": "acme"
+          }
+        },
+        "seq": 40,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "metrics summary: another squad than the frame's": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "error": {
+              "code": -32002,
+              "message": "say hello to that squad first"
+            },
+            "id": 28,
+            "jsonrpc": "2.0"
+          },
+          "seq": 68,
+          "squad": "acme",
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 28,
+          "jsonrpc": "2.0",
+          "method": "metrics.summary",
+          "params": {
+            "project": "site",
+            "squad": "home"
+          }
+        },
+        "seq": 41,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "metrics summary: nothing connected": {
+      "receives": {
+        "rpc": {
+          "id": 27,
+          "jsonrpc": "2.0",
+          "result": {
+            "from": "2026-10-27",
+            "project": "site",
+            "squad": "acme",
+            "tiles": [],
+            "to": "2026-11-02"
+          }
+        },
+        "seq": 67,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "metrics: connecting is not something a device may ask": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "error": {
+              "code": -32601,
+              "message": "not something a device may ask"
+            },
+            "id": 29,
+            "jsonrpc": "2.0"
+          },
+          "seq": 69,
+          "squad": "acme",
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 29,
+          "jsonrpc": "2.0",
+          "method": "metrics.connect",
+          "params": {
+            "project": "site",
+            "squad": "acme"
+          }
+        },
+        "seq": 42,
         "squad": "acme",
         "ts": 1760000000000
       }

@@ -39,6 +39,8 @@ pub struct Draft {
     pub failed: Option<String>,
     /// The person pressed connect with a required box empty.
     pub missing: bool,
+    /// Opened from the North Star card: only its three boxes show.
+    pub north: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -212,7 +214,7 @@ pub fn cards(query: &QueryResult, sources: &Sources) -> Vec<Card> {
                     let top = m.breakdown.iter().map(|s| s.value).fold(0., f64::max);
                     Body::Bars(m.breakdown.iter().map(|s| Bar { label: s.label.clone(), value: number(s.value), fill: if top > 0. { (s.value / top) as f32 } else { 0. } }).collect())
                 }
-                Shape::Count | Shape::Total => Body::Number { value: m.value.map(number), change: change_of(m), series: values_of(&m.series), previous: values_of(&m.previous_series) },
+                Shape::Count | Shape::Total | Shape::Rolling => Body::Number { value: m.value.map(number), change: change_of(m), series: values_of(&m.series), previous: values_of(&m.previous_series) },
             };
             Card {
                 connection: m.connection.clone(),
@@ -368,7 +370,7 @@ pub type Points = Vec<Option<(f32, f32)>>;
 pub fn spark(series: &[Option<f64>], previous: &[Option<f64>], w: f32, h: f32) -> (Points, Points) {
     let all = || series.iter().chain(previous).flatten().copied();
     let (lo, hi) = all().fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-    let place = |line: &[Option<f64>]| -> Vec<Option<(f32, f32)>> {
+    let place = |line: &[Option<f64>]| -> Points {
         let last = line.len().saturating_sub(1).max(1) as f32;
         line.iter()
             .enumerate()
@@ -410,13 +412,17 @@ pub mod demo {
         Field { key: key.into(), label: label.into(), secret, required: true, hint: hint.map(Into::into) }
     }
 
+    fn optional(key: &str, label: &str, hint: &str) -> Field {
+        Field { key: key.into(), label: label.into(), secret: false, required: false, hint: Some(hint.into()) }
+    }
+
     fn def(name: &str, label: &str, unit: &str, shape: Shape) -> MetricDef {
         MetricDef { name: name.into(), label: label.into(), unit: unit.into(), shape }
     }
 
     pub fn kinds() -> Vec<SourceSpec> {
         vec![
-            SourceSpec { kind: SourceKind::Posthog, label: "PostHog".into(), fields: vec![field("api_key", "Personal API key", true, None), field("project_id", "Project ID", false, None)], metrics: vec![def("visits", "Visits", "page_loads", Shape::Count), def("languages", "Languages", "page_loads", Shape::Breakdown)], keeps_days: None },
+            SourceSpec { kind: SourceKind::Posthog, label: "PostHog".into(), fields: vec![field("api_key", "Personal API key", true, None), field("project_id", "Project ID", false, None), optional("north_star_event", "North Star event", "The event of an approval: work_accepted when empty"), optional("north_star_property", "North Star counts", "The event property counted once each: squad when empty"), optional("north_star_where", "North Star only", "Event properties, comma-separated: by=person when empty")], metrics: vec![def("visits", "Visits", "page_loads", Shape::Count), def("languages", "Languages", "page_loads", Shape::Breakdown)], keeps_days: None },
             SourceSpec { kind: SourceKind::Github, label: "GitHub".into(), fields: vec![field("token", "Token", true, None), field("repo", "Repository", false, None)], metrics: vec![def("views", "Views", "views", Shape::Count), def("stars", "Stars", "stars", Shape::Total)], keeps_days: Some(14) },
             SourceSpec { kind: SourceKind::AppStore, label: "App Store Connect".into(), fields: vec![field("private_key", "Private key", true, None), field("app_id", "App ID", false, None)], metrics: vec![def("downloads", "Downloads", "downloads", Shape::Count)], keeps_days: None },
         ]
@@ -466,7 +472,7 @@ pub mod demo {
         let last = windows.iter().flatten().last().copied();
         let before = windows.len().checked_sub(2).and_then(|n| windows[n]);
         let series = windows.iter().enumerate().map(|(n, v)| Sample { day: format!("2026-w{n:02}"), value: *v }).collect();
-        MetricValue { connection: connection.into(), kind: SourceKind::Posthog, metric: NORTH_STAR.into(), label: "Squads approving each week".into(), unit: "squads".into(), shape: Shape::Total, value: last, previous: before, change: last.zip(before).map(|(a, b)| a - b), change_pct: last.zip(before).filter(|(_, b)| *b > 0.).map(|(a, b)| ((a - b) / b * 100.).round()), as_of: Some("2026-11-02".into()), days_known: 7, series, previous_series: vec![], breakdown: vec![] }
+        MetricValue { connection: connection.into(), kind: SourceKind::Posthog, metric: NORTH_STAR.into(), label: "Squads approving each week".into(), unit: "squads".into(), shape: Shape::Rolling, value: last, previous: before, change: last.zip(before).map(|(a, b)| a - b), change_pct: last.zip(before).filter(|(_, b)| *b > 0.).map(|(a, b)| ((a - b) / b * 100.).round()), as_of: Some("2026-11-02".into()), days_known: 7, series, previous_series: vec![], breakdown: vec![] }
     }
 
     pub fn north_full() -> Vec<Option<f64>> {

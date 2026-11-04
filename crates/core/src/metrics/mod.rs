@@ -41,6 +41,11 @@ const FIRST_DAYS: u32 = 400;
 const LATER_DAYS: u32 = 14;
 /// Tiles on the phone's card.
 const TILES: usize = 4;
+/// The North Star (docs/TELEMETRY.md): first on the phone's card.
+pub const NORTH_STAR: &str = "north_star";
+/// A `rolling` metric's window, and its series: this many values that far apart.
+pub const WINDOW: i64 = 7;
+pub const ROLLING_POINTS: i64 = 12;
 
 // ---- Days ----
 
@@ -353,8 +358,12 @@ impl Metrics {
             _ => BTreeMap::new(),
         };
         for field in &spec.fields {
+            // An empty value for a setting of a kept connection clears it.
+            let cleared = kept.is_some() && !field.secret && !field.required && p.settings.get(&field.key).is_some_and(|v| v.trim().is_empty());
             let value = given(&field.key).or_else(|| {
-                if field.secret {
+                if cleared {
+                    None
+                } else if field.secret {
                     old_keys.get(&field.key).cloned()
                 } else {
                     kept.as_ref().and_then(|c| c.settings.get(&field.key).cloned())
@@ -600,10 +609,43 @@ fn over(def: &MetricDef, points: &BTreeMap<(String, i64), Point>, from: i64, to:
                 breakdown = split;
             }
         }
-        Shape::Count => {}
+        Shape::Count | Shape::Rolling => {}
     }
     let known: Vec<i64> = (from..=to).filter(|n| day(*n).is_some()).collect();
     (value, series, breakdown, known.last().copied(), known.len() as u32)
+}
+
+/// A `rolling` metric over days `from..=to`: its last known day's value, the
+/// value 7 days before that day, and 12 values 7 days apart ending there — the
+/// same whatever the period's length or bucket. Nothing when no day of it was
+/// ever fetched (a source without the definition: the screen says so).
+fn rolling(c: &Connection, def: &MetricDef, points: &BTreeMap<(String, i64), Point>, from: i64, to: i64) -> Option<MetricValue> {
+    let day = |n: i64| points.get(&(def.name.clone(), n)).map(|p| p.value);
+    if !points.keys().any(|(m, _)| m == &def.name) {
+        return None;
+    }
+    let known: Vec<i64> = (from..=to).filter(|n| day(*n).is_some()).collect();
+    let end = known.last().copied().unwrap_or(to);
+    let value = day(end);
+    let previous = day(end - WINDOW);
+    let series = (0..ROLLING_POINTS).rev().map(|k| end - k * WINDOW).map(|n| Sample { day: day_string(n), value: day(n) }).collect();
+    Some(MetricValue {
+        connection: c.id.clone(),
+        kind: c.kind,
+        metric: def.name.clone(),
+        label: def.label.clone(),
+        unit: def.unit.clone(),
+        shape: def.shape,
+        value,
+        previous,
+        change: value.zip(previous).map(|(v, w)| round1(v - w)),
+        change_pct: value.zip(previous).filter(|(_, w)| *w != 0.0).map(|(v, w)| round1((v - w) / w * 100.0)),
+        as_of: known.last().copied().map(day_string),
+        days_known: known.len() as u32,
+        series,
+        previous_series: Vec::new(),
+        breakdown: Vec::new(),
+    })
 }
 
 fn round1(v: f64) -> f64 {
@@ -627,6 +669,10 @@ pub fn query(home: &Path, p: &QueryParams, today: i64) -> Result<QueryResult, Re
         let Some(adapter) = adapters::adapter(c.kind) else { continue };
         let points = merged(&snapshots(home, &c.squad, &c.id));
         for def in adapter.spec().metrics.iter().filter(|d| p.metrics.is_empty() || p.metrics.contains(&d.name)) {
+            if def.shape == Shape::Rolling {
+                values.extend(rolling(c, def, &points, from, to));
+                continue;
+            }
             let (value, series, now_split, as_of, days_known) = over(def, &points, from, to, p.bucket);
             let (previous, previous_series, then_split, _, _) = over(def, &points, prev_from, prev_to, p.bucket);
             let change = value.zip(previous).map(|(v, w)| round1(v - w));
@@ -666,15 +712,15 @@ pub fn query(home: &Path, p: &QueryParams, today: i64) -> Result<QueryResult, Re
 }
 
 /// `metrics.summary`: the last 7 days beside the 7 before, the first
-/// [`TILES`] numbers that aren't breakdowns.
+/// [`TILES`] numbers that aren't breakdowns — the North Star first.
 pub fn summary(home: &Path, p: &SummaryParams, today: i64) -> Result<Summary, Refused> {
     let q = QueryParams { squad: p.squad.clone(), project: p.project.clone(), days: Some(7), ..QueryParams::default() };
     let result = query(home, &q, today)?;
     let error_of = |id: &str| result.connections.iter().find(|c| c.id == id).and_then(|c| c.last.as_ref()?.error.clone());
-    let tiles = result
-        .values
-        .iter()
-        .filter(|v| v.shape != Shape::Breakdown)
+    let mut numbers: Vec<&MetricValue> = result.values.iter().filter(|v| v.shape != Shape::Breakdown).collect();
+    numbers.sort_by_key(|v| v.metric != NORTH_STAR);
+    let tiles = numbers
+        .into_iter()
         .take(TILES)
         .map(|v| Tile {
             connection: v.connection.clone(),

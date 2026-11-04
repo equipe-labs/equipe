@@ -1842,6 +1842,7 @@ mod tests {
             effort: None,
             subagents: vec![],
             compacting: Some(equipe_core::protocol::CompactingInfo { trigger: CompactTrigger::Auto, started_at: crate::state::now_unix_ms() - 30_000, estimate_ms: 90_000 }),
+            visuals: Vec::new(),
         };
         let c = Convo::from_info(&info, Instant::now());
         assert!(c.compacting_for().unwrap() >= Duration::from_secs(30));
