@@ -137,8 +137,9 @@ impl Palette {
             on_primary: rgb(0x151513),
             on_accent: rgb(0x151513),
             amber: rgb(0xEABA67),
-            // What waits on the person: clear, not peach — and small, a
-            // number in it, one filled badge at most.
+            // What waits on the person: clear, not peach — filled once (the
+            // sidebar's total, a number in it), a dot beside the words and
+            // figures everywhere else (docs/DESIGN-SYSTEM.md).
             orange: rgb(0xFF7A45),
             red: rgb(0xF2857D),
             // One lightness and chroma (OKLCH 0.80, 0.11), so no member is louder.
@@ -478,6 +479,22 @@ mod tests {
             assert!(contrast(p.on_primary, p.primary) >= 4.5);
             // Reading text is softer than titles, and still far past AAA (7:1).
             assert!(contrast(p.prose, p.bg) < contrast(p.text, p.bg) && contrast(p.prose, p.bg) >= 7.);
+        }
+    }
+
+    /// What waits on the person, as the sidebar says it: the one filled badge
+    /// (its figures on the orange at 4.5:1) and the wait dot before every
+    /// other count (a graphic, at 3:1 on every surface a row sits on).
+    #[test]
+    fn the_filled_badge_and_the_wait_dot_read_in_both_appearances() {
+        for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
+            let p = Palette::new(appearance);
+            assert!(contrast(p.on_accent, p.orange) >= 4.5, "badge figures ({appearance:?}): {:.2}", contrast(p.on_accent, p.orange));
+            for (surface, bg) in [("side", p.side), ("side_hover", p.side_hover), ("side_sel", p.side_sel)] {
+                for (mark, c) in [("wait", p.orange), ("risk", p.danger())] {
+                    assert!(contrast(c, bg) >= 3., "{mark} dot on {surface} ({appearance:?}): {:.2}", contrast(c, bg));
+                }
+            }
         }
     }
 
