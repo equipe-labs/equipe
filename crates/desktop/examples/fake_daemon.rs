@@ -75,6 +75,9 @@
 //! routine's message and the review in the designer's conversation, its
 //! proposal waiting in 나에게 as a visual question (`fake_daemon/review.rs`).
 //!
+//! `FAKE_NOISE=1`: the designer's conversation holds the engine's own turns —
+//! background tasks ending, a reminder, a `sleep` refused (`fake_daemon/noise.rs`).
+//!
 //! `FAKE_ACCEPT=1`: the PM puts T-42 and T-71 to the person on a card to
 //! confirm accepting them (`fake_daemon/accept.rs`; `merge`, `words`).
 //!
@@ -979,6 +982,9 @@ mod review;
 #[path = "fake_daemon/retro.rs"]
 mod retro;
 
+#[path = "fake_daemon/noise.rs"]
+mod noise;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -1153,6 +1159,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         if review::on() {
                             designer.work = None;
                             designer.recent = review::history();
+                        }
+                        // `FAKE_NOISE=1`: the engine's own turns in the designer's conversation.
+                        if noise::on() {
+                            designer.work = None;
+                            designer.recent = noise::history();
                         }
                         let mut backend = backend;
                         backend.effort = Some("high".into());

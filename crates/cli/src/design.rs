@@ -4,10 +4,13 @@
 //! (`equipe_core::design::critique`). A member runs them in its worktree;
 //! so can the person. `equipe design flows …` keeps the UI map
 //! (`equipe_core::design::flows`): every flow, its screens, each in every
-//! state, pictured light and dark at each width.
+//! state, pictured light and dark at each width — a web page's states shot
+//! in Chrome, an app's by the `command` the map gives them, run at the
+//! repository's root.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use clap::Subcommand;
 use equipe_core::design::{check, critique, flows, kit, tokens};
@@ -135,7 +138,7 @@ pub enum FlowsAction {
         #[arg(long)]
         json: bool,
     },
-    /// Picture each state from its URL (else its screen's): at each width, light and dark, into flows/<flow>/<screen>/
+    /// Picture each state by its command, else from its URL: at each width, light and dark, into flows/<flow>/<screen>/
     Shoot {
         /// The design folder (default: ./design)
         #[arg(long)]
@@ -152,6 +155,12 @@ pub enum FlowsAction {
         /// Light only (dark is shot too unless this is given)
         #[arg(long)]
         light: bool,
+        /// How many of the map's commands run at once
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=64))]
+        jobs: u16,
+        /// How long each command may run, in seconds, before it is stopped
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_secs: u64,
     },
     /// The map as an outline: each flow's screens in order, their states, what is missing or stale
     List {
@@ -179,6 +188,9 @@ pub enum FlowsAction {
         /// How many earlier recordings to keep in history/, for each mode and width
         #[arg(long, default_value_t = 5)]
         keep: usize,
+        /// How long a flow's record_command may run, in seconds, before it is stopped
+        #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_secs: u64,
     },
 }
 
@@ -286,30 +298,31 @@ async fn flows_command(action: FlowsAction) -> Result<(), String> {
             }
             if failing(&map, &findings) { Err(t!("design.flows.check_failed").to_owned()) } else { Ok(()) }
         }
-        FlowsAction::Shoot { dir, flow, screen, widths: text, light } => {
+        FlowsAction::Shoot { dir, flow, screen, widths: text, light, jobs, timeout_secs } => {
             let dir = dir_or_default(dir);
             if !map_file(&dir).is_file() {
                 return Err(no_map(&dir));
             }
             let plan = plan(&flows::shots(&dir), flow.as_deref(), screen.as_deref(), &widths(&text)?, light)?;
             print!("{}", draw_list(&plan.draw));
-            if plan.takes.is_empty() {
-                return Ok(());
+            let failed = if plan.runs.is_empty() { 0 } else { shoot_by_commands(&dir, &plan.runs, usize::from(jobs), Duration::from_secs(timeout_secs)).await? };
+            if !plan.takes.is_empty() {
+                let kit = kit_dir();
+                std::fs::create_dir_all(&kit).map_err(|e| format!("{}: {e}", kit.display()))?;
+                let file = kit.join(format!("flows-plan-{}.json", std::process::id()));
+                std::fs::write(&file, serde_json::to_vec(&plan.takes).unwrap_or_default()).map_err(|e| format!("{}: {e}", file.display()))?;
+                eprintln!("{}", t!("design.flows.shooting", count = plan.takes.len()));
+                let ran = run_script("render.mjs", &["--plan", file.to_string_lossy().as_ref()]).await;
+                let _ = std::fs::remove_file(&file);
+                ran?;
             }
-            let kit = kit_dir();
-            std::fs::create_dir_all(&kit).map_err(|e| format!("{}: {e}", kit.display()))?;
-            let file = kit.join(format!("flows-plan-{}.json", std::process::id()));
-            std::fs::write(&file, serde_json::to_vec(&plan.takes).unwrap_or_default()).map_err(|e| format!("{}: {e}", file.display()))?;
-            eprintln!("{}", t!("design.flows.shooting", count = plan.takes.len()));
-            let ran = run_script("render.mjs", &["--plan", file.to_string_lossy().as_ref()]).await;
-            let _ = std::fs::remove_file(&file);
-            ran
+            if failed > 0 { Err(t!("design.flows.commands_failed", count = failed)) } else { Ok(()) }
         }
         FlowsAction::List { dir } => {
             print!("{}", outline(&read_map(&dir_or_default(dir))?));
             Ok(())
         }
-        FlowsAction::Record { dir, flow, widths: text, light, dark, keep } => record(&dir_or_default(dir), flow.as_deref(), &widths(&text)?, record_modes(light, dark), keep).await,
+        FlowsAction::Record { dir, flow, widths: text, light, dark, keep, timeout_secs } => record(&dir_or_default(dir), flow.as_deref(), &widths(&text)?, record_modes(light, dark), keep, Duration::from_secs(timeout_secs)).await,
     }
 }
 
@@ -324,7 +337,7 @@ fn record_modes(light: bool, dark: bool) -> &'static [&'static str] {
 
 /// `flows record`: each flow chosen walked through at each width in each
 /// mode, the one before kept in history/.
-async fn record(design: &Path, only: Option<&str>, widths: &[u32], modes: &[&str], keep: usize) -> Result<(), String> {
+async fn record(design: &Path, only: Option<&str>, widths: &[u32], modes: &[&str], keep: usize, limit: Duration) -> Result<(), String> {
     let map = read_map(design)?;
     let lang = crate::i18n::lang();
     let chosen: Vec<&equipe_core::protocol::design::Flow> = map.flows.iter().filter(|f| only.is_none_or(|id| f.id == id)).collect();
@@ -333,8 +346,8 @@ async fn record(design: &Path, only: Option<&str>, widths: &[u32], modes: &[&str
     }
     let mut walks = Vec::new();
     for flow in chosen {
-        match flows::walk(design, &flow.id, lang) {
-            Ok(steps) => walks.push((flow, steps)),
+        match flows::recording(design, &flow.id, lang) {
+            Ok(how) => walks.push((flow, how)),
             Err(why) if only.is_some() => return Err(why),
             Err(why) => why.lines().for_each(|line| eprintln!("! {line}")),
         }
@@ -342,16 +355,29 @@ async fn record(design: &Path, only: Option<&str>, widths: &[u32], modes: &[&str
     if walks.is_empty() {
         return Err(t!("design.flows.no_walks").to_owned());
     }
-    let encoder = Encoder::find().ok_or_else(|| t!("design.flows.no_encoder").to_owned())?;
-    let work = kit_dir().join(format!("record-{}", std::process::id()));
+    // Chrome's walks need an encoder; a record_command, the repository it runs in.
+    let encoder = match walks.iter().any(|(_, how)| matches!(how, flows::Recording::Walk(_))) {
+        true => Some(Encoder::find().ok_or_else(|| t!("design.flows.no_encoder").to_owned())?),
+        false => None,
+    };
+    let repo = match walks.iter().any(|(_, how)| matches!(how, flows::Recording::Command(_))) {
+        true => Some(command_root(design)?),
+        false => None,
+    };
+    let work = std::path::absolute(kit_dir().join(format!("record-{}", std::process::id()))).map_err(|e| e.to_string())?;
     let ran = async {
-        for (flow, steps) in &walks {
+        for (flow, how) in &walks {
             let titles = flow.screens.iter().map(|s| (s.id.clone(), s.title.clone())).collect();
             let at = design.join(flows::DIR).join(&flow.id);
             for &width in widths {
                 for &mode in modes {
                     eprintln!("{}", t!("design.flows.recording", flow = flow.id, width = width, mode = mode_word(mode)));
-                    let made = record_one(&work, &encoder, &walk_script(steps, &titles), width, mode).await.map_err(|why| t!("design.flows.record_failed", flow = flow.id, why = why))?;
+                    let made = match (how, &encoder, &repo) {
+                        (flows::Recording::Walk(steps), Some(encoder), _) => record_one(&work, encoder, &walk_script(steps, &titles), width, mode).await,
+                        (flows::Recording::Command(command), _, Some(repo)) => record_by_command(&work, command, repo, &flow.id, width, mode, limit).await,
+                        _ => unreachable!("an encoder for each walk, a repository for each command"),
+                    };
+                    let made = made.map_err(|why| t!("design.flows.record_failed", flow = flow.id, why = why))?;
                     let kept = keep_video(&at, mode, width, made, keep).map_err(|e| format!("{}: {e}", at.display()))?;
                     if let Some(before) = &kept.before {
                         println!("{}", t!("design.flows.shelved", path = before.display()));
@@ -373,6 +399,7 @@ fn mode_word(mode: &str) -> &'static str {
 }
 
 /// A video made in the work folder, and what it shows.
+#[derive(Debug)]
 struct Made {
     video: PathBuf,
     sidecar: Sidecar,
@@ -396,6 +423,19 @@ async fn record_one(work: &Path, encoder: &Encoder, script: &str, width: u32, mo
     let video = work.join("walkthrough.mp4");
     encoder.encode(&line, work, &video).await?;
     Ok(Made { video, sidecar: Sidecar { millis: line.millis, marks: line.marks } })
+}
+
+/// One flow recorded by its own `record_command` at `width` in `mode`, into
+/// `work`, at the root of `repo`: the video it wrote, checked, and the note
+/// it wrote beside it, if any.
+async fn record_by_command(work: &Path, command: &str, repo: &Path, flow: &str, width: u32, mode: &str, limit: Duration) -> Result<Made, String> {
+    let _ = std::fs::remove_dir_all(work);
+    std::fs::create_dir_all(work).map_err(|e| format!("{}: {e}", work.display()))?;
+    let video = work.join("walkthrough.mp4");
+    let values = flows::record_values(&video, mode, width, flow);
+    made_by(&flows::fill(command, &values), &video, repo, &flows::env_of("EQUIPE_RECORD_", &values), limit, Want::Mp4).await?;
+    let sidecar = std::fs::read(video.with_extension("json")).ok().and_then(|b| serde_json::from_slice::<Sidecar>(&b).ok()).unwrap_or(Sidecar { millis: 0, marks: Vec::new() });
+    Ok(Made { video, sidecar })
 }
 
 /// The viewport a width is recorded in: its height, and its pixel scale
@@ -451,16 +491,18 @@ struct RawMark {
 }
 
 /// Where a screen begins in a video, in ms from its start.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Mark {
     screen: String,
     at: u64,
 }
 
 /// What sits beside a video: how long it is and where each screen begins.
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Sidecar {
+    #[serde(default)]
     millis: u64,
+    #[serde(default)]
     marks: Vec<Mark>,
 }
 
@@ -725,11 +767,23 @@ struct Take {
     scheme: &'static str,
 }
 
-/// What `flows shoot` does: the pictures it takes, and the states with no
-/// URL to open — `flow › screen › state` and the pictures to draw for each.
+/// A picture a state's command takes.
+#[derive(Debug, PartialEq, Eq)]
+struct Run {
+    shot: flows::Shot,
+    command: String,
+    path: PathBuf,
+    width: u32,
+    mode: &'static str,
+}
+
+/// What `flows shoot` does: the pictures Chrome takes, those commands take,
+/// and the states neither reaches — `flow › screen › state` and the pictures
+/// to draw for each.
 #[derive(Debug, Default)]
 struct Plan {
     takes: Vec<Take>,
+    runs: Vec<Run>,
     draw: Vec<(String, Vec<PathBuf>)>,
 }
 
@@ -744,12 +798,198 @@ fn plan(all: &[flows::Shot], flow: Option<&str>, screen: Option<&str>, widths: &
     let mut plan = Plan::default();
     for shot in kept {
         let pictures = widths.iter().flat_map(|&width| modes(light).iter().map(move |&scheme| (width, scheme))).map(|(width, scheme)| (width, scheme, shot.dir.join(flows::picture_name(&shot.state, scheme, width))));
-        match &shot.url {
-            Some(url) => plan.takes.extend(pictures.map(|(width, scheme, path)| Take { url: url.clone(), path, width, scheme })),
-            None => plan.draw.push((at(&shot.flow, Some(&shot.screen), Some(&shot.state)), pictures.map(|(_, _, path)| path).collect())),
+        match (&shot.command, &shot.url) {
+            (Some(command), _) => plan.runs.extend(pictures.map(|(width, mode, path)| Run { shot: shot.clone(), command: command.clone(), path, width, mode })),
+            (None, Some(url)) => plan.takes.extend(pictures.map(|(width, scheme, path)| Take { url: url.clone(), path, width, scheme })),
+            (None, None) => plan.draw.push((at(&shot.flow, Some(&shot.screen), Some(&shot.state)), pictures.map(|(_, _, path)| path).collect())),
         }
     }
     Ok(plan)
+}
+
+/// The repository root `design` is in: where the map's commands run, and
+/// nowhere else.
+fn command_root(design: &Path) -> Result<PathBuf, String> {
+    let at = std::path::absolute(design).unwrap_or_else(|_| design.to_path_buf());
+    equipe_core::worktree::repo_root(&at).map_err(|_| t!("design.flows.command_no_repo", path = at.display()))
+}
+
+/// Each of `runs` taken by its command at the root of `design`'s
+/// repository, `jobs` at a time, each stopped after `limit`; what was
+/// written said as it comes, what wasn't with why. How many didn't come out.
+async fn shoot_by_commands(design: &Path, runs: &[Run], jobs: usize, limit: Duration) -> Result<usize, String> {
+    use futures_util::StreamExt;
+    let repo = command_root(design)?;
+    eprintln!("{}", t!("design.flows.running", count = runs.len(), jobs = jobs.min(runs.len())));
+    let failed = futures_util::stream::iter(runs)
+        .map(|run| {
+            let repo = &repo;
+            async move {
+                let taken = shoot_one(run, repo, limit).await;
+                match &taken {
+                    Ok(path) => println!("{}", t!("design.flows.wrote", path = path.display())),
+                    Err(why) => eprintln!("✗ {} · {} · {} px: {why}", at(&run.shot.flow, Some(&run.shot.screen), Some(&run.shot.state)), mode_word(run.mode), run.width),
+                }
+                taken.is_err()
+            }
+        })
+        .buffer_unordered(jobs.max(1))
+        .filter(|failed| std::future::ready(*failed))
+        .count()
+        .await;
+    Ok(failed)
+}
+
+/// One picture taken by its command, at the root of `repo`: written to a
+/// hidden file beside it, checked to be a PNG, then put in its place — so
+/// a failed run leaves the picture before as it was. Where it went.
+async fn shoot_one(run: &Run, repo: &Path, limit: Duration) -> Result<PathBuf, String> {
+    let path = std::path::absolute(&run.path).map_err(|e| format!("{}: {e}", run.path.display()))?;
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let fresh = dir.join(format!(".{}.{}.png", name.trim_end_matches(".png"), std::process::id()));
+    let _ = std::fs::remove_file(&fresh);
+    let values = flows::shot_values(&fresh, run.mode, run.width, &run.shot);
+    let made = made_by(&flows::fill(&run.command, &values), &fresh, repo, &flows::env_of("EQUIPE_SHOT_", &values), limit, Want::Png).await;
+    let placed = made.and_then(|()| std::fs::rename(&fresh, &path).map_err(|e| format!("{}: {e}", path.display())));
+    let _ = std::fs::remove_file(&fresh);
+    placed.map(|()| path)
+}
+
+/// What a command is to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Want {
+    Png,
+    Mp4,
+}
+
+impl Want {
+    /// Whether `path` is one: `Err` says what is wrong.
+    fn check(self, path: &Path) -> Result<(), String> {
+        let meta = std::fs::metadata(path).ok().filter(|m| m.is_file() && m.len() > 0);
+        let (missing, wrong) = match self {
+            Want::Png => ("design.flows.command_no_picture", "design.flows.command_not_png"),
+            Want::Mp4 => ("design.flows.command_no_video", "design.flows.command_not_mp4"),
+        };
+        let words = crate::i18n::catalog();
+        let says = |key: &str| words.fill(key, &[("path", path.display().to_string())]);
+        if meta.is_none() {
+            return Err(says(missing));
+        }
+        let good = match self {
+            Want::Png => image::ImageReader::open(path)
+                .ok()
+                .and_then(|r| r.with_guessed_format().ok())
+                .filter(|r| r.format() == Some(image::ImageFormat::Png))
+                .and_then(|r| r.into_dimensions().ok())
+                .is_some_and(|(w, h)| w > 0 && h > 0),
+            // An MP4 starts with its `ftyp` box.
+            Want::Mp4 => std::fs::read(path).ok().is_some_and(|b| b.get(4..8) == Some(b"ftyp".as_slice())),
+        };
+        if good { Ok(()) } else { Err(says(wrong)) }
+    }
+}
+
+/// `command` run at the root of `repo` with `env`, stopped after `limit`,
+/// and what it was to write at `out` checked: `Err` says why it didn't
+/// come out, with the last lines it printed to stderr.
+async fn made_by(command: &str, out: &Path, repo: &Path, env: &[(String, String)], limit: Duration, want: Want) -> Result<(), String> {
+    let ran = run_command(command, repo, env, limit).await?;
+    let why = match ran.ended {
+        Ended::TimedOut => Err(t!("design.flows.command_timed_out", secs = limit.as_secs_f32())),
+        Ended::Exited(status) if !status.success() => Err(t!("design.flows.command_failed", status = status)),
+        Ended::Exited(_) => want.check(out),
+    };
+    why.map_err(|why| if ran.said.is_empty() { why } else { format!("{why}\n{}", ran.said.lines().map(|l| format!("    | {l}")).collect::<Vec<_>>().join("\n")) })
+}
+
+/// How a command ended.
+#[derive(Debug)]
+enum Ended {
+    Exited(std::process::ExitStatus),
+    /// It ran past its limit and was stopped, with all it started.
+    TimedOut,
+}
+
+/// A command run: how it ended, and the end of what it printed to stderr.
+#[derive(Debug)]
+struct Ran {
+    ended: Ended,
+    said: String,
+}
+
+/// How much of a command's stderr is kept, and how many of its last lines told.
+const SAID_BYTES: usize = 16 << 10;
+const SAID_LINES: usize = 12;
+
+/// `command` run by `sh -c` at `cwd` with `env` added, in a process group
+/// of its own: past `limit`, the group is sent SIGTERM, then SIGKILL two
+/// seconds on — so what it started stops too.
+async fn run_command(command: &str, cwd: &Path, env: &[(String, String)], limit: Duration) -> Result<Ran, String> {
+    use tokio::io::AsyncReadExt;
+    let mut child = tokio::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(cwd)
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("sh: {e}"))?;
+    let group = child.id().map(|id| id as libc::pid_t);
+    let mut stderr = child.stderr.take();
+    let mut reader = tokio::spawn(async move {
+        let mut kept: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Some(pipe) = stderr.as_mut() {
+            match pipe.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    kept.extend_from_slice(&chunk[..n]);
+                    if kept.len() > SAID_BYTES {
+                        kept.drain(..kept.len() - SAID_BYTES);
+                    }
+                }
+            }
+        }
+        kept
+    });
+    let ended = match tokio::time::timeout(limit, child.wait()).await {
+        Ok(status) => Ended::Exited(status.map_err(|e| format!("sh: {e}"))?),
+        Err(_) => {
+            let signal = |sig| {
+                if let Some(group) = group {
+                    // SAFETY: killpg only sends a signal; the group is the child's own, and the child isn't reaped yet.
+                    unsafe { libc::killpg(group, sig) };
+                }
+            };
+            signal(libc::SIGTERM);
+            if tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
+                signal(libc::SIGKILL);
+            }
+            let _ = child.wait().await;
+            Ended::TimedOut
+        }
+    };
+    // Whatever it left running may hold stderr open: wait for it a little only.
+    let said = match tokio::time::timeout(Duration::from_secs(2), &mut reader).await {
+        Ok(Ok(bytes)) => tail(&String::from_utf8_lossy(&bytes)),
+        _ => {
+            reader.abort();
+            String::new()
+        }
+    };
+    Ok(Ran { ended, said })
+}
+
+/// The last `SAID_LINES` lines of `text` with something on them.
+fn tail(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(SAID_LINES)..].join("\n")
 }
 
 /// `onboarding › login › error`, as far as it goes.
@@ -1058,18 +1298,20 @@ mod tests {
         assert!(matches!(flows_args(&["check", "--json"]), FlowsAction::Check { dir: None, json: true }));
         assert!(matches!(flows_args(&["list", "--dir", "d"]), FlowsAction::List { dir: Some(_) }));
         match flows_args(&["shoot"]) {
-            FlowsAction::Shoot { dir, flow, screen, widths, light } => {
-                assert_eq!((dir, flow, screen, widths.as_str(), light), (None, None, None, "390,1280", false));
+            FlowsAction::Shoot { dir, flow, screen, widths, light, jobs, timeout_secs } => {
+                assert_eq!((dir, flow, screen, widths.as_str(), light, jobs, timeout_secs), (None, None, None, "390,1280", false, 1, 120));
             }
             _ => panic!("shoot"),
         }
-        match flows_args(&["shoot", "--flow", "onboarding", "--screen", "login", "--widths", "768", "--light", "--dir", "d"]) {
-            FlowsAction::Shoot { dir, flow, screen, widths, light } => {
-                assert_eq!((dir.as_deref(), flow.as_deref(), screen.as_deref(), widths.as_str(), light), (Some(Path::new("d")), Some("onboarding"), Some("login"), "768", true));
+        match flows_args(&["shoot", "--flow", "onboarding", "--screen", "login", "--widths", "768", "--light", "--dir", "d", "--jobs", "4", "--timeout-secs", "30"]) {
+            FlowsAction::Shoot { dir, flow, screen, widths, light, jobs, timeout_secs } => {
+                assert_eq!((dir.as_deref(), flow.as_deref(), screen.as_deref(), widths.as_str(), light, jobs, timeout_secs), (Some(Path::new("d")), Some("onboarding"), Some("login"), "768", true, 4, 30));
             }
             _ => panic!("shoot"),
         }
         assert!(Args::try_parse_from(["design", "flows", "shoot", "onboarding"]).is_err(), "the flow is a flag");
+        assert!(Args::try_parse_from(["design", "flows", "shoot", "--jobs", "0"]).is_err(), "at least one at a time");
+        assert!(Args::try_parse_from(["design", "flows", "shoot", "--timeout-secs", "0"]).is_err(), "some time to run");
     }
 
     #[test]
@@ -1085,7 +1327,7 @@ mod tests {
     fn each_state_is_shot_at_each_width_light_and_dark_into_its_screens_folder() {
         let dir = design(&[]);
         let login = dir.join("flows/onboarding/login");
-        let shot = |screen: &str, state: &str, url: Option<&str>| flows::Shot { flow: "onboarding".into(), screen: screen.into(), state: state.into(), url: url.map(Into::into), dir: dir.join("flows/onboarding").join(screen) };
+        let shot = |screen: &str, state: &str, url: Option<&str>| flows::Shot { flow: "onboarding".into(), screen: screen.into(), state: state.into(), url: url.map(Into::into), command: None, dir: dir.join("flows/onboarding").join(screen) };
         let all = [shot("login", "default", Some("http://localhost:3000/login")), shot("login", "error", Some("http://localhost:3000/login?fixture=wrong-password")), shot("welcome", "first", None)];
 
         let plan = plan(&all, None, None, &[390, 1280], false).unwrap();
@@ -1104,7 +1346,7 @@ mod tests {
         let welcome = dir.join("flows/onboarding/welcome");
         assert_eq!(plan.draw, vec![("onboarding › welcome › first".to_owned(), vec![welcome.join("first.light.390.png"), welcome.join("first.dark.390.png"), welcome.join("first.light.1280.png"), welcome.join("first.dark.1280.png")])]);
         let words = draw_list(&plan.draw);
-        assert!(words.starts_with("No URL to open these — draw them instead"), "{words}");
+        assert!(words.starts_with("Neither a URL nor a command reaches these — draw them instead"), "{words}");
         assert!(words.contains("\n  onboarding › welcome › first\n"), "{words}");
         assert!(words.contains(&format!("\n    {}\n", welcome.join("first.dark.1280.png").display())), "{words}");
         assert_eq!(draw_list(&[]), "");
@@ -1112,7 +1354,7 @@ mod tests {
         // Narrowed, and light only.
         let narrowed = super::plan(&all, Some("onboarding"), Some("login"), &[768], true).unwrap();
         assert_eq!(narrowed.takes.iter().map(|t| t.path.clone()).collect::<Vec<_>>(), vec![login.join("default.light.768.png"), login.join("error.light.768.png")]);
-        assert!(narrowed.draw.is_empty());
+        assert!(narrowed.draw.is_empty() && narrowed.runs.is_empty());
         assert_eq!(super::plan(&all, None, Some("welcome"), &[390], true).unwrap().draw.len(), 1);
         assert_eq!(super::plan(&all, Some("checkout"), None, &[390], false).unwrap_err(), "Nothing in the map matches --flow checkout.");
         assert_eq!(super::plan(&all, Some("onboarding"), Some("nope"), &[390], false).unwrap_err(), "Nothing in the map matches --flow onboarding --screen nope.");
@@ -1202,14 +1444,14 @@ mod tests {
     #[test]
     fn record_takes_a_flow_widths_one_mode_and_how_many_to_keep() {
         match flows_args(&["record"]) {
-            FlowsAction::Record { dir, flow, widths, light, dark, keep } => {
-                assert_eq!((dir, flow, widths.as_str(), light, dark, keep), (None, None, "390", false, false, 5));
+            FlowsAction::Record { dir, flow, widths, light, dark, keep, timeout_secs } => {
+                assert_eq!((dir, flow, widths.as_str(), light, dark, keep, timeout_secs), (None, None, "390", false, false, 5, 600));
                 assert_eq!(record_modes(light, dark), ["light", "dark"]);
             }
             _ => panic!("record"),
         }
-        match flows_args(&["record", "--flow", "onboarding", "--widths", "390,1280", "--dark", "--keep", "2", "--dir", "d"]) {
-            FlowsAction::Record { dir, flow, widths, light, dark, keep } => {
+        match flows_args(&["record", "--flow", "onboarding", "--widths", "390,1280", "--dark", "--keep", "2", "--dir", "d", "--timeout-secs", "90"]) {
+            FlowsAction::Record { dir, flow, widths, light, dark, keep, timeout_secs: 90 } => {
                 assert_eq!((dir.as_deref(), flow.as_deref(), widths.as_str(), keep), (Some(Path::new("d")), Some("onboarding"), "390,1280", 2));
                 assert_eq!(record_modes(light, dark), ["dark"]);
             }
@@ -1314,5 +1556,133 @@ mod tests {
         assert!(prune(&flow, "light", 390, 0).unwrap().len() >= 2);
         assert_eq!(shelve(&flow, "light", 390).unwrap(), None, "nothing current to move");
         assert_eq!(super::stamp(1_793_000_000).len(), 15);
+    }
+
+    #[test]
+    fn a_states_command_is_run_for_each_picture_and_wins_over_its_url() {
+        let dir = design(&[]);
+        let login = dir.join("flows/onboarding/login");
+        let shot = |state: &str, url: Option<&str>, command: Option<&str>| flows::Shot { flow: "onboarding".into(), screen: "login".into(), state: state.into(), url: url.map(Into::into), command: command.map(Into::into), dir: login.clone() };
+        let all = [shot("default", Some("http://localhost:3000/login"), Some("scripts/shot.sh {mode} {width} {out}")), shot("error", Some("http://localhost:3000/login?e=1"), None), shot("long", None, Some("scripts/long.sh {out}"))];
+        let plan = plan(&all, None, None, &[1280], false).unwrap();
+        let runs: Vec<(&str, &str, PathBuf, u32, &str)> = plan.runs.iter().map(|r| (r.shot.state.as_str(), r.command.as_str(), r.path.clone(), r.width, r.mode)).collect();
+        assert_eq!(
+            runs,
+            [
+                ("default", "scripts/shot.sh {mode} {width} {out}", login.join("default.light.1280.png"), 1280, "light"),
+                ("default", "scripts/shot.sh {mode} {width} {out}", login.join("default.dark.1280.png"), 1280, "dark"),
+                ("long", "scripts/long.sh {out}", login.join("long.light.1280.png"), 1280, "light"),
+                ("long", "scripts/long.sh {out}", login.join("long.dark.1280.png"), 1280, "dark"),
+            ]
+        );
+        assert_eq!(plan.takes.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["http://localhost:3000/login?e=1", "http://localhost:3000/login?e=1"], "only the state with no command opens its URL");
+        assert!(plan.draw.is_empty());
+    }
+
+    /// A repository in a folder of its own, with a design folder holding `MAP`.
+    fn repo() -> (PathBuf, PathBuf) {
+        let design = design(&[]);
+        let root = design.parent().unwrap().canonicalize().unwrap();
+        let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&root).status().unwrap();
+        assert!(git.success());
+        std::fs::write(root.join("fixture.png"), PNG).unwrap();
+        (root.clone(), root.join("design"))
+    }
+
+    fn run_of(design: &Path, command: &str, mode: &'static str) -> Run {
+        let dir = design.join("flows/onboarding/login");
+        let shot = flows::Shot { flow: "onboarding".into(), screen: "login".into(), state: "default".into(), url: None, command: Some(command.into()), dir: dir.clone() };
+        Run { shot, command: command.into(), path: dir.join(flows::picture_name("default", mode, 1280)), width: 1280, mode }
+    }
+
+    fn leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with('.')).collect()
+    }
+
+    #[tokio::test]
+    async fn a_command_runs_at_the_repositorys_root_with_its_placeholders_and_its_png_is_put_in_place() {
+        let (root, design) = repo();
+        let limit = Duration::from_secs(20);
+        let command = r#"[ "$(pwd -P)" = "$PWD_WANT" ] && [ "$EQUIPE_SHOT_STATE/$EQUIPE_SHOT_MODE/$EQUIPE_SHOT_WIDTH" = "default/{mode}/{width}" ] && [ "$EQUIPE_SHOT_OUT" = {out} ] && cp fixture.png {out}"#;
+        let run = run_of(&design, &command.replace("$PWD_WANT", &root.display().to_string()), "dark");
+        let path = shoot_one(&run, &root, limit).await.unwrap();
+        assert_eq!(path, design.join("flows/onboarding/login/default.dark.1280.png"));
+        assert_eq!(std::fs::read(&path).unwrap(), PNG);
+        assert!(leftovers(path.parent().unwrap()).is_empty(), "the hidden file it was written to is gone");
+        let map = read_map(&design).unwrap();
+        assert_eq!(map.flows[0].screens[0].states[0].pictures.len(), 1, "and the map finds it");
+
+        // Run again and failing, the picture before stays as it was.
+        let failed = shoot_one(&run_of(&design, "echo 'no window' >&2; exit 3", "dark"), &root, limit).await.unwrap_err();
+        assert!(failed.starts_with("the command stopped (exit status: 3)\n    | no window"), "{failed}");
+        assert_eq!(std::fs::read(&path).unwrap(), PNG);
+    }
+
+    #[tokio::test]
+    async fn a_command_that_writes_no_png_says_so_with_the_end_of_what_it_printed() {
+        let (root, design) = repo();
+        let limit = Duration::from_secs(20);
+        let chatty = (1..=30).map(|n| format!("echo line {n} >&2")).collect::<Vec<_>>().join("; ");
+        let none = shoot_one(&run_of(&design, &chatty, "light"), &root, limit).await.unwrap_err();
+        let lines: Vec<&str> = none.lines().collect();
+        assert!(lines[0].starts_with("the command wrote no picture at ") && lines[0].contains("/flows/onboarding/login/"), "{none}");
+        assert_eq!(lines[1..], (19..=30).map(|n| format!("    | line {n}")).collect::<Vec<_>>(), "its last lines, no more");
+        let fake = shoot_one(&run_of(&design, "echo 'not a picture' > {out}", "light"), &root, limit).await.unwrap_err();
+        assert!(fake.starts_with("what the command wrote at ") && fake.ends_with(" isn't a PNG"), "{fake}");
+        let quiet = shoot_one(&run_of(&design, "true", "light"), &root, limit).await.unwrap_err();
+        assert!(!quiet.contains('\n'), "nothing printed, nothing told: {quiet}");
+        let dir = design.join("flows/onboarding/login");
+        assert!(leftovers(&dir).is_empty() && !dir.join("default.light.1280.png").exists(), "nothing left behind");
+        assert!(!dir.join("default.light.1280.png").exists());
+    }
+
+    #[tokio::test]
+    async fn a_command_past_its_limit_is_stopped_with_what_it_started() {
+        let (root, design) = repo();
+        let marker = root.join("still-running");
+        let command = format!("echo starting >&2; (sleep 3; touch {}) & sleep 30", marker.display());
+        let began = std::time::Instant::now();
+        let late = shoot_one(&run_of(&design, &command, "light"), &root, Duration::from_millis(400)).await.unwrap_err();
+        assert!(began.elapsed() < Duration::from_secs(3), "stopped at its limit, not when it ended: {:?}", began.elapsed());
+        assert_eq!(late, "the command was still running after 0.4 s, so it was stopped\n    | starting");
+        tokio::time::sleep(Duration::from_millis(3500)).await;
+        assert!(!marker.exists(), "what it started in the background was stopped too");
+        let ran = run_command("sleep 0.1", &root, &[], Duration::from_secs(5)).await.unwrap();
+        assert!(matches!(ran.ended, Ended::Exited(status) if status.success()), "{ran:?}");
+    }
+
+    #[tokio::test]
+    async fn commands_run_some_at_once_and_how_many_failed_is_counted() {
+        let (root, design) = repo();
+        let runs = [run_of(&design, "sleep 0.5; cp fixture.png {out}", "light"), run_of(&design, "sleep 0.5; cp fixture.png {out}", "dark"), run_of(&design, "sleep 0.5; exit 1", "light")];
+        let mut runs = runs.into_iter().collect::<Vec<_>>();
+        runs[2].path = runs[2].path.with_file_name("other.light.1280.png");
+        let began = std::time::Instant::now();
+        assert_eq!(shoot_by_commands(&design, &runs, 3, Duration::from_secs(20)).await, Ok(1));
+        assert!(began.elapsed() < Duration::from_millis(1400), "three at once: {:?}", began.elapsed());
+        assert!(design.join("flows/onboarding/login/default.dark.1280.png").is_file());
+        let _ = root;
+        let away = std::env::temp_dir().join(format!("equipe-cli-norepo-{}", std::process::id())).join("design");
+        std::fs::create_dir_all(&away).unwrap();
+        if equipe_core::worktree::repo_root(&away).is_err() {
+            let said = shoot_by_commands(&away, &runs, 1, Duration::from_secs(1)).await.unwrap_err();
+            assert!(said.starts_with("The map's commands run only at the root of the repository") && said.contains("equipe-cli-norepo"), "{said}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_record_command_writes_the_video_and_maybe_its_marks() {
+        let (root, _) = repo();
+        let work = root.join("work");
+        let write_mp4 = r#"printf '\000\000\000\030ftypisom0000' > {out}; printf '{"millis": 4200, "marks": [{"screen": "board", "at": 0}]}' > "${EQUIPE_RECORD_OUT%.mp4}.json""#;
+        let made = record_by_command(&work, write_mp4, &root, "desktop", 1280, "dark", Duration::from_secs(20)).await.unwrap();
+        assert_eq!(made.video, work.join("walkthrough.mp4"));
+        assert_eq!(made.sidecar, Sidecar { millis: 4200, marks: vec![Mark { screen: "board".into(), at: 0 }] });
+        let bare = record_by_command(&work, r#"printf '\000\000\000\030ftypisom' > {out}"#, &root, "desktop", 1280, "dark", Duration::from_secs(20)).await.unwrap();
+        assert_eq!(bare.sidecar, Sidecar { millis: 0, marks: vec![] }, "no note beside it, none kept");
+        let not = record_by_command(&work, "echo hi > {out}", &root, "desktop", 1280, "dark", Duration::from_secs(20)).await.unwrap_err();
+        assert!(not.ends_with("isn't an MP4"), "{not}");
+        let none = record_by_command(&work, "echo 'no camera' >&2", &root, "desktop", 1280, "dark", Duration::from_secs(20)).await.unwrap_err();
+        assert!(none.starts_with("the command wrote no video at ") && none.ends_with("    | no camera"), "{none}");
     }
 }

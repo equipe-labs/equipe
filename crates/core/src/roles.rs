@@ -186,10 +186,15 @@ meets by using it included; a state's `kind` is `default`, `empty`, `loading`, `
 `flows/<flow>/<screen>/<state>.<mode>.<width>.png`, light and dark at each width the product supports. A screen's \
 `expects` lists the states it should have. `equipe design flows init` starts it; `equipe design flows shoot` \
 (`--flow`, `--screen`) shoots them from the running app, a state reached through the fixture or URL parameter in its \
-`url`; one no URL reaches is drawn as a mockup and rendered to the same path. Each flow keeps a `walk` beside its \
+`url`. An app that isn't a web page (a desktop app, a phone simulator) you reach state by state through its own \
+screenshot harness — a snapshot build, a test harness, the simulator's screenshot tool — named as a `command` on the \
+state, its screen or its flow, run at the repository's root, writing the PNG at `{out}` in `{mode}` at `{width}`; a \
+GPUI or other desktop app with an offscreen snapshot mode is shot through that, never by screenshotting the real \
+screen. Draw a state as a mockup, rendered to the same path, only when nothing can reach it. Each flow keeps a `walk` beside its \
 screens — its steps through the running app (`go`, `click`, `fill`, `press`, `wait`, `say` a caption; `screen` where \
 one appears) — and `equipe design flows record --flow <id>` plays it into \
-`flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`). When the person asks to see a \
+`flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`); an app that records itself \
+gives its flow a `record_command` instead. When the person asks to see a \
 flow as a video, record it on fixtures or demo data, never a real account or credentials, and give them its \
 absolute path as you would a picture's. A screen whose code changed after its pictures is stale, and a stale picture \
 is a defect: whenever a screen changes, its states and pictures, and its flow's `walk` and video, change in the \
@@ -1002,7 +1007,9 @@ A command whose output shows `<sandbox_violations>` was stopped by the fence equ
 prints (\"token not valid\", \"not logged in\"): the login is fine, so never log in again or touch tokens over it — \
 run it outside the fence, which asks the person once; their \"always\" stops it asking. Rust builds go to \
 `$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`. \
-Run one command at a time where you can: a single command can be allowed for good, a chain only once. Your memory \
+Run one command at a time where you can: a single command can be allowed for good, a chain only once. Never sleep \
+in the foreground to wait for something: run a long command in the background and wait for it with your engine's own \
+wait or monitor tool. Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
 lesson there — their taste, the project's conventions, what to avoid — and check it before new work. What the person attaches comes as tags with a path on this \
 machine; open each before you answer: `[image: <path>]` — look at it with Read; `[pdf: <path> · N pages]` — Read it \
@@ -1122,6 +1129,18 @@ mod tests {
     }
 
     #[test]
+    fn every_member_waits_with_its_engines_tool_never_a_foreground_sleep() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }];
+        for (id, board) in [(PM, true), ("designer", true), ("frontend", false), (CUSTOM.id, true)] {
+            let text = charter(role_or_custom(id), id, &ctx(&team, &[], board));
+            assert!(
+                text.contains("Never sleep in the foreground to wait for something: run a long command in the background and wait for it with your engine's own wait or monitor tool."),
+                "{id}: {text}"
+            );
+        }
+    }
+
+    #[test]
     fn the_pm_gives_design_the_problem_and_leaves_the_answer_to_the_designer() {
         let pm = role(PM).unwrap().duties;
         assert!(pm.contains("A design ticket says the problem, who it is for, the constraints and how success shows"), "{pm}");
@@ -1165,6 +1184,14 @@ mod tests {
             "`equipe design flows init`",
             "`equipe design flows shoot`",
             "fixture or URL parameter",
+            // An app that isn't a web page: its own harness, offscreen, drawn only when nothing reaches it.
+            "An app that isn't a web page (a desktop app, a phone simulator)",
+            "its own screenshot harness — a snapshot build, a test harness, the simulator's screenshot tool",
+            "as a `command` on the state, its screen or its flow",
+            "writing the PNG at `{out}` in `{mode}` at `{width}`",
+            "offscreen snapshot mode is shot through that, never by screenshotting the real screen",
+            "only when nothing can reach it",
+            "gives its flow a `record_command` instead",
             "a stale picture is a defect",
             // A flow as a video, played from its walk, rewatchable.
             "Each flow keeps a `walk` beside its screens",

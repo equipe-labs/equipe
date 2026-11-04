@@ -284,7 +284,8 @@ pub fn reply_line(entries: &[Entry]) -> Option<String> {
                     return Some(line);
                 }
             }
-            Entry::User { .. } => return None,
+            // A background task ending is the engine's word, not the person's.
+            Entry::User { text } if !equipe_core::protocol::harness::only_harness(text) => return None,
             _ => {}
         }
     }
@@ -667,6 +668,8 @@ mod tests {
         assert_eq!(line.chars().count(), LINE_MAX);
         assert!(line.ends_with('…'));
         assert_eq!(reply_line(&[Entry::Reply { text: "old".into() }, Entry::User { text: "new".into() }]), None, "the person spoke last");
+        let ended = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into() };
+        assert_eq!(reply_line(&[Entry::Reply { text: "Built it.".into() }, ended]), Some("Built it.".into()), "the engine's word, not the person's");
         // A turn's last answer is the one told; an empty one falls back.
         let turn = vec![Entry::User { text: "q".into() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "다 됐어요".into() }];
         assert_eq!(reply_line(&turn), Some("다 됐어요".into()));

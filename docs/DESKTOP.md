@@ -260,6 +260,36 @@ and a stand-in `equipe` that prints the bridge's three lines.
 
 **Sharp snapshots.** `EQUIPE_SNAPSHOT_SCALE=2` (with `--features snapshot`) draws the window and every `shot:` at 2× on any screen, retina or not — the PNG is exactly twice the pixels, no screen-recording permission (the scale is forced in the vendored `gpui-pre-macos`); unset, the screen's own scale.
 
+**The app on the UI map.** The app isn't a web page, so its states on the UI map
+(`equipe design flows shoot`) are shot by a `command` rather than a `url`.
+`scripts/design-shot.sh <light|dark> <width> <out.png> '<steps>'` starts
+`examples/fake_daemon` on a home of its own, waits for its socket, runs the snapshot
+build with `EQUIPE_SCRIPT="theme:<mode>;size:<width>x<height>;<steps>;shot:…;quit"`,
+waits for the PNG and stops both. The app draws its own window to the PNG; the real
+screen is never captured. Build it first with
+`cargo build -p equipe-desktop --features snapshot --bins --example fake_daemon`
+(`EQUIPE_SHOT_BIN` points the script at binaries kept elsewhere). A map for it:
+
+```json
+{ "flows": [
+  { "id": "desktop", "title": "equipe desktop", "summary": "The app, against the fake daemon",
+    "command": "scripts/design-shot.sh {mode} {width} {out} 'wait:1500'",
+    "screens": [
+      { "id": "chat", "title": "Conversation", "source": ["crates/desktop/src/views/chat.rs"],
+        "states": [ { "id": "default", "label": "The PM's conversation", "kind": "default" } ] },
+      { "id": "board", "title": "Board", "source": ["crates/desktop/src/views/board.rs"],
+        "command": "scripts/design-shot.sh {mode} {width} {out} 'board;wait:800'",
+        "states": [
+          { "id": "default", "label": "Every ticket", "kind": "default" },
+          { "id": "picked", "label": "A ticket open", "kind": "detail",
+            "command": "scripts/design-shot.sh {mode} {width} {out} 'board;pick:55;wait:800'" } ] } ] } ] }
+```
+
+`equipe design flows shoot --widths 1280 --jobs 2` runs each picture's command at the
+repository's root (a state's own `command`, else its screen's, else its flow's), each
+stopped after `--timeout-secs` (120). Placeholders are filled in already quoted, so
+`{out}` is written bare.
+
 Later, when the desktop needs them often, the `ssh` side commands can become
 daemon requests like `squads` and `upload` did (a `diff` request first); the
 table is the contract until then.

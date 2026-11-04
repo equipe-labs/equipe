@@ -29,6 +29,7 @@
   "flows.problem_source_outside": "{at}: {path} liegt außerhalb des Repositorys, Änderungen daran werden nicht verfolgt",
   "flows.problem_step": "{at}: Ein Schritt hat genau eine Aktion: go, click, fill, press, wait oder say",
   "flows.problem_step_screen": "{at}: {screen} ist kein Bildschirm dieses Ablaufs",
+  "flows.record_none": "{flow} hat nichts, womit er aufgenommen wird: gib ihm in flows.json einen walk (die Schritte durch eine Webseite) oder, für eine App, die sich selbst aufnimmt, ein record_command",
   "flows.walk_no_map": "Keine Karte zum Durchgehen: {path} gibt es nicht",
   "flows.walk_no_flow": "flows.json hat keinen Ablauf {flow}",
   "flows.walk_empty": "{flow} hat in flows.json kein walk: die Schritte, um ihn durchzugehen",
