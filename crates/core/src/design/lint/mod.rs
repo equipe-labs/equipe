@@ -313,6 +313,12 @@ impl System {
                         }
                     }
                 }
+                // A shadow's colour is the system's too.
+                "shadow" => {
+                    for v in std::iter::once(&t.value).chain(t.modes.values()) {
+                        system.colours.extend(values::shadows(v).unwrap_or_default().into_iter().map(|s| (t.name.clone(), s.color)));
+                    }
+                }
                 "fontFamily" => system.families.extend(values::font_family(&t.value).unwrap_or_default().into_iter().map(|f| f.to_ascii_lowercase())),
                 "typography" => {
                     if let Some(style) = values::typography(&t.value) {

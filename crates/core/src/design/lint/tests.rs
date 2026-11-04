@@ -105,6 +105,11 @@ fn colour_rules_know_the_systems_values_and_where_a_literal_is_only_a_fallback()
     assert_eq!(at(4), vec!["literal-on-scale"], "white is the system's surface");
     assert_eq!(at(5), vec!["literal-on-scale"]);
     assert!(at(6).is_empty());
+    // A shadow written out in the system's shadow colour names its token; another fails.
+    let root = project(&[("src/b.css", ".a { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }\n.b { box-shadow: 0 8px 24px rgba(99, 102, 241, 0.4); }")]);
+    let r = lint(&root, "src/b.css");
+    assert!(r.findings.iter().any(|f| f.line == Some(1) && f.rule == "literal-on-scale" && f.evidence.contains("shadow.raised")), "{}", r.text());
+    assert!(r.findings.iter().any(|f| f.line == Some(2) && f.rule == "token-colour"));
     // A token file holds the values: nothing to say.
     let root = project(&[("design/build/css/tokens.css", ":root { --color-text: #15161A; --brand: #123456; }")]);
     assert!(lint(&root, "design/build/css/tokens.css").findings.is_empty());

@@ -63,7 +63,7 @@ pub fn check(edit: &Edit, system: &System) -> Vec<Finding> {
     let Some(src) = source::Source::read(&edit.file, text.clone()) else { return Vec::new() };
     let findings = scan::scan(&src, system, super::is_token_file(&edit.file));
     let ranges = lines_written(&text, &edit.written);
-    findings
+    let mut findings: Vec<Finding> = findings
         .into_iter()
         .filter(|f| f.tier == Tier::Floor)
         // A rule about the whole file (motion with no fallback anywhere) counts when the edit touches it.
@@ -71,7 +71,10 @@ pub fn check(edit: &Edit, system: &System) -> Vec<Finding> {
             (None, _) | (_, None) => true,
             (Some(r), Some(line)) => r.iter().any(|(a, b)| (*a..=*b).contains(&line)),
         })
-        .collect()
+        .collect();
+    // Each rule's findings together, in the rules' order.
+    findings.sort_by_key(|f| super::RULES.iter().position(|r| r.id == f.rule));
+    findings
 }
 
 /// What the member is told: each failure with its fix, and that the edit
