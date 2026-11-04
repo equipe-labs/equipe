@@ -155,6 +155,12 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
 
 /// Requests for permission still unanswered; a `decide` removes one. `FAKE_ASKS=0` starts with none.
 /// The squad's "always allow" rules, as settings lists them.
+/// The looks screens told (`rpc::SCREEN_LOOK`).
+fn looks() -> &'static std::sync::Mutex<equipe_core::looks::Looks> {
+    static LOOKS: std::sync::OnceLock<std::sync::Mutex<equipe_core::looks::Looks>> = std::sync::OnceLock::new();
+    LOOKS.get_or_init(Default::default)
+}
+
 fn allowed() -> &'static std::sync::Mutex<Vec<String>> {
     static ALLOWED: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
     ALLOWED.get_or_init(|| std::sync::Mutex::new(vec!["Bash(npm install:*)".into(), "Bash(gh:*)".into(), "WebFetch(domain:vercel.com)".into()]))
@@ -1372,6 +1378,21 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             Err(why) => Message::failure(id, -32000, why),
                         };
                         if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    // The look a screen shows, kept as the daemon keeps it (`equipe_core::looks`), in memory.
+                    (Some(rpc::SCREEN_LOOK), None) => {
+                        if let Some(look) = message.params_as::<equipe_core::protocol::look::ScreenLook>() {
+                            eprintln!("screen look from {}: {} {:?} {}x{} sidebar {:?} zoom {} idle {:?}", look.machine, look.lang, look.theme, look.width, look.height, look.sidebar_width, look.zoom, look.idle);
+                            looks().lock().unwrap().report(look, now_ms() / 1000);
+                        }
+                    }
+                    // The look of the screen used last: what the real view is shot in.
+                    (Some(rpc::PERSON_LOOK), Some(id)) => {
+                        let look = looks().lock().unwrap().person().cloned();
+                        eprintln!("person look asked: {:?}", look.as_ref().map(|s| &s.look.machine));
+                        if writer.write_all(Message::response(id, equipe_core::protocol::look::PersonLook { look }).to_line().as_bytes()).await.is_err() {
                             return;
                         }
                     }

@@ -27,9 +27,11 @@
 //! drawn (`default.{mode}.{width}.png`); `lang:<code>` switches the words.
 //!
 //! `EQUIPE_SNAPSHOT_READONLY=1` is the real view (`readonly.rs`): the person's
-//! own daemon, read-only, in their language and look (its steps come before
-//! the script's), the window never shown; each `shot` gets a note beside it
-//! (`.json`: the app, its version, `EQUIPE_SHOT_COMMIT`, the squad, the
+//! own daemon, read-only, in their language and look — that of the screen
+//! they used last, as it told the daemon (its steps come before the
+//! script's), the window never shown; each `shot` gets a note beside it
+//! (`.json`: the app, its version, `EQUIPE_SHOT_COMMIT`, the squad, whose look
+//! — that screen's machine and version, or this Mac's own state — the
 //! language, the mode and the size). `scripts/design-shot-live.sh` runs it.
 //!
 //! `EQUIPE_SNAPSHOT_SCALE=2` draws the window — and so every `shot` — at that scale, whatever
@@ -55,6 +57,8 @@ fn shot_note(squad: &str, mode: &str, width: u32, height: u32) -> String {
         "commit": commit,
         "live": true,
         "squad": squad,
+        // Whose look it was shot in: the person's screen (its machine and version), or this Mac's own state.
+        "look": crate::readonly::look().map(crate::readonly::Look::note),
         "lang": crate::i18n::lang().code(),
         "mode": mode,
         "width": width,

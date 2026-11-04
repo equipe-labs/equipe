@@ -1267,6 +1267,7 @@
   "flows.screen_note": "이 화면",
   "flows.shot_with": "찍은 버전 {shot}",
   "flows.shot_with_now": "찍은 버전 {shot} · 지금 {now}",
+  "flows.shot_with_now_on": "찍은 버전 {shot} · 지금 {machine}에서 {now}",
   "flows.stale": "오래됨",
   "flows.stale_note": "그림을 찍은 뒤 코드가 바뀌었어요",
   "flows.states_n.other": "상태 {count}",

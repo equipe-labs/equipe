@@ -160,11 +160,17 @@ pub struct FlowMap {
     /// state that went.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlisted: Vec<String>,
-    /// The version of the app installed now, when its pictures say which app
-    /// they were shot with and the daemon's machine has it (`0.103.23`): a
-    /// picture shot with another is stale, whatever its code did.
+    /// The version of the app the person uses now, when its pictures say
+    /// which app they were shot with (`0.103.23`): the one on the screen they
+    /// used last, as it told the daemon (`crate::look`); else the one
+    /// installed on the daemon's machine. A picture shot with another is
+    /// stale, whatever its code did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed: Option<String>,
+    /// The machine of the screen that version is on (`Abel's MacBook Pro`),
+    /// when a screen told it; none: the daemon's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_on: Option<String>,
 }
 
 /// A flow a person goes through: 온보딩, 결제 — its screens in the order met.

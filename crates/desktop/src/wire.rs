@@ -116,6 +116,14 @@ impl Commands {
         self.ask(rpc::TELEMETRY_SET, equipe_core::protocol::telemetry::SetTelemetry { on })
     }
 
+    /// Tell the daemon something that wants no answer (`screen_look`). In
+    /// the real view only what reads leaves — and nothing told does.
+    pub fn tell(&self, method: &str, params: impl serde::Serialize) {
+        if crate::readonly::lets_method(method) {
+            let _ = self.out.send(Message::notification(method, params));
+        }
+    }
+
     /// Any request of the daemon's JSON-RPC (`metrics.*`); answered as [`Commands::upload`] is.
     /// In the real view only one that reads leaves; the rest is answered no here.
     pub fn ask(&self, method: &str, params: impl serde::Serialize) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
@@ -242,6 +250,11 @@ where
     }
     send(&mut writer, &hello).await?;
     let hello = response(&mut lines, HELLO_ID, opts.step, "hello").await?.result_as::<Hello>().ok_or_else(|| Failure::Other(t!("failure.hello_refused").into()))?;
+    // What this screen shows the app in, told as it attaches (`screen_look.rs`);
+    // the real view tells none. A daemon older than it lets it pass.
+    if let Some(look) = crate::screen_look::shown() {
+        let _ = send(&mut writer, &Message::notification(rpc::SCREEN_LOOK, look)).await;
+    }
 
     let (events_tx, events) = mpsc::unbounded_channel();
     let pending: Pending = Arc::default();
@@ -328,6 +341,37 @@ mod tests {
         assert_eq!(check_protocol(&at(rpc::PROTOCOL)), Ok(()));
         assert_eq!(check_protocol(&at(rpc::PROTOCOL + 1)), Err(Failure::AppTooOld { daemon: rpc::PROTOCOL + 1 }));
         assert_eq!(check_protocol(&at(0)), Err(Failure::DaemonTooOld { daemon: 0 }));
+    }
+
+    #[tokio::test]
+    async fn the_screen_tells_its_look_as_it_attaches() {
+        use equipe_core::protocol::look::ScreenLook;
+        crate::screen_look::keep(ScreenLook { machine: "MacBook".into(), app: "equipe-desktop".into(), version: "0.103.25".into(), lang: "en".into(), width: 1200, height: 760, zoom: 100, ..ScreenLook::default() });
+        let (ours, theirs) = tokio::io::duplex(1 << 16);
+        let (reader, writer) = tokio::io::split(ours);
+        let daemon = tokio::spawn(async move {
+            let (r, mut w) = tokio::io::split(theirs);
+            let mut lines = BufReader::new(r).lines();
+            let mut said = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let message = Message::from_line(&line).unwrap();
+                match (message.method.as_deref(), message.id) {
+                    (Some(rpc::SQUADS), Some(id)) => w.write_all(Message::response(id, squads(&["acme"], None)).to_line().as_bytes()).await.unwrap(),
+                    (Some(rpc::HELLO), Some(id)) => w.write_all(Message::response(id, Hello { version: "d".into(), snapshot: Default::default() }).to_line().as_bytes()).await.unwrap(),
+                    (Some(rpc::SCREEN_LOOK), None) => {
+                        said.push(message.params_as::<ScreenLook>().expect("a look"));
+                        return said;
+                    }
+                    _ => {}
+                }
+            }
+            said
+        });
+        let opts = Opts { version: "t".into(), prefer: None, bridged: false, first: Duration::from_secs(2), step: Duration::from_secs(2) };
+        let Ok((_greeting, _wire)) = connect(reader, writer, &opts).await else { panic!("not attached") };
+        let said = tokio::time::timeout(Duration::from_secs(5), daemon).await.unwrap().unwrap();
+        assert_eq!(said.len(), 1, "told right after hello");
+        assert!(!said[0].machine.is_empty() && !said[0].lang.is_empty());
     }
 
     #[tokio::test]

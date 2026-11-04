@@ -464,6 +464,26 @@ async fn serve_client(
             (Some(rpc::BUSY), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, core.busy().await));
             }
+            // The look this screen shows (`crate::looks`): kept for the squad it follows.
+            (Some(rpc::SCREEN_LOOK), None) => {
+                if let (Some(squad), Some(look)) = (followed.clone(), message.params_as::<equipe_protocol::look::ScreenLook>()) {
+                    let home = home.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        if let Err(why) = crate::looks::report(&home, &squad, look, now) {
+                            crate::daemon_log!("equipe: a screen's look wasn't kept: {why}");
+                        }
+                    });
+                }
+            }
+            // The look of the screen the person used last: what the UI map's real view is shot in.
+            (Some(rpc::PERSON_LOOK), Some(id)) => {
+                let (home, out) = (home.clone(), out_tx.clone());
+                tokio::spawn(async move {
+                    let look = tokio::task::spawn_blocking(move || crate::looks::person(&home)).await.ok().flatten();
+                    let _ = out.send(Message::response(id, equipe_protocol::look::PersonLook { look }));
+                });
+            }
             // A look at the disk, and a clean: their own task, a look takes seconds.
             (Some(rpc::DISK), Some(id)) => {
                 let (core, out) = (core.clone(), out_tx.clone());
