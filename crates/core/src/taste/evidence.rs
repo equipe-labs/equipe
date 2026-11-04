@@ -19,7 +19,7 @@ pub fn of_decision(d: &Decision) -> Evidence {
 }
 
 /// The send-backs equipe kept in the squad's memory (`design taste`):
-/// `- Sent back “Pricing page”: “못생겼어”` under its `## date · T-n` entry.
+/// `- Sent back “Pricing page”: “it looks cheap”` under its `## date · T-n` entry.
 pub fn sent_backs(body: &str) -> Vec<Evidence> {
     let unquote = |s: &str| s.trim().trim_matches(['\u{201c}', '\u{201d}', '"']).trim().to_owned();
     let (mut date, mut ticket): (String, Option<TicketId>) = (String::new(), None);

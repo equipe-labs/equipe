@@ -1,7 +1,7 @@
 //! A conversation's chapters, for the rail at its left: a bar for each
 //! thing the person asked — their message's first line, and how the answer
 //! began — the one being read drawn longer; over it, the list, and a click
-//! goes there (`views/chapters.rs`). A word or two ("ok", "ㄱㄱ") goes on the
+//! goes there (`views/chapters.rs`). A word or two ("ok", "go go") goes on the
 //! chapter it answers rather than starting one. No UI types here.
 
 use crate::convo::Block;

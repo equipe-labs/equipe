@@ -108,9 +108,9 @@ pub fn parse_ticket_id(text: &str) -> Option<TicketId> {
 }
 
 /// The first ticket number in `text` that stands on its own — `T-8`, `(T-8)`,
-/// `T-8:`, `T-8,`, `T-8와`, `T-8.` closing a sentence, each of `T-2/T-3` —
-/// where, and how long. Not one inside a word (`MAT-8`, `T-8a`), a path or a
-/// file name (`outputs/T-2 갤러리/`, `T-2.png`, `a_T-2`, `T-2-draft`), or an
+/// `T-8:`, `T-8,`, a particle after it (Korean `T-8와`), `T-8.` closing a
+/// sentence, each of `T-2/T-3` — where, and how long. Not one inside a word (`MAT-8`, `T-8a`), a path or a
+/// file name (`outputs/T-2 gallery/`, `T-2.png`, `a_T-2`, `T-2-draft`), or an
 /// address (`https://x.y/?t=T-2`): those are not about the ticket.
 pub fn ticket_ref(text: &str) -> Option<(usize, usize)> {
     ticket_ref_from(text, 0)

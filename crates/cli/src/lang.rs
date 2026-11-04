@@ -21,7 +21,7 @@ pub fn parse_choice(word: &str) -> Option<Option<Lang>> {
     }
 }
 
-/// `한국어 (ko)`.
+/// `Deutsch (de)`, `日本語 (ja)`.
 pub fn name(lang: Lang) -> String {
     format!("{} ({})", lang.native_name(), lang.code())
 }

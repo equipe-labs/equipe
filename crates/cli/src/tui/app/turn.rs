@@ -1,9 +1,9 @@
 //! A ticket put down for the person (`block_on_person`), answered in the
 //! terminal ask by ask — opened with `/answer T-n`, or r on the board. While
 //! nothing is typed, single keys act on the line marked: on a thing to do, d
-//! 했음, y 대신 해 줘 (the member does it), l 나중에 (it stays open); on a
-//! question, a (or Enter, or any other character) writes the answer, y 네가
-//! 정해 줘, ? 모르겠어요; n a note on the line; the last line, the words to the
+//! "done — carry on", y "Do it for me" (the member does it), l "later" (it
+//! stays open); on a question, a (or Enter, or any other character) writes the
+//! answer, y "You decide", ? "I don't know"; n a note on the line; the last line, the words to the
 //! member. ↑↓ move, s sends what is set (what isn't goes as not yet), Esc
 //! puts the card away and keeps it as it was.
 

@@ -36,7 +36,7 @@ pub fn part_of(name: &str) -> DesignPart {
     }
 }
 
-/// The ticket a subject names (`designer: T-144 브랜드`, `equipe: merge
+/// The ticket a subject names (`designer: T-144 brand`, `equipe: merge
 /// T-12 Login`), and the subject without its mark and what leads to it.
 pub fn ticket_of(subject: &str) -> (Option<TicketId>, String) {
     let subject = subject.trim();

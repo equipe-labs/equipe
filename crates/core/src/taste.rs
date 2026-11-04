@@ -6,7 +6,7 @@
 //! go past a few dozen. No runtime types here.
 //!
 //! What it comes to is kept apart, for the person to see and edit on the
-//! design screen ("취향과 결정"): the notes the designer follows (`notes`),
+//! design screen ("Taste & decisions"): the notes the designer follows (`notes`),
 //! and the decisions made, each with why (`decisions`) — where both live
 //! and how they are read and written is `store`'s.
 

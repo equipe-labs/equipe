@@ -2,7 +2,7 @@
 //! composer, under the accent bar: who asks, the question and where the
 //! person is (1/2), the options numbered (picked ones marked), `o` for their
 //! own words, and the keys. Answered, the message the answers went in reads
-//! as one line in the conversation: "✓ 결정함 · 2개 — …".
+//! as one line in the conversation: "✓ Decided · 2 questions — …".
 
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
@@ -104,7 +104,7 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
         .collect()
 }
 
-/// "이미지 2개 · logo-a.png, logo-b.png" under what shows them, indented
+/// "2 images · logo-a.png, logo-b.png" under what shows them, indented
 /// by `indent`; `None` without pictures.
 fn pictures_line(images: &[String], indent: &str, theme: Theme, width: usize) -> Option<Line<'static>> {
     if images.is_empty() {
