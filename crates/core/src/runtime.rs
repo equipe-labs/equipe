@@ -6553,6 +6553,7 @@ there, end your turn, and carry on when they say they're done."
                 let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
                     .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then hand in again."))?;
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
+                self.designer_hand_in(id)?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
                 work.handed_in = Some(summary);
