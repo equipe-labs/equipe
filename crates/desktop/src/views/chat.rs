@@ -66,6 +66,7 @@ const PART_THOUGHT: u32 = PART_MORE + 1;
 const PART_NEWS: u32 = PART_MORE + 2;
 const PART_GROUP: u32 = PART_MORE + 3;
 const PART_ROUTINE: u32 = PART_MORE + 4;
+const PART_BACKGROUND: u32 = PART_MORE + 5;
 /// A call of an open group, by its number in it.
 const PART_ROW: u32 = 1 << 21;
 /// The side panel's width; the conversation keeps the rest.
@@ -913,6 +914,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(format!("{} · {}", worked.took(), worked.at))
             .into_any_element(),
         Block::Summarized => super::compact::divider(p, rows.tones.added).into_any_element(),
+        Block::Background { summary, failed, file } => background_row(rows, key, summary, *failed, file.as_deref(), window, cx),
         Block::Note(text) => {
             // A ticket's heading (`── T-12 …`).
             let chapter = text.starts_with('─');
@@ -997,6 +999,51 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
     }
 }
 
+/// A command the member left in the background ended: a quiet line in its
+/// flow — how it ended and the engine's summary — opening on where its output
+/// is, when the engine said.
+fn background_row(rows: &Rows, key: u64, summary: &str, failed: bool, file: Option<&str>, window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let (mark, tone, how) = match failed {
+        true => (Icon::Alert, rows.tones.danger, t!("chat.background_failed")),
+        false => (Icon::Check, p.muted, t!("chat.background_done")),
+    };
+    let words = if summary.is_empty() { how.to_owned() } else { format!("{how} · {summary}") };
+    let line = || {
+        [
+            div().flex_none().child(icon(mark, 12., tone)).into_any_element(),
+            div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(words.clone()).into_any_element(),
+        ]
+    };
+    let Some(file) = file else {
+        return h_flex().min_h(px(24.)).gap(px(6.)).items_center().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.muted).children(line()).into_any_element();
+    };
+    let open = rows.is_open(key, PART_BACKGROUND, false);
+    let progress = motion::openness(("background-open", key), open, window, cx);
+    let head = disclosure_head(rows, ("background", key), PART_BACKGROUND, key, false, window, cx).children(line()).child(chevron(p.muted, progress));
+    let body = (progress > 0.).then(|| {
+        motion::Reveal::new(
+            ("background-body", key),
+            progress,
+            h_flex()
+                .opacity(progress)
+                .pt_1()
+                .ml(px(2.))
+                .pl(px(12.))
+                .gap_2()
+                .border_l_1()
+                .border_color(p.hair)
+                .text_size(px(SMALL))
+                .line_height(px(SMALL_LINE))
+                .text_color(p.muted)
+                .child(div().flex_none().child(t!("chat.background_output")))
+                .child(div().min_w_0().font_family(MONO).child(SelectableText::new(("background-file", key), file.to_owned())))
+                .into_any_element(),
+        )
+    });
+    v_flex().child(head).children(body).into_any_element()
+}
+
 /// A reply: who speaks over the conversation's first, the text full width,
 /// and under a turn's last the actions — copy, ask again, how long it worked
 /// and when — in sight on the latest, on hover on the rest.
@@ -1042,7 +1089,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Worked(_) | Block::Summarized);
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized);
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
@@ -2098,6 +2145,7 @@ impl Shell {
         let part = match (call, self.chat.blocks.get(ix)) {
             (Some(n), _) => PART_ROW + n,
             (None, Some(Block::Thought { .. })) => PART_THOUGHT,
+            (None, Some(Block::Background { .. })) => PART_BACKGROUND,
             (None, Some(Block::News(_))) => PART_NEWS,
             (None, Some(Block::YourTurn { .. })) => yourturn::PART_SENT,
             (None, Some(Block::User(text))) if crate::decide::decided(text).is_some() => super::decide::PART_DECIDED,

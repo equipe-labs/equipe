@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use equipe_protocol::harness;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
@@ -3146,7 +3147,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(m) = self.sessions.get(&pm) else { return };
         let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
         let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
-        let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { text.lines().next().map(str::to_owned) } else { None }));
+        let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
         lane.title = title.clone();
         lane.transcript = Transcript::from_entries(lines.clone());
         self.publish_lane(id, lane, pm, c.project, true);
@@ -6517,7 +6518,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 let history = conversation
                     .iter()
                     .filter_map(|entry| match entry {
-                        Entry::User { text } => Some(responses::Message { role: responses::Role::User, text: text.clone() }),
+                        Entry::User { text } => harness::words(text).map(|text| responses::Message { role: responses::Role::User, text: text.into_owned() }),
                         Entry::Reply { text } => {
                             Some(responses::Message { role: responses::Role::Assistant, text: text.clone() })
                         }
@@ -6640,7 +6641,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
                     let mut lane = lane_of(pm, &self.sessions[&pm], c.project, thread, true);
                     let lines = journal.conversation(c.id).unwrap_or_default();
-                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { text.lines().next().map(str::to_owned) } else { None }));
+                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
                     lane.transcript = Transcript::from_entries(lines);
                     self.sessions.insert(c.id, lane);
                 }
@@ -6729,7 +6730,7 @@ check what is already done in your worktree first."
             .entries()
             .iter()
             .filter_map(|e| match e {
-                Entry::User { text } => Some(format!("- the person: {}", clip(text, 600))),
+                Entry::User { text } => harness::words(text).map(|text| format!("- the person: {}", clip(&text, 600))),
                 Entry::Reply { text } => Some(format!("- you: {}", clip(text, 600))),
                 _ => None,
             })
@@ -7131,6 +7132,12 @@ and carry on where you left off.]"
 /// How many of the last messages a fresh conversation is handed.
 const REFRESH_TAIL: usize = 12;
 
+/// A conversation's title from a message in it: its first line, when the
+/// person said it (a background task ending is the engine's).
+fn first_said_line(text: &str) -> Option<String> {
+    harness::words(text).and_then(|words| words.lines().next().map(str::to_owned))
+}
+
 /// `text` cut to about `max` characters, on a character boundary.
 fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -7370,7 +7377,7 @@ fn suggestion_context(member: &str, entries: &[Entry]) -> Option<String> {
     let said: Vec<(bool, &str)> = entries
         .iter()
         .filter_map(|e| match e {
-            Entry::User { text } => Some((true, text.as_str())),
+            Entry::User { text } if !harness::only_harness(text) => Some((true, text.as_str())),
             Entry::Reply { text } if !text.trim().is_empty() => Some((false, text.as_str())),
             _ => None,
         })
@@ -7706,6 +7713,16 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_task_ending_is_never_the_persons_title_nor_their_last_word() {
+        let done = "<task-notification><task-id>b1</task-id><status>completed</status><summary>built</summary></task-notification>";
+        assert_eq!(first_said_line(done), None);
+        assert_eq!(first_said_line("fix the header\nplease").as_deref(), Some("fix the header"));
+        let talk = [Entry::User { text: "go".into() }, Entry::Reply { text: "Started the build.".into() }, Entry::User { text: done.into() }];
+        let context = suggestion_context("frontend", &talk).expect("the member answered last");
+        assert!(!context.contains("task-notification"), "{context}");
+    }
 
     #[test]
     fn a_turn_on_token_factory_logs_its_requests_never_its_text() {

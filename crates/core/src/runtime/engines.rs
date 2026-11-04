@@ -753,7 +753,10 @@ fn brief_talk(entries: &[Entry]) -> String {
     let mut size = 0;
     for entry in entries.iter().rev() {
         let line = match entry {
-            Entry::User { text } => format!("Person: {}", clip(text, 1_200)),
+            Entry::User { text } => match equipe_protocol::harness::words(text) {
+                Some(text) => format!("Person: {}", clip(&text, 1_200)),
+                None => continue,
+            },
             Entry::Reply { text } => format!("You: {}", clip(text, 1_800)),
             Entry::Note { text } => format!("(equipe: {})", clip(text, 300)),
             _ => continue,

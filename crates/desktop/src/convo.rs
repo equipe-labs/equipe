@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use equipe_core::protocol::harness;
 use equipe_core::protocol::transcript::scope;
 use equipe_core::protocol::{CompactTrigger, Entry, Event, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
 use equipe_core::t;
@@ -369,7 +370,7 @@ impl Convo {
     /// What the person said last in it, its first line.
     pub fn last_said(&self) -> Option<String> {
         self.transcript.entries().iter().rev().find_map(|e| match e {
-            Entry::User { text } => Some(crate::sent::summary(text).lines().next().unwrap_or_default().trim().to_owned()),
+            Entry::User { text } => harness::words(text).map(|words| crate::sent::summary(&words).lines().next().unwrap_or_default().trim().to_owned()),
             _ => None,
         })
     }
@@ -660,12 +661,25 @@ impl ToolLine {
 /// A call the engine refused by a rule it was given, not one that broke:
 /// Claude Code's words for a deny rule or a permission not granted.
 pub fn refused_by_rule(output: &str) -> bool {
-    output.contains("was blocked by a deny rule") || (output.contains("Permission to use ") && output.contains(" has been denied"))
+    output.contains("was blocked by a deny rule") || (output.contains("Permission to use ") && output.contains(" has been denied")) || harness_blocked(output)
+}
+
+/// Claude Code's harness refusing a call by its own rule (a foreground
+/// `sleep`, say): `Blocked: …`, in its `<tool_use_error>` wrapper or bare.
+fn harness_blocked(output: &str) -> bool {
+    let said = output.trim_start();
+    let said = said.strip_prefix("<tool_use_error>").unwrap_or(said).trim_start();
+    said.starts_with("Blocked: ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     User(String),
+    /// A command the member left running in the background ended (the
+    /// engine's word, put in as if the person had said it): what it was and
+    /// how it ended, in the engine's words; whether it failed; and where its
+    /// output is, when the engine says.
+    Background { summary: String, failed: bool, file: Option<String> },
     /// A reply; `first` when it is the conversation's first (its speaker
     /// named over it); `live` while it is still streaming; `worked`, when it
     /// ended its turn: how long the turn took, and when.
@@ -710,7 +724,7 @@ impl Block {
         match self {
             // Your words as shown: without the attachments' tags.
             Block::User(t) | Block::Pending { text: t, .. } => Some(crate::sent::parts(t).text),
-            Block::Reply { text: t, .. } | Block::Note(t) => Some(t.clone()),
+            Block::Reply { text: t, .. } | Block::Note(t) | Block::Background { summary: t, .. } => Some(t.clone()),
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
             Block::YourTurn { news, .. } => Some(news.clone()),
             Block::HandOver { name, why, .. } => Some(format!("{name}\n{why}")),
@@ -829,7 +843,19 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
             // What equipe once told a member as if the person had said it (its
             // browser handed back): a line of equipe's, never their bubble.
             Entry::User { text } if crate::activity::handed_back_line(text) => blocks.push(Block::Note(t!("chat.browser_given_back").to_owned())),
-            Entry::User { text } => blocks.push(Block::User(text.clone())),
+            // The engine's harness speaking in the person's place (a command
+            // left in the background ended, a reminder for the model): a quiet
+            // line of the member's, or nothing — and the person's own words, if
+            // any came with it, theirs.
+            Entry::User { text } => {
+                let said = harness::read(text);
+                for task in &said.tasks {
+                    blocks.push(Block::Background { summary: task.summary.clone().unwrap_or_default(), failed: task.failed(), file: task.output_file.clone() });
+                }
+                if said.persons() || !said.harness {
+                    blocks.push(Block::User(said.words.into_owned()));
+                }
+            }
             Entry::Reply { text } => {
                 blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });
                 replied = true;
@@ -1104,6 +1130,76 @@ mod tests {
         assert_eq!(lines[1].status, Status::Failed, "the system's own no is a failure");
         assert!(refused_by_rule("Permission to use Edit has been denied."));
         assert!(!refused_by_rule("Access denied"));
+    }
+
+    #[test]
+    fn the_harness_refusing_a_sleep_is_declined_not_a_failure() {
+        let blocked = "<tool_use_error>Blocked: sleep 240 followed by: cargo test. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.</tool_use_error>";
+        assert!(refused_by_rule(blocked));
+        assert!(refused_by_rule("Blocked: sleep 240 followed by: ls"), "without its wrapper");
+        assert!(refused_by_rule("\n <tool_use_error>\n Blocked: sleep 60</tool_use_error>"));
+        assert!(!refused_by_rule("<tool_use_error>File does not exist.</tool_use_error>"), "a tool that broke");
+        assert!(!refused_by_rule("error: Blocked: waiting on the lock"), "a command's own words");
+        assert!(!refused_by_rule("Blocked"));
+        let mut c = convo(false);
+        let refused = Event::ToolResult { session: 1, tool: "Bash".into(), target: Some("sleep 240 && cargo test".into()), outcome: ToolOutcome { ok: false, output: blocked.into(), ..Default::default() } };
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, tool("Bash", "sleep 240 && cargo test"), refused]);
+        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
+        assert_eq!(lines[0].status, Status::Declined, "grey: a rule said no, nothing broke");
+    }
+
+    /// Claude Code's word that a command left in the background has ended.
+    const TASK_DONE: &str = "<task-notification>\n<task-id>b16yoo5kk</task-id>\n<tool-use-id>toolu_01Xy</tool-use-id>\n<output-file>/private/tmp/claude-501/tasks/b16yoo5kk.output</output-file>\n<status>completed</status>\n<summary>Background command \"Build the app\" completed (exit code 0)</summary>\n</task-notification>\nRead the output file to retrieve the result: /private/tmp/claude-501/tasks/b16yoo5kk.output";
+    const TASK_FAILED: &str = "<task-notification><task-id>b2</task-id><tool-use-id>toolu_02</tool-use-id><status>failed</status><summary>Background command \"Run the tests\" failed with exit code 1</summary></task-notification>";
+
+    #[test]
+    fn a_background_task_ending_is_a_quiet_line_of_the_members_never_the_persons_bubble() {
+        let mut c = convo(false);
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "go".into() },
+                Event::ToolUse { session: 1, tool: "Bash".into(), target: Some("cargo build".into()), label: None, background: true },
+                Event::Steered { session: 1, text: TASK_DONE.into() },
+                Event::TextDelta { session: 1, text: "Built.".into() },
+                Event::Steered { session: 1, text: TASK_FAILED.into() },
+                Event::Steered { session: 1, text: "<system-reminder>\nThe todo list is empty.\n</system-reminder>".into() },
+                Event::Steered { session: 1, text: "skip the footer please\n\n<system-reminder>x</system-reminder>".into() },
+            ],
+        );
+        let blocks = c.blocks();
+        let said: Vec<&str> = blocks.iter().filter_map(|b| if let Block::User(t) = b { Some(t.as_str()) } else { None }).collect();
+        assert_eq!(said, ["go", "skip the footer please"], "{blocks:#?}");
+        let ended: Vec<&Block> = blocks.iter().filter(|b| matches!(b, Block::Background { .. })).collect();
+        assert_eq!(
+            ended,
+            [
+                &Block::Background { summary: "Background command \"Build the app\" completed (exit code 0)".into(), failed: false, file: Some("/private/tmp/claude-501/tasks/b16yoo5kk.output".into()) },
+                &Block::Background { summary: "Background command \"Run the tests\" failed with exit code 1".into(), failed: true, file: None },
+            ]
+        );
+        // In the member's flow: after its step, before its words.
+        assert!(matches!(blocks[1], Block::Steps(_)) && matches!(blocks[2], Block::Background { .. }) && matches!(blocks[3], Block::Reply { .. }), "{blocks:#?}");
+        for block in &blocks {
+            let words = block.searchable().unwrap_or_default();
+            assert!(!words.contains("task-notification") && !words.contains("system-reminder"), "{block:?}");
+        }
+        // Not the person speaking: no chapter, no last word.
+        let titles: Vec<String> = crate::chapters::of(&blocks).into_iter().map(|c| c.title).collect();
+        assert_eq!(titles, ["go", "skip the footer please"]);
+        assert_eq!(c.last_said().as_deref(), Some("skip the footer please"));
+        let mut only = convo(false);
+        feed(&mut only, &[Event::Steered { session: 1, text: TASK_DONE.into() }]);
+        assert_eq!(only.last_said(), None);
+        assert!(crate::chapters::of(&only.blocks()).is_empty());
+    }
+
+    #[test]
+    fn a_task_ended_line_says_how_it_ended_and_opens_on_its_output() {
+        let done = Block::Background { summary: "built".into(), failed: false, file: Some("/tmp/b.output".into()) };
+        assert_eq!(done.searchable().as_deref(), Some("built"));
+        let entries = [Cow::Owned(Entry::User { text: "<task-notification><status>killed</status></task-notification>".into() })];
+        assert_eq!(build_blocks(&entries, Path::new("/w")), vec![Block::Background { summary: String::new(), failed: true, file: None }]);
     }
 
     #[test]
