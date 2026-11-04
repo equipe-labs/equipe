@@ -44,6 +44,7 @@ use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
 use crate::routines;
+use crate::skills;
 use crate::vault;
 use equipe_protocol::routines::Routine;
 use crate::squad_home;
@@ -3376,6 +3377,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let home = squad.as_deref().map(|s| squad_home::path(&self.config.home, s));
         let memory = squad_memory::for_charter(&facts);
+        // A member's skills: written as a plugin for Claude Code, as files for
+        // Codex's CLI to read by path; Codex over the API reads nothing, so it
+        // gets them inline — as it does when they can't be written.
+        let reads_files = has_tools(session);
+        let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
             let mates: Vec<Teammate> = team.iter().map(|(_, name, role)| Teammate { name, role }).collect();
@@ -3398,8 +3404,21 @@ for one project goes to it as tickets for its owners, with that project — and 
                 memory: memory.as_deref(),
                 facts: facts.len(),
                 edits,
+                skills: skills::Delivery::Inline,
             };
-            roles::charter(roles::role_or_custom(&m.role), &m.name, &ctx)
+            let role = roles::role_or_custom(&m.role);
+            let offered = skills::offered(role, &ctx);
+            let written = (reads_files && !offered.is_empty())
+                .then(|| skills::materialise(&self.config.home, &self.config.client_version, role.id, &offered))
+                .and_then(|written| written.map_err(|err| crate::daemon_log!("{}'s skills weren't written: {err}", m.name)).ok());
+            let Some(dir) = written else {
+                return roles::charter(role, &m.name, &ctx);
+            };
+            let at = dir.to_string_lossy().into_owned();
+            let delivery = if session.engine == Engine::Claude { skills::Delivery::Plugin(&at) } else { skills::Delivery::Files(&at) };
+            let charter = roles::charter(role, &m.name, &roles::Context { skills: delivery, ..ctx });
+            skill_plugin = Some((dir, offered));
+            charter
         });
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
@@ -3651,6 +3670,11 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if member_rules {
                     allowed.extend(squad_rules);
                 }
+                // Its skills, as a plugin: each opened, and its files read, without asking.
+                let plugin_dirs: Vec<PathBuf> = skill_plugin.iter().map(|(dir, _)| dir.clone()).collect();
+                if let Some((dir, offered)) = &skill_plugin {
+                    allowed.extend(skills::allowed_tools(dir, offered));
+                }
                 let mut blocked: Vec<String> =
                     if member_rules { permissions::BLOCKED.iter().map(|r| (*r).to_owned()).collect() } else { Vec::new() };
                 // Claude Code's own question tool asks a terminal nobody watches:
@@ -3680,6 +3704,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         access,
                         resume: resume.as_deref(),
                         charter: charter.as_deref(),
+                        plugin_dirs: &plugin_dirs,
                         memory: memory.as_deref(),
                         add_dirs: &add_dirs,
                         mcp_config: mcp_config.as_deref(),
