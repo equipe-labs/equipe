@@ -3652,7 +3652,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             let role = roles::role_or_custom(&m.role);
             let offered = skills::offered(role, &ctx);
             let written = (reads_files && !offered.is_empty())
-                .then(|| skills::materialise(&self.config.home, &self.config.client_version, role.id, &offered))
+                .then(|| {
+                    // On Claude Code, a designer's and a frontend engineer's edits are checked as they make them.
+                    let hooks = self.config.equipe_binary.as_deref().filter(|_| session.engine == Engine::Claude).and_then(|bin| skills::hooks(role.id, bin));
+                    skills::materialise(&self.config.home, &self.config.client_version, role.id, &offered, hooks.as_deref())
+                })
                 .and_then(|written| written.map_err(|err| crate::daemon_log!("{}'s skills weren't written: {err}", m.name)).ok());
             let Some(dir) = written else {
                 return roles::charter(role, &m.name, &ctx);
