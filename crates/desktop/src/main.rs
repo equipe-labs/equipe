@@ -83,6 +83,7 @@ mod usage;
 mod views;
 mod visuals;
 mod voiceover;
+mod windows;
 mod wire;
 mod yourturn;
 mod zoom;
@@ -126,6 +127,8 @@ actions!(equipe, [PairPhone]);
 actions!(equipe, [DismissOverlay, NewSquad]);
 // The View menu's: the window's size, as a browser zooms (⌘+, ⌘-, ⌘0).
 actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
+// The Window menu's: one more window (⌘⇧N), and the Mac's own two.
+actions!(equipe, [NewWindow, MinimizeWindow, ZoomWindow]);
 
 /// The menu bar and ⌘K: each item is a command line (T-62 §2.7 — every menu
 /// item is a command, and every command is in the palette). A line that ends
@@ -209,8 +212,15 @@ pub struct Shell {
     pub panes: pane::Panes,
     /// The answer boxes of the cards tickets waiting for the person ask on.
     pub turn: views::yourturn::TurnUi,
-    /// Where this window was opened to go (⌘-click elsewhere), once connected.
+    /// Where this window was opened to go (⌘-click elsewhere, a window
+    /// opened again at launch), once connected.
     pub goal: Option<views::elsewhere::Goal>,
+    /// Which of the app's windows this is (`windows.rs`): its own machine and squad.
+    pub window_id: u64,
+    /// The machine, squad and place last told to the app's list of windows,
+    /// and the title last set.
+    seat_told: Option<(windows::Seat, windows::Spot)>,
+    title_shown: String,
     /// The boxes of members' asks for a secret.
     pub secrets: views::secrets::SecretsUi,
     /// The boxes the person writes to a member in, on its request for permission.
@@ -324,7 +334,6 @@ pub struct Shell {
     link: Option<Link>,
     _pump: Option<Task<()>>,
     _connecting: Option<Task<()>>,
-    _clicks: Option<Task<()>>,
     _updates: Option<Task<()>>,
     _notices: Option<Task<()>>,
     _jobs: Option<Task<()>>,
@@ -334,7 +343,7 @@ pub struct Shell {
 }
 
 impl Shell {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(opening: windows::Opening, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Started again on the way to the newest release: keep at it.
         relaunch::begin_chain();
         // Sparkle skips a first launch and then waits its whole hour: look now,
@@ -359,7 +368,6 @@ impl Shell {
             cx.notify();
         })
         .detach();
-        let (clicks, mut clicked) = tokio::sync::mpsc::unbounded_channel();
         let (notices, mut noticed) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (jobs, mut finished) = tokio::sync::mpsc::unbounded_channel();
         let mut remembered = Remembered::load(&equipe_home());
@@ -368,9 +376,11 @@ impl Shell {
             look.lay_over(&mut remembered);
         }
         let (fetched_tx, mut fetched) = tokio::sync::mpsc::unbounded_channel::<diffs::Fetched>();
-        let endpoint = std::env::var("EQUIPE_TARGET")
-            .ok()
-            .and_then(|t| Endpoint::parse(&t).ok())
+        // Its own machine — the one it was opened on — else as the app was left.
+        let endpoint = opening
+            .endpoint
+            .clone()
+            .or_else(|| std::env::var("EQUIPE_TARGET").ok().and_then(|t| Endpoint::parse(&t).ok()))
             .or_else(|| remembered.last.clone())
             .unwrap_or_else(Endpoint::this_mac);
         let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
@@ -400,7 +410,10 @@ impl Shell {
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),
-            goal: None,
+            goal: opening.goal.clone(),
+            window_id: window.window_handle().window_id().as_u64(),
+            seat_told: None,
+            title_shown: String::new(),
             secrets: Default::default(),
             approval_words: Default::default(),
             decide: Default::default(),
@@ -464,7 +477,6 @@ impl Shell {
             link: None,
             _pump: None,
             _connecting: None,
-            _clicks: None,
             _updates: None,
             _notices: None,
             _jobs: None,
@@ -479,15 +491,8 @@ impl Shell {
         }
         shell.chat.follow = !shell.remembered.whole_conversation;
         shell.board.view.layout = if shell.remembered.tickets_board { tickets::Layout::Board } else { tickets::Layout::List };
-        // Where a click on a notification says to go: the delegate sends, we follow.
-        shell.start_bell(clicks, window, cx);
-        shell._clicks = Some(cx.spawn_in(window, async move |this, cx| {
-            while let Some(go) = clicked.recv().await {
-                if this.update_in(cx, |this, window, cx| this.go(go, window, cx)).is_err() {
-                    break;
-                }
-            }
-        }));
+        // What macOS allows, and whether this window is in front of the person.
+        shell.start_bell(window, cx);
         // An update downloaded in the background: the sidebar offers the restart.
         let mut updates = relaunch::watch();
         shell._updates = Some(cx.spawn_in(window, async move |this, cx| {
@@ -733,15 +738,68 @@ impl Shell {
         }));
         shell.load_peers(cx);
         shell.tell_looks(window, cx);
-        shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
+        // One of the app's windows, on its own machine and squad.
+        let first = windows::none_open();
+        let squad = opening.squad.clone().unwrap_or_default();
+        windows::opened(shell.window_id, window.window_handle(), cx.weak_entity(), windows::Seat { endpoint: endpoint.clone(), squad });
+        let mut first_link = Target::new(endpoint, env!("CARGO_PKG_VERSION"));
+        if let Some(squad) = opening.squad {
+            first_link.prefer = Some(squad);
+        }
+        shell.attach(first_link, window, cx);
         shell.composer.focus(window, cx);
-        // One more window: the first takes what other apps share and
-        // greets the person; this one only goes where it was opened to go.
-        if !views::elsewhere::opening_another() {
+        // The app's first window takes what other apps share and greets the
+        // person (on the screen they chose to start on); one more only goes
+        // where it was opened to go.
+        if first {
             shell.watch_inbox(cx);
-            shell.open_start(window, cx);
+            if shell.remembered.start != crate::target::Start::Pm {
+                shell.goal = None;
+                shell.open_start(window, cx);
+            }
+        }
+        // "Connect to another machine…" in a new window: the chooser, over it.
+        if opening.chooser {
+            shell.open_chooser(window, cx);
         }
         shell
+    }
+
+    /// The app's first window closed and this one is the first now: what
+    /// only the first does (what other apps share) is its.
+    pub fn take_first_duties(&mut self, cx: &mut Context<Self>) {
+        if self.composer.inbox_watch.is_none() {
+            self.watch_inbox(cx);
+        }
+    }
+
+    /// The window's machine and squad as the app's list knows them.
+    pub fn seat(&self) -> windows::Seat {
+        windows::Seat { endpoint: self.endpoint.clone(), squad: self.model.squad.clone() }
+    }
+
+    /// Tell the app's list where this window is, and the Mac what it is
+    /// called ("equipe-squad · Mac mini"): each draw, only what changed.
+    fn sync_window(&mut self, window: &mut Window) {
+        let seat = self.seat();
+        let spot = windows::Spot::of(self.place(), self.board.project_page.as_deref());
+        if self.seat_told.as_ref() != Some(&(seat.clone(), spot.clone())) {
+            let route = seat.route();
+            if let Some((old, _)) = &self.seat_told
+                && old.route() != route
+                && window.is_window_active()
+            {
+                notify::set_in_sight(old.route(), false);
+                notify::set_in_sight(route, true);
+            }
+            windows::moved(self.window_id, &seat, &spot);
+            self.seat_told = Some((seat, spot));
+        }
+        let title = windows::title(&self.model.squad, &self.place_name());
+        if title != self.title_shown {
+            window.set_window_title(&title);
+            self.title_shown = title;
+        }
     }
 
     /// Bring what depends on the model up to date: the draft in the box and the
@@ -1082,6 +1140,7 @@ impl Shell {
         self._connecting = Some(self.tick_connecting(CONNECTING_AFTER, cx));
     }
 
+    /// This window to squad `name`, on its machine: the other windows stay where they are.
     pub fn select_squad(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         if name == self.model.squad {
             return;
@@ -1090,6 +1149,28 @@ impl Shell {
         target.prefer = Some(name.to_owned());
         self.attach(target, window, cx);
         cx.notify();
+    }
+
+    /// How a window opened from this one starts: on its machine and squad.
+    pub fn opening_beside(&self, goal: Option<views::elsewhere::Goal>) -> windows::Opening {
+        windows::Opening { endpoint: Some(self.endpoint.clone()), squad: Some(self.model.squad.clone()).filter(|s| !s.is_empty()), goal, chooser: false }
+    }
+
+    /// New Window (⌘⇧N): another window on this machine and squad, to point
+    /// elsewhere without touching this one.
+    pub fn new_window(&mut self, squad: Option<String>, cx: &mut Context<Self>) {
+        let mut opening = self.opening_beside(None);
+        if squad.is_some() {
+            opening.squad = squad;
+        }
+        views::elsewhere::open(opening, cx);
+    }
+
+    /// "Connect to another machine…" in a new window: one opens beside this,
+    /// its chooser open — this window stays on its machine.
+    pub fn new_window_elsewhere(&mut self, cx: &mut Context<Self>) {
+        let opening = windows::Opening { chooser: true, ..self.opening_beside(None) };
+        views::elsewhere::open(opening, cx);
     }
 
     // ── which machine ──
@@ -1856,6 +1937,7 @@ impl Render for Shell {
         self.design_prepare(window, cx);
         // What the person did here (accepted, answered, a project in focus) changes 나에게 too.
         self.sync_badge();
+        self.sync_window(window);
         self.renders += 1;
         self.decide.room = f32::from(window.viewport_size().height);
         if self.log_renders {
@@ -2059,7 +2141,30 @@ fn app_menu(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Quit, cx| {
+        // Every window open now opens again next time.
+        windows::quitting();
+        cx.quit();
+    });
+    // New Window: beside the window in front, on its machine and squad; with
+    // none open, as the app was left.
+    cx.on_action(|_: &NewWindow, cx| {
+        let front = cx.active_window().and_then(|active| windows::shells().into_iter().find(|(h, _)| h.window_id() == active.window_id())).and_then(|(_, s)| s.upgrade());
+        match front {
+            Some(shell) => shell.update(cx, |shell, cx| shell.new_window(None, cx)),
+            None => views::elsewhere::open(windows::Opening::default(), cx),
+        }
+    });
+    cx.on_action(|_: &MinimizeWindow, cx| {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| window.minimize_window());
+        }
+    });
+    cx.on_action(|_: &ZoomWindow, cx| {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| window.zoom_window());
+        }
+    });
     cx.bind_keys([
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
@@ -2086,7 +2191,23 @@ pub fn set_menus(cx: &mut App) {
         MenuItem::action(t!("main.menu_show_all"), ShowAll),
         MenuItem::separator(),
         MenuItem::action(t!("main.menu_quit"), Quit),
-    ]), edit_menu(), squad_menu(), member_menu(), view_menu(), help_menu()]);
+    ]), edit_menu(), squad_menu(), member_menu(), view_menu(), window_menu(), help_menu()]);
+    // The Mac lists the windows under it, by their titles ("equipe-squad · Mac mini").
+    windows::windows_menu_at(WINDOW_MENU_AT);
+}
+
+/// Where the Window menu is in the menu bar: after equipe, Edit, Squad, Member and View.
+const WINDOW_MENU_AT: isize = 5;
+
+/// The Window menu: one more window, and the Mac's own items; macOS lists
+/// the open windows under them.
+fn window_menu() -> Menu {
+    Menu::new(t!("menu.window")).items([
+        MenuItem::action(t!("menu.new_window"), NewWindow),
+        MenuItem::separator(),
+        MenuItem::action(t!("menu.minimize"), MinimizeWindow),
+        MenuItem::action(t!("menu.zoom_window"), ZoomWindow),
+    ])
 }
 
 /// ⌘+ ⌘- ⌘0 and the View menu: the app's to answer, whatever has the focus
@@ -2157,7 +2278,9 @@ fn window_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-/", ShowHelp, None),
         KeyBinding::new("cmd-shift-h", OpenSquadFolder, None),
         KeyBinding::new("cmd-shift-e", ExportConversation, None),
-        KeyBinding::new("cmd-shift-n", AddMembers, None),
+        KeyBinding::new("cmd-shift-n", NewWindow, None),
+        KeyBinding::new("alt-cmd-n", AddMembers, None),
+        KeyBinding::new("cmd-m", MinimizeWindow, None),
         // ⌥⏎ and ⌃J break the line like ⇧⏎ (T-54 §8).
         KeyBinding::new("alt-enter", Enter { secondary: false, shift: true }, Some("Input")),
         KeyBinding::new("ctrl-j", Enter { secondary: false, shift: true }, Some("Input")),
@@ -2274,22 +2397,31 @@ fn main() {
                 let _ = window.update(cx, |_, window, _| window.activate_window());
             }
             None => {
-                open_app_window(cx);
+                open_kept_windows(cx);
             }
         }
         cx.activate(true);
     });
     app.run(|cx| {
         gpui_kit::init(cx);
-        // The notification centre's delegate, before a click can come back.
+        // The notification centre's delegate, before a click can come back;
+        // a click goes to the window showing the squad it came from.
         notify::start();
+        follow_notice_clicks(cx);
+        // A window closed: the others take on what it did; quitting keeps them all.
+        cx.on_window_closed(|cx, id| windows::closed(id.as_u64(), cx)).detach();
+        cx.on_app_quit(|_| {
+            windows::quitting();
+            async {}
+        })
+        .detach();
         tips::init(cx);
         render::code::warm();
         cx.bind_keys(window_bindings());
         app_menu(cx);
         views::composer::bind_keys(cx);
         #[allow(unused_variables)]
-        let (handle, shell) = open_app_window(cx);
+        let (handle, shell) = open_kept_windows(cx);
         // The real view draws to its pictures alone: it never comes forward.
         if !readonly::on() {
             cx.activate(true);
@@ -2302,11 +2434,47 @@ fn main() {
 /// The smallest the window goes, in points.
 const MIN_WINDOW: (f32, f32) = (760., 520.);
 
+/// Where a click on a notice goes: the window showing the squad it came
+/// from (else the first), which comes to the front there.
+fn follow_notice_clicks(cx: &mut App) {
+    let (clicks, mut clicked) = tokio::sync::mpsc::unbounded_channel::<notify::Click>();
+    notify::follow_clicks(clicks);
+    cx.spawn(async move |cx| {
+        while let Some(click) = clicked.recv().await {
+            cx.update(|cx| {
+                let Some((handle, shell)) = windows::clicked(click.route) else { return };
+                let Some(shell) = shell.upgrade() else { return };
+                let _ = handle.update(cx, |_, window, cx| shell.update(cx, |shell, cx| shell.go(click.go, window, cx)));
+            });
+        }
+    })
+    .detach();
+}
+
+/// The windows the app was left with, each on its machine and squad and
+/// where it was — the first in front; one window as before when none were
+/// kept (or a machine is named for this launch: `EQUIPE_TARGET`). A machine
+/// out of reach shows its window reconnecting, as any dropped line does.
+fn open_kept_windows(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
+    let kept = if readonly::on() || std::env::var_os("EQUIPE_TARGET").is_some() { Vec::new() } else { windows::load(&equipe_home()) };
+    let mut openings = kept.iter().map(windows::Kept::opening);
+    let first = open_app_window(openings.next().unwrap_or_default(), cx);
+    let more = openings.len();
+    for opening in openings {
+        open_app_window(opening, cx);
+    }
+    if more > 0 {
+        let _ = first.0.update(cx, |_, window, _| window.activate_window());
+    }
+    first
+}
+
 /// A window of the app, with the conversation in it: at launch, from the
-/// Dock after it was closed, and for a place opened elsewhere
-/// (`views::elsewhere`) — a little down and right of the others, so it is
-/// seen to open. All in one tab group, so the Mac can make tabs of them.
-pub fn open_app_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
+/// Dock after it was closed, and for one more (New Window, a place opened
+/// elsewhere, `views::elsewhere`) — a little down and right of the others,
+/// so it is seen to open. All in one tab group, so the Mac can make tabs of
+/// them.
+pub fn open_app_window(opening: windows::Opening, cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
     {
         let others = cx.windows().len() as f32;
         // As large as the person left it; the real view, as their app is.
@@ -2333,7 +2501,7 @@ pub fn open_app_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
             tabbing_identifier: Some("equipe".to_owned()),
             ..Default::default()
         };
-        let (handle, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(window, cx))).expect("failed to open window");
+        let (handle, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(opening, window, cx))).expect("failed to open window");
         answer_zoom(handle, shell.clone(), cx);
         (handle, shell)
     }
@@ -2362,6 +2530,14 @@ mod tests {
             assert_eq!(bound(&format!("ctrl-{n}")), [format!("equipe::Project{n}").as_str()]);
             assert!(bound(&format!("cmd-{n}")).is_empty(), "⌘{n} is free again");
         }
+    }
+
+    #[test]
+    fn a_new_window_has_the_macs_keys() {
+        assert_eq!(bound("cmd-shift-n"), ["equipe::NewWindow"], "⌘⇧N: one more window, as browsers and editors open one");
+        assert_eq!(bound("alt-cmd-n"), ["equipe::AddMembers"], "adding members moved over for it");
+        assert_eq!(bound("cmd-m"), ["equipe::MinimizeWindow"]);
+        assert_eq!(bound("cmd-n"), ["equipe::NewMessage"], "⌘N stays a new message");
     }
 
     #[test]

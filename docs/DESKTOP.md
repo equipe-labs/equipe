@@ -561,6 +561,13 @@ another Mac's daemon notifies on the person's Mac, the same as locally. The
 daemon (and the `equipe attach --stdio` it runs over SSH) never shows a
 notification.
 
+**Several windows** (see "Windows" below): each machine's squad is told once,
+by the first window open on it, however many windows show it; the app's own
+notices (an update) by the app's first window. A notice's identifier carries
+its squad's route (`member:4|<n>|r<hex>`), so a click goes to the window
+showing that squad, and macOS shows the banner unless a window on that very
+squad is the one in front. The Dock's number adds each squad's 나에게 once.
+
 **Dev builds.** The centre needs the app bundle — run as a bare binary it
 would abort ("bundleProxyForCurrentProcess is nil") — so `cargo run` logs once
 that notifications are off and goes on; settings says so. To see them, package
@@ -575,6 +582,36 @@ open -n --stderr /tmp/notify.log target/desktop-dmg/equipe.app --args --notify-t
 It says what macOS allows, asks if it never was, posts three notices (two in
 the PM's thread, and the update's), puts 3 on the Dock and waits two minutes for
 a click, each step in the log.
+
+## Windows
+
+Each window is its own machine and squad, live side by side: the Mac mini's
+squad in one, another machine's in the next (`windows.rs`). **New Window**
+(⌘⇧N; Window menu; "새 창" in the squad switcher at the sidebar's foot) opens
+one on the same machine and squad; from there it is pointed elsewhere — a
+squad, "다른 컴퓨터에 연결…" — without touching the others. In the switcher a
+squad, or "다른 컴퓨터에 연결…", opens in a new window with ⌘-click (as places
+do, `views/elsewhere.rs`) or the row's button on the pointer.
+
+- **Per connection.** The daemon follows one squad per connection (`hello
+  {squad}`); the squad switches by reconnecting that window's own line. After
+  a drop the line asks for the squad it was on, never the daemon's "opened
+  last" (which another window or the terminal may have changed).
+- **Told apart.** The title is "squad · machine" (`equipe-squad · Mac mini`) —
+  the Window menu (made the Mac's windows menu whatever its name in the
+  language in use), Mission Control, ⌘\` and the tab bar show it — and the
+  sidebar's foot marks another machine with its icon.
+- **Kept.** `<home>/desktop-windows` keeps each window's machine, squad and
+  place (`window\t<local|ssh spec>\t<squad>\t<spot>`), in order; the next
+  launch (or a click on the Dock with none open) opens them all again. A
+  machine out of reach shows its window's usual connecting screen. Closing a
+  window forgets it — not the last one; quitting forgets none. `EQUIPE_TARGET`
+  opens one window, as before.
+- Closing a window drops only its own line; SSH's shared connection
+  (`ControlPersist`) stays for the others.
+
+The snapshot script has `newwindow[:<squad>]`, `win:<n|first|last>` and
+`titles[:<file>]` for these.
 
 ## Zoom (⌘+ ⌘- ⌘0)
 
