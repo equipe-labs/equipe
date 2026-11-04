@@ -77,6 +77,7 @@ const SOURCES: &[Source] = &[
         offered: |r, _| r.id == "designer",
     },
     Source { dir: "design-qa", files: &[file!("design-qa", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "ui-floor", files: &[file!("ui-floor", "SKILL.md")], offered: |r, _| r.id == "frontend" },
     Source { dir: "design-remix", files: &[file!("design-remix", "SKILL.md")], offered: |r, c| r.id == "designer" && c.design },
     Source { dir: "security-review", files: &[file!("security-review", "SKILL.md")], offered: |r, _| r.id == crate::roles::SECURITY },
     Source { dir: "marketing-playbook", files: &[file!("marketing-playbook", "SKILL.md")], offered: |r, _| r.id == crate::roles::MARKETING },
@@ -447,7 +448,8 @@ mod tests {
         assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
         assert_eq!(names("designer", &base), ["plan-review", "research-report", "design-system", "design-process", "design-tools", "ui-map", "design-qa"]);
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
-        for id in ["frontend", "backend", "mobile", "qa"] {
+        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "ui-floor"]);
+        for id in ["backend", "mobile", "qa"] {
             assert_eq!(names(id, &base), ["plan-review", "research-report"], "{id}");
         }
         assert_eq!(names("data", &base), ["research-report"]);

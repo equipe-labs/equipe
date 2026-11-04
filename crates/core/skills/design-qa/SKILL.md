@@ -12,3 +12,10 @@ put them beside the spec; never pass on the engineer's screenshots alone, and pa
 what it changed are up to date. Differences from the spec, the tokens and accessibility are blockers and send it back;
 what keeps it from looking finished — rhythm, alignment, density, hierarchy, the first impression — is polish, always
 written down, even on a pass. Finish it with `design_qa`, its report written under `design/qa/`.
+
+Hold each changed screen to the system in code too: `equipe design lint <its changed source> --render --url <its
+preview> --screen <flow/screen>`. A floor finding is a blocker and sends it back, never waived; a habit is a blocker
+unless the spec or the person kept it (then it is in `design/decisions/`); finishing notes go in the report as
+polish. Before you pass it, `equipe design second-look <flow/screen> --criteria "<the ticket's acceptance
+criteria>"` gives it fresh eyes, and what that look asks to fix is a blocker too. A redesign of a screen also passes
+`equipe design kept check` against what was recorded before it.
