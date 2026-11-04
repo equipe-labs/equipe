@@ -76,6 +76,8 @@
 //! routine's message and the review in the designer's conversation, its
 //! proposal waiting in 나에게 as a visual question (`fake_daemon/review.rs`).
 //!
+//! `FAKE_CHECKS=1`: the designer's conversation checks a screen in code and has a
+//! second look at it (`fake_daemon/checks.rs`); `FAKE_CHECKS=fail` stops at a failing check.
 //! `FAKE_NOISE=1`: the designer's conversation holds the engine's own turns —
 //! background tasks ending, a reminder, a `sleep` refused (`fake_daemon/noise.rs`).
 //!
@@ -999,6 +1001,8 @@ mod retro;
 
 #[path = "fake_daemon/noise.rs"]
 mod noise;
+#[path = "fake_daemon/checks.rs"]
+mod checks;
 
 #[path = "fake_daemon/signin.rs"]
 mod signin;
@@ -1197,6 +1201,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         if noise::on() {
                             designer.work = None;
                             designer.recent = noise::history();
+                        }
+                        // `FAKE_CHECKS=1`: the designer checks a screen in code and has fresh eyes look at it.
+                        if checks::on() {
+                            designer.work = None;
+                            designer.state = SessionState::Ready;
+                            designer.recent = checks::history();
                         }
                         let mut backend = backend;
                         backend.effort = Some("high".into());

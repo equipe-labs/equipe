@@ -254,6 +254,42 @@ pub struct Screen {
     /// The same of its pictures of the person's real data ([`Picture::live`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub live_stale: bool,
+    /// Its latest design check, as `equipe design lint --render` kept it in
+    /// `design/checks/<flow>/<screen>.json`; `None`: never checked so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<ScreenCheck>,
+}
+
+/// A screen's latest design check and second look, in short: what the UI map
+/// shows on its card.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenCheck {
+    /// Floor rules passed, of those run.
+    pub floor: (u32, u32),
+    /// Habits left to fix, and kept with a reason.
+    #[serde(default)]
+    pub habits: u32,
+    #[serde(default)]
+    pub kept: u32,
+    /// Finishing notes.
+    #[serde(default)]
+    pub finish: u32,
+    /// The widths it was drawn at.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub widths: Vec<u32>,
+    /// When it was checked, in unix seconds.
+    #[serde(default)]
+    pub at: u64,
+    /// The second look since: passed, or how many fixes it asked; `None`: none yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<Look>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Look {
+    pub pass: bool,
+    #[serde(default)]
+    pub fixes: u32,
 }
 
 /// A state of a screen: default, empty, loading, error — with its pictures.
