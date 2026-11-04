@@ -94,6 +94,9 @@
 //! `FAKE_DISK=low|critical|full`: the disk runs short, with a realistic look
 //! at what takes it and a clean that gives it back (`fake_daemon/disk.rs`).
 //! `FAKE_ENGINES`: settings' AI platforms in each state (`fake_daemon/engines.rs`).
+//! `FAKE_SIGNIN=outside|outside_stuck|locked|expired|failed|missing|unknown|back|checking|codex`:
+//! the PM's last turn stopped by a lost sign-in, its card in each state
+//! (`fake_daemon/signin.rs`).
 //! `FAKE_DESIGN=1`: the squad's design system and the web project's own,
 //! modelled on T-144's brand guideline; `draft`: T-144 in review with its
 //! draft; `working`: T-378 still making the squad's UI map, the designer at
@@ -993,6 +996,9 @@ mod retro;
 #[path = "fake_daemon/noise.rs"]
 mod noise;
 
+#[path = "fake_daemon/signin.rs"]
+mod signin;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -1109,6 +1115,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         if replies::on() {
                             history.extend(replies::history());
+                        }
+                        // `FAKE_SIGNIN`: the PM's last turn stopped by a lost sign-in, and its card.
+                        if signin::on() {
+                            history.extend(signin::history());
+                            signin::attached(events.clone());
                         }
                         if browser::handover() {
                             history.push(Entry::User { text: "App Store Connect에서 EU DSA 거래자 상태를 바꿔 줘".into() });
@@ -1593,7 +1604,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) {
+                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

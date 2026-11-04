@@ -919,12 +919,13 @@ pub enum Command {
     /// screen, by [`Event::Engines`].
     Engines,
     /// Sign `engine` in on the daemon's machine, with its own command-line
-    /// tool (`codex login`), whose login it keeps and equipe never reads.
-    /// `device`: with a one-time code the screen shows, for a browser on
-    /// another machine (`codex login --device-auth`); else the browser opens
-    /// on the daemon's machine. Claude Code is signed in by the person
-    /// (`claude auth login` in a terminal). Answered, to every screen, by
-    /// [`Event::SignIn`].
+    /// tool (`codex login`, `claude auth login`), whose login it keeps and
+    /// equipe never reads. `device`: with a one-time code the screen shows,
+    /// for a browser on another machine (`codex login --device-auth`); else
+    /// the browser opens on the daemon's machine. Claude Code's sign-in opens
+    /// the browser there too and also gives a page to open anywhere, whose
+    /// code the person pastes back ([`SignInStep::Paste`]). Answered, to
+    /// every screen, by [`Event::SignIn`].
     SignIn {
         engine: Engine,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -932,6 +933,17 @@ pub enum Command {
     },
     /// Stop the sign-in under way: answered by [`SignInStep::Cancelled`].
     SignInCancel { engine: Engine },
+    /// The code the sign-in page showed, as the person pasted it on a screen
+    /// ([`SignInStep::Paste`]): written once to the tool's own prompt, never
+    /// kept or logged.
+    SignInCode { engine: Engine, code: String },
+    /// Look again at why `engine` can't serve its members on the daemon's
+    /// machine: answered, to every screen, by [`Event::EngineAuth`].
+    CheckEngine { engine: Engine },
+    /// The daemon runs outside the Mac's login session
+    /// ([`AuthState::OutsideLogin`]): it stops, and its login service starts
+    /// it again inside, where the Keychain is. Only ever the person's.
+    MoveIntoLogin,
     /// Install `engine`'s command-line tool on the daemon's machine with its
     /// maker's own installer (no Node needed), as the person asked from a
     /// screen. Answered, to every screen, by [`Event::EngineInstall`], then
@@ -1102,6 +1114,12 @@ pub enum SignInStep {
     /// daemon's machine in to whoever enters it: shown to the person's screens
     /// only, never to a phone, never logged.
     DeviceCode { url: String, code: String },
+    /// Open `url` in any browser, approve, and paste the code the page then
+    /// shows ([`Command::SignInCode`]) — or approve in the browser that
+    /// opened on the daemon's machine, which needs no code. Like a device
+    /// code, a link that signs the daemon's machine in to whoever finishes
+    /// it: shown to the person's screens only, never logged.
+    Paste { url: String },
     /// Signed in; the tool keeps the login on the daemon's machine.
     Done,
     Failed {
@@ -1112,6 +1130,44 @@ pub enum SignInStep {
     },
     /// Stopped before it finished.
     Cancelled,
+}
+
+/// Why an engine can't serve its members on the daemon's machine, as equipe
+/// found it after a turn failed for want of a sign-in ([`Event::EngineAuth`]).
+/// Looked at by equipe itself — the tool's own status, the session the
+/// daemon runs in, whether the login Keychain is locked — never by reading
+/// a credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthState {
+    /// Being looked at.
+    Checking,
+    /// The daemon runs outside the Mac's login session — started over SSH —
+    /// so the tools it runs can't reach the login Keychain, where Claude
+    /// Code keeps its sign-in. Signing in again wouldn't help.
+    /// `movable`: its login service is there to start it inside
+    /// ([`Command::MoveIntoLogin`]); else `equipe daemon install`, at the
+    /// Mac's own screen.
+    OutsideLogin {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        movable: bool,
+    },
+    /// Stopping, to start again inside the login session.
+    Moving,
+    /// The Mac's login Keychain is locked: unlocked, the sign-in in it works again.
+    KeychainLocked,
+    /// No working sign-in: the person signs in again ([`Command::SignIn`]).
+    SignedOut,
+    /// Its tool isn't on the daemon's machine.
+    NotInstalled,
+    /// Signed in: `resumed` conversations its sign-in had stopped carry on.
+    SignedIn {
+        #[serde(default, skip_serializing_if = "is_zero")]
+        resumed: u32,
+    },
+    /// Couldn't tell (the event's `detail` says why) — or a state this build doesn't know.
+    #[serde(other)]
+    Unknown,
 }
 
 /// How installing an engine's tool goes ([`Event::EngineInstall`]).
@@ -1786,6 +1842,20 @@ pub enum Event {
     },
     /// A sign-in to `engine` moved on ([`Command::SignIn`]).
     SignIn { engine: Engine, step: SignInStep },
+    /// Why `engine` can't serve its members on the daemon's machine, and how
+    /// its fix goes ([`AuthState`]): told when a turn fails for want of a
+    /// sign-in, as it is looked at again ([`Command::CheckEngine`]), and to
+    /// each screen as it attaches. `stopped`: the conversations whose turns
+    /// it stopped, carried on by equipe once it is signed in again.
+    EngineAuth {
+        engine: Engine,
+        state: AuthState,
+        /// More, in the tool's words, when there is any.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        stopped: Vec<SessionId>,
+    },
     /// Installing `engine`'s tool moved on ([`Command::InstallEngine`]).
     EngineInstall { engine: Engine, step: InstallStep },
     /// Nebius Token Factory on the daemon's machine: sent with
@@ -2000,6 +2070,7 @@ impl Event {
             | Event::Engines { .. }
             | Event::Nebius { .. }
             | Event::SignIn { .. }
+            | Event::EngineAuth { .. }
             | Event::EngineInstall { .. } => None,
         }
     }
@@ -2016,6 +2087,7 @@ impl Event {
                 | Event::Engines { .. }
                 | Event::Nebius { .. }
                 | Event::SignIn { .. }
+                | Event::EngineAuth { .. }
                 | Event::EngineInstall { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
@@ -2984,6 +3056,45 @@ mod tests {
         let step = serde_json::to_value(SignInStep::Failed { why: SignInFailure::Expired, detail: String::new() }).unwrap();
         assert_eq!(step, json!({ "kind": "failed", "why": "expired" }));
         assert_eq!(serde_json::to_value(SignInStep::Browser { url: None }).unwrap(), json!({ "kind": "browser" }));
+    }
+
+    #[test]
+    fn an_engines_lost_sign_in_and_its_fix_travel_to_every_screen() {
+        let commands = [
+            Command::SignIn { engine: Engine::Claude, device: true },
+            Command::SignInCode { engine: Engine::Claude, code: "abc#def".into() },
+            Command::CheckEngine { engine: Engine::Claude },
+            Command::MoveIntoLogin,
+        ];
+        for command in commands {
+            let json = serde_json::to_string(&command).unwrap();
+            assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+        }
+        assert_eq!(serde_json::to_value(Command::MoveIntoLogin).unwrap(), json!({ "type": "move_into_login" }));
+        let states = [
+            AuthState::Checking,
+            AuthState::OutsideLogin { movable: true },
+            AuthState::OutsideLogin { movable: false },
+            AuthState::Moving,
+            AuthState::KeychainLocked,
+            AuthState::SignedOut,
+            AuthState::NotInstalled,
+            AuthState::SignedIn { resumed: 2 },
+            AuthState::Unknown,
+        ];
+        for state in states {
+            let event = Event::EngineAuth { engine: Engine::Claude, state, detail: "said".into(), stopped: vec![3, 4] };
+            assert_eq!((event.squad(), event.session(), event.for_everyone()), (None, None, true));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+        }
+        let quiet = serde_json::to_value(Event::EngineAuth { engine: Engine::Claude, state: AuthState::SignedIn { resumed: 0 }, detail: String::new(), stopped: vec![] }).unwrap();
+        assert_eq!(quiet, json!({ "type": "engine_auth", "engine": "claude", "state": { "kind": "signed_in" } }));
+        // A newer daemon's reason reads as one this build can't tell.
+        let newer: AuthState = serde_json::from_value(json!({ "kind": "disk_encrypted" })).unwrap();
+        assert_eq!(newer, AuthState::Unknown);
+        let paste = Event::SignIn { engine: Engine::Claude, step: SignInStep::Paste { url: "https://claude.com/cai/oauth/authorize?code=true".into() } };
+        assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&paste).unwrap()).unwrap(), paste);
     }
 
     #[test]

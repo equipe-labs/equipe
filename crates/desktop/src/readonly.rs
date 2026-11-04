@@ -142,6 +142,10 @@ pub fn reads(command: &Command) -> bool {
         | C::DiskRun { .. }
         | C::SignIn { .. }
         | C::SignInCancel { .. }
+        // Looking again may carry stopped turns on: the person's own, not a picture's.
+        | C::SignInCode { .. }
+        | C::CheckEngine { .. }
+        | C::MoveIntoLogin
         | C::InstallEngine { .. }
         | C::SetNebiusKey { .. }
         | C::SignOut { .. }
@@ -512,6 +516,9 @@ mod tests {
             Command::Engines,
             Command::SignIn { engine: Engine::Codex, device: false },
             Command::SignInCancel { engine: Engine::Codex },
+            Command::SignInCode { engine: Engine::Claude, code: "c".into() },
+            Command::CheckEngine { engine: Engine::Claude },
+            Command::MoveIntoLogin,
             Command::InstallEngine { engine: Engine::Claude },
             Command::SetNebiusKey { key: None },
             Command::SignOut { engine: Engine::Codex },

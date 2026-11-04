@@ -454,5 +454,6 @@
   "control.disallow": "撤回“始终允许”规则 {rule}",
   "control.merge_push": "将 T-{ticket} 的分支合并到 main 并推送到 origin",
   "control.merge": "将 T-{ticket} 的分支合并到 main",
-  "control.keep_on_branch": "将 T-{ticket} 的工作留在其分支上"
+  "control.keep_on_branch": "将 T-{ticket} 的工作留在其分支上",
+  "news.sign_in_carried_on": "{engine} 已重新登录，停下的工作继续进行。"
 }

@@ -458,5 +458,6 @@
   "control.disallow": "Retirar la regla «permitir siempre» {rule}",
   "control.merge_push": "Fusionar la rama de T-{ticket} en main y subirla a origin",
   "control.merge": "Fusionar la rama de T-{ticket} en main",
-  "control.keep_on_branch": "Dejar el trabajo de T-{ticket} en su rama"
+  "control.keep_on_branch": "Dejar el trabajo de T-{ticket} en su rama",
+  "news.sign_in_carried_on": "{engine} vuelve a tener la sesión iniciada: el trabajo detenido continúa."
 }
