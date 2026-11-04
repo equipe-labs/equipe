@@ -1,7 +1,7 @@
 //! The design system screen's state (`views/design.rs` draws it): what the
 //! daemon last said the squad's design systems are (`Event::Design`), which
 //! one is on screen and which section, what changed since the person last
-//! looked. Its pictures are the window's (`crate::visuals`, read through the
+//! looked, and what a ticket still at work on one has made so far. Its pictures are the window's (`crate::visuals`, read through the
 //! daemon's `read_image` on this Mac or another, as a decision's are). No UI
 //! types here, so the rules can be tested.
 
@@ -13,6 +13,7 @@ use equipe_core::design::contrast;
 use equipe_core::design::diff::{self, Change, Seen};
 use equipe_core::design::values;
 use equipe_core::protocol::design::{AssetKind, DesignSystem, DesignVersion, FlowMap, Taste, TasteFrom, TasteNote, Token};
+use equipe_core::t;
 
 use crate::compare::{self, Side};
 use gpui_kit::ScrollHandle;
@@ -315,6 +316,9 @@ pub struct DesignUi {
     pub source: String,
     /// Looking at that system's draft rather than the accepted one.
     pub draft: bool,
+    /// Looking at the work a ticket is still making of it, as far as it has
+    /// come: read-only, not in review.
+    pub working: bool,
     pub section: Section,
     /// What was seen when this look began, by system — the "바뀐 것" are since then.
     pub baseline: HashMap<String, Seen>,
@@ -371,6 +375,7 @@ impl Default for DesignUi {
             asked: None,
             source: "squad".into(),
             draft: false,
+            working: false,
             section: Section::Overview,
             baseline: HashMap::new(),
             seen: BTreeMap::new(),
@@ -405,9 +410,19 @@ impl DesignUi {
         self.systems.iter().filter(|s| s.draft.is_none()).collect()
     }
 
-    /// The draft handed in for the system on screen, if any.
+    /// The draft handed in for the system on screen, if any: one in review,
+    /// never work still under way.
     pub fn draft_of(&self, source: &str) -> Option<&DesignSystem> {
-        self.systems.iter().find(|s| s.draft.is_some() && base_key(s) == source)
+        self.systems.iter().find(|s| in_review(s) && base_key(s) == source)
+    }
+
+    /// The work a ticket is still making of `source`, as far as it has come
+    /// — none while a draft of it is in review, which comes first.
+    pub fn working_of(&self, source: &str) -> Option<&DesignSystem> {
+        if self.draft_of(source).is_some() {
+            return None;
+        }
+        self.systems.iter().find(|s| is_working(s) && base_key(s) == source)
     }
 
     /// The sources to switch between: every system's, accepted or only drafted.
@@ -423,16 +438,59 @@ impl DesignUi {
     }
 
     /// The system on screen: the accepted one of the source (its draft when
-    /// asked, or when there is only a draft).
+    /// asked, or when there is only a draft; the work under way when asked).
+    /// Work under way is never shown unasked: alone, the source is still empty.
     pub fn current(&self) -> Option<&DesignSystem> {
+        if self.working
+            && let Some(work) = self.working_of(&self.source)
+        {
+            return Some(work);
+        }
         let accepted = self.systems.iter().find(|s| s.draft.is_none() && base_key(s) == self.source);
         let draft = self.draft_of(&self.source);
         match (accepted, draft) {
             (Some(_), Some(d)) if self.draft => Some(d),
             (Some(a), _) => Some(a),
             (None, Some(d)) => Some(d),
-            (None, None) => self.systems.first(),
+            (None, None) if self.working_of(&self.source).is_some() => None,
+            (None, None) => self.systems.iter().find(|s| !is_working(s)),
         }
+    }
+
+    /// The work under way on the source on screen viewed (`on`) or left:
+    /// whether it is on show now.
+    pub fn view_working(&mut self, on: bool) -> bool {
+        self.working = on && self.working_of(&self.source).is_some();
+        if self.working {
+            self.draft = false;
+            self.end_compare();
+        }
+        self.lightbox = None;
+        let map = self.current().and_then(|s| s.flows.clone());
+        self.map.arrived(map.as_ref());
+        if let Some(system) = self.current()
+            && count(system, self.section).is_none()
+        {
+            self.section = Section::Overview;
+        }
+        self.working
+    }
+
+    /// The work under way on the source on screen, as the screen tells it:
+    /// its ticket, who is at it and what they are doing now (as the team
+    /// says), what has landed. `None` with none — or a draft in review.
+    pub fn making(&self, model: &crate::state::Model) -> Option<Making> {
+        let work = self.working_of(&self.source)?;
+        let of = work.draft.as_ref()?;
+        let member = model.member_on(of.ticket);
+        Some(Making {
+            ticket: of.ticket,
+            title: of.title.clone(),
+            who: member.map(|m| (m.name.clone(), m.role.clone())),
+            doing: member.and_then(|m| crate::board::step_words(m.estimate.as_ref().and_then(|e| e.what.as_deref()), m.target.as_deref())),
+            busy: member.is_some_and(|m| m.presence == crate::state::Presence::Working),
+            landed: landed(work),
+        })
     }
 
     /// The daemon's word: keep it, keep the person's place where it still is,
@@ -448,6 +506,10 @@ impl DesignUi {
         }
         if self.draft_of(&self.source).is_none() {
             self.draft = false;
+        }
+        // The work handed in (now in review), or given up: nothing under way to show.
+        if self.working_of(&self.source).is_none() {
+            self.working = false;
         }
         // The draft accepted, sent back or gone: nothing to compare.
         if self.compare && !self.can_compare() {
@@ -505,8 +567,8 @@ impl DesignUi {
     /// screen now is what the person has seen.
     pub fn looked(&mut self, seen_key: &dyn Fn(&DesignSystem) -> String) -> bool {
         let mut changed = false;
-        let draft = self.draft;
-        for system in self.systems.iter().filter(|s| s.draft.is_none() || draft) {
+        let (draft, working) = (self.draft, self.working);
+        for system in self.systems.iter().filter(|s| s.draft.is_none() || (draft && in_review(s)) || (working && is_working(s))) {
             let key = seen_key(system);
             let now = diff::seen(&system.tokens);
             if self.seen.get(&key) != Some(&now) {
@@ -561,6 +623,7 @@ impl DesignUi {
     /// 지금 or 바뀐 뒤 on show: the whole screen flips, the place in the map kept where it is.
     pub fn show_side(&mut self, side: Side) {
         self.draft = side == Side::After && self.draft_of(&self.source).is_some();
+        self.working = false;
         self.lightbox = None;
         let map = self.current().and_then(|s| s.flows.clone());
         self.map.arrived(map.as_ref());
@@ -694,6 +757,84 @@ pub fn by_month(decisions: &[equipe_core::protocol::design::Decision]) -> Vec<((
     out
 }
 
+/// A draft handed in and waiting for the person: offered for accepting and comparing.
+pub fn in_review(system: &DesignSystem) -> bool {
+    system.draft.as_ref().is_some_and(|d| !d.working)
+}
+
+/// Work a ticket is still making in its worktree: shown as it lands, never
+/// accepted, compared or called in review.
+pub fn is_working(system: &DesignSystem) -> bool {
+    system.draft.as_ref().is_some_and(|d| d.working)
+}
+
+/// What work under way has made so far: the flows in its map, their
+/// screens, the pictures shot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Landed {
+    pub flows: usize,
+    pub screens: usize,
+    pub pictures: usize,
+}
+
+impl Landed {
+    pub fn is_empty(self) -> bool {
+        self.flows == 0 && self.screens == 0 && self.pictures == 0
+    }
+}
+
+pub fn landed(system: &DesignSystem) -> Landed {
+    let flows = system.flows.as_ref().map_or(&[][..], |m| m.flows.as_slice());
+    Landed {
+        flows: flows.len(),
+        screens: flows.iter().map(|f| f.screens.len()).sum(),
+        pictures: flows.iter().flat_map(|f| &f.screens).flat_map(|s| &s.states).map(|s| s.pictures.len()).sum(),
+    }
+}
+
+/// Work under way on the source on screen (`DesignUi::making`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Making {
+    pub ticket: equipe_core::protocol::TicketId,
+    pub title: String,
+    /// Who is at it — name and role — when the team says.
+    pub who: Option<(String, String)>,
+    /// What it is doing now, in a few words: its own, else what its last tool touched.
+    pub doing: Option<String>,
+    /// In the middle of a turn.
+    pub busy: bool,
+    pub landed: Landed,
+}
+
+impl Making {
+    /// The header's chip: "만드는 중 · T-378", and what it is doing now.
+    pub fn chip(&self) -> (String, Option<String>) {
+        (t!("design.working_chip", id = self.ticket), self.doing.clone())
+    }
+
+    /// Who is making it, and on which ticket: "designer · T-378 「화면 지도」".
+    pub fn whose(&self) -> String {
+        match &self.who {
+            Some((name, _)) => t!("design.working_who", name = name, id = self.ticket, title = self.title),
+            None => t!("design.working_ticket", id = self.ticket, title = self.title),
+        }
+    }
+
+    /// What it is doing now, in a line — `None` when the team doesn't say.
+    pub fn now(&self) -> Option<String> {
+        self.doing.as_ref().map(|what| t!("design.working_now", what = what))
+    }
+
+    /// What has landed so far, in a line.
+    pub fn so_far(&self) -> String {
+        let Landed { flows, screens, pictures } = self.landed;
+        if self.landed.is_empty() {
+            return t!("design.working_nothing_yet").to_owned();
+        }
+        t!("design.working_landed", flows = flows, screens = screens, pictures = pictures)
+    }
+}
+
 /// A system's key without a draft's part: the source it belongs to.
 pub fn base_key(system: &DesignSystem) -> String {
     system.project.as_ref().map_or_else(|| "squad".to_owned(), |p| format!("project:{p}"))
@@ -710,7 +851,105 @@ mod tests {
     }
 
     fn system(project: Option<&str>, draft: Option<u32>, tokens: Vec<Token>) -> DesignSystem {
-        DesignSystem { project: project.map(str::to_owned), draft: draft.map(|t| DraftOf { ticket: t, title: "브랜드".into() }), dir: "/d".into(), tokens, ..Default::default() }
+        DesignSystem { project: project.map(str::to_owned), draft: draft.map(|t| DraftOf { ticket: t, title: "브랜드".into(), working: false }), dir: "/d".into(), tokens, ..Default::default() }
+    }
+
+    /// T-378 at work on the source's UI map: `shots` pictures taken of each screen named.
+    fn making(project: Option<&str>, screens: &[(&str, usize)]) -> DesignSystem {
+        use equipe_core::protocol::design::{Flow, Picture, Screen, ScreenState};
+        let screen = |(id, shots): &(&str, usize)| Screen {
+            id: (*id).into(),
+            title: (*id).into(),
+            states: vec![ScreenState { id: "default".into(), label: "기본".into(), kind: "default".into(), note: None, pictures: (0..*shots).map(|n| Picture { path: format!("/w/{id}.{n}.png"), mode: "light".into(), width: 390, taken: 1, hash: None }).collect() }],
+            ..Default::default()
+        };
+        let (first, rest) = screens.split_at(screens.len().min(2));
+        let flows = [("onboarding", first), ("checkout", rest)].into_iter().filter(|(_, s)| !s.is_empty()).map(|(id, s)| Flow { id: id.into(), title: id.into(), screens: s.iter().map(screen).collect(), ..Default::default() }).collect();
+        DesignSystem {
+            draft: Some(DraftOf { ticket: 378, title: "화면 지도".into(), working: true }),
+            dir: "/w/t378/design".into(),
+            flows: Some(FlowMap { flows, ..Default::default() }),
+            ..system(project, None, vec![])
+        }
+    }
+
+    #[test]
+    fn work_under_way_shows_only_when_asked_and_is_never_in_review() {
+        let mut ui = DesignUi::default();
+        let key = |s: &DesignSystem| s.key();
+        ui.arrived(vec![system(None, None, vec![]), making(None, &[("login", 2), ("signup", 0), ("plans", 1)])], "/f".into(), vec![], &key);
+        assert_eq!(ui.sources(), ["squad"]);
+        assert!(ui.draft_of("squad").is_none(), "not a draft in review");
+        assert_eq!(ui.working_of("squad").and_then(|s| s.draft.as_ref()).map(|d| d.ticket), Some(378));
+        assert!(!ui.can_compare() && !ui.begin_compare(), "nothing to compare it with");
+        assert!(ui.current().unwrap().draft.is_none(), "the accepted one, until asked");
+        // Viewed: on show, read-only; the draft's switch leaves it.
+        assert!(ui.view_working(true));
+        assert!(is_working(ui.current().unwrap()) && !in_review(ui.current().unwrap()));
+        let map = ui.current().unwrap().flows.as_ref().unwrap();
+        assert_eq!(ui.map.flow(map).map(|f| f.id.as_str()), Some("onboarding"), "its map, from its first flow");
+        ui.show_side(Side::Now);
+        assert!(!ui.working && ui.current().unwrap().draft.is_none());
+        // Alone: the source is still empty, its work not shown unasked.
+        ui.arrived(vec![making(None, &[("login", 1)])], "/f".into(), vec![], &key);
+        assert_eq!(ui.sources(), ["squad"]);
+        assert!(ui.current().is_none());
+        assert!(ui.view_working(true) && ui.current().is_some());
+        // Handed in: in review now, and the view goes back to what is accepted.
+        let mut handed = making(None, &[("login", 1)]);
+        handed.draft.as_mut().unwrap().working = false;
+        ui.arrived(vec![system(None, None, vec![]), handed.clone()], "/f".into(), vec![], &key);
+        assert!(!ui.working && ui.working_of("squad").is_none());
+        assert_eq!(ui.draft_of("squad").map(|s| s.dir.as_str()), Some("/w/t378/design"));
+        // In review and under way at once: the one in review comes first.
+        ui.arrived(vec![system(None, None, vec![]), handed, making(None, &[("plans", 1)])], "/f".into(), vec![], &key);
+        assert!(ui.working_of("squad").is_none() && !ui.view_working(true));
+        assert!(ui.can_compare());
+        // A project's work is its own: not the squad's.
+        ui.arrived(vec![system(None, None, vec![]), making(Some("web"), &[("login", 1)])], "/f".into(), vec![], &key);
+        assert!(ui.working_of("squad").is_none() && ui.working_of("project:web").is_some());
+    }
+
+    #[test]
+    fn the_chip_and_the_empty_map_say_who_is_making_it_what_it_is_doing_and_what_has_landed() {
+        use crate::state::{Member, Model, Presence, Verb};
+        let mut ui = DesignUi::default();
+        let key = |s: &DesignSystem| s.key();
+        let mut model = Model::new("acme");
+        assert!(ui.making(&model).is_none(), "nothing under way");
+        ui.arrived(vec![system(None, None, vec![]), making(None, &[("login", 2), ("signup", 0), ("plans", 3)])], "/f".into(), vec![], &key);
+        // The team not heard from yet: the ticket alone.
+        let m = ui.making(&model).unwrap();
+        assert_eq!((m.ticket, m.who.clone(), m.doing.clone(), m.busy), (378, None, None, false));
+        assert_eq!(m.landed, Landed { flows: 2, screens: 3, pictures: 5 });
+        assert_eq!(m.chip(), ("만드는 중 · T-378".to_owned(), None));
+        assert_eq!(m.whose(), "T-378 「화면 지도」");
+        assert_eq!(m.now(), None);
+        assert_eq!(m.so_far(), "지금까지 흐름 2 · 화면 3 · 그림 5");
+        // The designer at it, mid-turn, saying what it is at.
+        let designer = |presence, what: Option<&str>, target: Option<&str>| Member {
+            session: 4, name: "designer".into(), role: "designer".into(), presence, verb: Verb::Editing, ticket: Some(378), memos: 0, context: None, model: None, engine: None,
+            estimate: what.map(|w| equipe_core::protocol::Estimate { what: Some(w.into()), ..Default::default() }), target: target.map(Into::into), last_seen: 0, failed: false,
+        };
+        model.members = vec![designer(Presence::Working, Some("결제 흐름 상태 찍는 중"), Some("/w/t378/design/flows/checkout/plans/default.light.390.png"))];
+        let m = ui.making(&model).unwrap();
+        assert!(m.busy);
+        assert_eq!(m.chip(), ("만드는 중 · T-378".to_owned(), Some("결제 흐름 상태 찍는 중".to_owned())));
+        assert_eq!(m.whose(), "designer · T-378 「화면 지도」");
+        assert_eq!(m.now().as_deref(), Some("지금: 결제 흐름 상태 찍는 중"));
+        // No words of its own: the file its last tool touched, by name.
+        model.members = vec![designer(Presence::Ready, None, Some("/w/t378/design/flows/flows.json"))];
+        let m = ui.making(&model).unwrap();
+        assert!(!m.busy);
+        assert_eq!(m.now().as_deref(), Some("지금: flows.json"));
+        // Nothing landed yet.
+        ui.arrived(vec![system(None, None, vec![]), DesignSystem { flows: None, ..making(None, &[]) }], "/f".into(), vec![], &key);
+        assert_eq!(ui.making(&model).unwrap().so_far(), "아직 들어온 화면이 없어요");
+        // Every word, in every language, filled.
+        let m = Making { ticket: 378, title: "t".into(), who: Some(("designer".into(), "designer".into())), doing: Some("x".into()), busy: true, landed: Landed { flows: 1, screens: 2, pictures: 3 } };
+        for said in [m.chip().0, m.whose(), m.now().unwrap(), m.so_far()] {
+            assert!(!said.contains('{') && !said.starts_with("design."), "{said}");
+        }
     }
 
     #[test]

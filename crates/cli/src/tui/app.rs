@@ -3768,7 +3768,7 @@ pub fn design_summary(systems: &[equipe_core::protocol::design::DesignSystem], f
     if !main.assets.is_empty() {
         parts.push(t!("app.design_assets", count = main.assets.len()));
     }
-    let drafts: Vec<String> = systems.iter().filter_map(|s| s.draft.as_ref()).map(|d| t!("app.design_draft", id = d.ticket)).collect();
+    let drafts: Vec<String> = systems.iter().filter_map(|s| s.draft.as_ref()).filter(|d| !d.working).map(|d| t!("app.design_draft", id = d.ticket)).collect();
     parts.extend(drafts);
     if !main.problems.is_empty() {
         parts.push(t!("app.design_problems", count = main.problems.len()));

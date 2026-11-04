@@ -725,7 +725,7 @@ fn design_system(draft: bool) -> equipe_core::protocol::design::DesignSystem {
     DesignSystem {
         project: None,
         dir: dir.into(),
-        draft: draft.then(|| DraftOf { ticket: 144, title: "브랜드 가이드라인".into() }),
+        draft: draft.then(|| DraftOf { ticket: 144, title: "브랜드 가이드라인".into(), working: false }),
         modes: tokens.modes,
         tokens: tokens.tokens,
         problems: vec![],

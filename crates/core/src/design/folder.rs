@@ -2,7 +2,8 @@
 //! `design/` in its folder (`~/.equipe/squads/<squad>/home/design`), which
 //! the designer's tasks land in when the person accepts them; a project with
 //! a look of its own keeps one in its repository (`<repo>/design`); a ticket
-//! in review whose worktree changed one shows it as a draft.
+//! in review whose worktree changed one shows it as a draft, and a ticket
+//! still at work on one shows what it has made so far (a draft `working`).
 //!
 //! A folder counts when it holds `tokens.json` or `guidelines.md`. Files are
 //! read only inside it — links resolved, nothing bigger than a limit — and
@@ -58,7 +59,9 @@ pub fn is_design_dir(dir: &Path) -> bool {
 }
 
 /// Where `squad`'s design systems are, or may be: its own (always, there or
-/// not), each project's that has one, each draft a ticket in review has.
+/// not), each project's that has one, each draft a ticket in review has —
+/// and the work a ticket in progress (or waiting on the person) is making in
+/// its worktree, marked `working`, so the screen fills in as it lands.
 pub fn places(home: &Path, squad: &str) -> Vec<Place> {
     let mut out = vec![Place { project: None, draft: None, dir: crate::squad_home::path(home, squad).join(DIR) }];
     let db = crate::journal::squad_dir(home, squad).join("squad.db");
@@ -73,11 +76,16 @@ pub fn places(home: &Path, squad: &str) -> Vec<Place> {
         }
     }
     for ticket in journal.tickets().unwrap_or_default() {
-        let Some(worktree) = ticket.worktree.as_ref().filter(|_| ticket.status == TicketStatus::Review) else { continue };
+        let working = match ticket.status {
+            TicketStatus::Review => false,
+            TicketStatus::InProgress | TicketStatus::Waiting => true,
+            _ => continue,
+        };
+        let Some(worktree) = ticket.worktree.as_ref() else { continue };
         let dir = worktree.join(DIR);
         if is_design_dir(&dir) {
             let project = if ticket.kind == TicketKind::Code { ticket.project.as_deref().map(crate::board::project_name) } else { None };
-            out.push(Place { project, draft: Some(DraftOf { ticket: ticket.id, title: ticket.title.clone() }), dir });
+            out.push(Place { project, draft: Some(DraftOf { ticket: ticket.id, title: ticket.title.clone(), working }), dir });
         }
     }
     out
@@ -129,7 +137,7 @@ pub fn stamp(places: &[Place]) -> u64 {
     for place in places {
         place.dir.hash(&mut h);
         place.project.hash(&mut h);
-        place.draft.as_ref().map(|d| (d.ticket, &d.title)).hash(&mut h);
+        place.draft.as_ref().map(|d| (d.ticket, &d.title, d.working)).hash(&mut h);
         is_design_dir(&place.dir).hash(&mut h);
         for (path, meta) in files(&place.dir) {
             path.hash(&mut h);
@@ -328,7 +336,7 @@ pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
     let folder = places.first().map(|p| p.dir.to_string_lossy().into_owned()).unwrap_or_default();
     let mut read: Vec<DesignSystem> = places.iter().filter(|p| is_design_dir(&p.dir)).map(|p| read(p, lang)).collect();
     fingerprint(&mut read);
-    let systems = read
+    let systems: Vec<DesignSystem> = read
         .iter()
         .filter(|s| match &s.draft {
             // A ticket's worktree holds a copy of the accepted folder: a draft only where it differs.
@@ -337,6 +345,9 @@ pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
         })
         .cloned()
         .collect();
+    // Work under way beside a draft in review of the same system: the one in review is shown.
+    let reviewed: Vec<Option<String>> = systems.iter().filter(|s| s.draft.as_ref().is_some_and(|d| !d.working)).map(|s| s.project.clone()).collect();
+    let systems = systems.into_iter().filter(|s| !(s.draft.as_ref().is_some_and(|d| d.working) && reviewed.contains(&s.project))).collect();
     (systems, folder)
 }
 
@@ -539,6 +550,67 @@ mod tests {
     }
 
     #[test]
+    fn work_in_progress_is_shown_as_it_lands_and_a_draft_in_review_comes_first() {
+        let home = dir("working");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let folder = crate::squad_home::path(&home, "acme").join(DIR);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(TOKENS), TOKENS_JSON).unwrap();
+        // Each ticket's worktree starts as a copy of the squad's folder.
+        let worktree = |n: u32| {
+            let w = home.join(format!("worktrees/t{n}"));
+            std::fs::create_dir_all(w.join(DIR)).unwrap();
+            std::fs::write(w.join(DIR).join(TOKENS), TOKENS_JSON).unwrap();
+            w
+        };
+        let ticket = |status: TicketStatus, title: &str, w: PathBuf| {
+            let t = equipe_protocol::Ticket {
+                id: 0, title: title.into(), body: String::new(), status, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
+                project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, design_qa: None, plan: None, created_by: "pm".into(), note: None,
+                asks: vec![], remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None,
+            };
+            let id = journal.create_ticket(&t).unwrap();
+            journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(w.clone()), ..Default::default() }).unwrap();
+            (id, w.join(DIR))
+        };
+        let (map_id, map) = ticket(TicketStatus::InProgress, "화면 지도", worktree(378));
+        let (waits_id, _) = ticket(TicketStatus::Waiting, "로고", worktree(379));
+        ticket(TicketStatus::Todo, "아직", worktree(380));
+        ticket(TicketStatus::Done, "끝난 것", worktree(381));
+        let found = places(&home, "acme");
+        let mut drafts: Vec<(u32, bool)> = found.iter().filter_map(|p| p.draft.as_ref()).map(|d| (d.ticket, d.working)).collect();
+        drafts.sort();
+        assert_eq!(drafts, [(map_id, true), (waits_id, true)],"in progress and waiting: work under way; not one to do or done");
+        // Nothing made yet: its worktree is the squad's folder, and nothing shows.
+        let keys = |home: &Path| catalog(home, "acme", Lang::En).0.iter().map(|s| s.key()).collect::<Vec<_>>();
+        assert_eq!(keys(&home), ["squad"]);
+        // The map lands, a picture at a time: the folder's watch follows it, and the work shows.
+        let before = stamp(&places(&home, "acme"));
+        std::fs::create_dir_all(map.join("flows")).unwrap();
+        std::fs::write(map.join("flows/flows.json"), r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default" } ] } ] } ] }"#).unwrap();
+        let listed = stamp(&places(&home, "acme"));
+        assert_ne!(before, listed, "flows.json in the worktree of a ticket in progress");
+        png(&map.join("flows/app/home/default.light.390.png"));
+        assert_ne!(listed, stamp(&places(&home, "acme")), "its first picture");
+        let (systems, _) = catalog(&home, "acme", Lang::En);
+        let work = systems.iter().find(|s| s.draft.is_some()).unwrap();
+        assert_eq!(work.key(), format!("squad#T-{map_id}"));
+        assert!(work.draft.as_ref().unwrap().working);
+        assert_eq!(work.flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures.len(), 1);
+        let (paths, _) = shown(&home, "acme");
+        assert!(paths.iter().any(|p| p.ends_with("t378/design/flows/app/home/default.light.390.png")), "its pictures can be read");
+        // Handed in, it is in review; a ticket still at work on the same system waits behind it.
+        let mut handed_in = journal.ticket(map_id).unwrap().unwrap();
+        handed_in.status = TicketStatus::Review;
+        journal.save_ticket(&handed_in).unwrap();
+        std::fs::write(home.join("worktrees/t379/design").join(GUIDELINES), "# 로고").unwrap();
+        let (systems, _) = catalog(&home, "acme", Lang::En);
+        let drafts: Vec<(u32, bool)> = systems.iter().filter_map(|s| s.draft.as_ref()).map(|d| (d.ticket, d.working)).collect();
+        assert_eq!(drafts, [(map_id, false)], "the one in review is shown");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn a_draft_that_only_shot_its_screens_again_is_one_and_its_pictures_say_what_they_hold() {
         const MAP: &str = r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default" } ] }, { "id": "pay", "title": "Pay", "states": [ { "id": "default" } ] } ] } ] }"#;
         let root = dir("draft-map");
@@ -558,7 +630,7 @@ mod tests {
         let accepted = folder("main", [20, 90, 250, 255]);
         let reshot = folder("t170", [250, 90, 20, 255]);
         let copy = folder("t171", [20, 90, 250, 255]);
-        let draft = |n: u32, dir: PathBuf| Place { project: None, draft: Some(DraftOf { ticket: n, title: format!("T{n}") }), dir };
+        let draft = |n: u32, dir: PathBuf| Place { project: None, draft: Some(DraftOf { ticket: n, title: format!("T{n}"), working: false }), dir };
         let alone = [Place { project: None, draft: None, dir: accepted.clone() }];
         let (systems, _) = catalog_of(&alone, Lang::En);
         let pictures = |s: &DesignSystem| s.flows.as_ref().unwrap().flows[0].screens.iter().map(|sc| sc.states[0].pictures[0].hash.clone()).collect::<Vec<_>>();
