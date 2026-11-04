@@ -2522,7 +2522,7 @@
   "match.priority_high": "",
   "match.priority_normal": "",
   "match.priority_low": "",
-  "match.this_mac": "",
+  "match.this_mac": "this mac|this Mac",
   "match.all_members": "",
   "match.recommended": "recommended|best",
   "settings.links_words": "link url browser open",

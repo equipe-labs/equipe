@@ -27,18 +27,19 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// The languages equipe speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
-    Ko,
     En,
-    Ja,
-    ZhHans,
-    ZhHant,
+    De,
     Es,
     Fr,
-    De,
+    Ja,
+    Ko,
+    ZhHans,
+    ZhHant,
 }
 
 impl Lang {
-    pub const ALL: [Lang; 8] = [Lang::Ko, Lang::En, Lang::Ja, Lang::ZhHans, Lang::ZhHant, Lang::Es, Lang::Fr, Lang::De];
+    /// English first, then by code: a list to pick from favours no language.
+    pub const ALL: [Lang; 8] = [Lang::En, Lang::De, Lang::Es, Lang::Fr, Lang::Ja, Lang::Ko, Lang::ZhHans, Lang::ZhHant];
 
     /// Its code, as locale files are named: `ko`, `zh-Hans`.
     pub fn code(self) -> &'static str {
@@ -72,6 +73,18 @@ impl Lang {
             Lang::Fr => "French",
             Lang::De => "German",
         }
+    }
+
+    /// The language an English name names — as [`Lang::english_name`] says
+    /// it, or as the person's language is detected (`Chinese`, which is
+    /// written in simplified characters unless said otherwise) — if equipe
+    /// speaks it.
+    pub fn from_english_name(name: &str) -> Option<Lang> {
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("Chinese") || name.eq_ignore_ascii_case("Mandarin") {
+            return Some(Lang::ZhHans);
+        }
+        Lang::ALL.into_iter().find(|l| l.english_name().eq_ignore_ascii_case(name))
     }
 
     /// Its place in [`Lang::ALL`].
@@ -450,19 +463,19 @@ impl Words {
 
 /// equipe core's own words, in every language.
 pub const FILES: &[(&str, &str)] = &[
-    ("ko", include_str!("../locales/ko.json")),
     ("en", include_str!("../locales/en.json")),
-    ("ja", include_str!("../locales/ja.json")),
-    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
-    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
+    ("de", include_str!("../locales/de.json")),
     ("es", include_str!("../locales/es.json")),
     ("fr", include_str!("../locales/fr.json")),
-    ("de", include_str!("../locales/de.json")),
+    ("ja", include_str!("../locales/ja.json")),
+    ("ko", include_str!("../locales/ko.json")),
+    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
+    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
 ];
 
 static CORE: Words = Words::new(FILES, || Lang::En);
 
-/// How a language worded `key` before (Korean's lines once ended "…습니다"):
+/// How a language worded `key` before (a language's lines once more formal):
 /// what a line kept from then, or a daemon not yet updated, still says.
 pub fn previous(key: &str) -> impl Iterator<Item = &'static str> {
     static PREVIOUS: OnceLock<HashMap<String, HashMap<String, String>>> = OnceLock::new();
@@ -574,8 +587,8 @@ pub mod label {
         })
     }
 
-    /// The one line a screen shows while the disk is short: `디스크 여유 4.2 GB — 곧
-    /// 빌드가 실패할 수 있어요`. `None` while it's fine.
+    /// The one line a screen shows while the disk is short: `4.2 GB free on the
+    /// disk — builds may fail soon`. `None` while it's fine.
     pub fn disk_line(lang: Lang, status: &crate::disk::DiskStatus) -> Option<String> {
         use crate::disk::DiskLevel as L;
         let key = match status.level {
@@ -814,6 +827,26 @@ mod tests {
         assert_eq!(auto(&locale, Front::App, &system(&["zh-Hans-CN"])), Lang::ZhHans);
         assert_eq!(auto(&locale, Front::App, &system(&["it-IT", "pt-PT"])), Lang::En);
         assert_eq!(resolve(&env_of(&[("EQUIPE_LANG", "ja")]), None, Front::App, &system(&["ko"])), Lang::Ja);
+    }
+
+    #[test]
+    fn no_language_known_is_english_never_another() {
+        let none = env_of(&[]);
+        for front in [Front::Terminal, Front::App] {
+            assert_eq!(resolve(&none, None, front, &[]), Lang::En, "{front:?}");
+            assert_eq!(resolve(&none, None, front, &system(&["pt-BR", "ru-RU", "ar"])), Lang::En, "{front:?}: none it speaks");
+            assert_eq!(resolve(&env_of(&[("LANG", "C.UTF-8")]), None, front, &[]), Lang::En, "{front:?}: the C locale");
+        }
+        assert_eq!(Lang::ALL[0], Lang::En, "a list to pick from starts with English");
+        // A squad's language, as detected or kept: equipe's own words for it, else English.
+        for lang in Lang::ALL {
+            assert_eq!(Lang::from_english_name(lang.english_name()), Some(lang));
+        }
+        assert_eq!(Lang::from_english_name("Chinese"), Some(Lang::ZhHans));
+        assert_eq!(Lang::from_english_name("Portuguese"), None);
+        assert_eq!(crate::squad_home::named(None), Lang::En);
+        assert_eq!(crate::squad_home::named(Some("Portuguese")), Lang::En);
+        assert_eq!(crate::squad_home::named(Some("Japanese")), Lang::Ja);
     }
 
     #[test]

@@ -238,7 +238,9 @@ pub const SANS: &str = ".SystemUIFont";
 
 /// The Mac's faces for what SF doesn't draw — Korean, Japanese, Chinese —
 /// the app's language's first: Han characters are shared, and each language
-/// wants its own shapes for them. All come with every Mac, in every weight.
+/// wants its own shapes for them. In a language written without them, the
+/// first of these the Mac's own languages name leads, else Simplified
+/// Chinese's. All come with every Mac, in every weight.
 pub fn fallbacks(lang: equipe_core::i18n::Lang) -> FontFallbacks {
     use equipe_core::i18n::Lang;
     static BY_LANG: std::sync::OnceLock<Vec<(Lang, FontFallbacks)>> = std::sync::OnceLock::new();
@@ -247,15 +249,18 @@ pub fn fallbacks(lang: equipe_core::i18n::Lang) -> FontFallbacks {
     const SC: &str = "PingFang SC";
     const TC: &str = "PingFang TC";
     let all = BY_LANG.get_or_init(|| {
+        let face = |lang: Lang| match lang {
+            Lang::Ko => Some(KO),
+            Lang::Ja => Some(JA),
+            Lang::ZhHans => Some(SC),
+            Lang::ZhHant => Some(TC),
+            _ => None,
+        };
+        let system = equipe_core::i18n::preferred().into_iter().find_map(face).unwrap_or(SC);
         Lang::ALL
             .iter()
             .map(|&lang| {
-                let first = match lang {
-                    Lang::Ja => JA,
-                    Lang::ZhHans => SC,
-                    Lang::ZhHant => TC,
-                    _ => KO,
-                };
+                let first = face(lang).unwrap_or(system);
                 let faces = std::iter::once(first).chain([KO, JA, SC, TC].into_iter().filter(|f| *f != first)).map(str::to_owned).collect();
                 (lang, FontFallbacks::from_fonts(faces))
             })
@@ -537,12 +542,23 @@ mod tests {
     }
 
     /// Every language gets every CJK face, its own first: Japanese Han in
-    /// Hiragino's shapes, Chinese in PingFang's, Hangul (and Latin UIs) in
-    /// Apple SD Gothic Neo's.
+    /// Hiragino's shapes, Chinese in PingFang's, Hangul in Apple SD Gothic
+    /// Neo's; a Latin UI the first the Mac's languages name, else PingFang SC
+    /// — never Korean's for everyone.
     #[test]
     fn each_language_draws_cjk_in_its_own_faces_first() {
         use equipe_core::i18n::Lang;
-        for (lang, first) in [(Lang::Ko, "Apple SD Gothic Neo"), (Lang::Ja, "Hiragino Sans"), (Lang::ZhHans, "PingFang SC"), (Lang::ZhHant, "PingFang TC"), (Lang::En, "Apple SD Gothic Neo"), (Lang::De, "Apple SD Gothic Neo")] {
+        let latin = equipe_core::i18n::preferred()
+            .into_iter()
+            .find_map(|l| match l {
+                Lang::Ko => Some("Apple SD Gothic Neo"),
+                Lang::Ja => Some("Hiragino Sans"),
+                Lang::ZhHans => Some("PingFang SC"),
+                Lang::ZhHant => Some("PingFang TC"),
+                _ => None,
+            })
+            .unwrap_or("PingFang SC");
+        for (lang, first) in [(Lang::Ko, "Apple SD Gothic Neo"), (Lang::Ja, "Hiragino Sans"), (Lang::ZhHans, "PingFang SC"), (Lang::ZhHant, "PingFang TC"), (Lang::En, latin), (Lang::De, latin)] {
             let faces = super::fallbacks(lang);
             let faces = faces.fallback_list();
             assert_eq!(faces[0], first, "{lang:?}");
