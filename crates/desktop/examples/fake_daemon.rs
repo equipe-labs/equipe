@@ -64,7 +64,7 @@
 //! `FAKE_HISTORY=<n>`: the PM's history is a long day's, `n` lines of it
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
 //! `FAKE_HISTORY_PICTURES=<n>`: its screenshots are n different ones, and every
-//! fourth reply embeds one too — for measuring what pictures hold (`EQUIPE_SNAPSHOT_HIDDEN`, `snapshot.rs`).
+//! other reply embeds one too — for measuring what pictures hold (`EQUIPE_SNAPSHOT_HIDDEN`, `snapshot.rs`).
 //! `FAKE_READING=1`: it ends on a long Korean reply with every kind of text
 //! (`fake_daemon/reading.rs`), to compare how the conversation reads.
 //!

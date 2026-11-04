@@ -915,6 +915,8 @@ impl Shell {
         self.chat.sent.borrow_mut().clear();
         self.chat.gallery = None;
         self.shots.borrow_mut().clear();
+        let released = self.shots.borrow_mut().take_released();
+        cx.defer(move |cx| views::visuals::release(released, cx));
         self.viewer = None;
         // Questions still open were for the connection being left.
         self.ask.queue.clear();

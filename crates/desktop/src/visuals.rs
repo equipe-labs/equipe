@@ -2,7 +2,8 @@
 //! as the window has them: asked of the daemon (`read_image`), on this Mac
 //! or another alike, so they come only when the daemon says the squad shows
 //! them; a thumbnail first, and the picture whole once it is opened big,
-//! the whole ones kept within a budget. And how they lay out: the options'
+//! the whole ones kept within a budget, and every one ready to draw within
+//! another (what GPUI decoded let go with it). And how they lay out: the options'
 //! grid, a hand-in's gallery, the strip under a news line, the big view's
 //! ←/→. No UI types beyond the image, so the rules are tested without a window.
 //!
@@ -10,9 +11,10 @@
 //! column's width (`Size::Inline`), and the pictures of a folder it names
 //! (`list_images`), listed once.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use equipe_core::protocol::TicketId;
 use equipe_core::protocol::decide::Question;
@@ -40,6 +42,14 @@ pub const STRIP: f32 = 64.;
 pub const STRIP_MAX: usize = 4;
 /// Pictures kept whole, at most this many bytes all told.
 const WHOLE_BUDGET: usize = 96 << 20;
+/// Pictures ready to draw, at most about this many bytes all told as GPUI
+/// holds them — decoded, four bytes a pixel, and once more in each window's
+/// atlas. Past it, those not drawn lately go, least lately drawn first, and
+/// GPUI's copies with them; one drawn again is asked for again. Without it a
+/// long day's pictures stayed decoded for good, 4–16 MB each, twice.
+const DRAWN_BUDGET: usize = 96 << 20;
+/// A picture drawn this recently stays, whatever the budget: it may be on show.
+pub const DRAWN_LATELY: Duration = Duration::from_secs(10);
 /// A picture in a reply: its longer side in pixels, for the column at 2x.
 pub const INLINE: u32 = 1280;
 /// A picture in a reply is never taller than this, in points…
@@ -99,6 +109,22 @@ pub struct Shot {
     pub at: Instant,
 }
 
+impl Shot {
+    /// About how many bytes it takes decoded, asked for at `size`: four a
+    /// pixel, the file's size brought within the size's side.
+    fn decoded(&self, size: Size) -> usize {
+        let side = size.side() as f64;
+        match self.dims {
+            Some((w, h)) if w > 0 && h > 0 => {
+                let k = (side / w.max(h) as f64).min(1.);
+                ((w as f64 * k).ceil() * (h as f64 * k).ceil() * 4.) as usize
+            }
+            // An SVG's size isn't known: as if 4:3 at the side.
+            _ => (side * side * 3.) as usize,
+        }
+    }
+}
+
 /// Every picture the window has asked about, by its path on the daemon's
 /// machine and size; and how wide each grid was last drawn.
 #[derive(Debug, Default)]
@@ -119,6 +145,16 @@ pub struct Visuals {
     rows: HashMap<String, HashSet<u64>>,
     /// Hand-in galleries whose assets the person unfolded.
     pub unfolded: HashSet<u64>,
+    /// When each picture was last asked about at each size — as it is drawn.
+    used: RefCell<HashMap<(String, Size), Instant>>,
+    /// What the ready pictures take decoded, all told ([`DRAWN_BUDGET`]).
+    drawn_bytes: usize,
+    /// Each picture's size, kept when it goes: drawn again, it holds its place.
+    dims: HashMap<String, (u32, u32)>,
+    /// Pictures let go: GPUI's copies of them go too ([`Self::take_released`]).
+    released: Vec<Arc<Image>>,
+    /// A later [`Self::trim`] is on its way.
+    pub trimming: bool,
 }
 
 impl Visuals {
@@ -126,6 +162,7 @@ impl Visuals {
     pub fn look(&mut self, path: &str, size: Size) -> Look {
         let key = (path.to_owned(), size);
         if let Some(look) = self.shown.get(&key) {
+            self.used.borrow_mut().insert(key, Instant::now());
             return look.clone();
         }
         self.shown.insert(key, Look::Loading);
@@ -135,15 +172,35 @@ impl Visuals {
 
     /// What `path` shows at `size` now, without asking for it.
     pub fn known(&self, path: &str, size: Size) -> Option<&Look> {
-        self.shown.get(&(path.to_owned(), size))
+        let key = (path.to_owned(), size);
+        let look = self.shown.get(&key);
+        if look.is_some() {
+            self.used.borrow_mut().insert(key, Instant::now());
+        }
+        look
     }
 
     /// The best of `path` there is: whole when it came, else the reply's, else its thumbnail.
     pub fn best(&self, path: &str) -> Option<Shot> {
         [Size::Full, Size::Inline, Size::Thumb].into_iter().find_map(|size| match self.shown.get(&(path.to_owned(), size)) {
-            Some(Look::Ready(shot)) => Some(shot.clone()),
+            Some(Look::Ready(shot)) => {
+                self.used.borrow_mut().insert((path.to_owned(), size), Instant::now());
+                Some(shot.clone())
+            }
             _ => None,
         })
+    }
+
+    /// `path`'s size in pixels, as any copy of it that came said — kept after
+    /// the copies themselves went.
+    pub fn dims(&self, path: &str) -> Option<(u32, u32)> {
+        self.best(path).and_then(|s| s.dims).or_else(|| self.dims.get(path).copied())
+    }
+
+    /// The pictures let go since last asked: GPUI's decoded copies of them
+    /// and their atlas tiles are to go too.
+    pub fn take_released(&mut self) -> Vec<Arc<Image>> {
+        std::mem::take(&mut self.released)
     }
 
     /// Whether `path` turned out not to be there.
@@ -201,19 +258,70 @@ impl Visuals {
     /// What `path` shows at `size` from now on. Whole pictures past the
     /// budget are let go, oldest first (asked again when opened again).
     pub fn put(&mut self, path: &str, size: Size, look: Look) {
-        if size == Size::Full
-            && let Look::Ready(shot) = &look
-        {
-            self.whole.retain(|p| p != path);
-            self.whole.push_back(path.to_owned());
-            self.whole_bytes += shot.bytes;
+        let key = (path.to_owned(), size);
+        if let Some(Look::Ready(old)) = self.shown.get(&key) {
+            self.drawn_bytes = self.drawn_bytes.saturating_sub(old.decoded(size));
+            if size == Size::Full {
+                self.whole_bytes = self.whole_bytes.saturating_sub(old.bytes);
+            }
+            if !matches!(&look, Look::Ready(new) if new.image.id == old.image.id) {
+                self.released.push(old.image.clone());
+            }
         }
-        self.shown.insert((path.to_owned(), size), look);
+        if let Look::Ready(shot) = &look {
+            if size == Size::Full {
+                self.whole.retain(|p| p != path);
+                self.whole.push_back(path.to_owned());
+                self.whole_bytes += shot.bytes;
+            }
+            self.drawn_bytes += shot.decoded(size);
+            if let Some(dims) = shot.dims {
+                self.dims.insert(path.to_owned(), dims);
+            }
+            self.used.borrow_mut().insert(key.clone(), Instant::now());
+        }
+        self.shown.insert(key.clone(), look);
         while self.whole_bytes > WHOLE_BUDGET && self.whole.len() > 1 {
             let Some(oldest) = self.whole.pop_front() else { break };
-            if let Some(Look::Ready(shot)) = self.shown.remove(&(oldest, Size::Full)) {
+            self.let_go(&(oldest, Size::Full));
+        }
+        self.trim();
+    }
+
+    /// Pictures past the budget not drawn lately go, least lately drawn
+    /// first. Whether it is still past it: what was drawn lately stays, and
+    /// is let go [`DRAWN_LATELY`] later, if it is not drawn again by then.
+    pub fn trim(&mut self) -> bool {
+        while self.drawn_bytes > DRAWN_BUDGET {
+            let now = Instant::now();
+            let used = self.used.borrow();
+            let oldest = self
+                .shown
+                .iter()
+                .filter(|(_, look)| matches!(look, Look::Ready(_)))
+                .map(|(k, _)| (used.get(k).copied(), k))
+                .filter(|(at, _)| at.is_none_or(|at| now.duration_since(at) >= DRAWN_LATELY))
+                .min_by_key(|(at, _)| *at)
+                .map(|(_, k)| k.clone());
+            drop(used);
+            let Some(oldest) = oldest else { break };
+            if oldest.1 == Size::Full {
+                self.whole.retain(|p| *p != oldest.0);
+            }
+            self.let_go(&oldest);
+        }
+        self.drawn_bytes > DRAWN_BUDGET
+    }
+
+    /// The picture at `key` goes: asked for again when drawn again.
+    fn let_go(&mut self, key: &(String, Size)) {
+        self.used.borrow_mut().remove(key);
+        if let Some(Look::Ready(shot)) = self.shown.remove(key) {
+            if key.1 == Size::Full {
                 self.whole_bytes = self.whole_bytes.saturating_sub(shot.bytes);
             }
+            self.drawn_bytes = self.drawn_bytes.saturating_sub(shot.decoded(key.1));
+            self.released.push(shot.image);
         }
     }
 
@@ -230,7 +338,12 @@ impl Visuals {
 
     /// Another machine or squad: nothing known holds.
     pub fn clear(&mut self) {
-        *self = Self { generation: self.generation + 1, ..Self::default() };
+        let mut released = std::mem::take(&mut self.released);
+        released.extend(self.shown.drain().filter_map(|(_, look)| match look {
+            Look::Ready(shot) => Some(shot.image),
+            _ => None,
+        }));
+        *self = Self { generation: self.generation + 1, released, ..Self::default() };
     }
 
     /// How wide grid `key` was last drawn.
@@ -804,6 +917,71 @@ mod tests {
         assert!(v.whole_bytes() <= WHOLE_BUDGET);
         assert_eq!(v.best("/w/0.png").unwrap().bytes, 1, "let go whole; the thumbnail stays");
         assert_eq!(v.best("/w/3.png").unwrap().bytes, 40 << 20);
+    }
+
+    /// A screenshot as a reply shows it: 1600×1000, asked for at 1280 — 4 MB decoded.
+    fn screenshot(n: u8) -> Look {
+        Look::Ready(Shot { image: Arc::new(Image::from_bytes(ImageFormat::Png, vec![n; 8])), dims: Some((1600, 1000)), bytes: 300 << 10, at: Instant::now() })
+    }
+
+    /// As if `path` was last drawn a minute ago.
+    fn drawn_long_ago(v: &Visuals, path: &str, size: Size) {
+        let ago = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        v.used.borrow_mut().insert((path.to_owned(), size), ago);
+    }
+
+    #[test]
+    fn pictures_not_drawn_lately_go_past_the_budget_least_lately_drawn_first_and_are_released() {
+        let mut v = Visuals::default();
+        assert_eq!(Shot { image: Arc::new(Image::from_bytes(ImageFormat::Png, vec![])), dims: Some((1600, 1000)), bytes: 0, at: Instant::now() }.decoded(Size::Inline), 1280 * 800 * 4);
+        let n = DRAWN_BUDGET / (1280 * 800 * 4) + 8;
+        for i in 0..n {
+            let path = format!("/w/{i}.png");
+            v.put(&path, Size::Inline, screenshot(i as u8));
+            drawn_long_ago(&v, &path, Size::Inline);
+        }
+        assert!(v.drawn_bytes <= DRAWN_BUDGET, "{} > {DRAWN_BUDGET}", v.drawn_bytes);
+        let released = v.take_released();
+        assert_eq!(released.len(), 8);
+        assert_eq!(released[0].id, Image::from_bytes(ImageFormat::Png, vec![0; 8]).id, "the least lately drawn first");
+        assert!(v.known("/w/0.png", Size::Inline).is_none(), "let go");
+        assert_eq!(v.dims("/w/0.png"), Some((1600, 1000)), "its size kept: it holds its place");
+        assert!(matches!(v.look("/w/0.png", Size::Inline), Look::Loading), "drawn again, asked for again");
+        assert!(matches!(v.look(&format!("/w/{}.png", n - 1), Size::Inline), Look::Ready(_)));
+        assert!(v.take_released().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn pictures_past_the_budget_go_once_not_drawn_lately() {
+        let mut v = Visuals::default();
+        let n = DRAWN_BUDGET / (1280 * 800 * 4) + 3;
+        for i in 0..n {
+            v.put(&format!("/w/{i}.png"), Size::Inline, screenshot(i as u8));
+        }
+        assert!(v.trim(), "all drawn lately: past the budget still");
+        assert!(v.take_released().is_empty());
+        for i in 0..n {
+            drawn_long_ago(&v, &format!("/w/{i}.png"), Size::Inline);
+        }
+        assert!(!v.trim(), "a while later, back within it");
+        assert_eq!(v.take_released().len(), 3);
+    }
+
+    #[test]
+    fn pictures_drawn_lately_stay_past_the_budget_and_a_new_copy_releases_the_old() {
+        let mut v = Visuals::default();
+        let n = DRAWN_BUDGET / (1280 * 800 * 4) + 4;
+        for i in 0..n {
+            v.put(&format!("/w/{i}.png"), Size::Inline, screenshot(i as u8));
+        }
+        assert!(v.drawn_bytes > DRAWN_BUDGET, "all may be on show");
+        assert!(v.take_released().is_empty());
+        v.put("/w/0.png", Size::Inline, screenshot(200));
+        assert_eq!(v.take_released().len(), 1, "the copy it replaced");
+        v.put("/w/0.png", Size::Inline, screenshot(200));
+        assert!(v.take_released().is_empty(), "the same copy again: nothing to let go");
+        v.clear();
+        assert_eq!(v.take_released().len(), n, "another machine: every one goes");
     }
 
     #[test]

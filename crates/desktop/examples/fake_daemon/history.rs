@@ -140,9 +140,9 @@ pub fn history(n: usize) -> Vec<Entry> {
             out.push(entry);
         }
         let mut text = reply(&mut rng, turn);
-        // With `FAKE_HISTORY_PICTURES`, every fourth reply shows a screenshot
+        // With `FAKE_HISTORY_PICTURES`, every other reply shows a screenshot
         // of its own too, embedded (`read_image`, as from the daemon).
-        if pictures != 6 && turn % 4 == 2 {
+        if pictures != 6 && turn.is_multiple_of(2) {
             text.push_str(&format!("\n\n![screen]({})", picture(1000 + turn % pictures)));
         }
         out.push(Entry::Reply { text });
