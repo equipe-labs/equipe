@@ -1,4 +1,4 @@
-//! 로드맵: the squad's work as one picture (`views/roadmap.rs`) — a lane per
+//! Roadmap: the squad's work as one picture (`views/roadmap.rs`) — a lane per
 //! project (the HQ first), and across it what finished lately, what is under
 //! way now, what comes next and what waits on something before it; an arrow
 //! from each ticket to the ones waiting on it. Drawn from the board alone,

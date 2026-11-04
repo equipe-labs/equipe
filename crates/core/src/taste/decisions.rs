@@ -1,11 +1,11 @@
 //! Design decisions as their files keep them, the brand's decision record:
 //!
 //! ```md
-//! ## 2026-11-03 · 히어로 레이아웃
-//! - Chose: B — 한 단, 여백 넉넉히
-//! - Picture: decisions/2026-11-03-히어로-레이아웃.png
-//! - Passed over: A — 두 단; C — 꽉 찬 사진
-//! - Why: “좀 더 숨 쉬게”
+//! ## 2026-11-03 · Hero layout
+//! - Chose: B — one column, generous space
+//! - Picture: decisions/2026-11-03-hero-layout.png
+//! - Passed over: A — two columns; C — a full-bleed photo
+//! - Why: “let it breathe more”
 //! - Ticket: T-272
 //! ```
 //!

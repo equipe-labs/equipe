@@ -425,7 +425,7 @@ pub fn inline(shots: &Shots, row: u64, path: &str, alt: &str, pictures: &[(Strin
     div().py_1().child(tip(frame, p, label, None)).into_any_element()
 }
 
-/// The strip under a reply that names a folder of pictures: "이미지 N개",
+/// The strip under a reply that names a folder of pictures: "N images",
 /// the folder's name, and its first pictures small — none of it when the
 /// folder isn't one of pictures the squad shows, or every one already shows
 /// in the reply. Opened big among the reply's `pictures` and the folder's.
@@ -804,7 +804,7 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
         }))
 }
 
-/// The mark of the option a member recommends: "추천" — on a picture
+/// The mark of the option a member recommends: "Recommended" — on a picture
 /// (`on_dark`: over the big view's dark) or a tile.
 pub fn badge(p: Palette, on_dark: bool) -> impl IntoElement {
     div()
@@ -934,7 +934,7 @@ impl Shell {
     }
 
     /// Dev tool (`snapshot.rs`): the big view at option `n`'s picture of the
-    /// card on show (or picked in 나에게), or at `ticket`'s nth hand-in picture.
+    /// card on show (or picked in the Inbox), or at `ticket`'s nth hand-in picture.
     #[cfg(feature = "snapshot")]
     pub fn view_script(&mut self, ticket: Option<TicketId>, n: usize, cx: &mut Context<Self>) {
         let viewer = match ticket {

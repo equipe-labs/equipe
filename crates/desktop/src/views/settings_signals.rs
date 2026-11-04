@@ -24,7 +24,7 @@ const STRIP: usize = 12;
 /// The trend's column, one width for every row so the switches line up.
 const TREND_W: f32 = SPARK_W + 8. + 48.;
 
-/// "신호": one row a signal, or a line saying where they come from.
+/// "Signals": one row a signal, or a line saying where they come from.
 pub(super) fn section(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;
     let now = crate::state::now_unix();

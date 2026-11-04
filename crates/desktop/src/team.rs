@@ -1,6 +1,6 @@
 //! A change to the team the PM proposed (`propose_team_change`), as the card
 //! the person approves it on — above the composer in the PM's conversation,
-//! and in 나에게 under "결정 필요": which changes wait, and what the card says
+//! and in Needs you under "Decisions": which changes wait, and what the card says
 //! of one (what it does, what waits for it and who is busy, the details, the
 //! words on its button). No UI types here, so the rules are tested without a
 //! window. The approval is the person's command; the daemon then does what
@@ -86,7 +86,7 @@ pub struct Holder<'a> {
     pub ticket: Option<TicketId>,
 }
 
-/// What the change does, in a few words: "mobile 한 명 더 추가", "qa-2 내보내기".
+/// What the change does, in a few words: "Add one more mobile", "Let qa-2 go".
 pub fn what(change: &TeamChange) -> String {
     match (change.change, change.count) {
         (Change::Add, 1) => t!("team.add_one", role = change.role),
@@ -96,8 +96,8 @@ pub fn what(change: &TeamChange) -> String {
 }
 
 /// The card's first line: what it does — and, for an add, what waits for it
-/// and for how long, and who of the role is busy with what: "mobile 한 명 더
-/// 추가 — T-117이 4시간 기다리고 있어요 (mobile은 T-130 중)". `waiting`: how
+/// and for how long, and who of the role is busy with what: "Add one more
+/// mobile — T-117 has waited 4 hours (mobile is on T-130)". `waiting`: how
 /// long the first ticket it unblocks has waited, in seconds, when known.
 pub fn headline(change: &TeamChange, team: &[Holder<'_>], waiting: Option<u64>) -> String {
     let mut out = what(change);

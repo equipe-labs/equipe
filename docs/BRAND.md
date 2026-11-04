@@ -4,7 +4,7 @@
 > [`design/tokens/`](../design/tokens/). This page is the earlier identity, kept for the
 > terminal UI and the social assets still drawn from it until they move to the tokens.
 > Its chrome-and-grain look applies only to brand surfaces (social cards, avatars),
-> never to product screens (`design/guidelines.md`, 브랜드 §4).
+> never to product screens (`design/guidelines.md`, brand §4).
 
 # equipe — visual identity
 

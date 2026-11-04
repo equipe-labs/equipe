@@ -1,6 +1,6 @@
 //! A routine the PM proposed (`propose_routine`), as the card the person turns
-//! it on from — above the composer in the PM's conversation, and in 나에게
-//! under "결정 필요": which proposals wait, and the command the person's click
+//! it on from — above the composer in the PM's conversation, and in Needs you
+//! under "Decisions": which proposals wait, and the command the person's click
 //! sends. No UI types here, so the rules are tested without a window. Turned
 //! on, the daemon saves it as the person's own routine (`views::routines`
 //! lists it from then on); declined, it is gone.

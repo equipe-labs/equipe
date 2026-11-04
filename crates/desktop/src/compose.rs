@@ -138,7 +138,7 @@ impl Draft {
     }
 }
 
-/// How many files "최근 첨부" offers.
+/// How many files "Recent" offers.
 pub const RECENT: usize = 10;
 
 /// What was half written to each member, per squad and project in focus,
@@ -409,9 +409,9 @@ pub enum Effect {
     /// Talk to this member (a bare `@name`).
     Select(SessionId),
     ShowBoard,
-    /// 디자인 시스템 (`/design`).
+    /// Design system (`/design`).
     ShowDesign,
-    /// 지표 (`/metrics`).
+    /// Metrics (`/metrics`).
     ShowMetrics,
     /// The board, narrowed to these words (`/find`).
     Find(String),
@@ -434,7 +434,7 @@ pub enum Effect {
     Ask(Ask),
     /// `/suggest` was switched.
     Suggest(bool),
-    /// The 디스크 panel (`/disk`).
+    /// The Disk panel (`/disk`).
     Disk,
 }
 
@@ -463,8 +463,8 @@ impl Plan {
 /// `later` (Tab, or the memo button) leaves a member at work a memo for when
 /// its turn ends instead of steering the work.
 ///
-/// Words that plainly accept or merge handed-in work ("전부 수락", "T-1
-/// 수락") also raise the card to confirm it in that conversation, at once —
+/// Words that plainly accept or merge handed-in work ("accept all", "accept
+/// T-1") also raise the card to confirm it in that conversation, at once —
 /// sent before the words, so the member there finds it up. Only a card: the
 /// person's click on it is what accepts (`crate::accept`).
 pub fn plan(model: &Model, text: &str, later: bool) -> Plan {

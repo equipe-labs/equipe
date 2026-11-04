@@ -1,4 +1,4 @@
-//! 화면 지도's state (`views/flows.rs` draws it): the service's every flow,
+//! UI map's state (`views/flows.rs` draws it): the service's every flow,
 //! its screens in order and each screen in every state, as the designer
 //! keeps them (`equipe_protocol::design::FlowMap`, in `Event::Design`) — what
 //! is counted, what is missing or stale, which picture of a state is shown
@@ -15,9 +15,9 @@ use gpui_kit::{Image, ScrollHandle};
 /// The design screen's two tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
-    /// 화면 지도.
+    /// UI map.
     Map,
-    /// 디자인 시스템.
+    /// Design system.
     System,
 }
 
@@ -98,7 +98,7 @@ pub fn problems(map: &FlowMap) -> Vec<String> {
     map.problems.iter().cloned().chain(map.unlisted.iter().map(|name| words.fill("flows.unlisted", &[("name", name.clone())]))).collect()
 }
 
-/// A state's kind as the person reads it (빈 상태, 권한 없음); another word as it is.
+/// A state's kind as the person reads it (Empty, No permission); another word as it is.
 pub fn kind_label(kind: &str) -> String {
     if STATE_KINDS.contains(&kind) { crate::i18n::catalog().get(&format!("flows.kind_{kind}")).to_owned() } else { kind.to_owned() }
 }
@@ -227,7 +227,7 @@ pub fn length(video: &Walkthrough) -> String {
 
 // ── talking about a screen ──
 
-/// Where a state is: `온보딩 › 로그인 › 오류`.
+/// Where a state is: `Onboarding › Log in › Error`.
 pub fn context(flow: &Flow, screen: &Screen, state: &str) -> String {
     format!("{} › {} › {}", flow.title, screen.title, state)
 }
@@ -289,7 +289,7 @@ pub fn with_data(map: &FlowMap, data: Data) -> FlowMap {
 }
 
 /// The version a picture was shot with against the one the person uses
-/// now: `찍은 버전 0.103.22 · 지금 0.103.23` when they differ — with the
+/// now: `Shot with version 0.103.22 · now 0.103.23` when they differ — with the
 /// machine of their screen, `on`, when it is one's — the first alone when
 /// they don't, nothing when it doesn't say.
 pub fn shot_with(picture: &Picture, installed: Option<&str>, on: Option<&str>) -> Option<String> {

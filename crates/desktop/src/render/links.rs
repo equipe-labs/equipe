@@ -97,7 +97,7 @@ pub fn path_and_line(text: &str) -> (&str, Option<u32>) {
 
 /// Whether a code span's text reads as a path: no spaces, a slash or a file
 /// extension, nothing that only code would have.
-/// A path with spaces in its names (`outputs/T-4 데이터 설계/design.md`), not
+/// A path with spaces in its names (`outputs/T-4 data design/design.md`), not
 /// a command (`cat docs/a.md`): its first space comes after its first slash,
 /// on one line, and it ends in a file with a kind.
 fn spaced_path(text: &str) -> bool {

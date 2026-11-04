@@ -85,7 +85,7 @@ impl Sub {
 
 /// How long a summary may run before the band says it is taking a while.
 pub const COMPACT_LONG: Duration = Duration::from_secs(60);
-/// How long "요약했어요" stays up before it goes.
+/// How long "Summarized" stays up before it goes.
 pub const COMPACT_DONE_SHOWN: Duration = Duration::from_secs(4);
 
 /// Where a conversation's compaction stands (`Event::Compacting` and after).
@@ -137,7 +137,7 @@ pub struct Convo {
 /// seconds. A private-use character, so no other note starts so.
 pub const THOUGHT: char = '\u{E000}';
 
-/// The transcript line where a summary finished: the divider "요약했어요".
+/// The transcript line where a summary finished: the divider "Summarized".
 pub const COMPACTED: char = '\u{E002}';
 
 /// When something began, `ms` since the unix epoch, as an `Instant` (never
@@ -748,7 +748,7 @@ fn thought_of(text: &str) -> Option<(usize, u64)> {
 }
 
 /// How long a turn worked, and when it ended: the time of day it was then,
-/// and (kept by this app since it learned to) the moment, for "5분 전".
+/// and (kept by this app since it learned to) the moment, for "5m ago".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worked {
     pub secs: u64,
@@ -757,7 +757,7 @@ pub struct Worked {
 }
 
 impl Worked {
-    /// `1분 05초 작업함`.
+    /// `Worked 1m 05s`.
     pub fn took(&self) -> String {
         t!("chat.worked_for", took = elapsed(Duration::from_secs(self.secs)))
     }

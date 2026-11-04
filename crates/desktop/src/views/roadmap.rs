@@ -1,4 +1,4 @@
-//! 로드맵 (`roadmap.rs`): the squad's work as one picture — a lane per
+//! Roadmap (`roadmap.rs`): the squad's work as one picture — a lane per
 //! project, the HQ first; across it what finished lately, what is under way,
 //! what comes next and what waits; an arrow from each ticket to the ones
 //! waiting on it, orange while it holds them up. A card opens its ticket.

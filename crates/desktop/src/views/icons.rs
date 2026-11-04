@@ -1,6 +1,6 @@
 //! A ticket's status as a 14px mark, drawn with paths so every one sits on the
 //! same circle: proposed dashed, an idea dashed round a seed, to do empty, in progress half full (amber),
-//! 내 차례 a pause, 검토 three quarters, done a filled check, cancelled struck.
+//! Your turn a pause, Review three quarters, done a filled check, cancelled struck.
 
 use equipe_core::protocol::TicketStatus;
 use gpui_kit::*;

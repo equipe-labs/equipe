@@ -1,10 +1,10 @@
-//! 화면 지도: the service's every flow, its screens in order and each screen
+//! UI map: the service's every flow, its screens in order and each screen
 //! in every state, as the designer keeps them (`crate::flows`) — the design
-//! screen's first tab. A line of counts (화면 · 상태 · 빠진 상태 · 오래됨) over
+//! screen's first tab. A line of counts (Screens · States · Missing states · Out of date) over
 //! the flows on the left and the one picked: its walkthrough to watch, its
 //! screens left to right as cards joined by arrows, and the one clicked
 //! open below them — big, in each state (the missing ones dashed), light or
-//! dark, at each width, its notes, and "말하기" to talk about it in the
+//! dark, at each width, its notes, and "Talk" to talk about it in the
 //! conversation beside (`views/design_talk.rs`), the picture going with the
 //! words. ←/→ move between screens, ↑/↓ between flows, Esc closes. With no
 //! map yet, what one is and a way to ask the designer — or, once it is at
@@ -42,7 +42,7 @@ const POSTER_H: f32 = 64.;
 
 // ── the tabs ──
 
-/// 화면 지도 | 디자인 시스템, where the screen's title was.
+/// UI map | Design system, where the screen's title was.
 pub fn tabs(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let on = shell.design_tab();
@@ -84,8 +84,8 @@ pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     }
 }
 
-/// 화면 12 · 상태 31 · 빠진 상태 4 · 오래됨 1 — and, when the map has the
-/// person's real data, 실제 데이터 | 예시 데이터 at its right.
+/// Screens 12 · States 31 · Missing states 4 · Out of date 1 — and, when the map has the
+/// person's real data, Real data | Example data at its right.
 fn counts_bar(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let data = shell.design.data_on_show().map(|on| {
@@ -228,7 +228,7 @@ fn flow_head(shell: &Shell, flow: &Flow, cx: &mut Context<Shell>) -> impl IntoEl
     h_flex().flex_wrap().gap_3().items_start().child(title).child(div().flex_none().max_w_full().child(watch))
 }
 
-/// 영상으로 보기: the walkthrough to watch — its first frame, its length and
+/// Watch as a video: the walkthrough to watch — its first frame, its length and
 /// age, the screens it passes and when — and the older ones.
 fn walkthrough(shell: &Shell, flow: &Flow, video: &Walkthrough, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
@@ -462,7 +462,7 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, changes: Option
             .collect();
         head = head.child(segment(p, "flows-width", options, cx));
     }
-    // 말하기: the state on show, its picture, as a chip in the conversation beside.
+    // Talk: the state on show, its picture, as a chip in the conversation beside.
     if shown.is_some() {
         head = head.child(ui::button(p, "flows-say", ui::Kind::Secondary, t!("design.talk_say")).icon(Icon::Message).tip(t!("design.talk_say_screen"), None).on_click(cx.listener(|this, _, window, cx| this.flows_point(window, cx))));
     }
@@ -758,7 +758,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// 실제 데이터 or 예시 데이터; the mode and width as the pictures shown are.
+    /// Real data or Example data; the mode and width as the pictures shown are.
     pub fn flows_data(&mut self, data: fm::Data, cx: &mut Context<Self>) {
         self.design.pick_data(data);
         self.design.map.mode = None;
@@ -870,7 +870,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "말하기" on the open screen: the state on show, with the picture on
+    /// "Talk" on the open screen: the state on show, with the picture on
     /// show, as a chip in the conversation beside.
     pub fn flows_point(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(map) = self.flow_map() else { return };
@@ -882,7 +882,7 @@ impl Shell {
         self.design_point_at(ctx, window, cx);
     }
 
-    /// "+ 빠진 상태"'s way to have it drawn: the request goes to the designer
+    /// "+ Missing state"'s way to have it drawn: the request goes to the designer
     /// (or the PM), the way the empty screen's ask does.
     pub fn flows_ask_draw(&mut self, about: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = t!("flows.ask_draw_message", place = about);
@@ -901,7 +901,7 @@ impl Shell {
         self.design_ask_with(text.clone(), text, window, cx);
     }
 
-    /// 화면 지도's keys: ←/→ between screens, ↑/↓ between flows, Esc
+    /// The UI map's keys: ←/→ between screens, ↑/↓ between flows, Esc
     /// closes the open one — not while the box has the words.
     pub fn on_flows_key(&mut self, key: &str, window: &Window, cx: &mut Context<Self>) -> bool {
         if self.design_tab() != Tab::Map || self.composer.is_focused(window, cx) {

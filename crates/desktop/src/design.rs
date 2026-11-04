@@ -30,7 +30,7 @@ pub enum Section {
     Motion,
     Assets,
     Guidelines,
-    /// 취향과 결정: the person's taste notes and the decisions made.
+    /// Taste & decisions: the person's taste notes and the decisions made.
     Taste,
 }
 
@@ -309,7 +309,7 @@ pub struct DesignUi {
     pub systems: Vec<DesignSystem>,
     /// As the daemon sent them: every map's real-data pictures and examples.
     pub raw: Vec<DesignSystem>,
-    /// 실제 데이터 or 예시 데이터, as the person picked; `None`: real where
+    /// Real data or Example data, as the person picked; `None`: real where
     /// there is some and the daemon is this Mac's.
     pub data: Option<crate::flows::Data>,
     /// The daemon is this Mac's.
@@ -332,7 +332,7 @@ pub struct DesignUi {
     /// come: read-only, not in review.
     pub working: bool,
     pub section: Section,
-    /// What was seen when this look began, by system — the "바뀐 것" are since then.
+    /// What was seen when this look began, by system — the "Changed since you last looked" are since then.
     pub baseline: HashMap<String, Seen>,
     /// What each system was last seen as, kept on disk.
     pub seen: BTreeMap<String, Seen>,
@@ -355,20 +355,20 @@ pub struct DesignUi {
     pub toc_at: usize,
     /// The screen is on show: a look is under way.
     pub on_screen: bool,
-    /// 화면 지도: where the person is in the system's map.
+    /// UI map: where the person is in the system's map.
     pub map: crate::flows::MapUi,
-    /// 보면서 말하기: the conversation docked beside it (`views/design_talk.rs`).
+    /// Talk while looking: the conversation docked beside it (`views/design_talk.rs`).
     pub talk: crate::design_talk::TalkUi,
-    /// 비교하며 검토 under way: the draft held against the accepted system,
+    /// Compare and review under way: the draft held against the accepted system,
     /// the side on show being `draft`'s.
     pub compare: bool,
     /// Its box for what to change, open.
     pub redo_open: bool,
-    /// The window is wide enough for 지금 and 바뀐 뒤 side by side.
+    /// The window is wide enough for Now and After side by side.
     pub wide: bool,
     /// The design pane's width at the last frame: the header picks its switch by it.
     pub pane: f32,
-    /// 버전 기록 open.
+    /// Version history open.
     pub versions_open: bool,
     /// Each source's accepted versions, newest first, as the daemon last said.
     pub versions: HashMap<String, Vec<DesignVersion>>,
@@ -533,7 +533,7 @@ impl DesignUi {
         self.raw.iter().find(|s| s.key() == key)
     }
 
-    /// 실제 데이터 or 예시 데이터: every map shows it from now on.
+    /// Real data or Example data: every map shows it from now on.
     pub fn pick_data(&mut self, data: crate::flows::Data) {
         self.data = Some(data);
         self.systems = self.shown(&self.raw);
@@ -637,7 +637,7 @@ impl DesignUi {
         *self = Self { seen, seen_loaded, fonts, ..Self::default() };
     }
 
-    // ── 비교하며 검토 ──
+    // ── Compare and review ──
 
     /// The source's accepted system.
     pub fn accepted_of(&self, source: &str) -> Option<&DesignSystem> {
@@ -654,7 +654,7 @@ impl DesignUi {
         if self.draft { Side::After } else { Side::Now }
     }
 
-    /// Comparing begins on 바뀐 뒤, the draft.
+    /// Comparing begins on After, the draft.
     pub fn begin_compare(&mut self) -> bool {
         if !self.can_compare() {
             return false;
@@ -672,7 +672,7 @@ impl DesignUi {
         self.systems = self.shown(&self.raw);
     }
 
-    /// 지금 or 바뀐 뒤 on show: the whole screen flips, the place in the map kept where it is.
+    /// Now or After on show: the whole screen flips, the place in the map kept where it is.
     pub fn show_side(&mut self, side: Side) {
         self.draft = side == Side::After && self.draft_of(&self.source).is_some();
         self.working = false;
@@ -720,7 +720,7 @@ impl DesignUi {
         true
     }
 
-    // ── 버전 기록 ──
+    // ── Version history ──
 
     /// The project the source is (`None`: the squad's own).
     pub fn source_project(&self) -> Option<String> {
@@ -863,12 +863,12 @@ pub struct Making {
 }
 
 impl Making {
-    /// The header's chip: "만드는 중 · T-378", and what it is doing now.
+    /// The header's chip: "Creating · T-378", and what it is doing now.
     pub fn chip(&self) -> (String, Option<String>) {
         (t!("design.working_chip", id = self.ticket), self.doing.clone())
     }
 
-    /// Who is making it, and on which ticket: "designer · T-378 「화면 지도」".
+    /// Who is making it, and on which ticket: "designer · T-378 “UI map”".
     pub fn whose(&self) -> String {
         match &self.who {
             Some((name, _)) => t!("design.working_who", name = name, id = self.ticket, title = self.title),

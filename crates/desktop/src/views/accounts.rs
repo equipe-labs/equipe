@@ -1,4 +1,4 @@
-//! 설정 › 계정: the logins members sign in with (`protocol::vault`). A row
+//! Settings › Accounts: the logins members sign in with (`protocol::vault`). A row
 //! per login — its site and username, who may use it without asking (each
 //! taken back with ×), its last use — with change and delete (a second
 //! click); a form to add one or change it, the password masked and never
@@ -68,7 +68,7 @@ fn outcome_word(outcome: &str) -> &'static str {
     }
 }
 
-/// `frontend · 2시간 전 · 로그인함`.
+/// `frontend · 2 hours ago · signed in`.
 fn use_words(login: &Login, now: u64) -> Option<String> {
     let u = login.uses.first()?;
     Some(format!("{} · {} · {}", u.member, crate::activity::ago(now.saturating_sub(u.at)), outcome_word(&u.outcome)))
@@ -198,7 +198,7 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     out
 }
 
-/// 설정 › 브라우저 › 브라우저 프로필: other people's accounts, each in a Chrome of its own —
+/// Settings › Browser › Browser profiles: other people's accounts, each in a Chrome of its own —
 /// open one to sign in there, add one, drop one (a second click).
 pub(super) fn profiles_section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;

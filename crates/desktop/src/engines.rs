@@ -1,4 +1,4 @@
-//! Settings' AI 플랫폼: the engines members work on, from a registry, and the
+//! Settings' AI platforms: the engines members work on, from a registry, and the
 //! rules behind each one's card that `views/engines.rs` draws. The daemon
 //! asks each engine's own command-line tool where it stands and runs its
 //! sign-in on its own machine — which may not be this Mac — and tells every
@@ -127,13 +127,13 @@ pub enum Card {
     /// Another screen started it.
     Elsewhere,
     Failed { problem: Problem, detail: String },
-    /// "로그아웃" pressed: asked once more on the card.
+    /// "Sign out" pressed: asked once more on the card.
     ConfirmSignOut,
     SigningOut,
 }
 
 impl Card {
-    /// A sign-in is on its way: the card shows it and offers 취소.
+    /// A sign-in is on its way: the card shows it and offers "Cancel".
     pub fn under_way(&self) -> bool {
         matches!(self, Card::Starting { .. } | Card::Browser { .. } | Card::Code { .. } | Card::Paste { .. } | Card::Elsewhere)
     }
@@ -156,7 +156,7 @@ pub struct Engines {
     /// When the list was asked for while none had come.
     pub asked: Option<Instant>,
     cards: HashMap<Engine, Card>,
-    /// "복사됨" for a moment after the code or the link was copied.
+    /// "Copied" for a moment after the code or the link was copied.
     pub copied: Option<(Engine, Instant)>,
     /// Since when the person has been signing Claude Code in in a terminal.
     pub terminal: Option<Instant>,
@@ -226,7 +226,7 @@ impl Engines {
         self.statuses.is_none() && self.asked.is_some_and(|at| now.duration_since(at) >= NO_ANSWER)
     }
 
-    /// "로그인": the daemon runs the tool's sign-in; `remote` (the daemon is on
+    /// "Sign in": the daemon runs the tool's sign-in; `remote` (the daemon is on
     /// another Mac, the browser here) asks for a code instead of its browser.
     pub fn sign_in(&mut self, engine: Engine, remote: bool, now: Instant) -> Vec<Command> {
         if self.card(engine).under_way() || platform(engine).signs_in != SignsIn::FromApp {
@@ -261,7 +261,7 @@ impl Engines {
     }
 
     /// Ask the daemon why `engine` can't serve members — once per attach,
-    /// unless `again` (the person's "다시 확인").
+    /// unless `again` (the person's "Check again").
     pub fn check(&mut self, engine: Engine, again: bool) -> Vec<Command> {
         if !again && !self.auth_asked.insert(engine) {
             return vec![];
@@ -274,7 +274,7 @@ impl Engines {
         vec![Command::CheckEngine { engine }]
     }
 
-    /// "설치": the daemon runs the tool's own installer.
+    /// "Install": the daemon runs the tool's own installer.
     pub fn install(&mut self, engine: Engine) -> Vec<Command> {
         if self.installs.get(&engine) == Some(&Install::Running) {
             return vec![];
@@ -304,7 +304,7 @@ impl Engines {
         self.installs.get(&engine)
     }
 
-    /// "취소": the daemon stops the tool.
+    /// "Cancel": the daemon stops the tool.
     pub fn cancel(&mut self, engine: Engine) -> Vec<Command> {
         if !self.card(engine).under_way() {
             return vec![];
@@ -313,7 +313,7 @@ impl Engines {
         vec![Command::SignInCancel { engine }]
     }
 
-    /// "로그아웃" asks first; "유지" puts it back.
+    /// "Sign out" asks first; "Keep" puts it back.
     pub fn ask_sign_out(&mut self, engine: Engine) {
         self.set(engine, Card::ConfirmSignOut);
     }
@@ -458,7 +458,7 @@ pub enum Tone {
     Unknown,
 }
 
-/// The status in a few words: "로그인됨 · Max", "로그인 필요", "codex CLI 설치 필요".
+/// The status in a few words: "Signed in · Max", "Not signed in", "codex CLI not installed".
 pub fn headline(status: &EngineStatus) -> (Tone, String) {
     let tool = platform(status.engine).tool;
     match status.state {
@@ -485,7 +485,7 @@ pub fn members_line(status: &EngineStatus, squad: &str) -> Option<String> {
     (!names.is_empty()).then(|| names.join(", "))
 }
 
-/// The plan's windows, as the usage row says them: "5시간 42% · 1시간 10분 뒤 초기화".
+/// The plan's windows, as the usage row says them: "5-hour 42% · resets in 1h 10m".
 pub fn plan_usage(plan: &PlanUsage, now_unix: i64) -> Vec<(String, u8)> {
     [(t!("engines.window_5h"), plan.five_hour), (t!("engines.window_week"), plan.seven_day)]
         .into_iter()

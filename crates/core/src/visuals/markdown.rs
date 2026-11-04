@@ -1,7 +1,7 @@
 //! The pictures and folders a conversation's Markdown names: each image a
-//! member embeds (`![평면도](/…/images/plan.png)`, a path relative to where
+//! member embeds (`![Floor plan](/…/images/plan.png)`, a path relative to where
 //! it works, a title after it, spaces in it as members write them), and each
-//! folder it points at (`…/T-2 갤러리 디자인/images/`). The daemon reads
+//! folder it points at (`…/T-2 gallery design/images/`). The daemon reads
 //! them from what it recorded, for what a screen may then ask of it; a screen
 //! reads them from what it shows, for what to ask. Both read them here, so
 //! both name a picture by the same path.
@@ -240,7 +240,7 @@ pub fn local_images(text: &str) -> Vec<Embedded> {
 }
 
 /// `text` with each image's destination that holds a space put in `<…>`, so
-/// a Markdown reader takes it as one: members write `![a](/T-2 갤러리/a.png)`.
+/// a Markdown reader takes it as one: members write `![a](/T-2 gallery/a.png)`.
 pub fn bracketed(text: &str) -> Cow<'_, str> {
     let loose: Vec<Embedded> = images(text).into_iter().filter(|i| !i.bracketed && text[i.dest.clone()].contains(char::is_whitespace)).collect();
     if loose.is_empty() {

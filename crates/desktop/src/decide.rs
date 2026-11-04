@@ -1,5 +1,5 @@
 //! A member's questions (`ask_decision`) as the card the person answers them
-//! on — above the composer in the conversation, and in 나에게's peek: which
+//! on — above the composer in the conversation, and in Needs you's peek: which
 //! set shows where, where the person is in it (the step, the row the keys are
 //! on, what is picked, what was skipped), what each key does, and the
 //! answers it sends. Then, in the conversation, the message those answers
@@ -82,9 +82,9 @@ impl Asked {
     }
 }
 
-/// What a set is called where it waits — 나에게's row, the card's line —
-/// when it is the designer's weekly design review: "주간 디자인 리뷰 · 3가지",
-/// the things the review brings; or the PM's weekly retro: "주간 회고 · 2가지",
+/// What a set is called where it waits — Needs you's row, the card's line —
+/// when it is the designer's weekly design review: "Design review · 3 things",
+/// the things the review brings; or the PM's weekly retro: "Weekly retro · 2 things",
 /// the changes it proposes. `None`: any other set, called by its question.
 pub fn review_title(set: &QuestionSet) -> Option<String> {
     crate::retro::title(set).or_else(|| set.review.then(|| equipe_core::t!("decide.design_review", n = equipe_core::design::review::PARTS).to_string()))
@@ -405,7 +405,7 @@ pub fn reacts(q: &Question) -> bool {
 pub struct MixItem {
     pub from: usize,
     pub aspect: String,
-    /// "A에 B의 글꼴".
+    /// "A with B's type".
     pub label: String,
 }
 
@@ -423,7 +423,7 @@ pub fn mix_menu(q: &Question, base: usize) -> Vec<MixItem> {
         .collect()
 }
 
-/// "A에 B의 글꼴": the labels without their "(추천)".
+/// "A with B's type": the labels without their "(Recommended)".
 pub fn mix_label(base: &str, from: &str, aspect: &str) -> String {
     let (base, _) = crate::visuals::recommended(base);
     let (from, _) = crate::visuals::recommended(from);
@@ -431,7 +431,7 @@ pub fn mix_label(base: &str, from: &str, aspect: &str) -> String {
 }
 
 /// What a question was answered with, as the conversation shows it: a mix
-/// as "A에 B의 글꼴", another round as such (why beside it, as a note).
+/// as "A with B's type", another round as such (why beside it, as a note).
 pub fn answer_text(read: &decide::Read) -> String {
     match &read.mix {
         Some(mix) => mix_label(&mix.base, &mix.from, &mix.aspect),
@@ -443,7 +443,7 @@ pub fn answer_text(read: &decide::Read) -> String {
 // ── read back in the conversation ──
 
 /// The person's answers, as their message to the member shows in the
-/// conversation: one line, "결정함 · 2개", that opens to each question and
+/// conversation: one line, "Decided · 2", that opens to each question and
 /// what was decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decided {

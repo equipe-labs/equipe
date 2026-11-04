@@ -22,7 +22,7 @@ fn day_word(weekday: u8) -> &'static str {
     }
 }
 
-/// When it runs, in words: "매일 09:00", "매주 월요일 09:00".
+/// When it runs, in words: "Every day 09:00", "Every Monday 09:00".
 pub fn schedule_words(when: Schedule) -> String {
     let (hour, minute) = when.hour_minute();
     let time = format!("{hour:02}:{minute:02}");

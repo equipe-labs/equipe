@@ -5,7 +5,7 @@
 //! (the AI is connected first: `views/setup.rs`).
 //!
 //! The four questions are drawn here once (`fields`), for either form: this
-//! page, and the "새 스쿼드…" sheet over the window (`views/new_squad.rs`). Their
+//! page, and the "New squad…" sheet over the window (`views/new_squad.rs`). Their
 //! rules are `crate::squad_form`.
 
 use std::path::PathBuf;
@@ -45,7 +45,7 @@ pub struct WelcomeUi {
     pub failed: Option<String>,
     /// The squad is being made, then joined.
     pub busy: bool,
-    /// The sheet is over the window (the "새 스쿼드…" form only).
+    /// The sheet is over the window (the "New squad…" form only).
     pub open: bool,
     /// Tab stops, in the order the keys visit them: the team, the modes, then the buttons.
     team_focus: [FocusHandle; STARTERS.len()],
@@ -357,7 +357,7 @@ pub fn failed(p: Palette, why: String) -> Div {
     h_flex().gap_2().items_start().text_size(px(SMALL)).line_height(px(20.)).text_color(p.danger()).child(div().flex_none().pt(px(3.)).child(icon(Icon::Warning, ICON_SM, p.danger()))).child(div().flex_1().min_w_0().child(why))
 }
 
-/// The form's main button: 스쿼드 만들기, or 만드는 중… while it is.
+/// The form's main button: Create squad, or Creating… while it is.
 pub fn create_button(shell: &Shell, which: Which, cx: &mut Context<Shell>) -> ui::Button {
     let w = shell.form(which);
     ui::button(shell.palette, "create", Kind::Primary, if w.busy { t!("welcome.creating") } else { t!("welcome.create") })

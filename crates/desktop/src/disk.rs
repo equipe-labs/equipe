@@ -1,5 +1,5 @@
 //! The disk, as the window shows it: the banner while it runs short, and the
-//! 디스크 panel — free space with a bar, what uses it, the fixes worth making,
+//! Disk panel — free space with a bar, what uses it, the fixes worth making,
 //! and a sheet that lists exactly what a clean removes before it does. The
 //! daemon looks and cleans, on whichever machine it is (`Command::DiskScan`,
 //! `Command::DiskClean`); here are only what is shown and what to ask next.
@@ -63,7 +63,7 @@ pub struct DiskUi {
     pub picked: BTreeSet<String>,
     /// The banner was closed at this level: it stays away until it gets worse.
     pub dismissed: Option<DiskLevel>,
-    /// The command just copied, and when ("복사됨" for a moment).
+    /// The command just copied, and when ("Copied" for a moment).
     pub copied: Option<(String, Instant)>,
     /// What equipe just gave back on its own, to say once.
     pub auto: Option<u64>,
@@ -158,7 +158,7 @@ impl DiskUi {
         self.ask(&ids);
     }
 
-    /// "정리…" on one that isn't equipe's: its command, asked first.
+    /// "Clean…" on one that isn't equipe's: its command, asked first.
     pub fn ask_run(&mut self, id: &str) {
         let listed = self.report.as_ref().is_some_and(|r| r.items.iter().any(|i| i.id == id && i.command.is_some()));
         if listed {

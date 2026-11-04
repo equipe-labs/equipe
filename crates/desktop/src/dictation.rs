@@ -36,7 +36,7 @@ pub fn heard_here(lang: Lang) -> bool {
     crate::transcribe::on_device(locale(lang))
 }
 
-/// The language of the keyboard being typed with now (한글 → Korean, ABC →
+/// The language of the keyboard being typed with now (Korean "한글" → Korean, ABC →
 /// English), if equipe speaks it: what the person likely speaks next.
 pub fn typing_lang() -> Option<Lang> {
     #[cfg(target_os = "macos")]

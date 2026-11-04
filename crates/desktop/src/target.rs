@@ -130,7 +130,7 @@ impl Endpoint {
         }
     }
 
-    /// `local` / `this` / `이 맥`, or an SSH destination.
+    /// `local` / `this` / the locale's word for this Mac (`match.this_mac`), or an SSH destination.
     pub fn parse(text: &str) -> Result<Self, String> {
         match text.trim() {
             "local" | "this" => Ok(Self::this_mac()),
@@ -190,7 +190,7 @@ pub struct Remembered {
     /// their own height) — `side_split.rs`.
     pub side_usage: Option<f32>,
     pub side_team: Option<f32>,
-    /// When 진행 상황 was last opened (unix seconds): its "since you last looked".
+    /// When Progress was last opened (unix seconds): its "since you last looked".
     pub progress_seen: Option<u64>,
     /// The team shown row by row in the sidebar, not as one row of faces.
     pub team_open: bool,
@@ -212,20 +212,20 @@ pub struct Remembered {
     pub start: Start,
     /// What the person wants to be told of while the window is out of sight.
     pub pings: Pings,
-    /// The person said "나중에" when asked to let equipe notify: not asked
+    /// The person said "Not Now" when asked to let equipe notify: not asked
     /// again on its own (settings still offers it).
     pub notify_later: bool,
     /// The update notices told already (`found <v>`, `ready <v>`): each once.
     pub update_told: Vec<String>,
     /// The PM's conversation shows whole whatever project is in focus — as it
-    /// did before it followed the project (settings ▸ 일반).
+    /// did before it followed the project (settings ▸ General).
     pub whole_conversation: bool,
     /// The sidebar's projects folded to their header, by name (the squad's
     /// shared folder: ""): `fold\t<name>` lines.
     pub folded: std::collections::BTreeSet<String>,
-    /// 티켓 as a board rather than rows, as last left.
+    /// Tickets as a board rather than rows, as last left.
     pub tickets_board: bool,
-    /// How large the window draws, in percent (⌘+ / ⌘-, settings ▸ 일반).
+    /// How large the window draws, in percent (⌘+ / ⌘-, settings ▸ General).
     pub zoom: Zoom,
     /// The design screen's tab the person last picked (`map`, `system`);
     /// none: the map when there is one.
@@ -289,7 +289,7 @@ impl Appearance {
 }
 
 /// What the person wants to be told of while the window is out of sight
-/// (settings → 알림): each kind on or off, whether a notice makes a sound,
+/// (settings → Notifications): each kind on or off, whether a notice makes a sound,
 /// whether the Dock's icon shows what waits. Everything but merges, by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pings {
@@ -304,7 +304,7 @@ pub struct Pings {
     /// A new version of the app, downloaded.
     pub update: bool,
     pub sound: bool,
-    /// The number on the Dock's icon: 나에게's.
+    /// The number on the Dock's icon: Needs you's.
     pub badge: bool,
 }
 
@@ -391,9 +391,9 @@ pub enum Start {
     /// The PM's conversation.
     #[default]
     Pm,
-    /// 나에게: what waits for the person.
+    /// Needs you: what waits for the person.
     Inbox,
-    /// 모든 일.
+    /// All work.
     All,
 }
 
@@ -778,6 +778,17 @@ mod tests {
         assert_eq!(host("[::1]:2200"), SshHost { user: None, host: "::1".into(), port: Some(2200) });
         assert_eq!(host("fe80::1").port, None);
         assert_eq!(host("a@b").user.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn this_mac_is_understood_in_every_language() {
+        for word in ["local", "this", "this Mac", "이 맥", "このMac", "这台Mac", "這台Mac", "este Mac", "ce Mac", "dieser Mac"] {
+            assert_eq!(Endpoint::parse(word), Ok(Endpoint::this_mac()), "{word}");
+        }
+        for lang in equipe_core::i18n::Lang::ALL {
+            let words = crate::i18n::of(lang).own("match.this_mac").unwrap_or_default();
+            assert!(!words.is_empty(), "{lang:?} has no word for this Mac");
+        }
     }
 
     #[test]

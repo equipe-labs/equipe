@@ -13,7 +13,7 @@ a system from its tokens alone (two real screens light and dark, palette with co
 shadow); `render <file> --widths 390,1280 --dark` draws any HTML or SVG mockup to PNG; `shoot <url>…` shoots running
 pages (`http://localhost:<port>/…` included) at 390, 768 and 1280, light and dark; `diff <spec.png> <built.png>` puts
 a mockup and what was built side by side and lights up where they differ; `check` says what is wrong — tokens equipe's
-screen can't read, a missing layer, no dark values, text under AA, no Korean-capable family, no brand.md or logo, the
+screen can't read, a missing layer, no dark values, text under AA, no family for the product's script, no brand.md or logo, the
 stock look. Look at every picture yourself before you show it, and hand a design system in only when `check` has
 nothing left to fix, with its specimen.
 {{#if browser}}

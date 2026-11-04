@@ -5,18 +5,18 @@
 //! guessed from the error's words:
 //!
 //! - equipe runs outside the Mac's login session (started over SSH), so the
-//!   sign-in in its Keychain is out of reach: "로그인 세션에서 다시 띄우기",
+//!   sign-in in its Keychain is out of reach: "Start again in the login session",
 //!   no sign-in at all;
 //! - the login Keychain is locked: how to unlock it — in the terminal here
 //!   when this Mac is the daemon's (its terminal is in the login session);
 //!   at that Mac's own screen when it is another (a terminal from here is an
 //!   SSH session, which unlocking can't reach equipe from);
-//! - signed out: "다시 로그인", run by the daemon — the browser opens there,
+//! - signed out: "Sign in again", run by the daemon — the browser opens there,
 //!   and from another Mac its page opens here and the code it shows is
 //!   pasted back on the card; failing that, the terminal with the command
 //!   typed (Enter is the person's);
 //! - signed in again: the stopped work carries on by itself (the daemon
-//!   does it, as the person would with "이어서 하기"), and the card says so.
+//!   does it, as the person would with "Carry on"), and the card says so.
 //!
 //! The card is live on the latest such error with nothing the person said
 //! after it; before that it is the error as it was. Nothing on it approves
@@ -135,7 +135,7 @@ pub enum Offer {
     Install,
     /// The page to open, in this Mac's browser.
     OpenPage,
-    /// "이어서 하기": the person's own carry on.
+    /// "Carry on": the person's own carry on.
     CarryOn,
 }
 
@@ -364,7 +364,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "다시 로그인": the daemon runs the engine's own sign-in; Claude Code's
+    /// "Sign in again": the daemon runs the engine's own sign-in; Claude Code's
     /// page comes with a box here for the code it shows.
     pub fn signin_start(&mut self, engine: Engine, window: &mut Window, cx: &mut Context<Self>) {
         if engine == Engine::Claude && self.signin_code.is_none() {

@@ -149,7 +149,7 @@ pub fn last_words(output: &str) -> String {
 }
 
 /// Run `command` to its end, off the UI thread's business: `pid` holds the
-/// child while it runs, so "취소" can end it. `Err` carries its last words.
+/// child while it runs, so "Cancel" can end it. `Err` carries its last words.
 fn run(mut command: Command, pid: &AtomicU32) -> Result<(), String> {
     command.env("PATH", child_path()).env("EQUIPE_NO_OPEN", "1").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = command.spawn().map_err(|e| e.to_string())?;

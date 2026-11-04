@@ -202,7 +202,7 @@ fn members(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 }
 
 /// A conversation's path: its project (its colour and name, to its page; or
-/// "프로젝트 밖"), "/", its name — then its ⋯.
+/// "Outside projects"), "/", its name — then its ⋯.
 fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;

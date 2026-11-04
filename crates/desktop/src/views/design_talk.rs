@@ -1,7 +1,7 @@
-//! 보면서 말하기: the designer's conversation docked at the design screen's
+//! Talk while looking: the designer's conversation docked at the design screen's
 //! right — the conversation as the chat screen draws it, live, and the one
-//! composer under it — so the person says "이 주황 좀 덜 튀게" while looking.
-//! Each colour, type style, logo, asset and UI-map state has a "말하기"
+//! composer under it — so the person says "make this orange a bit quieter" while looking.
+//! Each colour, type style, logo, asset and UI-map state has a "Talk"
 //! button on hover: it puts a chip for that thing in the composer (the
 //! click on the thing itself still copies or shows it big), and the message
 //! carries the chips as a block the member reads, the pictures attached
@@ -21,7 +21,7 @@ use crate::theme::{META, Palette, R_SM, SMALL, SMALL_LINE};
 use crate::tips::TipExt as _;
 use crate::{Screen, Shell, motion, ui};
 
-/// The "말하기" button over a thing on the design screen: shown while the
+/// The "Talk" button over a thing on the design screen: shown while the
 /// pointer is on the thing (`group`), it attaches it beside.
 pub fn say(p: Palette, id: impl Into<ElementId>, group: impl Into<SharedString>, ctx: DesignContext, cx: &mut Context<Shell>) -> Stateful<Div> {
     h_flex()

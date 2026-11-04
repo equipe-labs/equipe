@@ -121,7 +121,7 @@ actions!(equipe, [CheckForUpdates, Hide, HideOthers, ShowAll, Quit]);
 actions!(equipe, [ToggleSidebar, NewMessage, SearchAll]);
 // Settings (⌘,), from the app menu or anywhere.
 actions!(equipe, [OpenSettings]);
-// "휴대폰 연결…": a phone paired with the daemon's machine, by QR code.
+// "Connect a phone…": a phone paired with the daemon's machine, by QR code.
 actions!(equipe, [PairPhone]);
 // A press outside a box over the window: what Esc does to it.
 actions!(equipe, [DismissOverlay, NewSquad]);
@@ -188,15 +188,15 @@ pub enum Screen {
     Board,
     /// Settings (⌘,): its own list in the sidebar's place.
     Settings,
-    /// 디자인 시스템: the squad's design system (`views/design.rs`).
+    /// Design system: the squad's design system (`views/design.rs`).
     Design,
-    /// 로드맵: the work as one picture, what waits on what (`views/roadmap.rs`).
+    /// Roadmap: the work as one picture, what waits on what (`views/roadmap.rs`).
     Roadmap,
-    /// 지표: the product's numbers, from the services it reports to (`views/metrics.rs`).
+    /// Metrics: the product's numbers, from the services it reports to (`views/metrics.rs`).
     Metrics,
     /// A project's page: its conversations and its work (`views/project.rs`).
     Project,
-    /// 진행 상황: what needs a look, what is under way, what finished (`views/progress.rs`).
+    /// Progress: what needs a look, what is under way, what finished (`views/progress.rs`).
     Progress,
 }
 
@@ -237,21 +237,21 @@ pub struct Shell {
     /// Words selected in the conversation, asked about (`views/quote.rs`).
     pub quote: views::quote::QuoteUi,
     pub settings: views::settings::SettingsUi,
-    /// 디자인 시스템's state: what the daemon said, what is on screen.
+    /// Design system's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
-    /// 비교하며 검토's box for what to change, a draft sent back with it.
+    /// Compare and review's box for what to change, a draft sent back with it.
     pub design_redo: Entity<InputState>,
-    /// The routines' list on 진행 상황: which is being edited or deleted.
+    /// The routines' list on Progress: which is being edited or deleted.
     pub routines_ui: views::routines::RoutinesUi,
     /// Each project's newest tag, as last found, and when it was asked.
     pub releases: Vec<(std::path::PathBuf, releases::Release)>,
     /// The squad's briefs and plans, as the daemon last sent them.
     pub docs: Vec<equipe_core::protocol::briefs::ProjectDoc>,
     pub releases_asked: Option<std::time::Instant>,
-    /// 지표's state: what the daemon said, the form being filled.
+    /// Metrics' state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
     pub metrics_ui: views::metrics::Inputs,
-    /// 취향과 결정's box for a note.
+    /// Taste & decisions' box for a note.
     pub design_taste: views::design_taste::Inputs,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
@@ -274,7 +274,7 @@ pub struct Shell {
     /// The person closed the banner: not again this launch.
     /// The daemon's update was asked for with the app's: the app restarts once it is in.
     relaunch_after_daemon: bool,
-    /// 현황's releases, as last found.
+    /// The status page's releases, as last found.
     /// The banner's "restart now" asked once: the next click restarts.
     pub(crate) daemon_restart_armed: bool,
     /// The ticket a `T-n` link asked the board to open.
@@ -289,22 +289,22 @@ pub struct Shell {
     pub connect: ConnectUi,
     /// The first run's form (`views/welcome.rs`).
     pub welcome: views::welcome::WelcomeUi,
-    /// "새 스쿼드…"'s sheet: the same form over the window (`views/new_squad.rs`).
+    /// "New squad…"'s sheet: the same form over the window (`views/new_squad.rs`).
     pub new_squad: views::welcome::WelcomeUi,
     /// Anonymous usage data: the daemon's answer and the question (`views/telemetry.rs`).
     pub telemetry: views::telemetry::TelemetryUi,
     pub ask: AskUi,
     /// A password just typed with "don't ask again" on: the key goes there once connected.
     ssh_key_wanted: bool,
-    /// "휴대폰 연결": the sheet's state and the paired phones (`pair.rs`).
+    /// "Connect a phone": the sheet's state and the paired phones (`pair.rs`).
     pub pairing: pair::Pairing,
     /// The AI platforms, as settings shows them.
     pub engines: engines::Engines,
     /// The first run's git, engine and squad steps, while no squad exists.
     pub setup: setup::Setup,
-    /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
+    /// The paired phone whose "Disconnect" was pressed once, asking to be sure.
     pub forgetting: Option<String>,
-    /// "디스크": the banner while it runs short, and the panel (`disk.rs`).
+    /// "Disk": the banner while it runs short, and the panel (`disk.rs`).
     pub disk: disk::DiskUi,
     /// `/usage`, over the window (`views/usage.rs`).
     pub usage_open: bool,
@@ -587,7 +587,7 @@ impl Shell {
             }
         }));
         // Settings' search filters as it is typed.
-        // 비교하며 검토's words: ⏎ sends the draft back with them.
+        // Compare and review's words: ⏎ sends the draft back with them.
         let design_redo = shell.design_redo.clone();
         shell._subscriptions.push(cx.subscribe_in(&design_redo, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } => this.design_redo_send(window, cx),
@@ -709,7 +709,7 @@ impl Shell {
                 cx.stop_propagation();
                 return;
             }
-            // 디자인 시스템's keys: sections, the lightbox.
+            // Design system's keys: sections, the lightbox.
             if this.update(cx, |shell, cx| shell.on_design_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
@@ -968,7 +968,7 @@ impl Shell {
                             // Told the squad first: these come right after the snapshot.
                             this.sync_browser(window, cx);
                             this.browser.update(cx, |b, cx| b.on_event(event, window, cx));
-                            // A page waiting for the person: 나에게, and a notification.
+                            // A page waiting for the person: Needs you, and a notification.
                             changed |= this.model.on_browser(event);
                             continue;
                         }
@@ -1117,7 +1117,7 @@ impl Shell {
                         }
                     }
                     // Told while the window is out of sight; in sight, the cards say it.
-                    // Only the kinds the person wants (settings → 알림).
+                    // Only the kinds the person wants (settings → Notifications).
                     let alerts = this.model.take_alerts();
                     this.announce(alerts, window, cx);
                     this.speak(cx);
@@ -1547,7 +1547,7 @@ impl Shell {
     }
 
     /// A notification was clicked: bring the window forward, on what it was about.
-    /// "다시 시작해 업데이트": the downloaded update goes in, and the app starts again.
+    /// "Restart to Update": the downloaded update goes in, and the app starts again.
     pub fn relaunch_to_update(&mut self, cx: &mut Context<Self>) {
         // A newer release than the downloaded one: on to it after this restart.
         relaunch::chain_if_newer();
@@ -1622,7 +1622,7 @@ impl Shell {
             conn => {
                 let screen = match self.screen {
                     Screen::Chat => views::chat::screen(self, cx).into_any_element(),
-                    // 나에게, 작업 중, 모든 일, a saved view: the menu item chosen.
+                    // Needs you, In progress, All work, a saved view: the menu item chosen.
                     Screen::Board => views::board::render(self, cx).into_any_element(),
                     Screen::Settings => views::settings::render(self, cx),
                     Screen::Design => views::design::render(self, cx),
@@ -1943,7 +1943,7 @@ impl Render for Shell {
         self.board.relocalize(window, cx);
         self.board_prepare(window, cx);
         self.design_prepare(window, cx);
-        // What the person did here (accepted, answered, a project in focus) changes 나에게 too.
+        // What the person did here (accepted, answered, a project in focus) changes Needs you too.
         self.sync_badge();
         self.sync_window(window);
         self.renders += 1;
@@ -1976,7 +1976,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &SearchAll, window, cx| this.search_everything(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
             .on_action(cx.listener(|this, _: &PairPhone, window, cx| this.open_pairing(window, cx)))
-            // The Squad menu's 새 스쿼드… is the switcher's: the same sheet.
+            // The Squad menu's "New Squad…" is the switcher's: the same sheet.
             .on_action(cx.listener(|this, _: &NewSquad, window, cx| this.open_new_squad(window, cx)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
                 screen_look::used();
@@ -2300,7 +2300,7 @@ fn window_bindings() -> Vec<KeyBinding> {
 }
 
 /// The Edit menu: the text box's own actions, under the selectors macOS knows
-/// — which is also where it adds "받아쓰기 시작…" and "이모지 및 기호".
+/// — which is also where it adds "Start Dictation…" and "Emoji & Symbols".
 fn edit_menu() -> Menu {
     use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
     Menu::new(t!("main.menu_edit")).items([

@@ -540,7 +540,7 @@ reports, the things a task produces.
   happen, so a short thing asked at the desk — save a note, tidy material, make
   one table — is written straight into the home, with no ticket. Each change is
   **saved as soon as the turn ends** (`squad_home::save`), one line saying who and
-  why: `pm: 세금 마감일 메모해줘` — the member's name and the person's words. The
+  why: `pm: note down the tax deadline` — the member's name and the person's words. The
   member's conversation shows *"✎ pm saved notes/tax-deadline.md in the squad's
   folder · /home undo takes it back"*.
 - **Every change can be taken back.** `/home changes` (and `equipe home changes`)

@@ -11,7 +11,7 @@
 //!   cards say it. The delegate keeps the rule too (`willPresent`). But a
 //!   browser waiting for the person's hands (a sign-in, a handed browser) is
 //!   told in sight too, unless that page is on screen.
-//! - Only the kinds the person wants (settings ▸ 일반 ▸ 알림).
+//! - Only the kinds the person wants (settings ▸ General ▸ Notifications).
 //! - Permission is asked when it is first useful — the first thing worth
 //!   telling, or a switch turned on — with a sheet saying why first, then
 //!   macOS's own question.
@@ -80,7 +80,7 @@ impl Alert {
     }
 }
 
-/// What the person wants to be told of (settings → 알림), kept with the
+/// What the person wants to be told of (settings → Notifications), kept with the
 /// window's other choices in `target.rs`.
 pub use crate::target::{Ping, Pings};
 
@@ -113,7 +113,7 @@ pub enum Go {
     /// The update's notice: with the update downloaded, a restart into it;
     /// before, the window, where the sidebar's pill follows the download.
     Update,
-    /// The update notice's "다시 시작": install the downloaded update now.
+    /// The update notice's "Restart": install the downloaded update now.
     Relaunch,
 }
 
@@ -149,7 +149,7 @@ impl Go {
 pub const ACTION_RELAUNCH: &str = "relaunch";
 /// Every other notice's button.
 pub const ACTION_OPEN: &str = "open";
-/// The notices that carry "열기", and the update's that carries "다시 시작".
+/// The notices that carry "Open", and the update's that carries "Restart".
 pub const CATEGORY_OPEN: &str = "equipe.open";
 pub const CATEGORY_UPDATE: &str = "equipe.update";
 
@@ -437,7 +437,7 @@ impl Permission {
 
 /// Whether to show the sheet that says why equipe asks to notify, now that
 /// there is something worth telling: never asked, and the person didn't say
-/// "나중에" already.
+/// "Not Now" already.
 pub fn explain_now(permission: Permission, later: bool) -> bool {
     permission == Permission::NotAsked && !later
 }

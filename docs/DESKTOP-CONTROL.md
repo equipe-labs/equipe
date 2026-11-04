@@ -208,7 +208,7 @@ window title, the element a click lands on, the focused element and its text).
 | any app | screenshot, `elements`, scroll, list/focus windows, `open_app` | free |
 | a messaging app | `type_text` without a line break | free — a draft |
 | a messaging app | `type_text` with `\n`/`\r`; `key` ending in Return/Enter (⌘↩, ⇧↩ too); ⌘⇧D (Mail) | asks |
-| a messaging app | click on an AX element named Send/Share/Invite/Accept/Join/Call/Upload/…, or 보내기/전송/공유/초대/수락/통화/… | asks |
+| a messaging app | click on an AX element named Send/Share/Invite/Accept/Join/Call/Upload/…, or the same words in any of equipe's languages (`match.outward_words`) | asks |
 | a messaging app | click on an unnamed button, or where AX says nothing | asks |
 | a messaging app | click on a named harmless element (a chat, a tab, the text field), space on a harmless focused element | free |
 | a messaging app | drag | asks — it may drop a file into a conversation |
@@ -231,7 +231,7 @@ Decisions:
   including the 30-minute "nobody answered" no. It is the one image equipe writes,
   and only for this.
 - **The window title doesn't block in messaging apps.** There it is a conversation's
-  name ("결제팀"): matching it against the hard-block words would lock the person's
+  name ("Payments team"): matching it against the hard-block words would lock the person's
   team chat. Outside messaging apps it does (System Settings → Privacy & Security).
 - **The list is the squad's** (`meta.messaging_apps`), defaulting to
   `desktop_gate::DEFAULT_APPS`. Entries match by shown name or bundle id; the
@@ -299,11 +299,11 @@ headless `claude` given exactly the MCP config a member gets.
 | Accessibility after that | ✅ listed; on after the person's toggle and password |
 | Screen Recording | ⚠️ tccd logged `kTCCServiceScreenCapture … Auth Right: Allowed (System Set)` for the helper while `CGPreflightScreenCaptureAccess()` stayed **false**. The helper now asks ScreenCaptureKit (`SCShareableContent`) when the preflight says no |
 | Rebuilt and re-signed helper, three times | ✅ every grant kept (same self-signed certificate) |
-| Member: `open_app`, `key cmd+n`, `type_text` "equipe 데스크톱 테스트: 안녕하세요, 반갑습니다!" | ✅ typed into a new TextEdit document; nothing refused |
-| Read back with `elements` | ✅ `AXTextArea = "Equipe 데스크톱 테스트: 안녕하세요, 반갑습니다!"` (TextEdit capitalised the first letter) |
-| `screenshot` (1430×804 JPEG, 1 px = 1.03 pt) | ✅ the member described the window "무제 — 편집됨" and the same line |
+| Member: `open_app`, `key cmd+n`, `type_text` in Korean, "equipe 데스크톱 테스트: 안녕하세요, 반갑습니다!" | ✅ typed into a new TextEdit document; nothing refused |
+| Read back with `elements` | ✅ `AXTextArea = "Equipe 데스크톱 테스트: 안녕하세요, 반갑습니다!"` (TextEdit capitalised the first letter; the Korean typed as written) |
+| `screenshot` (1430×804 JPEG, 1 px = 1.03 pt) | ✅ the member described the window — "무제 — 편집됨", Korean for "Untitled — Edited" — and the same line |
 | `app: "TextEdit"` on a Korean Mac | ❌ at first "no app called TextEdit": its name there is "텍스트 편집기". Apps now also match the last part of their bundle id |
-| macOS's "bypass the private window picker" dialogs left up, focus moved to Chrome | ✅ `type_text` refused ("Keyboard focus is in no app, not 텍스트 편집기: nothing typed"); `click` into TextEdit refused: "At (735, 450) is UserNotificationCenter (AXButton "허용"), not 텍스트 편집기: nothing done" — it would have pressed the dialog's Allow |
+| macOS's "bypass the private window picker" dialogs left up (in Korean on this Mac), focus moved to Chrome | ✅ `type_text` refused ("Keyboard focus is in no app, not 텍스트 편집기: nothing typed"); `click` into TextEdit refused: "At (735, 450) is UserNotificationCenter (AXButton "허용"), not 텍스트 편집기: nothing done" — it would have pressed the dialog's Allow |
 
 Also seen: each capture attempt before the person answers adds another
 "bypass the private window picker" dialog (they stack), and "Privacy & Security

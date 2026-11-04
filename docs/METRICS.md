@@ -111,7 +111,7 @@ Each source reports metrics by **name** (unique within the source), with a
 | `rolling` | the distinct count of the 7 days up to that day (squads) | its last known day; `previous` is the day 7 days before it, and `series` 12 days 7 apart ending there (`previous_series` empty), whatever `days` and `bucket` |
 
 Units: `page_loads`, `clicks`, `views`, `clones`, `stars`, `downloads`, `squads`. Screens
-word them ("페이지 로드"). PostHog gives each page load a new ID, so `visits` is
+word them ("page loads"). PostHog gives each page load a new ID, so `visits` is
 page loads, not people.
 
 A day is the daemon machine's **local calendar day**, `YYYY-MM-DD`. A day a
@@ -124,7 +124,7 @@ A query is a period of `days` (1–366, default 7) ending `to` (default today),
 beside the **previous period**: the same number of days just before it.
 `bucket` cuts its series: `day`, or `week` (Monday to Sunday; the first and
 last buckets are cut at the period's ends, and each is named by its first day).
-The screens' "7일 / 30일" are `days: 7` and `days: 30`.
+The screens' "7 days / 30 days" are `days: 7` and `days: 30`.
 
 `change` is `value − previous`; `change_pct` is that over `previous`, in percent,
 rounded to 0.1, absent when there is no previous value or it is 0.
@@ -157,7 +157,7 @@ What a fetch brings is kept as that day's snapshot:
   "fetched_at": 1793520000,
   "points": [
     { "metric": "views", "day": "2026-11-01", "value": 312 },
-    { "metric": "languages", "day": "2026-11-01", "value": 120, "breakdown": { "English": 70, "한국어": 50 } }
+    { "metric": "languages", "day": "2026-11-01", "value": 120, "breakdown": { "English": 70, "日本語": 50 } }
   ]
 }
 ```

@@ -94,7 +94,7 @@ fn exists(path: &std::path::Path) -> bool {
 }
 
 /// A path as a chip shows it: whole when short; else its last folder and
-/// name, or its name alone (`…/A linkedin 붙여넣기.txt`). A chip is one
+/// name, or its name alone (`…/A linkedin paste.txt`). A chip is one
 /// piece on its line — it can't wrap — so a long one would run past the
 /// words' edge in a narrow window. The whole path is on hover.
 pub fn shown_path(written: &str) -> String {
