@@ -34,7 +34,7 @@ if (!files.length && !plan) {
   console.error('usage: render <file.html|svg>… [--widths 390,1280] [--dark] [--out dir] [--viewport] | render --plan <shots.json>');
   process.exit(2);
 }
-const pageUrl = (file) => (/^https?:/.test(file) ? file : pathToFileURL(resolve(file)).href);
+const pageUrl = (file) => (/^(https?|file|data):/.test(file) ? file : pathToFileURL(resolve(file)).href);
 const shots = [];
 if (plan) {
   // A state of the map waits for what moves as the page opens.
