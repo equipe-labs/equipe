@@ -64,12 +64,15 @@ pub fn trial() -> bool {
 /// When the daemon serving `home` leaves on its own: one in a temporary home
 /// once the home is gone, or after `idle` (else [`TRIAL_IDLE`]) alone; the
 /// person's own, never. Started detached, a test's or a check's daemon
-/// outlives them — sixteen once piled up, each keeping its squads.
+/// outlives them — sixteen once piled up, each keeping its squads. Either
+/// leaves once hung, for the login service or the next screen to start it
+/// again: the one of 0.103.30 answered nothing until restarted by hand.
 fn leave_for(home: &Path, temps: &[PathBuf], idle: Option<Duration>) -> gateway::Leave {
+    let hung = gateway::Leave { hung: Some(equipe_core::watchdog::HUNG_AFTER), ..gateway::Leave::NEVER };
     if !is_temporary(home, temps) {
-        return gateway::Leave::NEVER;
+        return hung;
     }
-    gateway::Leave { home_gone: true, idle: Some(idle.unwrap_or(TRIAL_IDLE)), ..gateway::Leave::NEVER }
+    gateway::Leave { home_gone: true, idle: Some(idle.unwrap_or(TRIAL_IDLE)), ..hung }
 }
 
 /// Where temporary folders are made: this process's, and the system's.
@@ -645,15 +648,17 @@ mod tests {
         assert!(!is_temporary(Path::new("/tmpfiles/home"), &temps), "a folder named like it isn't one");
         assert!(!is_temporary(Path::new("/tmp/../Users/a/.equipe"), &temps), "a way through /tmp back to the person's home isn't one");
 
-        assert_eq!(leave_for(Path::new("/Users/a/.equipe"), &temps, None), gateway::Leave::NEVER);
+        let hung = gateway::Leave { hung: Some(equipe_core::watchdog::HUNG_AFTER), ..gateway::Leave::NEVER };
+        assert_eq!(leave_for(Path::new("/Users/a/.equipe"), &temps, None), hung, "the person's own leaves only when hung");
         assert_eq!(
             leave_for(Path::new("/Users/a/.equipe"), &temps, Some(Duration::from_secs(1))),
-            gateway::Leave::NEVER,
+            hung,
             "no setting makes the person's own daemon leave"
         );
         let trial = leave_for(Path::new("/tmp/t355home"), &temps, None);
         assert!(trial.home_gone);
         assert_eq!(trial.idle, Some(TRIAL_IDLE));
+        assert_eq!(trial.hung, Some(equipe_core::watchdog::HUNG_AFTER));
         assert_eq!(leave_for(Path::new("/tmp/t355home"), &temps, Some(Duration::from_secs(2))).idle, Some(Duration::from_secs(2)));
     }
 }

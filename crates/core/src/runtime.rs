@@ -446,6 +446,26 @@ impl Handle {
         self.pulse.stall(Duration::ZERO)
     }
 
+    /// The daemon's own: ask the loop what `status` asks every
+    /// [`watchdog::PROBE_EVERY`], and once nothing has answered for `after`
+    /// with the loop on no step ([`watchdog::hung`]), the watchdog ends the
+    /// process — its threads dumped to `dump` first — for the login service
+    /// to start it again. The asking stops with the loop.
+    pub fn heal_when_hung(&self, after: Duration, dump: Option<PathBuf>) -> tokio::task::JoinHandle<()> {
+        self.pulse.heal_after(after, dump);
+        let (requests, pulse) = (self.requests.clone(), self.pulse.clone());
+        tokio::spawn(async move {
+            loop {
+                let (tx, rx) = oneshot::channel();
+                if requests.send(Request::Busy(tx)).is_err() || rx.await.is_err() {
+                    return;
+                }
+                pulse.answered();
+                tokio::time::sleep(watchdog::PROBE_EVERY).await;
+            }
+        })
+    }
+
     /// An engine's plan usage read outside a turn (a poll of Codex's limits,
     /// say): told every screen as [`Event::PlanUsage`], and weighed for
     /// moving members between engines at once.
@@ -1104,6 +1124,7 @@ async fn run(
         let go_on = rt.wake(wake, &pulse).await;
         pulse.end();
         if !go_on {
+            pulse.stop_healing();
             return;
         }
     }

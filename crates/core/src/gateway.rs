@@ -57,10 +57,14 @@ pub struct Leave {
     pub idle: Option<Duration>,
     /// How often it looks.
     pub every: Duration,
+    /// Once it hasn't answered its own `status` for this long, with its loop
+    /// on no step: hung, it exits, for the login service to start it again
+    /// ([`crate::watchdog::hung`]). The daemon's; a test's runtime stays.
+    pub hung: Option<Duration>,
 }
 
 impl Leave {
-    pub const NEVER: Leave = Leave { home_gone: false, idle: None, every: Duration::from_secs(5) };
+    pub const NEVER: Leave = Leave { home_gone: false, idle: None, every: Duration::from_secs(5), hung: None };
 
     fn watches(&self) -> bool {
         self.home_gone || self.idle.is_some()
@@ -133,6 +137,7 @@ async fn serve_until(
     let (core, own_events) = runtime::start(config);
     // Screens subscribe for themselves; an unread receiver would only pile up events.
     drop(own_events);
+    let healing = leave.hung.map(|after| core.heal_when_hung(after, Some(home.join("daemon-hang.txt"))));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<oneshot::Sender<()>>();
     let screens = Screens::new();
     let mut look = tokio::time::interval(leave.every);
@@ -171,6 +176,9 @@ async fn serve_until(
         crate::daemon_log!("equipe: stopping without the core, which is still on {doing}");
     }
     daily.abort();
+    if let Some(healing) = healing {
+        healing.abort();
+    }
     let _ = std::fs::remove_file(socket);
     if let Some(ack) = ack {
         let _ = ack.send(());
