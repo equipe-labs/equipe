@@ -10,7 +10,7 @@
 //! go. Plain functions; the runtime keeps and sends (`runtime/retro.rs`).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use equipe_protocol::decide::{Answer, QuestionSet, Retro};
 use equipe_protocol::routines::{Routine, Schedule};
@@ -126,31 +126,27 @@ impl Wait {
     }
 }
 
-/// A brief in a project (`docs/briefs/*.md`): what was expected.
+/// A project's brief (`crate::briefs`): what was expected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Brief {
     pub project: String,
-    /// Its path inside the project.
+    /// Where it is: in the squad's folder, never the project's repository.
     pub file: String,
     pub title: String,
 }
 
-/// Where a project keeps its briefs.
-pub const BRIEFS: &str = "docs/briefs";
 /// Briefs listed, at most.
 const BRIEFS_SHOWN: usize = 12;
 
-/// The briefs of `projects`, by project then file.
-pub fn briefs(projects: &[PathBuf]) -> Vec<Brief> {
+/// The briefs of `projects`, kept in the squad's folder `home`: by project,
+/// then newest first.
+pub fn briefs(home: &Path, projects: &[PathBuf]) -> Vec<Brief> {
     let mut out = Vec::new();
     for project in projects {
-        let Ok(entries) = std::fs::read_dir(project.join(BRIEFS)) else { continue };
-        let mut files: Vec<String> = entries.flatten().filter_map(|e| e.file_name().to_str().map(str::to_owned)).filter(|f| f.ends_with(".md") && !f.starts_with('.')).collect();
-        files.sort();
-        for file in files {
-            let text = std::fs::read_to_string(project.join(BRIEFS).join(&file)).unwrap_or_default();
-            let title = text.lines().map(|l| l.trim().trim_start_matches('#').trim()).find(|l| !l.is_empty() && *l != "---").unwrap_or(file.trim_end_matches(".md")).to_owned();
-            out.push(Brief { project: crate::board::project_name(project), file: format!("{BRIEFS}/{file}"), title: clip(&title, 80) });
+        let name = crate::board::project_name(project);
+        let Ok(target) = crate::briefs::Target::project(home, &name) else { continue };
+        for doc in crate::briefs::list(&target).into_iter().filter(|d| d.kind == crate::briefs::Kind::Brief) {
+            out.push(Brief { project: name.clone(), file: doc.path, title: clip(&doc.title, 80) });
         }
     }
     out.truncate(BRIEFS_SHOWN);
@@ -839,7 +835,7 @@ mod tests {
     fn the_prompt_asks_for_one_message_from_the_facts_and_proposes_without_changing_anything() {
         for lang in Lang::ALL {
             let prompt = routine(lang, 1).prompt;
-            for must in ["[Retro facts · …]", "ask_decision", "`lesson`", "docs/briefs/", "propose_routine", "\"lessons\"", "T-"] {
+            for must in ["[Retro facts · …]", "ask_decision", "`lesson`", "docs/<project>/briefs/", "propose_routine", "\"lessons\"", "T-"] {
                 assert!(prompt.contains(must), "{lang:?} lacks {must}: {prompt}");
             }
             assert!(prompt.matches("\n1. ").count() == 1 && prompt.contains("\n2. ") && prompt.contains("\n3. ") && !prompt.contains("\n4. "), "{lang:?}: three parts, numbered");
@@ -906,16 +902,23 @@ mod tests {
     }
 
     #[test]
-    fn briefs_are_read_from_each_projects_docs_briefs() {
+    fn briefs_are_read_from_each_projects_folder_in_the_squads_and_never_its_repository() {
         let root = std::env::temp_dir().join(format!("equipe-retro-briefs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let (site, api) = (root.join("site"), root.join("api"));
-        std::fs::create_dir_all(site.join(BRIEFS)).unwrap();
+        let (site, api, home) = (root.join("site"), root.join("api"), root.join("home"));
+        let kept = home.join("docs/site/briefs");
+        std::fs::create_dir_all(&kept).unwrap();
         std::fs::create_dir_all(&api).unwrap();
-        std::fs::write(site.join(BRIEFS).join("pricing.md"), "\n# Pricing that converts\n\nMore.").unwrap();
-        std::fs::write(site.join(BRIEFS).join("notes.txt"), "not a brief").unwrap();
-        let found = briefs(&[site.clone(), api]);
-        assert_eq!(found, [Brief { project: "site".into(), file: "docs/briefs/pricing.md".into(), title: "Pricing that converts".into() }]);
+        std::fs::write(kept.join("2026-11-04-pricing.md"), "---\ntitle: Pricing that converts\nstatus: settled\n---\n\nMore.").unwrap();
+        std::fs::write(kept.join("notes.txt"), "not a brief").unwrap();
+        std::fs::create_dir_all(home.join("docs/site/plans")).unwrap();
+        std::fs::write(home.join("docs/site/plans/2026-11-05-pricing.md"), "---\ntitle: A plan\n---\n").unwrap();
+        // One left in the repository from before: not read.
+        std::fs::create_dir_all(site.join("docs/briefs")).unwrap();
+        std::fs::write(site.join("docs/briefs/2026-10-01-old.md"), "---\ntitle: Old\n---\n").unwrap();
+        let found = briefs(&home, &[site.clone(), api]);
+        let file = kept.join("2026-11-04-pricing.md").to_string_lossy().into_owned();
+        assert_eq!(found, [Brief { project: "site".into(), file, title: "Pricing that converts".into() }]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

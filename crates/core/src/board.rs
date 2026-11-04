@@ -385,8 +385,8 @@ pub const FORGET: &str = "forget";
 pub const ESTIMATE: &str = "estimate";
 /// The PM adds a project to the squad when the person asks it to.
 pub const ADD_PROJECT: &str = "add_project";
-/// The PM writes a plan into its project's `docs/plans/`, and asks for its
-/// reviews; a reviewer writes its own notes into it.
+/// The PM writes a plan — kept in the squad's own folder, never a project's
+/// repository — and asks for its reviews; a reviewer writes its own notes into it.
 pub const WRITE_PLAN: &str = "write_plan";
 
 /// Past this many minutes for one agent, work is split across subagents running at once.
@@ -485,7 +485,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "project": { "type": "string", "description": "The project's name: for code, the repository it changes (needed when the squad has several); for a task or action, what it is about, if anything." },
                     "depends_on": { "type": "array", "items": { "type": "integer" }, "description": "Ticket numbers that must be done first." },
                     "proposal": { "type": "boolean", "description": "PM only: put it up as a proposal for the person to take on, rather than ready — when they asked you to shape it." },
-                    "plan": { "type": "string", "description": "The plan it is cut from: its path (`docs/plans/2026-11-04-sign-in.md`) or slug. The ticket links to it, and is listed in its `tickets`." },
+                    "plan": { "type": "string", "description": "The plan it is cut from: its path, as `write_plan` gave it, or its slug. The ticket links to it, and is listed in its `tickets`." },
                     "tests": { "type": "array", "items": { "type": "string" }, "description": "With `plan`: the test plan's cases this ticket must pass (`TP-1`, `TP-3`). They are copied into its body, word for word, for its owner and QA." },
                     "idea": { "type": "boolean", "description": "The person's idea, kept for later rather than done now: it waits on the board as an idea, which nothing starts and nothing asks about, until the PM puts it to them when its time comes. Use it whenever they float something for someday — 'later', 'an idea', 'not now but' — and keep their own words in the body, with what led to it." },
                 },
@@ -802,8 +802,9 @@ fn write_plan_tool(is_pm: bool) -> Value {
     let text = |what: &str| json!({ "type": "string", "description": what });
     let description = if is_pm {
         "Write a plan — for work that went through a brief or will take several tickets, before any of its tickets — \
-into its project's `docs/plans/<date>-<slug>.md` (the squad's folder when there is no project), committed on the main \
-branch so every worktree sees it. A new plan needs `title`; then each section you give replaces that section: goal, \
+into the squad's own folder — `docs/<project>/plans/<date>-<slug>.md` there, `docs/plans/…` when there is no project — \
+never into a project's repository, which may be public; it is saved as a change the person can take back, and tickets \
+name it by its absolute path, which members read from their worktrees. A new plan needs `title`; then each section you give replaces that section: goal, \
 approach, architecture (and data flow), edge_cases, test_plan (a list, one case an item: each gets its `TP-` number), \
 design_notes, risks. Name the plan again (`plan`) to change it: its status, the scope the person picked, a section. \
 `reviewers` asks members to review it, at once, each from its role's angle — an engineer for architecture, edge \
@@ -814,12 +815,12 @@ notes into the plan and hands in. Then cut its tickets with `create_ticket` (`pl
 found from your role's angle. Only your own notes: the plan's sections are the PM's. Writing again replaces your notes."
     };
     let mut properties = serde_json::Map::new();
-    properties.insert("plan".into(), text("The plan: its path (`docs/plans/2026-11-04-sign-in.md`) or slug. Left out, a new plan."));
-    properties.insert("project".into(), text("The project whose repository it lives in, by name — needed when the squad has several."));
+    properties.insert("plan".into(), text("The plan: its absolute path, as your ticket names it, or its slug. Left out, a new plan."));
+    properties.insert("project".into(), text("The project it is about, by name — needed when the squad has several and `plan` isn't its path."));
     if is_pm {
         properties.insert("title".into(), text("The plan's title, in the person's language."));
         properties.insert("slug".into(), text("A short kebab-case name for its file (`magic-link-sign-in`); left out, made from the title."));
-        properties.insert("brief".into(), text("The brief it came from: its path (`docs/briefs/…`)."));
+        properties.insert("brief".into(), text("The brief it came from: its path, as `write_brief` gave it."));
         properties.insert("status".into(), json!({ "type": "string", "enum": crate::plan::Status::ALL.map(crate::plan::Status::label) }));
         properties.insert(
             "scope".into(),
@@ -1299,6 +1300,11 @@ mod tests {
         let plan = |tools: Vec<Value>| tools.into_iter().find(|t| t["name"] == WRITE_PLAN).expect("write_plan");
         let pm = plan(tools(true));
         let member = plan(tools(false));
+        // Kept in the squad's own folder, never in a repository that may be public.
+        for described in [pm["description"].as_str().unwrap(), crate::briefs::tool()["description"].as_str().unwrap()] {
+            assert!(described.contains("never into a project's repository, which may be public"), "{described}");
+            assert!(!described.contains("main branch") && !described.contains("committed"), "{described}");
+        }
         for key in ["title", "goal", "test_plan", "scope", "reviewers"] {
             assert!(pm["inputSchema"]["properties"].get(key).is_some(), "{key}");
             assert!(member["inputSchema"]["properties"].get(key).is_none(), "{key} is the PM's");

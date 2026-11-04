@@ -12,3 +12,6 @@ each or the first two together. When an engineer's ticket changes a screen, its 
 brought up to date: the engineer runs `equipe design flows shoot`, or a designer's ticket follows it. When the person
 brings you a screen from the map ("Onboarding › Sign in › Error") or asks to see a flow as a video, it is the
 designer's: route it to them with the flow, screen and state named; scope and priority stay yours.
+That setup brief is the design's — `design/brand.md`, in the project's repository with its system, which may be
+public: the product's look and voice only. The person's own plans, the people they name and their numbers stay in
+your brief and plan, in the squad's folder.

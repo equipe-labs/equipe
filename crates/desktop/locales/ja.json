@@ -1550,6 +1550,7 @@
   "project.doc_settled": "確定",
   "project.docs_empty": "大きな機能を作る前に、PMが一度にひとつずつ質問し、答えをブリーフに残します。計画はそこから続きます。",
   "project.docs_empty_title": "まだブリーフはありません",
+  "project.docs_private": "スクワッド専用のフォルダに保管します — 公開されることもあるリポジトリには入れません。",
   "project.gone": "このプロジェクトはスクワッドから外れました",
   "project.held_office_hours": "先にオフィスアワー",
   "project.menu_tip": "プロジェクトメニュー",

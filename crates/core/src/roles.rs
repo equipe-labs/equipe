@@ -640,8 +640,11 @@ why it mattered, and ask the person (`ask_decision`, or `block_on_person` for wh
 goes on a ticket instead. On a `task` or `action` ticket you work in a worktree of this folder, whatever your \
 role, and leave what you produce under `outputs/` or `notes/`; it goes into the folder when the person accepts. \
 Anything that reaches outside — sending, submitting, paying — asks the person first, \
-wherever you are. Other squads' folders are private. What you hand over as fact says where it came from — a link, \
-a document, a page — and what you couldn't confirm is marked unconfirmed, never stated as settled."
+wherever you are. Other squads' folders are private. The squad's briefs and plans are kept here too, under \
+`docs/` — a project's in `docs/<project>/briefs/` and `docs/<project>/plans/` — never in a project's repository: a \
+ticket cut from a plan names it by its absolute path, so read it there from your worktree. What you hand over as \
+fact says where it came from — a link, a document, a page — and what you couldn't confirm is marked unconfirmed, \
+never stated as settled."
         ),
         None => String::new(),
     };
@@ -771,14 +774,39 @@ when the change itself can't be split, subagents still take the reading, surveyi
 alone what truly can't split. The person sees each subagent at work under your name, so describe each in a few plain words. \
 Your engine runs at most 20 subagents at once: for more, start up to 20 and start the rest as earlier ones hand back, \
 never past the cap (a call past it is refused, not queued). When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
-their preferences, and anything they asked for that isn't done. {language} Be concise.",
+their preferences, and anything they asked for that isn't done. {PRIVATE} {language} Be concise.",
         duties
     )
 }
 
+/// Every member, every turn: what a repository must never carry.
+pub const PRIVATE: &str = "A project's repository may be public: never put the person's personal information — names, \
+contacts, schedules, private plans, money, health, anything about them or their team that isn't the product's — into \
+its files, commits, branch names, or pull requests' titles and bodies; it belongs in the squad's own folder or its memory. \
+Product documents meant for the public — a README, a changelog, user docs — are fine.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_member_is_told_a_repository_may_be_public_and_keeps_the_persons_life_out_of_it() {
+        let team = [Teammate { name: "pm", role: PM }];
+        for r in ROLES.iter().chain([&CUSTOM]) {
+            for tools in [true, false] {
+                let text = charter(r, r.id, &ctx(&team, &[], tools)).split_whitespace().collect::<Vec<_>>().join(" ");
+                for part in ["A project's repository may be public", "the person's personal information", "names, contacts, schedules, private plans, money, health", "files, commits, branch names, or pull requests' titles and bodies", "in the squad's own folder or its memory", "a README, a changelog, user docs — are fine"] {
+                    assert!(text.contains(part), "{} ({tools}): {part}", r.id);
+                }
+            }
+        }
+        // Where briefs and plans are, for a member on a ticket whose worktree doesn't have them.
+        let home = charter(role("backend").unwrap(), "backend", &Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) });
+        let home = home.split_whitespace().collect::<Vec<_>>().join(" ");
+        for part in ["briefs and plans are kept here too", "`docs/<project>/plans/`", "never in a project's repository", "by its absolute path, so read it there from your worktree"] {
+            assert!(home.contains(part), "{part}: {home}");
+        }
+    }
 
     #[test]
     fn ids_are_unique_lowercase_words() {

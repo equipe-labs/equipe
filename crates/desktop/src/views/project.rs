@@ -323,11 +323,19 @@ fn docs_list(shell: &Shell, project: &str, docs: &[&ProjectDoc], cx: &mut Contex
             .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(t!("project.docs_empty_title")))
             .child(div().max_w(px(420.)).text_center().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(t!("project.docs_empty")))
             .child(div().pt_3().child(start("project-office-hours", ui::Kind::Primary, cx)))
+            .child(div().pt_2().max_w(px(420.)).text_center().text_size(px(12.)).text_color(p.muted).child(t!("project.docs_private")))
             .into_any_element();
     }
     let rows: Vec<AnyElement> = docs.iter().enumerate().map(|(i, d)| doc_row(shell, i, d, cx)).collect();
-    // The tab says what they are: the rows start at once, office hours after them.
-    v_flex().w_full().pt_2().gap_0p5().children(rows).child(h_flex().pt_4().child(start("project-office-hours-more", ui::Kind::Secondary, cx))).into_any_element()
+    // The tab says what they are: the rows start at once, office hours after them, then where they are kept.
+    v_flex()
+        .w_full()
+        .pt_2()
+        .gap_0p5()
+        .children(rows)
+        .child(h_flex().pt_4().child(start("project-office-hours-more", ui::Kind::Secondary, cx)))
+        .child(div().pt_2().text_size(px(12.)).text_color(p.muted).child(t!("project.docs_private")))
+        .into_any_element()
 }
 
 /// A brief or plan: what it is, its title, its date and how it stands — opened beside the page.

@@ -1550,6 +1550,7 @@
   "project.doc_settled": "已確定",
   "project.docs_empty": "在建置較大的功能之前，PM 會一次問你一個問題，並把答案整理成簡報。計畫由此而來。",
   "project.docs_empty_title": "還沒有簡報",
+  "project.docs_private": "保存在小隊自己的資料夾中——絕不放進可能公開的程式碼庫。",
   "project.gone": "這個專案已不在小隊中",
   "project.held_office_hours": "先進行答疑時間",
   "project.menu_tip": "專案選單",

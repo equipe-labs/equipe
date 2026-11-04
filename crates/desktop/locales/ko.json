@@ -1550,6 +1550,7 @@
   "project.doc_settled": "확정",
   "project.docs_empty": "큰 기능을 만들기 전에 PM이 한 번에 하나씩 묻고 답을 브리프로 남겨요. 계획은 그 브리프에서 이어져요.",
   "project.docs_empty_title": "아직 브리프가 없어요",
+  "project.docs_private": "스쿼드 전용 폴더에 보관해요 — 공개될 수 있는 저장소에는 절대 넣지 않아요.",
   "project.gone": "이 프로젝트는 스쿼드에서 빠졌어요",
   "project.held_office_hours": "오피스 아워 먼저",
   "project.menu_tip": "프로젝트 메뉴",

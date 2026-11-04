@@ -1595,6 +1595,7 @@
   "project.doc_settled": "Settled",
   "project.docs_empty": "Before anything sizeable is built, the PM asks you one question at a time and leaves the answers as a brief. The plan follows from it.",
   "project.docs_empty_title": "No briefs yet",
+  "project.docs_private": "Kept in the squad's own folder — never in the repository, which may be public.",
   "project.gone": "This project is no longer in the squad",
   "project.held_office_hours": "Office hours first",
   "project.menu_tip": "Project menu",

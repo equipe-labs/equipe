@@ -3,9 +3,11 @@
 //! ticket for each reviewer, all ready at once; a reviewer writes its own
 //! notes into the plan with the same tool; the tickets cut from it with
 //! `create_ticket` (`plan`, `tests`) carry its path and their slice of its
-//! test plan, and are listed in its front matter. The file is committed onto
-//! the project's main branch ([`briefs::save`]), so its git work runs off the
-//! loop, one write at a time, and the call is answered once it is in.
+//! test plan, and are listed in its front matter. The file is kept in the
+//! squad's own folder, never a project's repository, and saved there as a
+//! change ([`briefs::save`]): its git work runs off the loop, one write at a
+//! time, and the call is answered once it is in. Tickets name it by its
+//! absolute path, which a member reads from its worktree.
 
 use std::sync::Mutex;
 
@@ -14,7 +16,7 @@ use crate::briefs::{self, Kind, Target};
 use crate::plan::{self, Change, Status};
 
 /// One plan written at a time: each write reads the file, changes it and
-/// commits it, and two at once would lose one's change.
+/// saves it, and two at once would lose one's change.
 static WRITING: Mutex<()> = Mutex::new(());
 
 /// What a `write_plan` call did off the loop, back on it.
@@ -30,7 +32,7 @@ pub(super) struct Written {
 }
 
 pub(super) struct Wrote {
-    /// What a ticket names it by: its path in the project, or its own in the squad's folder.
+    /// What a ticket names it by: its absolute path in the squad's folder.
     plan: String,
     /// Where it is on this machine.
     path: PathBuf,
@@ -56,15 +58,22 @@ pub(super) struct Slice {
 }
 
 impl Runtime {
-    /// Where a plan lives: the project named, else the squad's only one, else
-    /// — with none — the squad's folder.
-    fn plan_target(&mut self, squad: &str, project: Option<&str>) -> Result<Target, String> {
+    /// Where a plan is kept, in the squad's own folder, and the project it is
+    /// about: the one its absolute path names, else the project named, else
+    /// the squad's only one, else — with none — the squad's own work.
+    fn plan_target(&mut self, squad: &str, project: Option<&str>, named: Option<&str>) -> Result<(Target, Option<PathBuf>), String> {
         let projects = self.projects(squad);
+        let folder = squad_home::path(&self.config.home, squad);
         let names = || projects.iter().map(|p| board::project_name(p)).collect::<Vec<_>>().join(", ");
+        let of = |repo: &PathBuf| Target::project(&folder, &board::project_name(repo)).map(|t| (t, Some(repo.clone())));
+        if let Some((target, Kind::Plan)) = named.map(Path::new).filter(|p| p.is_absolute()).and_then(|p| Target::of_path(&folder, p)) {
+            let repo = target.project_name().and_then(|name| board::resolve_project(name, &projects));
+            return Ok((target, repo));
+        }
         match (project, projects.as_slice()) {
-            (Some(arg), _) => board::resolve_project(arg, &projects).map(Target::Repo).ok_or_else(|| format!("No project called {arg}. The squad's projects: {}.", names())),
-            (None, [one]) => Ok(Target::Repo(one.clone())),
-            (None, []) => Ok(Target::Folder(squad_home::path(&self.config.home, squad))),
+            (Some(arg), _) => board::resolve_project(arg, &projects).ok_or_else(|| format!("No project called {arg}. The squad's projects: {}.", names())).and_then(|repo| of(&repo)),
+            (None, [one]) => of(one),
+            (None, []) => Ok((Target::squad(&folder), None)),
             (None, _) => Err(format!("Which project is the plan for? Name it in `project`: {}.", names())),
         }
     }
@@ -98,7 +107,7 @@ impl Runtime {
             return fail(
                 reply,
                 match named.as_deref() {
-                    Some(arg) => format!("`{arg}` doesn't name a plan: give its path (`docs/plans/<date>-<slug>.md`) or slug."),
+                    Some(arg) => format!("`{arg}` doesn't name a plan: give its path (`…/plans/<date>-<slug>.md`) or slug."),
                     None if change.title.is_none() => "A new plan needs a `title`; to change one, name it in `plan`.".into(),
                     None => "Give the plan a `slug` — a few lowercase ASCII words joined by dashes (`magic-link-sign-in`): its title makes none.".into(),
                 },
@@ -110,8 +119,8 @@ impl Runtime {
         if change.is_empty() && reviewers.is_empty() {
             return fail(reply, "Nothing to write: give the sections, the status or scope that change, or `reviewers`.".into());
         }
-        let target = match self.plan_target(&squad, board::arg_str(args, "project")) {
-            Ok(target) => target,
+        let (target, project) = match self.plan_target(&squad, board::arg_str(args, "project"), named.as_deref()) {
+            Ok(found) => found,
             Err(text) => return fail(reply, text),
         };
         let (lang, internal, reviewed) = (self.config.lang, self.internal.clone(), change.review.is_some());
@@ -124,13 +133,9 @@ impl Runtime {
                     return Err(format!("There is no plan `{slug}` in {}.", target.root().display()));
                 }
                 let text = plan::apply(existing.as_deref(), &change, &today, lang)?;
-                let path = briefs::save(&target, Kind::Plan, &slug, &text, &today)?;
+                let path = briefs::save(&target, Kind::Plan, &slug, &text, &today, &member)?;
                 let (front, _) = plan::parse(&text);
-                let (plan, project) = match &target {
-                    Target::Repo(repo) => (path.strip_prefix(repo).unwrap_or(&path).to_string_lossy().into_owned(), Some(repo.clone())),
-                    Target::Folder(_) => (path.to_string_lossy().into_owned(), None),
-                };
-                Ok(Wrote { plan, path, title: front.title, project, status: front.status })
+                Ok(Wrote { plan: path.to_string_lossy().into_owned(), path, title: front.title, project, status: front.status })
             })();
             let _ = internal.send(Internal::PlanWritten(Box::new(Written { squad, member, reply, result, reviewers, reviewed })));
         });
@@ -214,10 +219,10 @@ take in what they found, put the scope to the person on one `ask_decision` card,
         let fail = |reply: oneshot::Sender<ToolResult>, text: String| drop(reply.send(ToolResult { text, is_error: true, image: None }));
         let named = board::arg_str(&call.arguments, "plan").unwrap_or_default().to_owned();
         let Some(slug) = plan::slug_of(&named).filter(|s| briefs::is_slug(s)) else {
-            return fail(reply, format!("`{named}` doesn't name a plan: give its path (`docs/plans/<date>-<slug>.md`) or slug."));
+            return fail(reply, format!("`{named}` doesn't name a plan: give its path (`…/plans/<date>-<slug>.md`) or slug."));
         };
-        let target = match self.plan_target(&call.squad, board::arg_str(&call.arguments, "project")) {
-            Ok(target) => target,
+        let (target, project) = match self.plan_target(&call.squad, board::arg_str(&call.arguments, "project"), Some(&named)) {
+            Ok(found) => found,
             Err(text) => return fail(reply, text),
         };
         let tests = board::arg_strs(&call.arguments, "tests");
@@ -226,10 +231,7 @@ take in what they found, put the scope to the person on one `ask_decision` card,
             let result = (|| {
                 let text = briefs::read(&target, Kind::Plan, &slug).ok_or_else(|| format!("There is no plan `{slug}` in {} — write it first with `write_plan`.", target.root().display()))?;
                 let name = briefs::find(&target, Kind::Plan, &slug).unwrap_or_default();
-                let (plan, project) = match &target {
-                    Target::Repo(repo) => (format!("{}/{name}", Kind::Plan.dir()), Some(repo.clone())),
-                    Target::Folder(root) => (root.join(Kind::Plan.dir()).join(&name).to_string_lossy().into_owned(), None),
-                };
+                let plan = target.path(Kind::Plan, &name).to_string_lossy().into_owned();
                 let (_, body) = plan::parse(&text);
                 let cases = plan::slice(body.section(plan::Section::TestPlan), &tests)
                     .map_err(|id| format!("The plan's test plan has no {id}: name its cases as it numbers them (`TP-1`), or write the case into it first."))?;
@@ -282,7 +284,7 @@ take in what they found, put the scope to the person on one `ask_decision` card,
                 let text = briefs::read(&slice.target, Kind::Plan, &slice.slug).ok_or_else(|| "it is gone".to_owned())?;
                 let (mut front, body) = plan::parse(&text);
                 front.add_ticket(id);
-                briefs::save(&slice.target, Kind::Plan, &slice.slug, &plan::text(&front, &body, lang), &squad_memory::date(now_secs())).map(drop)
+                briefs::save(&slice.target, Kind::Plan, &slice.slug, &plan::text(&front, &body, lang), &squad_memory::date(now_secs()), "equipe").map(drop)
             })();
             let error = result.err().map(|why| format!("T-{id} isn't listed in the plan {}: {why}.", slice.plan));
             let _ = internal.send(Internal::PlanListed(squad, error));
