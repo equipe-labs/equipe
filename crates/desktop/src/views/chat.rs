@@ -672,6 +672,8 @@ struct Rows {
     picked: Option<(String, u64)>,
     leaving: Rc<HashSet<String>>,
     waiting: usize,
+    /// The row of a turn that lost its engine's sign-in, and its card.
+    sign_in: Option<(usize, Rc<super::signin::Card>)>,
 }
 
 impl Rows {
@@ -784,6 +786,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         picked: shell.chat.picked.clone(),
         leaving: shell.chat.leaving.clone(),
         waiting: shell.model.convo().map_or(0, |c| c.queue.items().len()),
+        sign_in: super::signin::live(&shell.chat.blocks).map(|(ix, engine)| (ix, Rc::new(super::signin::Card::of(shell, &shell.chat.blocks, ix, engine)))),
         turns: shell
             .chat
             .blocks
@@ -982,6 +985,10 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(ShimmerText::new(t!("chat.thinking")).id(("thinking", key)).highlight_color(Hsla::from(p.text)))
             .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(latest.clone()))
             .into_any_element(),
+        Block::Error { .. } if rows.sign_in.as_ref().is_some_and(|(at, _)| *at == ix) => {
+            let (_, card) = rows.sign_in.as_ref().expect("just matched");
+            super::signin::card(card, p, rows.tones, key, rows.handle.clone())
+        }
         Block::Error { message, next } => v_flex()
             .gap_1()
             .text_size(px(BODY))

@@ -249,6 +249,9 @@ pub struct Shell {
     pub(crate) terminal: Option<views::terminal::TermUi>,
     /// The reply whose command was last typed into the terminal unasked.
     term_offered: Option<u64>,
+    /// The sign-in card's box for the code a sign-in page shows, once asked for.
+    pub(crate) signin_code: Option<Entity<gpui_kit::component::input::InputState>>,
+    pub(crate) signin_sub: Option<Subscription>,
     /// The document open in the panel at the right, if one is.
     pub(crate) doc: Option<doc::Doc>,
     doc_reads: u64,
@@ -422,6 +425,8 @@ impl Shell {
             browser,
             terminal: None,
             term_offered: None,
+            signin_code: None,
+            signin_sub: None,
             doc: None,
             doc_reads: 0,
             side_drag: None,
@@ -934,7 +939,7 @@ impl Shell {
                             continue;
                         }
                         // The engines: settings' AI platforms, never the model's.
-                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineInstall { .. })) = &update {
+                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. })) = &update {
                             let effect = this.engines.on_event(event);
                             changed |= effect.changed;
                             // The first engine ready: a squad that had none starts its team now.
@@ -1022,6 +1027,8 @@ impl Shell {
                         if let Some(session) = ended {
                             this.offer_terminal(session, window, cx);
                         }
+                        // A conversation ending on a lost sign-in: why is asked, if not told yet.
+                        this.signin_watch();
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();

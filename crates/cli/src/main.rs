@@ -1487,7 +1487,7 @@ impl App {
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
-                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineInstall { .. } => {}
+                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });

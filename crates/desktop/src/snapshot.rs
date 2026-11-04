@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>` (a lost sign-in's card in the conversation) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|reply|copy|type:<words>|write:<words>|add|cancel|edit:<n>|remove:<n>|peek:<n>|card:<quote>|<words>|send|close|jump>` (asking about — replying to — the words selected; a card's 답글, ✕, the pointer on it; a card made at once) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
@@ -932,6 +932,36 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                             let at = crate::engines::PLATFORMS.iter().position(|p| p.engine == engine).unwrap_or(0);
                             if let Some(focus) = shell.settings.engine_keys.get(at * crate::views::engines::KEYS) {
                                 window.focus(focus, cx);
+                            }
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                }),
+                // The conversation's card for a lost sign-in: `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>`
+                // (its 다시 로그인, 로그인 세션에서 다시 띄우기, 다시 확인, 취소, 이어서 하기; `far`, the window as if on another Mac; a code typed and sent, or only typed).
+                "signin" => shell.update(cx, |shell, cx| {
+                    use crate::views::signin::Offer;
+                    let engine = shell.model.convo().and_then(|c| crate::views::signin::live(&c.blocks())).map_or(equipe_core::protocol::Engine::Claude, |(_, e)| e);
+                    let (act, rest) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+                    match act {
+                        "go" => shell.signin_offer(engine, Offer::SignIn, window, cx),
+                        "move" => shell.signin_offer(engine, Offer::Move, window, cx),
+                        "check" => shell.signin_offer(engine, Offer::Check, window, cx),
+                        "cancel" => shell.signin_offer(engine, Offer::Cancel, window, cx),
+                        "carry" => shell.signin_offer(engine, Offer::CarryOn, window, cx),
+                        // The window as if on another Mac than the daemon's: drawn only, nothing reached.
+                        "far" => {
+                            if let Ok(endpoint) = crate::target::Endpoint::parse("mac-mini") {
+                                shell.endpoint = endpoint;
+                            }
+                        }
+                        "type" | "paste" => {
+                            if let Some(input) = shell.signin_code.clone() {
+                                input.update(cx, |s, cx| s.set_value(rest.to_owned(), window, cx));
+                            }
+                            if act == "paste" {
+                                shell.signin_paste(engine, window, cx);
                             }
                         }
                         _ => {}

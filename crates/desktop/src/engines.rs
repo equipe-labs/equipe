@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, SignInFailure, SignInStep};
+use equipe_core::protocol::{AuthState, Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, SessionId, SignInFailure, SignInStep};
 use equipe_core::t;
 
 use crate::icons::Icon;
@@ -121,6 +121,9 @@ pub enum Card {
     Browser { url: Option<String> },
     /// Enter `code` at `url`, in any browser.
     Code { url: String, code: String },
+    /// Open `url` in any browser, approve, and paste the code it shows here
+    /// (Claude Code's) — or approve in the browser on the daemon's machine.
+    Paste { url: String },
     /// Another screen started it.
     Elsewhere,
     Failed { problem: Problem, detail: String },
@@ -132,7 +135,7 @@ pub enum Card {
 impl Card {
     /// A sign-in is on its way: the card shows it and offers 취소.
     pub fn under_way(&self) -> bool {
-        matches!(self, Card::Starting { .. } | Card::Browser { .. } | Card::Code { .. } | Card::Elsewhere)
+        matches!(self, Card::Starting { .. } | Card::Browser { .. } | Card::Code { .. } | Card::Paste { .. } | Card::Elsewhere)
     }
 }
 
@@ -167,6 +170,22 @@ pub struct Engines {
     was_ready: bool,
     /// Installs this screen asked for: signed in next, once done.
     asked_installs: std::collections::HashSet<Engine>,
+    /// Sign-ins this screen asked for from another Mac: the page opens here.
+    asked_remote: std::collections::HashSet<Engine>,
+    /// Why an engine can't serve its members on the daemon's machine, as it
+    /// last said after a turn failed for want of a sign-in.
+    pub auth: HashMap<Engine, Auth>,
+    /// Engines this screen asked to look at since it attached.
+    auth_asked: std::collections::HashSet<Engine>,
+}
+
+/// Why an engine can't serve its members, as the daemon said ([`Event::EngineAuth`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Auth {
+    pub state: AuthState,
+    pub detail: String,
+    /// The conversations whose turns it stopped, carried on once it is signed in again.
+    pub stopped: Vec<SessionId>,
 }
 
 /// An engine's tool being installed on the daemon's machine.
@@ -215,6 +234,44 @@ impl Engines {
         }
         self.set(engine, Card::Starting { since: now });
         vec![Command::SignIn { engine, device: remote }]
+    }
+
+    /// From a conversation's card: the daemon runs the tool's own sign-in —
+    /// Claude Code's too, whose page and pasted code work from any Mac.
+    pub fn sign_in_again(&mut self, engine: Engine, remote: bool, now: Instant) -> Vec<Command> {
+        if self.card(engine).under_way() {
+            return vec![];
+        }
+        if remote {
+            self.asked_remote.insert(engine);
+        } else {
+            self.asked_remote.remove(&engine);
+        }
+        self.set(engine, Card::Starting { since: now });
+        vec![Command::SignIn { engine, device: remote }]
+    }
+
+    /// The code the sign-in page showed, as the person pasted it.
+    pub fn paste(&mut self, engine: Engine, code: &str) -> Vec<Command> {
+        let code = code.trim();
+        if code.is_empty() || !matches!(self.card(engine), Card::Paste { .. }) {
+            return vec![];
+        }
+        vec![Command::SignInCode { engine, code: code.to_owned() }]
+    }
+
+    /// Ask the daemon why `engine` can't serve members — once per attach,
+    /// unless `again` (the person's "다시 확인").
+    pub fn check(&mut self, engine: Engine, again: bool) -> Vec<Command> {
+        if !again && !self.auth_asked.insert(engine) {
+            return vec![];
+        }
+        self.auth_asked.insert(engine);
+        if again && let Some(auth) = self.auth.get_mut(&engine) {
+            auth.state = AuthState::Checking;
+            self.turn += 1;
+        }
+        vec![Command::CheckEngine { engine }]
     }
 
     /// "설치": the daemon runs the tool's own installer.
@@ -311,6 +368,11 @@ impl Engines {
                 self.turn += 1;
                 Effect { changed: true, sign_in, ..Effect::default() }
             }
+            Event::EngineAuth { engine, state, detail, stopped } => {
+                self.auth.insert(*engine, Auth { state: *state, detail: detail.clone(), stopped: stopped.clone() });
+                self.turn += 1;
+                Effect { changed: true, ..Effect::default() }
+            }
             Event::Nebius { status } => {
                 self.nebius = Some(status.clone());
                 self.turn += 1;
@@ -334,6 +396,13 @@ impl Engines {
                             open = Some(url.clone());
                         }
                         self.set(engine, Card::Code { url: url.clone(), code: code.clone() });
+                    }
+                    SignInStep::Paste { url } => {
+                        // From another Mac, the screen that asked opens the page here.
+                        if self.asked_remote.remove(&engine) {
+                            open = Some(url.clone());
+                        }
+                        self.set(engine, Card::Paste { url: url.clone() });
                     }
                     SignInStep::Done | SignInStep::Cancelled => self.set(engine, Card::Idle),
                     SignInStep::Failed { why, detail } => {
@@ -375,6 +444,9 @@ impl Engines {
     pub fn attached(&mut self) {
         self.statuses = None;
         self.asked = None;
+        // The daemon tells what it knows as the screen attaches; what isn't told is asked again.
+        self.auth.clear();
+        self.auth_asked.clear();
     }
 }
 
@@ -449,6 +521,23 @@ mod tests {
 
     fn status(engine: Engine, state: EngineState) -> EngineStatus {
         EngineStatus::new(engine, state)
+    }
+
+    #[test]
+    fn claude_signs_in_from_a_conversations_card_with_its_page_and_a_pasted_code() {
+        let mut e = Engines::default();
+        let now = Instant::now();
+        assert_eq!(e.sign_in_again(Engine::Claude, true, now), vec![Command::SignIn { engine: Engine::Claude, device: true }]);
+        assert!(e.paste(Engine::Claude, "abc#def").is_empty(), "no page yet: nothing to paste into");
+        e.on_event(&Event::SignIn { engine: Engine::Claude, step: SignInStep::Browser { url: None } });
+        let page = e.on_event(&Event::SignIn { engine: Engine::Claude, step: SignInStep::Paste { url: "https://claude.com/cai/oauth/authorize".into() } });
+        assert_eq!(page.open.as_deref(), Some("https://claude.com/cai/oauth/authorize"), "from another Mac, the page opens here");
+        assert_eq!(e.paste(Engine::Claude, "  abc#def \n"), vec![Command::SignInCode { engine: Engine::Claude, code: "abc#def".into() }]);
+        e.on_event(&Event::EngineAuth { engine: Engine::Claude, state: AuthState::SignedIn { resumed: 1 }, detail: String::new(), stopped: vec![] });
+        assert_eq!(e.auth[&Engine::Claude].state, AuthState::SignedIn { resumed: 1 });
+        assert_eq!(e.check(Engine::Claude, false), vec![Command::CheckEngine { engine: Engine::Claude }]);
+        assert!(e.check(Engine::Claude, false).is_empty(), "asked once per attach");
+        assert_eq!(e.check(Engine::Claude, true).len(), 1, "the person's 다시 확인 always asks");
     }
 
     #[test]
