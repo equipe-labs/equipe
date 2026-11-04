@@ -1,6 +1,6 @@
-//! Briefs and plans (`equipe_core::briefs`): written into the fake projects'
-//! repositories the way the PM's `write_brief` writes them — committed onto
-//! main — and sent when a project page asks. web has two briefs and a plan,
+//! Briefs and plans (`equipe_core::briefs`): written into the fake squad's
+//! folder the way the PM's `write_brief` writes them — never into the fake
+//! projects' repositories — and sent when a project page asks. web has two briefs and a plan,
 //! api a draft, app none (its page offers office hours). `FAKE_DOCS=none`:
 //! no project has any. `FAKE_DECIDE=office`: the PM's office-hours card waits.
 
@@ -21,11 +21,12 @@ pub fn seed() {
         return;
     }
     let write = |project: &str, kind: Kind, slug: &str, date: &str, fields: &[(&str, String)], body: &str| {
-        let target = Target::Repo(super::repo(project));
-        if let Err(why) = briefs::save(&target, kind, slug, &briefs::render(fields, body), date) {
+        let Ok(target) = Target::project(&folder(), project) else { return };
+        if let Err(why) = briefs::save(&target, kind, slug, &briefs::render(fields, body), date, "pm") {
             eprintln!("fake daemon: {project}'s {slug} wasn't written: {why}");
         }
     };
+    let brief_path = folder().join("docs/web/briefs/2026-11-02-one-tap-checkout.md").to_string_lossy().into_owned();
     let f = |pairs: &[(&'static str, &str)]| pairs.iter().map(|(k, v)| (*k, (*v).to_owned())).collect::<Vec<_>>();
     write(
         "web",
@@ -40,7 +41,7 @@ pub fn seed() {
         Kind::Plan,
         "one-tap-checkout",
         "2026-11-03",
-        &f(&[("title", "한 번에 끝나는 결제 — 계획"), ("date", "2026-11-03"), ("status", "in_review"), ("brief", "docs/briefs/2026-11-02-one-tap-checkout.md"), ("scope", "selective"), ("tickets", "[42, 51]")]),
+        &f(&[("title", "한 번에 끝나는 결제 — 계획"), ("date", "2026-11-03"), ("status", "in_review"), ("brief", brief_path.as_str()), ("scope", "selective"), ("tickets", "[42, 51]")]),
         "## 단계\n\n1. 결제 수단 선택을 한 화면으로 (T-42)\n2. 저장된 수단 불러오기\n3. 하단 요약 고정 (T-51)\n\n## 테스트\n\n- 카드 / 간편결제 각각 끝까지\n- 저장된 수단이 없을 때\n",
     );
     write(
@@ -61,9 +62,14 @@ pub fn seed() {
     );
 }
 
+/// The fake squad's folder, where its briefs and plans are kept.
+pub fn folder() -> std::path::PathBuf {
+    super::root().join("home")
+}
+
 /// Every project's briefs and plans, as the daemon reads them.
 fn docs() -> Vec<equipe_core::protocol::briefs::ProjectDoc> {
-    PROJECTS.iter().flat_map(|p| briefs::list(&super::repo(p), Some(p))).collect()
+    PROJECTS.iter().filter_map(|p| Target::project(&folder(), p).ok()).flat_map(|t| briefs::list(&t)).collect()
 }
 
 /// `ProjectDocs`: answered at once.

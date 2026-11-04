@@ -37,7 +37,7 @@ impl Runtime {
         let turns = journal.turns_since(from).unwrap_or_default();
         let mut waits = journal.waits_since(from).unwrap_or_default();
         waits.extend(open);
-        let facts = rules::gather(&Week { from, to: now, tickets: &tickets, events: &events, turns: &turns, waits: &waits, briefs: rules::briefs(&projects) });
+        let facts = rules::gather(&Week { from, to: now, tickets: &tickets, events: &events, turns: &turns, waits: &waits, briefs: rules::briefs(&crate::squad_home::path(&self.config.home, squad), &projects) });
         crate::daemon_log!("equipe: {squad}: weekly retro {} handed to the PM ({} shipped, {} troubles)", routine.id, facts.shipped.len(), facts.troubles.len());
         rules::message(routine, &rules::facts_text(&facts, &routines::Local))
     }

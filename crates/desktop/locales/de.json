@@ -1595,6 +1595,7 @@
   "project.doc_settled": "Festgelegt",
   "project.docs_empty": "Bevor etwas Größeres gebaut wird, stellt dir der PM eine Frage nach der anderen und hält die Antworten in einem Briefing fest. Der Plan folgt daraus.",
   "project.docs_empty_title": "Noch keine Briefings",
+  "project.docs_private": "Im eigenen Ordner des Squads aufbewahrt – nie im Repository, das öffentlich sein kann.",
   "project.gone": "Dieses Projekt gehört nicht mehr zum Squad",
   "project.held_office_hours": "Erst Sprechstunde",
   "project.menu_tip": "Projektmenü",

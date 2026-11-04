@@ -4486,11 +4486,52 @@ async fn a_review_that_cant_run_says_why_and_never_the_key() {
 
 // ── the plan step ──
 
+/// The repository as it was: the same commit, nothing changed or added, no `docs/`.
+fn untouched(repo: &Path, head: &str) {
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), head, "no commit in the project's repository");
+    assert_eq!(git(repo, &["status", "--porcelain", "--untracked-files=all"]), "", "nothing written into it");
+    assert_eq!(git(repo, &["branch", "--format=%(refname:short)"]), "main", "no branch either");
+    assert!(!repo.join("docs").exists());
+}
+
 #[tokio::test]
-async fn a_plan_is_committed_on_main_reviewed_at_once_and_cut_into_tickets_carrying_their_cases() {
+async fn a_brief_is_kept_in_the_squads_folder_and_never_written_or_committed_into_the_project() {
     let repo = repo();
+    let head = git(&repo, &["rev-parse", "HEAD"]);
     let claude = fake_claude(true, &answering("ok"));
-    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let project = equipe_core::board::project_name(&repo);
+    let wrote = tool(&handle, "pm", "write_brief", serde_json::json!({
+        "project": project, "title": "Checkout with Mina", "slug": "checkout", "mode": "startup", "body": "## Who\n\nMina, our designer, on 010-1234-5678.",
+    }))
+    .await;
+    assert!(!wrote.is_error, "{}", wrote.text);
+    let folder = squad_home::path(&home, "acme");
+    let kept = folder.join("docs").join(&project).join("briefs");
+    let name = std::fs::read_dir(&kept).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.ends_with("-checkout.md")).expect("kept in the squad's folder");
+    assert!(wrote.text.contains(&kept.join(&name).to_string_lossy().into_owned()) && wrote.text.contains("not in any repository"), "{}", wrote.text);
+    untouched(&repo, &head);
+    // Saved there as the PM's change, which the person can take back.
+    let change = squad_home::changes(&folder, 1).unwrap().remove(0);
+    assert_eq!(change.by, "pm");
+    assert_eq!(change.files, [("saved", format!("docs/{project}/briefs/{name}"))]);
+    // Listed for the project's page, from there.
+    handle.send(Command::ProjectDocs { squad: "acme".into() });
+    let got = until(&mut events, |e| matches!(e, Event::ProjectDocs { docs, .. } if !docs.is_empty())).await;
+    let Some(Event::ProjectDocs { docs, .. }) = got.last() else { panic!() };
+    assert_eq!(docs.len(), 1);
+    assert_eq!((docs[0].project.as_deref(), docs[0].path.as_str()), (Some(project.as_str()), kept.join(&name).to_str().unwrap()));
+}
+
+#[tokio::test]
+async fn a_plan_is_kept_in_the_squads_folder_reviewed_at_once_and_cut_into_tickets_carrying_their_cases() {
+    let repo = repo();
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "backend")).await;
     add(&handle, &mut events, 3, member(&repo, "qa")).await;
@@ -4501,24 +4542,29 @@ async fn a_plan_is_committed_on_main_reviewed_at_once_and_cut_into_tickets_carry
     .await;
     assert!(!wrote.is_error, "{}", wrote.text);
     assert!(wrote.text.contains("Asked backend (T-1), qa (T-2)"), "{}", wrote.text);
-    let name = git(&repo, &["ls-tree", "--name-only", "main", "docs/plans/"]);
-    assert!(name.starts_with("docs/plans/") && name.ends_with("-magic-link.md"), "{name}");
-    let on_main = git(&repo, &["show", &format!("main:{name}")]);
-    assert!(on_main.contains("status: in_review") && on_main.contains("- TP-2: a used link fails"), "{on_main}");
-    // Each reviewer's ticket: ready at once, from its angle, naming the plan.
+    let project = equipe_core::board::project_name(&repo);
+    let plans = squad_home::path(&home, "acme").join("docs").join(&project).join("plans");
+    let file = std::fs::read_dir(&plans).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with("-magic-link.md")).expect("kept in the squad's folder");
+    let name = file.to_string_lossy().into_owned();
+    let kept = std::fs::read_to_string(&file).unwrap();
+    assert!(kept.contains("status: in_review") && kept.contains("- TP-2: a used link fails"), "{kept}");
+    untouched(&repo, &head);
+    // Each reviewer's ticket: ready at once, from its angle, naming the plan by its absolute path.
     let board = handle.snapshot("acme").await.tickets;
     let reviews: Vec<_> = board.iter().filter(|t| t.plan.as_deref() == Some(name.as_str())).collect();
     assert_eq!(reviews.iter().map(|t| t.owner.as_deref().unwrap()).collect::<Vec<_>>(), ["backend", "qa"]);
-    assert!(reviews.iter().all(|t| t.kind == equipe_core::protocol::TicketKind::Task && t.body.contains(&name)));
+    assert!(reviews.iter().all(|t| t.kind == equipe_core::protocol::TicketKind::Task && t.body.contains(&name) && t.project.as_deref() == Some(repo.as_path())));
 
-    // A reviewer writes only its own notes.
+    // A reviewer writes only its own notes — naming the plan by its path, or its slug.
     let refused = tool(&handle, "backend", "write_plan", serde_json::json!({ "plan": name, "goal": "mine" })).await;
     assert!(refused.is_error && refused.text.contains("the PM's"), "{}", refused.text);
     let noted = tool(&handle, "qa", "write_plan", serde_json::json!({ "plan": "magic-link", "review": "TP-2 needs two browsers." })).await;
     assert!(!noted.is_error, "{}", noted.text);
-    let on_main = git(&repo, &["show", &format!("main:{name}")]);
-    assert!(on_main.contains("## Review notes\n\n### qa\n\nTP-2 needs two browsers."), "{on_main}");
-    assert!(on_main.contains("Sign in without a password."), "the rest stays: {on_main}");
+    let noted = tool(&handle, "backend", "write_plan", serde_json::json!({ "plan": name, "review": "Fine." })).await;
+    assert!(!noted.is_error, "{}", noted.text);
+    let kept = std::fs::read_to_string(&file).unwrap();
+    assert!(kept.contains("## Review notes\n\n### qa\n\nTP-2 needs two browsers."), "{kept}");
+    assert!(kept.contains("Sign in without a password."), "the rest stays: {kept}");
 
     // A ticket cut from it carries its slice of the test plan, and is listed in it.
     let cut = tool(&handle, "pm", "create_ticket", serde_json::json!({
@@ -4533,11 +4579,14 @@ async fn a_plan_is_committed_on_main_reviewed_at_once_and_cut_into_tickets_carry
     assert!(made.body.starts_with("Expired links say so.\n\nPlan: `") && made.body.contains("- TP-1: an expired link says so") && !made.body.contains("TP-2"), "{}", made.body);
     let mut listed = String::new();
     for _ in 0..50 {
-        listed = git(&repo, &["show", &format!("main:{name}")]);
+        listed = std::fs::read_to_string(&file).unwrap();
         if listed.contains("tickets: [") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(listed.contains(&format!("status: settled\ntickets: [{}]", made.id)), "{listed}");
+    // The code ticket's own branch may be cut by now; main never had the plan.
+    assert_eq!(git(&repo, &["rev-parse", "main"]), head);
+    assert_eq!(git(&repo, &["ls-tree", "-r", "--name-only", "main"]), "README.md");
 }

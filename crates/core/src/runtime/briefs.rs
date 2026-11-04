@@ -2,8 +2,9 @@
 //! `Command::ProjectDocs`, read off the loop and sent as `Event::ProjectDocs`
 //! — and sent again whenever one is written (`write_brief`, and the plan
 //! step's `write_plan` through [`Runtime::docs_changed`]). The PM writes a
-//! brief with `write_brief`: committed onto the project's main branch, off
-//! the loop, its answer sent when it is in.
+//! brief with `write_brief`: into the squad's own folder, never a project's
+//! repository, saved there as the PM's change off the loop, its answer sent
+//! when it is in.
 
 use equipe_protocol::ProjectDoc;
 
@@ -46,26 +47,30 @@ impl Runtime {
             Err(text) => return fail(reply, text),
         };
         let projects = self.projects(&squad);
+        let folder = squad_home::path(&self.config.home, &squad);
         let target = match &brief.project {
-            Some(arg) => match board::resolve_project(arg, &projects) {
-                Some(path) => Target::Repo(path),
+            Some(arg) => match board::resolve_project(arg, &projects).map(|p| Target::project(&folder, &board::project_name(&p))) {
+                Some(Ok(target)) => target,
+                Some(Err(text)) => return fail(reply, text),
                 None => {
                     let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
                     return fail(reply, format!("No project called {arg}. The squad's projects: {}.", names.join(", ")));
                 }
             },
-            None => Target::Folder(squad_home::path(&self.config.home, &squad)),
+            None => Target::squad(&folder),
         };
+        let by = call.member.clone();
         let (home, internal) = (self.config.home.clone(), self.internal.clone());
         tokio::task::spawn_blocking(move || {
             let today = squad_memory::date(now_secs());
             // A rewrite keeps the date it was first written on.
             let date = briefs::find(&target, Kind::Brief, &brief.slug).and_then(|n| briefs::parse_name(&n).map(|(d, _)| d.to_owned())).unwrap_or_else(|| today.clone());
-            let result = briefs::save(&target, Kind::Brief, &brief.slug, &brief_text(&brief, &date), &today);
+            let result = briefs::save(&target, Kind::Brief, &brief.slug, &brief_text(&brief, &date), &today, &by);
             let _ = reply.send(match result {
                 Ok(path) => ToolResult {
                     text: format!(
-                        "Wrote {} ({}). It shows on the project's page. Give the person its path in backticks in one line; {}",
+                        "Wrote {} ({}), in the squad's own folder — not in any repository. It shows on the project's page. \
+Give the person its path in backticks in one line; {}",
                         path.display(),
                         brief.status,
                         if brief.status == "settled" { "the plan comes next." } else { "it is settled only when they say so." }

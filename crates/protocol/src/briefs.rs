@@ -1,9 +1,10 @@
 //! What the squad thought before it built: the briefs the PM leaves after
-//! office hours with the person (`docs/briefs/<date>-<slug>.md`) and the
-//! plans that follow them (`docs/plans/<date>-<slug>.md`), in a project's
-//! repository — or the squad's folder, for work outside the projects. Each
-//! opens with a front matter (`title`, `date`, `status`, …); screens list them
-//! on a project's page from [`crate::Event::ProjectDocs`].
+//! office hours with the person and the plans that follow them — kept in the
+//! squad's own folder, never in a project's repository (which may be public):
+//! `docs/<project>/briefs/<date>-<slug>.md` and `docs/<project>/plans/…` for a
+//! project, `docs/briefs/…` and `docs/plans/…` for work outside the projects.
+//! Each opens with a front matter (`title`, `date`, `status`, …); screens list
+//! them on a project's page from [`crate::Event::ProjectDocs`].
 
 use serde::{Deserialize, Serialize};
 
@@ -20,11 +21,20 @@ pub enum DocKind {
 impl DocKind {
     pub const ALL: [DocKind; 2] = [DocKind::Brief, DocKind::Plan];
 
-    /// Its folder, from the top of a repository (or the squad's folder).
+    /// Its folder for the squad's own work, from the top of the squad's
+    /// folder — and where equipe once wrote it in a project's repository.
     pub fn dir(self) -> &'static str {
         match self {
             DocKind::Brief => "docs/briefs",
             DocKind::Plan => "docs/plans",
+        }
+    }
+
+    /// Its folder's own name, beside the other kind's: `briefs`, `plans`.
+    pub fn folder(self) -> &'static str {
+        match self {
+            DocKind::Brief => "briefs",
+            DocKind::Plan => "plans",
         }
     }
 

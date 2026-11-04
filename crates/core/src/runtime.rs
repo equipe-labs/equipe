@@ -6859,6 +6859,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 crate::daemon_log!("equipe: {squad}'s members' memories couldn't be gathered: {err}");
             }
             let projects = journal.projects().unwrap_or_default();
+            keep_docs_from_repos(&dir.path(), &home, &projects);
             let tickets = journal.tickets().unwrap_or_default();
             for mut record in journal.open_sessions().unwrap_or_default() {
                 let Some(member) = record.member.clone() else {
@@ -7209,6 +7210,31 @@ check what is already done in your worktree first."
 /// was removed in the meantime goes back on the board instead.
 /// Where in a worktree `project` is: the worktree itself for a repository,
 /// the same folder in it for a folder of a repository.
+/// Marks a squad whose projects' repositories were looked through once for
+/// the briefs and plans equipe used to commit into them.
+const DOCS_KEPT: &str = ".docs-kept";
+
+/// Once per squad, off the loop: the briefs and plans equipe once committed
+/// into its `projects`' repositories copied into its folder `home`, where
+/// they are kept now, so the PM's history stays. The repositories are only
+/// read; a copy the person later deletes isn't brought back.
+fn keep_docs_from_repos(squad_dir: &Path, home: &Path, projects: &[PathBuf]) {
+    let mark = squad_dir.join(DOCS_KEPT);
+    if mark.exists() || projects.is_empty() {
+        return;
+    }
+    let (home, projects) = (home.to_owned(), projects.to_vec());
+    std::thread::spawn(move || match crate::briefs::keep_from_repos(&home, &projects) {
+        Ok(copied) => {
+            if !copied.is_empty() {
+                crate::daemon_log!("equipe: kept {} briefs and plans from the projects' repositories in {}", copied.len(), home.display());
+            }
+            let _ = std::fs::write(&mark, format!("{}\n", copied.len()));
+        }
+        Err(why) => crate::daemon_log!("equipe: the briefs and plans in the projects' repositories weren't kept in {}: {why}", home.display()),
+    });
+}
+
 fn within(sandbox: &Sandbox, project: &Path) -> PathBuf {
     let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
     match canon(project).strip_prefix(canon(&sandbox.repo)) {
