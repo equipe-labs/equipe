@@ -31,7 +31,7 @@ pub fn sections() -> Vec<Section> {
                 (t!("help.chat_at_key"), t!("help.chat_at")),
                 ("⌘↑ ⌘↓ · ⌥⌘1–9", t!("help.chat_pick")),
                 ("⇧⏎ · ⌥⏎ · ⌃J", t!("help.chat_newline")),
-                ("Esc · ⌘.", t!("help.chat_stop")),
+                ("Esc Esc · ⌘.", t!("help.chat_stop")),
                 (t!("help.chat_paste_key"), t!("help.chat_paste")),
                 ("→", t!("help.chat_guess")),
                 ("⌘K · /", t!("help.chat_commands")),

@@ -588,6 +588,8 @@
   "composer.effort_set": "{name} réfléchit en {effort} à partir du prochain tour",
   "composer.effort_short": "effort",
   "composer.engine_next": "dès le prochain ticket",
+  "composer.esc_again": "Appuyez à nouveau sur Échap pour arrêter le travail de {name}",
+  "composer.esc_again_subs": "Appuyez à nouveau sur Échap pour arrêter le travail de {name} et ses {count} sous-agents",
   "composer.failed_summary": "{n} n'ont pas pu être joints",
   "composer.hint_idle": "⏎ envoyer · ⇧⏎ nouvelle ligne · ⌘U joindre · / commandes · @ mention",
   "composer.inbox_attached": "Images envoyées depuis le Mac jointes",

@@ -565,6 +565,8 @@
   "composer.effort_set": "{name}は次のターンから{effort}で考えます",
   "composer.effort_short": "深さ",
   "composer.engine_next": "次のチケットから",
+  "composer.esc_again": "もう一度 Esc を押すと {name} の作業を止めます",
+  "composer.esc_again_subs": "もう一度 Esc を押すと {name} の作業とサブエージェント {count} 件が止まります",
   "composer.failed_summary": "{n}個を添付できませんでした",
   "composer.hint_idle": "⏎ 送信 · ⇧⏎ 改行 · ⌘U 添付 · / コマンド · @ メンション",
   "composer.inbox_attached": "Macから送られた画像を添付しました",

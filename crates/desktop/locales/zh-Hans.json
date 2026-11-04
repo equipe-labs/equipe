@@ -565,6 +565,8 @@
   "composer.effort_set": "{name} 下一轮起以 {effort} 思考",
   "composer.effort_short": "深度",
   "composer.engine_next": "从下一个工单起",
+  "composer.esc_again": "再按一次 Esc 即停止 {name} 的工作",
+  "composer.esc_again_subs": "再按一次 Esc 将停止 {name} 的工作及其 {count} 个子代理",
   "composer.failed_summary": "{n} 个无法附加",
   "composer.hint_idle": "⏎ 发送 · ⇧⏎ 换行 · ⌘U 附加 · / 命令 · @ 提及",
   "composer.inbox_attached": "已附加从 Mac 发送的图片",
