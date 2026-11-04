@@ -302,7 +302,10 @@ async fn a_designer_brings_a_weekly_review_that_waits_for_the_setup_and_comes_to
     let routines = handle.snapshot("acme").await.routines;
     assert_eq!(routines.len(), 3, "the check-in, the PM's retro, the review: {routines:?}");
     let review = &routines[2];
-    assert_eq!((review.id, review.title.as_str(), review.when, review.on), (3, "디자인 리뷰", Schedule::Weekly { weekday: 1, hour: 10, minute: 0 }, true));
+    // Named in the language the app speaks on this machine, whatever it is.
+    let lang = equipe_core::i18n::Lang::resolve_in(&home, equipe_core::i18n::Front::App);
+    let named = equipe_core::i18n::core(lang).get("routine.design_review.title");
+    assert_eq!((review.id, review.title.as_str(), review.when, review.on), (3, named, Schedule::Weekly { weekday: 1, hour: 10, minute: 0 }, true));
     assert!(review.next_run.is_some_and(|at| at > now() && at <= now() + 7 * DAY), "{review:?}");
 
     // No design folder yet: the designer is nudged on with the brief, not reviewed; the PM hears nothing.
@@ -354,7 +357,9 @@ async fn a_pm_brings_a_weekly_retro_from_the_weeks_facts_and_only_confirmed_less
     let routines = handle.snapshot("acme").await.routines;
     assert_eq!(routines.len(), 2, "the check-in, then the PM's retro: {routines:?}");
     let retro = &routines[1];
-    assert_eq!((retro.id, retro.title.as_str(), retro.when, retro.on), (2, "주간 회고", Schedule::Weekly { weekday: 5, hour: 17, minute: 0 }, true));
+    let lang = equipe_core::i18n::Lang::resolve_in(&home, equipe_core::i18n::Front::App);
+    let named = equipe_core::i18n::core(lang).get("routine.retro.title");
+    assert_eq!((retro.id, retro.title.as_str(), retro.when, retro.on), (2, named, Schedule::Weekly { weekday: 5, hour: 17, minute: 0 }, true));
     assert!(retro.next_run.is_some_and(|at| at > now() && at <= now() + 7 * DAY), "{retro:?}");
     assert_eq!(Journal::for_squad(&home, "acme").unwrap().retro_routine(), Some(2));
 
