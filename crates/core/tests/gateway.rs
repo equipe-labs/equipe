@@ -758,7 +758,7 @@ async fn ends_within(task: &mut tokio::task::JoinHandle<std::io::Result<()>>, wa
     tokio::time::timeout(wait, task).await.is_ok_and(|done| done.unwrap().is_ok())
 }
 
-const QUICK_TRIAL: gateway::Leave = gateway::Leave { home_gone: true, idle: Some(Duration::from_millis(400)), every: Duration::from_millis(50) };
+const QUICK_TRIAL: gateway::Leave = gateway::Leave { home_gone: true, idle: Some(Duration::from_millis(400)), every: Duration::from_millis(50), hung: None };
 
 #[tokio::test]
 async fn a_trial_daemon_leaves_once_no_screen_has_come_for_a_while() {
