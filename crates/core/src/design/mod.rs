@@ -8,6 +8,13 @@
 //! - `contrast`: WCAG 2.x contrast, and which colour is the background.
 //! - `diff`: what changed since the person last looked.
 //! - `critique`: the designer's pictures, critiqued by the other engine.
+//! - `lint`: a screen held to rules in code — the floor never waived, the
+//!   habits of generated screens kept only with a reason, finishing notes —
+//!   in its source and as a browser draws it, and what a hand-in needs.
+//! - `second_look`: a reviewer started fresh, given only the pictures, the
+//!   brief and the system, whose verdict a hand-in waits on.
+//! - `directions`: the directions proposed and chosen, so the next differs.
+//! - `kept`: what a screen offers, recorded before a redesign and checked after.
 //! - `flows`: the service's UI map — every flow, screen and state, pictured.
 //! - `review`: the designer's weekly review, held back until the setup is done.
 //! - `folder`: where the folders are, what they hold, and the stamp that says
@@ -17,12 +24,16 @@
 
 pub mod check;
 pub mod kit;
+pub mod lint;
 pub mod contrast;
 pub mod critique;
 pub mod diff;
+pub mod directions;
 pub mod flows;
 pub mod folder;
+pub mod kept;
 pub mod review;
+pub mod second_look;
 pub mod tokens;
 pub mod values;
 pub mod versions;
