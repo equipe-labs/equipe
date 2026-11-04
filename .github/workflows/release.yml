@@ -15,6 +15,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # The commit a build is of, which the app tells the daemon (its screen's look).
+  EQUIPE_COMMIT: ${{ github.sha }}
 
 # A newer tag's build cancels an older one still building, so the newest
 # version reaches people sooner. Only the building jobs take part: a run
