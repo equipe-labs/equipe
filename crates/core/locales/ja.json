@@ -20,6 +20,7 @@
   "design.restore_body": "`{dir}/` フォルダをバージョン `{version}`（{subject}）の状態に戻してください。履歴は書き換えず、新しい変更としてレビューに出します。\n\n- [ ] 作業ツリーで `git restore --source={commit} --staged --worktree -- {dir}` — その後に増えたファイルも消えます\n- [ ] 画面マップがあれば、画像が今のコードと合っているか確かめ、必要なら撮り直す\n- [ ] 何が戻ったか（トークン · ロゴ · 画面マップ · ガイドライン）を書いてレビューに出す",
   "design.restore_title": "デザインをバージョン {version} に戻す · {subject}",
   "error.design_version": "そのデザインのバージョン（{version}）が見つかりませんでした。バージョン履歴を開き直してください。",
+  "flows.problem_live_in_repo": "{path} はリポジトリの中にあるため、実データの画像を読みませんでした — 実データはリポジトリの外にだけ置きます",
   "flows.problem_not_json": "flows.json が正しい JSON ではありません（{line} 行目、{column} 文字目）",
   "flows.problem_not_map": "flows.json はフローの一覧を持つオブジェクトにしてください",
   "flows.problem_entry": "{at} は flows.json の書き方に合わないため、外しました",

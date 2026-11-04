@@ -20,6 +20,7 @@
   "design.restore_body": "Bring den Ordner `{dir}/` auf den Stand von Version `{version}` ({subject}) zurück. Die Historie bleibt, wie sie ist: Das ist eine neue Änderung, die zur Prüfung geht.\n\n- [ ] In deinem Arbeitsbereich: `git restore --source={commit} --staged --worktree -- {dir}` — später hinzugekommene Dateien verschwinden auch\n- [ ] Gibt es eine UI-Karte, prüfe, ob ihre Bilder noch zum Code passen, und nimm sie sonst neu auf\n- [ ] Schreib, was zurückkam (Tokens · Logo · UI-Karte · Richtlinien), und reich es zur Prüfung ein",
   "design.restore_title": "Design auf Version {version} zurücksetzen · {subject}",
   "error.design_version": "Diese Design-Version ({version}) wurde nicht gefunden. Öffne den Versionsverlauf erneut.",
+  "flows.problem_live_in_repo": "{path} liegt in einem Repository, daher wurden die Bilder mit echten Daten nicht gelesen – echte Daten liegen nur außerhalb von Repositorys",
   "flows.problem_not_json": "flows.json ist kein gültiges JSON (Zeile {line}, Spalte {column})",
   "flows.problem_not_map": "flows.json sollte ein Objekt mit einer Liste von Abläufen sein",
   "flows.problem_entry": "{at} ist nicht so geschrieben, wie flows.json es erwartet, und wird ausgelassen",

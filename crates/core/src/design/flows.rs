@@ -67,6 +67,17 @@
 //!   A `.json` it writes beside `out`, `{"millis": …, "marks": […]}`, is kept
 //!   beside the video.
 //!
+//! - A picture may have a note beside it, `<state>.<mode>.<width>.json`:
+//!   `{"app": "equipe-desktop", "version": "0.103.23", "commit": "d0351b3"}`,
+//!   the build it was shot with. When equipe knows the version of that app
+//!   installed now (`installed`) and it is another, the screen is stale.
+//!
+//! The person's real data — an app that can render their own state
+//! read-only, shot in their language and look — is never kept in a
+//! repository: it is in `<home>/squads/<squad>/ui-map/<project>/` (`live_dir`),
+//! laid out as `flows/` is, its pictures read beside the repository's and
+//! marked `live`. A folder of them that is inside a repository isn't read.
+//!
 //! What can't be read is said, a line each, and left out; the rest still
 //! shows. Fields the file has that aren't these are passed over.
 //!
@@ -103,6 +114,89 @@ const FILES_MAX: usize = 5000;
 const QA_DEPTH: usize = 4;
 /// The actions a step of a walk may take, one each.
 const ACTIONS: [&str; 6] = ["go", "click", "fill", "press", "wait", "say"];
+/// The squad's folder of real-data pictures, one folder in it per system.
+pub const LIVE: &str = "ui-map";
+/// The squad's own system's folder in it; a project's is the project's name.
+pub const LIVE_SQUAD: &str = "_squad";
+/// The biggest note beside a picture read.
+const NOTE_MAX: u64 = 16 << 10;
+/// equipe's own desktop app, as a picture's note names it.
+pub const DESKTOP_APP: &str = "equipe-desktop";
+
+/// Where `squad`'s pictures of the person's real data are kept for the map
+/// of `project` (`None`: the squad's own system): outside any repository,
+/// `<home>/squads/<squad>/ui-map/<project>/`, laid out as `flows/` is.
+pub fn live_dir(home: &Path, squad: &str, project: Option<&str>) -> PathBuf {
+    crate::journal::squad_dir(home, squad).join(LIVE).join(project.unwrap_or(LIVE_SQUAD))
+}
+
+/// Whether `path` (there or not) is inside a git repository: it, or a
+/// folder it is in, holds `.git`. Real data is never kept in one.
+pub fn in_repository(path: &Path) -> bool {
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    path.ancestors().any(|dir| std::fs::symlink_metadata(dir.join(".git")).is_ok())
+}
+
+/// The note beside a picture: what shot it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShotNote {
+    /// The app shot: [`DESKTOP_APP`], or another name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// Its version, as it says it: `0.103.23`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The commit it was built from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Of the person's real data.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
+}
+
+/// A picture's note's file name: `error.dark.390.json`.
+pub fn note_name(state: &str, mode: &str, width: u32) -> String {
+    format!("{state}.{mode}.{width}.json")
+}
+
+/// The note beside the picture at `path`, when there is one inside `root`.
+fn note_of(path: &Path, root: &Path) -> Option<ShotNote> {
+    let real = std::fs::canonicalize(path.with_extension("json")).ok()?;
+    let meta = std::fs::metadata(&real).ok()?;
+    if !real.starts_with(root) || !meta.is_file() || meta.len() > NOTE_MAX {
+        return None;
+    }
+    serde_json::from_slice(&std::fs::read(&real).ok()?).ok()
+}
+
+/// The version of `app` installed on the daemon's machine, when equipe can
+/// tell: its desktop app's, from the bundle in `/Applications` (or
+/// `~/Applications`); `equipe` itself, this build's.
+pub fn installed(app: &str) -> Option<String> {
+    match app {
+        DESKTOP_APP => {
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let bundles = [Some(PathBuf::from("/Applications")), home.map(|h| h.join("Applications"))];
+            bundles.into_iter().flatten().find_map(|dir| std::fs::read_to_string(dir.join("equipe.app/Contents/Info.plist")).ok().and_then(|text| bundle_version(&text)))
+        }
+        "equipe" => Some(env!("CARGO_PKG_VERSION").to_owned()),
+        _ => None,
+    }
+}
+
+/// `CFBundleShortVersionString` in an `Info.plist`'s XML.
+pub fn bundle_version(plist: &str) -> Option<String> {
+    let after = plist.split("<key>CFBundleShortVersionString</key>").nth(1)?;
+    let value = after.trim_start().strip_prefix("<string>")?;
+    let value = value[..value.find("</string>")?].trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+/// Whether a picture shot with `shot_with` is out of date, `installed` being
+/// what is installed now: only when both are known and they differ.
+pub fn outdated(shot_with: Option<&str>, installed: Option<&str>) -> bool {
+    matches!((shot_with, installed), (Some(shot), Some(now)) if shot.trim() != now.trim())
+}
 
 /// `flows.json` as the designer writes it. Each list is read an entry at a
 /// time (`T` a JSON value at first), so a bad one is told and left out while
@@ -356,11 +450,62 @@ fn secs(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// A picture found, when it was taken and the app its note says shot it.
+struct Taken {
+    picture: Picture,
+    at: SystemTime,
+    app: Option<String>,
+}
+
+impl Taken {
+    /// The picture at `path` (its real path `real`), with its note from inside `root`.
+    fn of(path: &Path, real: &Path, root: &Path, mode: String, width: u32, live: bool) -> Option<Self> {
+        let at = std::fs::metadata(real).and_then(|m| m.modified()).ok()?;
+        let note = note_of(path, root).unwrap_or_default();
+        let picture = Picture { path: path.to_string_lossy().into_owned(), mode, width, taken: secs(at), live, shot_with: note.version, ..Picture::default() };
+        Some(Self { picture, at, app: note.app })
+    }
+}
+
+/// The states `listed` names, by flow, screen and state.
+fn listed_states(listed: &[Listed]) -> HashSet<[&str; 3]> {
+    listed.iter().flat_map(|f| f.file.screens.iter().flat_map(move |s| s.states.iter().map(move |st| [f.file.id.as_str(), s.id.as_str(), st.id.as_str()]))).collect()
+}
+
+/// The pictures of the person's real data in `live` (its real path), of the
+/// states `listed` names: only what is what its name says and stays inside.
+/// Anything else there is passed over — the folder is no one's to tidy.
+fn find_live(live: &Path, listed: &[Listed]) -> HashMap<[String; 3], Vec<Taken>> {
+    let states = listed_states(listed);
+    let roots = [live.to_path_buf()];
+    let mut out: HashMap<[String; 3], Vec<Taken>> = HashMap::new();
+    for parts in files_in(live, 3) {
+        let [flow, screen, file] = parts.as_slice() else { continue };
+        let Some((state, mode, width)) = parse_picture_name(file).filter(|(state, ..)| states.contains(&[flow.as_str(), screen.as_str(), state.as_str()])) else { continue };
+        let path = live.join(flow).join(screen).join(file);
+        let Ok(real) = visuals::check(&path, &roots) else { continue };
+        if let Some(taken) = Taken::of(&path, &real, live, mode, width, true) {
+            out.entry([flow.clone(), screen.clone(), state]).or_default().push(taken);
+        }
+    }
+    out
+}
+
+/// The files in a folder of real-data pictures, and what the disk says of
+/// each: for the design folder's stamp.
+pub(crate) fn live_files(live: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
+    files_in(live, 3)
+        .into_iter()
+        .map(|parts| parts.iter().fold(live.to_path_buf(), |path, part| path.join(part)))
+        .filter_map(|path| std::fs::symlink_metadata(&path).ok().map(|m| (path, m)))
+        .collect()
+}
+
 /// What is in `root`'s `flows/` (`root` a design folder, its real path).
 #[derive(Default)]
 struct Found {
     /// Each listed state's pictures, by flow, screen and state, with their times.
-    pictures: HashMap<[String; 3], Vec<(Picture, SystemTime)>>,
+    pictures: HashMap<[String; 3], Vec<Taken>>,
     /// Each listed flow's walkthroughs, with their times.
     videos: HashMap<String, Vec<(Walkthrough, SystemTime)>>,
     /// Pictures of no listed state.
@@ -370,10 +515,7 @@ struct Found {
 /// The pictures and walkthroughs in `root`'s `flows/`, of the flows `listed`:
 /// only what is what its name says and stays inside `root`.
 fn find(root: &Path, listed: &[Listed]) -> Found {
-    let states: HashSet<[&str; 3]> = listed
-        .iter()
-        .flat_map(|f| f.file.screens.iter().flat_map(move |s| s.states.iter().map(move |st| [f.file.id.as_str(), s.id.as_str(), st.id.as_str()])))
-        .collect();
+    let states = listed_states(listed);
     let flows: HashSet<&str> = listed.iter().map(|f| f.file.id.as_str()).collect();
     let roots = [root.to_path_buf()];
     let base = root.join(DIR);
@@ -411,9 +553,8 @@ fn find(root: &Path, listed: &[Listed]) -> Found {
             continue;
         };
         let Ok(real) = visuals::check(&path, &roots) else { continue };
-        let Ok(modified) = std::fs::metadata(&real).and_then(|m| m.modified()) else { continue };
-        let picture = Picture { path: path.to_string_lossy().into_owned(), mode, width, taken: secs(modified), hash: None };
-        found.pictures.entry([parts[0].clone(), parts[1].clone(), state]).or_default().push((picture, modified));
+        let Some(taken) = Taken::of(&path, &real, root, mode, width, false) else { continue };
+        found.pictures.entry([parts[0].clone(), parts[1].clone(), state]).or_default().push(taken);
     }
     found
 }
@@ -435,33 +576,65 @@ fn changed(repo: &Path, source: &str) -> Result<Option<SystemTime>, ()> {
 /// The map in `design` (a design folder), its pictures found and its
 /// missing and stale screens worked out; `repo`, the repository it is in
 /// (`None` for the squad's own folder: nothing is stale). `None` when there
-/// is no `flows/flows.json`.
+/// is no `flows/flows.json`. Only the repository's pictures; the versions
+/// installed as [`installed`] says.
 pub fn read(design: &Path, repo: Option<&Path>, lang: Lang) -> Option<FlowMap> {
+    read_with(design, repo, None, lang, &installed)
+}
+
+/// The same, with the person's real-data pictures in `live` too (see
+/// [`live_dir`]) — none when that folder is inside a repository, which is
+/// said — and `installed` telling the version of an app installed now.
+pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: Lang, installed: &dyn Fn(&str) -> Option<String>) -> Option<FlowMap> {
     let words = crate::i18n::core(lang);
     let mut map = FlowMap::default();
     let listed = parse(design, words, &mut map.problems)?;
     let root = std::fs::canonicalize(design).ok()?;
     let mut found = find(&root, &listed);
+    let in_repo = |real: &Path| in_repository(real) || real.starts_with(&root) || repo.and_then(|r| std::fs::canonicalize(r).ok()).is_some_and(|r| real.starts_with(r));
+    let mut live_found = match live.and_then(|dir| std::fs::canonicalize(dir).ok()) {
+        Some(real) if in_repo(&real) => {
+            map.problems.push(words.fill("flows.problem_live_in_repo", &[("path", real.display().to_string())]));
+            HashMap::new()
+        }
+        Some(real) => find_live(&real, &listed),
+        None => HashMap::new(),
+    };
+    let mut versions: HashMap<String, Option<String>> = HashMap::new();
     for Listed { file: flow, .. } in listed {
         let mut screens = Vec::new();
         for screen in flow.screens {
-            let mut newest: Option<SystemTime> = None;
-            let states: Vec<ScreenState> = screen
-                .states
-                .into_iter()
-                .map(|state| {
-                    let mut pictures = found.pictures.remove(&[flow.id.clone(), screen.id.clone(), state.id.clone()]).unwrap_or_default();
-                    pictures.sort_by_key(|(p, _)| (p.mode != "light", p.width));
-                    newest = newest.max(pictures.iter().map(|(_, at)| *at).max());
-                    ScreenState {
-                        label: state.label.unwrap_or_else(|| state.id.clone()),
-                        kind: state.kind.unwrap_or_else(|| state.id.clone()),
-                        note: state.note,
-                        pictures: pictures.into_iter().map(|(p, _)| p).collect(),
-                        id: state.id,
+            // The newest of each kind of picture, and whether one of each is of another version.
+            let (mut newest, mut newest_live): (Option<SystemTime>, Option<SystemTime>) = (None, None);
+            let (mut old, mut old_live) = (false, false);
+            let mut states: Vec<ScreenState> = Vec::new();
+            for state in screen.states {
+                let key = [flow.id.clone(), screen.id.clone(), state.id.clone()];
+                let mut taken = found.pictures.remove(&key).unwrap_or_default();
+                taken.extend(live_found.remove(&key).unwrap_or_default());
+                taken.sort_by_key(|t| (t.picture.live, t.picture.mode != "light", t.picture.width));
+                for t in &taken {
+                    let now = t.app.as_ref().and_then(|app| versions.entry(app.clone()).or_insert_with(|| installed(app)).clone());
+                    if map.installed.is_none() {
+                        map.installed = now.clone();
                     }
-                })
-                .collect();
+                    let outdated = outdated(t.picture.shot_with.as_deref(), now.as_deref());
+                    if t.picture.live {
+                        newest_live = newest_live.max(Some(t.at));
+                        old_live |= outdated;
+                    } else {
+                        newest = newest.max(Some(t.at));
+                        old |= outdated;
+                    }
+                }
+                states.push(ScreenState {
+                    label: state.label.unwrap_or_else(|| state.id.clone()),
+                    kind: state.kind.unwrap_or_else(|| state.id.clone()),
+                    note: state.note,
+                    pictures: taken.into_iter().map(|t| t.picture).collect(),
+                    id: state.id,
+                });
+            }
             // Expected and not among the states, then each state with no picture.
             let mut missing: Vec<String> = Vec::new();
             for want in &screen.expects {
@@ -474,18 +647,21 @@ pub fn read(design: &Path, repo: Option<&Path>, lang: Lang) -> Option<FlowMap> {
                     missing.push(state.id.clone());
                 }
             }
-            let mut stale = false;
+            let (mut stale, mut live_stale) = (old, old_live);
             if let Some(repo) = repo {
                 for source in &screen.source {
                     match changed(repo, source) {
                         Err(()) => map.problems.push(words.fill("flows.problem_source_outside", &[("at", format!("{}/{}", flow.id, screen.id)), ("path", source.clone())])),
-                        Ok(Some(at)) => stale |= newest.is_some_and(|newest| at > newest),
+                        Ok(Some(at)) => {
+                            stale |= newest.is_some_and(|newest| at > newest);
+                            live_stale |= newest_live.is_some_and(|newest| at > newest);
+                        }
                         Ok(None) => {}
                     }
                 }
             }
             let title = screen.title.unwrap_or_else(|| screen.id.clone());
-            screens.push(Screen { id: screen.id, title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, states, missing, stale });
+            screens.push(Screen { id: screen.id, title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, states, missing, stale, live_stale });
         }
         let mut videos = found.videos.remove(&flow.id).unwrap_or_default();
         videos.sort_by_key(|(v, at)| (!v.current, std::cmp::Reverse(*at), v.mode != "light", v.width));
@@ -998,7 +1174,7 @@ mod tests {
     }
 
     fn picture(mode: &str, width: u32) -> Picture {
-        Picture { path: format!("/d/{mode}.{width}.png"), mode: mode.into(), width, taken: 1, hash: None }
+        Picture { path: format!("/d/{mode}.{width}.png"), mode: mode.into(), width, taken: 1, ..Default::default() }
     }
 
     fn state(id: &str, pictures: Vec<Picture>) -> ScreenState {
@@ -1028,6 +1204,7 @@ mod tests {
             }],
             problems: vec![],
             unlisted: vec!["app/home/eror.light.390.png".into(), "app/home/eror.dark.390.png".into(), "old/home/x.png".into(), "app/loose.png".into()],
+            installed: None,
         };
         assert_eq!(
             check(&map),
@@ -1261,5 +1438,107 @@ mod tests {
         assert_eq!(parse_picture_name("long-name.light.1280.png"), Some(("long-name".into(), "light".into(), 1280)));
         assert_eq!(parse_picture_name("error.sepia.390.png"), None);
         assert_eq!(parse_picture_name("error.png"), None);
+        assert_eq!(note_name("error", "dark", 390), "error.dark.390.json");
+    }
+
+    const LIVE_MAP: &str = r#"{ "flows": [ { "id": "inbox", "title": "Inbox", "screens": [
+        { "id": "list", "title": "List", "source": ["src/inbox.rs"], "states": [
+          { "id": "default", "label": "Default", "kind": "default" },
+          { "id": "empty", "label": "Empty", "kind": "empty" } ] } ] } ] }"#;
+
+    #[test]
+    fn real_data_is_kept_in_the_squads_folder_outside_any_repository() {
+        let home = dir("live-home");
+        let live = live_dir(&home, "acme", Some("web"));
+        assert_eq!(live, home.join("squads/acme/ui-map/web"));
+        assert_eq!(live_dir(&home, "acme", None), home.join("squads/acme/ui-map/_squad"), "the squad's own system has a folder too");
+        let repo = dir("live-repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        assert!(!live.starts_with(&repo) && !in_repository(&live), "never under the project's repository, nor any other");
+        assert!(in_repository(&repo.join("design/flows/inbox")), "a folder in a repository, there or not, is in it");
+        // A worktree's `.git` is a file: still a repository.
+        let worktree = dir("live-worktree");
+        write(&worktree.join(".git"), "gitdir: /elsewhere");
+        assert!(in_repository(&worktree.join("x")));
+        for d in [home, repo, worktree] {
+            std::fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn real_data_pictures_are_read_beside_the_examples_marked_live_and_never_from_inside_a_repository() {
+        let repo = dir("live-read");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let design = repo.join("design");
+        write(&design.join("flows/flows.json"), LIVE_MAP);
+        png(&design.join("flows/inbox/list/default.light.1200.png"));
+        png(&design.join("flows/inbox/list/empty.light.1200.png"));
+        let home = dir("live-read-home");
+        let live = live_dir(&home, "acme", Some("web"));
+        png(&live.join("inbox/list/default.dark.1440.png"));
+        // Not a listed state, not a picture's name: passed over, not called unlisted.
+        png(&live.join("inbox/list/gone.dark.1440.png"));
+        write(&live.join("inbox/list/notes.txt"), "x");
+        let map = read_with(&design, Some(&repo), Some(&live), Lang::En, &|_| None).unwrap();
+        let states = &map.flows[0].screens[0].states;
+        let kinds = |s: &ScreenState| s.pictures.iter().map(|p| format!("{} {}{}", p.mode, p.width, if p.live { " live" } else { "" })).collect::<Vec<_>>();
+        assert_eq!(kinds(&states[0]), ["light 1200", "dark 1440 live"], "the examples first, then the person's own");
+        assert_eq!(kinds(&states[1]), ["light 1200"], "a state the squad isn't in keeps its example only");
+        assert!(map.unlisted.is_empty() && map.problems.is_empty(), "{map:#?}");
+        assert!(states[0].pictures[1].path.starts_with(&live.to_string_lossy().into_owned()));
+        // Without the folder, the repository's alone — as `equipe design flows check` reads it.
+        assert!(read(&design, Some(&repo), Lang::En).unwrap().flows[0].screens[0].states[0].pictures.iter().all(|p| !p.live));
+        // A folder of real data inside a repository is never read, and that is said.
+        let inside = repo.join("ui-map");
+        png(&inside.join("inbox/list/default.dark.1440.png"));
+        let map = read_with(&design, Some(&repo), Some(&inside), Lang::En, &|_| None).unwrap();
+        assert!(map.flows[0].screens[0].states.iter().flat_map(|s| &s.pictures).all(|p| !p.live));
+        assert_eq!(map.problems.len(), 1, "{:?}", map.problems);
+        for d in [repo, home] {
+            std::fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_picture_shot_with_another_version_than_the_one_installed_is_stale_though_no_code_changed() {
+        assert!(outdated(Some("0.103.23"), Some("0.103.24")));
+        assert!(!outdated(Some("0.103.24"), Some("0.103.24")));
+        assert!(!outdated(None, Some("0.103.24")), "a picture that doesn't say isn't held to it");
+        assert!(!outdated(Some("0.103.23"), None), "nor one of an app whose version can't be told");
+        let repo = dir("live-version");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let design = repo.join("design");
+        write(&design.join("flows/flows.json"), LIVE_MAP);
+        let example = design.join("flows/inbox/list/default.light.1200.png");
+        png(&example);
+        let home = dir("live-version-home");
+        let live = live_dir(&home, "acme", Some("web"));
+        let shot = live.join("inbox/list/default.dark.1440.png");
+        png(&shot);
+        write(&shot.with_extension("json"), r#"{ "app": "equipe-desktop", "version": "0.103.23", "commit": "d0351b3", "live": true }"#);
+        let now_is = |now: &'static str| move |app: &str| (app == DESKTOP_APP).then(|| now.to_owned());
+        let screen = |map: &FlowMap| (map.flows[0].screens[0].stale, map.flows[0].screens[0].live_stale);
+        let map = read_with(&design, Some(&repo), Some(&live), Lang::En, &now_is("0.103.24")).unwrap();
+        assert_eq!(screen(&map), (false, true), "the person's pictures went stale; the examples, which don't say, didn't");
+        assert_eq!(map.installed.as_deref(), Some("0.103.24"));
+        assert_eq!(map.flows[0].screens[0].states[0].pictures[1].shot_with.as_deref(), Some("0.103.23"));
+        let map = read_with(&design, Some(&repo), Some(&live), Lang::En, &now_is("0.103.23")).unwrap();
+        assert_eq!(screen(&map), (false, false), "shot with what is installed");
+        // The examples' note counts the same way.
+        write(&example.with_extension("json"), r#"{ "app": "equipe-desktop", "version": "0.99.0" }"#);
+        assert_eq!(screen(&read_with(&design, Some(&repo), Some(&live), Lang::En, &now_is("0.103.23")).unwrap()), (true, false));
+        // And code changed since stales the real ones as it does the examples.
+        write(&repo.join("src/inbox.rs"), "new");
+        touch(&repo.join("src/inbox.rs"), SystemTime::now() + Duration::from_secs(60));
+        assert_eq!(screen(&read_with(&design, Some(&repo), Some(&live), Lang::En, &now_is("0.103.23")).unwrap()), (true, true));
+        // The installed app's version, from its bundle.
+        let plist = "<dict>\n\t<key>CFBundleName</key>\n\t<string>equipe</string>\n\t<key>CFBundleShortVersionString</key>\n\t<string>0.103.24</string>\n</dict>";
+        assert_eq!(bundle_version(plist).as_deref(), Some("0.103.24"));
+        assert_eq!(bundle_version("<dict></dict>"), None);
+        assert_eq!(installed("equipe").as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(installed("someone-elses-app"), None);
+        for d in [repo, home] {
+            std::fs::remove_dir_all(d).unwrap();
+        }
     }
 }

@@ -272,6 +272,9 @@ pub fn chaining() -> bool {
 
 /// At launch: a note from a restart into the newest — keep at it, or let it go.
 pub fn begin_chain() {
+    if crate::readonly::blocked("the update's note") {
+        return;
+    }
     let Some(chain) = std::fs::read_to_string(chain_path()).ok().and_then(|t| Chain::parse(&t)) else { return };
     match chain_step(env!("CARGO_PKG_VERSION"), &chain, unix_now()) {
         ChainStep::Go => {
@@ -288,6 +291,9 @@ pub fn begin_chain() {
 /// "다시 시작해 업데이트" with a newer release than the one downloaded: leave
 /// the note for the app starting again.
 pub fn chain_if_newer() {
+    if crate::readonly::blocked("the update's note") {
+        return;
+    }
     let shown = current().ready().map(str::to_owned);
     let staged = staged().lock().ok().and_then(|s| s.clone());
     if let (Some(shown), Some(staged)) = (shown, staged)

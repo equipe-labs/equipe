@@ -18,6 +18,8 @@ mod failure;
 mod i18n;
 #[path = "../src/install.rs"]
 mod install;
+#[path = "../src/readonly.rs"]
+mod readonly;
 #[path = "../src/ssh.rs"]
 mod ssh;
 #[path = "../src/sshkey.rs"]

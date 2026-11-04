@@ -61,8 +61,11 @@ pub struct Commands {
 }
 
 impl Commands {
+    /// In the real view (`readonly.rs`) only a command that reads leaves.
     pub fn send(&self, command: Command) {
-        let _ = self.out.send(Message::command(&command));
+        if crate::readonly::lets_command(&command) {
+            let _ = self.out.send(Message::command(&command));
+        }
     }
 
     /// Ask the daemon to keep a file (`upload`; `kind: None`, an image, as
@@ -114,8 +117,13 @@ impl Commands {
     }
 
     /// Any request of the daemon's JSON-RPC (`metrics.*`); answered as [`Commands::upload`] is.
+    /// In the real view only one that reads leaves; the rest is answered no here.
     pub fn ask(&self, method: &str, params: impl serde::Serialize) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
         let (tx, rx) = std::sync::mpsc::channel();
+        if !crate::readonly::lets_method(method) {
+            let _ = tx.send(Err(t!("readonly.kept_back").to_owned()));
+            return rx;
+        }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.pending.lock().unwrap().insert(id, tx);
         if self.out.send(Message::request(id, method, params)).is_err() {
@@ -224,7 +232,14 @@ where
         return Err(Failure::NoSquads.into());
     };
 
-    let hello = Message::request(HELLO_ID, rpc::HELLO, HelloParams { version: opts.version.clone(), squad, lang: Some(crate::i18n::lang().code().to_owned()), browser_panel: true });
+    // The real view says no language (what the daemon speaks in stays) and
+    // has no browser panel: the hello asks only to follow.
+    let readonly = crate::readonly::on();
+    let lang = (!readonly).then(|| crate::i18n::lang().code().to_owned());
+    let hello = Message::request(HELLO_ID, rpc::HELLO, HelloParams { version: opts.version.clone(), squad, lang, browser_panel: !readonly });
+    if readonly {
+        eprintln!("equipe readonly: sent request {} for {}", rpc::HELLO, hello.params.as_ref().and_then(|p| p.get("squad")).and_then(|s| s.as_str()).unwrap_or_default());
+    }
     send(&mut writer, &hello).await?;
     let hello = response(&mut lines, HELLO_ID, opts.step, "hello").await?.result_as::<Hello>().ok_or_else(|| Failure::Other(t!("failure.hello_refused").into()))?;
 

@@ -235,6 +235,8 @@ pub struct Remembered {
     pub design_talk: Option<bool>,
     /// How wide it was dragged (px).
     pub design_talk_width: Option<f32>,
+    /// The window's size as the person left it, in points: what it opens at.
+    pub window: Option<(f32, f32)>,
 }
 
 /// The window's size in percent (`zoom.rs`): actual size unless the person
@@ -452,6 +454,9 @@ impl Remembered {
                 out.side_team = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("window-size ") {
+                let size = |n: &str| n.trim().parse::<f32>().ok().filter(|n| n.is_finite() && *n > 0.);
+                out.window = rest.split_once('x').and_then(|(w, h)| Some((size(w)?, size(h)?)));
             } else if let Some(rest) = line.strip_prefix("lang ") {
                 out.lang = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
             } else if line.trim() == "dictation-servers on" {
@@ -559,6 +564,9 @@ impl Remembered {
         }
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar-width {width:.0}\n"));
+        }
+        if let Some((width, height)) = self.window {
+            text.push_str(&format!("window-size {width:.0}x{height:.0}\n"));
         }
         if let Some(height) = self.side_usage {
             text.push_str(&format!("side-usage {height:.0}\n"));
@@ -687,6 +695,9 @@ impl Remembered {
     }
 
     pub fn save(&self, home: &Path) {
+        if crate::readonly::blocked(&Self::path(home).display().to_string()) {
+            return;
+        }
         let _ = std::fs::create_dir_all(home);
         let _ = std::fs::write(Self::path(home), self.render());
     }
@@ -798,6 +809,7 @@ mod tests {
         remembered.board_split = Some(212.4);
         remembered.peek_width = Some(560.);
         remembered.sidebar_width = Some(301.6);
+        remembered.window = Some((1440.2, 899.6));
         remembered.side_usage = Some(96.);
         remembered.side_team = Some(240.4);
         remembered.progress_seen = Some(1_793_700_000);
@@ -817,6 +829,7 @@ mod tests {
 
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
+        assert_eq!(loaded.window, Some((1440., 900.)), "the window's size, as left");
         assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
         assert_eq!(loaded.progress_seen, Some(1_793_700_000), "진행 상황's last look, for \"since you last looked\"");
         assert!(loaded.team_open, "the team as the person left it");

@@ -20,6 +20,7 @@
   "design.restore_body": "把 `{dir}/` 文件夹恢复到版本 `{version}`（{subject}）时的样子。历史保持不变：这是一个新的改动，提交审阅。\n\n- [ ] 在你的工作区运行 `git restore --source={commit} --staged --worktree -- {dir}` — 之后新增的文件也会删除\n- [ ] 如果有界面地图，确认图片仍与代码一致，不一致的重新截图\n- [ ] 写明恢复了什么（令牌 · 标志 · 界面地图 · 指南）并提交审阅",
   "design.restore_title": "把设计恢复到版本 {version} · {subject}",
   "error.design_version": "找不到那个设计版本（{version}）。请重新打开版本记录。",
+  "flows.problem_live_in_repo": "{path} 在仓库之内，所以没有读取其中的真实数据图片——真实数据只放在仓库之外",
   "flows.problem_not_json": "flows.json 不是有效的 JSON（第 {line} 行，第 {column} 列）",
   "flows.problem_not_map": "flows.json 应是一个包含流程列表的对象",
   "flows.problem_entry": "{at} 不符合 flows.json 的写法，已略去",
