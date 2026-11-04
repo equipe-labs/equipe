@@ -1,7 +1,9 @@
 //! 디자인 시스템: the squad's design system as its designer keeps it
 //! (`docs/DESIGN-SYSTEM.md`), read through the daemon. A header — the
 //! project's when projects differ, a "검토 중 · T-n" pill for a draft in
-//! review, what changed since the person last looked — over sections:
+//! review, a quiet "만드는 중 · T-n" chip — its member's step, live — for
+//! work a ticket is still making (opened read-only, never accepted or
+//! compared), what changed since the person last looked — over sections:
 //! 개요 (logos on light and dark, the lead colours, a type sample), 색
 //! (swatches by group, light and dark side by side, contrast graded; a click
 //! copies), 타이포그래피 (live text in each style, a word when the font isn't
@@ -43,6 +45,8 @@ use crate::{Screen, Shell, motion, ui};
 /// either, a list.
 const SEGMENTS_MAX: usize = 2;
 const SEGMENTS_ROOM: f32 = 820.;
+/// The widest the work-under-way chip goes, its member's step cut past it.
+const WORKING_CHIP_MAX: f32 = 340.;
 
 /// The page's side margin and the widest its content goes.
 const PAD: f32 = 32.;
@@ -92,7 +96,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .bg(p.bg)
         .child(header(shell, cx))
         .children(ui.compare.then(|| super::compare::bar(shell, cx)))
-        .children((ui.loaded && !ui.compare).then(|| ui.current().filter(|s| s.draft.is_some()).map(|s| draft_banner(shell, s, cx))).flatten())
+        .children((ui.loaded && !ui.compare).then(|| ui.current().filter(|s| ds::in_review(s)).map(|s| draft_banner(shell, s, cx))).flatten())
+        .children((ui.loaded && !ui.compare).then(|| ui.current().filter(|s| ds::is_working(s)).map(|s| working_banner(shell, s, cx))).flatten())
         .children(draft_strip(shell, cx))
         .children(super::design_setup::band(shell, cx))
         .children((ui.loaded && tab == Tab::System).then(|| ui.current().map(|s| tabs(shell, s, cx))).flatten())
@@ -112,7 +117,8 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let accepted = ui.accepted().len();
     let current = ui.current();
     let draft = current.and_then(|_| ui.draft_of(&ui.source)).and_then(|d| d.draft.clone());
-    let only_draft = current.is_some_and(|s| s.draft.is_some()) && ui.systems.iter().all(|s| s.draft.is_some() || ds::base_key(s) != ui.source);
+    let only_draft = current.is_some_and(ds::in_review) && ui.systems.iter().all(|s| s.draft.is_some() || ds::base_key(s) != ui.source);
+    let making = ui.loaded.then(|| ui.making(&shell.model)).flatten().filter(|_| !ui.compare);
     let changes = current.filter(|_| shell.design_tab() == Tab::System).map(|s| ui.changes(&shell.design_seen_key(s))).unwrap_or_default();
     let dir = current.map(|s| s.dir.clone()).unwrap_or_else(|| ui.folder.clone());
     let remote = shell.endpoint.is_remote();
@@ -233,7 +239,7 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     // A narrow pane keeps the draft's pill and 비교하며 검토 on a strip of their
     // own under the bar (`draft_strip`), so the bar's ends stay whole.
     if let Some(d) = draft.filter(|_| !narrow(ui)) {
-        let viewing = current.is_some_and(|s| s.draft.is_some());
+        let viewing = current.is_some_and(ds::in_review);
         let pill = h_flex()
             .id("design-draft-pill")
             .flex_none()
@@ -261,6 +267,37 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                     .on_click(cx.listener(|this, _, _, cx| this.design_compare(true, cx))),
             );
         }
+    }
+    // Work under way on it: a quiet chip, live — its member's step while
+    // there is room — that opens what is done so far.
+    if let Some(m) = making {
+        let viewing = current.is_some_and(ds::is_working);
+        let (word, doing) = m.chip();
+        let tip = if viewing { t!("design.working_leave").to_owned() } else { t!("design.working_chip_tip", title = m.title) };
+        bar = bar.child(
+            h_flex()
+                .id("design-working-chip")
+                .flex_shrink_1()
+                .min_w_0()
+                .max_w(px(WORKING_CHIP_MAX))
+                .h(px(24.))
+                .px_2()
+                .gap_1p5()
+                .items_center()
+                .rounded(px(12.))
+                .border_1()
+                .border_color(if viewing { Rgba { a: 0.45, ..p.accent } } else { p.hair })
+                .when(viewing, |b| b.bg(p.accent_bg))
+                .text_size(px(META))
+                .text_color(p.text2)
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.wash))
+                .child(div().flex_none().child(if m.busy { motion::spinner(11., p.accent) } else { div().size(px(6.)).rounded_full().bg(p.accent).into_any_element() }))
+                .child(div().flex_none().text_color(p.text).child(word))
+                .children(doing.filter(|_| !narrow(ui)).map(|d| div().min_w_0().truncate().text_color(p.muted).child(format!("· {d}"))))
+                .on_click(cx.listener(move |this, _, _, cx| this.design_view_working(!viewing, cx)))
+                .tip(p, tip, None),
+        );
     }
     bar = bar.child(div().flex_1());
     if ui.loaded && ui.accepted_of(&ui.source).is_some() {
@@ -422,6 +459,83 @@ fn draft_banner(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -
         .when(accepted, |b| b.child(ui::button(p, "design-accepted", ui::Kind::Ghost, t!("design.back_to_accepted")).on_click(cx.listener(|this, _, _, cx| this.design_toggle_draft(cx)))))
 }
 
+/// Work under way on screen: whose, that it isn't finished or in review,
+/// its ticket, and the way back.
+fn working_banner(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    let d = system.draft.clone().expect("work under way");
+    let ticket = d.ticket;
+    h_flex()
+        .id("design-working-strip")
+        .flex_none()
+        .flex_wrap()
+        .min_h(px(40.))
+        .px(px(PAD))
+        .py_1()
+        .gap_x_3()
+        .gap_y_1()
+        .items_center()
+        .bg(p.accent_bg)
+        .border_b_1()
+        .border_color(Rgba { a: 0.3, ..p.accent })
+        .text_size(px(SMALL))
+        .child(div().size(px(7.)).flex_none().rounded_full().bg(p.accent))
+        .child(div().flex_1().min_w(px(200.)).text_color(p.text).child(t!("design.working_banner", id = d.ticket, title = d.title)))
+        .child(
+            h_flex()
+                .flex_none()
+                .gap_2()
+                .child(ui::button(p, "design-working-ticket", ui::Kind::Secondary, t!("design.open_ticket")).icon(Icon::Ticket).on_click(cx.listener(move |this, _, _, cx| this.open_ticket(ticket, cx))))
+                .child(ui::button(p, "design-working-leave", ui::Kind::Ghost, t!("design.working_leave")).on_click(cx.listener(|this, _, _, cx| this.design_view_working(false, cx)))),
+        )
+}
+
+/// Work under way on the empty system or map: who is making it and on
+/// which ticket, what it is doing now, what has landed — and a way to see
+/// it so far, in place of asking again.
+pub(super) fn making_panel(shell: &Shell, making: &ds::Making, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let ticket = making.ticket;
+    let who = making.who.as_ref().map(|(name, role)| crate::theme::avatar(p, role, name, 20.));
+    v_flex()
+        .id("design-making")
+        .w_full()
+        .gap_2()
+        .p_4()
+        .rounded(px(R_LG))
+        .bg(p.raised)
+        .border_1()
+        .border_color(p.hair)
+        .text_size(px(SMALL))
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .children(who)
+                .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::MEDIUM).text_color(p.text).child(making.whose())),
+        )
+        .children(making.now().map(|now| {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .text_color(p.text2)
+                .child(div().w(px(20.)).flex_none().flex().justify_center().child(if making.busy { motion::spinner(12., p.accent) } else { div().size(px(6.)).rounded_full().bg(p.muted).into_any_element() }))
+                .child(div().flex_1().min_w_0().child(now))
+        }))
+        .child(h_flex().gap_2().items_center().text_color(p.text2).child(div().w(px(20.)).flex_none()).child(div().flex_1().min_w_0().child(making.so_far())))
+        .child(
+            h_flex()
+                .pt_2()
+                .gap_2()
+                .flex_wrap()
+                .when(!making.landed.is_empty(), |r| {
+                    r.child(ui::button(p, "design-making-view", ui::Kind::Primary, t!("flows.working_view")).icon(Icon::AppWindow).on_click(cx.listener(|this, _, _, cx| this.design_view_working(true, cx))))
+                })
+                .child(ui::button(p, "design-making-ticket", ui::Kind::Secondary, t!("design.open_ticket")).icon(Icon::Ticket).on_click(cx.listener(move |this, _, _, cx| this.open_ticket(ticket, cx)))),
+        )
+        .into_any_element()
+}
+
 /// The daemon hasn't answered: a moment, or a daemon that predates the screen.
 fn waiting(shell: &Shell) -> AnyElement {
     let p = shell.palette;
@@ -443,6 +557,8 @@ fn empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let folder = shell.design.folder.clone();
     let has_designer = shell.model.members.iter().any(|m| m.role == "designer");
+    // The designer already at it: what it has made so far, not another ask.
+    let making = shell.design.making(&shell.model);
     let point = |text: String| h_flex().gap_2().items_start().child(div().mt(px(9.)).size(px(4.)).flex_none().rounded_full().bg(p.muted)).child(div().flex_1().child(text));
     v_flex()
         .id("design-empty")
@@ -468,7 +584,7 @@ fn empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                             .justify_center()
                             .child(super::sidebar::icon(IconName::Palette, 22., p.text2)),
                     )
-                    .child(div().text_size(px(20.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("design.empty_title")))
+                    .child(div().text_size(px(20.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(if making.is_some() { t!("design.working_title") } else { t!("design.empty_title") }))
                     .child(div().text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.text2).child(t!("design.empty_text")))
                     .child(
                         v_flex()
@@ -480,15 +596,18 @@ fn empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                             .child(point(t!("design.empty_guidelines").into()))
                             .child(point(t!("design.empty_assets").into())),
                     )
+                    .children(making.as_ref().map(|m| making_panel(shell, m, cx)))
                     .child(
                         h_flex()
                             .pt_2()
                             .gap_2()
-                            .child(
-                                ui::button(p, "design-ask", ui::Kind::Primary, if has_designer { t!("design.ask_designer") } else { t!("design.ask_pm") })
-                                    .icon(Icon::Message)
-                                    .on_click(cx.listener(|this, _, window, cx| this.design_ask_designer(window, cx))),
-                            )
+                            .when(making.is_none(), |r| {
+                                r.child(
+                                    ui::button(p, "design-ask", ui::Kind::Primary, if has_designer { t!("design.ask_designer") } else { t!("design.ask_pm") })
+                                        .icon(Icon::Message)
+                                        .on_click(cx.listener(|this, _, window, cx| this.design_ask_designer(window, cx))),
+                                )
+                            })
                             .child(ui::button(p, "design-taste-open", ui::Kind::Secondary, t!("design.taste_tab")).on_click(cx.listener(|this, _, _, cx| this.design_section(Section::Taste, cx)))),
                     )
                     .when(!folder.is_empty(), |d| {
@@ -1709,6 +1828,7 @@ impl Shell {
             self.design_end_look();
             self.design.source = key.to_owned();
             self.design.draft = false;
+            self.design.working = false;
             self.design.end_compare();
             let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
             let seen_key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
@@ -1723,6 +1843,13 @@ impl Shell {
                 self.design_versions_follow();
             }
         }
+        cx.notify();
+    }
+
+    /// The work under way on the system on screen, viewed or left.
+    pub fn design_view_working(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.design.view_working(on);
+        self.design.scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     }
 

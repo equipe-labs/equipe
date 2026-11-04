@@ -8,6 +8,10 @@
 //!   with its UI map (`fake_daemon/flows.rs`).
 //! - `draft`: the squad's as the desktop has it now (steel blue), and T-144
 //!   in review with its draft (signal blue) — the "검토 중" pill.
+//! - `working`: the squad's, its setup at the UI map, and T-378 still at work
+//!   on it in its worktree — two flows partly shot, the designer mid-turn
+//!   (`fake_daemon/flows.rs`, `seed_working`): the "만드는 중" chip and the
+//!   empty map that says who is making it.
 //! - `empty`: none yet.
 //!
 //! With `1`, the person's taste too: four notes of the squad's (from each
@@ -44,21 +48,41 @@ fn base() -> PathBuf {
 fn places() -> Vec<Place> {
     let mut out = vec![Place { project: None, draft: None, dir: base().join("squad/design") }];
     match mode().as_deref() {
-        Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "브랜드 가이드라인".into() }), dir: base().join("t144/design") }),
+        Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "브랜드 가이드라인".into(), working: false }), dir: base().join("t144/design") }),
+        Some("working") => out.push(Place { project: None, draft: Some(DraftOf { ticket: WORKING_TICKET, title: WORKING_TITLE.into(), working: true }), dir: base().join("t378/design") }),
         Some("empty") | None => {}
         Some(_) => {
             out.push(Place { project: Some("web".into()), draft: None, dir: base().join("web/design") });
             // T-170 in review: the site's refresh, its UI map shot again where it changed.
-            out.push(Place { project: Some("web".into()), draft: Some(DraftOf { ticket: 170, title: REFRESH_TITLE.into() }), dir: base().join("t170/design") });
+            out.push(Place { project: Some("web".into()), draft: Some(DraftOf { ticket: 170, title: REFRESH_TITLE.into(), working: false }), dir: base().join("t170/design") });
         }
     }
     out
 }
 
 const REFRESH_TITLE: &str = "사이트 리프레시 — 강조색과 버튼";
+/// `working`: the ticket making the squad's UI map.
+pub const WORKING_TICKET: u32 = 378;
+const WORKING_TITLE: &str = "화면 지도 만들기";
 
 /// The ticket in review whose draft is shown: T-144 (`draft`), T-170 (`1`).
 pub fn ticket() -> Option<Ticket> {
+    if mode().as_deref() == Some("working") {
+        let mut t = super::ticket(
+            WORKING_TICKET,
+            "in_progress",
+            "app",
+            "designer",
+            WORKING_TITLE,
+            "- [ ] 온보딩·결제 흐름을 flows/flows.json에\n- [ ] 화면마다 상태별로 라이트·다크 찍기",
+            &[],
+            None,
+            None,
+        );
+        t.kind = equipe_core::protocol::TicketKind::Task;
+        t.project = None;
+        return Some(t);
+    }
     if mode().as_deref() == Some("1") {
         let mut t = super::ticket(
             170,
@@ -103,6 +127,11 @@ pub fn seed() {
     if mode == "draft" {
         write_system(&squad, &tokens(&STEEL), GUIDELINES_STEEL);
         write_system(&base().join("t144/design"), &tokens(&SIGNAL), GUIDELINES);
+    } else if mode == "working" {
+        // The worktree starts as the squad's folder; the map lands in it.
+        write_system(&squad, &tokens(&SIGNAL), GUIDELINES);
+        write_system(&base().join("t378/design"), &tokens(&SIGNAL), GUIDELINES);
+        super::flows::seed_working(&base().join("t378/design"));
     } else {
         write_system(&squad, &tokens(&SIGNAL), GUIDELINES);
         write_system(&base().join("web/design"), &tokens(&SITE), GUIDELINES_WEB);
@@ -446,8 +475,10 @@ fn event() -> Event {
     super::flows::dress(&mut systems);
     // As the daemon does while a draft is in review: what each picture holds.
     folder::fingerprint(&mut systems);
-    // The web project's designer is at its map: brief, logo and system done.
-    for web in systems.iter_mut().filter(|s| s.project.as_deref() == Some("web")) {
+    // The web project's designer is at its map: brief, logo and system done
+    // (`working`: the squad's, its map under way).
+    let at_map = if mode().as_deref() == Some("working") { None } else { Some("web") };
+    for web in systems.iter_mut().filter(|s| s.project.as_deref() == at_map && s.draft.is_none()) {
         use equipe_core::protocol::design::{Setup, SetupStep};
         web.setup = [Setup::Brief, Setup::Logo, Setup::System, Setup::Flows, Setup::Qa].map(|step| SetupStep { step, done: !matches!(step, Setup::Flows | Setup::Qa) }).to_vec();
     }

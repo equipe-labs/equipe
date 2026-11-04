@@ -3,7 +3,8 @@
 //! band over the design screen while a step is left: each step ticked or
 //! not, the one it is at and what that step makes, and a way to ask the
 //! designer to go on with it (the PM to bring one in, when the team has
-//! none). Once every step is done it is gone. The steps are the shown
+//! none) — or, while a ticket is already making it, "진행 중 · T-n", which
+//! opens what is done so far. Once every step is done it is gone. The steps are the shown
 //! system's (`DesignSystem::setup`, read from its folder): a project's own,
 //! not the squad's, when they differ.
 
@@ -16,6 +17,7 @@ use gpui_kit::*;
 use crate::icons::{Icon, icon};
 use crate::state::{Member, Model, Presence};
 use crate::theme::{self, ICON_SM, META, SMALL, SMALL_LINE};
+use crate::tips::TipExt as _;
 use crate::{Shell, ui};
 
 /// The band's side margin: the design screen's.
@@ -79,6 +81,11 @@ fn whose(system: &DesignSystem) -> String {
     }
 }
 
+/// The step's place while a ticket is making it: "진행 중 · T-378".
+pub fn working_word(ticket: equipe_core::protocol::TicketId) -> String {
+    t!("design.setup_working", id = ticket)
+}
+
 /// What the designer is asked, for the step the setup is at.
 pub fn request(system: &DesignSystem) -> Option<String> {
     let design = whose(system);
@@ -112,7 +119,10 @@ const STEP_LINE_MIN: f32 = 280.;
 pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let ui = &shell.design;
-    let system = ui.current().filter(|s| ui.loaded && shows(s))?;
+    // The work under way on show: the band is the accepted system's, not its.
+    let system = ui.current().filter(|s| ui.loaded && !ui.working && shows(s))?;
+    // Already being made: where it is, not a second ask.
+    let making = ui.making(&shell.model);
     let at = current(system)?;
     let finished = STEPS.iter().filter(|s| done(system, **s)).count();
     let designer = designer(&shell.model);
@@ -182,13 +192,35 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                         .child(words),
                 ),
         )
-        .child(
-            div().flex_none().child(
-                ui::button(p, "design-setup-ask", ui::Kind::Primary, ask)
-                    .icon(Icon::Message)
-                    .on_click(cx.listener(|this, _, window, cx| this.design_ask_setup(window, cx))),
-            ),
-        );
+        .child(match making {
+            Some(m) => h_flex()
+                .id("design-setup-working")
+                .flex_none()
+                .h(px(28.))
+                .px_2p5()
+                .gap_1p5()
+                .items_center()
+                .rounded(px(14.))
+                .border_1()
+                .border_color(p.hair)
+                .text_size(px(SMALL))
+                .text_color(p.text)
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.wash))
+                .child(if m.busy { crate::motion::spinner(12., p.accent) } else { div().size(px(6.)).rounded_full().bg(p.accent).into_any_element() })
+                .child(working_word(m.ticket))
+                .tip(p, t!("design.setup_working_tip"), None)
+                .on_click(cx.listener(|this, _, _, cx| this.design_view_working(true, cx)))
+                .into_any_element(),
+            None => div()
+                .flex_none()
+                .child(
+                    ui::button(p, "design-setup-ask", ui::Kind::Primary, ask)
+                        .icon(Icon::Message)
+                        .on_click(cx.listener(|this, _, window, cx| this.design_ask_setup(window, cx))),
+                )
+                .into_any_element(),
+        });
     Some(v_flex().id("design-setup").flex_none().px(px(PAD)).py_3().gap_2().border_b_1().border_color(p.hair).child(steps).child(now).into_any_element())
 }
 
@@ -218,7 +250,7 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{STEPS, current, label, makes, now_line, pm_request, request, shows};
+    use super::{STEPS, current, label, makes, now_line, pm_request, request, shows, working_word};
     use equipe_core::protocol::design::{DesignSystem, Setup, SetupStep};
 
     fn system(project: Option<&str>, done: &[Setup]) -> DesignSystem {
@@ -270,6 +302,11 @@ mod tests {
         assert!(ask.contains("「로고」부터"), "{ask}");
         assert!(ask.ends_with(&request(&web).unwrap()), "the designer's words, for the PM to pass on");
         assert_eq!(pm_request(&system(None, &STEPS)), None);
+    }
+
+    #[test]
+    fn a_step_being_made_says_so_and_by_which_ticket() {
+        assert_eq!(working_word(378), "진행 중 · T-378");
     }
 
     #[test]
