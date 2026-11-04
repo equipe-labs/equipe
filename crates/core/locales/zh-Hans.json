@@ -28,6 +28,7 @@
   "flows.problem_reserved": "{at}：history 用来存放流程以前的录像；请给这个界面换个 id",
   "flows.problem_source_outside": "{at}：{path} 在仓库之外，不跟踪它的改动",
   "flows.problem_step": "{at}：每一步只做一个动作：go、click、fill、press、wait 或 say",
+  "flows.problem_action": "{at}：动作是一个 click、fill、press、wait 或 go 步骤，不能有 say 和 screen",
   "flows.problem_step_screen": "{at}：{screen} 不是这个流程的界面",
   "flows.walk_no_map": "没有可走的地图：{path} 不存在",
   "flows.walk_no_flow": "flows.json 里没有流程 {flow}",

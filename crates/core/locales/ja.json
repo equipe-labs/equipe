@@ -28,6 +28,7 @@
   "flows.problem_reserved": "{at}: history はフローの過去の録画を置くフォルダです。画面に別の id を付けてください",
   "flows.problem_source_outside": "{at}: {path} はリポジトリの外にあるため、変更を追いません",
   "flows.problem_step": "{at}: ステップの動作は一つです：go、click、fill、press、wait、say のどれか",
+  "flows.problem_action": "{at}: 動作は click・fill・press・wait・go のどれか一つのステップです（say と screen は使えません）",
   "flows.problem_step_screen": "{at}: {screen} はこのフローの画面ではありません",
   "flows.walk_no_map": "たどるマップがありません：{path} がありません",
   "flows.walk_no_flow": "flows.json にフロー {flow} がありません",

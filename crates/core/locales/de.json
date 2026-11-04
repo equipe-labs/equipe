@@ -28,6 +28,7 @@
   "flows.problem_reserved": "{at}: history enthält die früheren Durchläufe des Ablaufs; gib dem Bildschirm eine andere ID",
   "flows.problem_source_outside": "{at}: {path} liegt außerhalb des Repositorys, Änderungen daran werden nicht verfolgt",
   "flows.problem_step": "{at}: Ein Schritt hat genau eine Aktion: go, click, fill, press, wait oder say",
+  "flows.problem_action": "{at}: Eine Aktion ist genau ein click-, fill-, press-, wait- oder go-Schritt, ohne say und screen",
   "flows.problem_step_screen": "{at}: {screen} ist kein Bildschirm dieses Ablaufs",
   "flows.walk_no_map": "Keine Karte zum Durchgehen: {path} gibt es nicht",
   "flows.walk_no_flow": "flows.json hat keinen Ablauf {flow}",

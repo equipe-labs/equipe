@@ -39,6 +39,16 @@
 //! - A state's `url` (else the screen's) is what `equipe design flows shoot`
 //!   opens to take its pictures; a state that can't be reached by a URL is
 //!   drawn instead (an HTML mockup, `equipe design render`) to the same path.
+//! - How a state is shot, beyond its URL, is set on its screen for all its
+//!   states or on the state for itself (`Capture`): `locale` (the browser's
+//!   language, `en-US` unless set), `js: false`, `reducedMotion: true`,
+//!   `blockFonts: true` (as it looks while webfonts load), `fullPage: false`
+//!   (the first screen only), `selector` (that element alone), `permissions`
+//!   (`["clipboard-read", "clipboard-write"]`) and `actions` — a walk's
+//!   `click`/`fill`/`press`/`wait`/`go` steps, run before the shot:
+//!   `{ "id": "menu-open", "locale": "ko-KR", "actions": [{ "click": "summary" }, { "wait": 300 }] }`.
+//!   Before a whole page or an element is shot the page is scrolled through
+//!   (JavaScript on), so what appears on scroll has.
 //! - `source` paths are relative to the repository the design folder is in;
 //!   one modified after the screen's newest picture makes the screen `stale`.
 //! - A flow's `walk` is how to go through it, a step at a time, each with one
@@ -126,6 +136,8 @@ struct ScreenFile<T> {
     expects: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     states: Vec<T>,
+    #[serde(flatten)]
+    capture: Capture,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -139,6 +151,70 @@ struct StateFile {
     note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
+    #[serde(flatten)]
+    capture: Capture,
+}
+
+/// How a state is shot, beyond its URL — set on a screen for all its states,
+/// or on a state for itself (each field the state sets wins; its `actions`
+/// replace the screen's). Each is left out when not set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Capture {
+    /// The browser's language, and its `Accept-Language`: `en-US` unless set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+    /// `false`: JavaScript off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub js: Option<bool>,
+    /// `true`: the browser asks for reduced motion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduced_motion: Option<bool>,
+    /// `true`: webfonts aren't loaded — the page as it is while they load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_fonts: Option<bool>,
+    /// `false`: only the first screen (the viewport), not the whole page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_page: Option<bool>,
+    /// A CSS selector: that element alone is shot, sticky headers out of the
+    /// way, instead of the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// Browser permissions granted to the page: `clipboard-write`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<String>,
+    /// Steps run before the shot, as a walk's: `click`, `fill`, `press`,
+    /// `wait`, `go` — no `say`, no `screen`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Value>,
+}
+
+impl Capture {
+    /// `self` (a state's) over `under` (its screen's).
+    fn over(self, under: &Capture) -> Capture {
+        Capture {
+            locale: self.locale.or_else(|| under.locale.clone()),
+            js: self.js.or(under.js),
+            reduced_motion: self.reduced_motion.or(under.reduced_motion),
+            block_fonts: self.block_fonts.or(under.block_fonts),
+            full_page: self.full_page.or(under.full_page),
+            selector: self.selector.or_else(|| under.selector.clone()),
+            permissions: if self.permissions.is_empty() { under.permissions.clone() } else { self.permissions },
+            actions: if self.actions.is_empty() { under.actions.clone() } else { self.actions },
+        }
+    }
+
+    /// Its actions that are steps a shot can take, each one that isn't told in
+    /// `problems` (`at` is where it is) and left out.
+    fn keep_actions(&mut self, at: &str, words: &Catalog, problems: &mut Vec<String>) {
+        let actions = std::mem::take(&mut self.actions);
+        for (n, value) in actions.into_iter().enumerate() {
+            match step_of(&value) {
+                Some(WalkStep { screen: None, step }) if !matches!(step, Step::Say(_)) => self.actions.push(value),
+                _ => problems.push(words.fill("flows.problem_action", &[("at", format!("{at}/actions/#{}", n + 1))])),
+            }
+        }
+    }
 }
 
 /// The note beside a walkthrough.
@@ -280,11 +356,16 @@ fn parse(design: &Path, words: &Catalog, problems: &mut Vec<String>) -> Option<V
             let mut states = Vec::new();
             for state in entries::<StateFile>(screen.states, &at, words, |s| &s.id) {
                 match state {
-                    Ok(state) => states.push(state),
+                    Ok(mut state) => {
+                        state.capture.keep_actions(&format!("{at}/{}", state.id), words, problems);
+                        states.push(state);
+                    }
                     Err(problem) => problems.push(problem),
                 }
             }
-            screens.push(ScreenFile { id: screen.id, title: screen.title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, expects: screen.expects, states });
+            let mut capture = screen.capture;
+            capture.keep_actions(&at, words, problems);
+            screens.push(ScreenFile { id: screen.id, title: screen.title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, expects: screen.expects, states, capture });
         }
         let mut walk_problems = Vec::new();
         let walk = steps(&flow.walk, &flow.id, &screens, words, &mut walk_problems);
@@ -602,7 +683,7 @@ pub fn starter(lang: Lang) -> String {
     let words = crate::i18n::core(lang);
     let word = |key: &str| Some(words.get(key).to_owned());
     let url = "http://localhost:3000/login";
-    let state = |id: &str, label: &str, note: Option<&str>, url: Option<String>| StateFile { id: id.into(), label: word(label), kind: Some(id.into()), note: note.and_then(word), url };
+    let state = |id: &str, label: &str, note: Option<&str>, url: Option<String>| StateFile { id: id.into(), label: word(label), kind: Some(id.into()), note: note.and_then(word), url, capture: Capture::default() };
     let screen = ScreenFile {
         id: "login".into(),
         title: word("flows.starter_screen"),
@@ -615,6 +696,7 @@ pub fn starter(lang: Lang) -> String {
             state("default", "flows.starter_state_default", None, None),
             state("error", "flows.starter_state_error", Some("flows.starter_state_error_note"), Some(format!("{url}?fixture=wrong-password"))),
         ],
+        capture: Capture::default(),
     };
     let walk = vec![
         serde_json::json!({ "go": url, "screen": "login" }),
@@ -637,6 +719,8 @@ pub struct Shot {
     pub url: Option<String>,
     /// `<design>/flows/<flow>/<screen>`: each picture is `picture_name` in it.
     pub dir: PathBuf,
+    /// How it is shot: the state's, over its screen's.
+    pub capture: Capture,
 }
 
 /// Every state `design`'s map lists, in its order, to shoot.
@@ -648,7 +732,8 @@ pub fn shots(design: &Path) -> Vec<Shot> {
             let dir = design.join(DIR).join(&flow.id).join(&screen.id);
             for state in screen.states {
                 let url = state.url.or_else(|| screen.url.clone());
-                out.push(Shot { flow: flow.id.clone(), screen: screen.id.clone(), state: state.id, url, dir: dir.clone() });
+                let capture = state.capture.over(&screen.capture);
+                out.push(Shot { flow: flow.id.clone(), screen: screen.id.clone(), state: state.id, url, dir: dir.clone(), capture });
             }
         }
     }
@@ -951,6 +1036,40 @@ mod tests {
         let urls: Vec<(&str, Option<&str>)> = found.iter().map(|s| (s.state.as_str(), s.url.as_deref())).collect();
         assert_eq!(urls, [("default", Some("http://localhost:3000/login")), ("error", Some("http://localhost:3000/login?fixture=wrong")), ("loading-slow", Some("http://localhost:3000/login"))]);
         assert!(found.iter().all(|s| s.flow == "onboarding" && s.screen == "login" && s.dir == design.join("flows/onboarding/login")));
+        std::fs::remove_dir_all(design).unwrap();
+    }
+
+    #[test]
+    fn a_state_is_shot_as_it_says_over_its_screen_and_a_bad_action_is_told_and_left_out() {
+        let design = dir("capture");
+        write(
+            &design.join("flows/flows.json"),
+            r##"{ "flows": [ { "id": "site", "screens": [
+              { "id": "cli", "url": "http://localhost:4321/", "selector": "#get-started .cli", "locale": "de-DE",
+                "actions": [ { "click": "summary" } ],
+                "states": [
+                  { "id": "default" },
+                  { "id": "ko", "locale": "ko-KR", "js": false, "blockFonts": true, "reducedMotion": true, "fullPage": false,
+                    "permissions": ["clipboard-write"],
+                    "actions": [ { "click": ".copy" }, { "say": "no captions" }, { "wait": 200, "screen": "cli" }, { "press": "Enter" } ] },
+                  { "id": "typed", "js": "no" } ] } ] } ] }"##,
+        );
+        let found = shots(&design);
+        assert_eq!(found.iter().map(|s| s.state.as_str()).collect::<Vec<_>>(), ["default", "ko"], "a state that can't be read is left out");
+        let screen = &found[0].capture;
+        assert_eq!((screen.selector.as_deref(), screen.locale.as_deref(), screen.js), (Some("#get-started .cli"), Some("de-DE"), None));
+        assert_eq!(screen.actions, [serde_json::json!({ "click": "summary" })]);
+        let own = &found[1].capture;
+        assert_eq!(own.locale.as_deref(), Some("ko-KR"));
+        assert_eq!((own.js, own.block_fonts, own.reduced_motion, own.full_page), (Some(false), Some(true), Some(true), Some(false)));
+        assert_eq!(own.selector.as_deref(), Some("#get-started .cli"), "the screen's, not set on the state");
+        assert_eq!(own.permissions, ["clipboard-write"]);
+        assert_eq!(own.actions, [serde_json::json!({ "click": ".copy" }), serde_json::json!({ "press": "Enter" })], "the state's replace the screen's");
+        let map = read(&design, None, Lang::En).unwrap();
+        let told: Vec<&str> = map.problems.iter().map(String::as_str).filter(|p| p.contains("/actions/")).collect();
+        assert_eq!(told.len(), 2, "{:?}", map.problems);
+        assert!(told[0].starts_with("site/cli/ko/actions/#2: "), "{told:?}");
+        assert!(told[1].starts_with("site/cli/ko/actions/#3: "), "{told:?}");
         std::fs::remove_dir_all(design).unwrap();
     }
 

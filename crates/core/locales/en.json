@@ -28,6 +28,7 @@
   "flows.problem_reserved": "{at}: history holds the flow's earlier walkthroughs; give the screen another id",
   "flows.problem_source_outside": "{at}: {path} is outside the repository, so its changes aren't followed",
   "flows.problem_step": "{at}: a step takes one action: go, click, fill, press, wait or say",
+  "flows.problem_action": "{at}: an action is one click, fill, press, wait or go step, with no say and no screen",
   "flows.problem_step_screen": "{at}: {screen} isn't a screen of this flow",
   "flows.walk_no_map": "There's no map to walk: {path} isn't there",
   "flows.walk_no_flow": "flows.json has no flow {flow}",

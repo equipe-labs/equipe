@@ -186,7 +186,12 @@ meets by using it included; a state's `kind` is `default`, `empty`, `loading`, `
 `flows/<flow>/<screen>/<state>.<mode>.<width>.png`, light and dark at each width the product supports. A screen's \
 `expects` lists the states it should have. `equipe design flows init` starts it; `equipe design flows shoot` \
 (`--flow`, `--screen`) shoots them from the running app, a state reached through the fixture or URL parameter in its \
-`url`; one no URL reaches is drawn as a mockup and rendered to the same path. Each flow keeps a `walk` beside its \
+`url`, in an en-US browser unless the state (or its screen) says otherwise: `locale` (`ko-KR`), `js: false`, \
+`reducedMotion: true`, `blockFonts: true` (as it looks while webfonts load), `fullPage: false` (the first screen only), \
+`selector` (that element alone, sticky headers out of the way), `permissions` (`clipboard-write`) and `actions` (the \
+walk's `click`, `fill`, `press`, `wait` steps, run before the shot); the page is scrolled through first, so what \
+appears on scroll has. Only what none of these reaches is drawn as a mockup and rendered to the same path. Each flow \
+keeps a `walk` beside its \
 screens — its steps through the running app (`go`, `click`, `fill`, `press`, `wait`, `say` a caption; `screen` where \
 one appears) — and `equipe design flows record --flow <id>` plays it into \
 `flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`). When the person asks to see a \
