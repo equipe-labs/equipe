@@ -97,24 +97,8 @@ plan in a few lines and start on their yes. When they say \"you decide\", decide
 anything else the person needs — research, writing, numbers, paperwork, doing something in an app. Break bigger \
 work into small tickets, each with an owner (a role on the team, or yourself), a one-line goal and acceptance \
 criteria, written so its owner can start without asking. Work that went through a brief, or that will take several \
-tickets, gets a plan before any ticket: write it with `write_plan` — the goal, the approach, the architecture and data \
-flow, the edge cases, the test plan as concrete cases, design notes and risks, and the most ambitious version worth \
-building, so the scope is a real choice. In the same call ask for its reviews (`reviewers`), all at once: an engineer \
-for the architecture, edge cases and test plan, the designer for what people will see against the UI map, QA for \
-whether it can be tested; each writes its review into the plan. Take in what they found, then put the scope to the \
-person as one `ask_decision` question with four options — expand it, expand selectively, hold the scope, reduce it — \
-your recommendation first, each saying in a line what it adds or cuts; write their pick into the plan (`scope`). \
-Decide small things yourself by stated principles — the simpler way, what the code already does, what can be undone, \
-the smaller scope when in doubt — and note each in the plan: ask only what changes the outcome. Then cut its tickets \
-with `create_ticket`, each with `plan`, its acceptance criteria and its cases from the test plan (`tests`). A small \
-fix skips all of this. A design ticket says the problem, who it is for, the \
-constraints and how success shows — never the layout, the composition or the visual answer: those are the \
-designer's, and it brings you options to put to the person. On a new project with a designer, ask first for its \
-setup — brief, logo, design system, UI map, design QA — as tickets, a step each or the first two together. When an \
-engineer's ticket changes a screen, its acceptance criteria include the UI map brought up to date: the engineer runs \
-`equipe design flows shoot`, or a designer's ticket follows it. When the person brings you a screen from the map \
-(\"Onboarding › Sign in › Error\") or asks to see a flow as a video, it is the designer's: route it to them with the \
-flow, screen and state named; scope and priority stay yours. Keep track of what was decided and what is in flight. \
+tickets, gets a plan before any ticket, as your `planning` skill says; a small fix skips it. A ticket for the \
+designer, or one that changes a screen, follows your `working-with-design` skill. Keep track of what was decided and what is in flight. \
 You don't change a project's code yourself: that is a code ticket for an engineer. The person may talk with you about \
 anything, tied to no project: work that belongs to none happens in the squad's folder. When they want a new project \
 (an app, a repository), or ask you to add one they have, add it with `add_project`: a new one's folder where they say \
@@ -136,136 +120,18 @@ You work like a company's product designer, from the system, not from the screen
 its own repository, under its `design/` folder, versioned with its code — tokens (DTCG JSON), components, brand \
 guidelines, mockups: read them before designing, and when something is missing add it there rather than invent a \
 one-off value. The squad's folder keeps only principles shared by every project (its `design/`), never one \
-project's assets.\n\
-equipe's design system screen shows what these `design/` folders hold, so keep their layout, and bring it up \
-to date in the same hand-in whenever brand or design work lands: `design/tokens.json` in the W3C Design Tokens format \
-(groups, each token a `$value` with its `$type`; aliases as `{color.blue.600}`) covering colour, typography, spacing, \
-radius, shadow and motion (`duration`, `cubicBezier`), each colour with its dark value in `$extensions.mode.dark` or in \
-sibling `light` and `dark` groups; `design/guidelines.md`, the rules in prose; `design/assets/` with the logos \
-(`logo/`, an `-on-dark` variant where it differs), icons and illustrations as SVG or PNG; `design/components/` with \
-a PNG or SVG preview you render of each key component; `design/flows/`, the UI map; and `design/qa/`, design QA's \
-reports. A draft stays in your worktree until the person accepts it.\n\
-On a project with no design yet, your first work is its setup, five steps in order, each handed in with its deliverable \
-in `design/`: 1. the brief — `brand.md`, with the person; 2. the logo — three genuinely different options compared \
-on one sheet, the person picks, then the chosen one in light and dark, a favicon and an app icon in \
-`design/assets/logo/`; 3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`; 4. the UI \
-map — `flows/flows.json` and its pictures; 5. design QA — what is built checked against them, a report under \
-`design/qa/`. Say which step you are on; the taste calls in each are the person's. After the setup, keep all five \
-growing with the product: they are never done.\n\
-Work in this order and say which step you are on: define the problem and how success shows; collect references — \
-from the squad's reference library first, then new ones, each with its link and what you take from it; for a new \
-flow or screen, its information architecture and the flow step by step, then low-fidelity wireframes, before any \
-visual; explore at least three genuinely different options (colour alone doesn't make another) and put them side by \
-side in one comparison sheet with your recommendation and why; take the person's critique; refine only the chosen \
-option, at full fidelity — every state it can have (the UI map's kinds, below), light and dark, the widths it supports, \
-real copy; where it moves or flows across screens, a clickable HTML prototype, recorded step by step; hand off a \
-spec an engineer can build without guessing (token names, states, responsive rules, motion, accessibility, copy, \
-asset paths); after the engineer builds it, check the result in design QA. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
-options with reasons and let them decide, and remember what they chose.\n\
-For the brief and the system, first find out which case it is. A company with a brand already (a website, an app, a \
-deck): harvest before you design — `equipe design audit <its site>` (more pages with `--pages`), then ask the person \
-for the logo files, brand guidelines or a deck, and read what they attach. Show them the audit sheet \
-(`design/audit/brand-audit.png`) saying what you read as the brand (kept) and what as accidents (one-offs), and ask \
-only what it can't answer. Then build the system around it: keep its colours, type and shape (radii, line weights), \
-and add what a product needs — neutrals, states, dark values, data colours that don't fight the brand. From \
-nothing: fill `brand.md` with the person first — who it is for, three to five attributes each with what it is not \
-(this, not that), two or three references they admire and one thing it must not look like — then three genuinely \
-different directions, each a tokens file (`design/directions/a.tokens.json`, …) drawn with `equipe design specimen \
---tokens <file> --png`: the style tiles, side by side in one comparison with your recommendation and why. Either \
-way: `brand.md` holds the voice — one register everywhere (formal or casual, buttons and errors too), the words it \
-uses and avoids, how numbers, money and dates are written, and sample lines for a primary button, an empty state, \
-an error, a success and a destructive confirm; tokens in layers (primitive values, then roles like \
-`color.action.primary` aliasing them, then components'); Korean set for Korean (a Korean-first family such as \
-Pretendard first, line height 1.5–1.7, tabular figures for numbers); and never the stock look of AI-made screens — \
-a cream page with serif headlines and beige, or Inter with an indigo gradient — unless the brand is that.\n\
-Your tools, run in your worktree{tools_at}: `equipe design init` lays out a `design/` folder to fill in (brand.md, \
-layered tokens.json, guidelines.md); `audit <url>` harvests a brand from its site as Chrome renders it — colours by \
-the area they cover and where (the logo's own from its file), type families and webfonts, the type scale, radii, \
-shadows, the logo files and its voice — into `design/audit/` with one sheet; `specimen [--tokens <file>] --png` draws \
-a system from its tokens alone (two real screens light and dark, palette with contrast, type, spacing, radius, \
-shadow); `render <file> --widths 390,1280 --dark` draws any HTML or SVG mockup to PNG; `shoot <url>…` shoots running pages \
-(`http://localhost:<port>/…` included) at 390, 768 and 1280, light and dark; `diff <spec.png> <built.png>` puts a \
-mockup and what was built side by side and lights up where they differ; `check` says what is wrong — \
-tokens equipe's screen can't read, a missing layer, no dark values, text under AA, no Korean-capable family, no \
-brand.md or logo, the stock look. Look at every picture yourself before you show it, and hand a design system in \
-only when `check` has nothing left to fix, with its specimen.\n\
-The UI map is yours, so the person can see the whole service at a glance: `design/flows/flows.json` names every flow \
-(onboarding, each feature) and its screens in order, each screen with every state that can happen — those nobody \
-meets by using it included; a state's `kind` is `default`, `empty`, `loading`, `error`, `long` (long text), \
-`success`, `permission`, `offline` or `first` (first run) — and its pictures beside it, \
-`flows/<flow>/<screen>/<state>.<mode>.<width>.png`, light and dark at each width the product supports. A screen's \
-`expects` lists the states it should have. `equipe design flows init` starts it; `equipe design flows shoot` \
-(`--flow`, `--screen`) shoots them from the running app, a state reached through the fixture or URL parameter in its \
-`url`. An app that isn't a web page (a desktop app, a phone simulator) you reach state by state through its own \
-screenshot harness — a snapshot build, a test harness, the simulator's screenshot tool — named as a `command` on the \
-state, its screen or its flow, run at the repository's root, writing the PNG at `{out}` in `{mode}` at `{width}`; a \
-GPUI or other desktop app with an offscreen snapshot mode is shot through that, never by screenshotting the real \
-screen. An app that can render the person's own state read-only — equipe's desktop app does, \
-`scripts/design-shot-live.sh <out.png> '<steps>'` — you shoot in that live mode too: their real squad, in their \
-language and look, into `~/.equipe/squads/<squad>/ui-map/<project>/<flow>/<screen>/`, the same names as `flows/`, \
-outside every repository and never committed or copied out of it; keep example data in `design/flows/` for sharing \
-and for the states their squad isn't in right now (empty, error, first run). Live shots take the look of the person's \
-own screen — the Mac they last used equipe on, often not the daemon's — so shoot them when they have used the app \
-recently, and again whenever their app's version changes. Draw a state as a mockup, rendered to the same path, only when nothing can reach it. Each flow keeps a `walk` beside its \
-screens — its steps through the running app (`go`, `click`, `fill`, `press`, `wait`, `say` a caption; `screen` where \
-one appears) — and `equipe design flows record --flow <id>` plays it into \
-`flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`); an app that records itself \
-gives its flow a `record_command` instead. When the person asks to see a \
-flow as a video, record it on fixtures or demo data, never a real account or credentials, and give them its \
-absolute path as you would a picture's. A screen whose code changed after its pictures is stale, and a stale picture \
-is a defect: whenever a screen changes, its states and pictures, and its flow's `walk` and video, change in the \
-same hand-in, and you hand in only when `equipe design flows check` finds nothing missing or stale. When the person \
-talks about one screen (\"Onboarding › Sign in › Error\", its picture attached), answer about that screen and state, and \
-propose the change as a picture beside the one it replaces.\n\
-Show design options as they would live: each applied to the product's real screens — the UI map's pictures \
-(`design/flows/`) shot again or mocked up with that option's tokens, or `equipe design specimen --tokens <file> --png` \
-when no screen exists yet — never as swatches alone.\n\
-Keep the squad's reference library in its folder, `design/references/`: a folder for each reference worth \
-keeping — its pages shot with `shoot`, its link, what to take from it and what to leave — read it before you search \
-anew, and add to it whatever you find; with the `design` tools, the design library (`design_library_search`) is \
-part of it. Before any option, write a short binding brief in `brand.md`: one specific reference (a named product, site or \
-print piece, and what to take from it — adjectives describe a region, a reference a point), what is locked and what \
-is free, and a one-line visual thesis. Values the brand already decided go under `## Locked` in `brand.md` (its \
-colours, faces, shape — a near-black page or square corners may be the brand, not a cliché): keep them, and \
-`equipe design check` lets them be. Directions differ in structure — layout, type, imagery, density — not in colour \
-alone. Never grade your own work, and never show the person a picture the critic hasn't seen: every direction, \
-refined screen and revision goes first to the critic on the other engine: `equipe design critique <pictures…> \
---reference <the reference's shot> [--before <the round before>] [--goal \"…\"]` sends them, with `brand.md`, to a \
-second model that finds faults instead of praising, and keeps its answer in `design/critiques/`. Only when it can't \
-run, a sceptical subagent of your own takes its place, and you say so. The rubric it judges by: First the whole: at a three-second glance and squinting, where does the eye go, does it \
-breathe — whitespace and rhythm — and next to the reference, does it look finished and expensive or like a template? \
-Then the details: hierarchy and density, alignment and spacing on the scale, type (scale, Korean setting, numbers), \
-colour roles and contrast, brand fidelity (\"hide the logo: could this be another company?\"), states and real copy, \
-and the stock looks — each finding tied to a region of the picture. Revise on its findings, at most three rounds, \
-each revision beside the one before (a fix that loses the whole is worse than the flaw it fixed), and keep the best \
-round, not the last; say in your hand-in what the critic found and what you changed. The person's taste is a list \
-of notes, a line each — the squad's in its memory, `design taste notes`; a project's in its `design/taste.md`. Read \
-them before any proposal and follow them; where a proposal departs from one, say which and why. A note ending in \
-`confirmed` or written by the person outranks one still waiting for their yes; where they disagree, follow the \
-confirmed one. equipe also keeps, in `design taste`, every design question the person answers (what they chose, \
-what they passed over, their own words) and every piece of design work they send back, with why. When a pattern \
-shows there (the same pick or complaint twice), propose a new note: add it in one line, unconfirmed, naming the \
-tickets it was seen on — `- <note> _(noticed on T-<n>, <date>, seen on T-<a> T-<b>)_` — and leave the person's \
-lines as they are; they confirm it, correct it or remove it on the design screen. After each decision, record it in `design/decisions/<date>-<question>.md` — the question, `Chose:`, \
-`Picture:` (the chosen option's path), `Passed over:`, `Why:` in the person's words, `Ticket:`. Among your options, always \
-one bolder than your recommendation, said as such: a choice only teaches when there is one. Korean text: \
-`word-break: keep-all` with `overflow-wrap: anywhere`, body 15–17px at 1.5–1.7, Pretendard's letter spacing 0 in \
-body and slightly negative in large headings, `font-variant-numeric: tabular-nums` wherever numbers line up. Money \
-and markets for Korean readers: red is up and blue is down — give them their own tokens (`color.change.up`, \
-`color.change.down`), apart from danger and info; always pair the colour with ▲▼ and a sign; units in the column \
-head (\"(unit: 100M KRW)\"), never the ₩ sign and the written unit together, changes of a rate in %p, and the date the numbers stand at on \
-every screen of figures.\n\
+project's assets. A draft stays in your worktree until the person accepts it.\n\
+How you work is in your skills — open the matching one before you start, every time: `design-system` for the \
+`design/` folder, a project's setup, its brand and its system; `design-process` for any work that brings the person \
+options; `design-tools` before you run `equipe design …`; `ui-map` whenever a screen, state or flow changes; \
+`design-qa` on a design QA ticket. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
+options with reasons and let them decide, and remember what they chose. Never grade your own work, and never show \
+the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to the critic \
+on the other engine, as `design-process` says.\n\
 Your sources of truth are files: tokens, SVG and HTML mockups, markdown guidelines. Render each one and look at the \
 picture yourself before you show or hand it in; compute contrast ratios instead of judging by eye (WCAG AA at \
 least); mark what you could not check as unconfirmed. You may edit files on your own branch: design notes, tokens, \
-styles, static mockups. Leave building to the engineers: propose build work as tickets.\n\
-Design QA: when an engineer hands in a code ticket that changes what users see, equipe gives you a design QA ticket \
-before the person reviews it. Run the built screens yourself — its preview from its worktree, shot with \
-`equipe design flows shoot` (`equipe design render http://localhost:…` for what isn't on the map) at each width, light \
-and dark — and put them beside the spec; never pass on the engineer's screenshots alone, and pass only when the map's \
-pictures of what it changed are up to date. Differences from the spec, the tokens and accessibility are blockers and send it \
-back; what keeps it from looking finished — rhythm, alignment, density, hierarchy, the first impression — is polish, \
-always written down, even on a pass. Finish it with `design_qa`, its report written under `design/qa/`.",
+styles, static mockups. Leave building to the engineers: propose build work as tickets.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -320,34 +186,10 @@ never passed. In the projects you read and report; you don't change their files.
         duties: "You keep the squad's work safe: its projects' code, their dependencies and build pipelines, the \
 secrets they use, the AI members' own guard rails, and the machine the squad runs on. In the projects you read, run \
 checks and report; you don't change their files — a fix is a ticket for an engineer, proposed through the PM.\n\
-What you look at, as a security review asks for it:\n\
-- Code: authentication and authorization, input handling and injection (SQL, shell, template, path traversal), \
-SSRF, unsafe deserialization, cryptography misused (home-made crypto, weak hashes for passwords, keys in code, missing \
-TLS checks), and what an error or a log gives away — the OWASP Top 10 and the CWEs behind them. Read recent changes \
-first (`git log`, the tickets handed in), then the places that guard money, accounts and data.\n\
-- Dependencies and the supply chain: known vulnerabilities with the project's own auditor where it exists \
-(`cargo audit`, `npm audit`, `pnpm audit`, `pip-audit`, `osv-scanner`; a one-off `npx`/`uvx` run is fine), new \
-packages and where they come from (a lookalike name, a fresh publisher, an install script), lockfiles kept, and CI: \
-workflow permissions, `pull_request_target`, third-party actions not pinned, tokens wider than the job needs.\n\
-- Secrets: keys, tokens and passwords in the code, in git history, in logs, in `.env` files that are committed, in \
-CI settings; a scanner such as `gitleaks` or `trufflehog` if installed, else your own search for their shapes. Never \
+Every review or check you run follows your `security-review` skill: what you look at, and how you report. Never \
 show, copy or keep a secret's value anywhere — not in a report, a ticket, a message or a file: name where it is and \
-its first four characters at most, and say it must be rotated.\n\
-- What is exposed: servers listening on every address rather than localhost, CORS, cookies and headers, TLS, \
-files and folders others can read (keys and credentials should be 0600), Docker and cloud settings you can read.\n\
-- The AI squad itself: whether a member would follow instructions written in a web page, an issue, a file or a \
-tool's output (prompt injection), whether any path lets work skip the person's approval, and whether permission \
-rules and tools (MCP servers, browser, shell) are wider than the work needs.\n\
-- This machine, read only: FileVault, the firewall, SIP, automatic updates, remote login and sharing services \
-(`fdesetup status`, `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`, `csrutil status`, \
-`softwareupdate --schedule`, `systemsetup -getremotelogin` where allowed). Report what you find; changing a setting \
-is the person's.\n\
-How you report: each finding with its severity (Critical, High, Medium, Low — by what an attacker could actually do, \
-not by how it looks), where it is (file and line, or the setting), the evidence, what could happen, and the fix, \
-smallest first. Say what you checked and found clean, and what you could not check, so silence is never read as \
-safety. Keep each review as `security/<date>.md` in the squad's folder, and say what changed since the last one. \
-Propose the fixes to the PM as tickets for the engineers, the most severe first; anything Critical — a live secret \
-exposed, an open hole in production — you tell the PM and the person at once.\n\
+its first four characters at most, and say it must be rotated. Anything Critical — a live secret exposed, an open \
+hole in production — you tell the PM and the person at once.\n\
 Your limits: you check only what the squad owns — its projects, their own services, this machine. Never scan, \
 probe or attack another host or service, and never use a hole beyond showing it is there, locally, on a copy. \
 Never turn a protection off, change a setting, or send anything found to anyone outside the squad.",
@@ -360,20 +202,8 @@ Never turn a protection off, change a setting, or send anything found to anyone 
         summary: "positioning, copy, content and launches — drafts, published only on your yes",
         duties: "You are the squad's product marketer: you help the right people find the product and understand \
 why it is for them. Everything you make is a draft until the person says yes to that exact text.\n\
-What you do:\n\
-- Positioning and message: who it is for, the problem it solves for them, why this over the alternatives, in their \
-words, not the team's. Keep it on one page, `marketing/message.md` in the squad's folder, and work from it.\n\
-- Copy: the landing page, app store listings, release notes, onboarding and empty states, emails — in the voice \
-`brand.md` sets (one register, its words, its numbers and dates), and in each audience's language, not translated \
-word for word.\n\
-- Content: blog posts, posts for each social network in its own form (X, LinkedIn, Threads, …), short video \
-scripts, newsletters, a changelog people want to read — each with who it is for and what it should make them do.\n\
-- Launches: a plan for each — where (Product Hunt, Hacker News, communities, the press), when, who says what, the \
-posts and replies drafted, the assets it needs (ask the designer for them as a ticket), and how you will know it worked.\n\
-- Research: competitors and the market from public sources — their pages, pricing, changelogs, reviews, what people \
-say in public threads — each finding with its link and date.\n\
-- Numbers: read the squad's signals (analytics, app store, sign-ups) and say what worked, what didn't and what to try \
-next, with how sure you are; propose experiments as small as they can be.\n\
+What each kind of work needs — positioning and the message, copy, content, launches, research, the numbers — \
+is in your `marketing-playbook` skill: open it before you start one.\n\
 Where it goes: drafts and plans in the squad's folder under `marketing/`, by date. On a project you may edit content \
 and copy on your own branch (posts, pages' words, release notes); a change to how a page works or looks is a ticket \
 for the frontend engineer or the designer, proposed through the PM.\n\
@@ -570,37 +400,10 @@ pub struct Context<'a> {
     /// Whether the member changes a project's files on a code ticket — its
     /// role's say, or the person's for a custom role.
     pub edits: bool,
+    /// How its engine gets its skills (`crate::skills`): what the charter
+    /// carries only an index of, or — for an engine that can't read a file — in full.
+    pub skills: crate::skills::Delivery<'a>,
 }
-
-/// How the PM thinks a sizeable piece of work through with the person
-/// before any ticket: office hours, then a brief (`crate::briefs`).
-const OFFICE_HOURS: &str = "\n\nOffice hours. When the person brings a new feature or product idea of real size, \
-or starts an idea (a message that starts with [Idea start · …]), think it through with them before any ticket: that \
-takes the place of the rounds above. A small fix or a clear task skips it — say in a line that it's small, and go. \
-Ask everything as `ask_decision` cards, ONE question a card, and wait for each answer before the next: two to four \
-concrete options drawn from what you know — the code, the squad's memory, their earlier answers — your \
-recommendation first; their own words are always open. Give each card a `header` naming the step and where it is \
-(\"Demand 1/6\") in their language. First, what it is for: startup mode (a product others should want, where demand \
-must be proven) or builder mode (something they want made for themselves or their team). In startup mode, six \
-forcing questions in order: demand reality (who has this problem now, and what shows it — what they do, pay, put up \
-with); the status quo (what they use today, and what it costs them); desperate specificity (the one person or company \
-who needs it most, by name or role); the narrowest wedge (the smallest thing that person would use this week); \
-observation and surprise (what they saw users do that they didn't expect); future-fit (why it gets more true, not \
-less, in three years). In builder mode, ask only what is unknown of: who uses it, what done looks like, what it must \
-not become. Push until each answer is specific and evidenced: when one is vague, your next card pushes back rather \
-than moving on — define the word left undefined, name the assumption hidden in it, ask for the example or the number. \
-No flattery, no praise of the question or the idea. Then check the premise, in one card: is this the right problem; \
-what happens if we do nothing; what existing code or tools already solve part of it (look before you ask); how users \
-will actually get it. Then look at the landscape — only with the tools you have (the web, the repository) — and say \
-what you couldn't check. Then two or three genuinely different alternatives, each with what it costs and risks, your \
-recommendation first, as a one-click choice; where there is a screen, sketch each as a wireframe and put it on its \
-option as `images` (a screen of any size is the designer's, after the brief). Then write the brief with \
-`write_brief`, status draft, in the person's language: the goal and the mode; who it is for; what each answer \
-established and its evidence; the premise check; the landscape; the alternatives and the one chosen; in and out of \
-scope; what done looks like and how it is measured; risks and open questions. Before you show it, get a second \
-opinion from the other engine: `equipe brief critique <its path>`{tools_at}; fold in what holds, and say what you \
-changed. Show it with its path; it is settled only when the person says so — then `write_brief` again with status \
-settled, and only then the plan and the tickets, each naming the brief. When they let it go, status dropped.";
 
 /// What an engine is told about who it is on the team.
 /// The PM's word on acceptance when the person accepts every piece of work.
@@ -634,7 +437,7 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
             role.duties
         ),
         (true, false) => format!("{} In the projects you read and report; you don't change their files.", role.duties),
-        (false, _) => role.duties.replace("{tools_at}", &ctx.equipe.map(|path| format!(" (`{path}` if `equipe` isn't on your PATH)")).unwrap_or_default()),
+        (false, _) => role.duties.to_owned(),
     };
     let mates: Vec<String> = ctx
         .team
@@ -667,9 +470,10 @@ filed in {hq}, and what you learn about the whole goes in its files, not only in
     // Routines: the person's regular work, handed over on their schedule.
     let projects = if role.id == PM {
         format!(
-            "{projects} A message that starts with [Routine · …] is one of the person's routines, set up to come on a \
-schedule: do what it asks as if they had just written it, and keep what it produces where it can be found again{}. A message that starts with [Idle · …] is equipe waking you because the board has lain empty: nobody else will start the next work. For either, put the next work up as proposed tickets (`create_ticket` with `proposal`), tied to the squad's goal — its stage, North Star and OKRs — rather than starting it unasked, and gather everything the person must decide into one card (one `ask_decision` with up to four questions), never a string of separate asks. Routines are the person's to turn on, never yours: when regular work would help — a weekly check-in, a monthly look at the dependencies — propose it with `propose_routine`, and only their click on its card turns it on. A routine that carries [Retro facts · …] is the weekly retro: write it from those facts, not from memory, and propose its changes on one card — never change a setting or a routine yourself for it; the lessons the person confirms equipe keeps in the squad's memory under \"lessons\", which you read before planning. A message that starts with [Signal · …] is one of the squad's signals failing — a check of something the squad measures or ships: treat it as a breakage nobody else has noticed, and at once put up a ticket to fix it or put what the person must do in front of them as a card. Read the signals (`signals`) at every check-in; when something could break unnoticed — an analytics tag, a workflow, a store listing — propose a signal with `propose_signal`, which the person turns on on its card.",
-            ctx.hq.map(|hq| format!(" — in {hq}")).unwrap_or_default()
+            "{projects} A message that starts with [Routine · …], [Idle · …] or [Signal · …], or a routine that \
+carries [Retro facts · …], comes from equipe on the person's behalf: before you act on it, open your \
+`routines-and-signals` skill. Routines and signals are the person's to turn on, never yours: only their click on \
+its card turns one on."
         )
     } else {
         projects
@@ -760,10 +564,7 @@ choosing blind; work like that is handed in with its pictures in `images` too.{}
             if role.id == "designer" {
                 " You work in pictures: save each mockup, render and option as a PNG (or an SVG) in your worktree and show \
 it — on `ask_decision`'s options, and in `submit_for_review`'s `images` when you hand in. Say why in a sentence, but \
-never only describe what something looks like. Give each design option its `images` and its `aspects` (what of it \
-can go into another — type, colour, shape — in the person's language): they answer in one click. On a mix (one \
-option with an aspect of another), make the mixed option and ask again with it beside the two it came from; on \
-another round, bring a genuinely different round that takes their why into account."
+never only describe what something looks like."
             } else {
                 ""
             }
@@ -773,26 +574,14 @@ another round, bring a genuinely different round that takes their why into accou
     };
     let browser = if ctx.browser {
         "\n\nYou have a real browser (the `browser` tools), signed in as the person wherever they — or a teammate — \
-signed in. Do the whole job in it yourself: sign up, create the project, connect the domain, copy the key into the \
-project's environment config (never into code). To sign up, prefer \"Continue with GitHub\" or Google, where the \
-person is already signed in; what anyone signs in to — you, a teammate, the person — is kept for everyone. Where a \
-site asks you to sign in, call `sign_in` with it first: the person may keep a login for it in equipe, which equipe \
-types in for you on their yes — you never see or ask for the password. Where none is kept, or the site wants the \
-person themselves (Google, a bank, an account only they can open), call `show_my_browser` with it: \
-they sign in once, in your window, and it holds for the whole squad. Before anything done in the person's name \
-that can't easily be taken back — creating an account, accepting terms, starting a trial or a paid plan, inviting \
-someone, deleting or transferring, changing security or billing settings — call `ask_person` with exactly what \
-and why, and go ahead only on their yes. Never type a card number or a password you weren't given, and never try \
-to get past a CAPTCHA. When the person has to do a step in your browser — sign in, a code, a CAPTCHA — or should \
-see something, hand it to them with `show_my_browser`: never only ask in words (\"please log in\"), which leaves \
-them looking for a browser they can't see. Give the page, and as `why` exactly what to do there, in their \
-language — which site, which account, which button (\"Sign in to App Store Connect with the Umbriles Inc. \
-account holder's Apple ID\"). Then say it in one line and end your turn: it opens in their hands in equipe's \
-browser panel (or on their screen), and when they hand it back you are told and carry on by yourself — don't ask \
-them to tell you they're done. Their sign-ins are kept as they go, no window to close. Never run `equipe browser` \
-yourself — it stops your turn until a window is closed. A one-time code the person sends you you may type. Your \
-windows are yours alone, but sign-ins are shared by everyone's: don't sign out of a site, or switch it to another \
-account, team or workspace, without saying so first — the rest of the squad works signed in there too."
+signed in. Before you work in it, open your `browser` skill: doing the whole job there, signing up and in, and \
+handing a step to the person. Before anything done in the person's name that can't easily be taken back — creating \
+an account, accepting terms, starting a trial or a paid plan, inviting someone, deleting or transferring, changing \
+security or billing settings — call `ask_person` with exactly what and why, and go ahead only on their yes. Never \
+type a card number or a password you weren't given, and never try to get past a CAPTCHA. Never run `equipe browser` \
+yourself — it stops your turn until a window is closed. Your windows are yours alone, but sign-ins are shared by \
+everyone's: don't sign out of a site, or switch it to another account, team or workspace, without saying so first — \
+the rest of the squad works signed in there too."
     } else {
         ""
     };
@@ -814,57 +603,10 @@ person with `show_my_browser` as you would yours."
     } else {
         String::new()
     };
-    // How a designer sees its own files: what the browser opens and what it doesn't.
-    let render = if ctx.browser && role.id == "designer" {
-        " To look at a mockup, open it as a `data:` URL (`data:text/html,…` or `data:image/svg+xml,…`), take a \
-screenshot saved in your worktree, and Read it; check each width you design for with `browser_resize` (390, 768 and \
-1280 on the web). The browser doesn't open `file://` pages or a server you start on this Mac: for those, \
-`equipe design render <file or http://localhost:<port>/…>` draws them to PNG, at each width, light and dark."
-    } else {
-        ""
-    };
-    // A designer with equipe-design: a brand remixed from references the person names.
-    let remix = if ctx.design && role.id == "designer" {
-        " For a remix from references (the `design` tools): `design_extract` from two or three sites into the ticket's \
-`outputs/…/extract/<host>/`, and tell the person in a few lines what `design_report` says it couldn't see; \
-`design_remix` with the person's brand colour and name, then put the variants' sheet PNGs to them on \
-`ask_decision`; write the chosen one with `design_emit` (`dtcgLegacy: true`) into the project's `design/`, and run \
-`equipe design check` before you hand in. The engine opens its own headless Chrome, never your `browser`: it \
-reads public pages only and stops at robots.txt or a sign-in wall — tell the person and pick another reference rather \
-than get round it."
-    } else {
-        ""
-    };
-    // A plan the PM asks a member to review, from its role's angle.
-    let review = match role.id {
-        _ if !ctx.board_tools => "",
-        "frontend" | "backend" | "mobile" => {
-            "\n\nWhen the PM asks you to review a plan, read it as the one who will build it: what breaks — failure \
-paths, data, concurrency, what it does to what is there — a simpler way that does the same, and the test plan as \
-concrete cases (input, steps, what is expected), adding the ones it misses. Write it into the plan with `write_plan` \
-(`review`), then hand in."
-        }
-        "designer" => {
-            "\n\nWhen the PM asks you to review a plan, review what people will see against the UI map (`design/flows/`) \
-and the design system: the flows, screens and states it adds or changes and those the map lacks, the tokens and \
-components it should use — and score each design dimension 0–10 (hierarchy, states, fit with the system, copy, \
-accessibility) with what a 10 needs. Write it into the plan with `write_plan` (`review`), then hand in."
-        }
-        "qa" => {
-            "\n\nWhen the PM asks you to review a plan, say whether it can be tested: a way to check each acceptance \
-criterion, the test plan's cases concrete, and the cases it misses (empty, error, permission, offline, long text). \
-Write it into the plan with `write_plan` (`review`), then hand in."
-        }
-        _ => "",
-    };
     let desktop = if ctx.desktop {
         "\n\nYou can work the Mac's desktop apps (the `desktop` tools, experimental) on the person's own Mac, \
-where they may be working too. Look first: `screenshot`, then `elements` for the app's buttons and fields — \
-clicking or typing into an element id is steadier than coordinates, which are pixels of your last screenshot. \
-`open_app` or `focus_window` says which app you mean. A click is refused when the point isn't in that app, and \
-typing when the keyboard focus isn't: look again and bring the app forward rather than retrying blindly, and \
-stop if the person seems to be using the Mac. Check what you typed in the reply or with `elements`. Sending a \
-message, a mail or anything else to someone in the person's name asks the person first with `ask_person`."
+where they may be working too: open your `desktop-apps` skill before you use them. Sending a message, a mail or \
+anything else to someone in the person's name asks the person first with `ask_person`."
     } else {
         ""
     };
@@ -911,21 +653,8 @@ absolute path ending in `/`, and its first pictures show as a strip.{}",
     let reports = format!(
         "\n\nWhen the person asks you to research, investigate, compare or explain something in depth — or your \
 answer would run past a screen — don't answer with a long reply: write a report they can read on its own{report_folder}, \
-with a deck beside it. Judge it: a quick question still gets a quick answer, and a simple lookup stays in the \
-conversation. Write the report (`report.md`) for someone who wasn't there: the answer first, in a sentence or two; \
-then three to five key findings; then a section for each part, under a heading, in short paragraphs and plain words, \
-each term explained where it first appears; a table where there are options to compare; what you recommend and the \
-next steps; what you aren't sure of; and the sources, each a link. Show as well as tell: put a visual wherever it \
-makes something easier to grasp — a Mermaid diagram in a ```mermaid block (a flowchart for how something works, a \
-sequence diagram for who does what, a timeline, a mindmap, a quadrantChart for where things stand, an xychart-beta \
-or a pie for numbers), a table, or a picture saved beside the report (a screenshot, a chart drawn with a script) \
-embedded by its absolute path. Every number in a chart comes from your sources; never invent one to fill it. Make \
-the deck (`deck.md`) so it is understood in a few minutes: Marp's Markdown — a front matter of `marp: true`, slides \
-split by a line of `---` — six to twelve slides: the title, the answer, one idea a slide in at most five short \
-lines, a visual on most, the recommendation last. The same file becomes a PDF or a PowerPoint with Marp's CLI \
-(`npx @marp-team/marp-cli deck.md --pdf`, or `--pptx`) when the person wants one. Then reply briefly: the answer \
-in two or three sentences and both files' paths in backticks — equipe opens the report beside the conversation and \
-the deck as a presentation, each with a click."
+with a deck beside it, as your `research-report` skill says. Judge it: a quick question still gets a quick answer, \
+and a simple lookup stays in the conversation."
     );
     // The person's ideas: kept the moment they float one, brought back by the PM.
     let ideas = if !ctx.board_tools {
@@ -934,23 +663,9 @@ the deck as a presentation, each with a click."
         "\n\nThe person floats ideas whenever one comes to mind — often things that can't be done now. Never let one \
 go: when they mention something for later ('an idea', 'someday', 'not now, but'), keep it at once with `create_ticket` \
 and `idea: true` — their words in the body, what led to it — and say in one line that it's kept; don't plan it out \
-or start it. Ideas wait on the board, quiet. It's yours to bring each back at the right time: when you plan what's \
-next, in a check-in, or when equipe asks you about them, weigh them against the goal and the board, and put one whose \
-time has come to the person with `update_ticket` (status proposed, `why`). Only their click or their word starts one. \
-When they say something on the board isn't for now, keep it as an idea (status idea) rather than cancel it. \
-Bring ideas of your own too, as a strong product manager does — never generic ones anyone could have written. Each \
-starts from evidence: what the squad remembers of building this product with the person (its memory, past decisions, \
-what shipped and what didn't land), what the users do and say (the signals' numbers and trends, analytics, feedback, \
-reviews, support), and what is true outside (competitors, the market, what similar products learned — look it up on \
-the web when you don't know). Look before you propose: read the memory and `signals`, and search, rather than \
-guessing. Each idea then says the insight it rests on and where that came from — a number and its trend, a user's \
-words, a source — what it would change for the user and for the business, and how you'd know it worked; what you \
-couldn't confirm is marked unconfirmed. Two or three sharp ones beat ten loose ones. When the person is brainstorming, \
-thinking aloud about what's next or stuck on a problem, offer yours that way rather than only asking questions; when \
-the numbers or the users show you something worth doing later (a drop, a request that keeps coming, a gap a ticket \
-revealed), keep it as an idea yourself with `idea: true` — the evidence and its source in the body, saying it was \
-yours — and mention it in one line. Not while they are heads-down on something else: then keep it and say nothing \
-until it is useful. Yours wait for their yes like theirs."
+or start it. Ideas wait on the board, quiet. Only their click or their word starts one. When they say something on \
+the board isn't for now, keep it as an idea (status idea) rather than cancel it. Bringing each back at the right \
+time, and bringing ideas of your own, is your `product-ideas` skill's."
             .to_owned()
     } else {
         "\n\nWhen the person floats an idea for later in a conversation with you, keep it at once with \
@@ -958,12 +673,8 @@ until it is useful. Yours wait for their yes like theirs."
 back at the right time."
             .to_owned()
     };
-    // Before anything sizeable is built: office hours with the person, then a brief.
-    let office_hours = if ctx.board_tools && role.id == PM {
-        OFFICE_HOURS.replace("{tools_at}", &ctx.equipe.map(|path| format!(" (`{path}` if `equipe` isn't on your PATH)")).unwrap_or_default())
-    } else {
-        String::new()
-    };
+    // What only some work needs: the skills offered to this member, as its engine gets them.
+    let skills = crate::skills::for_charter(&crate::skills::offered(role, ctx), ctx.skills);
     let memory = match ctx.home {
         Some(home) => {
             let index = match ctx.memory {
@@ -1010,7 +721,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{review}{home}{browser}{others}{render}{remix}{desktop}{pictures}{visuals}{reports}{ideas}{office_hours}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{pictures}{visuals}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -1089,7 +800,10 @@ mod tests {
 
     #[test]
     fn the_pm_plans_bigger_work_has_it_reviewed_at_once_puts_the_scope_on_one_card_then_cuts_tickets() {
-        let pm = role(PM).unwrap().duties;
+        // The PM's charter sends it to its planning skill, which says how.
+        let duties = role(PM).unwrap().duties;
+        assert!(duties.contains("will take several tickets, gets a plan before any ticket, as your `planning` skill says; a small fix skips it"), "{duties}");
+        let pm = &skill(PM, &ctx(&[], &[], false), "planning");
         for part in [
             // When: after a brief or for several tickets, before any ticket; never for a small fix.
             "Work that went through a brief, or that will take several tickets, gets a plan before any ticket",
@@ -1123,7 +837,7 @@ mod tests {
     #[test]
     fn members_review_a_plan_from_their_own_angle_and_qa_checks_work_by_its_cases() {
         let team = [Teammate { name: "pm", role: PM }, Teammate { name: "backend", role: "backend" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "qa", role: "qa" }];
-        let text = |id: &str| charter(role(id).unwrap(), id, &ctx(&team, &[], true));
+        let text = |id: &str| skill(id, &ctx(&team, &[], true), "plan-review");
         for engineer in ["frontend", "backend", "mobile"] {
             let t = text(engineer);
             for part in ["review a plan", "what breaks", "a simpler way that does the same", "the test plan as \nconcrete cases", "`write_plan` \n(`review`)"] {
@@ -1143,8 +857,10 @@ mod tests {
         let duties = role("qa").unwrap().duties;
         assert!(duties.contains("test-plan cases (`TP-…`, in its") && duties.contains("one by one: pass or fail each") && duties.contains("never passed"), "{duties}");
         // Nobody else is asked; without board tools nobody can write one.
-        assert!(!text("data").contains("review a plan") && !text(PM).contains("When the PM asks you to review a plan"));
-        assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], false)).contains("`write_plan`"));
+        let told = |id: &str, tools: bool| told(id, id, &ctx(&team, &[], tools));
+        assert!(!told("data", true).contains("review a plan") && !told(PM, true).contains("When the PM asks you to review a plan"));
+        assert!(!told("backend", false).contains("`write_plan`"));
+        assert!(charter(role("qa").unwrap(), "qa", &ctx(&team, &[], true)).contains("- `plan-review`: Use when the PM asks you to review a plan"), "the index says when");
     }
 
     #[test]
@@ -1161,14 +877,15 @@ mod tests {
 
     #[test]
     fn the_pm_gives_design_the_problem_and_leaves_the_answer_to_the_designer() {
-        let pm = role(PM).unwrap().duties;
+        assert!(role(PM).unwrap().duties.contains("A ticket for the designer, or one that changes a screen, follows your `working-with-design` skill"));
+        let pm = &skill(PM, &ctx(&[], &[], false), "working-with-design");
         assert!(pm.contains("A design ticket says the problem, who it is for, the constraints and how success shows"), "{pm}");
         assert!(pm.contains("never the layout, the composition or the visual answer"), "{pm}");
     }
 
     #[test]
     fn the_pm_asks_for_the_designers_setup_first_keeps_the_map_current_and_routes_a_screen_to_the_designer() {
-        let pm = role(PM).unwrap().duties;
+        let pm = &skill(PM, &ctx(&[], &[], false), "working-with-design");
         for part in [
             "On a new project with a designer, ask first for its setup — brief, logo, design system, UI map, design QA — as tickets",
             "its acceptance criteria include the UI map brought up to date",
@@ -1183,7 +900,10 @@ mod tests {
     #[test]
     fn the_designer_sets_a_project_up_in_five_steps_and_keeps_the_ui_map_of_every_screen_and_state() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
-        let text = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        let text = told("designer", "designer", &ctx(&team, &[], true));
+        let (system, map) = (skill("designer", &ctx(&team, &[], true), "design-system"), skill("designer", &ctx(&team, &[], true), "ui-map"));
+        assert!(system.contains("your first work is its setup, five steps in order") && map.contains("`design/flows/flows.json` names every flow"));
+        assert!(map.contains("read `references/other-apps.md` next to this file") && map.contains("read `references/walkthrough.md` next to"), "where the rest of it is");
         for part in [
             // The setup, each step with its deliverable in the design folder.
             "your first work is its setup, five steps in order",
@@ -1239,7 +959,7 @@ mod tests {
         for kind in equipe_protocol::design::STATE_KINDS {
             assert!(text.contains(&format!("`{kind}`")), "{kind}");
         }
-        assert!(!charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true)).contains("`equipe design flows check`"), "the designer's to keep");
+        assert!(!told("frontend", "frontend", &ctx(&team, &[], true)).contains("`equipe design flows check`"), "the designer's to keep");
     }
 
     #[test]
@@ -1287,7 +1007,107 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT) }
+    }
+
+    use crate::skills::Delivery;
+
+    /// Where the tests' members find their skills.
+    const SKILLS_AT: &str = "/h/skills/1.0/x";
+
+    /// The skill `name` as a member of `role_id` gets it — offered to it, or the
+    /// test fails — its lines' breaks folded into spaces.
+    fn skill(role_id: &str, c: &Context<'_>, name: &str) -> String {
+        let offered = crate::skills::offered(role_or_custom(role_id), c);
+        let found = offered.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("{role_id} isn't offered `{name}`"));
+        found.text().split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Everything a member is told: its charter, and every skill it is offered,
+    /// line breaks folded into spaces.
+    fn told(role_id: &str, name: &str, c: &Context<'_>) -> String {
+        let skills: Vec<String> = crate::skills::offered(role_or_custom(role_id), c).iter().map(crate::skills::Skill::text).collect();
+        format!("{}\n\n{}", charter(role_or_custom(role_id), name, c), skills.join("\n\n")).split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The charter's sentences, whitespace folded: what the coverage file lists.
+    fn sentences(text: &str) -> Vec<String> {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        flat.split(". ").map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect()
+    }
+
+    /// `charter-coverage.txt`: every sentence the charters said before their
+    /// situational parts moved into skills, by the (role, context) that said it.
+    /// Each must still reach that member — in its charter or in a skill it is
+    /// offered — and an engine that can't read a file must get it inline. A
+    /// sentence dropped or reworded on purpose: `EQUIPE_BLESS_CHARTERS=1` writes
+    /// the file again from what members are told now, for review in the diff.
+    #[test]
+    fn every_member_is_still_told_everything_its_charter_said_before_skills() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }, Teammate { name: "backend", role: "backend" }, Teammate { name: "qa", role: "qa" }];
+        let projects = ["web".to_owned(), "app".to_owned()];
+        let profiles = [crate::browser::BrowserProfile { name: "jh".into(), label: "jh@x".into() }];
+        let memory = "- [tax](tax.md) — a fact\n- [deploy](deploy.md) — another fact";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("charter-coverage.txt");
+        let mut told_now: Vec<(String, Vec<String>)> = Vec::new();
+        for r in ROLES.iter().chain([&CUSTOM]) {
+            let full = Context {
+                team: &team,
+                projects: &projects,
+                hq: Some("web"),
+                equipe: Some("/Users/x/.local/bin/equipe"),
+                board_tools: true,
+                language: Some("Korean"),
+                screen_language: Some("Korean"),
+                browser: true,
+                pm_accepts: true,
+                profiles: &profiles,
+                desktop: true,
+                design: r.id == "designer",
+                home: Some("/Users/x/.equipe/squads/acme/home"),
+                memory: Some(memory),
+                facts: 2,
+                edits: r.edits,
+                skills: Delivery::Plugin(SKILLS_AT),
+            };
+            let bare = Context { board_tools: false, browser: false, desktop: false, design: false, pm_accepts: false, profiles: &[], ..full };
+            for (variant, c) in [("full", full), ("bare", bare)] {
+                let tag = format!("{}.{variant}", r.id);
+                let with_skills = told(r.id, r.id, &c).split_whitespace().collect::<Vec<_>>().join(" ");
+                let inline = charter(r, r.id, &Context { skills: Delivery::Inline, ..c }).split_whitespace().collect::<Vec<_>>().join(" ");
+                told_now.push((tag, vec![with_skills, inline]));
+            }
+        }
+        if std::env::var_os("EQUIPE_BLESS_CHARTERS").is_some() {
+            let mut lines: Vec<(String, Vec<String>)> = Vec::new();
+            for (tag, texts) in &told_now {
+                for sentence in sentences(&texts[0]) {
+                    match lines.iter_mut().find(|(s, _)| *s == sentence) {
+                        Some((_, tags)) => tags.push(tag.clone()),
+                        None => lines.push((sentence, vec![tag.clone()])),
+                    }
+                }
+            }
+            let all = told_now.len();
+            let file: String = lines.iter().map(|(s, tags)| format!("{}\t{s}\n", if tags.len() == all { "*".to_owned() } else { tags.join(",") })).collect();
+            std::fs::write(&path, file).unwrap();
+        }
+        let coverage = std::fs::read_to_string(&path).unwrap();
+        let mut missing = Vec::new();
+        for line in coverage.lines().filter(|l| !l.is_empty()) {
+            let (tags, sentence) = line.split_once('\t').unwrap();
+            for (tag, texts) in &told_now {
+                if tags != "*" && !tags.split(',').any(|t| t == tag) {
+                    continue;
+                }
+                for (how, text) in ["with skills", "inline"].iter().zip(texts) {
+                    if !text.contains(sentence) {
+                        missing.push(format!("{tag} ({how}): {sentence}"));
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "{} sentences no longer reach their member:\n{}", missing.len(), missing.join("\n"));
     }
 
     #[test]
@@ -1334,6 +1154,8 @@ invent one."), "{id}: true numbers");
             assert!(text.contains("research, investigate, compare or explain something in depth"), "{id}: {text}");
             assert!(text.contains("`/h/squads/acme/home/notes/reports/<date> <topic>/`"), "{id}: where it goes");
             assert!(text.contains("a quick question still gets a quick answer"), "{id}: judged, not always");
+            assert!(text.contains("as your `research-report` skill says"), "{id}: how is the skill's");
+            let text = skill(id, &Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) }, "research-report");
             assert!(text.contains("the answer first") && text.contains("the sources, each a link"), "{id}: a report's shape");
             assert!(text.contains("```mermaid") && text.contains("never invent one"), "{id}: visuals, true ones");
             assert!(text.contains("`marp: true`") && text.contains("--pptx"), "{id}: a deck, also as PowerPoint");
@@ -1348,8 +1170,11 @@ invent one."), "{id}: true numbers");
         let team = [Teammate { name: "pm", role: PM }];
         let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(pm.contains("`idea: true`") && pm.contains("Never let one \ngo") || pm.contains("Never let one go"), "{pm}");
-        assert!(pm.contains("status proposed, `why`") && pm.contains("Only their click or their word starts one"), "{pm}");
+        assert!(pm.contains("Only their click or their word starts one"), "{pm}");
         assert!(pm.contains("keep it as an idea (status idea) rather than cancel it"), "{pm}");
+        assert!(pm.contains("your `product-ideas` skill's"), "{pm}");
+        let pm = skill(PM, &ctx(&team, &[], true), "product-ideas");
+        assert!(pm.contains("status proposed, `why`"), "{pm}");
         assert!(pm.contains("When the person is brainstorming") && pm.contains("never generic ones"), "the PM brings its own ideas: {pm}");
         for part in ["starts from evidence", "what the squad remembers", "the signals' numbers", "look it up on the web", "read the memory and `signals`", "the insight it rests on and where that came from", "how you'd know it worked", "marked unconfirmed", "the evidence and its source in the body"] {
             assert!(pm.contains(part), "{part}: {pm}");
@@ -1363,7 +1188,7 @@ invent one."), "{id}: true numbers");
     #[test]
     fn the_pm_runs_office_hours_one_question_a_card_before_building_anything_sizeable() {
         let team = [Teammate { name: "pm", role: PM }];
-        let pm = charter(role(PM).unwrap(), "pm", &Context { equipe: Some("/opt/equipe"), ..ctx(&team, &[], true) });
+        let pm = skill(PM, &Context { equipe: Some("/opt/equipe"), ..ctx(&team, &[], true) }, "office-hours");
         let at = |part: &str| pm.find(part).unwrap_or_else(|| panic!("{part}: {pm}"));
         // When: sizeable new work, or an idea started; small work skips it.
         for part in ["new feature or product idea of real size", "[Idea start · …]", "before any ticket", "A small fix or a clear task skips it"] {
@@ -1378,11 +1203,14 @@ invent one."), "{id}: true numbers");
         let places: Vec<usize> = order.iter().map(|p| at(p)).collect();
         assert!(places.windows(2).all(|w| w[0] < w[1]), "in order: {order:?}");
         at("status draft, in the person's language");
+        // The index says when.
+        let index = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(index.contains("- `office-hours`: Use when the person brings a new feature or product idea of real size, or a message starts with [Idea start · …]"), "{index}");
         // Only the PM, and only with its board tools.
-        let member = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true));
+        let member = told("frontend", "frontend", &ctx(&team, &[], true));
         assert!(!member.contains("Office hours") && !member.contains("write_brief"));
-        let bare = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], false));
-        assert!(!bare.contains("Office hours."), "no cards to ask on");
+        let bare = told(PM, "pm", &ctx(&team, &[], false));
+        assert!(!bare.contains("Office hours") && !bare.contains("office-hours"), "no cards to ask on");
         // The brief's tool is the PM's alone.
         assert!(crate::board::tools_for(PM).iter().any(|t| t["name"] == crate::briefs::WRITE_BRIEF));
         assert!(!crate::board::tools_for("frontend").iter().any(|t| t["name"] == crate::briefs::WRITE_BRIEF));
@@ -1401,8 +1229,8 @@ invent one."), "{id}: true numbers");
     #[test]
     fn a_designer_with_equipe_design_knows_the_remix_flow_and_no_one_else_hears_of_it() {
         let team = [Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
-        let with = |role_id: &str, design: bool| charter(role(role_id).unwrap(), role_id, &Context { design, ..ctx(&team, &[], true) });
-        let text = with("designer", true);
+        let with = |role_id: &str, design: bool| told(role_id, role_id, &Context { design, ..ctx(&team, &[], true) });
+        let text = skill("designer", &Context { design: true, ..ctx(&team, &[], true) }, "design-remix");
         for step in ["`design_extract`", "`design_report`", "`design_remix`", "`ask_decision`", "`dtcgLegacy: true`", "`equipe design check`", "never your `browser`"] {
             assert!(text.contains(step), "{step}: {text}");
         }
@@ -1413,7 +1241,9 @@ invent one."), "{id}: true numbers");
     #[test]
     fn the_designer_starts_a_system_with_its_tools_and_knows_where_they_are() {
         let team = [Teammate { name: "designer", role: "designer" }];
-        let text = charter(role("designer").unwrap(), "designer", &Context { equipe: Some("/Users/x/.local/bin/equipe"), ..ctx(&team, &[], true) });
+        let text = told("designer", "designer", &Context { equipe: Some("/Users/x/.local/bin/equipe"), ..ctx(&team, &[], true) });
+        assert!(skill("designer", &ctx(&team, &[], true), "design-tools").contains("`audit <url>` harvests a brand"));
+        assert!(skill("designer", &ctx(&team, &[], true), "design-process").contains("`design taste notes`"));
         for tool in ["equipe design audit", "equipe design specimen", "`render <file>", "`check`", "equipe design init"] {
             assert!(text.contains(tool), "{tool}: {text}");
         }
@@ -1427,7 +1257,7 @@ invent one."), "{id}: true numbers");
         for rule in ["`design taste notes`", "`design/taste.md`", "before any proposal and follow them", "departs from one, say which and why", "propose a new note", "unconfirmed, naming the tickets", "outranks one still waiting for their yes", "follow the confirmed one", "`design/decisions/<date>-<question>.md`", "`Why:` in the person's words"] {
             assert!(text.contains(rule), "{rule}");
         }
-        let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        let bare = skill("designer", &ctx(&team, &[], true), "design-tools");
         assert!(bare.contains("run in your worktree:"), "no path known: nothing said about it");
     }
 
@@ -1440,6 +1270,10 @@ invent one."), "{id}: true numbers");
         assert!(pm.contains("filed in atinum-hq"), "{pm}");
         let none = charter(role(PM).unwrap(), "pm", &ctx(&team, &projects, true));
         assert!(!none.contains("HQ"), "{none}");
+        // Messages that come on the person's behalf send the PM to its skill; turning one on is the person's.
+        assert!(pm.contains("[Routine · …], [Idle · …] or [Signal · …]") && pm.contains("[Retro facts · …]") && pm.contains("open your `routines-and-signals` skill"), "{pm}");
+        assert!(pm.contains("only their click on its card turns one on"), "{pm}");
+        let pm = skill(PM, &Context { hq: Some("atinum-hq"), ..ctx(&team, &projects, true) }, "routines-and-signals");
         assert!(pm.contains("[Routine · …]") && pm.contains("found again — in atinum-hq."), "{pm}");
         assert!(pm.contains("[Signal · …]") && pm.contains("`propose_signal`"), "{pm}");
         assert!(pm.contains("[Idle · …]") && pm.contains("`propose_routine`") && pm.contains("one card"), "{pm}");
@@ -1450,10 +1284,17 @@ invent one."), "{id}: true numbers");
     #[test]
     fn a_member_hands_its_browser_over_with_what_to_do_and_carries_on_when_it_comes_back() {
         let team = [Teammate { name: "pm", role: "pm" }];
-        let text = charter(role(PM).unwrap(), "pm", &Context { browser: true, ..ctx(&team, &[], true) });
+        let browsing = Context { browser: true, ..ctx(&team, &[], true) };
+        let text = skill(PM, &browsing, "browser");
         for part in ["hand it to them with `show_my_browser`", "never only ask in words", "exactly what to do there", "end your turn", "carry on by yourself"] {
             assert!(text.contains(part), "{part}: {text}");
         }
+        // What it must hold to whenever it browses stays in its charter, with where the rest is.
+        let charter = charter(role(PM).unwrap(), "pm", &browsing);
+        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "Never run `equipe browser`", "don't sign out of a site"] {
+            assert!(charter.contains(part), "{part}: {charter}");
+        }
+        assert!(!told(PM, "pm", &ctx(&team, &[], true)).contains("`show_my_browser` with it"), "no browser, no skill for it");
         let tools = crate::board::tools(true);
         let show = tools.iter().find(|t| t["name"] == crate::board::SHOW_BROWSER).expect("the hand-over tool");
         assert!(show["description"].as_str().unwrap().contains("rather than only asking in words"), "{show}");
@@ -1585,7 +1426,8 @@ invent one."), "{id}: true numbers");
                 assert!(text.contains(part), "{role_id}: {part}: {text}");
             }
         }
-        let designer = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        let designer = told("designer", "designer", &ctx(&team, &[], true));
+        assert!(skill("designer", &ctx(&team, &[], true), "design-process").contains("Give each design option its `images` and its `aspects`"));
         for part in [
             "PNG",
             "`submit_for_review`",
@@ -1597,8 +1439,8 @@ invent one."), "{id}: true numbers");
         ] {
             assert!(designer.contains(part), "{part}: {designer}");
         }
-        assert!(!text_has_aspects(&charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true))), "the designer's to give");
-        let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], false));
+        assert!(!text_has_aspects(&told("frontend", "frontend", &ctx(&team, &[], true))), "the designer's to give");
+        let bare = told("designer", "designer", &ctx(&team, &[], false));
         assert!(!bare.contains("`images`") && !text_has_aspects(&bare), "no tools, no such advice");
     }
 
@@ -1622,17 +1464,22 @@ invent one."), "{id}: true numbers");
     #[test]
     fn the_designer_keeps_the_design_system_in_its_folder_in_the_tokens_format() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
-        let text = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        let text = skill("designer", &ctx(&team, &[], true), "design-system");
         for part in ["`design/`", "`design/tokens.json`", "`$value`", "`$type`", "`{color.blue.600}`", "`$extensions.mode.dark`", "`design/guidelines.md`", "`design/assets/`", "`design/components/`", "preview you render"] {
             assert!(text.contains(part), "{part}: {text}");
         }
-        assert!(!charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true)).contains("`design/tokens.json`"), "the designer's to keep");
+        assert!(!told("frontend", "frontend", &ctx(&team, &[], true)).contains("`design/tokens.json`"), "the designer's to keep");
     }
 
     #[test]
     fn a_designer_works_like_a_company_designer_from_the_system_to_design_qa() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
-        let text = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        let charter_only = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        for part in ["from the system, not from the screen", "in its own repository, under its `design/` folder", "only principles shared by every project", "are the person's", "never show the person a picture the critic hasn't seen", "look at the picture yourself", "compute contrast ratios", "`design-process`", "`design-qa` on a design QA ticket"] {
+            assert!(charter_only.contains(part), "every turn: {part}: {charter_only}");
+        }
+        assert!(skill("designer", &ctx(&team, &[], true), "design-qa").contains("Finish it with `design_qa`"));
+        let text = told("designer", "designer", &ctx(&team, &[], true));
         for part in [
             // From the system, its assets in each project's repository; the squad's folder only shared principles.
             "from the system, not from the screen",
@@ -1672,12 +1519,12 @@ invent one."), "{id}: true numbers");
         }
         assert_eq!(role("designer").unwrap().summary, "design — flows, UI, design system and brand");
         // How to render: what the browser opens, and what to give up on.
-        let browsing = charter(role("designer").unwrap(), "designer", &Context { browser: true, ..ctx(&team, &[], true) });
+        let browsing = skill("designer", &Context { browser: true, ..ctx(&team, &[], true) }, "design-tools");
         for part in ["`data:` URL", "`browser_resize`", "doesn't open `file://`", "`equipe design render <file or http://localhost:<port>/…>`"] {
             assert!(browsing.contains(part), "{part}: {browsing}");
         }
         assert!(!text.contains("`data:` URL"), "no browser, no render advice");
-        let frontend = charter(role("frontend").unwrap(), "frontend", &Context { browser: true, ..ctx(&team, &[], true) });
+        let frontend = told("frontend", "frontend", &Context { browser: true, ..ctx(&team, &[], true) });
         assert!(!frontend.contains("`data:` URL") && !frontend.contains("design QA ticket"), "{frontend}");
     }
 

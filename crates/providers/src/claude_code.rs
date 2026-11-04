@@ -167,6 +167,11 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     if let Some(charter) = request.charter {
         args.extend(["--append-system-prompt".to_owned(), charter.to_owned()]);
     }
+    // The member's skills: Claude Code lists each by its name and when to use
+    // it, and reads one only when the work calls for it.
+    for dir in request.plugin_dirs {
+        args.extend(["--plugin-dir".to_owned(), dir.to_string_lossy().into_owned()]);
+    }
     // Settings of the unmodified binary, not changes to it: Claude Code's auto
     // memory moved to a directory of the caller's choosing, and its sandbox.
     let mut settings = serde_json::Map::new();
@@ -238,6 +243,8 @@ pub struct TurnRequest<'a> {
     pub resume: Option<&'a str>,
     /// Who the agent is on the team, appended to Claude Code's system prompt.
     pub charter: Option<&'a str>,
+    /// Claude Code plugins to load for the turn (`--plugin-dir`): the member's skills.
+    pub plugin_dirs: &'a [std::path::PathBuf],
     /// Where Claude Code keeps what it learns (its auto memory). `None` leaves it
     /// where Claude Code would put it — which is per directory and shared with the
     /// person's own sessions there.
@@ -1117,6 +1124,15 @@ mod tests {
         assert!(args.iter().any(|a| a == "--verbose"));
         assert!(args.iter().any(|a| a == "--include-partial-messages"));
         assert!(!args.iter().any(|a| a == "--model"));
+    }
+
+    #[test]
+    fn a_members_skills_load_as_a_plugin_from_each_folder_given() {
+        let dirs = [std::path::PathBuf::from("/h/skills/1.0/pm-1"), std::path::PathBuf::from("/h/more")];
+        let args = turn_args(&TurnRequest { prompt: "x", plugin_dirs: &dirs, ..Default::default() });
+        let given: Vec<&str> = args.windows(2).filter(|w| w[0] == "--plugin-dir").map(|w| w[1].as_str()).collect();
+        assert_eq!(given, ["/h/skills/1.0/pm-1", "/h/more"]);
+        assert!(!turn_args(&TurnRequest { prompt: "x", ..Default::default() }).iter().any(|a| a == "--plugin-dir"));
     }
 
     #[test]

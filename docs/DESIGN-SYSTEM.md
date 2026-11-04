@@ -143,8 +143,8 @@ See `docs/remote-protocol.md` for the phone's side.
 
 ## The designer's tools — `equipe design`
 
-What a designer (or the person) runs in a worktree; the designer's charter
-says when (`roles.rs`).
+What a designer (or the person) runs in a worktree; the designer's skills
+say when (`crates/core/skills/design-tools/` and the rest).
 
 | Command | What it does |
 |---|---|
@@ -178,7 +178,7 @@ beside `equipe`, `browser` and `desktop` (`runtime.rs`, `DESIGN_SERVER`; on
 Codex the same server through its own config). The tools are
 `mcp__design__design_extract` and so on; in Auto and Full they don't ask, in
 Ask each call comes to the person. No other role gets it. Not on PATH: no
-`design` server and no word of it in the designer's charter — equipe never
+`design` server and no word of it to the designer (its `design-remix` skill isn't offered) — equipe never
 installs it (until it is published, the person links a checkout onto PATH:
 `npm link` in its `packages/cli`). Since the PATH is searched each turn, an install shows up on the next
 turn without restarting the daemon.
@@ -188,7 +188,7 @@ fresh temporary profile. It never attaches to the member's `browser` (the
 window the person's and the squad's sign-ins live in), carries no cookies, and
 stops at robots.txt or a sign-in wall.
 
-**The flow** (the designer's charter, `roles.rs`):
+**The flow** (the designer's `design-remix` skill):
 
 1. `design_extract` from two or three reference URLs into the ticket's `outputs/…/extract/<host>/`.
 2. Tell the person in a few lines what `design_report` says it couldn't see.
