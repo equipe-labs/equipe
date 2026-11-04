@@ -805,6 +805,11 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "dfold" => shell.update(cx, |shell, cx| shell.fold_doc(arg != "open", cx)),
                 "term" => shell.update(cx, |shell, cx| shell.open_terminal((!arg.is_empty()).then(|| arg.to_owned()), window, cx)),
                 "tmove" => shell.update(cx, |shell, cx| shell.move_terminal(cx)),
+                // What ⌘C would copy from the terminal, written to a file.
+                "tcopy" => shell.update(cx, |shell, _| {
+                    let text = shell.terminal.as_ref().and_then(|ui| ui.term.selected()).unwrap_or_default();
+                    let _ = std::fs::write(&arg, text);
+                }),
                 "tkeys" => shell.update(cx, |shell, _| {
                     if let Some(ui) = shell.terminal.as_ref() {
                         ui.term.write(arg.replace('~', "\r"));
