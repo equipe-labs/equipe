@@ -12,7 +12,7 @@ use gpui_kit::*;
 use crate::compose::{self, Effect};
 use crate::sheet::{self, After, Ask, Button, Outcome, Sheet, Then};
 use crate::sidecar::{self, Job};
-use crate::{Screen, Shell, export, usage};
+use crate::{Screen, Shell, export};
 
 impl Shell {
     /// Do what `line` (`/usage`, `/squad new shop`, …) says, as if typed and sent.
@@ -58,8 +58,9 @@ impl Shell {
             Effect::Focus(project) => self.set_focus(project, window, cx),
             Effect::SwitchSquad(name) => self.select_squad(&name, window, cx),
             Effect::Usage => {
-                self.sheet = Some(sheet::usage_sheet(&usage::view(&self.model, usage::local_time)));
+                self.sheet = None;
                 self.confirm = None;
+                self.open_usage(cx);
             }
             Effect::Help => {
                 self.sheet = Some(sheet::help_sheet());
@@ -199,6 +200,10 @@ impl Shell {
                         // Taken off the squad: said under the projects, with the way back.
                         if let equipe_core::protocol::Command::RemoveProject { path, .. } = &command {
                             self.board.removed_project = Some(super::sidebar::Removed { name: equipe_core::board::project_name(path), path: path.clone(), at: std::time::Instant::now() });
+                        }
+                        // A design version asked back: said to come as a change for review.
+                        if let equipe_core::protocol::Command::RestoreDesign { .. } = &command {
+                            self.composer.flash = Some(equipe_core::t!("design.versions_sent").into());
                         }
                         self.send_command(command);
                     }

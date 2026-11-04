@@ -124,6 +124,8 @@ impl MenuKind {
             MenuKind::Recent => 340.,
             MenuKind::Context => 300.,
             MenuKind::Model => 280.,
+            // Each mode's name and what it lets members do, whole.
+            MenuKind::Mode => 340.,
             _ => 248.,
         }
     }
@@ -131,11 +133,12 @@ impl MenuKind {
 
 /// What leads a menu row: an icon, a member's mark in their colour, or nothing
 /// (the column stays, so every label starts at the same place).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Lead {
     None,
     Icon(Icon),
-    Mark(&'static str, usize),
+    /// A member: its avatar (`theme::avatar`), by role and name.
+    Avatar(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -149,16 +152,24 @@ struct Row {
     more: bool,
     on: bool,
     act: Option<Act>,
+    /// The hint is a sentence: under the label, whole, not cut beside it.
+    below: bool,
 }
 
 impl Row {
     fn new(label: impl Into<String>, hint: impl Into<String>, act: Act) -> Self {
-        Self { label: label.into(), hint: hint.into(), keys: None, lead: Lead::None, more: false, on: false, act: Some(act) }
+        Self { label: label.into(), hint: hint.into(), keys: None, lead: Lead::None, more: false, on: false, act: Some(act), below: false }
+    }
+
+    /// The hint under the label, wrapping, for one that says what a choice does.
+    fn below(mut self) -> Self {
+        self.below = true;
+        self
     }
 
     /// A line of words that does nothing (the context menu's explanation).
     fn note(label: impl Into<String>) -> Self {
-        Self { label: label.into(), hint: String::new(), keys: None, lead: Lead::None, more: false, on: false, act: None }
+        Self { label: label.into(), hint: String::new(), keys: None, lead: Lead::None, more: false, on: false, act: None, below: false }
     }
 
     fn checked(self, on: bool) -> Self {
@@ -234,9 +245,21 @@ pub struct Composer {
     guard: EnterGuard,
     /// One quiet line over the box: what the last send did.
     pub flash: Option<String>,
-    /// Words of the conversation quoted to ask about ("Ask about this"),
-    /// over the box until sent — each a blockquote before the question.
-    pub quotes: Vec<String>,
+    /// The cards over the box until sent (`views/quote.rs`): passages of the
+    /// conversation replied to ("답글 달기"), or only quoted to ask about
+    /// ("Ask about this"). Kept with the draft.
+    pub replies: Vec<crate::quote::Reply>,
+    /// The card the keys are on (Tab from the box), the box keeping the focus.
+    pub card: Option<usize>,
+    /// The card under the pointer: its passage shows over it.
+    pub peek: Option<usize>,
+    /// The cards' row, scrolled sideways when they overflow it.
+    pub cards_scroll: ScrollHandle,
+    /// Where each card was last drawn: its passage and its box open from there.
+    pub card_rects: Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
+    /// What the person pointed at on the design screen ("말하기"), over the
+    /// box until sent — a block before the words (`crate::design_talk`).
+    pub context: Vec<crate::design_talk::DesignContext>,
     /// What went wrong with something the person asked for (a merge that
     /// didn't land): a notice over the box, framed, until closed.
     pub problem: Option<String>,
@@ -304,7 +327,12 @@ impl Composer {
             drafts: Drafts::load(Drafts::file(&equipe_providers::credentials::equipe_home())),
             guard: EnterGuard::default(),
             flash: None,
-            quotes: Vec::new(),
+            replies: Vec::new(),
+            card: None,
+            peek: None,
+            cards_scroll: ScrollHandle::new(),
+            card_rects: Rc::default(),
+            context: Vec::new(),
             problem: None,
             send_when_ready: None,
             choices: Vec::new(),
@@ -339,6 +367,15 @@ impl Composer {
             dictating: None,
             _speech: heard,
             inbox_watch: None,
+        }
+    }
+
+    /// Card `n` scrolled into the row's view; the first, the row back at its start.
+    pub fn reveal_card(&self, n: usize) {
+        if n == 0 {
+            self.cards_scroll.set_offset(Point::default());
+        } else {
+            self.cards_scroll.scroll_to_item(n);
         }
     }
 
@@ -383,7 +420,7 @@ impl Composer {
 
     /// What the box holds now, as a draft.
     fn draft(&self, cx: &App) -> Draft {
-        Draft { text: self.text(cx), caret: self.caret(cx), attachments: self.strip.saved() }
+        Draft { text: self.text(cx), caret: self.caret(cx), attachments: self.strip.saved(), replies: self.replies.clone() }
     }
 
     /// Put what the box holds away under the key it belongs to.
@@ -426,6 +463,9 @@ impl Composer {
         let draft = key.as_ref().map(|k| self.drafts.get(k)).unwrap_or_default();
         self.set_text_at(&draft.text, draft.caret, window, cx);
         self.strip.restore(&draft.attachments);
+        self.replies = draft.replies;
+        self.card = None;
+        self.peek = None;
         self.holds = key;
         self.history.stop();
         self.choices.clear();
@@ -444,6 +484,21 @@ fn listener(lang: equipe_core::i18n::Lang, servers: bool, window: &mut Window, c
     (speech, heard)
 }
 
+/// Whether the bar shows who the line goes to: always, but in a
+/// conversation with the PM — where the header says so — only once the line
+/// turns to someone else (`@`) or is a command (`/`).
+fn shows_recipient(model: &Model, text: &str) -> bool {
+    !model.with_pm() || text.starts_with('@') || text.starts_with('/')
+}
+
+/// The project a line to the PM is about: the conversation's, else the one in focus.
+fn pm_about(model: &Model) -> Option<String> {
+    match model.talk_project() {
+        Some(project) => project,
+        None => model.focus.clone(),
+    }
+}
+
 /// What the empty box says: who it is for.
 fn placeholder(model: &Model) -> String {
     let Some(member) = model.selected_member() else {
@@ -458,8 +513,8 @@ fn placeholder(model: &Model) -> String {
             let to = if member.ticket == Some(ticket) { member.name.as_str() } else { model.members.iter().find(|m| Model::is_pm(m)).map_or(member.name.as_str(), |m| m.name.as_str()) };
             t!("composer.placeholder_ticket", id = ticket, name = to)
         }
-        // To the PM, with a project in focus: about it.
-        None => match (model.focus.as_deref(), Model::is_pm(member)) {
+        // To the PM about a project — its conversation's, or the one in focus.
+        None => match (pm_about(model).as_deref(), Model::is_pm(member)) {
             (Some(project), true) => t!("composer.placeholder_to_in", name = member.name, project = project),
             // The PM with no project in focus: anything at all, a new project too.
             (None, true) => t!("composer.placeholder_to_pm_any", name = member.name),
@@ -478,6 +533,7 @@ impl Shell {
                 self.composer.history.stop();
                 self.composer.flash = None;
                 self.composer.chip = None;
+                self.composer.card = None;
                 // Typing lets a waiting bubble reached with ↑ go.
                 self.chat.picked = None;
                 if self.composer.text(cx).contains('@') {
@@ -527,7 +583,7 @@ impl Shell {
     }
 
     /// Write the drafts down a moment after the last change, off the UI thread.
-    fn save_drafts_soon(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn save_drafts_soon(&mut self, cx: &mut Context<Self>) {
         if self.composer.save_task.is_some() {
             return;
         }
@@ -572,10 +628,18 @@ impl Shell {
         }
         self.composer.send_when_ready = None;
         let tags = self.composer.strip.tags();
-        // What was quoted goes first, a blockquote each; the question after.
-        let quoted = !self.composer.quotes.is_empty() && !typed.trim().starts_with('/');
-        let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.quotes, &typed) } else { typed.clone() };
-        let text = attach::message(&typed_with_quotes, &tags);
+        // The cards go first, in order — each passage and the words to it —
+        // then what was typed in the box.
+        let quoted = !self.composer.replies.is_empty() && !typed.trim().starts_with('/');
+        let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.replies, &typed) } else { typed.clone() };
+        // What was pointed at on the design screen goes before them, its pictures attached.
+        let pointed = !self.composer.context.is_empty() && !typed.trim().starts_with('/') && (!typed_with_quotes.trim().is_empty() || !tags.is_empty());
+        let (typed_with_quotes, all_tags) = if pointed {
+            (crate::design_talk::message(&self.composer.context, &typed_with_quotes), format!("{tags}{}", crate::design_talk::tags(&self.composer.context)))
+        } else {
+            (typed_with_quotes, tags.clone())
+        };
+        let text = attach::message(&typed_with_quotes, &all_tags);
         let carries = !tags.is_empty() && !typed.trim().starts_with('/');
         let plan = compose::plan(&self.model, &text, later);
         if plan.commands.is_empty() && plan.flash.is_none() && plan.effect.is_none() && plan.restore.is_none() {
@@ -589,9 +653,15 @@ impl Shell {
         if carries && plan.restore.is_none() && !plan.commands.is_empty() {
             self.composer.strip.clear();
         }
-        // So did the quotes.
+        // So did the cards.
         if quoted && plan.restore.is_none() && !plan.commands.is_empty() {
-            self.composer.quotes.clear();
+            self.composer.replies.clear();
+            self.composer.card = None;
+            self.composer.peek = None;
+        }
+        // And what was pointed at.
+        if pointed && plan.restore.is_none() && !plan.commands.is_empty() {
+            self.composer.context.clear();
         }
         for command in plan.commands {
             self.send_command(command);
@@ -1099,7 +1169,15 @@ impl Shell {
         if self.chat.leaving.contains(&text) {
             return;
         }
-        let said = self.composer.history.sent_as(&text).cloned().unwrap_or_else(|| compose::Said { text: crate::sent::parts(&text).text, attachments: attach::saved_of(&text) });
+        // Its cards come back over the box too, its own words into it.
+        let written = crate::sent::parts(&text).text;
+        let (cards, rest) = crate::quote::read(&crate::design_talk::split(&written).1);
+        let said = self.composer.history.sent_as(&text).cloned().unwrap_or_else(|| compose::Said { text: if cards.is_empty() { written.clone() } else { rest.clone() }, attachments: attach::saved_of(&text) });
+        for card in cards.into_iter().filter(|c| !c.quote.is_empty()) {
+            if !self.composer.replies.contains(&card) {
+                self.composer.replies.push(card);
+            }
+        }
         let mut now = self.composer.text(cx);
         if !now.trim().is_empty() {
             now.push('\n');
@@ -1200,8 +1278,7 @@ impl Shell {
                 title = Some(t!("composer.menu_to").to_owned());
                 let selected = self.model.selected;
                 self.model.ordered().iter().filter(|m| m.presence != Presence::Closed).map(|m| {
-                        let (mark, hue) = look(&m.role, &m.name);
-                        Row { lead: Lead::Mark(mark, hue), ..Row::new(m.name.clone(), m.role.clone(), Act::Select(m.session)).checked(Some(m.session) == selected) }
+                        Row { lead: Lead::Avatar(m.role.clone(), m.name.clone()), ..Row::new(m.name.clone(), m.role.clone(), Act::Select(m.session)).checked(Some(m.session) == selected) }
                     })
                     .collect()
             }
@@ -1242,7 +1319,7 @@ impl Shell {
             MenuKind::Mode => {
                 title = Some(t!("composer.menu_mode").to_owned());
                 let lang = crate::i18n::lang();
-                Mode::ALL.iter().map(|m| Row::new(label::mode(lang, *m), label::mode_short(lang, *m), Act::Mode(*m)).checked(*m == self.model.mode)).collect()
+                Mode::ALL.iter().map(|m| Row::new(label::mode(lang, *m), label::mode_short(lang, *m), Act::Mode(*m)).checked(*m == self.model.mode).below()).collect()
             }
             MenuKind::Context => {
                 let Some(member) = member else { return };
@@ -1400,6 +1477,33 @@ impl Shell {
             cx.notify();
             return true;
         }
+        // A card reached with Tab: Tab and the arrows walk the cards, ⏎ opens
+        // its box, Backspace removes it, Esc goes back to the box.
+        if let Some(at) = self.composer.card {
+            let n = self.composer.replies.len();
+            let unmodified = !modifiers.control && !modifiers.alt && !modifiers.platform;
+            match key {
+                "tab" if unmodified => self.composer.card = crate::quote::tab(Some(at), n, modifiers.shift),
+                "left" if plain => self.composer.card = Some(at.saturating_sub(1).min(n.saturating_sub(1))),
+                "right" if plain => self.composer.card = crate::quote::tab(Some(at), n, false).or(Some(at.min(n.saturating_sub(1)))),
+                "backspace" | "delete" if plain => self.remove_card(at, cx),
+                "enter" | "space" if plain => {
+                    self.composer.card = None;
+                    self.quote_edit(at, window, cx);
+                }
+                "escape" => self.composer.card = None,
+                _ => {
+                    self.composer.card = None;
+                    cx.notify();
+                    return false;
+                }
+            }
+            if let Some(at) = self.composer.card {
+                self.composer.reveal_card(at);
+            }
+            cx.notify();
+            return true;
+        }
         let text = self.composer.text(cx);
         // A bubble waiting, reached with ↑: Backspace takes it back, ⌘↵ sends
         // everything waiting now, Esc lets it go.
@@ -1508,6 +1612,20 @@ impl Shell {
                 if let Some(item) = self.composer.strip.items().last().map(|i| i.id) {
                     self.unattach(item, cx);
                 }
+                true
+            }
+            // Then the last card.
+            "backspace" if plain && text.is_empty() && !self.composer.replies.is_empty() => {
+                self.remove_card(self.composer.replies.len() - 1, cx);
+                true
+            }
+            // Tab from an empty box (⇧Tab from any) reaches the cards.
+            "tab" if !modifiers.control && !modifiers.alt && !modifiers.platform && !self.composer.open() && !self.composer.replies.is_empty() && (modifiers.shift || text.is_empty()) => {
+                self.composer.card = crate::quote::tab(None, self.composer.replies.len(), modifiers.shift);
+                if let Some(at) = self.composer.card {
+                    self.composer.reveal_card(at);
+                }
+                cx.notify();
                 true
             }
             // Tab with something written to a member at work: a memo for after.
@@ -1702,7 +1820,7 @@ fn problem_notice(p: Palette, problem: String, cx: &mut Context<Shell>) -> AnyEl
             .child(div().flex_none().mt(px(2.)).child(icon(Icon::Warning, ICON_SM, p.amber)))
             .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(19.)).text_color(p.text).child(problem))
             .child(
-                crate::ui::x_box("problem-close", p.muted)
+                crate::ui::x_box("problem-close", p.muted, t!("composer.aria_close"))
                     .cursor_pointer()
                     .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1743,7 +1861,8 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .on_action(cx.listener(|this, _: &SendInverted, window, cx| this.send_inverted(window, cx)))
         .children(completion(shell, cx))
         .children(menu_layer(shell, cx))
-        .children(quotes(shell, cx))
+        .children(super::design_talk::chips(shell, INSET, cx))
+        .children(super::quote::cards(shell, INSET, cx))
         .children(strip(shell, cx))
         .child(
             motion::SmoothHeight::new(
@@ -1893,9 +2012,9 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                 None => base.py_1().child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(row.label.clone())).into_any_element(),
                 Some(_) => {
                     let picked = ix == menu.pick;
-                    let lead = match row.lead {
-                        Lead::Icon(name) => icon(name, ICON, p.text2).into_any_element(),
-                        Lead::Mark(mark, hue) => div().text_size(px(12.)).text_color(p.member(hue)).child(mark).into_any_element(),
+                    let lead = match &row.lead {
+                        Lead::Icon(name) => icon(*name, ICON, p.text2).into_any_element(),
+                        Lead::Avatar(role, name) => crate::theme::avatar(p, role, name, 18.).into_any_element(),
                         Lead::None if row.on => icon(Icon::Check, ICON, p.accent).into_any_element(),
                         Lead::None => div().into_any_element(),
                     };
@@ -1907,6 +2026,12 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                     };
                     let row_el = base
                         .id(("menu-row", ix))
+                        .role(Role::MenuItem)
+                        .aria_label(if row.hint.is_empty() { row.label.to_string() } else { format!("{}, {}", row.label, row.hint) })
+                        .aria_selected(picked)
+                        .when(row.on, |r| r.aria_toggled(Toggled::True))
+                        .when(row.more, |r| r.aria_expanded(false))
+                        .when_some(row.keys, |r, keys| r.aria_keyshortcuts(keys))
                         .when(live, |r| {
                             r.cursor_pointer()
                                 // The pointer moves the highlight, as the arrows do.
@@ -1922,8 +2047,18 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                                 .on_click(cx.listener(move |this, _, window, cx| this.run_row(ix, window, cx)))
                         })
                         .child(div().w(px(ICON)).flex_none().flex().justify_center().child(lead))
-                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(p.text).child(row.label.clone()))
-                        .when(!row.hint.is_empty(), |r| r.child(div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(row.hint.clone())))
+                        .when(row.below, |r| {
+                            r.py(px(6.)).items_start().child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(13.)).text_color(p.text).child(row.label.clone()))
+                                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).child(row.hint.clone())),
+                            )
+                        })
+                        .when(!row.below, |r| r.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(p.text).child(row.label.clone())))
+                        .when(!row.below && !row.hint.is_empty(), |r| r.child(div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(row.hint.clone())))
                         .children(trail.map(|t| div().flex_none().flex().items_center().child(t)));
                     motion::hover_fill(row_el, ("menu-row-fill", ix), p.wash, picked).into_any_element()
                 }
@@ -1933,6 +2068,8 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
     let kind = menu.kind;
     let surface = v_flex()
         .id(if live { "bar-menu" } else { "bar-menu-leaving" })
+        .role(Role::Menu)
+        .when_some(menu.title.clone(), |s, title| s.aria_label(title))
         .w(px(kind.width()))
         .p_1()
         .rounded(px(R_MD))
@@ -1992,11 +2129,12 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let working = model.viewed_presence() == Some(Presence::Working);
     let stopping = working && model.viewed().is_some_and(|s| composer.stopping == Some(s));
     let text = composer.text(cx);
-    let has_words = !text.trim().is_empty();
+    // The cards are words too: they send with an empty box.
+    let has_words = !text.trim().is_empty() || !composer.replies.is_empty();
     let has_any = has_words || composer.strip.ready() > 0;
     let steerable = member.is_some_and(|m| m.engine.is_some());
     let (to_label, to_color) = recipient(p, model, &text);
-    let project = model.focus.clone().filter(|_| member.is_some_and(Model::is_pm));
+    let project = pm_about(model).filter(|_| member.is_some_and(Model::is_pm));
     let anchors = composer.anchors.clone();
     let open = |kind: MenuKind| composer.menu.as_ref().is_some_and(|m| m.kind.trigger() == kind);
 
@@ -2141,7 +2279,12 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         Some(project) => format!("{to_label} · {project}"),
         None => to_label.clone(),
     };
-    wants.push((Slot::Fixed, pill_width(&to_text)));
+    // In a conversation with the PM it goes to the PM, said above: no picker —
+    // unless the line names someone else, or a command.
+    let show_to = shows_recipient(model, &text);
+    if show_to {
+        wants.push((Slot::Fixed, pill_width(&to_text)));
+    }
     if member.is_some() {
         wants.push((Slot::Mode, pill_width(label::mode(crate::i18n::lang(), model.mode))));
     }
@@ -2175,7 +2318,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
 
     let plus = plus.into_any_element();
     let mic = mic.map(IntoElement::into_any_element);
-    let to = to.into_any_element();
+    let to = show_to.then(|| to.into_any_element());
     let mode_pill = mode_pill.map(IntoElement::into_any_element);
     let ring = ring.map(IntoElement::into_any_element);
     let model_pill = model_pill.map(IntoElement::into_any_element);
@@ -2191,7 +2334,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             .items_center()
             .child(plus)
             .children(mic)
-            .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().child(to).children(mode_pill.filter(|_| keep(Slot::Mode))))
+            .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().children(to).children(mode_pill.filter(|_| keep(Slot::Mode))))
             .child(
                 h_flex()
                     .flex_none()
@@ -2279,8 +2422,8 @@ fn context_ring(p: Palette, used: u8) -> impl IntoElement {
 /// Who the line goes to, as the bar shows it: always someone, never a guess.
 fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
     let name_of = |m: &crate::state::Member| {
-        let (mark, hue) = look(&m.role, &m.name);
-        (format!("{mark} {}", m.name), p.member(hue))
+        let (_, hue) = look(&m.role, &m.name);
+        (m.name.clone(), p.member(hue))
     };
     if text.starts_with('/') {
         return (t!("composer.command").into(), p.accent);
@@ -2309,36 +2452,6 @@ fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
 /// got, and (in red, until dismissed) why one couldn't be attached.
 /// How close to the attachment limit before the strip shows its count.
 const NEAR_LIMIT: usize = 5;
-
-/// What is quoted to ask about, over the box: a quiet bar at each one's
-/// left, its first two lines, and ✕.
-fn quotes(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
-    if shell.composer.quotes.is_empty() {
-        return None;
-    }
-    let p = shell.palette;
-    let rows = shell.composer.quotes.iter().enumerate().map(|(n, quote)| {
-        h_flex()
-            .id(("composer-quote", n))
-            .w_full()
-            .gap(px(9.))
-            .items_start()
-            .child(div().flex_none().w(px(2.)).h(px(38.)).rounded_full().bg(Rgba { a: 0.6, ..p.accent }))
-            .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(19.)).text_color(p.text2).line_clamp(2).text_ellipsis().child(quote.clone()))
-            .child(
-                crate::ui::x_box(("composer-unquote", n), p.muted)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(p.wash))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if n < this.composer.quotes.len() {
-                            this.composer.quotes.remove(n);
-                        }
-                        cx.notify();
-                    })),
-            )
-    });
-    Some(v_flex().px(px(INSET)).pt(px(INSET)).gap_2().children(rows))
-}
 
 fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let strip = &shell.composer.strip;
@@ -2389,7 +2502,7 @@ fn remove_button(p: Palette, id: u64, name: &str, cx: &mut Context<Shell>) -> St
         .bg(p.popover())
         .border_1()
         .border_color(p.hair)
-        .hover(move |s| s.bg(p.wash))
+        .hover(move |s| s.bg(p.popover_hover()))
         .child(icon(Icon::X, 12., p.text2));
     tip(b, p, t!("composer.tip_remove"), None)
 }
@@ -2797,7 +2910,7 @@ pub fn answer_attachments(p: Palette, to: AttachTo, key: u64, items: Vec<attach:
             .children(state.map(|s| div().flex_none().text_color(p.muted).child(s)))
             .children(failed.map(|why| div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.danger()).child(why)))
             .child(
-                crate::ui::x_box(SharedString::from(format!("answer-unattach-{key}-{id}")), p.muted)
+                crate::ui::x_box(SharedString::from(format!("answer-unattach-{key}-{id}")), p.muted, t!("composer.tip_remove"))
                     .cursor_pointer()
                     .hover(move |s| s.bg(p.hair))
                     .on_click(move |_, _, cx| {
@@ -2848,7 +2961,23 @@ pub fn on_answer_drop(to: AttachTo, handle: WeakEntity<Shell>) -> impl Fn(&Exter
 
 #[cfg(test)]
 mod tests {
-    use super::{Act, Engine, Menu, MenuKind, Row, efforts, short_model, takes};
+    use super::{Act, Engine, Menu, MenuKind, Row, efforts, pm_about, short_model, shows_recipient, takes};
+    use crate::state::Model;
+
+    #[test]
+    fn in_a_conversation_with_the_pm_the_line_is_about_its_project_and_the_picker_stands_aside() {
+        let mut model = Model::new("acme");
+        model.focus = Some("app".into());
+        assert_eq!(pm_about(&model).as_deref(), Some("app"), "no conversation: the project in focus");
+        assert!(shows_recipient(&model, "hi"), "no one on screen to speak to yet");
+        model.draft_conversation(Some("web".into()));
+        assert_eq!(pm_about(&model).as_deref(), Some("web"), "the conversation's own, not the focus");
+        assert!(!shows_recipient(&model, "hi"), "the header says who it is with");
+        assert!(shows_recipient(&model, "@backend look"), "someone else, named");
+        assert!(shows_recipient(&model, "/project app"), "a command");
+        model.draft_conversation(None);
+        assert_eq!(pm_about(&model), None, "outside every project, whatever is in focus");
+    }
 
     #[test]
     fn model_names_read_short() {

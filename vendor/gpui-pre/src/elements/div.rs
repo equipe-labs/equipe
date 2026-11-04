@@ -1408,6 +1408,13 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// equipe: say the element is there but can't be used now, as a dimmed
+    /// button is (maps to AccessKit's `disabled`).
+    fn aria_disabled(mut self, disabled: bool) -> Self {
+        self.interactivity().aria.disabled = disabled;
+        self
+    }
+
     /// Set the numeric value for this element.
     fn aria_numeric_value(mut self, value: f64) -> Self {
         self.interactivity().aria.numeric_value = Some(value);
@@ -1905,8 +1912,13 @@ impl Element for Div {
     fn a11y_role(&self) -> Option<accesskit::Role> {
         // Nodes with `GenericContainer` should never be reported to accesskit.
         // Equivalent to an HTML div with no role.
+        // equipe: a named thing that answers a click is a button, unless it
+        // says what else it is — so an icon with a tooltip reads as one.
+        let named_click = self.interactivity.aria.label.is_some()
+            && !self.interactivity.click_listeners.is_empty();
         self.interactivity
             .override_role
+            .or(named_click.then_some(accesskit::Role::Button))
             .filter(|role| *role != accesskit::Role::GenericContainer)
     }
 
@@ -2111,6 +2123,7 @@ pub(crate) struct AriaProperties {
     pub(crate) selected: Option<bool>,
     pub(crate) expanded: Option<bool>,
     pub(crate) toggled: Option<accesskit::Toggled>,
+    pub(crate) disabled: bool,
     pub(crate) numeric_value: Option<f64>,
     pub(crate) min_numeric_value: Option<f64>,
     pub(crate) max_numeric_value: Option<f64>,
@@ -3548,6 +3561,9 @@ impl Interactivity {
         }
         if let Some(toggled) = self.aria.toggled {
             node.set_toggled(toggled);
+        }
+        if self.aria.disabled {
+            node.set_disabled();
         }
         if let Some(value) = self.aria.numeric_value {
             node.set_numeric_value(value);

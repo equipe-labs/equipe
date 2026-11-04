@@ -307,6 +307,8 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             "accept.rs: Box::pin(self.handle(Command::Reopen { squad, ticket, note: proposal.note.clone() })).await;",
             "accept.rs: Box::pin(self.handle(Command::Accept { squad: squad.clone(), ticket })).await;",
             "accept.rs: Box::pin(self.handle(Command::Merge { squad, ticket, push: land == Land::Push })).await;",
+            // The PM's `change_setting` merge: always on a card, done by the daemon on the person's tap.
+            "controls.rs: Change::Merge { ticket, push } => Command::Merge { squad: squad_name, ticket, push },",
             "runtime.rs: Command::Accept { squad, ticket } => self.accept(&squad, ticket, crate::telemetry::Accepter::Person).await,",
             "runtime.rs: Command::Merge { squad, ticket, push } => self.merge(&squad, ticket, push),",
             "runtime.rs: Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,",

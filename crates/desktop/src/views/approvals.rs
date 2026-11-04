@@ -359,7 +359,8 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
     let model = &shell.model;
     let approval = model.approvals.get(id)?;
     let card = Card::of(approval);
-    let (mark, hue) = look(model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str()), &approval.member);
+    let role = model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str());
+    let (_, hue) = look(role, &approval.member);
     let waiting = model.approvals.len();
     let handle = cx.entity().downgrade();
     let for_decisions = handle.clone();
@@ -394,7 +395,7 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .border_color(p.accent)
                     .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(21.)).child(Textarea::new(&field).appearance(false).bordered(false)))
                     .child(
-                        crate::ui::x_box(("words-close", id), p.muted)
+                        crate::ui::x_box(("words-close", id), p.muted, t!("composer.aria_close"))
                             .mt(px(2.))
                             .cursor_pointer()
                             .hover(move |s| s.bg(p.wash))
@@ -407,8 +408,15 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
     });
     let opened = words_box.is_some();
     let open_words = handle.clone();
+    // To a screen reader: who asks what, then what it would run.
+    let asked = format!("{}: {}", approval.member, t!("approvals.allow_question", what = card.noun));
+    let detail = card.lines.iter().cloned().chain(approval.reason.clone()).collect::<Vec<_>>().join("\n");
     Some(
         v_flex()
+            .id(("approval-card", id))
+            .role(Role::Group)
+            .aria_label(asked)
+            .aria_description(detail)
             .w_full()
             .gap_2()
             .child(
@@ -417,7 +425,7 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(h_flex().gap_1().text_color(p.accent).child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)).child(t!("approvals.waiting_on_you_mark")))
-                    .child(div().text_color(p.member(hue)).child(format!("{mark} {}", approval.member)))
+                    .child(h_flex().gap_1().items_center().text_color(p.member(hue)).child(crate::theme::avatar(p, role, &approval.member, 15.)).child(approval.member.clone()))
                     .children(approval.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}"))))
                     .child(div().flex_1())
                     .when(queue_line && waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting)))),

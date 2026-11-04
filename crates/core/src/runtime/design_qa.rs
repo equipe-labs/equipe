@@ -76,7 +76,7 @@ screenshot of each changed screen in your worktree, name them in images, and han
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "equipe".to_owned(),
             note: None,
             asks: Vec::new(),
@@ -177,10 +177,17 @@ screenshot of each changed screen in your worktree, name them in images, and han
             Some("changes") => false,
             _ => return Err("Give a verdict: pass, or changes.".into()),
         };
-        let findings = board::arg_str(args, "findings").ok_or("Say what you checked and found.")?.to_owned();
+        let summary = board::arg_str(args, "findings").ok_or("Say what you looked at and how it stands.")?.to_owned();
         let (cwd, roots) = self.picture_places(squad, id);
         let shown = crate::visuals::resolve_all(&board::arg_strs(args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
             .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then finish again."))?;
+        // Its own look, not the engineer's screenshots handed on.
+        let own = shown.iter().filter(|s| !checked.images.contains(s)).count();
+        let proof = crate::design_qa::Proof::read(args, own);
+        if let Some(why) = if passed { proof.refuses_pass() } else { proof.refuses_changes() } {
+            return Err(why);
+        }
+        let findings = proof.report(&summary);
         let work = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()).ok_or("You're not on a ticket.")?;
         work.handed_in = Some(findings.clone());
         work.shown = shown;
@@ -217,14 +224,18 @@ the person is told it is ready only once you pass it.",
         out.push_str(&format!("\nIts screenshots (look at each with Read):\n- {}\n", checked.images.join("\n- ")));
     }
     out.push_str(&format!(
-        "\nCheck it like a company designer: against the spec or mockups it was built from and the project's design \
-system (tokens, components under its design/ folder) — layout, spacing, type, colour, every state (empty, loading, \
-error, long text), light and dark, the widths it supports, and accessibility (contrast computed, not guessed; focus; \
-touch size). Take more screenshots yourself where you can; ask {engineer} with comment when one you need is missing. \
-Count only differences from the spec, the tokens and accessibility as defects, not taste — a new idea is a proposed \
-ticket. Leave your comparison under `outputs/T-{qa} …/`. Then finish with design_qa, not submit_for_review: verdict \
-pass, or changes with each difference numbered (where, the spec's value, what was built, how much it matters), and \
-your comparison pictures in images."
+        "\nCheck it like a company designer, on the built screens themselves — the engineer's screenshots are where to \
+start, never enough to pass. See it running: start its preview from its worktree as its project starts one (its \
+README or package.json says how; another port than anyone's, and change no file there), then shoot it yourself — \
+`equipe design render http://localhost:<port>/<page> --widths 390,768,1280 --dark` — every page it changed. Put \
+each beside the spec or mockup it was built from, at the same width, and look: layout, spacing on the scale, type, \
+colour, every state (empty, loading, error, long text, hover, focus), light and dark, and accessibility (contrast \
+computed, not guessed; focus; touch size). Where you truly can't run it, ask {engineer} with comment for what you \
+need — don't pass without it. Two kinds of finding: blockers, differences from the spec, the tokens or accessibility, \
+which send it back; and polish, what keeps it from looking finished — rhythm, alignment, density, hierarchy, the \
+first impression at a glance — never left out, even when it passes, with where and how to fix. Leave your comparison \
+sheets under `outputs/T-{qa} …/`. Then finish with design_qa, not submit_for_review: a pass needs at least two of \
+your own pictures in images, `compared`, what you `checked`, and no blocker."
     ));
     out
 }

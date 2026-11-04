@@ -22,6 +22,8 @@ static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0)
 /// A fresh directory. A counter, not the clock: two tests in the same
 /// microsecond (macOS clock resolution) must never share one.
 fn scratch(name: &str) -> PathBuf {
+    static SWEPT: std::sync::Once = std::sync::Once::new();
+    equipe_core::scratch::sweep_once(&SWEPT, "equipe-rt-");
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("equipe-rt-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1097,7 +1099,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     worktree: None,
                     merged: None,
                     off_main: None,
-                    design_qa: None,
+                    design_qa: None, plan: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
@@ -1184,7 +1186,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     worktree: None,
                     merged: Some(false),
                     off_main: None,
-                    design_qa: None,
+                    design_qa: None, plan: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
@@ -1870,6 +1872,53 @@ async fn the_browser_shows_on_screen_when_asked_and_its_code_tool_follows_the_mo
     until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
     let (_, _, settings) = turn(&handle, &mut events, 1).await;
     assert!(!asks_for_code(&settings), "{settings}");
+}
+
+#[tokio::test]
+async fn the_pm_changes_what_the_person_asks_and_only_their_tap_widens_what_the_squad_does() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    // What only narrows the squad: done at once.
+    let done = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "idle_wake_hours", "value": "6" })).await;
+    assert!(!done.is_error && done.text.starts_with("Done:"), "{}", done.text);
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().idle_wake_hours(), 6);
+    let narrowed = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "mode", "member": "frontend", "value": "ask" })).await;
+    assert!(!narrowed.is_error, "{}", narrowed.text);
+    until(&mut events, |e| matches!(e, Event::ModeChanged { mode: Some(Mode::Ask), .. })).await;
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("idle_wake_hours): 6 h") && read.text.contains("frontend: engine") && read.text.contains("mode ask"), "{}", read.text);
+
+    // A member changes nothing, and reads nothing of it.
+    let refused = tool(&handle, "frontend", "change_setting", serde_json::json!({ "setting": "mode", "value": "full" })).await;
+    assert!(refused.is_error && refused.text.contains("Only the PM"), "{}", refused.text);
+    assert!(tool(&handle, "frontend", "settings", serde_json::json!({})).await.is_error);
+
+    // What widens it: a card the daemon writes, and nothing until the person's tap.
+    let handle2 = handle.clone();
+    let asking = tokio::spawn(async move {
+        tool(&handle2, "pm", "change_setting", serde_json::json!({ "setting": "mode", "member": "frontend", "value": "full", "why": "they said go faster" })).await
+    });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.tool, "Change setting");
+    assert!(approval.action.contains("frontend"), "the card says whose: {}", approval.action);
+    assert!(!asked.iter().any(|e| matches!(e, Event::ModeChanged { mode: Some(Mode::Full), .. })), "not before the tap");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { member: Some(m), mode: Some(Mode::Full), .. } if m == "frontend")).await;
+    assert!(asking.await.unwrap().text.starts_with("The person said yes"));
+
+    // Said no: as it was.
+    let handle3 = handle.clone();
+    let asking = tokio::spawn(async move { tool(&handle3, "pm", "change_setting", serde_json::json!({ "setting": "pm_accepts", "value": "on" })).await });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
+    assert!(asking.await.unwrap().text.starts_with("The person said no"));
 }
 
 #[tokio::test]
@@ -3255,9 +3304,23 @@ async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through
     handle.send(Command::CloseConversation { session: 51 });
     until(&mut events, |e| matches!(e, Event::SessionClosed { session: 51 })).await;
     handle.shutdown().await;
-    let (handle, _events) = runtime::start(config(&claude, &home, true));
-    let left: Vec<_> = handle.snapshot("acme").await.sessions.iter().filter(|s| s.lane.is_some()).map(|s| s.session).collect();
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    let snapshot = handle.snapshot("acme").await;
+    let left: Vec<_> = snapshot.sessions.iter().filter(|s| s.lane.is_some()).map(|s| s.session).collect();
     assert_eq!(left, [50]);
+    // Listed as put away, to be taken up again as it was left.
+    let away: Vec<_> = snapshot.put_away.iter().map(|c| (c.session, c.project.clone(), c.title.clone())).collect();
+    assert_eq!(away, [(51, Some("app".to_owned()), Some("what next?".to_owned()))]);
+    handle.send(Command::ReopenConversation { squad: "acme".into(), session: 51 });
+    let seen = until(&mut events, |e| matches!(e, Event::PutAwayChanged { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { session: 51, of: 1, project: Some(p), kept: true } if p == "app")), "{seen:#?}");
+    let back = seen.iter().find_map(|e| if let Event::ConversationBack { session: 51, title, lines } = e { Some((title.clone(), text_entries(lines))) } else { None }).expect("its lines");
+    assert_eq!(back.0.as_deref(), Some("what next?"));
+    assert!(back.1.contains(&"user: what next?".to_owned()), "{:?}", back.1);
+    assert!(matches!(seen.last(), Some(Event::PutAwayChanged { list, .. }) if list.is_empty()));
+    handle.send(Command::Submit { session: 51, text: "and now?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 51, .. })).await;
+    assert!(arg(&said(&calls(&recorded), "and now?"), "--resume").is_some(), "carried on, not begun again");
     handle.shutdown().await;
 }
 
@@ -3811,8 +3874,10 @@ async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designe
     let (_, mut screen) = handle.subscribe("acme").await.unwrap();
     handle.send(Command::Design { squad: "acme".into() });
     let seen = until(&mut screen, |e| matches!(e, Event::Design { .. })).await;
-    let Some(Event::Design { squad, systems, folder }) = seen.last() else { unreachable!() };
+    let Some(Event::Design { squad, systems, folder, taste }) = seen.last() else { unreachable!() };
     assert_eq!((squad.as_str(), folder.as_str()), ("acme", design.to_str().unwrap()));
+    assert_eq!(taste.len(), 1, "the squad's, empty as yet");
+    assert!(taste[0].notes.is_empty() && taste[0].project.is_none());
     assert_eq!(systems.len(), 1);
     assert_eq!(systems[0].modes, ["light", "dark"]);
     assert_eq!(systems[0].tokens[0].value_in(Some("dark")), "#0A0A0C");
@@ -3823,6 +3888,60 @@ async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designe
     let Some(Event::Design { systems, .. }) = seen.last() else { unreachable!() };
     assert_eq!(systems[0].tokens.len(), 2);
     assert!(systems[0].modes.is_empty());
+    // The person writes down a taste note: kept in the squad's memory, and the screen follows.
+    let add = |text: &str| Command::Taste { squad: "acme".into(), project: None, change: equipe_core::protocol::design::TasteChange::Add { text: text.into() } };
+    handle.send(add("모서리는 둥글게"));
+    let seen = until(&mut screen, |e| matches!(e, Event::Design { taste, .. } if !taste.is_empty() && !taste[0].notes.is_empty())).await;
+    let Some(Event::Design { taste, .. }) = seen.last() else { unreachable!() };
+    assert_eq!(taste[0].notes[0].text, "모서리는 둥글게");
+    assert!(squad_home::path(&home, "acme").join("memory/design-taste-notes.md").is_file());
+    // Two lines: refused, in words.
+    handle.send(add("둥글게\n그리고 밝게"));
+    let seen = until(&mut screen, |e| matches!(e, Event::Error { .. })).await;
+    let Some(Event::Error { message, .. }) = seen.last() else { unreachable!() };
+    assert!(!message.is_empty() && !message.contains("taste."), "{message}");
+}
+
+#[tokio::test]
+async fn a_design_systems_versions_come_when_asked_and_going_back_is_a_ticket_for_review() {
+    let project = repo();
+    let home = squad_home(&[&project]);
+    let (handle, _all) = runtime::start(config(&fake_claude(true, &answering("hi")), &home, true));
+    let (_, mut screen) = handle.subscribe("acme").await.unwrap();
+    let folder = squad_home::path(&home, "acme");
+    let design = folder.join("design");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(&folder).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    if !folder.join(".git").exists() {
+        git(&["init", "-q", "-b", "main"]);
+    }
+    std::fs::create_dir_all(&design).unwrap();
+    std::fs::write(design.join("tokens.json"), r##"{ "color": { "$type": "color", "bg": { "$value": "#F6F5F1" } } }"##).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "designer: T-144 브랜드 가이드라인"]);
+    std::fs::write(design.join("guidelines.md"), "# Brand\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the person: guidelines"]);
+    handle.send(Command::DesignVersions { squad: "acme".into(), project: None });
+    let seen = until(&mut screen, |e| matches!(e, Event::DesignVersions { .. })).await;
+    let Some(Event::DesignVersions { project, versions, .. }) = seen.last() else { unreachable!() };
+    assert!(project.is_none());
+    let said: Vec<(Option<u32>, &str)> = versions.iter().map(|v| (v.ticket, v.subject.as_str())).collect();
+    assert_eq!(said, [(None, "the person: guidelines"), (Some(144), "브랜드 가이드라인")], "newest first");
+    // Back to T-144's: a new ticket, nothing rewritten.
+    let first = versions[1].commit.clone();
+    handle.send(Command::RestoreDesign { squad: "acme".into(), project: None, commit: first[..10].to_owned() });
+    let seen = until(&mut screen, |e| matches!(e, Event::TicketChanged { .. } | Event::Error { .. })).await;
+    let Some(Event::TicketChanged { ticket, .. }) = seen.last() else { panic!("{:?}", seen.last()) };
+    assert!(ticket.title.contains(&first[..7]) && ticket.body.contains(&first), "{ticket:?}");
+    assert_eq!(ticket.kind, equipe_core::protocol::TicketKind::Task);
+    assert_eq!(ticket.status, TicketStatus::Todo);
+    handle.send(Command::RestoreDesign { squad: "acme".into(), project: None, commit: "0000000deadbeef".into() });
+    let seen = until(&mut screen, |e| matches!(e, Event::Error { .. })).await;
+    let Some(Event::Error { message, .. }) = seen.last() else { unreachable!() };
+    assert!(message.contains("0000000dead"), "{message}");
 }
 
 // ── members' desktop calls: the lease, then the send gate, then the helper ──
@@ -4038,7 +4157,7 @@ async fn a_members_send_from_teams_waits_for_the_persons_yes_and_a_password_fiel
 
 /// A ticket's turn that saves a screenshot, `shot.png`, in its worktree, then works on a while.
 fn screenshot_turn() -> String {
-    format!("case \"$*\" in *\"You're on T-\"*) echo 'pretend png' > shot.png; sleep 2;; esac\n{}", answering("working on it"))
+    format!("case \"$*\" in *\"You're on T-\"*) echo 'pretend png' > shot.png; echo 'pretend png' > built-390.png; sleep 2;; esac\n{}", answering("working on it"))
 }
 
 /// Wait until `file` exists.
@@ -4088,7 +4207,7 @@ async fn screens_in_design_qa(recorded: &Path, handle: &Handle, events: &mut Unb
 
     let call = latest_call(recorded, |p| p.contains("This is design QA of T-1")).await;
     let prompt = arg(&call, "-p").unwrap();
-    for part in ["Per the spec in design/settings.md.", "Settings built.", "shot.png", "finish with design_qa", "not taste"] {
+    for part in ["Per the spec in design/settings.md.", "Settings built.", "shot.png", "finish with design_qa", "never enough to pass", "equipe design render http://localhost:", "polish"] {
         assert!(prompt.contains(part), "{part}: {prompt}");
     }
     // A design QA ends with a verdict, not a hand-in.
@@ -4115,14 +4234,26 @@ async fn changed_screens_pass_design_qa_before_the_person_reviews_them() {
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
-    let passed = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "pass", "findings": "Matches the spec.", "images": ["shot.png"] })).await;
+    // On the engineer's screenshot alone, or its own one look, no pass.
+    let thin = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "pass", "findings": "Matches the spec.", "checked": ["1280"], "images": ["shot.png"] })).await;
+    assert!(thin.is_error && thin.text.contains("pictures of your own") && thin.text.contains("beside the spec"), "{thin:?}");
+    let passed = tool(&handle, "designer", "design_qa", serde_json::json!({
+        "verdict": "pass",
+        "findings": "Matches the spec.",
+        "compared": true,
+        "checked": ["390", "1280", "dark"],
+        "polish": ["Section gaps 40 and 48 alternate; the scale says 48"],
+        "images": ["shot.png", "built-390.png"],
+    })).await;
     assert!(!passed.is_error, "{passed:?}");
     let done = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
     let checked = ticket_changed(&done).into_iter().rev().find(|t| t.id == 1).unwrap();
     assert_eq!((checked.status, checked.design_qa), (TicketStatus::Review, None), "on to the person");
     let note = checked.note.unwrap();
     assert!(note.starts_with("Settings built.") && note.contains("Design QA by designer (T-2): passed.") && note.contains("Matches the spec."), "{note}");
-    assert_eq!(checked.images.len(), 2, "the engineer's screenshot, then the designer's: {:?}", checked.images);
+    assert!(note.contains("Polish:\n1. Section gaps") && note.contains("Checked: 390, 1280, dark."), "polish reaches the person even on a pass: {note}");
+    assert_eq!(checked.images.len(), 4, "the engineer's screenshots, then the designer's: {:?}", checked.images);
+    assert!(checked.images[2..].iter().all(|i| i.contains("/squads/acme/home/")), "the designer's own come last: {:?}", checked.images);
     let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("passed the screens of T-1"))).await;
     assert!(!told.is_empty());
 
@@ -4140,7 +4271,9 @@ async fn screens_that_need_changes_go_back_to_their_engineer() {
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     let held = screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
-    let sent = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "changes", "findings": "1. The title is 20px; the spec says 24px." })).await;
+    let vague = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "changes", "findings": "Feels off.", "checked": ["1280"] })).await;
+    assert!(vague.is_error && vague.text.contains("blockers"), "{vague:?}");
+    let sent = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "changes", "findings": "Close, one difference.", "checked": ["1280"], "blockers": ["The title is 20px; the spec says 24px."] })).await;
     assert!(!sent.is_error, "{sent:?}");
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if Some(&ws.branch) == held.branch.as_ref()), "{again:#?}");
@@ -4313,4 +4446,62 @@ async fn a_review_that_cant_run_says_why_and_never_the_key() {
     assert_eq!(text, "Nemotron couldn't review T-1: Nebius Token Factory didn't accept the API key");
     assert!(!said.iter().any(|e| format!("{e:?}").contains("sk-mock")));
     assert!(handle.snapshot("acme").await.reviews.is_empty());
+}
+
+// ── the plan step ──
+
+#[tokio::test]
+async fn a_plan_is_committed_on_main_reviewed_at_once_and_cut_into_tickets_carrying_their_cases() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    add(&handle, &mut events, 3, member(&repo, "qa")).await;
+    let wrote = tool(&handle, "pm", "write_plan", serde_json::json!({
+        "title": "Magic link", "goal": "Sign in without a password.", "test_plan": "- an expired link says so\n- a used link fails",
+        "reviewers": ["backend", "qa"],
+    }))
+    .await;
+    assert!(!wrote.is_error, "{}", wrote.text);
+    assert!(wrote.text.contains("Asked backend (T-1), qa (T-2)"), "{}", wrote.text);
+    let name = git(&repo, &["ls-tree", "--name-only", "main", "docs/plans/"]);
+    assert!(name.starts_with("docs/plans/") && name.ends_with("-magic-link.md"), "{name}");
+    let on_main = git(&repo, &["show", &format!("main:{name}")]);
+    assert!(on_main.contains("status: in_review") && on_main.contains("- TP-2: a used link fails"), "{on_main}");
+    // Each reviewer's ticket: ready at once, from its angle, naming the plan.
+    let board = handle.snapshot("acme").await.tickets;
+    let reviews: Vec<_> = board.iter().filter(|t| t.plan.as_deref() == Some(name.as_str())).collect();
+    assert_eq!(reviews.iter().map(|t| t.owner.as_deref().unwrap()).collect::<Vec<_>>(), ["backend", "qa"]);
+    assert!(reviews.iter().all(|t| t.kind == equipe_core::protocol::TicketKind::Task && t.body.contains(&name)));
+
+    // A reviewer writes only its own notes.
+    let refused = tool(&handle, "backend", "write_plan", serde_json::json!({ "plan": name, "goal": "mine" })).await;
+    assert!(refused.is_error && refused.text.contains("the PM's"), "{}", refused.text);
+    let noted = tool(&handle, "qa", "write_plan", serde_json::json!({ "plan": "magic-link", "review": "TP-2 needs two browsers." })).await;
+    assert!(!noted.is_error, "{}", noted.text);
+    let on_main = git(&repo, &["show", &format!("main:{name}")]);
+    assert!(on_main.contains("## Review notes\n\n### qa\n\nTP-2 needs two browsers."), "{on_main}");
+    assert!(on_main.contains("Sign in without a password."), "the rest stays: {on_main}");
+
+    // A ticket cut from it carries its slice of the test plan, and is listed in it.
+    let cut = tool(&handle, "pm", "create_ticket", serde_json::json!({
+        "title": "Expired links", "body": "Expired links say so.", "owner": "backend", "plan": name, "tests": ["TP-1"],
+    }))
+    .await;
+    assert!(!cut.is_error, "{}", cut.text);
+    let missing = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "body": "-", "owner": "backend", "plan": "magic-link", "tests": ["TP-9"] })).await;
+    assert!(missing.is_error && missing.text.contains("TP-9"), "{}", missing.text);
+    let made = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.title == "Expired links").unwrap();
+    assert_eq!(made.plan.as_deref(), Some(name.as_str()));
+    assert!(made.body.starts_with("Expired links say so.\n\nPlan: `") && made.body.contains("- TP-1: an expired link says so") && !made.body.contains("TP-2"), "{}", made.body);
+    let mut listed = String::new();
+    for _ in 0..50 {
+        listed = git(&repo, &["show", &format!("main:{name}")]);
+        if listed.contains("tickets: [") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(listed.contains(&format!("status: settled\ntickets: [{}]", made.id)), "{listed}");
 }

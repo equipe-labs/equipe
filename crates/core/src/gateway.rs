@@ -37,6 +37,95 @@ pub async fn serve(config: runtime::Config, socket: &Path, version: &str) -> io:
 /// [`serve`], with the product's numbers kept by `metrics` (its keys in
 /// memory, for tests).
 pub async fn serve_with(config: runtime::Config, socket: &Path, version: &str, metrics: std::sync::Arc<crate::metrics::Metrics>) -> io::Result<()> {
+    serve_until(config, socket, version, metrics, Leave::NEVER).await
+}
+
+/// [`serve`] until a client asks it to shut down or `leave` says it is time.
+pub async fn serve_leaving(config: runtime::Config, socket: &Path, version: &str, leave: Leave) -> io::Result<()> {
+    let metrics = std::sync::Arc::new(crate::metrics::Metrics::open(&config.home));
+    serve_until(config, socket, version, metrics, leave).await
+}
+
+/// When a daemon leaves on its own, with no one asking it to stop. The
+/// person's own never does — it keeps the squad between screens; one a test or
+/// a check started in a temporary home does, or it would outlive them for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Leave {
+    /// Once its home folder is gone.
+    pub home_gone: bool,
+    /// After this long with no connection and no member mid-turn.
+    pub idle: Option<Duration>,
+    /// How often it looks.
+    pub every: Duration,
+}
+
+impl Leave {
+    pub const NEVER: Leave = Leave { home_gone: false, idle: None, every: Duration::from_secs(5) };
+
+    fn watches(&self) -> bool {
+        self.home_gone || self.idle.is_some()
+    }
+}
+
+/// The connections open now, and when the last one opened or closed.
+struct Screens {
+    open: std::sync::atomic::AtomicUsize,
+    since: std::sync::Mutex<tokio::time::Instant>,
+}
+
+impl Screens {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { open: Default::default(), since: std::sync::Mutex::new(tokio::time::Instant::now()) })
+    }
+
+    /// A connection, counted until the guard is dropped.
+    fn enter(self: &std::sync::Arc<Self>) -> ScreenGuard {
+        self.open.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.touch();
+        ScreenGuard(self.clone())
+    }
+
+    fn touch(&self) {
+        *self.since.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+    }
+
+    /// How long since a connection was last open; `None` while one is.
+    fn alone_for(&self) -> Option<Duration> {
+        let since = *self.since.lock().unwrap_or_else(|e| e.into_inner());
+        (self.open.load(std::sync::atomic::Ordering::SeqCst) == 0).then(|| since.elapsed())
+    }
+}
+
+struct ScreenGuard(std::sync::Arc<Screens>);
+
+impl Drop for ScreenGuard {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.open.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Why a daemon leaves now by `leave`, or `None` while it stays.
+async fn time_to_leave(leave: &Leave, home: &Path, screens: &Screens, core: &Handle) -> Option<String> {
+    if leave.home_gone && !home.is_dir() {
+        return Some(format!("its home {} is gone", home.display()));
+    }
+    let idle = leave.idle?;
+    if screens.alone_for().is_none_or(|alone| alone < idle) {
+        return None;
+    }
+    // Asked only once alone long enough: a stuck core counts as one at work.
+    let busy = core.busy().await;
+    (busy.working.is_empty() && busy.stalled.is_none()).then(|| format!("no screen for {}s and no one at work", idle.as_secs()))
+}
+
+async fn serve_until(
+    config: runtime::Config,
+    socket: &Path,
+    version: &str,
+    metrics: std::sync::Arc<crate::metrics::Metrics>,
+    leave: Leave,
+) -> io::Result<()> {
     let listener = bind(socket).await?;
     let home = config.home.clone();
     // Each connection's numbers, once a day.
@@ -45,12 +134,20 @@ pub async fn serve_with(config: runtime::Config, socket: &Path, version: &str, m
     // Screens subscribe for themselves; an unread receiver would only pile up events.
     drop(own_events);
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<oneshot::Sender<()>>();
+    let screens = Screens::new();
+    let mut look = tokio::time::interval(leave.every);
+    look.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    loop {
+    let ack = loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    tokio::spawn(serve_client(stream, core.clone(), home.clone(), version.to_owned(), stop_tx.clone(), metrics.clone()));
+                    let screen = screens.enter();
+                    let client = serve_client(stream, core.clone(), home.clone(), version.to_owned(), stop_tx.clone(), metrics.clone());
+                    tokio::spawn(async move {
+                        client.await;
+                        drop(screen);
+                    });
                 }
                 // Out of file descriptors, say: the next screen may find one. The
                 // daemon — and the agents it runs — stays.
@@ -59,19 +156,26 @@ pub async fn serve_with(config: runtime::Config, socket: &Path, version: &str, m
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
             },
-            Some(ack) = stop_rx.recv() => {
-                // A core that doesn't stop in time is left behind: the process ends anyway.
-                if tokio::time::timeout(SHUTDOWN_WAIT, core.shutdown()).await.is_err() {
-                    let doing = core.stall().map_or_else(|| "?".to_owned(), |s| s.doing);
-                    crate::daemon_log!("equipe: stopping without the core, which is still on {doing}");
+            Some(ack) = stop_rx.recv() => break Some(ack),
+            _ = look.tick(), if leave.watches() => {
+                if let Some(why) = time_to_leave(&leave, &home, &screens, &core).await {
+                    crate::daemon_log!("equipe: {why}, so this daemon leaves");
+                    break None;
                 }
-                daily.abort();
-                let _ = std::fs::remove_file(socket);
-                let _ = ack.send(());
-                return Ok(());
             }
         }
+    };
+    // A core that doesn't stop in time is left behind: the process ends anyway.
+    if tokio::time::timeout(SHUTDOWN_WAIT, core.shutdown()).await.is_err() {
+        let doing = core.stall().map_or_else(|| "?".to_owned(), |s| s.doing);
+        crate::daemon_log!("equipe: stopping without the core, which is still on {doing}");
     }
+    daily.abort();
+    let _ = std::fs::remove_file(socket);
+    if let Some(ack) = ack {
+        let _ = ack.send(());
+    }
+    Ok(())
 }
 
 /// How long a stop waits for the core to put its turns down.

@@ -31,7 +31,7 @@ pub(super) fn section(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -
     let mut lines: Vec<Line> = Vec::new();
     for s in &shell.model.signals {
         let (project, name) = (s.project.clone(), s.name.clone());
-        let flip = switch(shell, &format!("signal-{}-{}", s.project, s.name), s.on, connected, move |this, on, _, _| {
+        let flip = switch(shell, &format!("signal-{}-{}", s.project, s.name), &s.name, s.on, connected, move |this, on, _, _| {
             let squad = this.model.squad.clone();
             this.send_command(Command::SetSignalOn { squad, project: project.clone(), name: name.clone(), on });
         }, cx);

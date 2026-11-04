@@ -6,7 +6,7 @@
 //! to go on without them; a member that leaves takes its questions with it.
 //! Never a way to permission: that stays [`Runtime::ask_permission`]'s.
 
-use equipe_protocol::decide::{self, Answer, QuestionSet};
+use equipe_protocol::decide::{self, Answer, QuestionSet, Reaction};
 
 use super::*;
 use crate::visuals;
@@ -62,7 +62,9 @@ impl Runtime {
         };
         let is_pm = self.sessions.get(&id).is_some_and(Session::is_pm);
         let ticket = self.sessions.get(&session).or(self.sessions.get(&id)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
-        let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs() };
+        let review = self.review_asked(id, now_secs());
+        let retro = self.retro_asked(id, now_secs(), args, questions.len());
+        let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs(), review, retro };
         let (count, first) = (set.questions.len(), set.questions[0].question.clone());
         self.question_sets(squad).push(set.clone());
         self.save_questions(squad);
@@ -115,18 +117,45 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         let Some(set) = self.take_questions(squad, id) else { return };
         let answers = fit(&set, answers);
         let message = decide::answer_message(&set, &answers);
+        // A designer's question answered: the person's taste, kept for every design after.
+        let designer = self.sessions.get(&set.session).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == "designer");
+        if let Some(entry) = designer.then(|| crate::taste::decided(&set, &answers, &crate::squad_memory::date(now_secs()))).flatten() {
+            self.learn_taste(squad, &entry);
+        }
+        // Its visual picks: the brand's decision record, the chosen picture kept beside each.
+        if designer {
+            let project = set.ticket.and_then(|t| self.find_ticket(squad, t)).and_then(|t| t.project).filter(|p| crate::design::folder::is_design_dir(&p.join(crate::design::DIR))).map(|p| crate::board::project_name(&p));
+            for (decision, picture) in crate::taste::decisions::from_answers(&set, &answers, &crate::squad_memory::date(now_secs())) {
+                self.record_decision(squad, project.as_deref(), &decision, Some(std::path::Path::new(&picture)), crate::squad_home::PERSON);
+            }
+        }
         if let (Some(ticket), Some(journal)) = (set.ticket, self.journal(squad)) {
             let _ = journal.ticket_event(ticket, "you", "decided", &message);
         }
+        self.decision_settled(squad, &set, Some(&answers));
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers) });
         if let Some(to) = self.asker(squad, &set) {
             Box::pin(self.submit(to, message)).await;
         }
     }
 
+    /// Add `entry` to the person's design taste in the squad's memory, as
+    /// equipe: what they chose and said, not what a member recalls of it.
+    pub(super) fn learn_taste(&mut self, squad: &str, entry: &str) {
+        let folder = crate::squad_home::path(&self.config.home, squad);
+        let before = crate::squad_memory::facts(&folder).into_iter().find(|f| f.name == crate::taste::NAME).map(|f| f.body);
+        let body = crate::taste::with(before.as_deref(), entry);
+        let fact = crate::squad_memory::Remember { name: crate::taste::NAME, description: crate::taste::DESCRIPTION, kind: "decision", body: &body, confirmed: true };
+        let language = self.journals.get(squad).and_then(Journal::language);
+        if let Err(why) = crate::squad_memory::remember(&folder, "equipe", &fact, &crate::squad_memory::date(now_secs()), language.as_deref()) {
+            crate::daemon_log!("equipe: {squad}'s design taste wasn't kept: {why}");
+        }
+    }
+
     /// Closed without an answer: the member goes on without one.
     pub(super) async fn dismiss_questions(&mut self, squad: &str, id: u64) {
         let Some(set) = self.take_questions(squad, id) else { return };
+        self.decision_settled(squad, &set, None);
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: None });
         if let Some(to) = self.asker(squad, &set) {
             Box::pin(self.submit(to, decide::dismissed_message(&set))).await;
@@ -150,13 +179,16 @@ with a short line, or carry on with work that doesn't depend on the answer.";
 
 /// Answers made to fit their questions: one each (missing ones skipped),
 /// picks that exist, once each, in order — one at most where only one may
-/// be picked — and words of their own trimmed, none when blank.
+/// be picked — and words of their own trimmed, none when blank. A mix holds
+/// only between two options of one-pick, the aspect one the other has (its
+/// base then what is picked); another round, only where there were options
+/// (nothing then picked).
 pub(super) fn fit(set: &QuestionSet, answers: Vec<Answer>) -> Vec<Answer> {
     let mut answers = answers.into_iter();
     set.questions
         .iter()
         .map(|q| {
-            let Answer { picked, other } = answers.next().unwrap_or_default();
+            let Answer { picked, other, reaction } = answers.next().unwrap_or_default();
             let mut picked: Vec<usize> = picked.into_iter().filter(|&i| i < q.options.len()).collect();
             if !q.multi_select {
                 picked.truncate(1);
@@ -164,7 +196,16 @@ pub(super) fn fit(set: &QuestionSet, answers: Vec<Answer>) -> Vec<Answer> {
             picked.sort_unstable();
             picked.dedup();
             let other = other.map(|o| o.trim().to_owned()).filter(|o| !o.is_empty());
-            Answer { picked, other }
+            let reaction = reaction.filter(|r| match r {
+                Reaction::Mix { base, from, aspect } => !q.multi_select && base != from && *base < q.options.len() && q.options.get(*from).is_some_and(|f| f.aspects.contains(aspect)),
+                Reaction::Again => !q.options.is_empty(),
+            });
+            match reaction {
+                Some(Reaction::Mix { base, .. }) => picked = vec![base],
+                Some(Reaction::Again) => picked.clear(),
+                None => {}
+            }
+            Answer { picked, other, reaction }
         })
         .collect()
 }
@@ -183,12 +224,30 @@ mod tests {
             multi_select,
             ..Question::default()
         };
-        let set = QuestionSet { id: 1, session: 1, member: "pm".into(), ticket: None, questions: vec![q(false), q(true), q(false)], asked_at: 0 };
-        let fitted = fit(&set, vec![Answer { picked: vec![1, 0], other: Some("  ".into()) }, Answer { picked: vec![1, 9, 0, 1], other: Some(" x ".into()) }]);
+        let set = QuestionSet { id: 1, session: 1, member: "pm".into(), ticket: None, questions: vec![q(false), q(true), q(false)], asked_at: 0, review: false, retro: None };
+        let fitted = fit(&set, vec![Answer { picked: vec![1, 0], other: Some("  ".into()), ..Answer::default() }, Answer { picked: vec![1, 9, 0, 1], other: Some(" x ".into()), ..Answer::default() }]);
         assert_eq!(
             fitted,
-            [Answer { picked: vec![1], other: None }, Answer { picked: vec![0, 1], other: Some("x".into()) }, Answer::skipped()],
+            [Answer::pick(1), Answer { picked: vec![0, 1], other: Some("x".into()), ..Answer::default() }, Answer::skipped()],
             "one pick where one may be picked, none out of range, the missing one skipped"
         );
+    }
+
+    #[test]
+    fn a_mix_holds_between_two_options_on_an_aspect_one_has_and_another_round_picks_nothing() {
+        let option = |label: &str| Choice { label: label.into(), aspects: vec!["type".into(), "colour".into()], ..Choice::default() };
+        let design = Question { question: "Which?".into(), options: vec![option("A"), option("B"), Choice { label: "C".into(), ..Choice::default() }], ..Question::default() };
+        let set = QuestionSet { id: 1, session: 1, member: "designer".into(), ticket: None, questions: vec![design; 5], asked_at: 0, review: false, retro: None };
+        let mut stray = Answer::mix(0, 1, "type");
+        stray.picked = vec![2];
+        let fitted = fit(
+            &set,
+            vec![stray, Answer::mix(1, 1, "type"), Answer::mix(0, 2, "type"), Answer::mix(0, 1, "shape"), Answer { picked: vec![1], other: Some(" too cold ".into()), reaction: Some(Reaction::Again) }],
+        );
+        assert_eq!(fitted[0], Answer::mix(0, 1, "type"), "its base is what is picked");
+        assert_eq!(fitted[1], Answer::pick(1), "not with itself");
+        assert_eq!(fitted[2], Answer::pick(0), "C names nothing to take");
+        assert_eq!(fitted[3], Answer::pick(0), "B has no shape to give");
+        assert_eq!(fitted[4], Answer::again(Some("too cold".into())), "another round: nothing picked, why kept");
     }
 }

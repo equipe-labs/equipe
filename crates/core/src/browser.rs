@@ -311,7 +311,13 @@ fn human_words() -> &'static [&'static str] {
 }
 
 /// Where a CAPTCHA's frame comes from (not an invisible one's badge).
-const CAPTCHA_FRAMES: &[&str] = &["challenges.cloudflare.com", "hcaptcha.com", "/recaptcha/api2/", "/recaptcha/enterprise/", "recaptcha.net/recaptcha"];
+const CAPTCHA_FRAMES: &[&str] = &["challenges.cloudflare.com", "hcaptcha.com", "/recaptcha/api2/", "/recaptcha/enterprise/", "recaptcha.net/recaptcha", "arkoselabs.com", "funcaptcha.com"];
+
+/// Where a site checks its person after the password — LinkedIn's
+/// checkpoint, Google's challenge: a puzzle, a code sent to them, a tap on
+/// their phone. The person's, whatever the page has on it. Kept with
+/// `CHALLENGE_PATH` in `browser-host.cjs`.
+const CHALLENGE_PATHS: &[&str] = &["/checkpoint/challenge", "/checkpoint/lg", "/signin/challenge", "/login/challenge", "/auth/challenge"];
 
 /// Words of a code from the person's phone.
 fn code_words() -> impl Iterator<Item = &'static str> {
@@ -349,6 +355,9 @@ pub fn human_check(url: &str, title: &str, signals: Option<&Signals>) -> Option<
     }
     if s.otp || (s.code && !s.password && code_words().any(says)) {
         return Some(HumanCheck::TwoFactor);
+    }
+    if CHALLENGE_PATHS.iter().any(|p| url_l.contains(p)) {
+        return Some(HumanCheck::Challenge);
     }
     if s.password && sign_in_words().any(|w| url_l.contains(w) || title_l.contains(w)) {
         return Some(HumanCheck::SignIn);
@@ -1496,6 +1505,23 @@ mod tests {
         });
         assert_eq!(human_check("https://nid.naver.com/", "네이버", Some(&code)), Some(TwoFactor));
         assert_eq!(human_check("https://example.com/search", "Search", Some(&signals(|s| s.code = true))), None, "a short field alone");
+    }
+
+    #[test]
+    fn a_sites_own_check_after_the_password_is_the_persons_until_it_passes() {
+        use equipe_protocol::HumanCheck::{Captcha, Challenge};
+        // LinkedIn's security check: a puzzle, or a code sent by mail — no field
+        // equipe knows on the first, yet the person's all the same.
+        let url = "https://www.linkedin.com/checkpoint/challenge/AgG1x?ut=0Pq&_l=en_US";
+        assert_eq!(human_check(url, "Security Verification | LinkedIn", Some(&Signals::default())), Some(Challenge));
+        assert_eq!(human_check("https://accounts.google.com/v3/signin/challenge/totp", "Google", None), Some(Challenge));
+        let arkose = signals(|s| {
+            s.frames = vec!["https://client-api.arkoselabs.com/fc/gc/?token=1".into()];
+            s.text = "let's do a quick security check".into();
+        });
+        assert_eq!(human_check("https://www.linkedin.com/uas/login-submit", "LinkedIn", Some(&arkose)), Some(Captcha));
+        assert_eq!(human_check("https://www.linkedin.com/feed/", "Feed | LinkedIn", Some(&Signals::default())), None, "signed in: back to its member");
+        assert_eq!(human_check("https://leetcode.com/problemset/challenges/", "Challenges", None), None, "a page about challenges");
     }
 
     #[test]

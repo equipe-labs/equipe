@@ -8,6 +8,7 @@ use equipe_core::t;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use equipe_core::protocol::briefs::{DocKind, ProjectDoc};
 use equipe_core::protocol::{Command, OffMain, Priority, Ticket, TicketId, TicketKind, TicketStatus};
 
 use crate::state::{Model, Need, Section, status_word};
@@ -118,6 +119,7 @@ pub fn builtin_views() -> Vec<SavedView> {
     vec![
         SavedView { name: t!("board.view_blocked").into(), query: "is:blocked".into(), group: GroupBy::Deps, pinned: true },
         SavedView { name: t!("board.view_recent_done").into(), query: "status:done".into(), group: GroupBy::None, pinned: true },
+        SavedView { name: t!("board.view_ideas").into(), query: "status:idea".into(), group: GroupBy::None, pinned: true },
     ]
 }
 
@@ -221,6 +223,7 @@ fn status_of(word: &str) -> Option<TicketStatus> {
         "review" => TicketStatus::Review,
         "waiting" => TicketStatus::Waiting,
         "proposed" => TicketStatus::Proposed,
+        "idea" | "ideas" => TicketStatus::Idea,
         "todo" => TicketStatus::Todo,
         "progress" | "in_progress" | "working" => TicketStatus::InProgress,
         "done" => TicketStatus::Done,
@@ -228,6 +231,7 @@ fn status_of(word: &str) -> Option<TicketStatus> {
         _ if is("match.status_review") => TicketStatus::Review,
         _ if is("match.status_waiting") => TicketStatus::Waiting,
         _ if is("match.status_proposed") => TicketStatus::Proposed,
+        _ if is("match.status_idea") => TicketStatus::Idea,
         _ if is("match.status_todo") => TicketStatus::Todo,
         _ if is("match.status_progress") => TicketStatus::InProgress,
         _ if is("match.status_done") => TicketStatus::Done,
@@ -388,9 +392,9 @@ pub fn working(model: &Model, filter: &Filter) -> Vec<Row> {
 }
 
 /// The order statuses are listed in, by what needs attention: the person's
-/// turn, then their review, work under way, work ready (proposals only when
-/// asked for: they wait in triage), and finished.
-const STATUS_ORDER: [TicketStatus; 6] = [TicketStatus::Waiting, TicketStatus::Review, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done];
+/// turn, then their review, work under way, work ready (proposals and ideas
+/// only when asked for: they wait in triage, and in their own view), and finished.
+const STATUS_ORDER: [TicketStatus; 7] = [TicketStatus::Waiting, TicketStatus::Review, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Idea, TicketStatus::Done];
 
 fn status_rank(s: TicketStatus) -> usize {
     STATUS_ORDER.iter().position(|x| *x == s).unwrap_or(STATUS_ORDER.len() - 1)
@@ -422,6 +426,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
         .filter(|t| model.in_focus(t) && filter.matches(model, t))
         .filter(|t| match t.status {
             TicketStatus::Proposed => asked(TicketStatus::Proposed),
+            TicketStatus::Idea => asked(TicketStatus::Idea),
             TicketStatus::Cancelled => asked(TicketStatus::Cancelled),
             _ => true,
         })
@@ -622,22 +627,26 @@ pub fn recent_done_view() -> usize {
     builtin_views().iter().position(|v| v.query == "status:done").unwrap_or(0)
 }
 
+/// The person's ideas, kept for later: a view of their own.
+pub fn ideas_view() -> usize {
+    builtin_views().iter().position(|v| v.query == "status:idea").unwrap_or(0)
+}
+
 /// Where a click on a project's header in the sidebar lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadClick {
-    /// Its name: the project slice (the conversation and the board follow).
+    /// Its name: the project's page (its conversations and its work).
     Name,
-    /// Its chevron: fold or unfold its rows.
+    /// Its chevron: fold or unfold its conversations.
     Chevron,
 }
 
-/// What a click on a project's header does: `Some` slice to switch to (with
-/// `None` inside: every project), or a fold toggled in `folded` (by
-/// [`SideGroup::key`]). A click on the name of the project in focus goes back
-/// to every project; the shared folder has no slice, so its name folds it.
-pub fn head_click(click: HeadClick, project: Option<&str>, focus: Option<&str>, folded: &mut BTreeSet<String>) -> Option<Option<String>> {
+/// What a click on a project's header does: `Some` project whose page opens,
+/// or a fold toggled in `folded` (by [`SideGroup::key`]). The squad's own
+/// group has no page: its name folds it.
+pub fn head_click(click: HeadClick, project: Option<&str>, folded: &mut BTreeSet<String>) -> Option<String> {
     match (click, project) {
-        (HeadClick::Name, Some(name)) => Some(if focus == Some(name) { None } else { Some(name.to_owned()) }),
+        (HeadClick::Name, Some(name)) => Some(name.to_owned()),
         (_, project) => {
             let key = project.unwrap_or_default().to_owned();
             if !folded.remove(&key) {
@@ -646,6 +655,218 @@ pub fn head_click(click: HeadClick, project: Option<&str>, focus: Option<&str>, 
             None
         }
     }
+}
+
+/// A project page's tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProjectTab {
+    /// Its conversations with the PM.
+    #[default]
+    Talks,
+    /// Its tickets.
+    Work,
+    /// Its briefs and plans: what was thought through before it was built.
+    Docs,
+}
+
+/// A project's briefs and plans, newest first — a brief before the plan of
+/// the same day.
+pub fn project_docs<'a>(docs: &'a [ProjectDoc], project: &str) -> Vec<&'a ProjectDoc> {
+    let mut out: Vec<&ProjectDoc> = docs.iter().filter(|d| d.project.as_deref() == Some(project)).collect();
+    out.sort_by(|a, b| b.date.cmp(&a.date).then(a.kind.cmp(&b.kind)).then_with(|| a.title.cmp(&b.title)));
+    out
+}
+
+/// How a brief's or plan's status chip looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocTone {
+    /// Still being written: a draft, or a word equipe doesn't know.
+    Draft,
+    /// Being reviewed (a plan).
+    Review,
+    /// Settled: what the work follows.
+    Settled,
+    /// Let go.
+    Dropped,
+}
+
+/// A status as its chip says it, in the person's words — an unknown one as
+/// it is written.
+pub fn doc_status(status: &str) -> (String, DocTone) {
+    match status.trim().to_ascii_lowercase().replace([' ', '-'], "_").as_str() {
+        "draft" | "" => (t!("project.doc_draft").to_owned(), DocTone::Draft),
+        "in_review" | "review" => (t!("project.doc_in_review").to_owned(), DocTone::Review),
+        "settled" => (t!("project.doc_settled").to_owned(), DocTone::Settled),
+        "dropped" => (t!("project.doc_dropped").to_owned(), DocTone::Dropped),
+        _ => (status.trim().to_owned(), DocTone::Draft),
+    }
+}
+
+/// What a brief or plan is, in a word.
+pub fn doc_kind(kind: DocKind) -> &'static str {
+    match kind {
+        DocKind::Brief => t!("project.doc_brief"),
+        DocKind::Plan => t!("project.doc_plan"),
+    }
+}
+
+/// The toast when an idea is started: with a PM, it thinks it through with
+/// the person first (`OFFICE_HOURS_FIRST`); without one, it is simply ready.
+pub fn idea_start_toast(id: TicketId, pm: bool) -> String {
+    if pm { t!("board.toast_idea_office_hours", id = id) } else { t!("board.toast_idea_start", id = id) }
+}
+
+/// What the person asks the PM, in their words, to start office hours on `project`.
+pub fn office_hours_ask(project: &str) -> String {
+    t!("project.office_hours_ask", project = project)
+}
+
+/// A project's conversations with the PM, by whose turn it is: the person's
+/// (the PM answered), then those the PM is still answering. Most lately used
+/// first in each.
+pub fn project_talks<'a>(model: &'a Model, project: &str) -> (Vec<&'a crate::state::Lane>, Vec<&'a crate::state::Lane>) {
+    model.conversations().into_iter().filter(|l| l.project.as_deref() == Some(project)).partition(|l| l.presence != crate::state::Presence::Working)
+}
+
+/// How long work may go unheard from before it counts as stuck, not quiet.
+pub const STUCK_AFTER: u64 = 30 * 60;
+
+/// Why work under way needs a look: what 진행 상황 puts first, in red.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Risk {
+    /// Its member's last turn failed, or said something went wrong.
+    Failed,
+    /// Nothing heard from its member for this long (seconds).
+    Stuck(u64),
+    /// Past the time it was expected done by this much (seconds), and by
+    /// more than a fifth of the time it was given.
+    Late(u64),
+}
+
+/// Whether work under way needs a look, and why — the worst reason.
+pub fn risk(model: &Model, t: &Ticket) -> Option<Risk> {
+    if t.status != TicketStatus::InProgress {
+        return None;
+    }
+    if model.failed(t) {
+        return Some(Risk::Failed);
+    }
+    if let Some(quiet) = model.quiet_for(t).filter(|q| *q >= STUCK_AFTER) {
+        return Some(Risk::Stuck(quiet));
+    }
+    let eta = model.eta(t)?;
+    let over = model.unix.checked_sub(eta.at).filter(|o| *o > 0)?;
+    // A fifth of what it was given, from when it started — five minutes at least.
+    let given = model.since.get(&t.id).filter(|s| **s > 0 && **s < eta.at).map_or(0, |s| eta.at - s);
+    (over > (given / 5).max(5 * 60)).then_some(Risk::Late(over))
+}
+
+/// The step work is at, in a few words: what its member said it is doing,
+/// else what its last tool touched — a file by its name, not its path.
+pub fn step_words(what: Option<&str>, target: Option<&str>) -> Option<String> {
+    if let Some(what) = what.map(str::trim).filter(|w| !w.is_empty()) {
+        return Some(what.to_owned());
+    }
+    let target = target.map(str::trim).filter(|t| !t.is_empty())?;
+    // A path, alone: its last part. A command keeps its words.
+    if !target.contains(' ') && target.contains('/') {
+        return target.trim_end_matches('/').rsplit('/').next().map(str::to_owned);
+    }
+    Some(target.to_owned())
+}
+
+/// What 진행 상황 shows: work that needs a look first, then the rest under
+/// way by project, then what finished since `since`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Progress {
+    /// The worst first: failed, then the longest stuck, then the latest.
+    pub risks: Vec<(TicketId, Risk)>,
+    /// Under way and fine, by project in the sidebar's order (None: no
+    /// project), the soonest expected first.
+    pub working: Vec<(Option<String>, Vec<TicketId>)>,
+    /// Finished since then, the latest first.
+    pub done: Vec<TicketId>,
+}
+
+pub fn progress(model: &Model, since: u64) -> Progress {
+    let under_way: Vec<&Ticket> = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).collect();
+    let mut risks: Vec<(TicketId, Risk)> = under_way.iter().filter_map(|t| risk(model, t).map(|r| (t.id, r))).collect();
+    let rank = |r: &Risk| match *r {
+        Risk::Failed => (0, 0),
+        Risk::Stuck(s) => (1, u64::MAX - s),
+        Risk::Late(s) => (2, u64::MAX - s),
+    };
+    risks.sort_by_key(|(id, r)| (rank(r), *id));
+    let mut working: Vec<(Option<String>, Vec<TicketId>)> = Vec::new();
+    let mut names: Vec<Option<String>> = model.project_names().into_iter().map(Some).collect();
+    names.push(None);
+    for name in names {
+        let mut here: Vec<&&Ticket> = under_way.iter().filter(|t| !risks.iter().any(|(id, _)| *id == t.id) && model.ticket_project_name(t) == name).collect();
+        if here.is_empty() {
+            continue;
+        }
+        here.sort_by_key(|t| (model.eta(t).map_or(u64::MAX, |e| e.at), t.id));
+        working.push((name, here.into_iter().map(|t| t.id).collect()));
+    }
+    let mut done: Vec<&Ticket> = model.tickets.iter().filter(|t| t.status == TicketStatus::Done && crate::tickets::changed_at(model, t) >= since.max(1)).collect();
+    done.sort_by_key(|t| (std::cmp::Reverse(crate::tickets::changed_at(model, t)), std::cmp::Reverse(t.id)));
+    Progress { risks, working, done: done.into_iter().map(|t| t.id).collect() }
+}
+
+/// A project's conversations put away, the latest first: its page's 끝남.
+pub fn project_put_away<'a>(model: &'a Model, project: &str) -> Vec<&'a equipe_core::protocol::PutAway> {
+    model.put_away.iter().filter(|c| c.project.as_deref() == Some(project)).collect()
+}
+
+/// A part of a project's work on its page, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkPart {
+    /// Waiting on the person: their turn, a request, a hand-in, a proposal.
+    NeedsYou,
+    /// Under way, or the PM's to accept.
+    Working,
+    /// Ready to start, or waiting on other work.
+    Next,
+    /// Finished lately, the latest first.
+    Done,
+}
+
+/// At most this many finished tickets on a project's page.
+pub const PAGE_DONE: usize = 10;
+
+/// A project's work, part by part (empty parts left out): what waits on the
+/// person first, then what is under way, what is next, and what finished
+/// lately. Ideas and what was cancelled are kept elsewhere.
+pub fn project_work(model: &Model, project: &str) -> Vec<(WorkPart, Vec<TicketId>)> {
+    let since = |t: &Ticket| model.since.get(&t.id).copied().unwrap_or(0);
+    let mut parts: Vec<(WorkPart, Vec<&Ticket>)> = [WorkPart::NeedsYou, WorkPart::Working, WorkPart::Next, WorkPart::Done].into_iter().map(|w| (w, Vec::new())).collect();
+    for t in model.tickets.iter().filter(|t| model.ticket_project_name(t).as_deref() == Some(project)) {
+        let needs = live(model, t) == Some(Live::YourTurn) || (model.section_of(t).is_some() && !model.is_acted(t));
+        let part = match t.status {
+            TicketStatus::Idea | TicketStatus::Cancelled => continue,
+            _ if needs => WorkPart::NeedsYou,
+            TicketStatus::Done => WorkPart::Done,
+            TicketStatus::Todo | TicketStatus::Proposed => WorkPart::Next,
+            TicketStatus::InProgress | TicketStatus::Waiting | TicketStatus::Review => WorkPart::Working,
+        };
+        if let Some((_, list)) = parts.iter_mut().find(|(w, _)| *w == part) {
+            list.push(t);
+        }
+    }
+    parts
+        .into_iter()
+        .filter(|(_, list)| !list.is_empty())
+        .map(|(part, mut list)| {
+            match part {
+                WorkPart::Next => list.sort_by_key(|t| t.id),
+                _ => list.sort_by_key(|t| (std::cmp::Reverse(since(t)), std::cmp::Reverse(t.id))),
+            }
+            if part == WorkPart::Done {
+                list.truncate(PAGE_DONE);
+            }
+            (part, list.into_iter().map(|t| t.id).collect())
+        })
+        .collect()
 }
 
 /// The things listed, in order.
@@ -766,6 +987,8 @@ pub fn yes_commands(squad: &str, t: &Ticket, way: Option<MergeWay>, note: &str) 
     };
     match t.status {
         TicketStatus::Waiting => vec![Command::Resume { squad, ticket: t.id, note: note.to_owned() }],
+        // An idea started: ready for its owner, as a proposal taken on.
+        TicketStatus::Idea => vec![Command::MoveTicket { squad, ticket: t.id, status: Some(TicketStatus::Todo), before: None }],
         TicketStatus::Done if t.waits_to_merge() && way == Some(MergeWay::Branch) => vec![Command::KeepOnBranch { squad, ticket: t.id }],
         TicketStatus::Done if t.not_on_main() => merge(way).into_iter().collect(),
         TicketStatus::Review if Model::merges(t) => std::iter::once(Command::Accept { squad: squad.clone(), ticket: t.id }).chain(merge(way)).collect(),
@@ -986,6 +1209,25 @@ mod tests {
         assert_eq!(proposals(&m, &Filter::default()).iter().map(|t| t.id).collect::<Vec<_>>(), vec![4], "nothing else to sort");
         m.pm_accepts = false;
         assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 5, 3, 4, 8, 7], "the person accepting: all of it, as before");
+    }
+
+    #[test]
+    fn ideas_wait_quietly_in_their_own_view_until_the_pm_brings_one_back_and_a_starts_it() {
+        let mut brought = ticket(2, "proposed", "/p", &[]);
+        brought.note = Some(format!("{}지금 출시 직후라 맞아요", equipe_core::protocol::WHY_NOW));
+        brought.created_by = "frontend".into();
+        let mut m = model(vec![ticket(1, "idea", "/p", &[]), brought.clone(), ticket(3, "todo", "/p", &[])], &["/p"]);
+        m.pm_accepts = true;
+        let inbox_ids: Vec<Need> = items(&inbox(&m, &Filter::default()));
+        assert_eq!(inbox_ids, vec![Need::Ticket(2)], "the idea brought back asks, even where the PM accepts; a kept one doesn't");
+        assert_eq!(brought.why_now(), Some("지금 출시 직후라 맞아요"));
+        let everything = all(&m, &View::default(), &Filter::default(), GroupBy::None);
+        assert!(!items(&everything).contains(&Need::Ticket(1)), "not among all the work");
+        let ideas = all(&m, &View::default(), &Filter::parse("status:idea"), GroupBy::None);
+        assert_eq!(items(&ideas), vec![Need::Ticket(1)], "but in their view");
+        assert_eq!(builtin_views()[ideas_view()].query, "status:idea");
+        let idea = &m.tickets[0];
+        assert_eq!(yes_commands("acme", idea, None, ""), vec![Command::MoveTicket { squad: "acme".into(), ticket: 1, status: Some(TicketStatus::Todo), before: None }]);
     }
 
     #[test]
@@ -1237,18 +1479,131 @@ mod tests {
     }
 
     #[test]
-    fn a_headers_name_switches_the_project_its_chevron_folds() {
+    fn a_headers_name_opens_the_projects_page_its_chevron_folds() {
         let mut folded = BTreeSet::new();
-        assert_eq!(head_click(HeadClick::Name, Some("web"), None, &mut folded), Some(Some("web".into())));
+        assert_eq!(head_click(HeadClick::Name, Some("web"), &mut folded), Some("web".into()));
         assert!(folded.is_empty(), "the name doesn't fold");
-        assert_eq!(head_click(HeadClick::Name, Some("web"), Some("web"), &mut folded), Some(None), "the one in focus: back to every project");
-        assert_eq!(head_click(HeadClick::Name, Some("api"), Some("web"), &mut folded), Some(Some("api".into())));
-        assert_eq!(head_click(HeadClick::Chevron, Some("web"), None, &mut folded), None, "the chevron doesn't switch");
+        assert_eq!(head_click(HeadClick::Name, Some("web"), &mut folded), Some("web".into()), "again: the same page, never every project");
+        assert_eq!(head_click(HeadClick::Chevron, Some("web"), &mut folded), None, "the chevron opens nothing");
         assert!(folded.contains("web"));
-        head_click(HeadClick::Chevron, Some("web"), None, &mut folded);
+        head_click(HeadClick::Chevron, Some("web"), &mut folded);
         assert!(folded.is_empty(), "and unfolds");
-        assert_eq!(head_click(HeadClick::Name, None, None, &mut folded), None, "the shared folder has no slice: it folds");
+        assert_eq!(head_click(HeadClick::Name, None, &mut folded), None, "the squad's group has no page: it folds");
         assert!(folded.contains(""));
+    }
+
+    #[test]
+    fn a_projects_page_holds_its_own_work_what_waits_on_the_person_first() {
+        let mut tickets = vec![ticket(1, "todo", "/web", &[]), ticket(2, "in_progress", "/web", &[]), ticket(3, "waiting", "/web", &[]), ticket(4, "idea", "/web", &[]), ticket(5, "cancelled", "/web", &[]), ticket(6, "in_progress", "/api", &[])];
+        tickets.extend((10..23).map(|i| ticket(i, "done", "/web", &[])));
+        let mut m = model(tickets, &["/web", "/api"]);
+        m.since.insert(10, 500);
+        let work = project_work(&m, "web");
+        assert_eq!(work.iter().map(|(w, _)| *w).collect::<Vec<_>>(), [WorkPart::NeedsYou, WorkPart::Working, WorkPart::Next, WorkPart::Done]);
+        assert_eq!(work[0].1, [3], "its turn: the person's");
+        assert_eq!(work[1].1, [2], "another project's work is never here");
+        assert_eq!(work[2].1, [1]);
+        assert_eq!(work[3].1.len(), PAGE_DONE, "the latest finished only");
+        assert_eq!(work[3].1[0], 10, "the latest first");
+        assert!(!work.iter().any(|(_, ids)| ids.contains(&4) || ids.contains(&5)), "ideas and what was cancelled are kept elsewhere");
+        assert_eq!(project_work(&m, "api").iter().map(|(w, _)| *w).collect::<Vec<_>>(), [WorkPart::Working], "the empty parts left out");
+    }
+
+    fn at_work(session: u64, ticket: u32, last_seen: u64, failed: bool, done_at: Option<u64>) -> crate::state::Member {
+        crate::state::Member {
+            session,
+            name: format!("m{session}"),
+            role: "backend".into(),
+            presence: crate::state::Presence::Working,
+            verb: crate::state::Verb::Working,
+            ticket: Some(ticket),
+            memos: 0,
+            context: None,
+            model: None,
+            engine: None,
+            estimate: done_at.map(|at| equipe_core::protocol::Estimate { done_at: Some(at), ..Default::default() }),
+            target: None,
+            last_seen,
+            failed,
+        }
+    }
+
+    #[test]
+    fn work_under_way_needs_a_look_when_it_failed_went_quiet_or_ran_late() {
+        let now = 100_000;
+        let mut m = model((1..=6).map(|i| ticket(i, "in_progress", "/web", &[])).collect(), &["/web"]);
+        m.unix = now;
+        m.members = vec![
+            at_work(11, 1, now, true, None),                      // failed
+            at_work(12, 2, now - 31 * 60, false, None),           // stuck
+            at_work(13, 3, now - 12 * 60, false, None),           // quiet, not stuck
+            at_work(14, 4, now, false, Some(now - 20 * 60)),      // late: 20 minutes past an hour given
+            at_work(15, 5, now, false, Some(now - 6 * 60)),       // past, but within a fifth of the hour
+            at_work(16, 6, now, false, Some(now + 600)),          // on time
+        ];
+        for id in [4, 5] {
+            m.since.insert(id, now - 80 * 60);
+        }
+        let r = |id| risk(&m, m.tickets.iter().find(|t| t.id == id).unwrap());
+        assert_eq!(r(1), Some(Risk::Failed));
+        assert_eq!(r(2), Some(Risk::Stuck(31 * 60)));
+        assert_eq!(r(3), None, "ten minutes' quiet is a member thinking");
+        assert_eq!(r(4), Some(Risk::Late(20 * 60)));
+        assert_eq!(r(5), None, "a little over, on work given an hour");
+        assert_eq!(r(6), None);
+        let p = progress(&m, 0);
+        assert_eq!(p.risks.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [1, 2, 4], "the worst first");
+        assert_eq!(p.working, [(Some("web".to_owned()), vec![5, 6, 3])], "the rest, the soonest expected first, the unknown last");
+    }
+
+    #[test]
+    fn the_step_is_said_in_a_few_words_a_file_by_its_name() {
+        assert_eq!(step_words(Some("비교표 반응형"), Some("/a/b.tsx")).as_deref(), Some("비교표 반응형"), "the member's own words first");
+        assert_eq!(step_words(None, Some("/var/folders/x/equipe-fake/web/src/gallery.tsx")).as_deref(), Some("gallery.tsx"));
+        assert_eq!(step_words(Some("  "), Some("cargo test -p api")).as_deref(), Some("cargo test -p api"), "a command keeps its words");
+        assert_eq!(step_words(None, None), None);
+    }
+
+    #[test]
+    fn progress_lists_what_finished_since_the_person_last_looked() {
+        let mut m = model(vec![ticket(1, "done", "/web", &[]), ticket(2, "done", "/web", &[]), ticket(3, "done", "/api", &[]), ticket(4, "in_progress", "/api", &[]), ticket(5, "cancelled", "/web", &[])], &["/web", "/api"]);
+        m.unix = 10_000;
+        for (id, at) in [(1, 9_000), (2, 5_000), (3, 9_500), (5, 9_900)] {
+            m.since.insert(id, at);
+        }
+        let p = progress(&m, 8_000);
+        assert_eq!(p.done, [3, 1], "since then, the latest first; never what was cancelled");
+        assert_eq!(p.working, [(Some("api".to_owned()), vec![4])]);
+        assert_eq!(progress(&m, 0).done, [3, 1, 2]);
+    }
+
+    #[test]
+    fn a_projects_conversations_put_away_are_its_ended_ones() {
+        let mut m = Model::new("acme");
+        let away = |session, project: Option<&str>| equipe_core::protocol::PutAway { session, project: project.map(str::to_owned), title: None, at: 0 };
+        m.put_away = vec![away(9, Some("web")), away(8, None), away(7, Some("app")), away(6, Some("web"))];
+        assert_eq!(project_put_away(&m, "web").iter().map(|c| c.session).collect::<Vec<_>>(), [9, 6], "its own, the latest first");
+        assert!(project_put_away(&m, "api").is_empty());
+    }
+
+    #[test]
+    fn a_projects_conversations_split_by_whose_turn_it_is() {
+        let mut m = model(vec![], &["/web", "/api"]);
+        let lane = |session, project: Option<&str>, presence, active| crate::state::Lane {
+            session,
+            of: 1,
+            project: project.map(str::to_owned),
+            presence,
+            verb: crate::state::Verb::Thinking,
+            kept: true,
+            title: None,
+            active,
+        };
+        use crate::state::Presence;
+        m.lanes = vec![lane(10, Some("web"), Presence::Ready, 5), lane(11, Some("web"), Presence::Working, 9), lane(12, Some("web"), Presence::Ready, 7), lane(13, Some("api"), Presence::Ready, 8), lane(14, None, Presence::Ready, 9)];
+        let (yours, answering) = project_talks(&m, "web");
+        assert_eq!(yours.iter().map(|l| l.session).collect::<Vec<_>>(), [12, 10], "the PM answered: the person's turn, latest first");
+        assert_eq!(answering.iter().map(|l| l.session).collect::<Vec<_>>(), [11]);
     }
 
     #[test]
@@ -1260,5 +1615,47 @@ mod tests {
         assert_eq!(ids(&rows(&m, &view, &views)), vec![1], "막힌 일");
         assert_eq!(effective(&view, &views).1, GroupBy::Deps);
         assert_eq!(GroupBy::parse("member"), GroupBy::Member);
+    }
+
+    fn doc(kind: DocKind, project: Option<&str>, date: &str, title: &str, status: &str) -> ProjectDoc {
+        ProjectDoc { kind, project: project.map(str::to_owned), path: format!("/r/{}/{date}-{title}.md", kind.dir()), title: title.into(), date: date.into(), status: status.into(), ticket: None, mode: None }
+    }
+
+    #[test]
+    fn a_projects_briefs_and_plans_list_newest_first_a_brief_before_its_plan() {
+        let docs = [
+            doc(DocKind::Plan, Some("web"), "2026-11-04", "checkout", "in_review"),
+            doc(DocKind::Brief, Some("web"), "2026-11-01", "search", "dropped"),
+            doc(DocKind::Brief, Some("web"), "2026-11-04", "checkout", "settled"),
+            doc(DocKind::Brief, Some("api"), "2026-11-09", "rate-limits", "draft"),
+            doc(DocKind::Brief, None, "2026-11-10", "taxes", "draft"),
+        ];
+        let listed: Vec<(DocKind, &str)> = project_docs(&docs, "web").iter().map(|d| (d.kind, d.title.as_str())).collect();
+        assert_eq!(listed, [(DocKind::Brief, "checkout"), (DocKind::Plan, "checkout"), (DocKind::Brief, "search")]);
+        assert!(project_docs(&docs, "shop").is_empty());
+    }
+
+    #[test]
+    fn a_docs_status_reads_in_the_persons_words_and_an_unknown_one_as_written() {
+        assert_eq!(doc_status("draft"), ("초안".into(), DocTone::Draft));
+        assert_eq!(doc_status("in_review"), ("검토 중".into(), DocTone::Review));
+        assert_eq!(doc_status("In review"), ("검토 중".into(), DocTone::Review));
+        assert_eq!(doc_status("settled"), ("확정".into(), DocTone::Settled));
+        assert_eq!(doc_status("dropped"), ("접음".into(), DocTone::Dropped));
+        assert_eq!(doc_status(""), ("초안".into(), DocTone::Draft));
+        assert_eq!(doc_status("parked"), ("parked".into(), DocTone::Draft));
+        assert_eq!((doc_kind(DocKind::Brief), doc_kind(DocKind::Plan)), ("브리프", "계획"));
+    }
+
+    #[test]
+    fn office_hours_are_asked_for_in_the_persons_words_about_the_project() {
+        let ask = office_hours_ask("web");
+        assert!(ask.contains("web") && ask.contains("오피스 아워") && ask.contains("브리프"), "{ask}");
+    }
+
+    #[test]
+    fn a_started_idea_held_for_office_hours_says_so() {
+        assert_eq!(idea_start_toast(7, true), "아이디어 T-7 시작 → PM이 먼저 오피스 아워");
+        assert_eq!(idea_start_toast(7, false), "아이디어 T-7 시작 → 할 일");
     }
 }

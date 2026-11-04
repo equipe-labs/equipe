@@ -362,7 +362,7 @@ pub enum Updated {
 
 // ---- sparkline ----
 
-/// A line's points in its box: `None` is a gap.
+/// A line's points in its box, a gap where a day isn't known.
 pub type Points = Vec<Option<(f32, f32)>>;
 
 /// The points of two lines in a box `w` × `h`, scaled together (so the period
@@ -447,7 +447,7 @@ pub mod demo {
     }
 
     fn languages(connection: &str) -> MetricValue {
-        MetricValue { metric: "languages".into(), label: "Languages".into(), shape: Shape::Breakdown, value: Some(1284.), previous: Some(1187.), change: None, change_pct: None, series: vec![], previous_series: vec![], breakdown: vec![share("en", 742., 700.), share("ko", 283., 240.), share("ja", 112., 100.), share("es", 64., 60.), share("(unknown)", 83., 87.)], ..visits(connection) }
+        MetricValue { metric: "languages".into(), label: "Languages".into(), shape: Shape::Breakdown, value: Some(1284.), previous: Some(1187.), change: None, change_pct: None, series: vec![], previous_series: vec![], breakdown: vec![share("English", 742., 700.), share("Korean", 283., 240.), share("日本語", 112., 100.), share("Español", 64., 60.), share("Other", 83., 87.)], ..visits(connection) }
     }
 
     fn spots(connection: &str, metric: &str, label: &str, unit: &str, rows: &[(&str, f64)]) -> MetricValue {
@@ -485,8 +485,8 @@ pub mod demo {
         let values = vec![
             visits("m1"),
             languages("m1"),
-            spots("m1", "referrers", "Referrers", "page_loads", &[("$direct", 514.), ("t.co", 308.), ("github.com", 231.), ("www.linkedin.com", 128.), ("news.ycombinator.com", 103.)]),
-            spots("m1", "download_clicks", "Download click spots", "clicks", &[("hero", 96.), ("nav", 34.), ("install", 19.), ("footer", 7.)]),
+            spots("m1", "referrers", "Referrers", "page_loads", &[("Direct", 514.), ("X", 308.), ("GitHub", 231.), ("LinkedIn", 128.), ("Other", 103.)]),
+            spots("m1", "download_clicks", "Download click spots", "clicks", &[("Hero button", 96.), ("Top menu", 34.), ("Install guide", 19.), ("Footer", 7.)]),
             github("m2", "views", "Views", "views", Shape::Count, 2310., 5.1),
             github("m2", "clones", "Clones", "clones", Shape::Count, 418., -2.3),
             github("m2", "stars", "Stars", "stars", Shape::Total, 25., 19.0),
@@ -576,7 +576,7 @@ mod tests {
         let (s, q) = demo::healthy();
         let cards = cards(&q, &s);
         let Body::Bars(bars) = &cards[1].body else { panic!("languages are bars") };
-        assert_eq!((bars[0].label.as_str(), bars[0].value.as_str(), bars[0].fill), ("en", "742", 1.0));
+        assert_eq!((bars[0].label.as_str(), bars[0].value.as_str(), bars[0].fill), ("English", "742", 1.0));
         assert!((bars[1].fill - 283. / 742.).abs() < 1e-6);
         assert!(matches!(cards[0].body, Body::Number { .. }));
     }

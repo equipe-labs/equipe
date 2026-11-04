@@ -36,7 +36,7 @@ use crate::render::{self, Tones, hash_of, plugins, tools};
 use crate::state::{Model, Presence};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, BODY_LINE, CONTROL, ICON_SM, MEASURE, META, META_LINE, MONO, Palette, R_LG, R_MD, R_SM, SMALL, SMALL_LINE, TAIL_ROOM, look};
+use crate::theme::{BODY, BODY_LINE, CONTROL, ICON_SM, MEASURE, META, META_LINE, MONO, Palette, R_LG, R_MD, R_SM, SMALL, SMALL_LINE, TAIL_ROOM};
 use crate::tips::tip;
 
 /// Where text starts inside the column: the cards' and the composer's inner
@@ -65,6 +65,8 @@ const PART_MORE: u32 = 1 << 20;
 const PART_THOUGHT: u32 = PART_MORE + 1;
 const PART_NEWS: u32 = PART_MORE + 2;
 const PART_GROUP: u32 = PART_MORE + 3;
+const PART_ROUTINE: u32 = PART_MORE + 4;
+const PART_BACKGROUND: u32 = PART_MORE + 5;
 /// A call of an open group, by its number in it.
 const PART_ROW: u32 = 1 << 21;
 /// The side panel's width; the conversation keeps the rest.
@@ -76,6 +78,8 @@ type Shown = (SessionId, Option<u32>, Option<Option<String>>);
 
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
+    /// The chapters' list open over the rail (`views/chapters.rs`).
+    pub rail_open: bool,
     /// Which of the cards over the composer is in front, when several wait.
     pub dock_at: usize,
     pub blocks: Rc<Vec<Block>>,
@@ -177,6 +181,7 @@ impl Chat {
         cx.set_global(render::ShellRef(cx.entity().downgrade()));
         Self {
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
+            rail_open: false,
             blocks: Rc::new(Vec::new()),
             shown: None,
             about: Rc::default(),
@@ -243,23 +248,22 @@ impl Chat {
         }
         // Rows from the first that differs are new or changed (a streaming
         // reply is the last row growing); the list measures only those again.
-        let same = old.iter().zip(self.blocks.iter()).take_while(|(a, b)| a == b).count();
+        let change = changed(&old, &self.blocks);
         if n > old.len() {
             let now = std::time::Instant::now();
             let mut arrived: HashMap<u64, std::time::Instant> = self.arrived.iter().filter(|(_, at)| now.duration_since(**at) < ARRIVING).map(|(k, v)| (*k, *v)).collect();
             // Rows put in between (a fold opened) rise where they come; else the new ones at the end.
-            let tail = old.iter().rev().zip(self.blocks.iter().rev()).take_while(|(a, b)| a == b).count().min(old.len() - same);
-            let added = n - old.len();
-            for ix in n - tail - added..n - tail {
+            for ix in change.replaced.start..change.replaced.start + change.count {
                 arrived.insert(self.serial << 24 | ix as u64, now);
             }
             self.arrived = Rc::new(arrived);
         }
         self.scroller.update(cx, |s, cx| {
-            if old.len() != n {
-                s.splice(same..old.len(), n - same, cx);
-            } else if same < n {
-                s.remeasure_items(same..n, cx);
+            if !change.replaced.is_empty() || change.count > 0 {
+                s.splice(change.replaced, change.count, cx);
+            }
+            if !change.remeasured.is_empty() {
+                s.remeasure_items(change.remeasured, cx);
             }
             if folds_changed {
                 s.remeasure(cx);
@@ -282,6 +286,11 @@ impl Chat {
             self.toggle(row, PART_GROUP, cx);
         }
         Some(ix)
+    }
+
+    /// The row at the top of the view.
+    pub fn top_row(&self, cx: &App) -> usize {
+        self.scroller.read(cx).top_item()
     }
 
     /// Bring row `ix` to the top (the snapshot script's; a subagent's row in the sidebar).
@@ -614,7 +623,7 @@ fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> Div 
 #[derive(Clone)]
 struct Who {
     name: String,
-    color: Rgba,
+    role: String,
 }
 
 /// What every row of one frame draws with.
@@ -669,10 +678,9 @@ impl Rows {
     /// The project row `ix` is about, as its chip or dot shows it: its name
     /// and colour — while every project shows, or in a fold of other
     /// projects' talk opened.
-    fn project_of(&self, ix: usize) -> Option<(String, Rgba)> {
+    fn project_of(&self, ix: usize) -> Option<String> {
         let name = self.about.get(ix)?.as_ref().filter(|n| Some(*n) != self.focus.as_ref())?;
-        let at = self.projects.iter().position(|p| p == name)?;
-        Some((name.clone(), header::project_color(self.p, at)))
+        self.projects.contains(name).then(|| name.clone())
     }
 
     /// Whether `part` of row `key` is open: as it opens by itself
@@ -680,6 +688,29 @@ impl Rows {
     fn is_open(&self, key: u64, part: u32, default: bool) -> bool {
         default != self.opened.contains(&(key, part))
     }
+}
+
+/// How the rows went from `old` to `new`: those in `replaced` gave way to
+/// `count` new ones, and those in `remeasured` (counted after the splice)
+/// are measured again.
+#[derive(Debug, PartialEq)]
+struct Changed {
+    replaced: std::ops::Range<usize>,
+    count: usize,
+    remeasured: std::ops::Range<usize>,
+}
+
+/// Between the rows that stayed at the start and those at the end, the
+/// first ones are the same rows changed in place (a reply streaming on, a
+/// card no longer the latest): only those after them came or went. A
+/// replaced row puts the reader back at its top, so the rows they read in
+/// are measured again instead, and they stay where they were reading.
+fn changed(old: &[Block], new: &[Block]) -> Changed {
+    let same = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let tail = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count().min(old.len().min(new.len()) - same);
+    let (gone, came) = (old.len() - same - tail, new.len() - same - tail);
+    let kept = same + gone.min(came);
+    Changed { replaced: kept..same + gone, count: came - gone.min(came), remeasured: same..new.len() }
 }
 
 /// The replies that end a turn: the last before the person speaks again, or
@@ -703,8 +734,7 @@ pub fn conversation_pane(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let Some(member) = shell.model.selected_member().filter(|_| !shell.chat.blocks.is_empty()) else {
         return Empty.into_any_element();
     };
-    let (_, hue) = look(&member.role, &member.name);
-    let who = Who { name: member.name.clone(), color: shell.palette.member(hue) };
+    let who = Who { name: member.name.clone(), role: member.role.clone() };
     v_flex().size_full().items_center().child(conversation(shell, who, cx)).into_any_element()
 }
 
@@ -722,6 +752,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     let names = shell.model.project_names();
     let slice = shell.model.chat_slice(shell.chat.follow);
     let every = slice.is_some() && names.len() > 1;
+    let log_name = who.name.clone();
     let rows = Rc::new(Rows {
         p,
         tones: render::tones(&p),
@@ -781,6 +812,8 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // Our own pill, not the kit's jump button: the kit's put a tooltip with the
     // same word on it, in its own white, over the conversation.
     let jump = (!following).then(|| jump_pill(p, shell.chat.scroller.clone()));
+    // The rows' room at each side: wider while the chapter rail shows in it.
+    let side = if super::chapters::shows(&shell.chat.blocks) { super::chapters::GUTTER.max(16. + TEXT_INSET) } else { 16. + TEXT_INSET };
     // Words selected in it are offered to quote (`views/quote.rs`).
     let scroller = div()
         .flex_1()
@@ -806,8 +839,6 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             .absolute()
             .size_0()
         })
-        .children(pulse)
-        .children(jump)
         .child(
         // The list is the pane's whole width, so its scrollbar is at the
         // window's right edge (as a terminal's is); each row keeps the column.
@@ -815,12 +846,19 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             h_flex().w_full().justify_center().child(div().flex_1().min_w_0().max_w(px(COLUMN - 32. - 2. * TEXT_INSET)).child(row(&rows, ix, window, cx))).into_any_element()
         })
             .jump_button(false)
-            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(16. + TEXT_INSET)).pr(px(16. + TEXT_INSET)))
+            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(side)).pr(px(side)))
             // Room under the last line, so it never sits on the composer's
             // edge; read back, the rows fade out there under the jump pill.
             .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
             .with_bottom_fade(p.bg)
-    );
+            .aria_label(t!("chat.a11y_conversation", name = log_name))
+    )
+    // The pills come after the list, so they are painted over its rows and
+    // its bottom fade, not under them.
+    .children(pulse)
+    .children(jump)
+    // A bar for each thing asked, in the rows' left margin — over them.
+    .children(super::chapters::rail(shell, cx));
     // The pill has its own room under the list, so it covers nothing.
     let list = v_flex().flex_1().min_h_0().w_full().items_center().child(scroller);
     // Another project's slice: the list fades in at its end.
@@ -853,7 +891,9 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             let decided = crate::decide::decided(text).unwrap_or(crate::decide::Decided::Closed);
             super::decide::decided_row(p, rows.tones, rows.handle.clone(), key, &decided, rows.is_open(key, super::decide::PART_DECIDED, false), window, cx)
         }
-        Block::User(text) => user_row(rows, ix, key, text, opened(PART_MORE), rows.project_of(ix), cx),
+        // A routine run: its heading, opening on what it asked.
+        Block::User(text) if crate::routine::ran(text).is_some() => routine_row(rows, key, text, window, cx),
+        Block::User(text) => user_row(rows, ix, key, text, opened(PART_MORE), rows.project_of(ix), window.is_a11y_active(), cx),
         Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
         Block::Steps(lines) => group(rows, key, lines, window, cx),
         Block::News(news) => news_rows(rows, key, news, window, cx),
@@ -874,6 +914,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(format!("{} · {}", worked.took(), worked.at))
             .into_any_element(),
         Block::Summarized => super::compact::divider(p, rows.tones.added).into_any_element(),
+        Block::Background { summary, failed, file } => background_row(rows, key, summary, *failed, file.as_deref(), window, cx),
         Block::Note(text) => {
             // A ticket's heading (`── T-12 …`).
             let chapter = text.starts_with('─');
@@ -958,11 +999,56 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
     }
 }
 
+/// A command the member left in the background ended: a quiet line in its
+/// flow — how it ended and the engine's summary — opening on where its output
+/// is, when the engine said.
+fn background_row(rows: &Rows, key: u64, summary: &str, failed: bool, file: Option<&str>, window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let (mark, tone, how) = match failed {
+        true => (Icon::Alert, rows.tones.danger, t!("chat.background_failed")),
+        false => (Icon::Check, p.muted, t!("chat.background_done")),
+    };
+    let words = if summary.is_empty() { how.to_owned() } else { format!("{how} · {summary}") };
+    let line = || {
+        [
+            div().flex_none().child(icon(mark, 12., tone)).into_any_element(),
+            div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(words.clone()).into_any_element(),
+        ]
+    };
+    let Some(file) = file else {
+        return h_flex().min_h(px(24.)).gap(px(6.)).items_center().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.muted).children(line()).into_any_element();
+    };
+    let open = rows.is_open(key, PART_BACKGROUND, false);
+    let progress = motion::openness(("background-open", key), open, window, cx);
+    let head = disclosure_head(rows, ("background", key), PART_BACKGROUND, key, false, window, cx).children(line()).child(chevron(p.muted, progress));
+    let body = (progress > 0.).then(|| {
+        motion::Reveal::new(
+            ("background-body", key),
+            progress,
+            h_flex()
+                .opacity(progress)
+                .pt_1()
+                .ml(px(2.))
+                .pl(px(12.))
+                .gap_2()
+                .border_l_1()
+                .border_color(p.hair)
+                .text_size(px(SMALL))
+                .line_height(px(SMALL_LINE))
+                .text_color(p.muted)
+                .child(div().flex_none().child(t!("chat.background_output")))
+                .child(div().min_w_0().font_family(MONO).child(SelectableText::new(("background-file", key), file.to_owned())))
+                .into_any_element(),
+        )
+    });
+    v_flex().child(head).children(body).into_any_element()
+}
+
 /// A reply: who speaks over the conversation's first, the text full width,
 /// and under a turn's last the actions — copy, ask again, how long it worked
 /// and when — in sight on the latest, on hover on the rest.
 #[allow(clippy::too_many_arguments)]
-fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bool, worked: Option<&crate::convo::Worked>, _window: &mut Window, cx: &mut App) -> AnyElement {
+fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bool, worked: Option<&crate::convo::Worked>, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live };
     // A part of the reply's words, drawn in text view `kind`.
@@ -1003,7 +1089,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Worked(_) | Block::Summarized);
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized);
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
@@ -1038,6 +1124,10 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
             .children(when)
     });
     v_flex()
+        .id(("reply", key))
+        .role(Role::Article)
+        // Said only when a screen reader listens: the words, their marks gone.
+        .when(window.is_a11y_active(), |row| row.aria_label(t!("chat.a11y_said", who = rows.who.name.as_str(), text = crate::render::prose::spoken(text))))
         .group(group.clone())
         .when(after_activity && !first, |col| col.pt(px(6.)))
         .when(first, |col| {
@@ -1048,7 +1138,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
                     .items_center()
                     .text_size(px(META))
                     .text_color(p.muted)
-                    .child(div().size(px(6.)).rounded_full().bg(rows.who.color))
+                    .child(crate::theme::avatar(p, &rows.who.role, &rows.who.name, 15.))
                     .child(rows.who.name.clone()),
             )
         })
@@ -1060,7 +1150,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
 }
 
 /// The project a message of yours was about: a dot of its colour and its name.
-fn project_chip(p: Palette, name: String, color: Rgba) -> impl IntoElement {
+fn project_chip(p: Palette, name: String) -> impl IntoElement {
     h_flex()
         .h(px(20.))
         .px(px(7.))
@@ -1071,7 +1161,7 @@ fn project_chip(p: Palette, name: String, color: Rgba) -> impl IntoElement {
         .border_color(p.hair)
         .text_size(px(11.5))
         .text_color(p.text2)
-        .child(super::board::dot(color, 6.))
+        .child(crate::theme::project_mark(p, 11.))
         .child(name)
 }
 
@@ -1235,7 +1325,10 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
     };
     let one = single.then(|| &lines[0]);
     // A document read or written: a look at it in the panel, one click away.
-    let doc = one.filter(|_| status != Status::Running && !failed).and_then(|l| l.path.clone()).filter(|path| crate::doc::is_doc(path)).map(|path| {
+    // A deck written, among whatever else: shown as a presentation.
+    let deck = crate::deck::written(lines).map(str::to_owned);
+    let presents = deck.is_some();
+    let doc = deck.or_else(|| one.filter(|_| status != Status::Running && !failed).and_then(|l| l.path.clone()).filter(|path| crate::doc::is_doc(path))).map(|path| {
         let handle = rows.handle.clone();
         div()
             .id(("group-doc", key))
@@ -1249,7 +1342,13 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
             .text_color(p.text2)
             .cursor_pointer()
             .hover(move |s| s.bg(p.wash).text_color(p.text))
-            .child(t!("doc.view"))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .role(Role::Button)
+            .aria_label(if presents { t!("deck.present") } else { t!("doc.view") })
+            .children(presents.then(|| icon(Icon::Play, 10., p.text2)))
+            .child(if presents { t!("deck.present") } else { t!("doc.view") })
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 let path = std::path::PathBuf::from(&path);
@@ -1440,7 +1539,7 @@ fn diff_lines(rows: &Rows, id: u64, card: tools::DiffCard, path: Option<&str>) -
 /// in a row fold into one line that counts them.
 fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
-    // While every project shows: a dot of the project the news is about.
+    // While every project shows: the project the news is about, its folder.
     let project = rows.project_of((key & 0xFF_FFFF) as usize);
     let line = |n: usize, item: &crate::activity::News, cx: &mut App| {
         let line = h_flex()
@@ -1449,7 +1548,7 @@ fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut
             .items_center()
             .text_size(px(SMALL))
             .child(news_icon(rows, item.kind))
-            .children(project.as_ref().map(|(name, color)| tip(div().id(("news-project", key << 8 | n as u64)).child(super::board::dot(*color, 6.)), p, name.clone(), None)))
+            .children(project.as_ref().map(|name| tip(div().id(("news-project", key << 8 | n as u64)).child(crate::theme::project_mark(p, 11.)), p, name.clone(), None)))
             .child(linked(rows, ("news", key << 8 | n as u64), &item.text, p.muted, false))
             // The disk ran short: the way to make room, in a click.
             .when(item.kind == crate::activity::NewsKind::DiskShort, |r| {
@@ -1555,7 +1654,7 @@ fn news_icon(rows: &Rows, kind: crate::activity::NewsKind) -> impl IntoElement {
 /// is, quieter — a dashed outline — and under it what it waits for and when
 /// it was said, then on hover (or reached with ↑) copy, take it back and
 /// send it now. Taken back, it fades out.
-fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: Option<(String, Rgba)>, cx: &mut App) -> AnyElement {
+fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: Option<String>, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
@@ -1575,8 +1674,15 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
     let now = keyed_button(p, ("pending-now", key), Icon::SendNow, now_tip, Some("⌘↵"), move |_, cx| {
         handle.update(cx, |shell, cx| shell.send_pending_now(cx)).ok();
     });
+    // Its cards folded, as when it is sent.
+    let (cards, rest) = crate::quote::read(&crate::design_talk::split(&parts.text).1);
+    let quoted = (!cards.is_empty()).then(|| {
+        v_flex().gap(px(10.)).children(cards.iter().enumerate().map(|(n, card)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), usize::MAX, card, rows.handle.clone())))
+    });
+    let shown = if cards.is_empty() { parts.text.clone() } else { rest };
     let bubble = (!parts.text.is_empty()).then(|| {
-        div()
+        v_flex()
+            .gap(px(10.))
             .max_w(gpui_kit::relative(BUBBLE_SHARE))
             .px(px(BUBBLE_X))
             .py(px(BUBBLE_Y))
@@ -1588,7 +1694,8 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
             .text_size(px(BODY))
             .line_height(px(BODY_LINE))
             .text_color(p.text2)
-            .child(SelectableText::new(("pending", key), parts.text.clone()))
+            .children(quoted)
+            .when(!shown.is_empty(), |b| b.child(SelectableText::new(("pending", key), shown)))
     });
     let label = h_flex()
         .gap(px(5.))
@@ -1615,7 +1722,7 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
                 .text_color(p.muted)
                 .child(h_flex().gap(px(2.)).items_center().when(!picked, |r| r.invisible().group_hover(group.clone(), |s| s.visible())).child(copy).child(back).child(now))
                 .child(label)
-                .children(project.map(|(name, color)| project_chip(p, name, color))),
+                .children(project.map(|name| project_chip(p, name))),
         );
     if leaving {
         return row.with_animation(("pending-out", key), Animation::new(motion::BASE).with_easing(motion::ease_out), |el, t| el.opacity(1. - t)).into_any_element();
@@ -1643,15 +1750,26 @@ fn keyed_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: impl In
 /// wide as your words up to most of the column, no name over it; what it
 /// attached just above it, its start only when it is long ("더 보기"), and on
 /// hover a small row of actions beneath.
-fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<(String, Rgba)>, cx: &mut App) -> AnyElement {
+#[allow(clippy::too_many_arguments)]
+fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<String>, heard: bool, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
-    // Asked about words of the conversation: the quote over the words.
-    let (quotes, rest) = crate::quote::split_all(&parts.text);
-    let quoted = (!quotes.is_empty()).then(|| {
-        v_flex().gap_1().children(quotes.iter().enumerate().map(|(n, quote)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), ix, quote, rows.handle.clone()))).into_any_element()
+    // Pointed at things on the design screen: their chips first.
+    let (pointed, after) = crate::design_talk::split(&parts.text);
+    let pointed = (!pointed.is_empty()).then(|| super::design_talk::in_bubble(p, &pointed));
+    // Replied to — or asked about — passages of the conversation: each
+    // folded over the words to it, then the rest.
+    let (cards, rest) = crate::quote::read(&after);
+    let quoted = (!cards.is_empty()).then(|| {
+        let answered = cards.iter().any(crate::quote::Reply::answered);
+        v_flex()
+            .gap(px(if answered { 12. } else { 4. }))
+            .children(cards.iter().enumerate().map(|(n, card)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), ix, card, rows.handle.clone())))
+            // Replies, then the rest: a hairline between, so the rest isn't read as the last reply's.
+            .when(answered && !rest.trim().is_empty(), |q| q.pb(px(10.)).border_b_1().border_color(p.hair))
+            .into_any_element()
     });
-    let text = if quotes.is_empty() { parts.text.as_str() } else { rest.as_str() };
+    let text = if cards.is_empty() { after.as_str() } else { rest.as_str() };
     // The pictures it embeds show under it, their markup out of its words.
     let embedded = equipe_core::visuals::markdown::local_images(text);
     let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &rows.base).map(|p| p.to_string_lossy().into_owned());
@@ -1681,7 +1799,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
     let group: SharedString = format!("user-{key}").into();
     // What is copied is what is shown: the words (the tags only when there are none).
-    let copied = if parts.text.is_empty() { raw.to_owned() } else { parts.text.clone() };
+    let copied = if parts.text.is_empty() { raw.to_owned() } else { after.clone() };
     let copy = tool_button(p, ("user-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone())));
     let handle = rows.handle.clone();
     let more = long.then(|| {
@@ -1696,7 +1814,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
                 handle.update(cx, |shell, cx| shell.chat_toggle(key, PART_MORE, cx)).ok();
             })
     });
-    let bubble = (body.is_some() || quoted.is_some()).then(|| {
+    let bubble = (body.is_some() || quoted.is_some() || pointed.is_some()).then(|| {
         v_flex()
             .max_w(gpui_kit::relative(BUBBLE_SHARE))
             .px(px(BUBBLE_X))
@@ -1707,11 +1825,15 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
             .text_size(px(BODY))
             .line_height(px(BODY_LINE))
             .text_color(p.prose)
+            .children(pointed)
             .children(quoted)
             .children(body)
             .children(more)
     });
     v_flex()
+        .id(("user", key))
+        .role(Role::Article)
+        .when(heard, |row| row.aria_label(t!("chat.a11y_said", who = t!("tickets.you"), text = text)))
         .group(group.clone())
         .w_full()
         .mt_4()
@@ -1729,9 +1851,47 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
                 .gap(px(6.))
                 .items_center()
                 .child(div().invisible().group_hover(group, |s| s.visible()).child(copy))
-                .children(project.map(|(name, color)| project_chip(p, name, color))),
+                .children(project.map(|name| project_chip(p, name))),
         )
         .into_any_element()
+}
+
+/// A routine that ran — handed over as the person's message, on its schedule
+/// or their click: not their bubble but a heading, "정기 업무 · 디자인 리뷰", that
+/// opens on what it asked. What answers it comes under it.
+fn routine_row(rows: &Rows, key: u64, text: &str, window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let Some(ran) = crate::routine::ran(text) else { return div().into_any_element() };
+    // The weekly retro: headed by the day its week runs up to, whatever the routine is called now.
+    let retro = crate::retro::heading(text);
+    let title = retro.clone().unwrap_or_else(|| t!("chat.routine_ran", title = ran.title));
+    let open = rows.is_open(key, PART_ROUTINE, false);
+    let progress = motion::openness(("routine-open", key), open, window, cx);
+    let head = disclosure_head(rows, ("routine", key), PART_ROUTINE, key, false, window, cx)
+        .child(icon(if retro.is_some() { Icon::Flag } else { Icon::Clock }, 13., p.accent))
+        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(title.clone()))
+        .when(!ran.asked.is_empty(), |h| h.child(chevron(p.muted, progress)));
+    let body = (progress > 0. && !ran.asked.is_empty()).then(|| {
+        let state = rows.views.borrow_mut().get(view_key(key, 4), &escape_markdown(ran.asked), cx);
+        let look = Look { size: SMALL, line: SMALL_LINE, color: p.muted, live: false };
+        motion::Reveal::new(
+            ("routine-body", key),
+            progress,
+            div()
+                .opacity(progress)
+                .pt_1()
+                .ml(px(6.))
+                .pl(px(12.))
+                .border_l_1()
+                .border_color(p.hair)
+                .text_size(px(SMALL))
+                .line_height(px(SMALL_LINE))
+                .text_color(p.muted)
+                .child(view::configure(TextView::new(&state), p, look, key, Arc::default()))
+                .into_any_element(),
+        )
+    });
+    v_flex().id(("routine-ran", key)).role(Role::Article).aria_label(title).mt_4().child(head).children(body).into_any_element()
 }
 
 /// Your words as Markdown that shows them as typed: every mark escaped, every
@@ -1806,7 +1966,7 @@ fn jump_pill(p: Palette, scroller: Entity<MessageScrollerState>) -> impl IntoEle
         .text_size(px(13.))
         .text_color(p.text)
         .cursor_pointer()
-        .hover(move |s| s.bg(p.wash))
+        .hover(move |s| s.bg(p.popover_hover()))
         .child(icon(Icon::ArrowDown, 14., p.text2))
         .child(t!("chat.jump_to_bottom"))
         .on_click(move |_, _, cx| scroller.update(cx, |state, cx| state.scroll_to_end(cx)));
@@ -1985,6 +2145,7 @@ impl Shell {
         let part = match (call, self.chat.blocks.get(ix)) {
             (Some(n), _) => PART_ROW + n,
             (None, Some(Block::Thought { .. })) => PART_THOUGHT,
+            (None, Some(Block::Background { .. })) => PART_BACKGROUND,
             (None, Some(Block::News(_))) => PART_NEWS,
             (None, Some(Block::YourTurn { .. })) => yourturn::PART_SENT,
             (None, Some(Block::User(text))) if crate::decide::decided(text).is_some() => super::decide::PART_DECIDED,
@@ -2185,7 +2346,57 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 
 #[cfg(test)]
 mod tests {
-    use super::{Block, escape_markdown, find_hits, occurrences, turn_ends};
+    use super::{Block, changed, escape_markdown, find_hits, occurrences, turn_ends};
+    use gpui_kit::{ListAlignment, ListOffset, ListState, px};
+
+    /// Where the reader is once the list is told how `old` became `new`, read
+    /// from `at` (a row and how far into it).
+    fn place_after(old: &[Block], new: &[Block], at: (usize, f32)) -> (usize, f32) {
+        let list = ListState::new(old.len(), ListAlignment::Top, px(400.));
+        list.scroll_to(ListOffset { item_ix: at.0, offset_in_item: px(at.1) });
+        let change = changed(old, new);
+        if !change.replaced.is_empty() || change.count > 0 {
+            list.splice(change.replaced, change.count);
+        }
+        list.remeasure_items(change.remeasured);
+        assert_eq!(list.item_count(), new.len());
+        let top = list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item.into())
+    }
+
+    fn reply(text: &str, live: bool) -> Block {
+        Block::Reply { text: text.into(), first: false, live, worked: None }
+    }
+
+    #[test]
+    fn a_reply_read_as_it_streams_stays_put_when_the_next_call_comes() {
+        let old = [Block::User("go".into()), reply("a long answer", true)];
+        let new = [Block::User("go".into()), reply("a long answer, and more", true), Block::Steps(vec![])];
+        assert_eq!(place_after(&old, &new, (1, 300.)), (1, 300.));
+    }
+
+    #[test]
+    fn a_row_changing_above_the_reader_while_rows_come_leaves_them_where_they_read() {
+        let card = |live| Block::YourTurn { ticket: 7, news: "T-7".into(), live, look: 0 };
+        let old = [card(true), reply("read here", false), Block::Steps(vec![])];
+        let new = [card(false), reply("read here", false), Block::Steps(vec![]), card(true)];
+        assert_eq!(place_after(&old, &new, (1, 120.)), (1, 120.));
+    }
+
+    #[test]
+    fn a_row_put_in_above_the_reader_moves_their_place_down_with_it() {
+        let old = [Block::User("go".into()), reply("one", false), reply("two", false)];
+        let new = [Block::User("go".into()), Block::Note("between".into()), reply("one", false), reply("two", false)];
+        assert_eq!(place_after(&old, &new, (2, 50.)), (3, 50.));
+    }
+
+    #[test]
+    fn a_row_that_streams_on_alone_is_measured_again_in_place() {
+        let old = [Block::User("go".into()), reply("a", true)];
+        let new = [Block::User("go".into()), reply("ab", true)];
+        assert_eq!(place_after(&old, &new, (1, 10.)), (1, 10.));
+        assert_eq!(changed(&old, &new).remeasured, 1..2);
+    }
 
     #[test]
     fn your_words_show_as_typed() {

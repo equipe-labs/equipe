@@ -21,7 +21,7 @@ use super::icons;
 use crate::board::{self, DoneWindow, Filter, GroupBy, Menu, MergeWay, Row, SavedView, Tab, Tone, Undo, View};
 use crate::diffs::{self, Fetched, Source, Stat};
 use crate::state::{Conn, Model, Need, Presence, Verb, local_hm, short_span, status_word};
-use crate::theme::{MONO, PROJECT_HUES, Palette, SMALL, key_face, look};
+use crate::theme::{MONO, Palette, SMALL, key_face, look};
 use crate::tips::TipExt as _;
 use crate::{Screen, Shell};
 
@@ -59,8 +59,12 @@ pub enum Popover {
     Projects,
     /// The team, under the conversation's title.
     Members,
+    /// A conversation's ⋯: move it to another project, put it away.
+    Talk,
     Filter,
     Group,
+    /// The design screen's systems, when more than two: a list, not segments.
+    DesignSource,
 }
 
 type Seen = (Option<String>, String, Option<bool>);
@@ -104,15 +108,20 @@ pub struct BoardUi {
     pub side_drawn: std::rc::Rc<std::cell::Cell<[f32; 3]>>,
     /// When the sidebar last came or went, to slide it.
     pub sidebar_shown_at: Option<Instant>,
-    /// The sidebar's live rows as last drawn, to ease them in and out.
-    pub side_motion: std::cell::RefCell<super::sidebar::SideMotion>,
-    /// The sidebar's projects whose live work shows ticket by ticket, not
-    /// in one line (by [`SideGroup::key`]).
-    pub side_work_open: std::collections::HashSet<String>,
     /// The sidebar's lists of conversations shown whole (by project; "" the squad's).
     pub side_talks_all: std::collections::HashSet<String>,
     /// Every project shown, the quiet ones past the first few too.
     pub side_projects_all: bool,
+    /// The sidebar's other screens shown, named, under "더 보기".
+    pub side_more: bool,
+    /// 진행 상황: since when "since you last looked" counts, and whether it shows today instead.
+    pub progress_since: u64,
+    pub progress_today: bool,
+    /// The project whose page is open (or was last), and its tab.
+    pub project_page: Option<String>,
+    pub project_tab: crate::board::ProjectTab,
+    /// A conversation put away, asked back: opened when it is.
+    pub reopening: Option<equipe_core::protocol::SessionId>,
     /// A project's menu, open where its ⋯ or a right-click was.
     pub project_menu: Option<(String, Point<Pixels>)>,
     /// A project just taken off the squad, to put back while it is said.
@@ -197,10 +206,14 @@ impl BoardUi {
             side_split_drag: None,
             side_drawn: Default::default(),
             sidebar_shown_at: None,
-            side_motion: Default::default(),
-            side_work_open: Default::default(),
             side_talks_all: Default::default(),
+            project_page: None,
+            project_tab: Default::default(),
+            reopening: None,
             side_projects_all: false,
+            side_more: false,
+            progress_since: 0,
+            progress_today: false,
             project_menu: None,
             removed_project: None,
             sub_motion: Default::default(),
@@ -526,7 +539,7 @@ impl Shell {
                 } else if t.status == TicketStatus::Waiting {
                     let note = self.done_note(&t, cx);
                     self.land_with(&t, None, &note, cx);
-                } else if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed) {
+                } else if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Idea) {
                     self.land(&t, None, cx);
                 }
             }
@@ -649,6 +662,7 @@ impl Shell {
         let text = match t.status {
             TicketStatus::Waiting => t!("board.toast_resume", id = t.id),
             TicketStatus::Proposed => t!("board.toast_proposal", id = t.id),
+            TicketStatus::Idea => crate::board::idea_start_toast(t.id, self.model.members.iter().any(Model::is_pm)),
             TicketStatus::Done if way == Some(MergeWay::Branch) => t!("board.toast_keep", id = t.id),
             TicketStatus::Done => t!("board.toast_merge", id = t.id, project = project, way = way.unwrap_or(MergeWay::Merge).label()),
             _ if Model::merges(t) => match way {
@@ -747,6 +761,15 @@ impl Shell {
 
     // ── no ──
 
+    /// An idea the PM brought back, kept for later again: not yet.
+    pub fn keep_as_idea(&mut self, id: TicketId, cx: &mut Context<Self>) {
+        if !self.can_act() {
+            return;
+        }
+        let command = Command::MoveTicket { squad: self.model.squad.clone(), ticket: id, status: Some(TicketStatus::Idea), before: None };
+        self.hold(id, t!("board.toast_kept_idea", id = id), vec![command], cx);
+    }
+
     /// N: no to what is picked — decline, drop, or (asked once) cancel.
     pub fn board_no(&mut self, cx: &mut Context<Self>) {
         if !self.board.view.chosen.is_empty() {
@@ -763,7 +786,7 @@ impl Shell {
             Some(Need::Ticket(id)) => {
                 let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
                 match t.status {
-                    TicketStatus::Proposed => {
+                    TicketStatus::Proposed | TicketStatus::Idea => {
                         let command = Command::Cancel { squad: self.model.squad.clone(), ticket: id };
                         self.hold(id, t!("board.toast_drop", id = id), vec![command], cx);
                     }
@@ -817,7 +840,7 @@ impl Shell {
                 let set = self.merge_way_of(&self.project_of(&t));
                 // Work accepted already is merged in bulk, never kept unasked.
                 let way = if t.not_on_main() { set.filter(|w| *w != MergeWay::Branch) } else { board::needs_way(&t).then(|| set.unwrap_or(MergeWay::Branch)) };
-                if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Waiting) || t.not_on_main() {
+                if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Idea | TicketStatus::Waiting) || t.not_on_main() {
                     self.land(&t, way, cx);
                 }
             } else if !t.status.is_closed() {
@@ -1297,11 +1320,6 @@ pub fn kbd(p: Palette, key: &'static str) -> Div {
     div().px(px(5.)).h(px(18.)).flex().items_center().rounded(px(4.)).border_1().border_color(p.hair).text_size(px(11.)).text_color(p.muted).font_features(key_face()).child(key)
 }
 
-pub fn hue_of(p: Palette, model: &Model, t: &Ticket) -> Option<Rgba> {
-    let name = model.ticket_project_name(t)?;
-    model.project_names().iter().position(|q| *q == name).map(|ix| p.member(PROJECT_HUES[ix % PROJECT_HUES.len()]))
-}
-
 pub fn member_color(p: Palette, model: &Model, who: &str) -> Rgba {
     model.members.iter().find(|m| m.name == who || m.role == who).map_or(p.text2, |m| p.member(look(&m.role, &m.name).1))
 }
@@ -1334,7 +1352,7 @@ pub fn working_summary(model: &Model, count: bool) -> String {
     parts.join(" · ")
 }
 
-fn eta_text(at: u64, guessed: bool) -> String {
+pub fn eta_text(at: u64, guessed: bool) -> String {
     if guessed { format!("~{}", local_hm(at)) } else { local_hm(at) }
 }
 
@@ -1545,7 +1563,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .child(label)
     };
     let body: Vec<AnyElement> = match which {
-        Popover::Projects | Popover::Members => return None,
+        Popover::Projects | Popover::Members | Popover::Talk | Popover::DesignSource => return None,
         Popover::Group => {
             let mut rows: Vec<AnyElement> = GroupBy::ALL
                 .into_iter()
@@ -1722,10 +1740,7 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(color)
-                .when_some(match tone {
-                    Tone::Project(Some(i)) => Some(p.member(PROJECT_HUES[*i % PROJECT_HUES.len()])),
-                    _ => None,
-                }, |h, c| h.child(dot(c, 7.)))
+                .when(matches!(tone, Tone::Project(Some(_))), |h| h.child(crate::theme::project_mark(p, 12.)))
                 .child(label.clone())
                 .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()))
                 // The whole section at once: picked, and the bar asks once to confirm.
@@ -1878,6 +1893,7 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
             n => (format!("{a} · {}", t!("sidebar.subagents", n = n)), p.text2),
         }),
         TicketStatus::Waiting => board::first_need(t).map(|n| (n, p.accent)),
+        TicketStatus::Proposed if t.why_now().is_some() => Some((t!("board.idea_back").to_owned(), p.accent)),
         TicketStatus::Proposed => Some((t!("board.proposed_by", who = t.created_by), p.muted)),
         TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind)), p.muted)),
         TicketStatus::Review | TicketStatus::Done => shell.board.stat(t).map(|s| (s.short(), p.muted)),
@@ -1901,9 +1917,13 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     let p = shell.palette;
     let model = &shell.model;
     let group = SharedString::from(format!("row-{need:?}"));
-    let base = |id: SharedString, cx: &mut Context<Shell>| {
+    // `said`: the row as a screen reader reads it.
+    let base = |id: SharedString, said: String, cx: &mut Context<Shell>| {
         h_flex()
             .id(id)
+            .role(Role::ListItem)
+            .aria_label(said)
+            .aria_selected(picked)
             .group(group.clone())
             .relative()
             .h(px(ROW))
@@ -1932,14 +1952,13 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     let narrow = shell.board.list_width < 560.;
     let (flags_w, detail_w, eta_w) = if narrow { (0., 96., 0.) } else if compact { (72., 120., 44.) } else { (120., 176., 56.) };
     let project_col = |t: Option<&Ticket>| {
-        let color = t.and_then(|t| hue_of(p, model, t));
         let name = t.map(|t| model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into()));
         h_flex()
             .w(px(if compact { 10. } else { 84. }))
             .flex_none()
             .gap(px(6.))
             .items_center()
-            .children(t.map(|_| dot(color.unwrap_or(p.muted), 6.)))
+            .children(t.map(|_| crate::theme::project_mark(p, 11.)))
             .when(!compact, |d| d.child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(name.unwrap_or_default())))
     };
     let cell = |w: f32| div().w(px(w)).flex_none().truncate().text_align(TextAlign::Right).text_size(px(12.));
@@ -1949,7 +1968,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             let card = super::approvals::Card::of(a);
             let hue = look(model.members.iter().find(|m| m.session == a.session).map_or("", |m| m.role.as_str()), &a.member).1;
             let ticket = a.ticket.and_then(|t| model.tickets.iter().find(|x| x.id == t));
-            base(SharedString::from(format!("ask-{id}")), cx)
+            base(SharedString::from(format!("ask-{id}")), format!("{}: {}", a.member, t!("approvals.allow_question", what = card.noun)), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(div().size(px(14.)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)))
@@ -1965,14 +1984,14 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(card.lines.first().cloned().unwrap_or_default())),
                 )
                 .child(div().w(px(flags_w)).flex_none())
-                .child(cell(detail_w).text_color(p.member(hue)).child(a.member.clone()))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.member(hue)).child(crate::theme::member_mark(p, model, &a.member, 14.)).child(div().min_w_0().truncate().child(a.member.clone())))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
         }
         Need::Browser(page) => {
             let Some((title, name, color)) = super::browser::need_row(shell, page) else { return div().into_any_element() };
-            base(SharedString::from(format!("browser-{page}")), cx)
+            base(SharedString::from(format!("browser-{page}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::browser::need_mark(p))
@@ -1980,14 +1999,14 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(cell(detail_w).text_color(color).child(name))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
         }
         Need::Secret(id) => {
             let Some((title, name, color)) = super::secrets::row_text(shell, id) else { return div().into_any_element() };
-            base(SharedString::from(format!("secret-{id}")), cx)
+            base(SharedString::from(format!("secret-{id}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::secrets::mark(p))
@@ -1995,14 +2014,14 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(cell(detail_w).text_color(color).child(name))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
         }
         Need::Accept(id) => {
             let Some((title, name, color)) = super::accept::row_text(shell, id) else { return div().into_any_element() };
-            base(SharedString::from(format!("accept-{id}")), cx)
+            base(SharedString::from(format!("accept-{id}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::accept::mark(p))
@@ -2010,14 +2029,14 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(cell(detail_w).text_color(color).child(name))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
         }
         Need::Team(id) => {
             let Some((title, name, color)) = super::team::row_text(shell, id) else { return div().into_any_element() };
-            base(SharedString::from(format!("team-{id}")), cx)
+            base(SharedString::from(format!("team-{id}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::team::mark(p))
@@ -2025,14 +2044,14 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(cell(detail_w).text_color(color).child(name))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
         }
         Need::Routine(id) => {
             let Some((title, name, color)) = super::routine::row_text(shell, id) else { return div().into_any_element() };
-            base(SharedString::from(format!("routine-ask-{id}")), cx)
+            base(SharedString::from(format!("routine-ask-{id}")), format!("{title}, {name}"), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::routine::mark(p))
@@ -2040,7 +2059,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(cell(detail_w).text_color(color).child(name))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2048,7 +2067,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
         Need::Questions(id) => {
             let Some((title, ticket_id, name, color)) = super::decide::row_text(shell, id) else { return div().into_any_element() };
             let ticket = ticket_id.and_then(|t| model.tickets.iter().find(|x| x.id == t));
-            base(SharedString::from(format!("decide-{id}")), cx)
+            base(SharedString::from(format!("decide-{id}")), [ticket_id.map(|t| format!("T-{t}")), Some(title.to_string()), Some(name.to_string())].into_iter().flatten().collect::<Vec<_>>().join(", "), cx)
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::decide::mark(p))
@@ -2056,7 +2075,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(ticket)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(cell(detail_w).text_color(color).child(name))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2100,7 +2119,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 actions.push(quick("q-d", "D", cx, |this, w, cx| this.board_open_diff(w, cx)).into_any_element());
             }
             let has_actions = !actions.is_empty();
-            base(SharedString::from(format!("ticket-{id}")), cx)
+            base(SharedString::from(format!("ticket-{id}")), format!("T-{id} {}", t.title), cx)
                 .pl_2()
                 .child(
                     div()

@@ -28,11 +28,11 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::board::{btn, dot, hue_of, member_color};
+use super::board::{btn, member_color};
 use super::icons;
 use crate::board::{self as rules, MergeWay};
 use crate::state::Model;
-use crate::theme::{MONO, Palette, R_MD, SMALL, Sans, look};
+use crate::theme::{MONO, Palette, R_MD, SMALL, Sans};
 use crate::{Screen, Shell};
 
 /// How long the pointer rests on a link before its card shows.
@@ -809,13 +809,13 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
             .items_center()
             .text_size(px(11.5))
             .text_color(p.muted)
-            .child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.))
+            .child(crate::theme::project_mark(p, 11.))
             .child(div().truncate().child(name))
     });
     let who = rules::who(t).map(|w| {
         let member = model.members.iter().find(|m| m.name == w || m.role == w);
-        let (mark, _) = member.map_or_else(|| look(w, w), |m| look(&m.role, &m.name));
-        h_flex().flex_none().gap_1().text_size(px(11.5)).text_color(member_color(p, model, w)).child(mark).child(w.to_owned())
+        let role = member.map_or(w, |m| m.role.as_str());
+        h_flex().flex_none().gap_1().items_center().text_size(px(11.5)).text_color(member_color(p, model, w)).child(crate::theme::avatar(p, role, w, 15.)).child(w.to_owned())
     });
     let head = h_flex()
         .gap_2()
@@ -890,6 +890,26 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     }
     if let Some(since) = model.in_state_for(t) {
         facts.push(div().child(crate::activity::ago(since)).into_any_element());
+    }
+    // The plan it was cut from, or reviews: opened beside the conversation.
+    if let Some(plan) = model.ticket_plan(t) {
+        let handle = handle.clone();
+        facts.push(
+            h_flex()
+                .id(("card-plan", id as u64))
+                .gap_1()
+                .items_center()
+                .cursor_pointer()
+                .text_color(p.accent)
+                .child(crate::icons::icon(crate::icons::Icon::FileText, 11., p.accent))
+                .child(t!("card.plan"))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    let _ = handle.update(cx, |shell, cx| shell.open_doc(plan.clone(), cx));
+                    put_away(cx);
+                })
+                .into_any_element(),
+        );
     }
     let facts = (!facts.is_empty()).then(|| h_flex().flex_wrap().gap_x_3().gap_y_1().text_size(px(11.5)).text_color(p.muted).children(facts));
     // What can be done, or what was.

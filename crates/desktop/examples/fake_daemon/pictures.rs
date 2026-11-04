@@ -6,6 +6,10 @@
 //! `$TMPDIR/equipe-fake/pictures`, and read back as the daemon reads a
 //! member's pictures (`equipe_core::visuals`), from that folder only.
 //!
+//! `FAKE_DECIDE=brand`: the designer's three brand directions instead, each
+//! drawn on the product's home screen (calm, bold, warm), every option with
+//! the aspects the person can mix — type, colour, shape.
+//!
 //! `FAKE_DECIDE_CASE=<case>[,<case>…]` puts other logo questions to the
 //! person instead, one a step, for the grid's edge cases: `four` (the Gallery
 //! Y question — a picture of its own over four options, as a member once
@@ -21,9 +25,14 @@ use equipe_core::protocol::rpc::{ImageRead, ReadImage};
 use equipe_core::protocol::Ticket;
 use image::{Rgba, RgbaImage};
 
-/// Whether the logo decision and the brand hand-in are on.
+/// Whether the logo decision (or the brand directions) and the brand hand-in are on.
 pub fn on() -> bool {
-    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo")
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo" || v == "brand")
+}
+
+/// Whether the brand directions are asked, rather than the logo.
+fn brand() -> bool {
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "brand")
 }
 
 /// Where the pictures are drawn: the designer's worktree, as it were.
@@ -31,7 +40,7 @@ pub fn dir() -> PathBuf {
     std::env::temp_dir().join("equipe-fake").join("pictures")
 }
 
-fn at(name: &str) -> String {
+pub fn at(name: &str) -> String {
     let dir = dir();
     let dir = dir.canonicalize().unwrap_or(dir);
     dir.join(name).to_string_lossy().into_owned()
@@ -116,11 +125,180 @@ fn make_cases(dir: &Path) {
     let _ = draw(1200, 800, Some([0xFF, 0xFF, 0xFF, 0xFF]), |u, v| if (0.06..0.94).contains(&u) && (0.08..0.2).contains(&v) { Some([0xEE, 0xEF, 0xF2, 0xFF]) } else if e(u * 1.5, v, 0.3, 0.55, 0.16) { Some(INK) } else { None }).save(dir.join("case-now.png"));
 }
 
+/// A direction's tokens, as its home screen shows them.
+struct Tokens {
+    bg: [u8; 4],
+    surface: [u8; 4],
+    ink: [u8; 4],
+    muted: [u8; 4],
+    accent: [u8; 4],
+    on_accent: [u8; 4],
+    /// Corner radius, in the screen's height.
+    radius: f32,
+    /// How thick the headline's strokes are, in the screen's height.
+    weight: f32,
+}
+
+/// Whether `(x, y)` — x in the screen's height too — is in the box from
+/// `(x0, y0)` to `(x1, y1)` with corners `r` round.
+fn rounded(x: f32, y: f32, (x0, y0, x1, y1): (f32, f32, f32, f32), r: f32) -> bool {
+    if x < x0 || x > x1 || y < y0 || y > y1 {
+        return false;
+    }
+    let r = r.min((x1 - x0) / 2.).min((y1 - y0) / 2.);
+    let cx = x.max(x0 + r).min((x1 - r).max(x0 + r));
+    let cy = y.max(y0 + r).min((y1 - r).max(y0 + r));
+    (x - cx).powi(2) + (y - cy).powi(2) <= r * r
+}
+
+/// A line of words at `(x, y)`, `w` long and `h` high: blocks a word each,
+/// rounded as the type is.
+fn words(x: f32, y: f32, at: (f32, f32), w: f32, h: f32, round: f32) -> bool {
+    let (x0, y0) = at;
+    if y < y0 || y > y0 + h || x < x0 || x > x0 + w {
+        return false;
+    }
+    // Words of a few widths, a gap between.
+    let lengths = [0.09, 0.05, 0.13, 0.07, 0.1, 0.06, 0.11];
+    let mut start = x0;
+    for (i, len) in lengths.iter().cycle().enumerate().take(40) {
+        let len = len * (h / 0.04).clamp(0.6, 1.4);
+        let end = (start + len).min(x0 + w);
+        if x >= start && x <= end {
+            return rounded(x, y, (start, y0, end, y0 + h), h * round);
+        }
+        start = end + h * 0.45 + (i % 2) as f32 * 0.004;
+        if start >= x0 + w {
+            break;
+        }
+    }
+    false
+}
+
+/// The product's home screen in a direction's tokens: its bar, a headline
+/// and a line under it, the call to action and a quieter button, a picture,
+/// and three cards.
+fn home(t: &Tokens) -> impl Fn(f32, f32) -> Option<[u8; 4]> + '_ {
+    const WIDE: f32 = 4. / 3.;
+    move |u, v| {
+        let x = u * WIDE;
+        let r = t.radius;
+        let round = if r > 0.03 { 0.5 } else if r > 0. { 0.25 } else { 0. };
+        // The bar: a mark, three links, a button.
+        if v < 0.1 {
+            if (x - 0.07).powi(2) + (v - 0.05).powi(2) <= 0.018f32.powi(2) {
+                return Some(t.accent);
+            }
+            if words(x, v, (0.1, 0.04), 0.12, 0.022, round) {
+                return Some(t.ink);
+            }
+            for (i, at) in [0.72, 0.84, 0.96].iter().enumerate() {
+                if words(x, v, (*at, 0.042), 0.07 + i as f32 * 0.005, 0.016, round) {
+                    return Some(t.muted);
+                }
+            }
+            if rounded(x, v, (1.1, 0.025, 1.27, 0.075), r * 0.6) {
+                return Some(if words(x, v, (1.13, 0.043), 0.11, 0.014, round) { t.on_accent } else { t.ink });
+            }
+            return Some(t.surface);
+        }
+        if (0.1..0.103).contains(&v) {
+            return Some(t.muted);
+        }
+        // The headline, its line, the buttons.
+        let head = t.weight;
+        if words(x, v, (0.07, 0.17), 0.56, head, round) || words(x, v, (0.07, 0.17 + head * 1.45), 0.38, head, round) {
+            return Some(t.ink);
+        }
+        let below = 0.17 + head * 2.9 + 0.02;
+        if words(x, v, (0.07, below), 0.5, 0.018, round) || words(x, v, (0.07, below + 0.034), 0.42, 0.018, round) {
+            return Some(t.muted);
+        }
+        let buttons = below + 0.09;
+        if rounded(x, v, (0.07, buttons, 0.29, buttons + 0.07), r) {
+            return Some(if words(x, v, (0.1, buttons + 0.027), 0.15, 0.017, round) { t.on_accent } else { t.accent });
+        }
+        if rounded(x, v, (0.31, buttons, 0.5, buttons + 0.07), r) {
+            let inside = rounded(x, v, (0.313, buttons + 0.003, 0.497, buttons + 0.067), r);
+            return Some(if !inside || words(x, v, (0.34, buttons + 0.027), 0.12, 0.017, round) { t.ink } else { t.bg });
+        }
+        // The picture: the accent, lit from its corner.
+        if rounded(x, v, (0.72, 0.16, 1.27, 0.52), r * 1.4) {
+            let light = ((x - 0.72) / 0.55 * 0.5 + (v - 0.16) / 0.36 * 0.5).clamp(0., 1.);
+            let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * light * 0.55) as u8;
+            let disc = (x - 1.02).powi(2) + (v - 0.33).powi(2) <= 0.09f32.powi(2);
+            let base = if disc { t.on_accent } else { t.accent };
+            return Some([mix(base[0], t.surface[0]), mix(base[1], t.surface[1]), mix(base[2], t.surface[2]), 0xFF]);
+        }
+        // Three cards.
+        for i in 0..3 {
+            let x0 = 0.07 + i as f32 * 0.405;
+            let card = (x0, 0.6, x0 + 0.38, 0.94);
+            if rounded(x, v, card, r) {
+                if rounded(x, v, (x0 + 0.02, 0.62, x0 + 0.36, 0.77), r * 0.7) {
+                    let tint = [0.18, 0.3, 0.42][i];
+                    let m = |a: u8, b: u8| (a as f32 * tint + b as f32 * (1. - tint)) as u8;
+                    return Some([m(t.accent[0], t.bg[0]), m(t.accent[1], t.bg[1]), m(t.accent[2], t.bg[2]), 0xFF]);
+                }
+                if words(x, v, (x0 + 0.025, 0.8), 0.26, 0.022, round) {
+                    return Some(t.ink);
+                }
+                if words(x, v, (x0 + 0.025, 0.845), 0.3, 0.015, round) || words(x, v, (x0 + 0.025, 0.875), 0.2, 0.015, round) {
+                    return Some(t.muted);
+                }
+                return Some(t.surface);
+            }
+        }
+        Some(t.bg)
+    }
+}
+
+/// The three directions' home screens, drawn once.
+fn make_brand(dir: &Path) {
+    if dir.join("brand-warm.png").exists() {
+        return;
+    }
+    let calm = Tokens {
+        bg: [0xF6, 0xF6, 0xF4, 0xFF],
+        surface: [0xFF, 0xFF, 0xFF, 0xFF],
+        ink: [0x1C, 0x1D, 0x21, 0xFF],
+        muted: [0xA3, 0xA7, 0xAE, 0xFF],
+        accent: [0x3A, 0x5B, 0xD9, 0xFF],
+        on_accent: [0xFF, 0xFF, 0xFF, 0xFF],
+        radius: 0.018,
+        weight: 0.032,
+    };
+    let bold = Tokens {
+        bg: [0x10, 0x12, 0x14, 0xFF],
+        surface: [0x1C, 0x1E, 0x22, 0xFF],
+        ink: [0xF4, 0xF4, 0xF2, 0xFF],
+        muted: [0x6E, 0x73, 0x7B, 0xFF],
+        accent: [0xFF, 0x5A, 0x1F, 0xFF],
+        on_accent: [0x10, 0x12, 0x14, 0xFF],
+        radius: 0.,
+        weight: 0.056,
+    };
+    let warm = Tokens {
+        bg: [0xF3, 0xF5, 0xF0, 0xFF],
+        surface: [0xFF, 0xFF, 0xFC, 0xFF],
+        ink: [0x22, 0x33, 0x2A, 0xFF],
+        muted: [0x93, 0xA0, 0x97, 0xFF],
+        accent: [0x2E, 0x8B, 0x57, 0xFF],
+        on_accent: [0xFF, 0xFF, 0xFF, 0xFF],
+        radius: 0.05,
+        weight: 0.042,
+    };
+    for (name, tokens) in [("brand-calm.png", calm), ("brand-bold.png", bold), ("brand-warm.png", warm)] {
+        let _ = draw(800, 600, None, home(&tokens)).save(dir.join(name));
+    }
+}
+
 /// The marks, the app icon and the palette, drawn once.
 pub fn make() {
     let dir = dir();
     let _ = std::fs::create_dir_all(&dir);
     make_cases(&dir);
+    make_brand(&dir);
     if dir.join("palette.png").exists() {
         return;
     }
@@ -181,7 +359,7 @@ pub fn make() {
 
 /// One of `FAKE_DECIDE_CASE`'s questions.
 fn case(name: &str) -> Option<Question> {
-    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: if image.is_empty() { Vec::new() } else { vec![at(image)] } };
+    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: if image.is_empty() { Vec::new() } else { vec![at(image)] }, ..Choice::default() };
     let marks = |n: usize| (0..n).map(|i| option(&format!("{} 안", (b'A' + i as u8) as char), "모서리를 조금 더 둥글게 — 작은 크기에서도 읽힙니다", &format!("case-mark-{}.png", i % 4))).collect::<Vec<_>>();
     Some(match name {
         "four" => Question {
@@ -230,11 +408,34 @@ fn case(name: &str) -> Option<Question> {
 /// The designer's question: which mark is the master — each option its render.
 /// With `FAKE_DECIDE_CASE`, the edge cases' questions instead.
 pub fn question_set(now: u64) -> QuestionSet {
-    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: vec![at(image)] };
+    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: vec![at(image)], ..Choice::default() };
+    let aspects = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+    if brand() {
+        let direction = |label: &str, description: &str, image: &str| Choice { aspects: aspects(&["글꼴", "색", "모양"]), ..option(label, description, image) };
+        return QuestionSet {
+            id: 9003,
+            session: 4,
+            member: "designer".into(),
+            ticket: Some(150),
+            questions: vec![Question {
+                question: "브랜드 방향은 어느 쪽으로 갈까요? 세 안을 홈 화면에 입혀 봤어요".into(),
+                header: "브랜드".into(),
+                options: vec![
+                    direction("차분 (추천)", "얇은 글꼴과 넉넉한 여백, 파랑 하나 — 오래 써도 지치지 않습니다", "brand-calm.png"),
+                    direction("선명", "어두운 바탕에 굵은 글꼴, 각진 모서리 — 첫눈에 기억됩니다", "brand-bold.png"),
+                    direction("따뜻", "둥근 모서리와 초록 — 다가가기 쉬운 인상입니다", "brand-warm.png"),
+                ],
+                ..Question::default()
+            }],
+            asked_at: now.saturating_sub(120),
+            review: false,
+            retro: None,
+        };
+    }
     if let Some(cases) = std::env::var("FAKE_DECIDE_CASE").ok().filter(|c| !c.is_empty()) {
         let questions: Vec<Question> = cases.split(',').filter_map(|c| case(c.trim())).collect();
         if !questions.is_empty() {
-            return QuestionSet { id: 9003, session: 4, member: "designer".into(), ticket: Some(24), questions, asked_at: now.saturating_sub(300) };
+            return QuestionSet { id: 9003, session: 4, member: "designer".into(), ticket: Some(24), questions, asked_at: now.saturating_sub(300), review: false, retro: None };
         }
     }
     QuestionSet {
@@ -247,9 +448,9 @@ pub fn question_set(now: u64) -> QuestionSet {
                 question: "로고 마스터는 어느 안으로 할까요? (사이트는 파란 4점, 앱·스토어는 'e.' 회색 점으로 갈라져 있습니다)".into(),
                 header: "로고".into(),
                 options: vec![
-                    option("e. + 파란 원 점 (추천)", "사이트와 앱을 하나로 — 작은 크기에서도 또렷합니다", "logo-blue-dot.png"),
-                    option("e. 회색 점 유지", "지금 앱·스토어 그대로", "logo-grey-dot.png"),
-                    option("파란 4점을 주 로고로", "사이트의 4점을 앱에도 씁니다", "logo-four-dots.svg"),
+                    Choice { aspects: aspects(&["점"]), ..option("e. + 파란 원 점 (추천)", "사이트와 앱을 하나로 — 작은 크기에서도 또렷합니다", "logo-blue-dot.png") },
+                    Choice { aspects: aspects(&["점"]), ..option("e. 회색 점 유지", "지금 앱·스토어 그대로", "logo-grey-dot.png") },
+                    Choice { aspects: aspects(&["색"]), ..option("파란 4점을 주 로고로", "사이트의 4점을 앱에도 씁니다", "logo-four-dots.svg") },
                 ],
                 ..Question::default()
             },
@@ -261,6 +462,8 @@ pub fn question_set(now: u64) -> QuestionSet {
             },
         ],
         asked_at: now.saturating_sub(300),
+        review: false,
+        retro: None,
     }
 }
 

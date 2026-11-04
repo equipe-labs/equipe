@@ -184,21 +184,21 @@ pub fn check(fragment: &str) -> Result<(), String> {
     }
     let lower = fragment.to_ascii_lowercase();
     for (name, attrs) in tags(&lower) {
-        if TAGS.contains(&name.as_str()) {
+        if TAGS.contains(&name) {
             return Err(format!("<{name}>"));
         }
         for (attr, value) in attrs {
             if attr.starts_with("on") {
                 return Err(format!("{attr}= on <{name}>"));
             }
-            if LEAVING.contains(&attr.as_str()) {
+            if LEAVING.contains(&attr) {
                 return Err(format!("{attr}= on <{name}>"));
             }
-            let link = LINKS.contains(&name.as_str()) && (attr == "href" || attr == "xlink:href");
-            if link && !url(&value).starts_with('#') {
+            let link = LINKS.contains(&name) && (attr == "href" || attr == "xlink:href");
+            if link && !url(value).starts_with('#') {
                 return Err(format!("<{name} {attr}> goes to {value}"));
             }
-            if LOADING.contains(&attr.as_str()) && !inline(&value) {
+            if LOADING.contains(&attr) && !inline(value) {
                 return Err(format!("{attr}= loads {value}"));
             }
         }
@@ -235,7 +235,7 @@ fn inline(value: &str) -> bool {
 /// attribute's value, a comment or a `<style>`: what a browser takes for a
 /// tag — a `<style>` that ends early, a comment closed by `--!>` — is among
 /// them, however this reads the rest.
-fn tags(html: &str) -> Vec<(String, Vec<(String, String)>)> {
+fn tags(html: &str) -> Vec<(&str, Vec<(&str, &str)>)> {
     let bytes = html.as_bytes();
     let mut found = Vec::new();
     for open in 0..bytes.len() {
@@ -247,13 +247,13 @@ fn tags(html: &str) -> Vec<(String, Vec<(String, String)>)> {
 }
 
 /// The tag whose name starts at `i`, read as HTML's tokenizer does.
-fn tag(html: &str, mut i: usize) -> (String, Vec<(String, String)>) {
+fn tag(html: &str, mut i: usize) -> (&str, Vec<(&str, &str)>) {
     let bytes = html.as_bytes();
     let start = i;
     while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'/') {
         i += 1;
     }
-    let name = html[start..i].to_owned();
+    let name = &html[start..i];
     let mut attrs = Vec::new();
     loop {
         while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
@@ -268,11 +268,11 @@ fn tag(html: &str, mut i: usize) -> (String, Vec<(String, String)>) {
         while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'=' | b'/') {
             i += 1;
         }
-        let attr = html[at..i].to_owned();
+        let attr = &html[at..i];
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
-        let mut value = String::new();
+        let mut value = "";
         if bytes.get(i) == Some(&b'=') {
             i += 1;
             while i < bytes.len() && bytes[i].is_ascii_whitespace() {
@@ -280,11 +280,12 @@ fn tag(html: &str, mut i: usize) -> (String, Vec<(String, String)>) {
             }
             let quote = bytes.get(i).copied().filter(|q| *q == b'"' || *q == b'\'');
             let from = if quote.is_some() { i + 1 } else { i };
-            i = from;
-            while i < bytes.len() && quote.map_or(!bytes[i].is_ascii_whitespace() && bytes[i] != b'>', |q| bytes[i] != q) {
-                i += 1;
-            }
-            value = html[from..i].to_owned();
+            i = match quote {
+                // std's search, quick even in a debug build: an unclosed quote runs to the end.
+                Some(q) => html[from..].find(q as char).map_or(bytes.len(), |n| from + n),
+                None => from + html[from..].find(|c: char| c.is_ascii_whitespace() || c == '>').unwrap_or(html.len() - from),
+            };
+            value = &html[from..i];
             if quote.is_some() && i < bytes.len() {
                 i += 1;
             }

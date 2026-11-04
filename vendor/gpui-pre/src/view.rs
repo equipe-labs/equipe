@@ -523,6 +523,10 @@ fn prepaint_view(
                     && read.is_empty()
                     && element_state.drawn_in + 1 == window.frames_drawn
                     && !window.refreshing
+                    // equipe: the accessibility tree is built afresh each
+                    // frame and a reused view adds nothing to it, so with a
+                    // screen reader on every view draws again.
+                    && !window.a11y.is_active()
                 {
                     element_state.drawn_in = window.frames_drawn;
                     let prepaint_start = window.prepaint_index();

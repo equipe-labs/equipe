@@ -8,6 +8,7 @@
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
 mod attach;
+mod brief;
 mod clip;
 mod daemon;
 mod design;
@@ -283,7 +284,12 @@ enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
-    /// The designer's tools: init, check, specimen, render, audit
+    /// The PM's briefs: a second opinion on one from the other engine
+    Brief {
+        #[command(subcommand)]
+        action: brief::BriefAction,
+    },
+    /// The designer's tools: init, check, specimen, render, shoot, diff, critique, audit, flows
     Design {
         #[command(subcommand)]
         action: design::DesignAction,
@@ -474,6 +480,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Review { base, models, goal } => review::command(base, models, goal).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
+        Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
@@ -719,7 +726,7 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
     let (info, tools) = if desktop {
         (mcp::DESKTOP, equipe_desktop_control::tools::tools())
     } else {
-        (mcp::BOARD, equipe_core::board::tools(role == equipe_core::roles::PM))
+        (mcp::BOARD, equipe_core::board::tools_for(&role))
     };
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
@@ -957,6 +964,9 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Ok(())
         }
         DaemonAction::Install => {
+            if !daemon::own_home() {
+                return Err(Failure::new(t!("main.service_own_home_only")));
+            }
             let exe = std::env::current_exe().map_err(|err| Failure::new(err.to_string()))?;
             // The service takes over from a daemon already running — between turns.
             wait_until_idle(&p).await?;
@@ -973,6 +983,9 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Err(Failure::new(t!("main.service_no_answer")).next(format!("tail {}", daemon::log_path().display())))
         }
         DaemonAction::Uninstall => {
+            if !daemon::own_home() {
+                return Err(Failure::new(t!("main.service_own_home_only")));
+            }
             if daemon::service::uninstall().map_err(|err| Failure::new(err.to_string()))? {
                 println!("{}", p.ok_line(t!("main.service_removed")));
             } else {
@@ -997,8 +1010,14 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             };
             println!("{}", p.ok_line(t!("main.daemon_running")));
             println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
-            let how = if daemon::service::installed() { t!("main.runs_as_service") } else { t!("main.runs_on_demand") };
-            println!("{}", p.row(t!("main.row_runs_as"), how));
+            let how = if daemon::trial() {
+                t!("main.runs_as_trial", mins = daemon::TRIAL_IDLE.as_secs() / 60)
+            } else if daemon::service::installed() {
+                t!("main.runs_as_service").to_owned()
+            } else {
+                t!("main.runs_on_demand").to_owned()
+            };
+            println!("{}", p.row(t!("main.row_runs_as"), &how));
             if let Some(stall) = &busy.stalled {
                 let since = equipe_core::watchdog::clock(stall.since);
                 println!("{}", p.row(t!("main.row_stalled"), &t!("main.stalled_since", since = since, doing = stall.doing, secs = stall.secs)));
@@ -1462,7 +1481,7 @@ impl App {
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
-                Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::LaneMoved { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } | Event::VisualsRendered { .. } => {}
+                Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::LaneMoved { .. } | Event::ConversationBack { .. } | Event::PutAwayChanged { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } | Event::VisualsRendered { .. } => {}
                 Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
@@ -1520,7 +1539,9 @@ impl App {
                 | Event::SecretAsked { .. }
                 | Event::SecretClosed { .. }
                 | Event::Allowed { .. }
-                | Event::Design { .. } => {}
+                | Event::Design { .. }
+                | Event::ProjectDocs { .. }
+                | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
                     // A session that never opened won't send anything more.

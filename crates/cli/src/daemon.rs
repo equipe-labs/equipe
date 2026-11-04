@@ -6,7 +6,7 @@
 //! `~/.equipe/daemon.log`.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use equipe_core::gateway::{self, Client};
@@ -46,7 +46,60 @@ pub async fn run_foreground() -> io::Result<()> {
     tokio::spawn(crate::telegram::serve_forever(equipe_home(), socket(), build_id()));
     // Phones paired with this machine, through the relay.
     tokio::spawn(crate::remote::link::serve_forever(equipe_home(), socket(), build_id()));
-    left_for(gateway::serve(config, &socket(), &build_id()).await)
+    let idle = std::env::var("EQUIPE_TRIAL_IDLE_SECS").ok().and_then(|secs| secs.parse().ok()).map(Duration::from_secs);
+    let leave = leave_for(&settled(&equipe_home()), &temp_roots(), idle);
+    left_for(gateway::serve_leaving(config, &socket(), &build_id(), leave).await)
+}
+
+/// How long a daemon in a temporary home waits, with no screen and no member
+/// at work, before it leaves.
+pub const TRIAL_IDLE: Duration = Duration::from_secs(15 * 60);
+
+/// Whether this daemon's home is a temporary folder — a test's or a check's —
+/// whose daemon leaves on its own (see [`TRIAL_IDLE`]).
+pub fn trial() -> bool {
+    is_temporary(&settled(&equipe_home()), &temp_roots())
+}
+
+/// When the daemon serving `home` leaves on its own: one in a temporary home
+/// once the home is gone, or after `idle` (else [`TRIAL_IDLE`]) alone; the
+/// person's own, never. Started detached, a test's or a check's daemon
+/// outlives them — sixteen once piled up, each keeping its squads.
+fn leave_for(home: &Path, temps: &[PathBuf], idle: Option<Duration>) -> gateway::Leave {
+    if !is_temporary(home, temps) {
+        return gateway::Leave::NEVER;
+    }
+    gateway::Leave { home_gone: true, idle: Some(idle.unwrap_or(TRIAL_IDLE)), ..gateway::Leave::NEVER }
+}
+
+/// Where temporary folders are made: this process's, and the system's.
+fn temp_roots() -> Vec<PathBuf> {
+    let mut roots = vec![std::env::temp_dir()];
+    roots.extend(["/tmp", "/var/tmp", "/var/folders", "/dev/shm"].map(PathBuf::from));
+    roots
+}
+
+/// `home` as it really is, symbolic links followed, when it is there.
+fn settled(home: &Path) -> PathBuf {
+    home.canonicalize().unwrap_or_else(|_| home.to_owned())
+}
+
+fn is_temporary(home: &Path, temps: &[PathBuf]) -> bool {
+    use std::path::Component;
+    // `..` could lead back out of a temporary folder: such a home isn't taken for one.
+    if home.components().any(|c| c == Component::ParentDir) {
+        return false;
+    }
+    let home = unprivate(home);
+    temps.iter().any(|root| home.starts_with(unprivate(root)))
+}
+
+/// On a Mac `/tmp` and `/var` are `/private/tmp` and `/private/var`.
+fn unprivate(path: &Path) -> PathBuf {
+    match path.strip_prefix("/private") {
+        Ok(rest) if rest.starts_with("tmp") || rest.starts_with("var") => Path::new("/").join(rest),
+        _ => path.to_owned(),
+    }
 }
 
 /// A daemon that finds another already answering leaves cleanly: an exit the
@@ -74,7 +127,7 @@ pub async fn ensure_running() -> io::Result<bool> {
         Way::Reload => std::env::current_exe().is_ok_and(|exe| service::install(&exe, &log_path()).is_ok()),
         Way::Alone => spawn_detached().is_ok(),
     };
-    match start_with(ways(service::installed()), take, || gateway::is_running(&socket)).await {
+    match start_with(ways(service::installed() && own_home()), take, || gateway::is_running(&socket)).await {
         Some(way) => {
             if let Some(line) = way.log_line() {
                 note_in_log(line);
@@ -115,6 +168,19 @@ impl Way {
 }
 
 /// The ways to try, in order, each with how long it waits for an answer.
+/// Whether this is the person's own home (`~/.equipe`), the one the login
+/// service runs. Another (`EQUIPE_HOME` set elsewhere: a test, a second
+/// squad's trial) never touches the service: starting it there reloaded the
+/// person's own daemon in the middle of its work and pointed its log at a
+/// temporary folder.
+pub fn own_home() -> bool {
+    is_own_home(&equipe_home(), dirs::home_dir().as_deref())
+}
+
+fn is_own_home(home: &Path, user: Option<&Path>) -> bool {
+    user.is_some_and(|u| home == u.join(".equipe"))
+}
+
 fn ways(installed: bool) -> &'static [(Way, Duration)] {
     const SERVICE: &[(Way, Duration)] = &[
         (Way::Service, Duration::from_secs(10)),
@@ -369,7 +435,11 @@ pub mod service {
 
     fn run(program: &str, args: &[&str]) -> bool {
         // Nothing on our standard output: `equipe attach --stdio` carries the protocol there.
-        Command::new(program).args(args).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+        // Nor launchctl's own words on standard error: a service is looked for
+        // in both domains, and the one it isn't in says so ("Could not find
+        // service…", "Boot-out failed: 3") though nothing went wrong; what did
+        // is told in our words, from the status.
+        Command::new(program).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
     }
 
     fn domains() -> [String; 2] {
@@ -556,8 +626,34 @@ mod tests {
     #[test]
     fn without_the_service_it_runs_on_its_own_and_the_log_says_how_it_started() {
         assert_eq!(ways(false).iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Alone]);
+        assert!(is_own_home(Path::new("/Users/a/.equipe"), Some(Path::new("/Users/a"))));
+        assert!(!is_own_home(Path::new("/var/folders/x/T/tmp.V/"), Some(Path::new("/Users/a"))), "a home elsewhere starts alone, never through the person's service");
+        assert!(!is_own_home(Path::new("/Users/a/.equipe"), None));
         assert_eq!(ways(true).iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Service, Way::Reload, Way::Alone]);
         assert_eq!(Way::Service.log_line(), None);
         assert!(Way::Reload.log_line().is_some() && Way::Alone.log_line().is_some());
+    }
+
+    #[test]
+    fn a_daemon_in_a_temporary_home_leaves_on_its_own_and_the_persons_never_does() {
+        let temps = [PathBuf::from("/tmp"), PathBuf::from("/var/folders/hy/x/T/")];
+        // Homes T-355's and T-362's checks left their daemons in.
+        assert!(is_temporary(Path::new("/tmp/t355home"), &temps));
+        assert!(is_temporary(Path::new("/private/tmp/t362home.38E6"), &temps), "/tmp is /private/tmp on a Mac");
+        assert!(is_temporary(Path::new("/private/var/folders/hy/x/T/tmp.Pwnyv1UVsb"), &temps));
+        assert!(!is_temporary(Path::new("/Users/a/.equipe"), &temps));
+        assert!(!is_temporary(Path::new("/tmpfiles/home"), &temps), "a folder named like it isn't one");
+        assert!(!is_temporary(Path::new("/tmp/../Users/a/.equipe"), &temps), "a way through /tmp back to the person's home isn't one");
+
+        assert_eq!(leave_for(Path::new("/Users/a/.equipe"), &temps, None), gateway::Leave::NEVER);
+        assert_eq!(
+            leave_for(Path::new("/Users/a/.equipe"), &temps, Some(Duration::from_secs(1))),
+            gateway::Leave::NEVER,
+            "no setting makes the person's own daemon leave"
+        );
+        let trial = leave_for(Path::new("/tmp/t355home"), &temps, None);
+        assert!(trial.home_gone);
+        assert_eq!(trial.idle, Some(TRIAL_IDLE));
+        assert_eq!(leave_for(Path::new("/tmp/t355home"), &temps, Some(Duration::from_secs(2))).idle, Some(Duration::from_secs(2)));
     }
 }
