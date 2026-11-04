@@ -4,7 +4,8 @@
 // them (CDP screencast). The plan names the steps (a module `equipe` writes
 // from flows.json), the viewport and where the frames go; what it saw is
 // written to `raw`: { start, end, frames: [{ file, t }], marks: [{ screen, t }] },
-// times in Unix ms. equipe makes the video from that.
+// times in Unix ms. The browser is in the plan's `locale`, its
+// `reducedMotion` and `permissions` as the flow says. equipe makes the video from that.
 import { chromium } from 'playwright';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,7 +16,7 @@ if (at < 0) {
   console.error('usage: record --plan <plan.json>');
   process.exit(2);
 }
-const { walk, frames, raw, width, height, scale, scheme, pace = 650, typing = 55 } = JSON.parse(readFileSync(process.argv[at + 1], 'utf8'));
+const { walk, frames, raw, width, height, scale, scheme, locale = 'en-US', reducedMotion = false, permissions = [], pace = 650, typing = 55 } = JSON.parse(readFileSync(process.argv[at + 1], 'utf8'));
 mkdirSync(frames, { recursive: true });
 const walkthrough = (await import(pathToFileURL(walk).href)).default;
 
@@ -57,7 +58,17 @@ let start = 0;
 let end = 0;
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 try {
-  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: scale, colorScheme: scheme });
+  // The browser's language is the flow's, en-US unless it says: Chrome
+  // otherwise takes the Mac's, and a site offers that one in a banner.
+  const context = await browser.newContext({
+    viewport: { width, height },
+    deviceScaleFactor: scale,
+    colorScheme: scheme,
+    locale,
+    extraHTTPHeaders: { 'Accept-Language': locale },
+    reducedMotion: reducedMotion ? 'reduce' : 'no-preference',
+  });
+  if (permissions.length) await context.grantPermissions(permissions);
   const page = await context.newPage();
   const paint = () => page.evaluate(PAINT, caption).catch(() => {});
   page.on('domcontentloaded', paint);

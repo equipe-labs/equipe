@@ -356,7 +356,7 @@ async fn record(design: &Path, only: Option<&str>, widths: &[u32], modes: &[&str
         return Err(t!("design.flows.no_walks").to_owned());
     }
     // Chrome's walks need an encoder; a record_command, the repository it runs in.
-    let encoder = match walks.iter().any(|(_, how)| matches!(how, flows::Recording::Walk(_))) {
+    let encoder = match walks.iter().any(|(_, how)| matches!(how, flows::Recording::Walk(..))) {
         true => Some(Encoder::find().ok_or_else(|| t!("design.flows.no_encoder").to_owned())?),
         false => None,
     };
@@ -373,7 +373,7 @@ async fn record(design: &Path, only: Option<&str>, widths: &[u32], modes: &[&str
                 for &mode in modes {
                     eprintln!("{}", t!("design.flows.recording", flow = flow.id, width = width, mode = mode_word(mode)));
                     let made = match (how, &encoder, &repo) {
-                        (flows::Recording::Walk(steps), Some(encoder), _) => record_one(&work, encoder, &walk_script(steps, &titles), width, mode).await,
+                        (flows::Recording::Walk(steps, browse), Some(encoder), _) => record_one(&work, encoder, &walk_script(steps, &titles), browse, width, mode).await,
                         (flows::Recording::Command(command), _, Some(repo)) => record_by_command(&work, command, repo, &flow.id, width, mode, limit).await,
                         _ => unreachable!("an encoder for each walk, a repository for each command"),
                     };
@@ -405,16 +405,15 @@ struct Made {
     sidecar: Sidecar,
 }
 
-/// One walk recorded at `width` in `mode`, into `work`.
-async fn record_one(work: &Path, encoder: &Encoder, script: &str, width: u32, mode: &str) -> Result<Made, String> {
+/// One walk recorded at `width` in `mode`, in the browser `browse` says, into `work`.
+async fn record_one(work: &Path, encoder: &Encoder, script: &str, browse: &flows::Browse, width: u32, mode: &str) -> Result<Made, String> {
     let _ = std::fs::remove_dir_all(work);
     let frames = work.join("frames");
     std::fs::create_dir_all(&frames).map_err(|e| format!("{}: {e}", frames.display()))?;
     let walk = work.join("walk.mjs");
     std::fs::write(&walk, script).map_err(|e| format!("{}: {e}", walk.display()))?;
-    let (height, scale) = viewport(width);
     let raw = work.join("raw.json");
-    let plan = serde_json::json!({ "walk": walk, "frames": frames, "raw": raw, "width": width, "height": height, "scale": scale, "scheme": mode });
+    let plan = record_plan(&walk, &frames, &raw, browse, width, mode);
     let file = work.join("plan.json");
     std::fs::write(&file, plan.to_string()).map_err(|e| format!("{}: {e}", file.display()))?;
     run_script("record.mjs", &["--plan", file.to_string_lossy().as_ref()]).await?;
@@ -423,6 +422,17 @@ async fn record_one(work: &Path, encoder: &Encoder, script: &str, width: u32, mo
     let video = work.join("walkthrough.mp4");
     encoder.encode(&line, work, &video).await?;
     Ok(Made { video, sidecar: Sidecar { millis: line.millis, marks: line.marks } })
+}
+
+/// What `record.mjs` is told: the walk, where its frames and what it saw
+/// go, the viewport, the mode, and the browser — `en-US` unless the flow
+/// says its `locale`, as `flows shoot` is, so a site that offers a
+/// visitor's own language doesn't on the Mac's.
+fn record_plan(walk: &Path, frames: &Path, raw: &Path, browse: &flows::Browse, width: u32, mode: &str) -> serde_json::Value {
+    let (height, scale) = viewport(width);
+    let locale = browse.locale.as_deref().unwrap_or("en-US");
+    serde_json::json!({ "walk": walk, "frames": frames, "raw": raw, "width": width, "height": height, "scale": scale, "scheme": mode,
+        "locale": locale, "reducedMotion": browse.reduced_motion.unwrap_or(false), "permissions": browse.permissions })
 }
 
 /// One flow recorded by its own `record_command` at `width` in `mode`, into
@@ -1479,6 +1489,18 @@ mod tests {
             walk_script(&steps, &titles),
             "// Written by `equipe design flows record` from flows.json.\nexport default async (w) => {\n  await w.screen(\"login\", \"Log in\");\n  await w.go(\"http://localhost:3000/login\");\n  await w.fill(\"input[name=\\\"email\\\"]\", \"kim@example.com\");\n  await w.say(\"A wrong password: \\\"it's\\\" shown under the field\");\n  await w.press(\"Enter\");\n  await w.wait(800);\n  await w.screen(\"welcome\", \"Welcome \u{2028}\");\n  await w.click(\"text=Start\");\n  await w.screen(\"gone\", \"gone\");\n  await w.wait(1);\n};\n"
         );
+    }
+
+    #[test]
+    fn a_walk_is_recorded_in_en_us_unless_its_flow_says_its_locale() {
+        let (walk, frames, raw) = (Path::new("/w/walk.mjs"), Path::new("/w/frames"), Path::new("/w/raw.json"));
+        let plan = record_plan(walk, frames, raw, &flows::Browse::default(), 390, "dark");
+        assert_eq!((&plan["locale"], &plan["reducedMotion"], &plan["permissions"]), (&serde_json::json!("en-US"), &serde_json::json!(false), &serde_json::json!([])));
+        assert_eq!((&plan["width"], &plan["height"], &plan["scale"], &plan["scheme"]), (&serde_json::json!(390), &serde_json::json!(844), &serde_json::json!(2), &serde_json::json!("dark")));
+        assert_eq!(plan["walk"], "/w/walk.mjs");
+        let ko = flows::Browse { locale: Some("ko-KR".into()), reduced_motion: Some(true), permissions: vec!["clipboard-write".into()] };
+        let plan = record_plan(walk, frames, raw, &ko, 1280, "light");
+        assert_eq!((&plan["locale"], &plan["reducedMotion"], &plan["permissions"]), (&serde_json::json!("ko-KR"), &serde_json::json!(true), &serde_json::json!(["clipboard-write"])));
     }
 
     fn raw(start: u64, end: u64, frames: &[(&str, u64)], marks: &[(&str, u64)]) -> Raw {

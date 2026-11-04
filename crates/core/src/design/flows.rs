@@ -60,7 +60,10 @@
 //!   follows it to record the flow's walkthrough: the video, and beside it
 //!   `{"millis": 8200, "marks": [{"screen": "login", "at": 3200}]}`, how long
 //!   it runs and where each screen starts. Recorded again, the last one moves
-//!   to `history/`, named by when it was recorded.
+//!   to `history/`, named by when it was recorded. The browser it walks in
+//!   is in `en-US` unless the flow says its `locale` (`"locale": "ko-KR"`);
+//!   `reducedMotion: true` and `permissions` (`["clipboard-write"]`) are
+//!   set on the flow too.
 //! - An app that records itself gives its flow a `record_command` instead of
 //!   a walk (it wins over one): run as a `command` is, given `out` (an
 //!   `.mp4` to write), `mode`, `width` and `flow` (`EQUIPE_RECORD_<NAME>`).
@@ -224,6 +227,25 @@ struct FlowFile<T> {
     /// What records it, for an app that records itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     record_command: Option<String>,
+    /// The browser its walk is recorded in.
+    #[serde(flatten)]
+    browse: Browse,
+}
+
+/// The browser a flow's walk is recorded in, beyond its viewport and mode —
+/// each left out when not set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Browse {
+    /// The browser's language, and its `Accept-Language`: `en-US` unless set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+    /// `true`: the browser asks for reduced motion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduced_motion: Option<bool>,
+    /// Browser permissions granted to the page: `clipboard-write`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -410,7 +432,7 @@ fn parse(design: &Path, words: &Catalog, problems: &mut Vec<String>) -> Option<V
         let mut walk_problems = Vec::new();
         let walk = steps(&flow.walk, &flow.id, &screens, words, &mut walk_problems);
         problems.extend(walk_problems.iter().cloned());
-        out.push(Listed { file: FlowFile { id: flow.id, title: flow.title, summary: flow.summary, screens, walk: Vec::new(), command: flow.command, record_command: flow.record_command }, walk, walk_problems });
+        out.push(Listed { file: FlowFile { id: flow.id, title: flow.title, summary: flow.summary, screens, walk: Vec::new(), command: flow.command, record_command: flow.record_command, browse: flow.browse }, walk, walk_problems });
     }
     Some(out)
 }
@@ -825,7 +847,7 @@ pub fn starter(lang: Lang) -> String {
         serde_json::json!({ "say": words.get("flows.starter_say") }),
         serde_json::json!({ "wait": 1500 }),
     ];
-    let flow = FlowFile { id: "onboarding".into(), title: word("flows.starter_flow"), summary: word("flows.starter_flow_summary"), screens: vec![screen], walk, command: None, record_command: None };
+    let flow = FlowFile { id: "onboarding".into(), title: word("flows.starter_flow"), summary: word("flows.starter_flow_summary"), screens: vec![screen], walk, command: None, record_command: None, browse: Browse::default() };
     let mut text = serde_json::to_string_pretty(&MapFile { flows: vec![flow] }).unwrap_or_default();
     text.push('\n');
     text
@@ -975,11 +997,11 @@ fn listed_flow(design: &Path, flow: &str, words: &Catalog) -> Result<Listed, Str
 }
 
 /// How a flow is recorded: by its own `record_command`, or its walk
-/// followed in Chrome.
+/// followed in Chrome, in the browser the flow says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recording {
     Command(String),
-    Walk(Vec<WalkStep>),
+    Walk(Vec<WalkStep>, Browse),
 }
 
 /// How flow `flow` in `design` is recorded: its `record_command` when it
@@ -998,7 +1020,7 @@ pub fn recording(design: &Path, flow: &str, lang: Lang) -> Result<Recording, Str
     if found.walk.is_empty() {
         return Err(words.fill("flows.record_none", &[("flow", flow.to_owned())]));
     }
-    Ok(Recording::Walk(found.walk))
+    Ok(Recording::Walk(found.walk, found.file.browse))
 }
 
 #[cfg(test)]
@@ -1331,7 +1353,10 @@ mod tests {
         assert!(recording(&design, "web", Lang::Ko).unwrap_err().chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)));
         assert!(recording(&design, "gone", Lang::En).unwrap_err().contains("gone"));
         write(&design.join("flows/flows.json"), WALKED);
-        assert!(matches!(recording(&design, "onboarding", Lang::En), Ok(Recording::Walk(steps)) if steps.len() == 6));
+        assert!(matches!(recording(&design, "onboarding", Lang::En), Ok(Recording::Walk(steps, browse)) if steps.len() == 6 && browse == Browse::default()));
+        write(&design.join("flows/flows.json"), &WALKED.replacen(r#""title": "Onboarding","#, r#""title": "Onboarding", "locale": "ko-KR", "reducedMotion": true, "permissions": ["clipboard-write"],"#, 1));
+        let Ok(Recording::Walk(_, browse)) = recording(&design, "onboarding", Lang::En) else { panic!("a walk") };
+        assert_eq!(browse, Browse { locale: Some("ko-KR".into()), reduced_motion: Some(true), permissions: vec!["clipboard-write".into()] });
         std::fs::remove_dir_all(design).unwrap();
     }
 
