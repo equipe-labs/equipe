@@ -29,8 +29,57 @@ use crate::side_split::Divider;
 use crate::theme::{Palette, Sans, UI, key_face};
 use crate::{Screen, Shell, motion};
 
-/// The width a row's waiting count takes: two figures at its size.
-const COUNT_W: f32 = 15.;
+/// Every count at a row's end sits in a box this wide, its figures centred:
+/// two of them fit, and the filled badge, the quiet counts and the spinner
+/// share one column down the sidebar whether a row says 1 or 10.
+const COUNT_BOX: f32 = 22.;
+/// The dot before a count, saying how it stands (`docs/DESIGN-SYSTEM.md`,
+/// "Counts and what waits").
+const SIGN_DOT: f32 = 6.;
+
+/// The box a row's count (or spinner) sits in, at its end.
+fn count_box() -> Div {
+    div().flex_none().min_w(px(COUNT_BOX)).h(px(18.)).flex().items_center().justify_center()
+}
+
+/// A count as the rows under the total show it: a dot in its state's colour
+/// (a graphic, read at 3:1), then the number in muted ink — colour for the
+/// mark, never for the figures, so a column of rows that all wait stays calm
+/// and the one filled badge above them stays the thing that stands out.
+/// No dot: the number alone; no number: the dot alone, in the dots' column.
+fn count_sign(dot_color: Option<Rgba>, n: Option<usize>, p: Palette) -> Div {
+    h_flex()
+        .flex_none()
+        .h(px(18.))
+        .gap(px(4.))
+        .items_center()
+        .text_size(px(12.))
+        .text_color(p.muted)
+        .child(div().size(px(SIGN_DOT)).flex_none().rounded_full().when_some(dot_color, |d, c| d.bg(c)))
+        .child(count_box().children(n.map(|n| n.to_string())))
+}
+
+/// The one sign at a project header's end, the most pressing first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadSign {
+    /// This many things in it wait on the person: the wait dot and the number.
+    Waits(usize),
+    /// Work under way in it needs a look: the red dot.
+    Risky,
+    /// This many at work in it: the spinner.
+    Working(usize),
+    Quiet,
+}
+
+/// Waiting on the person, else work that needs a look, else at work.
+pub fn head_sign(waiting: usize, risky: bool, working: usize) -> HeadSign {
+    match (waiting, risky, working) {
+        (n @ 1.., _, _) => HeadSign::Waits(n),
+        (0, true, _) => HeadSign::Risky,
+        (0, false, n @ 1..) => HeadSign::Working(n),
+        _ => HeadSign::Quiet,
+    }
+}
 
 pub const WIDTH: f32 = 260.;
 pub const MIN_WIDTH: f32 = 200.;
@@ -190,10 +239,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .child(icon_button(p, "search", IconName::Search, true, Some(t!("sidebar.search_tip").into())).on_click(cx.listener(|this, _, window, cx| this.search_everything(window, cx))))
         .child(crate::ui::title_gap());
 
-    // A badge for what waits on the person; a quiet count for the rest.
+    // The squad's total waiting on the person: the sidebar's one filled
+    // badge. Every other count is a quiet number, a dot before it saying how
+    // it stands (`count_sign`).
     // A row's mark: an icon, or the PM's own (◆ in its colour), as the header and the composer show it.
     let glyph = |name: IconName, on: bool| icon(name, 16., if on { p.text } else { p.text2 }).into_any_element();
-    let nav = |id: &'static str, mark: AnyElement, label: String, badge: usize, count: usize, on: bool| {
+    let nav = |id: &'static str, mark: AnyElement, label: String, badge: usize, count: usize, risky: bool, on: bool| {
         row_shell(p, id, on)
             .h(px(32.))
             .role(Role::Tab)
@@ -204,27 +255,24 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             })
             .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(mark))
             .child(div().flex_1().min_w_0().truncate().text_color(if on { p.text } else { p.text2 }).child(label))
-            .when(badge > 0, |r| {
-                r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.orange).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string()))
-            })
-            .when(count > 0, |r| r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().text_size(px(12.)).text_color(p.muted).child(count.to_string())))
+            .when(badge > 0, |r| r.child(count_box().rounded(px(9.)).px(px(5.)).bg(p.orange).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string())))
+            // A red dot once work under way needs a look, where a project's wait dot sits.
+            .when(count > 0 || risky, |r| r.child(count_sign(risky.then(|| p.danger()), (count > 0).then_some(count), p)))
     };
     let nav_rows = v_flex()
         .gap(px(1.))
         .child(
-            nav("nav-new", glyph(IconName::Plus, new_on), t!("sidebar.new_conversation").into(), 0, 0, new_on)
+            nav("nav-new", glyph(IconName::Plus, new_on), t!("sidebar.new_conversation").into(), 0, 0, false, new_on)
                 .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘N"))
                 .on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))),
         )
-        .child(nav("nav-inbox", glyph(IconName::Inbox, on_board && menu == Menu::Inbox), t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-inbox", glyph(IconName::Inbox, on_board && menu == Menu::Inbox), t!("board.menu_inbox").into(), needs, 0, false, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }), window, cx) {
                 this.open_side_menu(Menu::Inbox, cx);
             }
         })))
-        // 진행 상황: a red dot once work under way needs a look.
         .child(
-            nav("nav-working", glyph(IconName::LoaderCircle, progress_on), t!("progress.title").into(), 0, working, progress_on)
-                .when(risky > 0, |r| r.child(div().flex_none().size(px(7.)).rounded_full().bg(p.danger())))
+            nav("nav-working", glyph(IconName::LoaderCircle, progress_on), t!("progress.title").into(), 0, working, risky > 0, progress_on)
                 .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
                     if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Progress, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                         this.open_progress(cx);
@@ -547,7 +595,8 @@ pub fn hq_badge(p: Palette) -> impl IntoElement {
 
 /// A project's header, as tall and as large as the rows above: the chevron
 /// (fold), its colour and name (switch the project slice to it), and what is
-/// live in it — a quiet count at work, an orange badge waiting on the person.
+/// live in it — one sign (`head_sign`): what waits on the person, the wait
+/// dot and its number in ink; else a red dot; else a spinner at work.
 /// On the pointer the counts give way to "+" (a new conversation here) and
 /// "⋯" (its menu, as a right-click opens it).
 fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: bool, cx: &mut Context<Shell>) -> AnyElement {
@@ -599,47 +648,18 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
         None => div().size(px(8.)).rounded_full().border_1().border_color(p.muted).into_any_element(),
     };
     let name_color = if focused { p.text } else { p.text2 };
-    // Waiting on the person: its share of 확인 필요, so the rows add up to it.
+    // Waiting on the person: its share of Needs you, so the rows add up to it.
     let waiting = shell.model.needs_by_project().get(&g.name).copied().unwrap_or(0);
-    // One sign at the end: waiting on the person (an orange badge), else work
-    // that needs a look (a red dot), else at work (a spinner).
     let risky = crate::board::progress(&shell.model, shell.model.unix).risks.iter().any(|(id, _)| shell.model.tickets.iter().find(|t| t.id == *id).is_some_and(|t| shell.model.ticket_project_name(t) == g.name));
     let spin = shell.spin(cx);
-    let meta = h_flex()
-        .flex_none()
-        .gap(px(6.))
-        .items_center()
-        .group_hover(group.clone(), |s| s.invisible())
-        .when(waiting == 0 && risky, |m| m.child(div().id(SharedString::from(format!("risky-{key}"))).size(px(18.)).flex().items_center().justify_center().tip(p, t!("progress.risks"), None).child(div().size(px(7.)).rounded_full().bg(p.danger()))))
-        .when(waiting == 0 && !risky && g.working > 0, |m| {
-            m.child(
-                div()
-                    .id(SharedString::from(format!("working-{key}")))
-                    .size(px(18.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .tip(p, t!("sidebar.work_working", n = g.working), None)
-                    .child(icon(IconName::LoaderCircle, 13., p.muted).rotate(radians(spin))),
-            )
-        })
-        .when(waiting > 0, |m| {
-            m.child(
-                h_flex()
-                    .id(SharedString::from(format!("waiting-{key}")))
-                    .h(px(18.))
-                    .gap(px(5.))
-                    .items_center()
-                    .text_color(p.orange)
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .tip(p, t!("sidebar.work_needs_you", n = waiting), None)
-                    .child(div().size(px(6.)).rounded_full().bg(p.orange))
-                    // Up to two figures in one width, right-aligned: the dots
-                    // line up down the list whether a row says 1 or 10.
-                    .child(div().min_w(px(COUNT_W)).flex().justify_end().child(waiting.to_string())),
-            )
-        });
+    let sign_id = SharedString::from(format!("sign-{key}"));
+    let sign = match head_sign(waiting, risky, g.working) {
+        HeadSign::Waits(n) => Some(count_sign(Some(p.orange), Some(n), p).id(sign_id).tip(p, t!("sidebar.work_needs_you", n = n), None)),
+        HeadSign::Risky => Some(count_sign(Some(p.danger()), None, p).id(sign_id).tip(p, t!("progress.risks"), None)),
+        HeadSign::Working(n) => Some(count_box().id(sign_id).tip(p, t!("sidebar.work_working", n = n), None).child(icon(IconName::LoaderCircle, 13., p.muted).rotate(radians(spin)))),
+        HeadSign::Quiet => None,
+    };
+    let meta = h_flex().flex_none().items_center().group_hover(group.clone(), |s| s.invisible()).children(sign);
     // On the pointer, in the counts' place: a new conversation here, and the project's menu.
     let small = |id: SharedString, name: IconName, tip: String| {
         div()
@@ -1181,7 +1201,8 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
         .child(t!("sidebar.team"))
         .child(div().font_weight(FontWeight::NORMAL).child(members.len().to_string()))
         .child(div().flex_1())
-        .when(turns > 0, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.orange).child(t!("sidebar.team_turns", n = turns))));
+        // How many wait on the person: the wait dot, the words in the heading's ink.
+        .when(turns > 0, |h| h.child(h_flex().gap(px(5.)).items_center().font_weight(FontWeight::NORMAL).child(dot(p.orange, SIGN_DOT)).child(t!("sidebar.team_turns", n = turns))));
     let body = if open { list.into_any_element() } else { faces(shell, &members, cx) };
     Some(
         v_flex()
@@ -1453,7 +1474,7 @@ impl TeamState {
         }
     }
 
-    /// Whether it waits on the person (said in orange).
+    /// Whether it waits on the person (its face's orange dot).
     pub fn waits(self) -> bool {
         matches!(self, TeamState::Asks | TeamState::YourTurn)
     }
@@ -1503,7 +1524,10 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
                 .truncate()
                 .text_right()
                 .text_size(px(12.))
-                .text_color(if state.waits() { p.orange } else { p.muted })
+                // Waiting on the person, its face's dot says so in orange; the
+                // words stay in ink, a step stronger.
+                .text_color(if state.waits() { p.text2 } else { p.muted })
+                .when(state.waits(), |d| d.font_weight(FontWeight::MEDIUM))
                 .group_hover(group.clone(), |s| s.invisible())
                 .child(state.words()),
         )
@@ -2241,10 +2265,34 @@ pub struct Place {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, remove_ask, settle, shown_projects, sub_rows, subs_cap, team_height};
+    use super::{HeadSign, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, head_sign, remove_ask, settle, shown_projects, sub_rows, subs_cap, team_height};
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
     use std::time::{Duration, Instant};
+
+    /// A project's header says one thing at its end, the most pressing: what
+    /// waits on the person (with how many), else work that needs a look, else
+    /// work under way — and nothing when nothing is live.
+    #[test]
+    fn a_project_header_shows_one_sign_what_waits_on_the_person_first() {
+        assert_eq!(head_sign(4, true, 3), HeadSign::Waits(4));
+        assert_eq!(head_sign(1, false, 0), HeadSign::Waits(1));
+        assert_eq!(head_sign(0, true, 2), HeadSign::Risky);
+        assert_eq!(head_sign(0, true, 0), HeadSign::Risky);
+        assert_eq!(head_sign(0, false, 2), HeadSign::Working(2));
+        assert_eq!(head_sign(0, false, 0), HeadSign::Quiet);
+    }
+
+    /// With nearly every project waiting, the headers' counts are the total's
+    /// breakdown and add up to it; one with nothing waiting shows its work, not a zero.
+    #[test]
+    fn the_headers_counts_add_up_to_the_one_total() {
+        let rows = [4, 2, 2, 1, 1, 0, 10];
+        let signs: Vec<HeadSign> = rows.iter().map(|&n| head_sign(n, false, 1)).collect();
+        let total: usize = signs.iter().map(|s| if let HeadSign::Waits(n) = s { *n } else { 0 }).sum();
+        assert_eq!(total, 20);
+        assert_eq!(signs[5], HeadSign::Working(1));
+    }
 
     #[test]
     fn busy_projects_always_show_and_quiet_ones_past_a_few_go_behind_more() {

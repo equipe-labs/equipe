@@ -42,6 +42,36 @@ repository: its layered sources are in `design/tokens/`, and `npm run build`
 there writes `design/tokens.json` (light as `$value`, dark in
 `$extensions.mode.dark`) — a generated file, never edited by hand.
 
+### Counts and what waits (equipe's own screens)
+
+How the desktop app shows that something waits on the person, derived from
+`design/guidelines.md` — "사람의 승인이 가장 크게 보인다 … 주 행동은 한 영역에
+하나" (principle 1), "색만으로 말하지 않는다. 상태는 색 + 기호 + 글자"
+(principle 2), "색은 둘뿐: 브랜드 파랑(단 하나)과 의미색. 나머지는 따뜻한 중립"
+(§2.1), orange (`wait`) = "사람을 기다림" (§2.2), and brand §4: icons follow
+the text colour, "색을 쓰는 건 상태 아이콘(ok/work/wait/err)뿐":
+
+1. **One filled badge.** The total of what waits on the person (the sidebar's
+   Needs you) is the only count drawn as a filled `wait` pill, figures in
+   `on_accent`. A screen has at most one.
+2. **Its breakdown is ink.** Every other count — a project's share of the
+   total, Progress, a team's "N your turn" — is a number in `muted` (words in
+   `muted`/`text2`), never in orange. A count of things waiting is told apart
+   by the **dot** before it: 6 pt, in the state's colour (`wait` orange,
+   `err` red for work that needs a look), read as a graphic at 3:1.
+3. **The dot is the per-item mark.** A conversation, a member's face and a
+   project header that wait on the person carry the same orange dot; the
+   words beside it ("Your turn") stay in ink, a step stronger (`text2`, medium).
+4. **One column.** Counts sit centred in one 22 pt box at the row's end (the
+   badge, the numbers, a spinner), their dots in one column before it, so
+   rows line up whether they say 1 or 10.
+5. **Words for the number.** A count's tooltip and accessible name say what
+   it counts ("4 need you", "Needs you, 20").
+
+So when every project waits, the sidebar shows one orange shape and a quiet
+column of dots, not a column of orange figures: the signal is the total; the
+rows say where.
+
 ## `tokens.json`
 
 The [W3C Design Tokens Community Group format](https://tr.designtokens.org/format/):

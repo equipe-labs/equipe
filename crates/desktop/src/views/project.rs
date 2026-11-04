@@ -88,6 +88,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 cx.notify();
             }))
             .child(label)
+            // What waits on the person here: the wait dot, its count in ink as
+            // every other — the one filled badge is the sidebar's total.
+            .when(count > 0 && hot, |t| t.child(super::board::dot(p.orange, 6.)))
             .when(count > 0, |t| {
                 t.child(
                     div()
@@ -100,8 +103,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                         .rounded(px(9.))
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .when(hot, |b| b.text_color(p.orange))
-                        .when(!hot, |b| b.bg(p.wash).text_color(p.text2))
+                        .bg(p.wash)
+                        .text_color(p.text2)
                         .child(count.to_string()),
                 )
             })
@@ -138,7 +141,7 @@ fn page(shell: &Shell, header: impl IntoElement, column: AnyElement) -> AnyEleme
         .into_any_element()
 }
 
-/// A part's heading: small, quiet — orange where it waits on the person.
+/// A part's heading: small, quiet — the wait dot before it where it waits on the person.
 fn heading(shell: &Shell, label: String, count: usize, hot: bool) -> Div {
     let p = shell.palette;
     h_flex()
@@ -148,7 +151,8 @@ fn heading(shell: &Shell, label: String, count: usize, hot: bool) -> Div {
         .items_center()
         .text_size(px(12.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(if hot { p.orange } else { p.muted })
+        .text_color(p.muted)
+        .when(hot, |h| h.child(super::board::dot(p.orange, 6.)))
         .child(label)
         .child(div().font_weight(FontWeight::NORMAL).child(count.to_string()))
 }
@@ -301,7 +305,7 @@ fn ticket_row(shell: &Shell, id: TicketId, hot: bool, cx: &mut Context<Shell>) -
                 this.open_ticket_row(id, window, cx);
             }
         }))
-        .child(div().w(px(48.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(if hot { p.orange } else { p.muted }).child(format!("T-{id}")))
+        .child(div().w(px(48.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
         .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).text_color(if t.status.is_closed() { p.text2 } else { p.text }).child(t.title.clone()))
         .child(div().flex_none().max_w(px(200.)).truncate().text_size(px(12.)).text_color(p.muted).child(meta))
         .into_any_element()
