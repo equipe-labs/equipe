@@ -65,6 +65,9 @@
 //!   mockup, `equipe design render`) to the same path.
 //! - `source` paths are relative to the repository the design folder is in;
 //!   one modified after the screen's newest picture makes the screen `stale`.
+//!   A file git tracks and that is as committed was modified when it was
+//!   last committed — a checkout writes files in no order, so their times
+//!   on disk say nothing — and any other when its time on disk says.
 //! - A flow's `walk` is how to go through it, a step at a time, each with one
 //!   action — `go` to a URL, `click` a selector, `fill` a selector with text,
 //!   `press` a key, `wait` milliseconds, `say` a caption — and, from the step
@@ -112,6 +115,7 @@ use serde_json::Value;
 use super::folder;
 use crate::i18n::{Catalog, Lang};
 use crate::visuals;
+use crate::worktree::{GIT_TIMEOUT, git_command, output_within};
 
 /// The map's folder in the design folder, and its file.
 pub const DIR: &str = "flows";
@@ -561,9 +565,11 @@ fn secs(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// A picture found, when it was taken and the app its note says shot it.
+/// A picture found, where it really is, when it was taken and the app its
+/// note says shot it.
 struct Taken {
     picture: Picture,
+    real: PathBuf,
     at: SystemTime,
     app: Option<String>,
 }
@@ -574,7 +580,7 @@ impl Taken {
         let at = std::fs::metadata(real).and_then(|m| m.modified()).ok()?;
         let note = note_of(path, root).unwrap_or_default();
         let picture = Picture { path: path.to_string_lossy().into_owned(), mode, width, taken: secs(at), live, shot_with: note.version, ..Picture::default() };
-        Some(Self { picture, at, app: note.app })
+        Some(Self { picture, real: real.to_path_buf(), at, app: note.app })
     }
 }
 
@@ -670,9 +676,9 @@ fn find(root: &Path, listed: &[Listed]) -> Found {
     found
 }
 
-/// When `source`, in `repo`, was last changed: `Err` when it is outside
-/// `repo` (or a link out of it), `Ok(None)` when it isn't there.
-fn changed(repo: &Path, source: &str) -> Result<Option<SystemTime>, ()> {
+/// Where `source`, in `repo`, really is: `Err` when it is outside `repo`
+/// (or a link out of it), `Ok(None)` when it isn't there.
+fn source_in(repo: &Path, source: &str) -> Result<Option<PathBuf>, ()> {
     let rel = Path::new(source);
     if rel.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) {
         return Err(());
@@ -681,7 +687,61 @@ fn changed(repo: &Path, source: &str) -> Result<Option<SystemTime>, ()> {
     if !real.starts_with(&root) {
         return Err(());
     }
-    Ok(std::fs::metadata(&real).and_then(|m| m.modified()).ok())
+    Ok(std::fs::metadata(&real).is_ok_and(|m| m.is_file()).then_some(real))
+}
+
+/// When files in a repository were last changed: one git tracks and that is
+/// as committed, when it was last committed — a fresh checkout writes them
+/// in no order, a second or two apart, so their times on disk say nothing —
+/// and any other (new, edited, ignored) when its time on disk says.
+struct Clock {
+    /// The repository's top folder, its real path.
+    top: PathBuf,
+    /// The files tracked and as committed, their paths in `top`.
+    clean: HashSet<PathBuf>,
+}
+
+impl Clock {
+    /// The clock of the repository `repo` is in; `None` when git can't say.
+    fn of(repo: &Path) -> Option<Self> {
+        let top = git_out(repo, &["rev-parse", "--show-toplevel"])?;
+        let top = std::fs::canonicalize(String::from_utf8(top).ok()?.trim_end_matches('\n')).ok()?;
+        let mut clean: HashSet<PathBuf> = git_out(&top, &["ls-files", "-z"])?.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| top.join(String::from_utf8_lossy(p).as_ref())).collect();
+        // `XY path`, each ended by a NUL: staged, edited or deleted since the last commit.
+        for entry in git_out(&top, &["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=no"])?.split(|b| *b == 0) {
+            if let Some(path) = entry.get(3..).filter(|p| !p.is_empty()) {
+                clean.remove(&top.join(String::from_utf8_lossy(path).as_ref()));
+            }
+        }
+        Some(Self { top, clean })
+    }
+
+    /// When the newest of `files` (real paths) was changed; `None` for none.
+    fn newest(clock: Option<&Self>, files: &[PathBuf]) -> Option<SystemTime> {
+        let on_disk = |file: &PathBuf| std::fs::metadata(file).and_then(|m| m.modified()).ok();
+        let Some(clock) = clock else { return files.iter().filter_map(on_disk).max() };
+        let (committed, others): (Vec<&PathBuf>, Vec<&PathBuf>) = files.iter().partition(|f| clock.clean.contains(*f));
+        let mut newest = others.into_iter().filter_map(on_disk).max();
+        if !committed.is_empty() {
+            // One look for them all: the newest commit that touched any.
+            let mut args = vec!["--literal-pathspecs".to_owned(), "log".to_owned(), "-1".to_owned(), "--format=%ct".to_owned(), "--".to_owned()];
+            args.extend(committed.iter().filter_map(|f| f.strip_prefix(&clock.top).ok()).map(|rel| rel.to_string_lossy().into_owned()));
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let at = git_out(&clock.top, &args).and_then(|out| String::from_utf8(out).ok()?.trim().parse::<u64>().ok());
+            newest = newest.max(match at {
+                Some(secs) => Some(UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+                None => committed.into_iter().filter_map(on_disk).max(),
+            });
+        }
+        newest
+    }
+}
+
+/// What git printed in `dir` for `args`, when it ran and succeeded.
+fn git_out(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let mut command = git_command(dir);
+    command.args(args);
+    output_within(command, GIT_TIMEOUT).ok().filter(|out| out.status.success()).map(|out| out.stdout)
 }
 
 /// The map in `design` (a design folder), its pictures found and its
@@ -712,11 +772,14 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
         None => HashMap::new(),
     };
     let mut versions: HashMap<String, Option<String>> = HashMap::new();
+    // Asked of git once, and only when some screen has code to compare.
+    let mut clock: Option<Option<Clock>> = None;
     for Listed { file: flow, .. } in listed {
         let mut screens = Vec::new();
         for screen in flow.screens {
-            // The newest of each kind of picture, and whether one of each is of another version.
-            let (mut newest, mut newest_live): (Option<SystemTime>, Option<SystemTime>) = (None, None);
+            // The repository's pictures, the newest of the person's, and whether one of each is of another version.
+            let mut pictured: Vec<PathBuf> = Vec::new();
+            let mut newest_live: Option<SystemTime> = None;
             let (mut old, mut old_live) = (false, false);
             let mut states: Vec<ScreenState> = Vec::new();
             for state in screen.states {
@@ -734,7 +797,7 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
                         newest_live = newest_live.max(Some(t.at));
                         old_live |= outdated;
                     } else {
-                        newest = newest.max(Some(t.at));
+                        pictured.push(t.real.clone());
                         old |= outdated;
                     }
                 }
@@ -760,14 +823,19 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
             }
             let (mut stale, mut live_stale) = (old, old_live);
             if let Some(repo) = repo {
+                let mut sources: Vec<PathBuf> = Vec::new();
                 for source in &screen.source {
-                    match changed(repo, source) {
+                    match source_in(repo, source) {
                         Err(()) => map.problems.push(words.fill("flows.problem_source_outside", &[("at", format!("{}/{}", flow.id, screen.id)), ("path", source.clone())])),
-                        Ok(Some(at)) => {
-                            stale |= newest.is_some_and(|newest| at > newest);
-                            live_stale |= newest_live.is_some_and(|newest| at > newest);
-                        }
+                        Ok(Some(real)) => sources.push(real),
                         Ok(None) => {}
+                    }
+                }
+                if !sources.is_empty() && (!pictured.is_empty() || newest_live.is_some()) {
+                    let clock = clock.get_or_insert_with(|| Clock::of(repo)).as_ref();
+                    if let Some(changed) = Clock::newest(clock, &sources) {
+                        stale |= Clock::newest(clock, &pictured).is_some_and(|newest| changed > newest);
+                        live_stale |= newest_live.is_some_and(|newest| changed > newest);
                     }
                 }
             }
@@ -1267,6 +1335,62 @@ mod tests {
         assert_eq!(screens(&squad), [false, false], "no repository, nothing stale");
         assert!(squad.problems.is_empty(), "and nothing to say of sources: {:?}", squad.problems);
         std::fs::remove_file(secret).unwrap();
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    /// Git in `dir`, its commits dated `at` (Unix seconds).
+    fn git(dir: &Path, at: u64, args: &[&str]) {
+        let date = format!("@{at} +0000");
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn in_a_fresh_checkout_committed_code_and_pictures_are_compared_by_their_commits_not_their_times_on_disk() {
+        let repo = dir("commits");
+        let design = repo.join("design");
+        write(
+            &design.join("flows/flows.json"),
+            r#"{ "flows": [ { "id": "app", "title": "App", "screens": [
+                 { "id": "home", "title": "Home", "source": ["src/home.tsx"], "states": [ { "id": "default", "label": "Default", "kind": "default" } ] } ] } ] }"#,
+        );
+        let (picture, code) = (design.join("flows/app/home/default.light.390.png"), repo.join("src/home.tsx"));
+        write(&code, "v1");
+        git(&repo, 1_793_000_000, &["init", "-q"]);
+        git(&repo, 1_793_000_000, &["add", "."]);
+        git(&repo, 1_793_000_000, &["commit", "-qm", "code"]);
+        png(&picture);
+        git(&repo, 1_793_100_000, &["add", "."]);
+        git(&repo, 1_793_100_000, &["commit", "-qm", "pictures"]);
+        // As a checkout leaves them: the code written after the pictures.
+        let now = SystemTime::now();
+        touch(&picture, now - Duration::from_secs(2));
+        touch(&code, now);
+        let stale = |design: &Path| read(design, Some(&repo), Lang::En).unwrap().flows[0].screens[0].stale;
+        assert!(!stale(&design), "the code was committed before the pictures");
+        // Through a worktree's own folder, as a ticket sees it.
+        let worktree = repo.join("wt");
+        git(&repo, 1_793_100_000, &["worktree", "add", "-q", "--detach", worktree.to_str().unwrap()]);
+        touch(&worktree.join("src/home.tsx"), now + Duration::from_secs(5));
+        assert!(!read(&worktree.join("design"), Some(&worktree), Lang::En).unwrap().flows[0].screens[0].stale, "a worktree reads its own commits");
+        // Edited and not committed: its time on disk, newer than the pictures' commit.
+        write(&code, "v2");
+        assert!(stale(&design), "edited code after the pictures");
+        // Committed after the pictures: stale too, whatever the disk says.
+        git(&repo, 1_793_200_000, &["commit", "-qam", "code again"]);
+        touch(&code, now - Duration::from_secs(3600));
+        assert!(stale(&design), "code committed after the pictures");
+        // Shot again and not yet committed: the new picture's time on disk wins.
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([250, 90, 20, 255])).save(&picture).unwrap();
+        assert!(!stale(&design), "a new picture, after the last commit");
         std::fs::remove_dir_all(repo).unwrap();
     }
 
