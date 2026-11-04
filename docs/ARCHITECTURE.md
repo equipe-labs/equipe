@@ -693,6 +693,22 @@ owns it or suggests `/add`.
   `--append-system-prompt` for Claude Code, `instructions` for Codex. A charter names
   the member, its teammates and who keeps the plan, and is rebuilt every turn, so it
   follows the team as members come and go.
+- **Skills** (`equipe_core::skills`, sources in `crates/core/skills/<name>/`) hold
+  what only some work needs — office hours, planning, plan reviews, the designer's
+  setup, process, tools, UI map and design QA, a security review, reports, the
+  browser — so the charter carries only what every turn needs and an index: each
+  skill's name and a line on when to open it. A skill's `SKILL.md` (front matter
+  `name`, `description`; at most 500 lines) is read when the work matches, its
+  `references/` only when it says so. Each is offered to the roles, and squads,
+  whose charter it came out of, rendered for them (`{{tools_at}}`, `{{hq_in}}`,
+  `{{#if <flag>}}` blocks). Claude Code gets them as a plugin, `--plugin-dir`
+  `~/.equipe/skills/<version>/<role>-<hash>/` — written once per content, so the
+  prompt stays the same turn to turn — with `Skill(equipe:<name>)` and a `Read` of
+  that folder allowed; Codex's CLI gets the index with each `SKILL.md`'s absolute
+  path; Codex over the API, which reads no file, gets every skill inline.
+  `crates/core/charter-coverage.txt` lists every sentence the charters said before
+  skills, and a test checks each still reaches its member (`EQUIPE_BLESS_CHARTERS=1`
+  rewrites it after a deliberate change).
 - **Names** are unique per team — `frontend`, `frontend-2` — and editing members
   work on `equipe/<name>-<id>` branches.
 - **The designer** works like a company's product designer (T-142's playbook,

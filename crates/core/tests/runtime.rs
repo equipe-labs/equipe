@@ -841,6 +841,42 @@ async fn a_member_gets_its_charter_a_recommended_model_and_its_own_memory() {
 }
 
 #[tokio::test]
+async fn a_members_skills_load_as_a_plugin_and_its_charter_keeps_only_their_index() {
+    let (claude, recorded) = recording_claude(&answering("on it"));
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "plan the site".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+
+    let call = &calls(&recorded)[0];
+    let dir = PathBuf::from(arg(call, "--plugin-dir").expect("its skills as a plugin"));
+    assert!(dir.starts_with(home.join("skills").join("test")), "under equipe's home, by version: {}", dir.display());
+    let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(".claude-plugin/plugin.json")).unwrap()).unwrap();
+    assert_eq!(manifest["name"], "equipe");
+    let office = std::fs::read_to_string(dir.join("skills/office-hours/SKILL.md")).unwrap();
+    assert!(office.starts_with("---\nname: office-hours\ndescription: Use when") && office.contains("`equipe brief critique <its path>` (`/opt/equipe` if"), "{office}");
+    // Opened, and its files read, without asking.
+    let allowed: Vec<&String> = call.iter().skip_while(|a| *a != "--allowedTools").skip(1).take_while(|a| !a.starts_with("--")).collect();
+    assert!(allowed.iter().any(|a| *a == "Skill(equipe:office-hours)"), "{allowed:?}");
+    assert!(allowed.iter().any(|a| **a == format!("Read(/{}/**)", dir.display())), "{allowed:?}");
+    // The charter names each skill and when; the body stays in the skill.
+    let charter = arg(call, "--append-system-prompt").unwrap();
+    assert!(charter.contains("- `office-hours`: Use when the person brings a new feature"), "{charter}");
+    assert!(!charter.contains("six forcing questions"), "{charter}");
+
+    // The next turn: the same folder, untouched.
+    let written = std::fs::metadata(dir.join("skills/office-hours/SKILL.md")).unwrap().modified().unwrap();
+    handle.send(Command::Submit { session: 1, text: "and the app?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let again = calls(&recorded).pop().unwrap();
+    assert_eq!(arg(&again, "--plugin-dir"), Some(&*dir.to_string_lossy()));
+    assert_eq!(arg(&again, "--append-system-prompt"), Some(charter), "the same prompt, turn after turn");
+    assert_eq!(std::fs::metadata(dir.join("skills/office-hours/SKILL.md")).unwrap().modified().unwrap(), written);
+}
+
+#[tokio::test]
 async fn members_are_named_by_role_and_told_who_else_is_on_the_team() {
     let (claude, recorded) = recording_claude(&answering("ok"));
     let cwd = scratch("cwd");

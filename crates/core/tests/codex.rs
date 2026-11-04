@@ -218,7 +218,15 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     assert_eq!(start["config"]["mcp_servers"]["node_repl"]["enabled"], false);
     assert_eq!(start["config"]["plugins"]["unified-computer-use@openai-bundled"]["enabled"], false);
     assert_eq!(start["config"]["features"]["apps"], false);
-    assert!(start["developerInstructions"].as_str().unwrap().starts_with("You are qa, the QA engineer"));
+    let instructions = start["developerInstructions"].as_str().unwrap();
+    assert!(instructions.starts_with("You are qa, the QA engineer"));
+    // Its skills: an index of absolute paths it reads by, never Codex's own skill folders.
+    let review = home.join("skills").join("test");
+    let path = instructions.split('`').find(|p| p.ends_with("/plan-review/SKILL.md")).unwrap_or_else(|| panic!("{instructions}"));
+    assert!(Path::new(path).is_absolute() && Path::new(path).starts_with(&review), "{path}");
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.starts_with("---\nname: plan-review\n") && text.contains("say whether it can be tested"), "{text}");
+    assert!(instructions.contains("read the matching skill's `SKILL.md` at its path") && !instructions.contains("say whether it can be tested"), "{instructions}");
 }
 
 #[tokio::test]

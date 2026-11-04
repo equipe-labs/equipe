@@ -45,6 +45,7 @@ pub mod routines;
 pub mod secrets;
 pub mod signal_sources;
 pub mod signals;
+pub mod skills;
 pub mod runtime;
 pub mod squad_home;
 pub mod squad_memory;
