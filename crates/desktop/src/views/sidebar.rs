@@ -1744,6 +1744,26 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                         .into_any_element(),
                 );
             }
+            // One more squad, on the machine the window is on — or why not now.
+            let route = shell.new_squad_route();
+            let new = h_flex()
+                .id("new-squad")
+                .h(px(30.))
+                .px_2()
+                .gap_2()
+                .items_center()
+                .rounded(px(6.))
+                .text_size(px(TEXT))
+                .child(div().w(px(14.)).flex_none().child(icon(IconName::Plus, 13., if route.available() { p.text2 } else { p.muted })))
+                .child(div().flex_1().min_w_0().truncate().child(t!("sidebar.new_squad")));
+            rows.push(match super::new_squad::unavailable_tip(route, &shell.endpoint.label()) {
+                Some(why) => new.text_color(p.muted).tip_at(p, why, None, gpui_kit::base::Placement::Right).into_any_element(),
+                None => new
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.side_hover))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_new_squad(window, cx)))
+                    .into_any_element(),
+            });
             rows.push(div().h(px(1.)).my_1().bg(p.hair).into_any_element());
             rows.push(
                 item("machine".into(), t!("sidebar.other_machine").into(), false)

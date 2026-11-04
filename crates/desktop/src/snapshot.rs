@@ -20,7 +20,7 @@
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines|taste>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dwork` (the work under way on it, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
 //! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` (말하기 on the open state) · `dsay:<token>` / `dsay:asset:<n>` (말하기 on a colour or type style by name, or asset n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
 //! `dcompare[:off]` (비교하며 검토, begun or ended) · `dside:<now|after>` · `dstep[:prev]` (the next or previous changed screen) · `daccept` · `dredo[:<words>]` (다시 부탁's box, with words) · `dredosend` · `dversions` (버전 기록, opened or closed) · `drestore:<n>` (row n asked back: its confirmation) · `dtaste:<add|edit:<n>|type:<words>|save|cancel|remove:<n>|confirm:<n>|evidence:<n>>` (a taste note: write a new one, rewrite note n, type in its box, keep it, put the box away, remove note n, say 맞아요 to note n, open or close its evidence) ·
-//! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `newsquad[:type:<name>|create|tab[:back]|close|failed|far|farout]` (새 스쿼드…'s sheet: a name, its Create, Tab, closed, a refusal shown; the window as if on another machine, attached or not) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
 //! `EQUIPE_SNAPSHOT_SCALE=2` draws the window — and so every `shot` — at that scale, whatever
@@ -468,6 +468,29 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     "retry" => shell.retry_pairing(cx),
                     "close" => shell.close_pairing(window, cx),
                     _ => shell.open_pairing(window, cx),
+                }),
+                // 새 스쿼드…: the sheet; a name typed; its Create; Tab; a refusal
+                // from the far machine; the window as if on another machine
+                // (`far`, attached; `farout`, the line down) — drawn only, nothing reached.
+                "newsquad" => shell.update(cx, |shell, cx| {
+                    let (what, rest) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+                    match what {
+                        "type" => shell.new_squad.name.update(cx, |s, cx| s.set_value(rest.to_owned(), window, cx)),
+                        "create" => shell.create_squad(crate::views::welcome::Which::New, window, cx),
+                        "tab" => shell.new_squad_tab(rest == "back", window, cx),
+                        "close" => shell.close_new_squad(window, cx),
+                        "failed" => shell.new_squad.failed = Some(format!("{}\nssh: connect to host studio port 22: Operation timed out", equipe_core::t!("welcome.failed_create"))),
+                        "far" | "farout" => {
+                            if let Ok(endpoint) = crate::target::Endpoint::parse("abel@studio") {
+                                shell.endpoint = endpoint;
+                            }
+                            if what == "farout" {
+                                shell.model.conn = crate::state::Conn::Down { reason: crate::failure::Failure::Closed, since: crate::state::Clock::now(), had_snapshot: true };
+                            }
+                        }
+                        _ => shell.open_new_squad(window, cx),
+                    }
+                    cx.notify();
                 }),
                 // 디스크: the panel, a fix's sheet, every fix's, yes, back, close.
                 "disk" => shell.update(cx, |shell, cx| {

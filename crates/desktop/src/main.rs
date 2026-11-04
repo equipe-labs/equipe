@@ -46,6 +46,7 @@ mod setup;
 mod sheet;
 mod side_split;
 mod sidecar;
+mod squad_form;
 mod ssh;
 mod sshkey;
 #[cfg(feature = "snapshot")]
@@ -120,7 +121,7 @@ actions!(equipe, [OpenSettings]);
 // "휴대폰 연결…": a phone paired with the daemon's machine, by QR code.
 actions!(equipe, [PairPhone]);
 // A press outside a box over the window: what Esc does to it.
-actions!(equipe, [DismissOverlay]);
+actions!(equipe, [DismissOverlay, NewSquad]);
 // The View menu's: the window's size, as a browser zooms (⌘+, ⌘-, ⌘0).
 actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
 
@@ -151,7 +152,6 @@ menu_commands!(
     ExportConversation => "/export",
     TidyBoard => "/tidy",
     SwitchSquad => "/squad ",
-    NewSquad => "/squad new ",
     AddFolder => "/squad add ",
     RemoveFolder => "/squad remove ",
     AddMembers => "/add ",
@@ -274,6 +274,8 @@ pub struct Shell {
     pub connect: ConnectUi,
     /// The first run's form (`views/welcome.rs`).
     pub welcome: views::welcome::WelcomeUi,
+    /// "새 스쿼드…"'s sheet: the same form over the window (`views/new_squad.rs`).
+    pub new_squad: views::welcome::WelcomeUi,
     /// Anonymous usage data: the daemon's answer and the question (`views/telemetry.rs`).
     pub telemetry: views::telemetry::TelemetryUi,
     pub ask: AskUi,
@@ -303,6 +305,9 @@ pub struct Shell {
     pub confirm: Option<sheet::Ask>,
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
+    /// A squad just made on another machine, and how much it does alone: set
+    /// on its daemon once the window is attached to it.
+    pending_mode: Option<(String, equipe_core::protocol::Mode)>,
     connecting_shown: bool,
     /// How far the connection being made has got, for its screen.
     pub(crate) connecting: views::connect::Connecting,
@@ -357,7 +362,8 @@ impl Shell {
             .unwrap_or_else(Endpoint::this_mac);
         let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
         let ask = AskUi::new(window, cx);
-        let welcome = views::welcome::WelcomeUi::new(window, cx);
+        let welcome = views::welcome::WelcomeUi::new(views::welcome::Which::First, window, cx);
+        let new_squad = views::welcome::WelcomeUi::new(views::welcome::Which::New, window, cx);
         let telemetry = views::telemetry::TelemetryUi::new(cx);
         // Light or dark as the person picked, else as the Mac is.
         remembered.appearance.apply();
@@ -417,6 +423,7 @@ impl Shell {
             remembered,
             connect,
             welcome,
+            new_squad,
             telemetry,
             ask,
             ssh_key_wanted: false,
@@ -433,6 +440,7 @@ impl Shell {
             sheet: None,
             confirm: None,
             pending_team: None,
+            pending_mode: None,
             connecting_shown: false,
             connecting: views::connect::Connecting::new(std::time::Instant::now()),
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
@@ -586,6 +594,9 @@ impl Shell {
             if this.update(cx, |shell, _| shell.overlay_open()).unwrap_or(false) {
                 if key == "escape" {
                     this.update(cx, |shell, cx| shell.escape_overlay(window, cx)).ok();
+                    cx.stop_propagation();
+                } else if key == "tab" && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, _| shell.new_squad.open && shell.ask.queue.is_empty()).unwrap_or(false) {
+                    this.update(cx, |shell, cx| shell.new_squad_tab(modifiers.shift, window, cx)).ok();
                     cx.stop_propagation();
                 } else if key == "enter" && this.update(cx, |shell, _| shell.confirm.as_ref().is_some_and(|a| !a.destructive()) && shell.ask.queue.is_empty()).unwrap_or(false) {
                     this.update(cx, |shell, cx| shell.answer_question(true, window, cx)).ok();
@@ -1019,6 +1030,7 @@ impl Shell {
                         }
                         if attached {
                             this.start_team();
+                            this.apply_pending_mode();
                             // A new connection: the design system is asked for again, if on screen.
                             this.design.reset();
                         }
@@ -1152,12 +1164,14 @@ impl Shell {
     // ── questions from ssh ──
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open || self.disk.open || self.usage_open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
+        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.usage_open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.ask.queue.is_empty() {
             self.answer_prompt(askpass::Answer::Cancel, window, cx);
+        } else if self.new_squad.open {
+            self.close_new_squad(window, cx);
         } else if self.pairing.open {
             self.close_pairing(window, cx);
         } else if self.disk.open {
@@ -1779,6 +1793,8 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &SearchAll, window, cx| this.search_everything(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
             .on_action(cx.listener(|this, _: &PairPhone, window, cx| this.open_pairing(window, cx)))
+            // The Squad menu's 새 스쿼드… is the switcher's: the same sheet.
+            .on_action(cx.listener(|this, _: &NewSquad, window, cx| this.open_new_squad(window, cx)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 // A hairline between the sidebar's areas, held.
                 if this.board.side_split_drag.is_some() {
@@ -1885,6 +1901,7 @@ impl Render for Shell {
                 .relative()
                 .child(h_flex().flex_1().min_h_0().child(views::settings::render(self, cx)))
                 .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
+                .children(views::new_squad::sheet(self, cx))
                 .children(views::pair::sheet(self, cx))
                 .children(views::disk::sheet(self, cx))
                 .children(views::usage::panel(self, cx))
@@ -1927,6 +1944,7 @@ impl Render for Shell {
             .children(views::sheet::sheet(self, cx))
             .children(views::sheet::question(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
+            .children(views::new_squad::sheet(self, cx))
             .children(views::pair::sheet(self, cx))
             .children(views::disk::sheet(self, cx))
                 .children(views::usage::panel(self, cx))
