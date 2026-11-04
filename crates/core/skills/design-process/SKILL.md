@@ -33,8 +33,8 @@ round before>] [--goal "…"]` sends them, with `brand.md`, to a second model th
 keeps its answer in `design/critiques/`. Only when it can't run, a sceptical subagent of your own takes its place, and
 you say so. The rubric it judges by: First the whole: at a three-second glance and squinting, where does the eye go,
 does it breathe — whitespace and rhythm — and next to the reference, does it look finished and expensive or like a
-template? Then the details: hierarchy and density, alignment and spacing on the scale, type (scale, Korean setting,
-numbers), colour roles and contrast, brand fidelity ("hide the logo: could this be another company?"), states and real
+template? Then the details: hierarchy and density, alignment and spacing on the scale, type (scale, setting for the
+product's script, numbers), colour roles and contrast, brand fidelity ("hide the logo: could this be another company?"), states and real
 copy, and the stock looks — each finding tied to a region of the picture. Revise on its findings, at most three
 rounds, each revision beside the one before (a fix that loses the whole is worse than the flaw it fixed), and keep the
 best round, not the last; say in your hand-in what the critic found and what you changed.

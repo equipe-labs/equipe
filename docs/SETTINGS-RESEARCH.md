@@ -117,7 +117,7 @@ settings. Destructive actions sit apart, in red, and ask first.
    - The squad's default mode is a picker with a sentence for each choice.
    - The squad's "always allow" rules are listed one per row, each with a
      button that takes it back (`Command::Disallow`, which the daemon
-     answers with `Event::Allowed`). A "항상" answer on a request shows up
+     answers with `Event::Allowed`). An "Always" answer on a request shows up
      here at once.
    - The shared sign-in caution is said plainly.
 9. **Scope.** The page says whose setting each one is: this Mac's window, the
@@ -127,7 +127,7 @@ settings. Destructive actions sit apart, in red, and ask first.
     permission, ready for review, waits on you, a turn failed), plus a sound
     switch. They only ever come while the window is out of sight.
 11. **Updates.** Version, Check now, automatic updates (Sparkle's own
-    setting), the "다시 시작해 업데이트" state, and links to the site,
+    setting), the "Restart to Update" state, and links to the site,
     GitHub and the licence. Without Sparkle (a dev build) the controls say
     why they're off.
 12. **Shortcuts.** A read-only list of every key, searchable, in the app's

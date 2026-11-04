@@ -13,7 +13,7 @@ People get it from **https://github.com/equipe-labs/equipe/releases/latest/downl
 (see [Shipping the app](#shipping-the-app)).
 
 Why a Rust core and GPUI: [research/desktop-stack](./research/desktop-stack/README.md).
-Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
+Screen design: the squad's `outputs/T-54 desktop screen design/spec.md`.
 
 ## How it is built: a daemon client
 
@@ -79,7 +79,7 @@ through SSH instead of the socket file.
 ### Connecting
 
 - **Target.** The window shows which machine it is on (title bar, and the sidebar's
-  foot, which opens the chooser; menu *연결 대상…* ⌘⇧K). The chooser lists *이 맥*,
+  foot, which opens the chooser; menu *Connect To…* ⌘⇧K). The chooser lists *This Mac*,
   every `Host` in `~/.ssh/config` (and files it `Include`s; no wildcards), the hosts
   typed before, and a box for `host`, `user@host`, `user@host:port` or `[::1]:port`
   — anything `ssh` resolves; `-` at the start, spaces and shell characters are
@@ -121,10 +121,10 @@ through SSH instead of the socket file.
     window; the answer goes back to `ssh` on stdout and is dropped — **never stored**.
     The control master means it is asked once, not on every reconnect. Closing the box
     cancels the whole attempt (`ssh` does not re-ask) and the window waits for
-    *다시 시도*.
+    *Try again*.
   - *A host this Mac has not met*: never auto-accepted and never an error screen.
     `ssh`'s own question arrives as a box showing the key's fingerprint
-    (`SHA256:…`) and the host; *지문이 맞습니다 — 연결* answers yes (and `ssh` writes
+    (`SHA256:…`) and the host; *Fingerprint Matches — Connect* answers yes (and `ssh` writes
     `known_hosts` itself), the other button no. The person's `StrictHostKeyChecking`
     setting is untouched: with `yes` the guide says to `ssh <host>` once in a
     terminal; a *changed* key is refused with a warning (no way around it in the app).
@@ -158,7 +158,7 @@ through SSH instead of the socket file.
 
   | Seen | Cause | The guide says |
   |---|---|---|
-  | `Connection refused` | no SSH server listening | turn on *원격 로그인* (macOS: 시스템 설정 → 일반 → 공유; ≤ 12: 시스템 환경설정 → 공유) / install and enable `sshd` on Linux; custom port as `host:port` |
+  | `Connection refused` | no SSH server listening | turn on *Remote Login* (macOS: System Settings → General → Sharing; ≤ 12: System Preferences → Sharing) / install and enable `sshd` on Linux; custom port as `host:port` |
   | no route, timeout, unknown name | unreachable | check the name, that the machine is awake, VPN / Tailscale, try `ssh` in a terminal |
   | `Permission denied` | authentication failed | `ssh-keygen -t ed25519`, `ssh-copy-id [-p …] user@host`, check the user name |
   | closed password box | sign-in cancelled | try again when ready |
@@ -173,7 +173,7 @@ through SSH instead of the socket file.
 
   Causes only the person can fix (cancelled box, auth failure, host-key refusals,
   an app older than the daemon) are **not** retried on a timer — the window would
-  keep asking for the same password. They wait for *다시 시도* (the guide's button, or
+  keep asking for the same password. They wait for *Try again* (the guide's button, or
   the banner's). Everything else — a refused port, an unreachable host, a daemon
   that is off — keeps retrying with backoff and is picked up when it comes back.
 - **Reconnecting.** An `ssh` that exits is run again after the backoff; the window
@@ -307,21 +307,21 @@ with projects, `equipe daemon run` (stopped while tickets are put into
 `EQUIPE_SCRIPT="board;pick:2;bkey:d;shot:/tmp/a.png"` (`bkey`, `pick`, `find`, `note`,
 `submit`, `cancel` drive the board).
 
-**티켓** (`views/tickets.rs`; rules in `tickets.rs`, the daemon's in
+**Tickets** (`views/tickets.rs`; rules in `tickets.rs`, the daemon's in
 `equipe_core::runtime`'s `tickets.rs` and `equipe_core::board`). Every ticket, the person's to
 shape — with their own commands only (`create_ticket`, `edit_ticket`, `edit_tickets`,
 `move_ticket`, `comment_ticket`, `ticket_history`); a member's word never moves one.
 
 - *List* (default) or *board* (V; kept as `tickets board` in `desktop-target`). The list runs by
-  attention: 내 차례 · 검토 · 진행 중 · 할 일 (the board's order) · 끝남 (the week, folded);
-  cancelled shows only when the filter asks. Proposals wait behind "분류 필요 N": a triage of
+  attention: Your turn · Review · In progress · To do (the board's order) · Done (the week, folded);
+  cancelled shows only when the filter asks. Proposals wait behind "N to sort": a triage of
   their own where A takes one on and N drops it. A row: status (live) · T-n · title · ⛔ what it
-  waits on · project · who and what they do now, or their place in their queue (다음 #1) ·
-  diff · priority · when it last changed; one waiting for the person is lit, as in 나에게 —
+  waits on · project · who and what they do now, or their place in their queue (next #1) ·
+  diff · priority · when it last changed; one waiting for the person is lit, as in the Inbox —
   it is the same list of needs, the same peek, the same keys.
-- By hand a ticket goes from proposal to 할 일, moves within 할 일 (what a member picks next is
+- By hand a ticket goes from proposal to To do, moves within To do (what a member picks next is
   that order; priority only between equals), or is cancelled (asked once; on the board, drop it
-  on the place at its foot). 진행 중, 내 차례, 검토 and 끝남 are the members' and A's: a drop there
+  on the place at its foot). In progress, Your turn, Review and Done are the members' and A's: a drop there
   is refused, saying why. The daemon takes more (`board::move_rule`: review to done accepts,
   done back sends back…), for screens that ask.
 - Edits show at once and are sent after the five seconds U can take them back in (a refusal
@@ -346,9 +346,9 @@ are for it.
 Spike knobs (env): `EQUIPE_AGENTS` (3), `EQUIPE_RATE` lines/s per mock agent
 (200, `0` = idle), `EQUIPE_TICK_MS` UI poll interval (33), `EQUIPE_W`/`EQUIPE_H`.
 
-## AI 플랫폼 (the engines)
+## AI platforms (the engines)
 
-Settings ▸ AI 플랫폼 has a card for each entry in `engines.rs`'s `PLATFORMS` (mark, name, its
+Settings ▸ AI platforms has a card for each entry in `engines.rs`'s `PLATFORMS` (mark, name, its
 CLI, how it signs in, its install line and guide, the line saying what it adds): one more
 platform is one more entry. Each card says where the engine stands on the daemon's machine
 (`engines` → `Event::Engines`: signed in and the plan when its CLI says, signed out, CLI not
@@ -359,12 +359,12 @@ about and never reads.
 Codex signs in from the card: the daemon runs `codex login` on its machine — the browser
 opens there, which is this Mac when the window is local — or, when the window is on another
 Mac over SSH, `codex login --device-auth`, whose address and one-time code the card shows
-(the page opens here; 코드 복사). Every screen follows the sign-in (`Event::SignIn`), and the
-card turns signed in when it ends, without a restart; 취소 stops the CLI, failures say what
+(the page opens here; Copy code). Every screen follows the sign-in (`Event::SignIn`), and the
+card turns signed in when it ends, without a restart; Cancel stops the CLI, failures say what
 to do (device codes turned off in ChatGPT's security settings, out of time, no answer from an
-older daemon, a lost connection) with 다시 시도. 로그아웃 asks first, then runs `codex logout`.
-equipe's own older login (`equipe login codex`) shows as "이전 방식" when it's kept. Claude Code
-is the person's own: on this Mac "터미널에서 로그인" opens Terminal running `claude auth login`
+older daemon, a lost connection) with Try again. Sign out asks first, then runs `codex logout`.
+equipe's own older login (`equipe login codex`) shows as "the older way" when it's kept. Claude Code
+is the person's own: on this Mac "Sign in in Terminal" opens Terminal running `claude auth login`
 (a `.command` file; the card looks again every few seconds), over SSH the card says what to run
 there. A phone may see where the engines stand, never sign one in or out, and never gets a
 code. `FAKE_ENGINES` in the fake daemon shows each state.
@@ -385,29 +385,29 @@ The fake daemon (`examples/fake_daemon.rs`) keeps the real consent file in its
 
 ## Pairing a phone
 
-"휴대폰 연결…" (the app menu, the account menu at the sidebar's foot, or settings ▸ 스쿼드와
-기기 ▸ 휴대폰) opens a sheet with a QR code the equipe app scans — no terminal. The daemon
+"Connect a phone…" (the app menu, the account menu at the sidebar's foot, or settings ▸ Squad &
+machine ▸ Phone) opens a sheet with a QR code the equipe app scans — no terminal. The daemon
 does the pairing on its own machine, which over SSH is not this Mac: the sheet sends
 `pair_start` and draws what comes back (docs/remote-protocol.md, "From a screen"). The stages:
 a spinner while the daemon opens a code at the relay; the code (black on white with a quiet
 zone, drawn as whole-point rectangles so it scans in light and dark), three steps, its time
-left and "링크 복사"; the phone asking, with 거절 / 허용 (the person's yes is still what pairs
-it); "연결됨", and the sheet closes itself. A code that runs out is replaced up to three times,
+left and "Copy link"; the phone asking, with Deny / Allow (the person's yes is still what pairs
+it); "Connected", and the sheet closes itself. A code that runs out is replaced up to three times,
 then the sheet offers a new one. Errors say what to do: the relay unreachable, another code
 open elsewhere, a daemon without its phone link, or one that never answers (older than the
 app: update it, or `equipe pair` meanwhile). The code lives only in the sheet's state while it
 is open; closing it cancels the code (or says no to a phone left asking).
 
-Settings lists the paired phones — connected now, or when last seen — with "연결 끊기",
+Settings lists the paired phones — connected now, or when last seen — with "Disconnect",
 asked twice. The rules are `src/pair.rs`, the drawing `src/views/pair.rs`. The fake daemon
 answers pairing too (`FAKE_PAIR=ask|relay|silent`), and the snapshot script has `pair` and
 `pair:allow|deny|retry|close`.
 
 ## The browser panel
 
-⌘⇧B (or the header's 브라우저) opens the shared Chrome the members browse in,
+⌘⇧B (or the header's Browser) opens the shared Chrome the members browse in,
 live, beside the conversation: tabs grouped by member (in its colour) and the
-person's own (내 탭), back/forward/reload, the address, Chrome에서 열기, and who
+person's own (My tabs), back/forward/reload, the address, Open in Chrome, and who
 has the page in hand. It follows the conversation on screen. It is not a web
 view: the page is the daemon's Chrome (`crates/core/assets/browser-host.cjs`),
 signed in once, so the person sees exactly what the members see.
@@ -427,7 +427,7 @@ signed in once, so the person sees exactly what the members see.
   through the frame's CSS size; Korean composition goes as
   `Input.imeSetComposition`, commits as `insertText`, editing keys carry the
   Mac's editing commands. Touching a member's page takes it (its browser tools
-  answer "The person is using this browser…" meanwhile); 돌려주기, Esc or two
+  answer "The person is using this browser…" meanwhile); Give back, Esc or two
   idle minutes give it back.
 - **A member hands the person its browser** (`show_my_browser`: sign in, a
   code, something only they can do). The app says in its `hello` that it has a
@@ -435,41 +435,41 @@ signed in once, so the person sees exactly what the members see.
   Mac or another over SSH, its panel open or not — the daemon never raises a
   Chrome window: the browser goes into the person's hands and every attached
   screen opens the panel on the tab its member works in, already driving,
-  with a strip over the page in the member's own words and **다 했어요 — pm에게
-  돌려주기**. The window on the daemon's Mac comes up only with no app attached
-  (the terminal alone), or when the person asks for it (Chrome에서 열기; over
-  SSH it reads "<host> 화면에서 열기"). On the daemon's own Mac the panel is
+  with a strip over the page in the member's own words and **Done — give it back to
+  pm**. The window on the daemon's Mac comes up only with no app attached
+  (the terminal alone), or when the person asks for it (Open in Chrome; over
+  SSH it reads "Open on <host>'s screen"). On the daemon's own Mac the panel is
   preferred too: it is where the person already is, it says what to do, and
   it hands back. Handing back starts the member's turn again ("The person
-  finished in your browser (you asked: …)") — nobody types "됐어". The panel
+  finished in your browser (you asked: …)") — nobody types "done". The panel
   opens once per hand-over (closing it sticks across reconnects), the window
-  isn't pulled forward — out of sight, a notification ("pm이 브라우저에서
-  로그인을 기다려요") opens it there — and 나에게 lists it under 내 차례 until
-  it comes back. In the conversation the news line is a row: "pm이 브라우저를
-  넘겼어요" with 브라우저 열기 / 돌려주기 on the latest (old lines, the English
+  isn't pulled forward — out of sight, a notification ("pm is waiting for you to sign in,
+  in its browser") opens it there — and the Inbox lists it under Your turn until
+  it comes back. In the conversation the news line is a row: "pm handed you its
+  browser" with Open the browser / Give back on the latest (old lines, the English
   "comes up on this Mac's screen" included, read as rows too). A phone away
   gets a push saying to do it in the app on the Mac.
 - **What a hold stops** (`crates/core/assets/gate.js`, tested in
   `browser::tests` through Node). A hold equipe made for a page that waits for
   a person, nobody's hand on it yet, never stops its member closing that tab,
   going elsewhere in it, or using its other tabs — the daemon then lets the
-  hold go (banner and 나에게 with it). Only the person's own hand (직접 하기, a
+  hold go (banner and Inbox with it). Only the person's own hand (Take over, a
   click or a key on the page — moves and the wheel never take it) makes a tab
   theirs, and only that tab: the member's other tabs, and closing them, stay
   its own. A refusal says why and since when ("The person is using this tab
   since 12:47 — ask them in words, or wait"); a refused close asks the person
-  in the panel ("pm이(가) 이 탭을 닫으려 해요 · 계속 쓰기 / 닫기").
+  in the panel ("pm wants to close this tab · Keep using / Close").
 - **Closing.** Every tab has a ✕ (on hover; always on the one picked), ⌘W
-  closes the picked tab, a right-click offers 탭 닫기 / 다른 탭 닫기 / Chrome에서
-  열기, and the check banner and bar have 탭 닫기 / 확인 그만하고 탭 닫기. A
-  member's tab while it is at work asks once ("pm이(가) 쓰는 중이에요.
-  닫을까요?"); its member is told the person closed it. Taking a browser and
-  giving it back each say so for a moment ("브라우저를 직접 쓰고 있어요 — pm은(는)
-  기다려요 …", "pm에게 돌려줬어요"); what equipe tells the member then is a
+  closes the picked tab, a right-click offers Close tab / Close other tabs / Open in
+  Chrome, and the check banner and bar have Close tab / Stop the check and close the tab. A
+  member's tab while it is at work asks once ("pm is using it.
+  Close it?"); its member is told the person closed it. Taking a browser and
+  giving it back each say so for a moment ("You're using the browser — pm
+  waits …", "Given back to pm"); what equipe tells the member then is a
   notice in the conversation, never a message in the person's name.
 - JS dialogs show as a card over the page; what a picture can't do (passkeys,
   permission prompts, a `<select>`'s list, file choosers) goes through
-  Chrome에서 열기.
+  Open in Chrome.
 - **One tab's picture, always its own.** Frames name their page, and the panel
   shows a frame only for the tab picked and only while that page is listed
   (`browse::Picture`); picking another tab shows a skeleton until its first
@@ -487,8 +487,8 @@ signed in once, so the person sees exactly what the members see.
   out in a real window keeps the window's. A frame of another size is fitted,
   its shape kept, on a neutral ground.
 - **Who has it.** The control bar says who drives and what (`frontend ·
-  App Store Connect에서 작업 중`), with one button: 직접 하기 / 돌려주기. The
-  person driving shows as an accent outline and `내가 쓰는 중 · Esc로 돌려주기`;
+  working in App Store Connect`), with one button: Take over / Give back. The
+  person driving shows as an accent outline and `You're driving · Esc to give back`;
   a member at work as a faint outline in its colour (the bar's tooltip says so).
   The in-page glow and label show only when the window is on the Mac's screen.
 - **Pages that wait for a person.** The host reads each member page's frames,
@@ -497,16 +497,16 @@ signed in once, so the person sees exactly what the members see.
   (`browser::human_check`: Cloudflare's "Just a moment…"/`cf_chl` walls,
   Turnstile/reCAPTCHA/hCaptcha, sign-in walls, 2FA) and puts that browser in the
   person's hands — its tools answer "a page waits for a person… end your turn".
-  The panel shows "사람 확인이 필요해요 — 직접 눌러 주세요" with 직접 하기, 나에게
-  lists it under 내 차례, and a notification opens the panel on it. Passed
+  The panel shows "A person needs to check this — please do it yourself" with Take over, the Inbox
+  lists it under Your turn, and a notification opens the panel on it. Passed
   with no hand on it, it goes back by itself; passed by the person, the banner
-  offers 돌려주기 (the member is told to carry on if its turn had ended).
-- Empty, connecting, line down (다시 시도), page crashed (새로고침), pictures
-  stopped (다시 시도) and a member's browser closed (내 탭으로 다시 열기) each say
+  offers Give back (the member is told to carry on if its turn had ended).
+- Empty, connecting, line down (Try again), page crashed (Reload), pictures
+  stopped (Try again) and a member's browser closed (Reopen in my tab) each say
   so in place of the picture.
 
 Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `btake`, `bgive`,
-`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한`, `bclose:<n>`, `bwheel`. The fake
+`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한` (Korean IME steps), `bclose:<n>`, `bwheel`. The fake
 daemon has a browser with `FAKE_BROWSER=1` (frontend on an App Store
 Connect–like page, backend paused at a "Just a moment…" wall that a click
 passes, a tab of the person's own; `FAKE_BROWSER=empty` for none;
@@ -526,33 +526,33 @@ sight, the sidebar and the cards say it and nothing pops up. What is told
 
 | Kind | When | Switch (default) |
 |---|---|---|
-| 허락을 구할 때 | a member asks permission | on |
-| 검토할 일이 생겼을 때 | a ticket turns to review | on |
-| 내가 할 일이 남았을 때 | a ticket waits on the person, a member's question set, a browser page waiting for a human | on |
-| 작업이 실패했을 때 | a member's turn failed, or merging accepted work failed (conflict or otherwise) | on |
-| 답장이 왔을 때 | a turn ended with an answer in the conversation the person last wrote in (only the first answer after they wrote): "pm의 답장이 왔어요" and the answer's first line of prose, never a code block | on |
-| main에 머지됐을 때 | accepted work landed on main | off |
-| 업데이트가 준비됐을 때 | Sparkle downloaded a new version: "새 버전이 준비됐어요", with a 다시 시작 button | on |
+| A member asks permission | a member asks permission | on |
+| Work is ready for review | a ticket turns to review | on |
+| Something waits on you | a ticket waits on the person, a member's question set, a browser page waiting for a human | on |
+| A turn fails | a member's turn failed, or merging accepted work failed (conflict or otherwise) | on |
+| A reply comes | a turn ended with an answer in the conversation the person last wrote in (only the first answer after they wrote): "pm replied" and the answer's first line of prose, never a code block | on |
+| Work is merged into main | accepted work landed on main | off |
+| An update is ready | Sparkle downloaded a new version: "A new version is ready", with a Restart button | on |
 
-More than three things that wait, at once, become one notice ("acme에서 4건이
-…"); news (answers, merges, updates) is never folded in. A notice says who
+More than three things that wait, at once, become one notice ("acme: 4 waiting
+on you"); news (answers, merges, updates) is never folded in. A notice says who
 needs what, never a command, a secret or a file's content. Each carries a
 thread — the member's (`squad/<squad>/<member>`), else the squad's — so
-Notification Center keeps them together, and an 열기 button. A click (or the
+Notification Center keeps them together, and an Open button. A click (or the
 button) comes back through the delegate as a `Go` encoded in the notice's
 identifier (`member:4|<n>`), so it works even when the click starts the app:
 the window comes forward on that conversation, ticket, the board or the
-browser panel. 소리 turns the system sound off; **Dock 아이콘에 숫자 표시** puts
-나에게's count on the Dock icon, live (no permission needed).
+browser panel. Sound turns the system sound off; **Show a number on the Dock icon** puts
+the Inbox's count on the Dock icon, live (no permission needed).
 
 **Asking permission.** Nothing is asked at launch. The first time there is
 something to tell while the window is out of sight, or when the person turns a
 switch on, a sheet says what equipe will notify and that a notice never holds
-commands or contents (알림 켜기 / 나중에); 알림 켜기 asks macOS
-(`requestAuthorization`: alert, sound, badge). 나중에 is remembered (`notify
-later` in `desktop-target`); Settings ▸ 일반 ▸ 알림 still offers 알림 켜기.
+commands or contents (Turn On Notifications / Later); Turn On Notifications asks macOS
+(`requestAuthorization`: alert, sound, badge). Later is remembered (`notify
+later` in `desktop-target`); Settings ▸ General ▸ Notifications still offers Turn On Notifications.
 Settings shows what macOS allows (asked again whenever the window comes
-forward); turned off, it says so and **시스템 설정 열기** opens System Settings ▸
+forward); turned off, it says so and **Open System Settings** opens System Settings ▸
 Notifications on equipe (`…Notifications-Settings.extension?id=<bundle id>`).
 No usage description is needed for notifications.
 
@@ -566,7 +566,7 @@ by the first window open on it, however many windows show it; the app's own
 notices (an update) by the app's first window. A notice's identifier carries
 its squad's route (`member:4|<n>|r<hex>`), so a click goes to the window
 showing that squad, and macOS shows the banner unless a window on that very
-squad is the one in front. The Dock's number adds each squad's 나에게 once.
+squad is the one in front. The Dock's number adds each squad's Inbox once.
 
 **Dev builds.** The centre needs the app bundle — run as a bare binary it
 would abort ("bundleProxyForCurrentProcess is nil") — so `cargo run` logs once
@@ -587,10 +587,10 @@ a click, each step in the log.
 
 Each window is its own machine and squad, live side by side: the Mac mini's
 squad in one, another machine's in the next (`windows.rs`). **New Window**
-(⌘⇧N; Window menu; "새 창" in the squad switcher at the sidebar's foot) opens
+(⌘⇧N; Window menu; "New window" in the squad switcher at the sidebar's foot) opens
 one on the same machine and squad; from there it is pointed elsewhere — a
-squad, "다른 컴퓨터에 연결…" — without touching the others. In the switcher a
-squad, or "다른 컴퓨터에 연결…", opens in a new window with ⌘-click (as places
+squad, "Connect to another machine…" — without touching the others. In the switcher a
+squad, or "Connect to another machine…", opens in a new window with ⌘-click (as places
 do, `views/elsewhere.rs`) or the row's button on the pointer.
 
 - **Per connection.** The daemon follows one squad per connection (`hello
@@ -615,9 +615,9 @@ The snapshot script has `newwindow[:<squad>]`, `win:<n|first|last>` and
 
 ## Zoom (⌘+ ⌘- ⌘0)
 
-The window zooms as a browser (or Claude) does: 보기 ▸ 확대 (⌘+, also ⌘=),
-축소 (⌘-), 실제 크기 (⌘0), through 67 · 75 · 80 · 90 · 100 · 110 · 125 · 150 ·
-175 · 200 %. Settings ▸ 일반 ▸ 화면 크기 has the same as − / + and 실제 크기. The
+The window zooms as a browser (or Claude) does: View ▸ Zoom In (⌘+, also ⌘=),
+Zoom Out (⌘-), Actual Size (⌘0), through 67 · 75 · 80 · 90 · 100 · 110 · 125 · 150 ·
+175 · 200 %. Settings ▸ General ▸ Zoom has the same as − / + and Actual Size. The
 size is kept in `desktop-target` (`zoom 125`) and put back at launch; a small
 chip with the new size shows near the window's top for a moment (`zoom.rs`).
 
@@ -687,7 +687,7 @@ One command on a Mac, from the repo root; ~5 min cold (two architectures).
   and Info.plist gets `SUFeedURL`, `SUPublicEDKey`, `SURequireSignedFeed`,
   `SUVerifyUpdateBeforeExtraction`, `SUEnableAutomaticChecks`, `SUAutomaticallyUpdate`
   and an hourly `SUScheduledCheckInterval`: a new version downloads in the background,
-  its signature checked, and then the sidebar offers **다시 시작해 업데이트** (Sparkle's
+  its signature checked, and then the sidebar offers **Restart to Update** (Sparkle's
   `updater:willInstallUpdateOnQuit:immediateInstallationBlock:`, kept by our delegate in
   `src/update.rs`): a click installs it and relaunches; quitting installs it anyway.
   The public key is committed (`crates/desktop/macos/sparkle-public-ed-key`). With the private
@@ -703,19 +703,19 @@ In the app (`src/update.rs`): when `Contents/Frameworks/Sparkle.framework` is
 there, the app `dlopen`s it and starts `SPUStandardUpdaterController`. Sparkle
 checks the feed every hour by itself, and the app looks too right after launch
 and when the window comes back after 5 minutes; the app menu (equipe ▸
-업데이트 확인…) and Settings ▸ 업데이트와 정보 ▸ 지금 확인 check now. `cargo run`
+Check for Updates…) and Settings ▸ Updates & about ▸ Check now each check at once. `cargo run`
 has no framework, so updates are off and the item is disabled.
 
 Where an update stands is `relaunch::Update`, moved by each of Sparkle's
 delegate calls (`didFindValidUpdate`, `willDownloadUpdate`,
 `failedToDownloadUpdate`, `userDidCancelDownload`, `willInstallUpdateOnQuit`,
 `didAbortWithError`, `didFinishUpdateCycleForUpdateCheck`), and shown the same
-way in the sidebar's pill and in settings: **새 버전 0.49.0 받는 중…** (quiet;
-Sparkle's delegate gives no download progress), **다시 시작해 업데이트 →**,
-**업데이트 받기 실패 · 다시 시도** (settings: the reason in plain words, 로그 보기,
-다시 시도), or **Applications 폴더로 옮겨 주세요** when the app was opened from the
-disk image or translocated from a download (Finder에서 보기). Found and
-downloaded each give one notice per version (업데이트가 준비됐을 때; told
+way in the sidebar's pill and in settings: **Downloading 0.49.0…** (quiet;
+Sparkle's delegate gives no download progress), **Restart to Update →**,
+**Update failed · Try Again** (settings: the reason in plain words, Show Log,
+Try Again), or **Move equipe to Applications** when the app was opened from the
+disk image or translocated from a download (Show in Finder). Found and
+downloaded each give one notice per version (An update is ready; told
 versions kept in `desktop-target` as `update-told`); clicking the downloaded
 one restarts into it.
 
@@ -726,12 +726,12 @@ occurred while running the updater".
 
 The app never starts a Sparkle session against one in progress: its quiet
 check runs only when `sessionInProgress` is false and no update is found,
-downloading or waiting (`relaunch::may_check_quietly`); 지금 확인 with an update
+downloading or waiting (`relaunch::may_check_quietly`); Check now with an update
 waiting installs it through the block Sparkle handed `willInstallUpdateOnQuit`
 (Sparkle 2.3+ allows calling it again after a cancelled quit) rather than
 checking again, and while Sparkle downloads on its own (`canCheckForUpdates`
-false) it is left to finish. The menu also has 가리기 (⌘H), 기타 가리기
-(⌥⌘H), 모두 보기 and 종료 (⌘Q).
+false) it is left to finish. The menu also has Hide equipe (⌘H), Hide Others
+(⌥⌘H), Show All and Quit equipe (⌘Q).
 
 Knobs for testing: `EQUIPE_DMG_ARCHS=aarch64` (one arch, quicker),
 `EQUIPE_DMG_OUT`, `EQUIPE_APPCAST_URL` / `EQUIPE_DMG_URL` (point the app and the
@@ -748,7 +748,7 @@ The desktop app ships with the CLI, same version, same tag:
    signature valid, `Applications` link) and hands `equipe.dmg`,
    `equipe.dmg.sha256` and `appcast.xml` to `publish`, which puts them on the
    release beside the CLI archives. Installed apps see the new `appcast.xml`
-   through the `latest` link within a day, or at once with 업데이트 확인….
+   through the `latest` link within a day, or at once with Check for Updates….
 
 Run the workflow by hand (Actions ▸ Release ▸ Run workflow) to build the DMG
 as an artifact without publishing.

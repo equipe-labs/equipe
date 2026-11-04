@@ -250,7 +250,7 @@ pub struct Composer {
     /// (`stop_on_escape`); one alone only says how.
     pub stop_armed: Option<(SessionId, std::time::Instant)>,
     /// The cards over the box until sent (`views/quote.rs`): passages of the
-    /// conversation replied to ("답글 달기"), or only quoted to ask about
+    /// conversation replied to ("Reply"), or only quoted to ask about
     /// ("Ask about this"). Kept with the draft.
     pub replies: Vec<crate::quote::Reply>,
     /// The card the keys are on (Tab from the box), the box keeping the focus.
@@ -261,7 +261,7 @@ pub struct Composer {
     pub cards_scroll: ScrollHandle,
     /// Where each card was last drawn: its passage and its box open from there.
     pub card_rects: Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
-    /// What the person pointed at on the design screen ("말하기"), over the
+    /// What the person pointed at on the design screen ("Talk"), over the
     /// box until sent — a block before the words (`crate::design_talk`).
     pub context: Vec<crate::design_talk::DesignContext>,
     /// What went wrong with something the person asked for (a merge that
@@ -882,7 +882,7 @@ impl Shell {
         self.attach_sources_to(to, files, cx);
     }
 
-    /// "첨부": the system's file picker, into an answer.
+    /// "Attach": the system's file picker, into an answer.
     pub fn pick_into(&mut self, to: AttachTo, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(t!("composer.pick_prompt").into()) });
         cx.spawn(async move |this, cx| {
@@ -1101,7 +1101,7 @@ impl Shell {
         self.composer.focus(window, cx);
     }
 
-    /// "사진·파일…": the system's file picker.
+    /// "Photos & Files…": the system's file picker.
     fn pick_files(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(t!("composer.pick_prompt").into()) });
         cx.spawn(async move |this, cx| {
@@ -1112,7 +1112,7 @@ impl Shell {
         .detach();
     }
 
-    /// "스크린샷": the system's selection, then attached.
+    /// "Screenshot": the system's selection, then attached.
     fn screenshot(&mut self, cx: &mut Context<Self>) {
         let path = crate::ssh::scratch_dir().join(format!("screenshot-{}.png", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())));
         let shot = path.clone();
@@ -1190,7 +1190,7 @@ impl Shell {
 
     // ── the memos and steers waiting ──
 
-    /// 되돌리기: a steer or memo still waiting is taken back — its words and
+    /// Take back: a steer or memo still waiting is taken back — its words and
     /// what it attached come back into the box — and its bubble fades out.
     pub fn withdraw_pending(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.model.viewed() else { return };
@@ -1239,7 +1239,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// 지금 보내기: the member's turn stops, as Esc stops it, and everything
+    /// Send now: the member's turn stops, as Esc stops it, and everything
     /// waiting goes to it at once — in the order shown, as one message.
     pub fn send_pending_now(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.model.viewed() else { return };
@@ -2781,7 +2781,7 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
     )
 }
 
-/// `사진 2`, `PDF 1`, …
+/// `Photo 2`, `PDF 1`, …
 fn kind_word(kind: Kind, n: usize) -> String {
     let word = match kind {
         Kind::Image => t!("composer.kind_image"),
@@ -2796,7 +2796,7 @@ fn kind_word(kind: Kind, n: usize) -> String {
 }
 
 /// An attachment shown big over the window (a click on its chip): a picture
-/// whole, a video's frames with what it is and "QuickTime에서 열기", a PDF's
+/// whole, a video's frames with what it is and "Open in QuickTime", a PDF's
 /// first page. ←/→ go through the others, Esc closes.
 pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let id = shell.composer.lightbox?;
@@ -2905,7 +2905,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
 
 
 /// An answer's attachments, one small chip each — its picture or kind, its
-/// name, how far it got or why it failed, and ✕ — and "첨부" to add one.
+/// name, how far it got or why it failed, and ✕ — and "Attach" to add one.
 pub fn answer_attachments(p: Palette, to: AttachTo, key: u64, items: Vec<attach::Item>, handle: WeakEntity<Shell>) -> AnyElement {
     let chips = items.into_iter().map(|item| {
         let id = item.id;

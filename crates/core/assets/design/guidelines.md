@@ -9,7 +9,9 @@ what it sits on, and its contrast in light and dark (from `equipe design check`)
 
 ## Type
 The scale (display → caption), which style each kind of text uses, line heights,
-numbers (tabular figures in tables and KPIs), Korean line breaking (keep-all).
+numbers (tabular figures in tables and KPIs), and how the product's languages are set:
+a family that has their script first, line breaking (`keep-all` for Korean, none mid-word
+for Japanese and Chinese), and right-to-left layout where they read that way.
 
 ## Space, radius, elevation
 The spacing steps and where each is used; radii by component size; the shadow levels.

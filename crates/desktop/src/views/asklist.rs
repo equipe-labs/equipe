@@ -1,9 +1,9 @@
 //! A reply that ends asking the person several things in a list of its own
-//! words (`crate::asklist`), answered where it was asked: a quiet "이 질문들에
-//! 답하기" under the list turns it, in place, into a form — each item with its
-//! words, a box that grows, and a tap for the obvious answers (네 · 아니요,
-//! 같은 걸로) — and a box for anything to add. Tab goes from box to box, ⌘↵
-//! sends every answer to the member in one message ("1) 전화번호 → …"), as
+//! words (`crate::asklist`), answered where it was asked: a quiet "Answer these
+//! questions" under the list turns it, in place, into a form — each item with its
+//! words, a box that grows, and a tap for the obvious answers (Yes · No,
+//! Same as above) — and a box for anything to add. Tab goes from box to box, ⌘↵
+//! sends every answer to the member in one message ("1) Phone number → …"), as
 //! the composer would, and the form gives way to that message; Esc puts the
 //! list back. A "1." typed into the composer after such a reply offers the
 //! form too, above the box.
@@ -93,7 +93,7 @@ impl Shell {
         (form.hash == hash && Some(form.session) == self.model.viewed()).then_some(form)
     }
 
-    /// "이 질문들에 답하기": the list becomes the form, the first box takes the
+    /// "Answer these questions": the list becomes the form, the first box takes the
     /// keys — with what was typed after a "1." in the composer, if anything.
     pub fn asklist_open(&mut self, first: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let (Some((ix, hash, asked)), Some(session)) = (self.asking(), self.model.viewed()) else { return };

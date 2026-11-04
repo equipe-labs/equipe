@@ -82,7 +82,7 @@ pub enum Hit {
 }
 
 /// A line of the side list: what can be opened on the right — the PM (the
-/// one conversation to talk to), a menu of the board (나에게, 작업 중, 모든 일),
+/// one conversation to talk to), a menu of the board (Inbox, In progress, All work),
 /// a project (its line puts it in focus), a ticket's work, the rest of a
 /// project's live work, what finished lately, someone on the team — and the
 /// headings between.
@@ -96,7 +96,7 @@ pub enum Side {
     Ticket(TicketId),
     /// "+N more": the board on that project.
     More(Option<usize>),
-    /// "최근 끝남 N": the board, its finished last.
+    /// "Recently done N": the board, its finished last.
     Done,
     Member(usize),
 }
@@ -693,7 +693,7 @@ pub struct App {
     pub pane: Pane,
     /// Lines the board is scrolled up from its top.
     pub board_scroll: usize,
-    /// What the board lists: 나에게, 작업 중, 모든 일.
+    /// What the board lists: Inbox, In progress, All work.
     pub board_menu: BoardMenu,
     /// The picked ticket's detail shows under the list (Space).
     pub board_detail_open: bool,
@@ -977,8 +977,8 @@ impl App {
         Some(self.lane_of(selected).unwrap_or(selected))
     }
 
-    /// The side list, in order: the PM, the board's menu (나에게, 작업 중,
-    /// 모든 일), the live work by project (never what finished: one line for
+    /// The side list, in order: the PM, the board's menu (Inbox, In progress,
+    /// All work), the live work by project (never what finished: one line for
     /// that), then the rest of the team — drawn pinned at the foot.
     pub fn side(&self) -> Vec<Side> {
         let mut out = vec![Side::Pm, Side::Menu(BoardMenu::Inbox), Side::Menu(BoardMenu::Working), Side::Menu(BoardMenu::All)];
@@ -1053,7 +1053,7 @@ impl App {
     /// Everything waiting for the person, in one list, by section: requests
     /// for permission, tickets put down for them, work handed in (what it
     /// unblocks first), proposals, work accepted but not on main. The same
-    /// definition as the desktop's: the menu's count, 나에게 and the card read it.
+    /// definition as the desktop's: the menu's count, the Inbox and the card read it.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.iter().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         for section in &Section::ALL[1..] {
@@ -1554,7 +1554,7 @@ impl App {
     /// The board's keys, while nothing is typed — the same as the desktop's:
     /// a yes (accept and land it the project's way, "done", take a proposal),
     /// A how, r in words, n no, d the diff, c talk, m merge; j/k move, Space
-    /// folds the ticket below, g i / g l / g b go to 나에게 / 작업 중 / 모든 일.
+    /// folds the ticket below, g i / g l / g b go to Inbox / In progress / All work.
     fn on_board_key(&mut self, code: KeyCode, shift: bool) -> Option<Vec<Command>> {
         let ticket = self.selected_ticket().cloned();
         if std::mem::take(&mut self.chord) {

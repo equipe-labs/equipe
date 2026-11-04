@@ -1,6 +1,6 @@
 //! Requests for permission: the queue, the card's words, and the card — above
 //! the composer for the oldest one, and in the peek for the one picked in
-//! 나에게. Allow once is Y or A, always ⇧A, decline N. The queue and the card's
+//! the Inbox. Allow once is Y or A, always ⇧A, decline N. The queue and the card's
 //! text are plain code, tested without a window; the drawing is below them.
 
 use std::collections::HashMap;
@@ -117,7 +117,7 @@ pub fn decision_for(key: &str, shift: bool) -> Option<Decision> {
 }
 
 /// The boxes the person writes to a member in, on its request: open once
-/// "R 답장" is pressed, by request.
+/// "R Reply" is pressed, by request.
 #[derive(Default)]
 pub struct Words {
     pub fields: HashMap<u64, Entity<TextareaState>>,
@@ -260,7 +260,7 @@ impl Shell {
             None => {
                 let field = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 6).submit_on_enter(true).placeholder(t!("approvals.words_placeholder")));
                 let subscription = cx.subscribe_in(&field, window, move |shell, _, event: &InputEvent, _, cx| {
-                    // Words in the box turn the buttons into "…하고 보내기".
+                    // Words in the box turn the buttons into "… and send".
                     if matches!(event, InputEvent::Change) {
                         cx.notify();
                     }
@@ -490,7 +490,7 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
 }
 
 /// The card of work waiting for the person above the composer gave way to
-/// 나에게 in the sidebar, which holds the same list with its keys: nothing here.
+/// The Inbox in the sidebar, which holds the same list with its keys: nothing here.
 pub fn for_you(_shell: &Shell, _cx: &mut Context<Shell>) -> Option<AnyElement> {
     None
 }

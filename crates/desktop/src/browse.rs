@@ -216,13 +216,13 @@ impl Hand {
         }
     }
 
-    /// The person takes it (직접 하기, or a hand on the page).
+    /// The person takes it ("Take over", or a hand on the page).
     pub fn take(&mut self) {
         self.held = true;
         self.touched = true;
     }
 
-    /// The person gives it back (돌려주기, Esc).
+    /// The person gives it back ("Give back", Esc).
     pub fn give_back(&mut self) {
         *self = Hand::default();
     }

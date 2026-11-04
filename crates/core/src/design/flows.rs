@@ -16,19 +16,19 @@
 //!
 //! ```json
 //! { "flows": [
-//!   { "id": "onboarding", "title": "온보딩", "summary": "첫 실행부터 첫 프로젝트까지",
+//!   { "id": "onboarding", "title": "Onboarding", "summary": "From first launch to the first project",
 //!     "screens": [
-//!       { "id": "login", "title": "로그인", "note": "틀리면 필드 아래 한 줄로 알려요",
+//!       { "id": "login", "title": "Log in", "note": "A mistake is said in one line under the field",
 //!         "url": "http://localhost:3000/login", "source": ["src/app/login/page.tsx"], "ticket": 142,
 //!         "expects": ["empty", "error", "loading"],
 //!         "states": [
-//!           { "id": "default", "label": "기본", "kind": "default" },
-//!           { "id": "error", "label": "오류", "kind": "error", "note": "비밀번호가 틀렸을 때",
+//!           { "id": "default", "label": "Default", "kind": "default" },
+//!           { "id": "error", "label": "Error", "kind": "error", "note": "When the password is wrong",
 //!             "url": "http://localhost:3000/login?fixture=wrong-password" } ] } ],
 //!     "walk": [
 //!       { "go": "http://localhost:3000/login", "screen": "login" },
 //!       { "fill": ["#email", "ada@example.com"] }, { "click": "button[type=submit]" },
-//!       { "press": "Enter" }, { "wait": 800 }, { "say": "비밀번호가 틀리면", "screen": "login" } ] } ] }
+//!       { "press": "Enter" }, { "wait": 800 }, { "say": "With a wrong password", "screen": "login" } ] } ] }
 //! ```
 //!
 //! - Ids are folder names: lowercase letters, digits and `-`; no screen is

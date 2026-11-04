@@ -75,7 +75,7 @@ pub fn mode_about(mode: Switching) -> &'static str {
     }
 }
 
-/// "35분", "2시간", "3일": how long until `at`.
+/// "35m", "2h", "3d" (in the person's language): how long until `at`.
 pub fn span(at: i64) -> String {
     let secs = (at - now()).max(60) as u64;
     match secs {
@@ -110,7 +110,7 @@ pub fn headline(p: &Proposal) -> String {
     }
 }
 
-/// One move as a row: "backend  Claude opus → Codex 기본 모델 · medium".
+/// One move as a row: "backend  Claude opus → Codex default model · medium".
 pub fn move_row(m: &Move) -> (String, String) {
     let model = |m: Option<&str>| m.map_or_else(|| t!("engines.default_model").to_owned(), str::to_owned);
     let after = match &m.effort {

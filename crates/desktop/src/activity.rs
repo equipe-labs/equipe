@@ -11,7 +11,7 @@ use crate::convo::{Status, ToolLine};
 /// More news lines in a row than this fold into one line that counts them.
 pub const NEWS_FOLDS_PAST: usize = 3;
 
-/// A step's verb phrase, done or under way: `실행함` / `실행 중`. A tool
+/// A step's verb phrase, done or under way: `Ran` / `Running`. A tool
 /// without a phrase of its own reads as its name.
 /// A line's verb phrase: a command left in the background says so.
 pub fn line_phrase(line: &ToolLine, running: bool) -> String {
@@ -121,7 +121,7 @@ impl Count {
     }
 }
 
-/// `명령 3개 실행 · 파일 2개 읽음`: what a group did, counted, in the order it
+/// `Ran 3 commands · Read 2 files`: what a group did, counted, in the order it
 /// first did each.
 pub fn summary(lines: &[ToolLine]) -> String {
     let mut counts: Vec<(Count, Vec<&str>, usize)> = Vec::new();
@@ -245,7 +245,7 @@ pub enum NewsKind {
     DeskSaved,
     YouTold,
     Stale,
-    /// The disk ran short, or a build failed for want of room: 정리하기 beside it.
+    /// The disk ran short, or a build failed for want of room: "Clean up" beside it.
     DiskShort,
     /// The disk has room again.
     DiskRoom,
@@ -380,7 +380,7 @@ fn match_template(template: &str, text: &str) -> Option<Vec<(String, String)>> {
     args.iter().all(|(name, value)| !matches!(name.as_str(), "id" | "count") || value.chars().all(|c| c.is_ascii_digit())).then_some(args)
 }
 
-/// `방금`, `5분 전`, `3시간 전`, `2일 전`.
+/// `just now`, `5m ago`, `3h ago`, `2d ago`.
 pub fn ago(secs: u64) -> String {
     let words = crate::i18n::catalog();
     match secs {

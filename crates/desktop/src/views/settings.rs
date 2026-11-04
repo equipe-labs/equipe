@@ -1,5 +1,5 @@
 //! Settings (⌘,, or the gear at the sidebar's foot): a page in the window,
-//! as Linear's and Codex's. Its own list takes the sidebar's place — 돌아가기,
+//! as Linear's and Codex's. Its own list takes the sidebar's place — Back,
 //! a search that filters every row, the categories — and the page shows the
 //! one picked. Rows are a label and a muted line on the left and the control
 //! on the right, in rounded cards under short headers. A change applies at
@@ -76,7 +76,7 @@ pub struct SettingsUi {
     pub scroll: ScrollHandle,
     /// The AI platforms' buttons, for Tab (`super::engines::KEYS` a card).
     pub engine_keys: Vec<FocusHandle>,
-    /// 계정's form and second clicks.
+    /// Accounts' form and second clicks.
     pub accounts: super::accounts::AccountsUi,
     /// The Nebius card's key box (masked; emptied once sent), what's wrong
     /// with what was pasted, and the second click to remove the key.
@@ -255,7 +255,7 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, 
 }
 
 /// The window's size: − and + either side of it, as the segmented control's
-/// pill, and "실제 크기" beside it when it isn't (⌘+ / ⌘- / ⌘0 do the same).
+/// pill, and "Actual Size" beside it when it isn't (⌘+ / ⌘- / ⌘0 do the same).
 fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     use crate::zoom::{self, Step};
     let p = shell.palette;
@@ -594,8 +594,8 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     ]
 }
 
-/// 휴대폰: pair one by QR code (the sheet), and the ones paired, each with
-/// when it was last there and "연결 끊기" — asked twice.
+/// Phones: pair one by QR code (the sheet), and the ones paired, each with
+/// when it was last there and "Disconnect" — asked twice.
 fn phones(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;
     let words = t!("settings.phone_words");
@@ -1382,7 +1382,7 @@ impl Shell {
         }
     }
 
-    /// "Dock 아이콘에 숫자 표시": the number goes, or comes back, at once.
+    /// "Show a number on the Dock icon": the number goes, or comes back, at once.
     pub fn set_badge_shown(&mut self, on: bool) {
         self.remembered.pings.set(Ping::Badge, on);
         self.remembered.save(&equipe_providers::credentials::equipe_home());

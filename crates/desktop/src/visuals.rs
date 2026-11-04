@@ -469,7 +469,7 @@ pub fn all_failed(looks: &[Option<&Look>]) -> Option<ImageWhy> {
 }
 
 /// The words members mark the option they recommend with, in the languages
-/// the person may speak — "(Recommended)", "(추천)".
+/// the person may speak — "(Recommended)", Korean "(추천)".
 fn recommended_words() -> &'static [&'static str] {
     crate::i18n::every("match.recommended")
 }

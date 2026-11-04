@@ -1,4 +1,4 @@
-//! 진행 상황, where 작업 중 leads: since the person last looked (or today),
+//! Progress, where In progress leads: since the person last looked (or today),
 //! how many finished, how many need a look, how many are under way — then
 //! the work that needs a look, in red, first; the rest under way by project,
 //! each with who is on it, the step it is at and when it is expected done;
@@ -69,7 +69,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .child(seg("progress-today", t!("progress.today"), today, true, cx)),
         );
 
-    // How many, at a glance; 확인 필요 leads to its list.
+    // How many, at a glance; Needs you leads to its list.
     let tile = |id: &'static str, n: usize, label: &'static str, hot: Option<Rgba>| {
         v_flex()
             .id(id)
@@ -266,7 +266,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// 진행 상황, from 작업 중: "since you last looked" means since the last
+    /// Progress, from In progress: "since you last looked" means since the last
     /// time it was opened on this Mac (the start of today, the first time).
     pub fn open_progress(&mut self, cx: &mut Context<Self>) {
         if self.screen != Screen::Progress {

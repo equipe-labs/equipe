@@ -26,11 +26,11 @@ pub struct Engines {
 /// The person's answer to a card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
-    /// 옮기기, 적용.
+    /// Move, Apply.
     Apply,
-    /// 이번엔 그대로, 나중에 — or 확인 on moves already made.
+    /// Not this time, Later — or Confirm on moves already made.
     Leave,
-    /// 되돌리기.
+    /// Undo.
     Undo,
 }
 
@@ -199,13 +199,13 @@ pub fn header_glance(meters: &[Meter], sidebar_hidden: bool) -> Option<(Engine, 
     tightest(meters).filter(|_| sidebar_hidden)
 }
 
-/// "Claude 42% 남음".
+/// "Claude 42% left".
 pub fn glance(engine: Engine, g: &Gauge) -> String {
     t!("engines.glance", engine = engine_name(engine), left = g.left())
 }
 
-/// A window on the pointer: "5시간 58% 남음 · 2시간 10분 뒤 초기화 (17:40)";
-/// used up, "다 씀"; past its reset, refilled (the next reset isn't known yet).
+/// A window on the pointer: "5-hour 58% left · resets in 2h 10m (17:40)";
+/// used up, "used up"; past its reset, refilled (the next reset isn't known yet).
 pub fn left_words(g: &Gauge, now: i64, when: impl Fn(i64) -> String) -> String {
     let window = match g.window {
         Window::FiveHour => t!("usage.five_hour"),
@@ -221,8 +221,8 @@ pub fn left_words(g: &Gauge, now: i64, when: impl Fn(i64) -> String) -> String {
     }
 }
 
-/// How long until `at`, as short as it says it: "35분", "2시간", "2시간 10분",
-/// "3일", "3일 5시간" — never under a minute.
+/// How long until `at`, as short as it says it: "35m", "2h", "2h 10m",
+/// "3d", "3d 5h" — never under a minute.
 pub fn until(at: i64, now: i64) -> String {
     let secs = (at - now).max(60);
     let (days, hours, minutes) = (secs / 86_400, secs % 86_400 / 3_600, secs % 3_600 / 60);
@@ -235,7 +235,7 @@ pub fn until(at: i64, now: i64) -> String {
     }
 }
 
-/// How old a reading is, once it is no longer sure ("2시간 전에 읽음").
+/// How old a reading is, once it is no longer sure ("read 2h ago").
 pub fn age_words(m: &Meter, now: i64) -> Option<String> {
     m.read_at.filter(|_| m.stale).map(|at| t!("engines.read_ago", span = span(now + (now - at), now)))
 }
@@ -262,7 +262,7 @@ pub fn engine_name(engine: Engine) -> &'static str {
     }
 }
 
-/// "5시간", "주간".
+/// "5-hour", "Weekly".
 pub fn window_word(window: Option<Window>) -> &'static str {
     match window {
         Some(Window::Weekly) => t!("switch.window_week"),
@@ -270,7 +270,7 @@ pub fn window_word(window: Option<Window>) -> &'static str {
     }
 }
 
-/// The meter's short label: "5h", "주".
+/// The meter's short label: "5h", "wk".
 pub fn window_short(window: Window) -> &'static str {
     match window {
         Window::FiveHour => t!("engines.short_5h"),
@@ -278,7 +278,7 @@ pub fn window_short(window: Window) -> &'static str {
     }
 }
 
-/// "35분", "2시간", "3일": how long until `at`.
+/// "35m", "2h", "3d": how long until `at`.
 pub fn span(at: i64, now: i64) -> String {
     let secs = (at - now).max(60) as u64;
     match secs {
@@ -413,7 +413,7 @@ pub fn buttons(p: &Proposal) -> (&'static str, &'static str) {
     }
 }
 
-/// How far along the moves are: "1/2 옮김".
+/// How far along the moves are: "1/2 moved".
 pub fn progress(p: &Proposal) -> Option<String> {
     let done = p.moves.iter().filter(|m| m.done).count();
     (p.applied && !p.moves.is_empty()).then(|| t!("engines.progress", done = done, all = p.moves.len()))
@@ -450,7 +450,7 @@ mod tests {
         let out = g(Window::Weekly, 100, NOW + 3 * 86_400 + 5 * 3600);
         assert_eq!(out.left(), 0);
         assert_eq!(left_words(&out, NOW, |_| "11/07 09:00".into()), "주간 다 씀 · 3일 5시간 뒤 초기화 (11/07 09:00)");
-        // As short as it says it: no "0분", no "0시간".
+        // As short as it says it: no "0m", no "0h".
         assert_eq!([until(NOW + 35 * 60, NOW), until(NOW + 2 * 3600, NOW), until(NOW + 3 * 86_400, NOW), until(NOW + 20, NOW)], ["35분", "2시간", "3일", "1분"]);
         let fresh = g(Window::FiveHour, 0, NOW - 60);
         assert_eq!(left_words(&fresh, NOW, |_| unreachable!("no reset known past it")), "5시간 100% 남음 · 다시 채워졌어요");

@@ -1,4 +1,4 @@
-//! 취향과 결정: the person's design taste as notes the designer follows —
+//! Taste & decisions: the person's design taste as notes the designer follows —
 //! each editable where it stands, removable, with a muted line on where it
 //! came from — and below, the decisions made: a timeline of the date, the
 //! chosen picture, the question, the choice and why (`crate::taste` in core

@@ -1,4 +1,4 @@
-//! "새 스쿼드…": the squad switcher's way to one more squad. A sheet over the
+//! "New squad…": the squad switcher's way to one more squad. A sheet over the
 //! window with the first run's four questions (`views/welcome.rs`'s `fields`,
 //! its rules `crate::squad_form`) — the name, the team, the mode, a folder —
 //! then Create: the squad is made on the machine the window is on, becomes the
@@ -89,7 +89,7 @@ impl Shell {
         Route::for_window(self.endpoint.is_remote(), matches!(self.model.conn, Conn::Connected { .. }))
     }
 
-    /// "새 스쿼드…": the sheet opens, answered as nobody has yet, the name to type.
+    /// "New squad…": the sheet opens, answered as nobody has yet, the name to type.
     pub fn open_new_squad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         crate::tips::hide(cx);
         self.board.popup = None;

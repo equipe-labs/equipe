@@ -139,7 +139,7 @@ screen names. The same checks hold on the blob: an image by name and by its firs
 most 30 MB.
 
 **Pictures in the conversation.** A reply, a note or the person's own message may embed
-pictures with Markdown — `![평면도](/…/images/plan.png)`, a title after the path, a path
+pictures with Markdown — `![Floor plan](/…/images/plan.png)`, a title after the path, a path
 relative to where its member works, spaces in it as members write them — and may name a folder
 of them (an absolute path ending in `/`, or in a code span). Members are told to show pictures
 this way, never to ask the person to open a folder. `read_image` gives such a picture too, by
@@ -201,8 +201,8 @@ woken (0: never; absent from an older daemon); it changes with `idle_wake_change
 
 ### Accepting in words, confirmed on a card
 
-When the person says in words that they accept, merge or send back handed-in work ("전부 수락",
-"T-1이랑 T-3 수락해줘", "머지까지 해줘"), the PM — or the screen they typed it on, reading their
+When the person says in words that they accept, merge or send back handed-in work ("accept them all",
+"accept T-1 and T-3", "merge it too", in any language), the PM — or the screen they typed it on, reading their
 own words — puts it to them on a card: an `accept_proposed` event whose `proposal` is `{ "id",
 "verdict": "accept" | "merge" | "changes", "tickets": [<ticket>…], "note"? (to send back: what to
 change, in their words), "summary"?, "by" (the member that proposed it, or `"you"` when a screen

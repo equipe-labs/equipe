@@ -164,7 +164,7 @@ pub fn split(text: &str) -> Split {
 }
 
 /// `text` with each tag in its place as `label` words it (the terminal's
-/// `[이미지] paste.png`). Spaces a removed tag leaves are tidied.
+/// `[Image] paste.png`). Spaces a removed tag leaves are tidied.
 pub fn compact(text: &str, label: impl Fn(&Tag) -> String) -> String {
     let tags = find(text);
     if tags.is_empty() {

@@ -159,11 +159,6 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
     }
 }
 
-/// Whether the person wrote in Korean: the members answer in it.
-fn korean(text: &str) -> bool {
-    text.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c) || ('\u{3131}'..='\u{318E}').contains(&c))
-}
-
 impl Scene {
     fn new() -> Self {
         let pm = session(
@@ -424,10 +419,10 @@ fn member_reply(member: &str, lang: Lang) -> String {
     crate::i18n::of(lang).fill("demo.member_noted", &[("member", member.to_owned())])
 }
 
-/// The language the members answer in: Korean when the person wrote it,
-/// else the screen's.
+/// The language the members answer in: the one the person wrote in, when
+/// equipe speaks it, else the screen's.
 fn reply_lang(text: &str) -> Lang {
-    if korean(text) { Lang::Ko } else { crate::i18n::lang() }
+    equipe_core::language::detect(text).and_then(Lang::from_english_name).unwrap_or_else(crate::i18n::lang)
 }
 
 /// The demo's own place: its relay registration, its code, its devices.
@@ -530,9 +525,19 @@ mod tests {
         let later: Vec<Event> = demo.due(80_000).into_iter().map(|(_, e)| e).collect();
         assert!(later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 7 && ticket.title == "FAQ 페이지 추가해줘")));
         let said: String = later.iter().filter_map(|e| match e { Event::TextDelta { text, .. } => Some(text.as_str()), _ => None }).collect();
-        assert!(said.contains("T-7") && korean(&said), "{said}");
+        assert!(said.contains("T-7") && equipe_core::language::detect(&said) == Some("Korean"), "{said}");
         let s = hello(&mut demo, "a");
         assert!(matches!(s.sessions[0].recent.last(), Some(Entry::Reply { text }) if text.contains("T-7")));
+    }
+
+    #[test]
+    fn the_members_answer_in_the_language_the_person_wrote_in() {
+        assert_eq!(reply_lang("What's the status?"), crate::i18n::lang(), "too short to tell: the screen's");
+        assert_eq!(reply_lang("FAQ 페이지 추가해줘"), Lang::Ko);
+        assert_eq!(reply_lang("FAQページを追加してください"), Lang::Ja);
+        assert_eq!(reply_lang("Ajoute une page FAQ au site, s'il te plaît"), Lang::Fr);
+        assert_eq!(reply_lang("Füge bitte eine FAQ-Seite zur Website hinzu"), Lang::De);
+        assert_eq!(reply_lang("Adicione uma página de perguntas frequentes ao site"), crate::i18n::lang(), "one equipe doesn't speak: the screen's");
     }
 
     #[test]

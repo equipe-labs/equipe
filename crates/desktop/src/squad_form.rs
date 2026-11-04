@@ -1,6 +1,6 @@
 //! A squad's four questions, as rules with no UI types: the name it may take,
 //! the team it starts with, and where it is made. Both forms ask them — the
-//! first run's page (`views/welcome.rs`) and the "새 스쿼드…" sheet over the
+//! first run's page (`views/welcome.rs`) and the "New squad…" sheet over the
 //! window (`views/new_squad.rs`) — and both draw the same fields.
 
 use std::path::{Path, PathBuf};
@@ -51,7 +51,7 @@ pub fn default_team() -> [bool; STARTERS.len()] {
 /// How much a new squad does alone before anyone says otherwise.
 pub const DEFAULT_MODE: Mode = Mode::Auto;
 
-/// Where "새 스쿼드…" makes the squad, for the machine the window is on.
+/// Where "New squad…" makes the squad, for the machine the window is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
     /// This Mac: its own disk, as the first run does — no `equipe` needed.

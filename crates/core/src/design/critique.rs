@@ -60,8 +60,9 @@ First the whole. At a three-second glance, and again squinting: where does the e
 that the right order? Does it breathe — whitespace, rhythm, a clear grid — or is it cramped or scattered? Next to the \
 reference, does it look finished and expensive, or like a template? Hide the logo: could this be another company?\n\
 \n\
-Then the details: hierarchy and density; alignment and spacing on one scale; type (scale, line length, Korean \
-setting — keep-all breaks, no orphans — numbers in tabular figures); colour roles and contrast (text under WCAG AA \
+Then the details: hierarchy and density; alignment and spacing on one scale; type (scale, line length, set for \
+the product's language — a family with its script, its line breaking, right to left where it reads so, no orphans — \
+numbers in tabular figures); colour roles and contrast (text under WCAG AA \
 is a blocker); brand fidelity against the brief; states and real copy (placeholder text, missing empty or error \
 states); the stock looks (cream page with a serif, Inter with an indigo gradient, three equal cards, emoji as icons).\n\
 \n\

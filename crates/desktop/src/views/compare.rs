@@ -1,11 +1,11 @@
-//! 비교하며 검토 and 버전 기록 on the design screen (`crate::compare` holds
+//! Compare and review and Version history on the design screen (`crate::compare` holds
 //! the rules). A draft in review is compared from the header's button: a
 //! band under it names the ticket and how many screens changed, flips the
-//! whole screen between 지금 and 바뀐 뒤, steps through the changed screens
+//! whole screen between Now and After, steps through the changed screens
 //! only (←/→), and accepts the ticket or sends it back with words — the
-//! board's own way, taken back with U. In 화면 지도 the changed cards say
-//! 바뀜 and the open screen shows both sides at once when the window is
-//! wide. 버전 기록 lists the accepted versions, each to be asked back: a
+//! board's own way, taken back with U. In the UI map the changed cards say
+//! Changed and the open screen shows both sides at once when the window is
+//! wide. Version history lists the accepted versions, each to be asked back: a
 //! ticket for the designer, reviewed like any other change.
 
 use equipe_core::protocol::Command;
@@ -240,7 +240,7 @@ pub fn other_picture(shell: &Shell) -> Option<String> {
     fm::pick(s, &ui_.map.mode(shell.palette.is_dark()), ui_.map.width).map(|p| p.path.clone())
 }
 
-// ── 버전 기록 ──
+// ── Version history ──
 
 pub fn versions_popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let ui_ = &shell.design;
@@ -331,7 +331,7 @@ fn version_row(shell: &Shell, versions: &[DesignVersion], n: usize, v: &DesignVe
 // ── what it does ──
 
 impl Shell {
-    /// 비교하며 검토 begun (on 바뀐 뒤, in 화면 지도 when there is a map, at
+    /// Compare and review begun (on After, in the UI map when there is a map, at
     /// the first changed screen) or ended.
     pub fn design_compare(&mut self, on: bool, cx: &mut Context<Self>) {
         if on {
@@ -352,7 +352,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// 지금 or 바뀐 뒤.
+    /// Now or After.
     pub fn design_side(&mut self, side: Side, cx: &mut Context<Self>) {
         self.design.show_side(side);
         cx.notify();
@@ -380,7 +380,7 @@ impl Shell {
         self.model.tickets.iter().find(|t| t.id == id).cloned()
     }
 
-    /// 수락: the ticket accepted the board's way — landed the project's way
+    /// Accept: the ticket accepted the board's way — landed the project's way
     /// when one is set, else accepted and its merge asked for after.
     pub fn design_accept_draft(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.compared_ticket() else {
@@ -395,7 +395,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// 다시 부탁's box, opened (focused) or closed.
+    /// Ask again's box, opened (focused) or closed.
     pub fn design_redo(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.design.redo_open = open;
         if open {
@@ -430,7 +430,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// 버전 기록 opened — the daemon asked for the system on screen's — or closed.
+    /// Version history opened — the daemon asked for the system on screen's — or closed.
     pub fn design_versions(&mut self, open: bool, cx: &mut Context<Self>) {
         self.design.versions_open = open;
         if open {
@@ -464,7 +464,7 @@ impl Shell {
         }
     }
 
-    /// "이 버전으로 되돌리기 요청": asked first, saying it becomes a change for review.
+    /// "Ask to go back to this": asked first, saying it becomes a change for review.
     pub fn design_restore_ask(&mut self, at: usize, cx: &mut Context<Self>) {
         let Some(versions) = self.design.shown_versions() else { return };
         if !cm::can_restore(versions, at) {

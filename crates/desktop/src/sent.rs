@@ -167,7 +167,7 @@ pub fn parts(text: &str) -> Parts {
 }
 
 /// A message in one line's words: each attachment as its kind and name
-/// (`[이미지] paste.png`), for where it is named rather than shown.
+/// (`[Image] paste.png`), for where it is named rather than shown.
 pub fn summary(text: &str) -> String {
     equipe_core::protocol::tags::compact(text, |tag| {
         let name = tag.name();

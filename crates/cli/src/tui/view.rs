@@ -1391,7 +1391,7 @@ fn side_lines(app: &App, theme: Theme, area: Rect) -> (Vec<(Line<'static>, Optio
                 lines.push((Line::from(vec![Span::raw("  "), Span::styled("+ ", theme.dim()), Span::styled(text, if today > 0 { Style::new() } else { theme.dim() })]), Some(side)));
             }
             Side::Menu(menu) => {
-                // 나에게 · 작업 중 · 모든 일, each with its count, as the desktop's menu.
+                // Inbox · In progress · All work, each with its count, as the desktop's menu.
                 let on = app.pane == Pane::Board && app.board_menu == menu;
                 let count = app.menu_count(menu);
                 let marker = if on { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
@@ -1711,7 +1711,7 @@ fn tool_run(run: Vec<ToolLine>, expanded: bool, theme: Theme, width: usize) -> V
 /// background when the terminal told us its colour.
 /// What the person attached, named rather than spelled out: each tag of a
 /// message (`[image: /…/uploads/1792073093606-paste.png]`) as its kind and
-/// name — `[이미지] paste.png`. The member still gets the tag as it is.
+/// name — `[Image] paste.png`. The member still gets the tag as it is.
 pub fn attachments_named(text: &str) -> String {
     use equipe_core::protocol::tags::{TagKind, compact};
     compact(text, |tag| {
@@ -2372,7 +2372,7 @@ fn for_you(t: &equipe_core::protocol::Ticket) -> bool {
 }
 
 /// A status as one ASCII mark, so it lines up in any terminal: proposed `.`,
-/// to do `o`, in progress `*`, 내 차례 `!`, 검토 `?`, done `+`, cancelled `x`.
+/// to do `o`, in progress `*`, your turn `!`, review `?`, done `+`, cancelled `x`.
 /// How pressing a ticket is, before its title: `!! ` urgent, `↑ ` high,
 /// `↓ ` low; normal says nothing.
 pub fn priority_mark(priority: Priority, theme: Theme) -> Span<'static> {
@@ -2442,7 +2442,7 @@ fn row_meta(app: &App, t: &equipe_core::protocol::Ticket, theme: Theme) -> (Vec<
     (flags, activity, style, eta)
 }
 
-/// The board's list, as the menu asks: 나에게 by section, 작업 중, or 모든 일
+/// The board's list, as the menu asks: the Inbox by section, In progress, or All work
 /// by status with the finished folded into one line (e). One row a ticket:
 /// its mark, number, project, title, flags, what is happening, when done, who.
 fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<u32>)> {
@@ -2564,7 +2564,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     if let Some(line) = current.as_deref().and_then(folded) {
         rows.push((line, None));
     }
-    // 모든 일: the finished, folded into one line until shown.
+    // All work: the finished, folded into one line until shown.
     if app.board_menu == BoardMenu::All && query.is_none() && !app.board_expanded {
         let done = app.tickets.iter().filter(|t| t.status.is_closed() && app.in_focus(t)).count();
         if done > 0 {

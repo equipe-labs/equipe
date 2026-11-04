@@ -72,7 +72,7 @@ pub enum Spot {
     Ticket(u32),
     /// The work screens, at a list.
     Board(Menu),
-    /// 진행 상황, 디자인 시스템, 로드맵, 지표.
+    /// Progress, Design system, Roadmap, Metrics.
     Screen(Screen),
     /// A project's page.
     Project(String),
@@ -241,7 +241,7 @@ struct Entry {
     id: u64,
     seat: Seat,
     spot: Spot,
-    /// What waits for the person in it (나에게), for the Dock.
+    /// What waits for the person in it (Needs you), for the Dock.
     needs_you: usize,
 }
 

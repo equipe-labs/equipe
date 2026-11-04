@@ -35,16 +35,27 @@ directions, each a tokens file (`design/directions/a.tokens.json`, …) drawn wi
 `brand.md` holds the voice — one register everywhere (formal or casual, buttons and errors too), the words it uses and
 avoids, how numbers, money and dates are written, and sample lines for a primary button, an empty state, an error, a
 success and a destructive confirm; tokens in layers (primitive values, then roles like `color.action.primary` aliasing
-them, then components'); Korean set for Korean (a Korean-first family such as Pretendard first, line height 1.5–1.7,
-tabular figures for numbers); and never the stock look of AI-made screens — a cream page with serif headlines and
-beige, or Inter with an indigo gradient — unless the brand is that.
+them, then components'); every language the product speaks set for its script (a family made for that script first
+— Noto Sans JP for Japanese, Pretendard for Korean, IBM Plex Sans Arabic for Arabic — and tabular figures for
+numbers); and never the stock look of AI-made screens — a cream page with serif headlines and beige, or Inter with an
+indigo gradient — unless the brand is that.
 
 Values the brand already decided go under `## Locked` in `brand.md` (its colours, faces, shape — a near-black page or
 square corners may be the brand, not a cliché): keep them, and `equipe design check` lets them be.
 
-Korean text: `word-break: keep-all` with `overflow-wrap: anywhere`, body 15–17px at 1.5–1.7, Pretendard's letter
-spacing 0 in body and slightly negative in large headings, `font-variant-numeric: tabular-nums` wherever numbers line
-up. Money and markets for Korean readers: red is up and blue is down — give them their own tokens (`color.change.up`,
-`color.change.down`), apart from danger and info; always pair the colour with ▲▼ and a sign; units in the column head
-("(unit: 100M KRW)"), never the ₩ sign and the written unit together, changes of a rate in %p, and the date the
-numbers stand at on every screen of figures.
+Set type, numbers and dates for the product's own languages and market — the person's language and the people the
+product is for — never for one country by default. The script decides the type: Chinese, Japanese and Korean want a
+family made for them, body 15–17px at 1.5–1.7 and letter spacing 0 in body, and no break inside a word (Korean:
+`word-break: keep-all` with `overflow-wrap: anywhere`; Japanese and Chinese break between characters but keep closing
+punctuation off a line's start); Arabic, Hebrew and Persian read right to left — `dir="rtl"`, layout in logical
+properties (start and end, not left and right), icons that point the way mirrored, numbers and Latin runs still left
+to right inside; Thai and Devanagari need room above and below for their marks. Everywhere,
+`font-variant-numeric: tabular-nums` wherever numbers line up. Write numbers, money and dates as the market does,
+through `Intl.NumberFormat` and `Intl.DateTimeFormat` with the product's locale rather than by hand: its decimal and
+grouping marks (1,234.5 · 1.234,5 · 1 234,5), its currency's sign and where it goes, its date order (month first, day
+first, or year first) and a 12- or 24-hour clock. Money and markets: the colour of a rise is the market's — green up
+and red down in most, red up in much of East Asia (Korea, China, Taiwan, Japan) with blue or green down — so give change
+its own tokens (`color.change.up`, `color.change.down`), apart from danger and info; always pair the colour with ▲▼
+and a sign; units in the column head ("(in $M)", "(unit: 100M KRW)", "(in € thousands)"), never a currency sign and
+the written unit together; changes of a rate in percentage points (%p); and the date the numbers stand at on every
+screen of figures.

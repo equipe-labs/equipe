@@ -223,7 +223,7 @@ impl Ask {
     }
 }
 
-/// This Mac's time zone, by name: `Asia/Seoul`.
+/// This Mac's time zone, by name: `Europe/Berlin`, `America/Sao_Paulo`.
 fn local_zone() -> String {
     if let Some(tz) = std::env::var("TZ").ok().map(|t| t.trim_start_matches(':').to_owned()).filter(|t| t.contains('/')) {
         return tz;

@@ -1,8 +1,8 @@
 //! A member's reply that ends asking the person several things in a list of
-//! its own words ("알려 주세요: 1. … 2. … 3. …") instead of the tools made
+//! its own words ("Let me know: 1. … 2. … 3. …") instead of the tools made
 //! for it: which list that is, what each item asks, the quick answers that
-//! fit one (네 · 아니요, 같은 걸로), and the one message the answers go back
-//! in, "1) 전화번호 → +82 …". Also the "1." the person starts typing by hand
+//! fit one (Yes · No, The same), and the one message the answers go back
+//! in, "1) Phone number → +1 …". Also the "1." the person starts typing by hand
 //! after such a reply. No UI types here, so the rules are tested without a
 //! window; the form is `views::asklist`'s.
 
@@ -73,13 +73,13 @@ fn same() -> &'static [&'static str] {
     crate::i18n::every("match.same")
 }
 
-/// How many characters may follow the list ("받으면 바로 입력합니다") for it to
+/// How many characters may follow the list ("I'll enter it once I have it") for it to
 /// still be what the reply ends on.
 const TAIL: usize = 600;
 
 /// The list in `reply` that asks the person things, if there is one: at
 /// least two items, and either it follows a line asking for what follows
-/// ("알려 주세요", "Questions") or most of its items ask ("…?", "…주세요").
+/// ("Let me know", "Questions") or most of its items ask ("…?", "please …").
 /// A list of what was done, or of options laid out, isn't one. The last such
 /// list wins, near the end of the reply.
 pub fn find(reply: &str) -> Option<Asked> {
@@ -107,7 +107,7 @@ fn asks(reply: &str, list: &List) -> bool {
     }
     let lead = reply[..list.span.start].lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
     let lead = lead.to_lowercase();
-    // "FAQ에 다음 질문을 넣었습니다:" — what follows was done.
+    // "I added these questions to the FAQ:" — what follows was done.
     if is_done(&lead) {
         return false;
     }
@@ -149,7 +149,7 @@ fn is_done(text: &str) -> bool {
 }
 
 /// Whether Korean words end in the past tense: "고쳤습니다", "했어요" — a
-/// syllable closing on ㅆ before the ending ("있습니다" is the present).
+/// syllable closing on ㅆ before the ending (Korean "있습니다" is the present).
 fn past_ko(end: &str) -> bool {
     let Some(stem) = crate::i18n::every("match.past_endings").iter().find_map(|e| end.strip_suffix(e)) else { return false };
     let Some(last) = stem.chars().last() else { return false };
@@ -195,7 +195,7 @@ fn chips(text: &str) -> Vec<Chip> {
 }
 
 /// An item, short, for the message the answers go in: its label when it is
-/// one ("전화번호: 국가번호 포함" → "전화번호"), else the whole of it,
+/// one ("Phone number: with the country code" → "Phone number"), else the whole of it,
 /// clipped.
 pub fn summary(text: &str) -> String {
     let words = plain(text);

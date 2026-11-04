@@ -1,7 +1,7 @@
 //! The PM's weekly retro on screen (`equipe_core::retro`): its run headed
-//! "주간 회고 · 2026-11-06" in the PM's conversation, its proposed changes
-//! called "주간 회고 · N가지" where they wait, and the past retros listed in
-//! 진행 상황 — the day each covers up to, one line of what it said, the row
+//! "Weekly retro · 2026-11-06" in the PM's conversation, its proposed changes
+//! called "Weekly retro · N things" where they wait, and the past retros listed in
+//! Progress — the day each covers up to, one line of what it said, the row
 //! it is at. No UI types here, so the rules are tested without a window.
 
 use equipe_core::protocol::Entry;
@@ -15,13 +15,13 @@ pub const SHOWN: usize = 5;
 /// A past retro's line, at its longest.
 const LINE: usize = 96;
 
-/// What the retro's changes are called where they wait: "주간 회고 · 2가지".
+/// What the retro's changes are called where they wait: "Weekly retro · 2 things".
 /// `None`: any other set.
 pub fn title(set: &QuestionSet) -> Option<String> {
     set.retro.is_some().then(|| t!("decide.retro", n = set.questions.len()))
 }
 
-/// The heading a retro's run is shown under: "주간 회고 · 2026-11-06", the
+/// The heading a retro's run is shown under: "Weekly retro · 2026-11-06", the
 /// day its week runs up to. `None`: any other message.
 pub fn heading(text: &str) -> Option<String> {
     let (_, to) = equipe_core::retro::week_of(text)?;

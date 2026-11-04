@@ -1,7 +1,7 @@
-//! 비교하며 검토: a draft of the design system in review, held against the
+//! Compare and review: a draft of the design system in review, held against the
 //! accepted one before it is accepted — the whole UI map flipped through as
-//! 지금 / 바뀐 뒤, the screens whose pictures differ marked 바뀜 and stepped
-//! through on their own — and 버전 기록, the accepted versions to go back to.
+//! Now / After, the screens whose pictures differ marked "Changed" and stepped
+//! through on their own — and Version history, the accepted versions to go back to.
 //! Pictures are paired by flow, screen, state, mode and width; one differs
 //! by what it holds (the hash the daemon works out while a draft is in
 //! review), else by when it was taken. No UI types here, so the rules are tested.
@@ -13,9 +13,9 @@ use equipe_core::protocol::design::{DesignPart, DesignVersion, FlowMap, Picture,
 /// Which side of the comparison is on show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Side {
-    /// 지금: the accepted system.
+    /// Now: the accepted system.
     Now,
-    /// 바뀐 뒤: the draft.
+    /// After: the draft.
     After,
 }
 
@@ -169,7 +169,7 @@ pub fn side_by_side(window_width: f32) -> bool {
     window_width >= SIDE_BY_SIDE_AT
 }
 
-// ── 버전 기록 ──
+// ── Version history ──
 
 /// A part's word in the locale files.
 pub fn part_key(part: DesignPart) -> &'static str {
@@ -217,7 +217,7 @@ mod tests {
         FlowMap { flows: flows.into_iter().map(|(id, screens)| Flow { id: id.into(), title: id.into(), screens, ..Default::default() }).collect(), ..Default::default() }
     }
 
-    /// 온보딩: login (re-shot in dark), signup (the same); 결제: plans (an
+    /// Onboarding: login (re-shot in dark), signup (the same); checkout: plans (an
     /// error state added), pay (gone in the draft), receipt (new).
     fn now_and_after() -> (FlowMap, FlowMap) {
         let now = map(vec![
