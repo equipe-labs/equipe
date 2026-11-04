@@ -126,7 +126,7 @@ async fn days_the_service_forgot_stay_in_the_snapshots() {
 #[tokio::test]
 async fn a_key_is_never_written_logged_or_answered() {
     let home = scratch("keys");
-    let metrics = metrics(&home);
+    let metrics = Arc::new(metrics(&home));
     let now = 1_793_000_000;
     // One that works, one whose service quotes the token in its error.
     let ok = metrics.call(m::CONNECT, serde_json::to_value(fake(&[])).unwrap(), now).await.unwrap();
@@ -170,7 +170,7 @@ fn the_files_are_the_persons_only() {
 #[tokio::test]
 async fn connecting_again_keeps_the_key_left_out_and_checks_the_fields() {
     let home = scratch("again");
-    let metrics = metrics(&home);
+    let metrics = Arc::new(metrics(&home));
     metrics.connect(fake(&[("seed", "1")]), 1).unwrap();
     let again = ConnectParams { squad: "acme".into(), id: Some("m1".into()), settings: BTreeMap::from([("seed".into(), "9".into())]), ..Default::default() };
     let c = metrics.connect(again, 2).unwrap();
@@ -330,4 +330,68 @@ fn a_rolling_metric_is_its_last_day_beside_seven_days_before_in_twelve_weeks() {
     let q = query(&home, &QueryParams { squad: "acme".into(), ..Default::default() }, today).unwrap();
     assert!(q.values.iter().all(|v| v.metric != NORTH_STAR));
     assert!(q.values.iter().any(|v| v.metric == "visits"));
+}
+
+/// Keys whose reads never come back until the test lets them go: the
+/// Keychain asking whether a new build of equipe may read them, with no one
+/// there to answer (the daemon of 2026-11-04 12:12).
+struct Unanswered {
+    kept: InMemory,
+    held: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Keys for Unanswered {
+    fn set(&mut self, id: &str, keys: &BTreeMap<String, String>) -> Result<(), String> {
+        self.kept.set(id, keys)
+    }
+
+    fn get(&self, _: &str) -> Result<BTreeMap<String, String>, String> {
+        let _ = self.held.lock().unwrap().recv();
+        Err("let go".into())
+    }
+
+    fn delete(&mut self, id: &str) -> Result<(), String> {
+        self.kept.delete(id)
+    }
+}
+
+/// The daily fetch woke on the one worker parked on the runtime's timers and
+/// sockets, and waited there on the Keychain for good: no hello, no status,
+/// no timer was answered again. One worker here makes it the only one.
+#[test]
+fn a_keychain_that_never_answers_fails_the_fetch_and_holds_up_nothing() {
+    let home = scratch("unanswered");
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (told, heard) = std::sync::mpsc::channel::<String>();
+    let d = day("2026-11-04");
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        rt.block_on(async move {
+            let mut metrics = Metrics::new(&home, Box::new(Unanswered { kept: InMemory::default(), held: std::sync::Mutex::new(held) }));
+            metrics.keychain_wait = Duration::from_millis(300);
+            let metrics = Arc::new(metrics);
+            metrics.connect(fake(&[]), noon(d)).unwrap_or_else(|e| panic!("{}", e.message));
+            let fetch = tokio::spawn({
+                let metrics = metrics.clone();
+                async move { metrics.refresh_one("m1", noon(d), d).await }
+            });
+            // Meanwhile the runtime keeps its time: a screen's hello is answered.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = told.send("answered meanwhile".into());
+            fetch.await.unwrap();
+            let last = connections(&home).into_iter().find(|c| c.id == "m1").and_then(|c| c.last).and_then(|l| l.error);
+            let _ = told.send(format!("{:?}", last.map(|e| e.code)));
+            // Asked again while the first ask still waits: no other piles up behind it.
+            let again = ConnectParams { id: Some("m1".into()), ..fake(&[]) };
+            let again = metrics.call(m::CONNECT, serde_json::to_value(again).unwrap(), noon(d)).await;
+            let _ = told.send(format!("{:?}", again.err().map(|e| e.code)));
+        });
+        rt.shutdown_background();
+    });
+    let wait = Duration::from_secs(10);
+    let froze = "the runtime froze while the Keychain didn't answer";
+    assert_eq!(heard.recv_timeout(wait).expect(froze), "answered meanwhile");
+    assert_eq!(heard.recv_timeout(wait).expect(froze), "Some(Keychain)", "the fetch fails, and says why");
+    assert_eq!(heard.recv_timeout(wait).expect(froze), format!("{:?}", Some(KEYCHAIN)), "connecting again waits its turn, then says why");
+    drop(release);
 }
