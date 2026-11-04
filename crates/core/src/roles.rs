@@ -1207,6 +1207,31 @@ mod tests {
     }
 
     #[test]
+    fn the_persons_language_is_whichever_they_write_in_and_none_is_assumed() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }];
+        let languages = ["English", "Spanish", "Portuguese", "Arabic", "Hindi", "Simplified Chinese", "Traditional Chinese", "German", "Japanese", "Korean"];
+        for r in ROLES.iter().chain([&CUSTOM]) {
+            for language in languages {
+                let text = charter(r, r.id, &Context { language: Some(language), ..ctx(&team, &[], true) });
+                assert!(text.contains(&format!("The person writes in {language}: write everything meant for them in {language} —")), "{}: {language}", r.id);
+                for other in languages.iter().filter(|l| **l != language && !language.contains(**l) && !l.contains(language)) {
+                    assert!(!text.contains(&format!("writes in {other}")) && !text.contains(&format!("them in {other}")), "{}: {language}, yet {other}", r.id);
+                }
+            }
+            // Nothing known: no language named, none assumed.
+            let unknown = charter(r, r.id, &ctx(&team, &[], true));
+            assert!(unknown.contains("Write for the person in the language they write in."), "{}", r.id);
+            for language in languages {
+                assert!(!unknown.contains(&format!("in {language}")), "{}: {language} assumed", r.id);
+            }
+            for screen in ["French", "Thai"] {
+                let text = charter(r, r.id, &Context { screen_language: Some(screen), ..ctx(&team, &[], true) });
+                assert!(text.contains(&format!("until they have written, in {screen}, the language of their screen")), "{}: {screen}", r.id);
+            }
+        }
+    }
+
+    #[test]
     fn every_member_adds_a_visual_to_an_answer_only_where_it_helps() {
         let team = [Teammate { name: "pm", role: PM }];
         for role in ROLES {

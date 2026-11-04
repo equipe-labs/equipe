@@ -25,7 +25,7 @@ pub enum DesignAction {
         /// The design folder (default: ./design)
         dir: Option<PathBuf>,
     },
-    /// Check a design folder before handing it in: tokens equipe reads, layers, dark, contrast, Korean type, brand, logo
+    /// Check a design folder before handing it in: tokens equipe reads, layers, dark, contrast, type for the product's script, brand, logo
     Check {
         dir: Option<PathBuf>,
         /// The findings as JSON
