@@ -141,10 +141,10 @@ pub struct Meter {
     pub stale: bool,
 }
 
-/// Whether the sidebar shows the plans' use: only once a window is watched
-/// (70%) or worse, or a switch waits on the person — calm, it is Settings'.
+/// Whether the sidebar shows the plans' use: once either plan was read —
+/// calm too, so the person can pace it — or a switch waits on the person.
 pub fn worth_showing(meters: &[Meter], waiting: bool) -> bool {
-    waiting || meters.iter().any(|m| m.gauges.iter().any(|g| g.tone != Tone::Calm))
+    waiting || meters.iter().any(|m| m.read_at.is_some())
 }
 
 /// One window of a plan.
@@ -178,6 +178,74 @@ pub fn tone(percent: u8) -> Tone {
 fn gauge(window: Window, w: PlanWindow, now: i64) -> Gauge {
     let percent = if w.resets_at <= now { 0 } else { w.used_percent.min(100) };
     Gauge { window, percent, resets_at: w.resets_at, tone: tone(percent) }
+}
+
+impl Gauge {
+    /// What is left of it, 0–100.
+    pub fn left(&self) -> u8 {
+        100 - self.percent.min(100)
+    }
+}
+
+/// The window that runs lowest of the plans read, with its engine — the one
+/// back sooner when two have as little left.
+pub fn tightest(meters: &[Meter]) -> Option<(Engine, Gauge)> {
+    meters.iter().flat_map(|m| m.gauges.iter().map(move |g| (m.engine, *g))).min_by_key(|(_, g)| (g.left(), g.resets_at))
+}
+
+/// The title bar's glance at it, only while the sidebar — the meters with
+/// it — is away: shown there, it would say the same twice.
+pub fn header_glance(meters: &[Meter], sidebar_hidden: bool) -> Option<(Engine, Gauge)> {
+    tightest(meters).filter(|_| sidebar_hidden)
+}
+
+/// "Claude 42% 남음".
+pub fn glance(engine: Engine, g: &Gauge) -> String {
+    t!("engines.glance", engine = engine_name(engine), left = g.left())
+}
+
+/// A window on the pointer: "5시간 58% 남음 · 2시간 10분 뒤 초기화 (17:40)";
+/// used up, "다 씀"; past its reset, refilled (the next reset isn't known yet).
+pub fn left_words(g: &Gauge, now: i64, when: impl Fn(i64) -> String) -> String {
+    let window = match g.window {
+        Window::FiveHour => t!("usage.five_hour"),
+        Window::Weekly => t!("usage.week"),
+    };
+    if g.resets_at <= now {
+        return t!("engines.left_tip_fresh", window = window, left = g.left());
+    }
+    let (span, at) = (until(g.resets_at, now), when(g.resets_at));
+    match g.left() {
+        0 => t!("engines.left_tip_out", window = window, span = span, at = at),
+        left => t!("engines.left_tip", window = window, left = left, span = span, at = at),
+    }
+}
+
+/// How long until `at`, as short as it says it: "35분", "2시간", "2시간 10분",
+/// "3일", "3일 5시간" — never under a minute.
+pub fn until(at: i64, now: i64) -> String {
+    let secs = (at - now).max(60);
+    let (days, hours, minutes) = (secs / 86_400, secs % 86_400 / 3_600, secs % 3_600 / 60);
+    match (days, hours, minutes) {
+        (0, 0, m) => t!("engines.span_minutes", count = m),
+        (0, h, 0) => t!("engines.span_hours", count = h),
+        (0, h, m) => t!("usage.left_hours", hours = h, minutes = m),
+        (d, 0, _) => t!("engines.span_days", count = d),
+        (d, h, _) => t!("usage.left_days", days = d, hours = h),
+    }
+}
+
+/// How old a reading is, once it is no longer sure ("2시간 전에 읽음").
+pub fn age_words(m: &Meter, now: i64) -> Option<String> {
+    m.read_at.filter(|_| m.stale).map(|at| t!("engines.read_ago", span = span(now + (now - at), now)))
+}
+
+/// An engine never read: what its row says, and on the pointer, how it gets read.
+pub fn unread_words(engine: Engine) -> (&'static str, &'static str) {
+    match engine {
+        Engine::Claude => (t!("engines.unread_claude"), t!("engines.claude_not_read")),
+        Engine::Codex => (t!("engines.unread_codex"), t!("engines.codex_unread_tip")),
+    }
 }
 
 impl Meter {
@@ -218,11 +286,6 @@ pub fn span(at: i64, now: i64) -> String {
         3_600..172_800 => t!("engines.span_hours", count = (secs + 1_800) / 3_600),
         _ => t!("engines.span_days", count = (secs + 43_200) / 86_400),
     }
-}
-
-/// A window on the pointer: "5시간 · 62% 사용 · 2시간 뒤 리셋 (17:40)".
-pub fn gauge_words(g: &Gauge, now: i64, when: impl Fn(i64) -> String) -> String {
-    t!("engines.gauge", window = window_word(Some(g.window)), percent = g.percent, span = span(g.resets_at, now), at = when(g.resets_at))
 }
 
 /// The meter's line on the pointer about when it was read.
@@ -362,13 +425,60 @@ mod tests {
 
     const NOW: i64 = 1_760_000_000;
 
+    fn meter(engine: Engine, gauges: &[(Window, u8, i64)], read_at: Option<i64>) -> Meter {
+        let gauges = gauges.iter().map(|&(window, percent, resets_at)| Gauge { window, percent, resets_at, tone: tone(percent) }).collect();
+        Meter { engine, gauges, read_at, stale: read_at.is_some_and(|at| NOW - at > STALE_AFTER) }
+    }
+
     #[test]
-    fn the_sidebar_shows_the_plans_use_only_when_it_matters() {
-        let meter = |percent| Meter { engine: Engine::Claude, gauges: vec![Gauge { window: Window::Weekly, percent, resets_at: 0, tone: tone(percent) }], read_at: Some(NOW), stale: false };
-        assert!(!worth_showing(&[meter(3), meter(69)], false), "calm: Settings has it");
-        assert!(worth_showing(&[meter(3), meter(70)], false), "watched");
-        assert!(worth_showing(&[meter(3)], true), "a switch waits on the person");
+    fn the_sidebar_shows_the_plans_use_once_read_calm_too() {
+        let calm = meter(Engine::Claude, &[(Window::Weekly, 3, NOW + 3600)], Some(NOW));
+        let unread = meter(Engine::Codex, &[], None);
+        assert!(worth_showing(&[calm.clone(), unread.clone()], false), "calm: still shown, to pace it");
+        assert!(worth_showing(&[unread.clone(), calm], false), "either engine read is enough");
+        assert!(!worth_showing(&[unread.clone(), unread.clone()], false), "nothing read: the space stays the team's");
+        assert!(worth_showing(&[unread], true), "a switch waits on the person");
         assert!(!worth_showing(&[], false));
+    }
+
+    #[test]
+    fn a_window_says_what_is_left_and_when_it_starts_over() {
+        let g = |window, percent, resets_at| Gauge { window, percent, resets_at, tone: tone(percent) };
+        let five = g(Window::FiveHour, 42, NOW + 2 * 3600 + 10 * 60);
+        assert_eq!(five.left(), 58);
+        assert_eq!(left_words(&five, NOW, |_| "17:40".into()), "5시간 58% 남음 · 2시간 10분 뒤 초기화 (17:40)");
+        let out = g(Window::Weekly, 100, NOW + 3 * 86_400 + 5 * 3600);
+        assert_eq!(out.left(), 0);
+        assert_eq!(left_words(&out, NOW, |_| "11/07 09:00".into()), "주간 다 씀 · 3일 5시간 뒤 초기화 (11/07 09:00)");
+        // As short as it says it: no "0분", no "0시간".
+        assert_eq!([until(NOW + 35 * 60, NOW), until(NOW + 2 * 3600, NOW), until(NOW + 3 * 86_400, NOW), until(NOW + 20, NOW)], ["35분", "2시간", "3일", "1분"]);
+        let fresh = g(Window::FiveHour, 0, NOW - 60);
+        assert_eq!(left_words(&fresh, NOW, |_| unreachable!("no reset known past it")), "5시간 100% 남음 · 다시 채워졌어요");
+    }
+
+    #[test]
+    fn the_tightest_window_is_the_one_with_least_left() {
+        let claude = meter(Engine::Claude, &[(Window::FiveHour, 42, NOW + 7200), (Window::Weekly, 76, NOW + 86_400)], Some(NOW));
+        let codex = meter(Engine::Codex, &[(Window::FiveHour, 76, NOW + 3600), (Window::Weekly, 9, NOW + 86_400)], Some(NOW));
+        let (engine, g) = tightest(&[claude.clone(), codex.clone()]).unwrap();
+        assert_eq!((engine, g.window, g.left()), (Engine::Codex, Window::FiveHour, 24), "as low as Claude's week, and back sooner");
+        assert_eq!(glance(engine, &g), "Codex 24% 남음");
+        assert_eq!(tightest(&[claude.clone(), meter(Engine::Codex, &[], None)]).map(|(e, g)| (e, g.left())), Some((Engine::Claude, 24)));
+        assert_eq!(tightest(&[meter(Engine::Claude, &[], None)]), None, "nothing read, nothing to glance at");
+        // The title bar glances at it only while the sidebar, with the meters, is away.
+        assert_eq!(header_glance(std::slice::from_ref(&claude), false), None);
+        assert_eq!(header_glance(&[claude], true).map(|(e, g)| (e, g.window)), Some((Engine::Claude, Window::Weekly)));
+    }
+
+    #[test]
+    fn a_reading_says_how_old_it_is_and_an_unread_one_how_to_get_it() {
+        let fresh = meter(Engine::Claude, &[(Window::FiveHour, 10, NOW + 3600)], Some(NOW - 5 * 60));
+        assert_eq!(age_words(&fresh, NOW), None, "just read: nothing to say");
+        let old = meter(Engine::Claude, &[(Window::FiveHour, 10, NOW + 3600)], Some(NOW - 2 * 3600));
+        assert_eq!(age_words(&old, NOW).as_deref(), Some("2시간 전에 읽음"));
+        assert_eq!(age_words(&meter(Engine::Codex, &[], None), NOW), None, "never read is said otherwise");
+        assert_eq!(unread_words(Engine::Claude), ("아직 모름 · 멤버가 일하면 보여요", "Claude 멤버가 다음 턴을 마치면 보여요"));
+        assert_eq!(unread_words(Engine::Codex), ("아직 모름 · 로그인하면 보여요", "설정 › AI 플랫폼에서 Codex에 로그인하면 보여요"));
     }
 
     fn shift(applied: bool) -> Proposal {
@@ -459,7 +569,7 @@ mod tests {
         assert_eq!(read_words(codex, NOW), "1시간 전에 읽음");
         assert_eq!([tone(69), tone(70), tone(85), tone(100)], [Tone::Calm, Tone::Watch, Tone::Low, Tone::Out]);
         let g = e.meters(NOW)[0].gauges[0];
-        assert_eq!(gauge_words(&g, NOW, |_| "17:40".into()), "5시간 · 86% 사용 · 2시간 뒤 리셋 (17:40)");
+        assert_eq!(left_words(&g, NOW, |_| "17:40".into()), "5시간 14% 남음 · 2시간 뒤 초기화 (17:40)");
     }
 
     #[test]

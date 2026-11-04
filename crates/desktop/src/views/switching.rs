@@ -1,7 +1,9 @@
-//! Both engines, drawn: two small meters at the sidebar's foot — each
-//! engine's five hours and week, the reset on the pointer, a click opens
-//! `/usage`; the card above the composer — "엔진 전환 제안" with [옮기기]
-//! [이번엔 그대로], what equipe did in `auto` with [되돌리기], the recommended
+//! Both engines, drawn: two small meters at the sidebar's foot, once either
+//! plan was read — what is left of each engine's five hours and week, the
+//! reset on the pointer, a click opens `/usage`, foldable to the tightest
+//! window — and that window in the title bar while the sidebar is away; the
+//! card above the composer — "엔진 전환 제안" with [옮기기] [이번엔 그대로],
+//! what equipe did in `auto` with [되돌리기], the recommended
 //! setup once with [적용] [나중에], each with who moves from what to what; and
 //! the small badge by a member's name. The rules are `crate::switching`'.
 
@@ -62,7 +64,10 @@ impl Shell {
 
 // ── the sidebar's meters ──
 
-/// Both engines' meters, pinned above the team: a row each.
+/// Both engines' plans, pinned above the team, as soon as either was read:
+/// a row each — what is left of each window, the reset on the pointer, how
+/// old a reading is once it isn't sure — a click opens `/usage`. The heading
+/// folds them (kept per Mac) to the tightest window alone.
 pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
@@ -71,40 +76,20 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     }
     let now = now();
     let meters = model.engines.meters(now);
-    // Nothing read of either yet: the space stays the team's.
-    if meters.iter().all(|m| m.read_at.is_none()) {
-        return None;
-    }
     let waiting = model.engines.first().is_some();
-    if !crate::switching::worth_showing(&meters, waiting) {
+    if !rules::worth_showing(&meters, waiting) {
         return None;
     }
+    let folded = shell.remembered.usage_folded;
+    // Folded, the heading keeps the one window that runs lowest in sight.
+    let glance = rules::tightest(&meters).filter(|_| folded).map(|(engine, g)| {
+        let stale = meters.iter().any(|m| m.engine == engine && m.stale);
+        let color = if stale || g.tone == Tone::Calm { p.muted } else { tone_color(p, g.tone) };
+        div().font_weight(FontWeight::NORMAL).text_size(px(11.)).text_color(color).child(rules::glance(engine, &g))
+    });
     let head = h_flex()
+        .id("usage-heading")
         .h(px(22.))
-        .mx_2()
-        .px_2()
-        .gap(px(8.))
-        .items_center()
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(p.muted)
-        .child(t!("engines.usage"))
-        .child(div().flex_1())
-        .child(div().font_weight(FontWeight::NORMAL).text_size(px(11.)).child(rules::mode_word(model.engines.mode)))
-        .children(waiting.then(|| div().size(px(6.)).rounded_full().bg(p.accent)));
-    let rows: Vec<AnyElement> = meters.iter().map(|m| meter_row(shell, m, now, cx)).collect();
-    // Its hairline above is the sidebar's, to drag (`sidebar::split_area`).
-    Some(v_flex().flex_none().pt(px(6.)).pb_1().child(head).children(rows).into_any_element())
-}
-
-/// One engine: its name, then each window — a short label, a thin bar, the percent.
-fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let name = rules::engine_name(m.engine);
-    let read = rules::read_words(m, now);
-    let mut row = h_flex()
-        .id(SharedString::from(format!("meter-{name}")))
-        .h(px(24.))
         .mx_2()
         .px_2()
         .gap(px(8.))
@@ -112,30 +97,80 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         .rounded(px(6.))
         .cursor_pointer()
         .hover(move |s| s.bg(p.side_hover))
-        .on_click(cx.listener(|this, _, window, cx| this.apply_effect(crate::compose::Effect::Usage, window, cx)))
+        .aria_expanded(!folded)
+        .aria_label(t!("engines.usage_left"))
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.remembered.usage_folded = !this.remembered.usage_folded;
+            this.remembered.save(&equipe_providers::credentials::equipe_home());
+            cx.notify();
+        }))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.muted)
+        .child(
+            div()
+                .w(px(crate::views::sidebar::MARK_BOX))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::views::sidebar::icon(if folded { IconName::ChevronRight } else { IconName::ChevronDown }, 12., p.muted)),
+        )
+        .child(div().min_w_0().truncate().child(t!("engines.usage_left")))
+        .child(div().flex_1())
+        .children(glance)
+        .when(!folded, |h| h.child(div().flex_none().font_weight(FontWeight::NORMAL).text_size(px(11.)).child(rules::mode_word(model.engines.mode))))
+        .children(waiting.then(|| div().flex_none().size(px(6.)).rounded_full().bg(p.accent)));
+    let rows: Vec<AnyElement> = if folded { Vec::new() } else { meters.iter().map(|m| meter_row(shell, m, now, cx)).collect() };
+    // Its hairline above is the sidebar's, to drag (`sidebar::split_area`).
+    Some(v_flex().flex_none().pt(px(6.)).pb_1().child(head).children(rows).into_any_element())
+}
+
+/// One engine: its name, then each window — a short label, a thin bar of
+/// what is left, the percent left — and under it, once a reading is old, how
+/// old. Never read: "아직 모름" and how it gets read.
+fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let name = rules::engine_name(m.engine);
+    let mut row = h_flex()
+        .h(px(24.))
+        .gap(px(8.))
+        .items_center()
         .child(
             div()
                 .id(SharedString::from(format!("meter-name-{name}")))
-                .w(px(42.))
+                .w(px(NAME_W))
                 .flex_none()
                 .text_size(px(12.))
                 .text_color(if m.read_at.is_some() { p.text2 } else { p.muted })
-                .tip_at(p, read, None, gpui_kit::base::Placement::Right)
+                .tip_at(p, rules::read_words(m, now), None, gpui_kit::base::Placement::Right)
                 .child(name),
         );
-    if m.gauges.is_empty() {
-        // Read, but a plan with no five-hour or weekly window (a free one):
-        // its kind, rather than "not yet".
-        let kind = shell.model.engines.plan(m.engine).and_then(|p| p.plan_type.clone()).filter(|_| m.read_at.is_some());
-        let words = match kind {
+    if m.read_at.is_none() {
+        let (words, how) = rules::unread_words(m.engine);
+        row = row.child(
+            div()
+                .id(SharedString::from(format!("meter-unread-{name}")))
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(11.5))
+                .text_color(p.muted)
+                .tip_at(p, how, None, gpui_kit::base::Placement::Right)
+                .child(words),
+        );
+    } else if m.gauges.is_empty() {
+        // Read, but a plan with no five-hour or weekly window (a free one): its kind.
+        let words = match shell.model.engines.plan(m.engine).and_then(|p| p.plan_type.clone()) {
             Some(kind) => t!("engines.plan_no_windows", plan = crate::engines::title_case(&kind)),
             None => t!("engines.not_yet").to_owned(),
         };
         row = row.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(p.muted).child(words));
-    }
-    // One slot per window, the same on every row: a plan with only a weekly
-    // window keeps its bar under the others' weekly bar, not across both.
-    if !m.gauges.is_empty() {
+    } else {
+        // One slot per window, the same on every row: a plan with only a weekly
+        // window keeps its bar under the others' weekly bar, not across both.
         // A narrow sidebar has no room for the bars: the label and percent alone.
         let bars = shell.board.sidebar_width >= BARS_FROM;
         for window in [equipe_core::protocol::engines::Window::FiveHour, equipe_core::protocol::engines::Window::Weekly] {
@@ -145,21 +180,38 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
             });
         }
     }
-    row.into_any_element()
+    // An old reading says how old, under the windows it is about.
+    let age = rules::age_words(m, now).map(|words| div().h(px(14.)).pl(px(NAME_W + 8.)).mt(px(-3.)).text_size(px(10.5)).text_color(p.muted).truncate().child(words));
+    v_flex()
+        .id(SharedString::from(format!("meter-{name}")))
+        .mx_2()
+        .px_2()
+        .rounded(px(6.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.side_hover))
+        .on_click(cx.listener(|this, _, window, cx| this.apply_effect(crate::compose::Effect::Usage, window, cx)))
+        .child(row)
+        .children(age)
+        .into_any_element()
 }
 
+/// The engine's name's column.
+const NAME_W: f32 = 42.;
 /// A gauge's least width with its bar: label, gaps, a sliver of bar, percent.
 const GAUGE_MIN: f32 = LABEL_W + 4. + 8. + 4. + PERCENT_W;
 const LABEL_W: f32 = 16.;
 const PERCENT_W: f32 = 30.;
 /// The sidebar width a row's two bars fit in: its margins and padding, the
 /// engine's name, two gauges at their least and the gaps between.
-const BARS_FROM: f32 = 16. + 16. + 42. + 8. + GAUGE_MIN + 8. + GAUGE_MIN + 8.;
+const BARS_FROM: f32 = 16. + 16. + NAME_W + 8. + GAUGE_MIN + 8. + GAUGE_MIN + 8.;
 
+/// A window: what is left of it, as a bar that empties and its percent —
+/// quiet while calm, coloured once watched, low or out; grey when the
+/// reading is old.
 fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64, bars: bool) -> AnyElement {
     let color = if m.stale { p.muted } else { tone_color(p, g.tone) };
-    let words = rules::gauge_words(g, now, crate::usage::local_time);
-    let fill = (f32::from(g.percent) / 100.).clamp(0., 1.);
+    let words = rules::left_words(g, now, crate::usage::local_time);
+    let fill = (f32::from(g.left()) / 100.).clamp(0., 1.);
     h_flex()
         .id(SharedString::from(format!("gauge-{}-{:?}", rules::engine_name(m.engine), g.window)))
         .flex_1()
@@ -190,9 +242,41 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64, bars: bool) -> AnyElement {
                 .text_size(px(10.5))
                 .text_color(if g.tone >= Tone::Low && !m.stale { color } else { p.muted })
                 .when(g.tone >= Tone::Low, |d| d.font_weight(FontWeight::SEMIBOLD))
-                .child(format!("{}%", g.percent)),
+                .child(format!("{}%", g.left())),
         )
         .into_any_element()
+}
+
+/// The title bar's glance, while the sidebar is away: the tightest window's
+/// engine and what is left ("Claude 42% 남음"), its words on the pointer, a
+/// click opens `/usage`.
+pub fn glance(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let now = now();
+    let meters = shell.model.engines.meters(now);
+    let (engine, g) = rules::header_glance(&meters, shell.board.sidebar_hidden)?;
+    let stale = meters.iter().any(|m| m.engine == engine && m.stale);
+    let color = if stale || g.tone == Tone::Calm { p.muted } else { tone_color(p, g.tone) };
+    let words = rules::left_words(&g, now, crate::usage::local_time);
+    Some(
+        div()
+            .id("header-usage")
+            .flex_none()
+            .h(px(22.))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded(px(R_MD))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .text_size(px(SMALL))
+            .text_color(color)
+            .when(g.tone >= Tone::Low && !stale, |d| d.font_weight(FontWeight::SEMIBOLD))
+            .tip(p, words, None)
+            .on_click(cx.listener(|this, _, window, cx| this.apply_effect(crate::compose::Effect::Usage, window, cx)))
+            .child(rules::glance(engine, &g))
+            .into_any_element(),
+    )
 }
 
 /// The engine's mark alone, for a row with no room for its name (the team
