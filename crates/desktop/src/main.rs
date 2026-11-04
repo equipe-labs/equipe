@@ -2399,7 +2399,7 @@ fn main() {
     // The app's icons, then GPUI Kit's own (the sidebar's, the components').
     let app = gpui_kit::application().with_http_client(http).with_assets(icons::AppAssets);
     // The real view: no Dock icon, no menu bar — nothing of it on the screen.
-    let app = if readonly::on() { app.with_windowing(WindowingRequest::Headless) } else { app };
+    let app = if readonly::hidden() { app.with_windowing(WindowingRequest::Headless) } else { app };
     // The window closed (⌘W, the red button) leaves the app in the Dock, as a
     // Mac app does: a click on its icon then opens the window again. Without
     // this the click did nothing and the app looked dead.
@@ -2435,7 +2435,7 @@ fn main() {
         #[allow(unused_variables)]
         let (handle, shell) = open_kept_windows(cx);
         // The real view draws to its pictures alone: it never comes forward.
-        if !readonly::on() {
+        if !readonly::hidden() {
             cx.activate(true);
         }
         #[cfg(feature = "snapshot")]
@@ -2499,7 +2499,7 @@ pub fn open_app_window(opening: windows::Opening, cx: &mut App) -> (AnyWindowHan
             bounds.origin.x += px(28. * others);
             bounds.origin.y += px(28. * others);
         }
-        let hidden = readonly::on();
+        let hidden = readonly::hidden();
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),

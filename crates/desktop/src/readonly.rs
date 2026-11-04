@@ -49,6 +49,20 @@ pub fn on() -> bool {
     false
 }
 
+/// Whether the window is never shown and draws itself, to its pictures
+/// alone: the real view, or `EQUIPE_SNAPSHOT_HIDDEN=1` — a snapshot build on
+/// the fake daemon, run (and measured) with nothing on the screen and
+/// nothing held back. Never, outside a snapshot build.
+pub fn hidden() -> bool {
+    #[cfg(feature = "snapshot")]
+    {
+        static HIDDEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        on() || *HIDDEN.get_or_init(|| std::env::var("EQUIPE_SNAPSHOT_HIDDEN").is_ok_and(|v| v == "1"))
+    }
+    #[cfg(not(feature = "snapshot"))]
+    false
+}
+
 /// Whether `command` only reads (or follows what is there): the screen may
 /// send it in the real view. Every other one changes something — the board,
 /// a conversation, a setting, what the daemon keeps — and is kept back.
