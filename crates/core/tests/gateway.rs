@@ -570,6 +570,20 @@ async fn the_daemon_says_who_is_mid_turn() {
     assert_eq!(gateway::busy(&socket).await.unwrap(), None, "no daemon, no answer");
 }
 
+#[tokio::test]
+async fn the_daemon_says_how_it_runs_from_its_own_environment() {
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    // Served in this process: what it says is this process's own.
+    let runs = gateway::runs(&socket).await.expect("it answers `runs`");
+    assert_eq!(runs.pid, std::process::id());
+    assert_eq!(runs.ssh, equipe_core::engine_auth::ssh_bound(&|name| std::env::var(name).ok()), "bound to an SSH connection exactly when started from one");
+    assert_eq!(runs.login_session, equipe_core::engine_auth::in_login_session());
+    gateway::shutdown(&socket).await.unwrap();
+    assert_eq!(gateway::runs(&socket).await, None, "no daemon, no answer");
+}
+
 /// Write an executable script without this process ever holding it open for
 /// writing: on Linux, a test thread forking at that moment would carry the
 /// open file into its child, and running the script would fail with "Text

@@ -472,6 +472,14 @@ async fn serve_client(
             (Some(rpc::BUSY), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, core.busy().await));
             }
+            // How it runs: asked of the process, not the core loop, so a stuck loop still answers.
+            (Some(rpc::RUNS), Some(id)) => {
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let runs = tokio::task::spawn_blocking(crate::engine_auth::runs_here).await.unwrap_or_default();
+                    let _ = out.send(Message::response(id, runs));
+                });
+            }
             // The look this screen shows (`crate::looks`): kept for the squad it follows.
             (Some(rpc::SCREEN_LOOK), None) => {
                 if let (Some(squad), Some(look)) = (followed.clone(), message.params_as::<equipe_protocol::look::ScreenLook>()) {
@@ -967,6 +975,12 @@ pub async fn busy(socket: &Path) -> io::Result<Option<rpc::Busy>> {
         }
     }
     Ok(None)
+}
+
+/// How the daemon at `socket` runs, as it tells it; `None` when none answers
+/// (or it is older than `runs`).
+pub async fn runs(socket: &Path) -> Option<rpc::Runs> {
+    ask_once(socket, rpc::RUNS, ()).await.ok().flatten()
 }
 
 /// What uses the disk, as the daemon at `socket` looks at it; `None` when

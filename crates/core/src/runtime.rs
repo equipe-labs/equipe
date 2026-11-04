@@ -2200,7 +2200,7 @@ impl Runtime {
             return self.check_engine(Engine::Claude);
         }
         let exe = std::env::current_exe();
-        let (Some(plist), Ok(exe)) = (crate::engine_auth::service_plist(), exe) else {
+        let (Some(_), Ok(exe)) = (crate::engine_auth::service_plist(), exe) else {
             let fix = self.auth.entry(Engine::Claude).or_default();
             fix.state = AuthState::OutsideLogin { movable: false };
             let event = fix.event(Engine::Claude);
@@ -2208,7 +2208,7 @@ impl Runtime {
         };
         self.save_stopped();
         let fix = self.auth.entry(Engine::Claude).or_default();
-        match crate::engine_auth::move_into_login(&exe, &plist) {
+        match crate::engine_auth::move_into_login(&exe) {
             Ok(()) => {
                 crate::daemon_log!("equipe: started outside the Mac's login session, the daemon starts again inside it, as the person asked");
                 (fix.state, fix.detail) = (AuthState::Moving, String::new());

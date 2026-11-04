@@ -17,6 +17,7 @@ mod disk;
 mod home;
 mod i18n;
 mod lang;
+mod launchd;
 mod onboard;
 mod remote;
 mod review;
@@ -956,11 +957,26 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             if when_idle {
                 wait_until_idle(&p).await?;
             }
-            if let Ok(daemon::Stopped::Ended(pid)) = daemon::stop().await {
-                println!("{}", p.note(0, &t!("main.daemon_ended", pid = pid)));
-            }
-            daemon::ensure_running().await.map_err(|err| Failure::new(err.to_string()))?;
+            let restarted = daemon::restart(|pid| println!("{}", p.note(0, &t!("main.daemon_ended", pid = pid))))
+                .await
+                .map_err(|err| Failure::new(err.to_string()))?;
             println!("{}", p.ok_line(t!("main.daemon_restarted")));
+            match restarted {
+                daemon::Restarted::Service(up) => {
+                    let reloaded = match up.reloaded {
+                        None => None,
+                        Some(launchd::Why::Changed) => Some(t!("main.service_reloaded_changed")),
+                        Some(launchd::Why::Refused) => Some(t!("main.service_reloaded_refused")),
+                        Some(launchd::Why::NotLoaded | launchd::Why::Elsewhere) => Some(t!("main.service_reloaded")),
+                    };
+                    if let Some(words) = reloaded {
+                        println!("{}", p.note(2, words));
+                    }
+                }
+                daemon::Restarted::Alone => println!("{}", p.note(2, t!("main.restarted_alone"))),
+            }
+            // What the new daemon says of itself: bound to an SSH connection, or the Keychain closed to it.
+            show_whereabouts(&p, &daemon::whereabouts().await);
             Ok(())
         }
         DaemonAction::Install => {
@@ -971,7 +987,7 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             // The service takes over from a daemon already running — between turns.
             wait_until_idle(&p).await?;
             let _ = daemon::stop().await;
-            daemon::service::install(&exe, &daemon::log_path()).map_err(|err| Failure::new(err.to_string()))?;
+            daemon::service::install(&exe, &daemon::log_path()).await.map_err(|err| Failure::new(err.to_string()))?;
             for _ in 0..100 {
                 if equipe_core::gateway::is_running(&daemon::socket()).await {
                     println!("{}", p.ok_line(t!("main.service_installed")));
@@ -1010,14 +1026,7 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             };
             println!("{}", p.ok_line(t!("main.daemon_running")));
             println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
-            let how = if daemon::trial() {
-                t!("main.runs_as_trial", mins = daemon::TRIAL_IDLE.as_secs() / 60)
-            } else if daemon::service::installed() {
-                t!("main.runs_as_service").to_owned()
-            } else {
-                t!("main.runs_on_demand").to_owned()
-            };
-            println!("{}", p.row(t!("main.row_runs_as"), &how));
+            show_whereabouts(&p, &daemon::whereabouts().await);
             if let Some(stall) = &busy.stalled {
                 let since = equipe_core::watchdog::clock(stall.since);
                 println!("{}", p.row(t!("main.row_stalled"), &t!("main.stalled_since", since = since, doing = stall.doing, secs = stall.secs)));
@@ -1029,6 +1038,46 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             println!("{}", p.row(t!("main.row_screen"), &equipe_core::i18n::label::desktop(crate::i18n::lang(), &busy.desktop, None).unwrap_or_else(|| t!("main.screen_free").into())));
             Ok(())
         }
+    }
+}
+
+/// How the daemon runs — its login service's, or on its own (from an SSH
+/// connection, which the Keychain is closed to) — the login service's last
+/// exit when it wasn't clean, and the session it runs in, as it tells it;
+/// and what to do when Claude members couldn't sign in so.
+fn show_whereabouts(p: &ui::Painter, w: &daemon::Whereabouts) {
+    use daemon::HowRuns;
+    let how = match w.how {
+        HowRuns::Trial => t!("main.runs_as_trial", mins = daemon::TRIAL_IDLE.as_secs() / 60),
+        HowRuns::Service => t!("main.runs_as_service").to_owned(),
+        HowRuns::Alone { ssh: true, .. } => t!("main.runs_alone_ssh").to_owned(),
+        HowRuns::Alone { ssh: false, beside: true } => t!("main.runs_alone_beside").to_owned(),
+        HowRuns::Alone { ssh: false, beside: false } => t!("main.runs_on_demand").to_owned(),
+    };
+    println!("{}", p.row(t!("main.row_runs_as"), &how));
+    if let Some(code) = w.last_exit {
+        let exit = if code == launchd::EX_CONFIG { t!("main.last_exit_refused").to_owned() } else { code.to_string() };
+        println!("{}", p.row(t!("main.row_last_exit"), &exit));
+    }
+    let runs = w.runs.as_ref();
+    if let Some(inside) = runs.and_then(|r| r.login_session) {
+        let mut session = vec![if inside { t!("main.session_inside") } else { t!("main.session_outside") }];
+        match runs.and_then(|r| r.keychain) {
+            Some(true) => session.push(t!("main.keychain_open")),
+            Some(false) => session.push(t!("main.keychain_locked")),
+            None => {}
+        }
+        println!("{}", p.row(t!("main.row_session"), &session.join(" · ")));
+    }
+    let note = match w.how {
+        HowRuns::Alone { ssh: true, beside: true } => Some(t!("main.alone_ssh_restart")),
+        HowRuns::Alone { ssh: true, beside: false } => Some(t!("main.alone_ssh_install")),
+        _ if runs.and_then(|r| r.login_session) == Some(false) => Some(t!("main.outside_login")),
+        _ if runs.and_then(|r| r.keychain) == Some(false) => Some(t!("main.keychain_locked_note")),
+        _ => None,
+    };
+    if let Some(note) = note {
+        println!("{}", p.note(2, note));
     }
 }
 
