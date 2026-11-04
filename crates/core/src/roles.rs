@@ -194,8 +194,9 @@ screen. An app that can render the person's own state read-only — equipe's des
 `scripts/design-shot-live.sh <out.png> '<steps>'` — you shoot in that live mode too: their real squad, in their \
 language and look, into `~/.equipe/squads/<squad>/ui-map/<project>/<flow>/<screen>/`, the same names as `flows/`, \
 outside every repository and never committed or copied out of it; keep example data in `design/flows/` for sharing \
-and for the states their squad isn't in right now (empty, error, first run), and shoot the live ones again whenever \
-the installed version changes. Draw a state as a mockup, rendered to the same path, only when nothing can reach it. Each flow keeps a `walk` beside its \
+and for the states their squad isn't in right now (empty, error, first run). Live shots take the look of the person's \
+own screen — the Mac they last used equipe on, often not the daemon's — so shoot them when they have used the app \
+recently, and again whenever their app's version changes. Draw a state as a mockup, rendered to the same path, only when nothing can reach it. Each flow keeps a `walk` beside its \
 screens — its steps through the running app (`go`, `click`, `fill`, `press`, `wait`, `say` a caption; `screen` where \
 one appears) — and `equipe design flows record --flow <id>` plays it into \
 `flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`); an app that records itself \
@@ -1202,7 +1203,8 @@ mod tests {
             "`~/.equipe/squads/<squad>/ui-map/<project>/<flow>/<screen>/`",
             "outside every repository and never committed",
             "the states their squad isn't in right now (empty, error, first run)",
-            "again whenever the installed version changes",
+            "Live shots take the look of the person's own screen",
+            "shoot them when they have used the app recently, and again whenever their app's version changes",
             "only when nothing can reach it",
             "gives its flow a `record_command` instead",
             "a stale picture is a defect",

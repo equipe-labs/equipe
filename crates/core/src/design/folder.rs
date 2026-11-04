@@ -54,6 +54,10 @@ pub struct Place {
     /// (`flows::live_dir`): an accepted system's only — a draft shows the
     /// repository's.
     pub live: Option<PathBuf>,
+    /// The desktop app the person uses, as the screen they used last told
+    /// it (`crate::looks`): what the map's pictures are held to. None: the
+    /// one installed on this machine.
+    pub installed: Option<crate::looks::PersonApp>,
 }
 
 /// Whether `dir` is a design system: a folder (not a link to one) with
@@ -69,7 +73,8 @@ pub fn is_design_dir(dir: &Path) -> bool {
 pub fn places(home: &Path, squad: &str) -> Vec<Place> {
     let valid = crate::squads::valid_name(squad);
     let live = |project: Option<&str>| valid.then(|| super::flows::live_dir(home, squad, project));
-    let mut out = vec![Place { project: None, draft: None, dir: crate::squad_home::path(home, squad).join(DIR), live: live(None) }];
+    let installed = person_app(home);
+    let mut out = vec![Place { project: None, draft: None, dir: crate::squad_home::path(home, squad).join(DIR), live: live(None), installed: installed.clone() }];
     let db = crate::journal::squad_dir(home, squad).join("squad.db");
     if !valid || !db.exists() {
         return out;
@@ -79,7 +84,7 @@ pub fn places(home: &Path, squad: &str) -> Vec<Place> {
         let dir = project.join(DIR);
         if is_design_dir(&dir) {
             let name = crate::board::project_name(&project);
-            out.push(Place { live: live(Some(&name)), project: Some(name), draft: None, dir });
+            out.push(Place { live: live(Some(&name)), project: Some(name), draft: None, dir, installed: installed.clone() });
         }
     }
     for ticket in journal.tickets().unwrap_or_default() {
@@ -92,11 +97,38 @@ pub fn places(home: &Path, squad: &str) -> Vec<Place> {
         let dir = worktree.join(DIR);
         if is_design_dir(&dir) {
             let project = if ticket.kind == TicketKind::Code { ticket.project.as_deref().map(crate::board::project_name) } else { None };
-            out.push(Place { project, draft: Some(DraftOf { ticket: ticket.id, title: ticket.title.clone(), working }), dir, live: None });
+            out.push(Place { project, draft: Some(DraftOf { ticket: ticket.id, title: ticket.title.clone(), working }), dir, live: None, installed: None });
         }
     }
     out
 }
+
+/// The version of the desktop app the person uses (`crate::looks`), read
+/// again once a screen told this process something new, or after
+/// [`PERSON_EVERY`]: the folders are looked at far more often, and it asks
+/// every squad's journal.
+fn person_app(home: &Path) -> Option<crate::looks::PersonApp> {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    /// For which home, after how many looks told, when, and what was read.
+    type Kept = (PathBuf, u64, Instant, Option<crate::looks::PersonApp>);
+    static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+    let told = crate::looks::told();
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, then, when, version)) = kept.as_ref()
+        && at == home
+        && *then == told
+        && when.elapsed() < PERSON_EVERY
+    {
+        return version.clone();
+    }
+    let version = crate::looks::person_app(home, super::flows::DESKTOP_APP);
+    *kept = Some((home.to_owned(), told, Instant::now(), version.clone()));
+    version
+}
+
+/// How long the person's app is taken as read.
+const PERSON_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Where `squad`'s accepted design system of `project` is (`None`: the
 /// squad's own, there or not) — not a draft's.
@@ -146,6 +178,8 @@ pub fn stamp(places: &[Place]) -> u64 {
         place.project.hash(&mut h);
         place.draft.as_ref().map(|d| (d.ticket, &d.title, d.working)).hash(&mut h);
         is_design_dir(&place.dir).hash(&mut h);
+        // The person's app updated: their pictures may have gone stale.
+        place.installed.hash(&mut h);
         for (path, meta) in files(&place.dir) {
             path.hash(&mut h);
             meta.len().hash(&mut h);
@@ -267,7 +301,18 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
     system.assets = assets(&place.dir);
     // A project's folder is in its repository, where the screens' code is.
     let repo = place.project.as_ref().and_then(|_| place.dir.parent());
-    system.flows = super::flows::read_with(&place.dir, repo, place.live.as_deref(), lang, &super::flows::installed);
+    // Held to the app the person uses — on their own screen's Mac, which is
+    // often not this one — else to the one installed here.
+    let installed = |app: &str| match &place.installed {
+        Some(person) if app == super::flows::DESKTOP_APP => Some(person.version.clone()),
+        _ => super::flows::installed(app),
+    };
+    system.flows = super::flows::read_with(&place.dir, repo, place.live.as_deref(), lang, &installed);
+    if let (Some(map), Some(person)) = (system.flows.as_mut(), &place.installed)
+        && map.installed.as_ref() == Some(&person.version)
+    {
+        map.installed_on = Some(person.machine.clone());
+    }
     system.setup = super::flows::setup(&place.dir);
     system.stamp = stamp(std::slice::from_ref(place));
     system
@@ -321,6 +366,7 @@ pub fn fingerprint(systems: &mut [DesignSystem]) {
 fn map_shown(map: Option<&FlowMap>) -> Option<FlowMap> {
     let mut map = map.cloned()?;
     map.installed = None;
+    map.installed_on = None;
     for flow in &mut map.flows {
         flow.videos.clear();
         for screen in &mut flow.screens {
@@ -463,7 +509,7 @@ mod tests {
         std::fs::write(root.join("elsewhere.json"), TOKENS_JSON).unwrap();
         symlink(root.join("elsewhere.json"), design.join(TOKENS)).unwrap();
         std::fs::write(design.join(GUIDELINES), "가".repeat(GUIDELINES_MAX)).unwrap();
-        let place = Place { project: None, draft: None, dir: design.clone(), live: None };
+        let place = Place { project: None, draft: None, dir: design.clone(), live: None, installed: None };
         let system = read(&place, Lang::En);
         assert!(system.tokens.is_empty(), "a tokens.json that is a link out of the folder isn't read");
         let text = system.guidelines.unwrap();
@@ -480,7 +526,7 @@ mod tests {
     fn the_stamp_moves_when_anything_in_the_folder_does() {
         let root = dir("stamp");
         let design = root.join("design");
-        let place = [Place { project: None, draft: None, dir: design.clone(), live: None }];
+        let place = [Place { project: None, draft: None, dir: design.clone(), live: None, installed: None }];
         let missing = stamp(&place);
         std::fs::create_dir_all(&design).unwrap();
         std::fs::write(design.join(TOKENS), TOKENS_JSON).unwrap();
@@ -516,6 +562,38 @@ mod tests {
         std::fs::write(design.join("qa/2026-11-04/report.md"), "# QA").unwrap();
         moved(&mut last, "a QA report");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_persons_pictures_are_held_to_the_app_on_the_screen_they_use_not_the_one_installed_here() {
+        use equipe_protocol::look::ScreenLook;
+        let home = dir("person-version");
+        crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let folder = crate::squad_home::path(&home, "acme").join(DIR);
+        std::fs::create_dir_all(folder.join("flows")).unwrap();
+        std::fs::write(folder.join(TOKENS), TOKENS_JSON).unwrap();
+        std::fs::write(folder.join("flows/flows.json"), r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default", "label": "Default", "kind": "default" } ] } ] } ] }"#).unwrap();
+        let shot = super::super::flows::live_dir(&home, "acme", None).join("app/home/default.light.1200.png");
+        png(&shot);
+        std::fs::write(shot.with_extension("json"), r#"{ "app": "equipe-desktop", "version": "0.103.25", "live": true }"#).unwrap();
+        let map = || catalog(&home, "acme", Lang::En).0.into_iter().find(|s| s.project.is_none()).and_then(|s| s.flows).unwrap();
+        let stamp = || super::stamp(&places(&home, "acme"));
+        // No screen ever said: the app installed on this machine, as before.
+        assert_eq!((map().installed, map().installed_on), (super::super::flows::installed(super::super::flows::DESKTOP_APP), None));
+        let before = stamp();
+        // The person's own Mac says what it runs; the old app installed here is nobody's.
+        let screen = |version: &str| ScreenLook { machine: "MacBook".into(), app: "equipe-desktop".into(), version: version.into(), lang: "en".into(), width: 1200, height: 760, zoom: 100, idle: Some(0), ..ScreenLook::default() };
+        crate::looks::report(&home, "acme", screen("0.103.25"), 100).unwrap();
+        let now = map();
+        assert_eq!((now.installed.as_deref(), now.installed_on.as_deref()), (Some("0.103.25"), Some("MacBook")), "the screen's version, not this machine's");
+        assert!(!now.flows[0].screens[0].live_stale, "shot with what the person runs");
+        assert_ne!(stamp(), before, "the map is sent again when the person's app changes");
+        // Their app updated: the pictures shot with the one before are stale.
+        crate::looks::report(&home, "acme", screen("0.103.26"), 200).unwrap();
+        let now = map();
+        assert_eq!(now.installed.as_deref(), Some("0.103.26"));
+        assert!(now.flows[0].screens[0].live_stale);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -673,8 +751,8 @@ mod tests {
         let accepted = folder("main", [20, 90, 250, 255]);
         let reshot = folder("t170", [250, 90, 20, 255]);
         let copy = folder("t171", [20, 90, 250, 255]);
-        let draft = |n: u32, dir: PathBuf| Place { project: None, draft: Some(DraftOf { ticket: n, title: format!("T{n}"), working: false }), dir, live: None };
-        let alone = [Place { project: None, draft: None, dir: accepted.clone(), live: None }];
+        let draft = |n: u32, dir: PathBuf| Place { project: None, draft: Some(DraftOf { ticket: n, title: format!("T{n}"), working: false }), dir, live: None, installed: None };
+        let alone = [Place { project: None, draft: None, dir: accepted.clone(), live: None, installed: None }];
         let (systems, _) = catalog_of(&alone, Lang::En);
         let pictures = |s: &DesignSystem| s.flows.as_ref().unwrap().flows[0].screens.iter().map(|sc| sc.states[0].pictures[0].hash.clone()).collect::<Vec<_>>();
         assert!(pictures(&systems[0]).iter().all(Option::is_none), "no draft: nothing read for it");

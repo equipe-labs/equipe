@@ -31,6 +31,7 @@ pub mod gateway;
 pub mod i18n;
 pub mod journal;
 pub mod language;
+pub mod looks;
 pub mod mcp;
 pub mod metrics;
 pub mod permissions;

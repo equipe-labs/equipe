@@ -1267,6 +1267,7 @@
   "flows.screen_note": "這個畫面",
   "flows.shot_with": "拍攝時的版本 {shot}",
   "flows.shot_with_now": "拍攝時的版本 {shot} · 現在 {now}",
+  "flows.shot_with_now_on": "拍攝時的版本 {shot} · 現在 {machine} 上是 {now}",
   "flows.stale": "已過時",
   "flows.stale_note": "截圖之後程式碼有改動",
   "flows.states_n.other": "{count} 種狀態",

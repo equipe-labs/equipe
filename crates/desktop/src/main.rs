@@ -43,6 +43,7 @@ mod pane;
 mod queue;
 mod quote;
 mod readonly;
+mod screen_look;
 mod setup;
 mod sheet;
 mod side_split;
@@ -312,6 +313,8 @@ pub struct Shell {
     pub(crate) accept_asked: std::collections::HashMap<equipe_core::protocol::TicketId, (Option<String>, String, Option<bool>)>,
     renders: u64,
     started: std::time::Instant,
+    /// When this screen tells the daemon its look (`screen_look.rs`).
+    look_teller: screen_look::Teller,
     // Dropping these ends the link's thread and the tasks that feed from it.
     link: Option<Link>,
     _pump: Option<Task<()>>,
@@ -334,6 +337,8 @@ impl Shell {
         relaunch::check_quietly(cx, std::time::Duration::ZERO);
         cx.observe_window_activation(window, |_, window, cx| {
             if window.is_window_active() {
+                // Brought forward: the person is at this screen.
+                screen_look::used();
                 relaunch::check_quietly(cx, relaunch::LOOK_AGAIN_AFTER);
             }
         })
@@ -352,7 +357,11 @@ impl Shell {
         let (clicks, mut clicked) = tokio::sync::mpsc::unbounded_channel();
         let (notices, mut noticed) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (jobs, mut finished) = tokio::sync::mpsc::unbounded_channel();
-        let remembered = Remembered::load(&equipe_home());
+        let mut remembered = Remembered::load(&equipe_home());
+        // The real view: the person's own screen's look over it (never saved).
+        if let Some(look) = readonly::look() {
+            look.lay_over(&mut remembered);
+        }
         let (fetched_tx, mut fetched) = tokio::sync::mpsc::unbounded_channel::<diffs::Fetched>();
         let endpoint = std::env::var("EQUIPE_TARGET")
             .ok()
@@ -443,6 +452,7 @@ impl Shell {
             accept_asked: std::collections::HashMap::new(),
             renders: 0,
             started: std::time::Instant::now(),
+            look_teller: Default::default(),
             link: None,
             _pump: None,
             _connecting: None,
@@ -579,6 +589,7 @@ impl Shell {
         // before the text box's own bindings take them.
         let this = cx.entity().downgrade();
         shell._subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
+            screen_look::used();
             let key = event.keystroke.key.as_str();
             let modifiers = event.keystroke.modifiers;
             // Typing into the browser panel's page: its keys are the page's.
@@ -710,6 +721,7 @@ impl Shell {
             }
         }));
         shell.load_peers(cx);
+        shell.tell_looks(window, cx);
         shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
         shell.composer.focus(window, cx);
         // One more window: the first takes what other apps share and
@@ -1626,6 +1638,58 @@ impl Shell {
 
     /// The person's second click: the daemon starts again on the new
     /// release now, members mid-turn or not; the app reconnects on its own.
+    /// What this screen shows the app in, looked at every
+    /// [`screen_look::LOOK_EVERY`] and told to the daemon a moment after it
+    /// changes, or as the person uses it. Never from the real view.
+    fn tell_looks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if readonly::on() {
+            return;
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                if this.update_in(cx, |this, window, cx| this.tell_look(window, cx)).is_err() {
+                    break;
+                }
+                cx.background_executor().timer(screen_look::LOOK_EVERY).await;
+            }
+        })
+        .detach();
+    }
+
+    fn tell_look(&mut self, window: &Window, cx: &App) {
+        let look = self.screen_look(window, cx);
+        screen_look::keep(look.clone());
+        if let Some(told) = self.look_teller.next(look, screen_look::used_at(), std::time::Instant::now())
+            && !self.link.as_ref().is_some_and(|link| link.tell_look(&told))
+        {
+            self.look_teller.forget();
+        }
+    }
+
+    /// The look this window shows now.
+    fn screen_look(&self, window: &Window, cx: &App) -> equipe_core::protocol::look::ScreenLook {
+        use equipe_core::protocol::look::{ScreenLook, Theme};
+        let size = window.bounds().size;
+        ScreenLook {
+            machine: screen_look::machine().to_owned(),
+            app: equipe_core::design::flows::DESKTOP_APP.to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            commit: option_env!("EQUIPE_COMMIT").map(str::to_owned),
+            lang: crate::i18n::lang().code().to_owned(),
+            theme: if gpui_kit::component::Theme::global(cx).mode.is_dark() { Theme::Dark } else { Theme::Light },
+            width: f32::from(size.width).round() as u32,
+            height: f32::from(size.height).round() as u32,
+            sidebar_width: self.remembered.sidebar_width.map(|w| w.round() as u32),
+            sidebar_hidden: self.board.sidebar_hidden,
+            folded: self.remembered.folded.iter().cloned().collect(),
+            team_open: self.remembered.team_open,
+            usage_folded: self.remembered.usage_folded,
+            design_talk: self.remembered.design_talk,
+            zoom: self.remembered.zoom.0,
+            idle: None,
+        }
+    }
+
     /// The window's size, kept a moment after it stops changing (a drag
     /// sends many) — not while it fills the screen.
     fn keep_window_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1809,6 +1873,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
             .on_action(cx.listener(|this, _: &PairPhone, window, cx| this.open_pairing(window, cx)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                screen_look::used();
                 // A hairline between the sidebar's areas, held.
                 if this.board.side_split_drag.is_some() {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -2159,6 +2224,14 @@ fn main() {
     // language and look, read from their own state, before any word is shown.
     if let Some(look) = readonly::begin() {
         i18n::set(look.lang);
+        // Asked by `scripts/design-shot-live.sh` before it picks a build:
+        // the version the person's own screen runs, and where.
+        if std::env::args().any(|a| a == "--person-look") {
+            if let Some(from) = &look.from {
+                println!("{}\t{}", from.version, from.machine);
+            }
+            return;
+        }
     }
     // The language picked for every screen — this app's own pick from before
     // becomes that, once — else the Mac's, before any word is shown.

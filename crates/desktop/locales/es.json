@@ -1309,6 +1309,7 @@
   "flows.screen_note": "Esta pantalla",
   "flows.shot_with": "Tomada con la versión {shot}",
   "flows.shot_with_now": "Tomada con la versión {shot} · ahora {now}",
+  "flows.shot_with_now_on": "Tomada con la versión {shot} · ahora {now} en {machine}",
   "flows.stale": "desactualizado",
   "flows.stale_note": "El código cambió después de tomar estas imágenes",
   "flows.states_n.one": "{count} estado",

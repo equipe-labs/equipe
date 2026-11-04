@@ -572,6 +572,15 @@ impl Journal {
         self.set_meta("build_debug", debug.word())
     }
 
+    /// The looks the squad's screens told, a machine each (`crate::looks`).
+    pub fn screen_looks(&self) -> crate::looks::Looks {
+        self.meta(crate::looks::KEY).and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_screen_looks(&self, looks: &crate::looks::Looks) -> Result<()> {
+        self.set_meta(crate::looks::KEY, &serde_json::to_string(looks).unwrap_or_default())
+    }
+
     /// The person turned off guesses at their next message.
     pub fn suggestions_off(&self) -> bool {
         self.meta("suggestions").as_deref() == Some("off")

@@ -1267,6 +1267,7 @@
   "flows.screen_note": "この画面",
   "flows.shot_with": "撮影したバージョン {shot}",
   "flows.shot_with_now": "撮影したバージョン {shot} · 現在 {now}",
+  "flows.shot_with_now_on": "撮影したバージョン {shot} · 現在 {machine} で {now}",
   "flows.stale": "古い",
   "flows.stale_note": "画像を撮った後にコードが変わりました",
   "flows.states_n.other": "状態 {count}",

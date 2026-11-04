@@ -1267,6 +1267,7 @@
   "flows.screen_note": "这个界面",
   "flows.shot_with": "拍摄时的版本 {shot}",
   "flows.shot_with_now": "拍摄时的版本 {shot} · 现在 {now}",
+  "flows.shot_with_now_on": "拍摄时的版本 {shot} · 现在 {machine} 上是 {now}",
   "flows.stale": "已过时",
   "flows.stale_note": "截图之后代码有改动",
   "flows.states_n.other": "{count} 种状态",

@@ -199,7 +199,7 @@ pub fn map(design: &Path) -> FlowMap {
             videos: videos(design, f.id),
         })
         .collect();
-    FlowMap { flows, problems: vec!["flows/search/results/loading.sepia.390.png: 모드는 light나 dark여야 해요".into()], unlisted: vec!["onboarding/login/eror.dark.390.png".into()], installed: live().then(|| LIVE_INSTALLED.into()) }
+    FlowMap { flows, problems: vec!["flows/search/results/loading.sepia.390.png: 모드는 light나 dark여야 해요".into()], unlisted: vec!["onboarding/login/eror.dark.390.png".into()], installed: live().then(|| LIVE_INSTALLED.into()), installed_on: None }
 }
 
 fn video_path(design: &Path, flow: &str) -> PathBuf {
