@@ -445,6 +445,9 @@ impl Store {
 /// no copy is made) or else copied — 0600, and dated now so the daemon's
 /// week-old sweep doesn't take it at once.
 fn put_local(home: &Path, payload: &Payload, kind: Kind) -> Result<String, String> {
+    if crate::readonly::blocked("the daemon's uploads") {
+        return Err(t!("readonly.kept_back").to_owned());
+    }
     use std::io::Write as _;
     let (mut file, path) = equipe_core::gateway::create_upload(home, payload.name(), kind.upload())?;
     match payload {
@@ -913,6 +916,10 @@ pub fn inbox_waiting() -> bool {
 /// What arrived in the inbox, taken out of it (a console on this machine may
 /// take them too; whoever renames first has it).
 pub fn take_inbox() -> Vec<Source> {
+    // The real view leaves them for the person's own app.
+    if crate::readonly::on() {
+        return Vec::new();
+    }
     let Ok(entries) = std::fs::read_dir(inbox()) else {
         return Vec::new();
     };

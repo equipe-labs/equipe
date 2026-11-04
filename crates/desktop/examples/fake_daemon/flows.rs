@@ -123,6 +123,15 @@ const FLOWS: &[F] = &[
     },
 ];
 
+/// `FAKE_LIVE=1`: the map has the person's real data beside its examples.
+fn live() -> bool {
+    std::env::var("FAKE_LIVE").is_ok_and(|v| v == "1")
+}
+
+/// The version the real data was shot with, and the one installed now.
+const LIVE_SHOT_WITH: &str = "0.103.22";
+const LIVE_INSTALLED: &str = "0.103.23";
+
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -168,18 +177,29 @@ pub fn map(design: &Path) -> FlowMap {
                             note: note.map(Into::into),
                             pictures: shots(*drawn)
                                 .into_iter()
-                                .map(|(mode, width)| Picture { path: picture_path(design, f.id, s.id, id, mode, width).to_string_lossy().into_owned(), mode: mode.into(), width, taken: if s.stale { taken - 12 * 86_400 } else { taken }, hash: None })
+                                .map(|(mode, width)| Picture { path: picture_path(design, f.id, s.id, id, mode, width).to_string_lossy().into_owned(), mode: mode.into(), width, taken: if s.stale { taken - 12 * 86_400 } else { taken }, ..Default::default() })
+                                // `FAKE_LIVE=1`: the person's real data too, of each default state, shot with the version before.
+                                .chain((live() && *kind == "default" && *drawn == Drawn::Both).then(|| Picture {
+                                    path: picture_path(design, f.id, s.id, id, "dark", 1280).to_string_lossy().into_owned(),
+                                    mode: "dark".into(),
+                                    width: 1280,
+                                    taken,
+                                    live: true,
+                                    shot_with: Some(LIVE_SHOT_WITH.into()),
+                                    ..Default::default()
+                                }))
                                 .collect(),
                         })
                         .collect(),
                     missing: s.missing.iter().map(|m| (*m).to_owned()).collect(),
                     stale: s.stale,
+                    live_stale: live(),
                 })
                 .collect(),
             videos: videos(design, f.id),
         })
         .collect();
-    FlowMap { flows, problems: vec!["flows/search/results/loading.sepia.390.png: 모드는 light나 dark여야 해요".into()], unlisted: vec!["onboarding/login/eror.dark.390.png".into()] }
+    FlowMap { flows, problems: vec!["flows/search/results/loading.sepia.390.png: 모드는 light나 dark여야 해요".into()], unlisted: vec!["onboarding/login/eror.dark.390.png".into()], installed: live().then(|| LIVE_INSTALLED.into()) }
 }
 
 fn video_path(design: &Path, flow: &str) -> PathBuf {

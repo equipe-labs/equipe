@@ -71,6 +71,11 @@ fn quality(endpoint: &Endpoint) -> u8 {
 }
 
 async fn run(endpoint: Endpoint, mut from_panel: UnboundedReceiver<StreamIn>, updates: UnboundedSender<Update>) {
+    // The real view never opens it: what it carries back is the person's input to a page.
+    if crate::readonly::blocked("the browser's stream") {
+        while from_panel.recv().await.is_some() {}
+        return;
+    }
     let mut wait = Duration::from_millis(300);
     // What the panel watches, asked for again on every new line.
     let mut watching: Option<StreamIn> = None;

@@ -20,6 +20,7 @@
   "design.restore_body": "Bring the `{dir}/` folder back to how it was at version `{version}` ({subject}). History stays as it is: this is a new change, handed in for review.\n\n- [ ] In your worktree: `git restore --source={commit} --staged --worktree -- {dir}` — files added since go too\n- [ ] If there is a UI map, check its pictures still match the code, and shoot them again where they don't\n- [ ] Say what came back (tokens · logo · UI map · guidelines) and hand it in for review",
   "design.restore_title": "Restore the design to version {version} · {subject}",
   "error.design_version": "Couldn't find that design version ({version}). Open the version history again.",
+  "flows.problem_live_in_repo": "{path} is inside a repository, so its real-data pictures weren't read — real data is only kept outside repositories",
   "flows.problem_not_json": "flows.json isn't valid JSON (line {line}, column {column})",
   "flows.problem_not_map": "flows.json should be an object with a list of flows",
   "flows.problem_entry": "{at} isn't written the way flows.json expects, so it's left out",

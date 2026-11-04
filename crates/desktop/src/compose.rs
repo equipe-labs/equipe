@@ -208,6 +208,9 @@ impl Drafts {
 /// Write `text` at `path`, readable by its owner only, replacing what was there whole.
 pub fn write_private(path: &Path, text: &str) {
     use std::os::unix::fs::OpenOptionsExt as _;
+    if crate::readonly::blocked(&path.display().to_string()) {
+        return;
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

@@ -18,10 +18,19 @@
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
 //! `metrics[:<dash|error|empty|connect|key|done>]` (지표, on a sample) · `mtype:<n>,<text>` (in its form's box n) ·
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines|taste>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dwork` (the work under way on it, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
-//! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` (말하기 on the open state) · `dsay:<token>` / `dsay:asset:<n>` (말하기 on a colour or type style by name, or asset n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
+//! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fdata:<real|example>` (실제 데이터 or 예시 데이터) · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` (말하기 on the open state) · `dsay:<token>` / `dsay:asset:<n>` (말하기 on a colour or type style by name, or asset n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
 //! `dcompare[:off]` (비교하며 검토, begun or ended) · `dside:<now|after>` · `dstep[:prev]` (the next or previous changed screen) · `daccept` · `dredo[:<words>]` (다시 부탁's box, with words) · `dredosend` · `dversions` (버전 기록, opened or closed) · `drestore:<n>` (row n asked back: its confirmation) · `dtaste:<add|edit:<n>|type:<words>|save|cancel|remove:<n>|confirm:<n>|evidence:<n>>` (a taste note: write a new one, rewrite note n, type in its box, keep it, put the box away, remove note n, say 맞아요 to note n, open or close its evidence) ·
 //! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
+//!
+//! `shot:` names its file with `{mode}` and `{width}` put in as the window is
+//! drawn (`default.{mode}.{width}.png`); `lang:<code>` switches the words.
+//!
+//! `EQUIPE_SNAPSHOT_READONLY=1` is the real view (`readonly.rs`): the person's
+//! own daemon, read-only, in their language and look (its steps come before
+//! the script's), the window never shown; each `shot` gets a note beside it
+//! (`.json`: the app, its version, `EQUIPE_SHOT_COMMIT`, the squad, the
+//! language, the mode and the size). `scripts/design-shot-live.sh` runs it.
 //!
 //! `EQUIPE_SNAPSHOT_SCALE=2` draws the window — and so every `shot` — at that scale, whatever
 //! screen is attached (default: the screen's own): the PNG is exactly twice the pixels of a 1×
@@ -33,20 +42,71 @@ use gpui_kit::*;
 
 use crate::Shell;
 
+/// The note a real-view picture is kept with (`equipe_core::design::flows`'s
+/// `ShotNote`, and what it was drawn in): the app and the build that shot
+/// it — the commit as the runner says (`EQUIPE_SHOT_COMMIT`) — and the squad,
+/// language, mode and size.
+fn shot_note(squad: &str, mode: &str, width: u32, height: u32) -> String {
+    let commit = std::env::var("EQUIPE_SHOT_COMMIT").ok().filter(|c| !c.trim().is_empty());
+    let scale = std::env::var("EQUIPE_SNAPSHOT_SCALE").ok().and_then(|s| s.parse::<f32>().ok());
+    let note = serde_json::json!({
+        "app": equipe_core::design::flows::DESKTOP_APP,
+        "version": env!("CARGO_PKG_VERSION"),
+        "commit": commit,
+        "live": true,
+        "squad": squad,
+        "lang": crate::i18n::lang().code(),
+        "mode": mode,
+        "width": width,
+        "height": height,
+        "scale": scale,
+    });
+    serde_json::to_string_pretty(&note).unwrap_or_default()
+}
+
 pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
     let script = match (std::env::var("EQUIPE_SCRIPT"), std::env::var("EQUIPE_SNAPSHOT")) {
         (Ok(script), _) => script,
         (_, Ok(path)) => format!("wait:{};shot:{path};quit", std::env::var("EQUIPE_SNAPSHOT_MS").unwrap_or_else(|_| "3000".into())),
         _ => return,
     };
+    // The real view (`readonly.rs`): the window brought to the person's look
+    // first; the script's own steps after it may say otherwise.
+    let script = match crate::readonly::look() {
+        Some(look) => format!("{};{script}", look.steps()),
+        None => script,
+    };
     let started = std::time::Instant::now();
+    // The real view's window is never shown, so the screen asks it for no
+    // frames: it draws them itself, as a shown one would be asked to, a
+    // frame's time apart while it waits and after each step.
+    let hidden = crate::readonly::on();
+    let frame = move |cx: &mut AsyncApp| {
+        if hidden {
+            let _ = cx.update_window(handle, |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        }
+    };
     cx.spawn(async move |cx| {
         for step in script.split(';').map(str::trim).filter(|s| !s.is_empty()) {
             let (verb, arg) = step.split_once(':').unwrap_or((step, ""));
             let arg = arg.to_owned();
             if verb == "wait" {
-                cx.background_executor().timer(Duration::from_millis(arg.parse().unwrap_or(500))).await;
+                let until = std::time::Instant::now() + Duration::from_millis(arg.parse().unwrap_or(500));
+                while hidden && std::time::Instant::now() < until {
+                    cx.background_executor().timer(Duration::from_millis(16)).await;
+                    frame(cx);
+                }
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                cx.background_executor().timer(left).await;
                 continue;
+            }
+            // What the steps before it changed, drawn before the picture is taken.
+            if verb == "shot" || verb == "shotlast" {
+                frame(cx);
+                frame(cx);
             }
             if verb == "quit" {
                 cx.update(|cx| cx.quit());
@@ -124,15 +184,39 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     Some(json) => eprintln!("a11y {arg}: {:?}", std::fs::write(&arg, json)),
                     None => eprintln!("a11y: no tree yet (a11yon, then a frame)"),
                 },
-                "shot" => match window.render_to_image() {
-                    Ok(image) => eprintln!("shot {arg}: {:?}", image.save(&arg)),
-                    Err(err) => eprintln!("shot failed: {err}"),
-                },
+                // `{mode}` and `{width}` in the path: as the window is drawn now.
+                "shot" => {
+                    let dark = gpui_kit::component::Theme::global(cx).mode.is_dark();
+                    let size = window.bounds().size;
+                    let (width, height) = (f32::from(size.width).round() as u32, f32::from(size.height).round() as u32);
+                    let mode = if dark { "dark" } else { "light" };
+                    let path = arg.replace("{mode}", mode).replace("{width}", &width.to_string());
+                    match window.render_to_image() {
+                        Ok(image) => {
+                            eprintln!("shot {path}: {:?}", image.save(&path));
+                            // The real view's note beside it: what shot it, and in what.
+                            if crate::readonly::on() {
+                                let note = shot_note(&shell.read(cx).model.squad, mode, width, height);
+                                let at = std::path::Path::new(&path).with_extension("json");
+                                eprintln!("note {}: {:?}", at.display(), std::fs::write(&at, note));
+                            }
+                        }
+                        Err(err) => eprintln!("shot failed: {err}"),
+                    }
+                }
                 // The window opened last (⌘-click), as it looks.
                 "shotlast" => match cx.windows().last().map(|w| w.update(cx, |_, window, _| window.render_to_image())) {
                     Some(Ok(Ok(image))) => eprintln!("shot {arg}: {:?}", image.save(&arg)),
                     _ => eprintln!("shot failed"),
                 },
+                // The window's words in a language (`lang:en`), as settings switch them.
+                "lang" => {
+                    if let Some(lang) = equipe_core::i18n::Lang::parse(&arg) {
+                        crate::i18n::set(lang);
+                        crate::set_menus(cx);
+                        shell.update(cx, |_, cx| cx.notify());
+                    }
+                }
                 "say" | "type" | "memo" => shell.update(cx, |shell, cx| {
                     shell.composer.set_text(&arg, window, cx);
                     shell.on_composer_event(&gpui_kit::component::input::InputEvent::Change, window, cx);
@@ -406,6 +490,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "fscreen" => shell.update(cx, |shell, cx| shell.flows_toggle_screen(&arg, cx)),
                 "fstate" => shell.update(cx, |shell, cx| shell.flows_chip(&arg, cx)),
                 "fmode" => shell.update(cx, |shell, cx| shell.flows_mode(&arg, cx)),
+                "fdata" => shell.update(cx, |shell, cx| shell.flows_data(if arg == "example" { crate::flows::Data::Example } else { crate::flows::Data::Real }, cx)),
                 "fwidth" => shell.update(cx, |shell, cx| shell.flows_width(arg.parse().unwrap_or(390), cx)),
                 "fzoom" => shell.update(cx, |shell, cx| shell.flows_zoom(true, cx)),
                 "fvideos" => shell.update(cx, |shell, cx| {

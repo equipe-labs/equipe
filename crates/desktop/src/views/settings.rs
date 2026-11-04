@@ -1340,7 +1340,9 @@ impl Shell {
     /// What equipe says in the conversations follows.
     pub fn set_language(&mut self, choice: Option<Lang>, cx: &mut Context<Self>) {
         let home = equipe_providers::credentials::equipe_home();
-        if let Err(why) = equipe_core::i18n::save(&home, choice) {
+        if !crate::readonly::blocked("the language picked")
+            && let Err(why) = equipe_core::i18n::save(&home, choice)
+        {
             eprintln!("equipe: the language wasn't kept: {why}");
         }
         self.board.language = choice;

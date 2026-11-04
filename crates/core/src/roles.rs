@@ -200,7 +200,12 @@ meets by using it included; a state's `kind` is `default`, `empty`, `loading`, `
 screenshot harness — a snapshot build, a test harness, the simulator's screenshot tool — named as a `command` on the \
 state, its screen or its flow, run at the repository's root, writing the PNG at `{out}` in `{mode}` at `{width}`; a \
 GPUI or other desktop app with an offscreen snapshot mode is shot through that, never by screenshotting the real \
-screen. Draw a state as a mockup, rendered to the same path, only when nothing can reach it. Each flow keeps a `walk` beside its \
+screen. An app that can render the person's own state read-only — equipe's desktop app does, \
+`scripts/design-shot-live.sh <out.png> '<steps>'` — you shoot in that live mode too: their real squad, in their \
+language and look, into `~/.equipe/squads/<squad>/ui-map/<project>/<flow>/<screen>/`, the same names as `flows/`, \
+outside every repository and never committed or copied out of it; keep example data in `design/flows/` for sharing \
+and for the states their squad isn't in right now (empty, error, first run), and shoot the live ones again whenever \
+the installed version changes. Draw a state as a mockup, rendered to the same path, only when nothing can reach it. Each flow keeps a `walk` beside its \
 screens — its steps through the running app (`go`, `click`, `fill`, `press`, `wait`, `say` a caption; `screen` where \
 one appears) — and `equipe design flows record --flow <id>` plays it into \
 `flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`); an app that records itself \
@@ -1201,6 +1206,14 @@ mod tests {
             "as a `command` on the state, its screen or its flow",
             "writing the PNG at `{out}` in `{mode}` at `{width}`",
             "offscreen snapshot mode is shot through that, never by screenshotting the real screen",
+            // The person's real data, read-only, in their look — outside the repository; examples kept for the rest.
+            "An app that can render the person's own state read-only",
+            "`scripts/design-shot-live.sh <out.png> '<steps>'`",
+            "their real squad, in their language and look",
+            "`~/.equipe/squads/<squad>/ui-map/<project>/<flow>/<screen>/`",
+            "outside every repository and never committed",
+            "the states their squad isn't in right now (empty, error, first run)",
+            "again whenever the installed version changes",
             "only when nothing can reach it",
             "gives its flow a `record_command` instead",
             "a stale picture is a defect",
