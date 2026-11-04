@@ -194,6 +194,9 @@ pub struct Remembered {
     pub progress_seen: Option<u64>,
     /// The team shown row by row in the sidebar, not as one row of faces.
     pub team_open: bool,
+    /// The plans' meters folded to their heading (the tightest window alone);
+    /// they start open.
+    pub usage_folded: bool,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
@@ -443,6 +446,8 @@ impl Remembered {
                 out.progress_seen = rest.trim().parse::<u64>().ok().filter(|at| *at > 0);
             } else if line == "team-open" {
                 out.team_open = true;
+            } else if line == "usage-folded" {
+                out.usage_folded = true;
             } else if let Some(rest) = line.strip_prefix("side-team ") {
                 out.side_team = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
@@ -566,6 +571,9 @@ impl Remembered {
         }
         if self.team_open {
             text.push_str("team-open\n");
+        }
+        if self.usage_folded {
+            text.push_str("usage-folded\n");
         }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
@@ -794,6 +802,7 @@ mod tests {
         remembered.side_team = Some(240.4);
         remembered.progress_seen = Some(1_793_700_000);
         remembered.team_open = true;
+        remembered.usage_folded = true;
         remembered.set_host_name("me@100.106.17.55", "  사무실 맥미니 ");
         remembered.set_host_name("vision", "vision");
         remembered.set_host_name("vision", "");
@@ -811,6 +820,8 @@ mod tests {
         assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
         assert_eq!(loaded.progress_seen, Some(1_793_700_000), "진행 상황's last look, for \"since you last looked\"");
         assert!(loaded.team_open, "the team as the person left it");
+        assert!(loaded.usage_folded, "the plans' meters folded, as left");
+        assert!(!Remembered::default().usage_folded, "they start open");
         assert_eq!(loaded.host_name("me@100.106.17.55"), Some("사무실 맥미니"), "a machine's name, trimmed");
         assert_eq!(loaded.host_name("vision"), None, "an empty name takes it away");
         assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
