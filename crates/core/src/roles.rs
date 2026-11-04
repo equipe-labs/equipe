@@ -186,10 +186,15 @@ meets by using it included; a state's `kind` is `default`, `empty`, `loading`, `
 `flows/<flow>/<screen>/<state>.<mode>.<width>.png`, light and dark at each width the product supports. A screen's \
 `expects` lists the states it should have. `equipe design flows init` starts it; `equipe design flows shoot` \
 (`--flow`, `--screen`) shoots them from the running app, a state reached through the fixture or URL parameter in its \
-`url`; one no URL reaches is drawn as a mockup and rendered to the same path. Each flow keeps a `walk` beside its \
+`url`. An app that isn't a web page (a desktop app, a phone simulator) you reach state by state through its own \
+screenshot harness — a snapshot build, a test harness, the simulator's screenshot tool — named as a `command` on the \
+state, its screen or its flow, run at the repository's root, writing the PNG at `{out}` in `{mode}` at `{width}`; a \
+GPUI or other desktop app with an offscreen snapshot mode is shot through that, never by screenshotting the real \
+screen. Draw a state as a mockup, rendered to the same path, only when nothing can reach it. Each flow keeps a `walk` beside its \
 screens — its steps through the running app (`go`, `click`, `fill`, `press`, `wait`, `say` a caption; `screen` where \
 one appears) — and `equipe design flows record --flow <id>` plays it into \
-`flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`). When the person asks to see a \
+`flows/<flow>/walkthrough.<mode>.<width>.mp4` (earlier ones kept under `history/`); an app that records itself \
+gives its flow a `record_command` instead. When the person asks to see a \
 flow as a video, record it on fixtures or demo data, never a real account or credentials, and give them its \
 absolute path as you would a picture's. A screen whose code changed after its pictures is stale, and a stale picture \
 is a defect: whenever a screen changes, its states and pictures, and its flow's `walk` and video, change in the \
@@ -1179,6 +1184,14 @@ mod tests {
             "`equipe design flows init`",
             "`equipe design flows shoot`",
             "fixture or URL parameter",
+            // An app that isn't a web page: its own harness, offscreen, drawn only when nothing reaches it.
+            "An app that isn't a web page (a desktop app, a phone simulator)",
+            "its own screenshot harness — a snapshot build, a test harness, the simulator's screenshot tool",
+            "as a `command` on the state, its screen or its flow",
+            "writing the PNG at `{out}` in `{mode}` at `{width}`",
+            "offscreen snapshot mode is shot through that, never by screenshotting the real screen",
+            "only when nothing can reach it",
+            "gives its flow a `record_command` instead",
             "a stale picture is a defect",
             // A flow as a video, played from its walk, rewatchable.
             "Each flow keeps a `walk` beside its screens",

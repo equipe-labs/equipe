@@ -29,6 +29,7 @@
   "flows.problem_source_outside": "{at}: {path} is outside the repository, so its changes aren't followed",
   "flows.problem_step": "{at}: a step takes one action: go, click, fill, press, wait or say",
   "flows.problem_step_screen": "{at}: {screen} isn't a screen of this flow",
+  "flows.record_none": "{flow} has nothing to record it by: give it a walk in flows.json (the steps through a web page), or a record_command for an app that records itself",
   "flows.walk_no_map": "There's no map to walk: {path} isn't there",
   "flows.walk_no_flow": "flows.json has no flow {flow}",
   "flows.walk_empty": "{flow} has no walk in flows.json: the steps to go through it",
