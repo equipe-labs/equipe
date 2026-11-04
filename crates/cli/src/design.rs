@@ -775,6 +775,8 @@ struct Take {
     path: PathBuf,
     width: u32,
     scheme: &'static str,
+    #[serde(flatten)]
+    capture: flows::Capture,
 }
 
 /// A picture a state's command takes.
@@ -810,7 +812,7 @@ fn plan(all: &[flows::Shot], flow: Option<&str>, screen: Option<&str>, widths: &
         let pictures = widths.iter().flat_map(|&width| modes(light).iter().map(move |&scheme| (width, scheme))).map(|(width, scheme)| (width, scheme, shot.dir.join(flows::picture_name(&shot.state, scheme, width))));
         match (&shot.command, &shot.url) {
             (Some(command), _) => plan.runs.extend(pictures.map(|(width, mode, path)| Run { shot: shot.clone(), command: command.clone(), path, width, mode })),
-            (None, Some(url)) => plan.takes.extend(pictures.map(|(width, scheme, path)| Take { url: url.clone(), path, width, scheme })),
+            (None, Some(url)) => plan.takes.extend(pictures.map(|(width, scheme, path)| Take { url: url.clone(), path, width, scheme, capture: shot.capture.clone() })),
             (None, None) => plan.draw.push((at(&shot.flow, Some(&shot.screen), Some(&shot.state)), pictures.map(|(_, _, path)| path).collect())),
         }
     }
@@ -1337,7 +1339,7 @@ mod tests {
     fn each_state_is_shot_at_each_width_light_and_dark_into_its_screens_folder() {
         let dir = design(&[]);
         let login = dir.join("flows/onboarding/login");
-        let shot = |screen: &str, state: &str, url: Option<&str>| flows::Shot { flow: "onboarding".into(), screen: screen.into(), state: state.into(), url: url.map(Into::into), command: None, dir: dir.join("flows/onboarding").join(screen) };
+        let shot = |screen: &str, state: &str, url: Option<&str>| flows::Shot { flow: "onboarding".into(), screen: screen.into(), state: state.into(), url: url.map(Into::into), command: None, dir: dir.join("flows/onboarding").join(screen), capture: flows::Capture::default() };
         let all = [shot("login", "default", Some("http://localhost:3000/login")), shot("login", "error", Some("http://localhost:3000/login?fixture=wrong-password")), shot("welcome", "first", None)];
 
         let plan = plan(&all, None, None, &[390, 1280], false).unwrap();
@@ -1351,6 +1353,12 @@ mod tests {
         let wire = serde_json::to_value(&plan.takes[0]).unwrap();
         assert_eq!(wire["scheme"], "light");
         assert_eq!(wire["width"], 390);
+        assert!(wire.get("locale").is_none() && wire.get("actions").is_none(), "unset, left to render.mjs: {wire}");
+        let mut asked = all[0].clone();
+        asked.capture = flows::Capture { browse: flows::Browse { locale: Some("ko-KR".into()), ..Default::default() }, js: Some(false), full_page: Some(false), selector: Some("#faq".into()), actions: vec![serde_json::json!({ "click": "summary" })], ..Default::default() };
+        let wire = serde_json::to_value(&super::plan(&[asked], None, None, &[390], true).unwrap().takes[0]).unwrap();
+        assert_eq!((&wire["locale"], &wire["js"], &wire["fullPage"], &wire["selector"]), (&serde_json::json!("ko-KR"), &serde_json::json!(false), &serde_json::json!(false), &serde_json::json!("#faq")));
+        assert_eq!(wire["actions"], serde_json::json!([{ "click": "summary" }]));
 
         // A state with no URL is drawn instead, to the paths it would have.
         let welcome = dir.join("flows/onboarding/welcome");
@@ -1584,7 +1592,7 @@ mod tests {
     fn a_states_command_is_run_for_each_picture_and_wins_over_its_url() {
         let dir = design(&[]);
         let login = dir.join("flows/onboarding/login");
-        let shot = |state: &str, url: Option<&str>, command: Option<&str>| flows::Shot { flow: "onboarding".into(), screen: "login".into(), state: state.into(), url: url.map(Into::into), command: command.map(Into::into), dir: login.clone() };
+        let shot = |state: &str, url: Option<&str>, command: Option<&str>| flows::Shot { flow: "onboarding".into(), screen: "login".into(), state: state.into(), url: url.map(Into::into), command: command.map(Into::into), dir: login.clone(), capture: flows::Capture::default() };
         let all = [shot("default", Some("http://localhost:3000/login"), Some("scripts/shot.sh {mode} {width} {out}")), shot("error", Some("http://localhost:3000/login?e=1"), None), shot("long", None, Some("scripts/long.sh {out}"))];
         let plan = plan(&all, None, None, &[1280], false).unwrap();
         let runs: Vec<(&str, &str, PathBuf, u32, &str)> = plan.runs.iter().map(|r| (r.shot.state.as_str(), r.command.as_str(), r.path.clone(), r.width, r.mode)).collect();
@@ -1613,7 +1621,7 @@ mod tests {
 
     fn run_of(design: &Path, command: &str, mode: &'static str) -> Run {
         let dir = design.join("flows/onboarding/login");
-        let shot = flows::Shot { flow: "onboarding".into(), screen: "login".into(), state: "default".into(), url: None, command: Some(command.into()), dir: dir.clone() };
+        let shot = flows::Shot { flow: "onboarding".into(), screen: "login".into(), state: "default".into(), url: None, command: Some(command.into()), dir: dir.clone(), capture: flows::Capture::default() };
         Run { shot, command: command.into(), path: dir.join(flows::picture_name("default", mode, 1280)), width: 1280, mode }
     }
 

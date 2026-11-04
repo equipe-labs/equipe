@@ -29,6 +29,7 @@
   "flows.problem_reserved": "{at}: history는 흐름의 지난 녹화를 두는 폴더예요. 화면 id를 바꿔 주세요",
   "flows.problem_source_outside": "{at}: {path}은(는) 저장소 밖이라 바뀌어도 따라가지 않아요",
   "flows.problem_step": "{at}: 단계마다 동작은 하나예요. go, click, fill, press, wait, say 중 하나",
+  "flows.problem_action": "{at}: 동작은 click·fill·press·wait·go 중 하나인 단계예요(say·screen은 안 돼요)",
   "flows.problem_step_screen": "{at}: {screen}은(는) 이 흐름의 화면이 아니에요",
   "flows.record_none": "{flow}을(를) 녹화할 방법이 없어요. 웹 페이지라면 flows.json에 walk 단계를, 스스로 녹화하는 앱이라면 record_command를 적어 주세요",
   "flows.walk_no_map": "따라갈 지도가 없어요. {path}이(가) 없어요",

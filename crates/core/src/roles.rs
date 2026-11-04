@@ -953,6 +953,12 @@ mod tests {
             "each applied to the product's real screens",
             "`equipe design specimen --tokens <file> --png` when no screen exists yet",
             "never as swatches alone",
+            // How a state is shot (T-382) and a flow recorded (T-399): one browser, en-US unless said.
+            "in an en-US browser unless the state (or its screen, or its flow) says otherwise",
+            "`blockFonts: true`",
+            "`actions` (the walk's `click`, `fill`, `press`, `wait` steps, run before the shot)",
+            "the page is scrolled through first",
+            "A flow's `locale`, `reducedMotion` and `permissions` are also the browser its walk is recorded in",
         ] {
             assert!(text.contains(part), "{part}: {text}");
         }

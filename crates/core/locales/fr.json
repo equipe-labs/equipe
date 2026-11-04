@@ -29,6 +29,7 @@
   "flows.problem_reserved": "{at} : history contient les anciens enregistrements du parcours ; donnez un autre identifiant à l'écran",
   "flows.problem_source_outside": "{at} : {path} est hors du dépôt, ses changements ne sont pas suivis",
   "flows.problem_step": "{at} : une étape a une seule action : go, click, fill, press, wait ou say",
+  "flows.problem_action": "{at} : une action est une seule étape click, fill, press, wait ou go, sans say ni screen",
   "flows.problem_step_screen": "{at} : {screen} n'est pas un écran de ce parcours",
   "flows.record_none": "{flow} n'a rien pour l'enregistrer : donnez-lui un walk dans flows.json (les étapes à travers une page web), ou un record_command pour une app qui s'enregistre elle-même",
   "flows.walk_no_map": "Pas de carte à parcourir : {path} n'existe pas",
