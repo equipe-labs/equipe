@@ -81,7 +81,7 @@ pub fn buttons_end(zoom: f32) -> f32 {
 const ROW: f32 = 30.;
 const TEXT: f32 = 13.;
 /// Every row's mark sits in a box this wide, so every title starts at one x.
-const MARK_BOX: f32 = 16.;
+pub const MARK_BOX: f32 = 16.;
 /// A member's row in the team block, compact.
 pub const TEAM_ROW: f32 = 28.;
 /// The team block shows this many rows; past that it scrolls inside.
@@ -274,7 +274,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let drawn = shell.board.side_drawn.clone();
     let measured = drawn.get();
     let room = measured.iter().sum::<f32>();
-    let (usage_h, team_h) = if room > 0. { crate::side_split::fit(shell.remembered.side_usage, shell.remembered.side_team, room) } else { (shell.remembered.side_usage, shell.remembered.side_team) };
+    // Folded, the plans' meters are their heading alone, whatever height they were dragged to.
+    let side_usage = shell.remembered.side_usage.filter(|_| !shell.remembered.usage_folded);
+    let (usage_h, team_h) = if room > 0. { crate::side_split::fit(side_usage, shell.remembered.side_team, room) } else { (side_usage, shell.remembered.side_team) };
     let seen = drawn.clone();
     let body = v_flex()
         .id("side")
