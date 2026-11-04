@@ -20,6 +20,7 @@
   "design.restore_body": "`{dir}/` 폴더를 버전 `{version}`({subject})일 때로 되돌려 주세요. 기록은 고치지 않고, 새 변경으로 만들어 검토에 올립니다.\n\n- [ ] 작업 공간에서 `git restore --source={commit} --staged --worktree -- {dir}` — 그 뒤에 생긴 파일도 지워져요\n- [ ] 화면 지도가 있으면 그림이 지금 코드와 맞는지 보고, 필요하면 다시 찍기\n- [ ] 무엇이 돌아갔는지(토큰 · 로고 · 화면 지도 · 가이드라인) 적어서 검토에 올리기",
   "design.restore_title": "디자인을 {version} 버전으로 되돌리기 · {subject}",
   "error.design_version": "그 디자인 버전({version})을 찾지 못했어요. 버전 기록을 다시 열어 보세요.",
+  "flows.problem_live_in_repo": "{path}은(는) 저장소 안이라 실제 데이터 그림을 읽지 않았어요 — 실제 데이터는 저장소 밖에만 둬요",
   "flows.problem_not_json": "flows.json이 올바른 JSON이 아니에요 ({line}번째 줄, {column}번째 칸)",
   "flows.problem_not_map": "flows.json은 흐름 목록이 든 객체여야 해요",
   "flows.problem_entry": "{at}이(가) flows.json 형식에 맞지 않아 빠졌어요",

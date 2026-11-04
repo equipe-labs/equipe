@@ -1,0 +1,495 @@
+//! The real view (`--features snapshot`, `EQUIPE_SNAPSHOT_READONLY=1`): the
+//! snapshot build attached to the person's own daemon, drawing exactly what
+//! their app shows — their squad, their language, their look — for the UI
+//! map, and changing nothing.
+//!
+//! - What goes to the daemon is read-only: a command only when [`reads`]
+//!   says it reads (an allowlist; its `match` has no wildcard, so a new
+//!   command can't be sent until it is placed), a request only when its
+//!   method is one of [`READ_METHODS`]. Everything else is kept back here and
+//!   said in the app's log; what went is said too. The hello carries no
+//!   language (the daemon's stays) and no browser panel, and the browser's
+//!   own stream isn't opened.
+//! - Nothing of the person's is written on this Mac: the remembered state,
+//!   drafts, the language pick, what the design screen last saw, the inbox
+//!   `equipe send-image` fills, uploads, side commands that change things,
+//!   the daemon started, restarted or updated, notices and the Dock's badge
+//!   ([`blocked`] at each place).
+//! - [`Look`]: what the person sees it in, read (only) from their own
+//!   `~/.equipe` before the first frame.
+//!
+//! The window draws to the picture, not to the screen (`snapshot.rs`): it is
+//! never shown and nothing of the screen is captured.
+
+use std::path::Path;
+
+use equipe_core::i18n::Lang;
+use equipe_core::protocol::Command;
+use equipe_core::protocol::metrics;
+use equipe_core::protocol::rpc;
+
+use crate::target::{Appearance, Remembered};
+
+/// The variable that turns it on, in a snapshot build.
+#[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
+pub const ENV: &str = "EQUIPE_SNAPSHOT_READONLY";
+
+/// Whether this run is the real view. Never, outside a snapshot build.
+pub fn on() -> bool {
+    #[cfg(feature = "snapshot")]
+    {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var(ENV).is_ok_and(|v| v == "1"))
+    }
+    #[cfg(not(feature = "snapshot"))]
+    false
+}
+
+/// Whether `command` only reads (or follows what is there): the screen may
+/// send it in the real view. Every other one changes something — the board,
+/// a conversation, a setting, what the daemon keeps — and is kept back.
+pub fn reads(command: &Command) -> bool {
+    use Command as C;
+    match command {
+        // Answered with what is there, to this screen or every screen.
+        C::TicketHistory { .. }
+        | C::Logins
+        | C::BrowserProfiles
+        | C::Devices
+        | C::Engines
+        | C::Design { .. }
+        | C::ProjectDocs { .. }
+        | C::DesignVersions { .. }
+        | C::DiskScan
+        // A picture of a member's page now and then: following, as a screen does.
+        | C::WatchBrowser { .. } => true,
+        C::Start { .. }
+        | C::Submit { .. }
+        | C::SubmitLater { .. }
+        | C::Interrupt { .. }
+        | C::Close { .. }
+        | C::Accept { .. }
+        | C::Merge { .. }
+        | C::KeepOnBranch { .. }
+        | C::Reopen { .. }
+        | C::Resume { .. }
+        | C::Cancel { .. }
+        | C::CreateTicket { .. }
+        | C::EditTicket { .. }
+        | C::EditTickets { .. }
+        | C::MoveTicket { .. }
+        | C::CommentTicket { .. }
+        | C::SetMode { .. }
+        | C::Decide { .. }
+        | C::AnswerQuestions { .. }
+        | C::DismissQuestions { .. }
+        | C::ApproveTeamChange { .. }
+        | C::DeclineTeamChange { .. }
+        | C::ProposeAccept { .. }
+        | C::ConfirmAccept { .. }
+        | C::DeclineAccept { .. }
+        | C::Scale { .. }
+        | C::Refresh { .. }
+        // What the person looks at is kept for the squad: new work goes there.
+        | C::Focus { .. }
+        | C::NewConversation { .. }
+        | C::MoveConversation { .. }
+        | C::CloseConversation { .. }
+        | C::ReopenConversation { .. }
+        | C::AddProject { .. }
+        | C::RemoveProject { .. }
+        | C::SetHq { .. }
+        | C::SaveRoutine { .. }
+        | C::DeleteRoutine { .. }
+        | C::RunRoutine { .. }
+        | C::ApproveRoutine { .. }
+        | C::DeclineRoutine { .. }
+        | C::SetSignalOn { .. }
+        | C::SetIdleWake { .. }
+        | C::SaveLogin { .. }
+        | C::DeleteLogin { .. }
+        | C::ForgetLoginAllowance { .. }
+        | C::SaveBrowserProfile { .. }
+        | C::DeleteBrowserProfile { .. }
+        | C::SaveSecret { .. }
+        | C::DismissSecret { .. }
+        | C::SetModel { .. }
+        | C::ShowBrowser { .. }
+        | C::Desktop { .. }
+        | C::Suggestions { .. }
+        | C::Unqueue { .. }
+        | C::SendNow { .. }
+        | C::SetEffort { .. }
+        | C::BrowserNav { .. }
+        | C::BrowserNewTab { .. }
+        | C::BrowserCloseTab { .. }
+        | C::BrowserControl { .. }
+        | C::BrowserDialog { .. }
+        | C::BrowserPopOut { .. }
+        // The language equipe speaks to the person in, kept.
+        | C::Language { .. }
+        | C::Disallow { .. }
+        // A code opened at the relay.
+        | C::PairStart
+        | C::PairAnswer { .. }
+        | C::PairCancel
+        | C::Unpair { .. }
+        | C::DiskClean { .. }
+        | C::DiskRun { .. }
+        | C::SignIn { .. }
+        | C::SignInCancel { .. }
+        | C::InstallEngine { .. }
+        | C::SetNebiusKey { .. }
+        | C::SignOut { .. }
+        | C::SetEngineSwitching { .. }
+        | C::SetPmAccepts { .. }
+        | C::ApplyEngineProposal { .. }
+        | C::DismissEngineProposal { .. }
+        | C::UndoEngineProposal { .. }
+        | C::ShowEngineSetup { .. }
+        | C::MoveEngine { .. }
+        | C::RestoreDesign { .. }
+        | C::Taste { .. } => false,
+    }
+}
+
+/// The requests the real view may make: the handshake, and answers read
+/// from what is there. An upload, a telemetry answer, a metrics key or
+/// refresh, a disk cleaned, a browser window opened — and any method not
+/// named here — are kept back.
+pub const READ_METHODS: &[&str] = &[
+    rpc::SQUADS,
+    rpc::HELLO,
+    rpc::VERSION,
+    rpc::BUSY,
+    rpc::DISK,
+    rpc::READ_UPLOAD,
+    rpc::READ_IMAGE,
+    rpc::LIST_IMAGES,
+    rpc::TELEMETRY,
+    metrics::SOURCES,
+    metrics::QUERY,
+    metrics::SUMMARY,
+];
+
+pub fn reads_method(method: &str) -> bool {
+    READ_METHODS.contains(&method)
+}
+
+
+/// The command's name on the wire (`submit`), for the log.
+fn name(command: &Command) -> String {
+    serde_json::to_value(command).ok().and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_owned)).unwrap_or_default()
+}
+
+/// Whether `command` may go to the daemon now: always, but in the real
+/// view only one that reads — said either way in the log.
+pub fn lets_command(command: &Command) -> bool {
+    if !on() {
+        return true;
+    }
+    let ok = reads(command);
+    eprintln!("equipe readonly: {} command {}", if ok { "sent" } else { "kept back" }, name(command));
+    ok
+}
+
+/// The same of a request, by its method.
+pub fn lets_method(method: &str) -> bool {
+    if !on() {
+        return true;
+    }
+    let ok = reads_method(method);
+    eprintln!("equipe readonly: {} request {method}", if ok { "sent" } else { "kept back" });
+    ok
+}
+
+/// In the real view: `what` is left as it is (said in the log), and the
+/// caller does nothing. Outside it, `false`.
+pub fn blocked(what: &str) -> bool {
+    if on() {
+        eprintln!("equipe readonly: left {what} as it is");
+        true
+    } else {
+        false
+    }
+}
+
+/// What the person sees the app in: their language, light or dark, and
+/// how they left its window and sidebar — read (only) from their own
+/// `~/.equipe`, as their app reads it when it starts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Look {
+    pub lang: Lang,
+    pub appearance: Appearance,
+    /// The window, in points: as left, else as the app opens it.
+    pub window: (f32, f32),
+    pub sidebar_width: Option<f32>,
+    /// The sidebar's projects folded to their header.
+    pub folded: Vec<String>,
+    pub zoom: u16,
+}
+
+/// The window's size when the app opens and none was kept.
+pub const WINDOW: (f32, f32) = (1200., 760.);
+
+static LOOK: std::sync::OnceLock<Option<Look>> = std::sync::OnceLock::new();
+
+/// At launch: in the real view, the person's look, read once (and said in
+/// the log); `None` otherwise.
+pub fn begin() -> Option<&'static Look> {
+    LOOK.get_or_init(|| {
+        on().then(|| {
+            let look = Look::read(&equipe_providers::credentials::equipe_home(), &mac_languages());
+            eprintln!("equipe readonly: the person's look: {}", look.steps());
+            look
+        })
+    })
+    .as_ref()
+}
+
+/// The person's look, once [`begin`] read it.
+pub fn look() -> Option<&'static Look> {
+    LOOK.get().and_then(Option::as_ref)
+}
+
+impl Look {
+    /// From `home`; `mac`: the languages the Mac prefers for the app, most
+    /// preferred first — what decides when the person picked none.
+    pub fn read(home: &Path, mac: &[String]) -> Self {
+        let remembered = Remembered::load(home);
+        // The shared pick; else the app's own from before it (which the app
+        // makes the shared one as it starts); else the Mac's.
+        let lang = equipe_core::i18n::saved(home)
+            .or_else(|| remembered.lang.as_deref().and_then(Lang::parse))
+            .unwrap_or_else(|| mac.iter().find_map(|tag| Lang::parse(tag)).unwrap_or(Lang::En));
+        Self {
+            lang,
+            appearance: remembered.appearance,
+            window: remembered.window.unwrap_or(WINDOW),
+            sidebar_width: remembered.sidebar_width,
+            folded: remembered.folded.into_iter().collect(),
+            zoom: remembered.zoom.0,
+        }
+    }
+
+    /// The steps (`snapshot.rs`'s) that bring the window to it, before the
+    /// script's own — which may say otherwise. The rest of it (the sidebar,
+    /// the folds, the zoom) the app reads from the same file as it starts.
+    pub fn steps(&self) -> String {
+        let mut steps = vec![format!("lang:{}", self.lang.code()), format!("size:{}x{}", self.window.0.round(), self.window.1.round())];
+        match self.appearance {
+            Appearance::Light => steps.push("theme:light".into()),
+            Appearance::Dark => steps.push("theme:dark".into()),
+            Appearance::System => {}
+        }
+        steps.join(";")
+    }
+}
+
+/// The languages the Mac prefers for the installed app: its own pick in
+/// System Settings (`AppleLanguages` of `im.equipe.desktop`), else the Mac's.
+pub fn mac_languages() -> Vec<String> {
+    let read = |domain: &str| -> Vec<String> {
+        let out = std::process::Command::new("/usr/bin/defaults").args(["read", domain, "AppleLanguages"]).stderr(std::process::Stdio::null()).output();
+        let Ok(out) = out else { return Vec::new() };
+        if !out.status.success() {
+            return Vec::new();
+        }
+        parse_languages(&String::from_utf8_lossy(&out.stdout))
+    };
+    let own = read("im.equipe.desktop");
+    if own.is_empty() { read("-g") } else { own }
+}
+
+/// `defaults read`'s list, `("ko-KR", en)`: its words in order.
+pub fn parse_languages(text: &str) -> Vec<String> {
+    text.trim().trim_start_matches('(').trim_end_matches(')').split(',').map(|w| w.trim().trim_matches('"').to_owned()).filter(|w| !w.is_empty()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use equipe_core::protocol::design::TasteChange;
+    use equipe_core::protocol::{accept, decide, engines, routines, secrets, vault};
+    use equipe_core::protocol::{Access, BrowserNavAction, BrowserProfile, Decision, Engine, Mode, ScreenBounds, SessionSpec, TicketDraft, TicketEdit};
+
+    /// One of each command there is.
+    fn every_command() -> Vec<Command> {
+        let s = || "acme".to_owned();
+        let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: "/".into(), role: None, squad: None };
+        let routine = routines::Routine { id: 0, title: "t".into(), prompt: "p".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: None };
+        let login = vault::LoginDraft { id: None, site: "x".into(), username: "u".into(), password: None, note: None };
+        vec![
+            Command::Start { session: 1, spec },
+            Command::Submit { session: 1, text: "x".into(), about: None },
+            Command::SubmitLater { session: 1, text: "x".into(), about: None },
+            Command::Interrupt { session: 1 },
+            Command::Close { session: 1 },
+            Command::Accept { squad: s(), ticket: 1 },
+            Command::Merge { squad: s(), ticket: 1, push: false },
+            Command::KeepOnBranch { squad: s(), ticket: 1 },
+            Command::Reopen { squad: s(), ticket: 1, note: "n".into() },
+            Command::Resume { squad: s(), ticket: 1, note: "n".into() },
+            Command::Cancel { squad: s(), ticket: 1 },
+            Command::CreateTicket { squad: s(), draft: TicketDraft::default() },
+            Command::EditTicket { squad: s(), ticket: 1, changes: TicketEdit::default() },
+            Command::EditTickets { squad: s(), tickets: vec![1], changes: TicketEdit::default() },
+            Command::MoveTicket { squad: s(), ticket: 1, status: None, before: None },
+            Command::CommentTicket { squad: s(), ticket: 1, text: "x".into() },
+            Command::TicketHistory { squad: s(), ticket: 1 },
+            Command::SetMode { squad: s(), member: None, mode: Some(Mode::default()) },
+            Command::Decide { squad: s(), approval: 1, decision: Decision::Allow, words: None },
+            Command::AnswerQuestions { squad: s(), id: 1, answers: vec![decide::Answer::default()], about: None },
+            Command::DismissQuestions { squad: s(), id: 1 },
+            Command::ApproveTeamChange { squad: s(), id: 1 },
+            Command::DeclineTeamChange { squad: s(), id: 1 },
+            Command::ProposeAccept { squad: s(), session: 1, verdict: accept::Verdict::Accept, tickets: vec![1], note: String::new() },
+            Command::ConfirmAccept { squad: s(), id: 1, tickets: vec![accept::Confirmed::only(1)] },
+            Command::DeclineAccept { squad: s(), id: 1 },
+            Command::Scale { squad: s(), extra: 1 },
+            Command::Refresh { session: 1, summary: true },
+            Command::Focus { squad: s(), project: None },
+            Command::NewConversation { squad: s(), session: 1, project: None },
+            Command::MoveConversation { session: 1, project: None },
+            Command::CloseConversation { session: 1 },
+            Command::ReopenConversation { squad: s(), session: 1 },
+            Command::AddProject { squad: s(), path: "/p".into() },
+            Command::RemoveProject { squad: s(), path: "/p".into() },
+            Command::SetHq { squad: s(), path: None },
+            Command::SaveRoutine { squad: s(), routine },
+            Command::DeleteRoutine { squad: s(), id: 1 },
+            Command::RunRoutine { squad: s(), id: 1 },
+            Command::ApproveRoutine { squad: s(), id: 1 },
+            Command::DeclineRoutine { squad: s(), id: 1 },
+            Command::SetSignalOn { squad: s(), project: "p".into(), name: "n".into(), on: false },
+            Command::SetIdleWake { squad: s(), hours: 0 },
+            Command::SaveLogin { draft: login },
+            Command::DeleteLogin { id: 1 },
+            Command::ForgetLoginAllowance { id: 1, who: "acme/pm".into() },
+            Command::Logins,
+            Command::SaveBrowserProfile { profile: BrowserProfile { name: "b".into(), label: String::new() } },
+            Command::DeleteBrowserProfile { name: "b".into() },
+            Command::BrowserProfiles,
+            Command::SaveSecret { squad: s(), id: 1, values: vec![secrets::SecretValue("v".into())] },
+            Command::DismissSecret { squad: s(), id: 1 },
+            Command::WatchBrowser { squad: s(), session: None },
+            Command::SetModel { session: 1, model: "m".into() },
+            Command::ShowBrowser { squad: s(), member: None, show: true },
+            Command::Desktop { open: false },
+            Command::Suggestions { squad: s(), on: false },
+            Command::Unqueue { session: 1, text: "x".into() },
+            Command::SendNow { session: 1, texts: vec![] },
+            Command::SetEffort { session: 1, effort: None },
+            Command::BrowserNav { page: 1, action: BrowserNavAction::Reload, url: None },
+            Command::BrowserNewTab { url: None, profile: None },
+            Command::BrowserCloseTab { page: 1 },
+            Command::BrowserControl { lane: "pm".into(), take: true },
+            Command::BrowserDialog { page: 1, accept: true, text: None },
+            Command::BrowserPopOut { page: 1, bounds: Some(ScreenBounds { left: 0, top: 0, width: 1, height: 1 }) },
+            Command::Language { lang: "en".into() },
+            Command::Disallow { squad: s(), rule: "r".into() },
+            Command::PairStart,
+            Command::PairAnswer { approve: true },
+            Command::PairCancel,
+            Command::Devices,
+            Command::Unpair { device: "d".into() },
+            Command::DiskScan,
+            Command::DiskClean { ids: vec![] },
+            Command::DiskRun { id: "i".into() },
+            Command::Engines,
+            Command::SignIn { engine: Engine::Codex, device: false },
+            Command::SignInCancel { engine: Engine::Codex },
+            Command::InstallEngine { engine: Engine::Claude },
+            Command::SetNebiusKey { key: None },
+            Command::SignOut { engine: Engine::Codex },
+            Command::SetEngineSwitching { squad: s(), mode: engines::Switching::default() },
+            Command::SetPmAccepts { squad: s(), on: false },
+            Command::ApplyEngineProposal { squad: s(), id: 1 },
+            Command::DismissEngineProposal { squad: s(), id: 1 },
+            Command::UndoEngineProposal { squad: s(), id: 1 },
+            Command::ShowEngineSetup { squad: s() },
+            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude },
+            Command::Design { squad: s() },
+            Command::ProjectDocs { squad: s() },
+            Command::DesignVersions { squad: s(), project: None },
+            Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
+            Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
+        ]
+    }
+
+    /// Every variant `Command` has, by its name on the wire, read from the
+    /// enum's own source: a new one fails here until it is sampled above.
+    fn every_variant() -> Vec<String> {
+        let source = include_str!("../../protocol/src/lib.rs");
+        let body = source.split("pub enum Command {").nth(1).expect("the enum").split("\n}\n").next().expect("its end");
+        let mut out = Vec::new();
+        for line in body.lines() {
+            let Some(rest) = line.strip_prefix("    ") else { continue };
+            let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+            if name.is_empty() || !name.starts_with(|c: char| c.is_ascii_uppercase()) || !rest[name.len()..].starts_with([' ', ',', '{', '(']) {
+                continue;
+            }
+            let mut snake = String::new();
+            for (n, c) in name.chars().enumerate() {
+                if c.is_ascii_uppercase() && n > 0 {
+                    snake.push('_');
+                }
+                snake.push(c.to_ascii_lowercase());
+            }
+            out.push(snake);
+        }
+        out
+    }
+
+    #[test]
+    fn every_command_is_placed_and_only_reads_and_subscriptions_go() {
+        let commands = every_command();
+        let mut sampled: Vec<String> = commands.iter().map(name).collect();
+        let mut variants = every_variant();
+        assert!(variants.len() > 80, "the enum was read: {variants:?}");
+        sampled.sort();
+        variants.sort();
+        assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
+        let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
+        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "engines", "design", "project_docs", "design_versions"]);
+        // What a screen does as the person works is never among them.
+        for kept in ["submit", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "taste", "disk_clean"] {
+            assert!(!going.iter().any(|g| g == kept), "{kept} changes something");
+        }
+        // Outside the real view, everything goes, as ever.
+        assert!(!on() && commands.iter().all(lets_command));
+    }
+
+    #[test]
+    fn only_requests_that_read_go() {
+        for method in [rpc::HELLO, rpc::SQUADS, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::READ_UPLOAD, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
+            assert!(reads_method(method), "{method}");
+        }
+        for method in [rpc::UPLOAD, rpc::TELEMETRY_SET, rpc::DISK_CLEAN, rpc::BROWSER_WINDOW, rpc::BROWSER_STREAM, rpc::SHUTDOWN, rpc::TOOL, rpc::COMMAND, rpc::DESKTOP, metrics::CONNECT, metrics::DISCONNECT, metrics::REFRESH, "metrics.anything_new"] {
+            assert!(!reads_method(method), "{method}");
+        }
+        assert!(!blocked("nothing") && lets_method(rpc::UPLOAD), "outside the real view nothing is held back");
+    }
+
+    #[test]
+    fn the_look_is_read_from_the_persons_remembered_state_and_brings_the_window_to_it() {
+        let home = std::env::temp_dir().join(format!("equipe-look-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // Nothing kept: the app as it opens, in the Mac's first language equipe speaks.
+        let look = Look::read(&home, &["pt-BR".into(), "ko-KR".into()]);
+        assert_eq!((look.lang, look.appearance, look.window, look.sidebar_width, look.zoom), (Lang::Ko, Appearance::System, WINDOW, None, 100));
+        assert_eq!(look.steps(), "lang:ko;size:1200x760");
+        // As the person left it.
+        std::fs::write(Remembered::path(&home), "sidebar-width 312\nfold\tweb\nfold\t\nappearance dark\nwindow-size 1440x900\nzoom 110\nbrowser-width 559\n").unwrap();
+        equipe_core::i18n::save(&home, Some(Lang::En)).unwrap();
+        let before = std::fs::read(Remembered::path(&home)).unwrap();
+        let look = Look::read(&home, &["ko-KR".into()]);
+        assert_eq!(look, Look { lang: Lang::En, appearance: Appearance::Dark, window: (1440., 900.), sidebar_width: Some(312.), folded: vec![String::new(), "web".into()], zoom: 110 });
+        assert_eq!(look.steps(), "lang:en;size:1440x900;theme:dark", "a step of the script after it still says otherwise");
+        assert_eq!(std::fs::read(Remembered::path(&home)).unwrap(), before, "read, never written");
+        std::fs::remove_dir_all(home).unwrap();
+        assert_eq!(parse_languages("(\n    \"ko-KR\",\n    en\n)\n"), ["ko-KR", "en"]);
+        assert!(parse_languages("").is_empty());
+    }
+}

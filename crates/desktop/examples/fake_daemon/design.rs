@@ -46,15 +46,15 @@ fn base() -> PathBuf {
 
 /// Where each fake design system lives.
 fn places() -> Vec<Place> {
-    let mut out = vec![Place { project: None, draft: None, dir: base().join("squad/design") }];
+    let mut out = vec![Place { project: None, draft: None, dir: base().join("squad/design"), live: None }];
     match mode().as_deref() {
-        Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "브랜드 가이드라인".into(), working: false }), dir: base().join("t144/design") }),
-        Some("working") => out.push(Place { project: None, draft: Some(DraftOf { ticket: WORKING_TICKET, title: WORKING_TITLE.into(), working: true }), dir: base().join("t378/design") }),
+        Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "브랜드 가이드라인".into(), working: false }), dir: base().join("t144/design"), live: None }),
+        Some("working") => out.push(Place { project: None, draft: Some(DraftOf { ticket: WORKING_TICKET, title: WORKING_TITLE.into(), working: true }), dir: base().join("t378/design"), live: None }),
         Some("empty") | None => {}
         Some(_) => {
-            out.push(Place { project: Some("web".into()), draft: None, dir: base().join("web/design") });
+            out.push(Place { project: Some("web".into()), draft: None, dir: base().join("web/design"), live: None });
             // T-170 in review: the site's refresh, its UI map shot again where it changed.
-            out.push(Place { project: Some("web".into()), draft: Some(DraftOf { ticket: 170, title: REFRESH_TITLE.into(), working: false }), dir: base().join("t170/design") });
+            out.push(Place { project: Some("web".into()), draft: Some(DraftOf { ticket: 170, title: REFRESH_TITLE.into(), working: false }), dir: base().join("t170/design"), live: None });
         }
     }
     out

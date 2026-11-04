@@ -36,7 +36,7 @@ pub fn bundled_cli() -> Option<PathBuf> {
 pub fn wake_daemon() -> bool {
     use std::sync::atomic::{AtomicBool, Ordering};
     static TRIED: AtomicBool = AtomicBool::new(false);
-    if TRIED.swap(true, Ordering::SeqCst) {
+    if TRIED.swap(true, Ordering::SeqCst) || crate::readonly::blocked("the daemon, off") {
         return false;
     }
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return false };

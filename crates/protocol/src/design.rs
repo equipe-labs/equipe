@@ -160,6 +160,11 @@ pub struct FlowMap {
     /// state that went.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlisted: Vec<String>,
+    /// The version of the app installed now, when its pictures say which app
+    /// they were shot with and the daemon's machine has it (`0.103.23`): a
+    /// picture shot with another is stale, whatever its code did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<String>,
 }
 
 /// A flow a person goes through: 온보딩, 결제 — its screens in the order met.
@@ -235,9 +240,14 @@ pub struct Screen {
     /// aren't drawn, and its states without a picture — by kind or id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
-    /// Its code changed after its newest picture was taken.
+    /// Its code changed after its newest picture was taken, or a picture was
+    /// shot with another version than the one installed — of its example
+    /// pictures, the repository's.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
+    /// The same of its pictures of the person's real data ([`Picture::live`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live_stale: bool,
 }
 
 /// A state of a screen: 기본, 빈 상태, 로딩, 오류 — with its pictures.
@@ -276,6 +286,15 @@ pub struct Picture {
     /// the draft changed from the copies it only kept. `None`: not worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
+    /// Of the person's real data — shot read-only from their own squad, in
+    /// their language and look — kept on the daemon's machine outside any
+    /// repository and never shared; `false`: the repository's example data.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
+    /// The version of the app it was shot with (`0.103.23`), when the note
+    /// beside it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shot_with: Option<String>,
 }
 
 /// An accepted version of a design folder: a commit on its repository's
@@ -532,10 +551,22 @@ mod tests {
         assert_eq!(serde_json::from_value::<DesignVersion>(wire).unwrap(), v);
         let bare: DesignVersion = serde_json::from_str(r#"{"commit":"b","at":1,"subject":"x"}"#).unwrap();
         assert!(bare.ticket.is_none() && bare.parts.is_empty());
-        let picture = Picture { path: "/d/flows/a/b/default.light.390.png".into(), mode: "light".into(), width: 390, taken: 1, hash: None };
-        assert!(!serde_json::to_string(&picture).unwrap().contains("hash"), "an older screen reads it as before");
-        let hashed = Picture { hash: Some("9f2c".into()), ..picture };
+        let picture = Picture { path: "/d/flows/a/b/default.light.390.png".into(), mode: "light".into(), width: 390, taken: 1, ..Default::default() };
+        let wire = serde_json::to_string(&picture).unwrap();
+        assert!(!wire.contains("hash") && !wire.contains("live") && !wire.contains("shot_with"), "an older screen reads it as before: {wire}");
+        let hashed = Picture { hash: Some("9f2c".into()), ..picture.clone() };
         assert_eq!(serde_json::from_str::<Picture>(&serde_json::to_string(&hashed).unwrap()).unwrap(), hashed);
+        // The person's real data says so, and what it was shot with.
+        let live = Picture { live: true, shot_with: Some("0.103.23".into()), ..picture };
+        let wire = serde_json::to_value(&live).unwrap();
+        assert_eq!((wire["live"].clone(), wire["shot_with"].clone()), (serde_json::json!(true), serde_json::json!("0.103.23")));
+        assert_eq!(serde_json::from_value::<Picture>(wire).unwrap(), live);
+        let map = FlowMap { installed: Some("0.103.24".into()), ..Default::default() };
+        assert_eq!(serde_json::from_str::<FlowMap>(&serde_json::to_string(&map).unwrap()).unwrap(), map);
+        assert_eq!(serde_json::to_string(&FlowMap::default()).unwrap(), "{}");
+        let screen = Screen { live_stale: true, ..Default::default() };
+        assert_eq!(serde_json::to_value(&screen).unwrap()["live_stale"], true);
+        assert!(!serde_json::to_string(&Screen::default()).unwrap().contains("live_stale"));
     }
 
     #[test]

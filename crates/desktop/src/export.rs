@@ -21,6 +21,9 @@ pub fn folder(home: &Path) -> PathBuf {
 
 /// Write the conversation; the path it is at.
 pub fn save(dir: &Path, squad: &str, member: &str, entries: &[Entry]) -> std::io::Result<PathBuf> {
+    if crate::readonly::blocked("the conversation, written out") {
+        return Err(std::io::Error::other(equipe_core::t!("readonly.kept_back")));
+    }
     std::fs::create_dir_all(dir)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let path = dir.join(file_name(squad, member, stamp));

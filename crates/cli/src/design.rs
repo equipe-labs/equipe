@@ -1275,7 +1275,7 @@ mod tests {
                 for name in names {
                     let Some((state, mode, width)) = flows::parse_picture_name(&name) else { continue };
                     if let Some(s) = screen.states.iter_mut().find(|s| s.id == state) {
-                        s.pictures.push(Picture { path: folder.join(&name).to_string_lossy().into_owned(), mode, width, taken: 0, hash: None });
+                        s.pictures.push(Picture { path: folder.join(&name).to_string_lossy().into_owned(), mode, width, taken: 0, ..Default::default() });
                     }
                 }
                 if screen.id == "login" {

@@ -42,6 +42,7 @@ mod pair;
 mod pane;
 mod queue;
 mod quote;
+mod readonly;
 mod setup;
 mod sheet;
 mod side_split;
@@ -337,6 +338,9 @@ impl Shell {
             }
         })
         .detach();
+        // Its size, kept as the person leaves it: it opens at it again, and
+        // the UI map's real view is shot at it.
+        cx.observe_window_bounds(window, |this, window, cx| this.keep_window_size(window, cx)).detach();
         cx.observe_window_appearance(window, |this, window, cx| {
             let appearance = this.remembered.appearance.resolve(window.appearance());
             this.palette = Palette::new(appearance);
@@ -1622,6 +1626,27 @@ impl Shell {
 
     /// The person's second click: the daemon starts again on the new
     /// release now, members mid-turn or not; the app reconnects on its own.
+    /// The window's size, kept a moment after it stops changing (a drag
+    /// sends many) — not while it fills the screen.
+    fn keep_window_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TURN: AtomicU64 = AtomicU64::new(0);
+        let WindowBounds::Windowed(bounds) = window.window_bounds() else { return };
+        let size = (f32::from(bounds.size.width).round(), f32::from(bounds.size.height).round());
+        if self.remembered.window == Some(size) {
+            return;
+        }
+        self.remembered.window = Some(size);
+        let turn = TURN.fetch_add(1, Ordering::SeqCst) + 1;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(600)).await;
+            if TURN.load(Ordering::SeqCst) == turn {
+                let _ = this.update(cx, |this, _| this.remembered.save(&equipe_home()));
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn restart_daemon_now(&mut self, cx: &mut Context<Self>) {
         self.daemon_update = Some(DaemonUpdate::Restarting);
         self.daemon_restart_armed = false;
@@ -1631,6 +1656,10 @@ impl Shell {
     /// A script run where the daemon runs (this Mac, or over SSH), off the
     /// main thread; `then` is the banner's state once it succeeded.
     fn on_daemon_machine(&mut self, script: &'static str, then: DaemonUpdate, cx: &mut Context<Self>) {
+        // Never the person's daemon updated or restarted from the real view.
+        if readonly::blocked("the daemon, running") {
+            return;
+        }
         let endpoint = self.endpoint.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
@@ -2126,6 +2155,11 @@ fn main() {
     if let Some(code) = askpass::helper() {
         std::process::exit(code);
     }
+    // The real view (a snapshot build on the person's own daemon): their
+    // language and look, read from their own state, before any word is shown.
+    if let Some(look) = readonly::begin() {
+        i18n::set(look.lang);
+    }
     // The language picked for every screen — this app's own pick from before
     // becomes that, once — else the Mac's, before any word is shown.
     i18n::migrate(&equipe_home());
@@ -2138,6 +2172,8 @@ fn main() {
     let http = std::sync::Arc::new(reqwest_client::ReqwestClient::user_agent("equipe-desktop").unwrap_or_else(|_| reqwest_client::ReqwestClient::new()));
     // The app's icons, then GPUI Kit's own (the sidebar's, the components').
     let app = gpui_kit::application().with_http_client(http).with_assets(icons::AppAssets);
+    // The real view: no Dock icon, no menu bar — nothing of it on the screen.
+    let app = if readonly::on() { app.with_windowing(WindowingRequest::Headless) } else { app };
     // The window closed (⌘W, the red button) leaves the app in the Dock, as a
     // Mac app does: a click on its icon then opens the window again. Without
     // this the click did nothing and the app looked dead.
@@ -2163,11 +2199,17 @@ fn main() {
         views::composer::bind_keys(cx);
         #[allow(unused_variables)]
         let (handle, shell) = open_app_window(cx);
-        cx.activate(true);
+        // The real view draws to its pictures alone: it never comes forward.
+        if !readonly::on() {
+            cx.activate(true);
+        }
         #[cfg(feature = "snapshot")]
         snapshot::run(handle, shell, cx);
     });
 }
+
+/// The smallest the window goes, in points.
+const MIN_WINDOW: (f32, f32) = (760., 520.);
 
 /// A window of the app, with the conversation in it: at launch, from the
 /// Dock after it was closed, and for a place opened elsewhere
@@ -2176,14 +2218,22 @@ fn main() {
 pub fn open_app_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
     {
         let others = cx.windows().len() as f32;
-        let mut bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+        // As large as the person left it; the real view, as their app is.
+        let (width, height) = match readonly::look() {
+            Some(look) => look.window,
+            None => Remembered::load(&equipe_home()).window.unwrap_or(readonly::WINDOW),
+        };
+        let mut bounds = Bounds::centered(None, size(px(width.max(MIN_WINDOW.0)), px(height.max(MIN_WINDOW.1))), cx);
         if others > 0. {
             bounds.origin.x += px(28. * others);
             bounds.origin.y += px(28. * others);
         }
+        let hidden = readonly::on();
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(760.), px(520.))),
+            window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
+            show: !hidden,
+            focus: !hidden,
             titlebar: Some(TitlebarOptions {
                 title: Some("equipe".into()),
                 appears_transparent: true,

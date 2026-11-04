@@ -9,7 +9,9 @@
 # `board;pick:2`, `design;dtab:map`. The app draws its own window to the PNG
 # (`--features snapshot`): nothing is captured from the screen, and no
 # permission is asked. It talks to examples/fake_daemon on a home of its own,
-# so no real squad is touched.
+# so no real squad is touched: the example data the repository's map keeps.
+# The person's own screens, read-only from their real squad, are
+# scripts/design-shot-live.sh's — kept outside the repository.
 #
 # Build first:
 #   cargo build -p equipe-desktop --features snapshot --bins --example fake_daemon

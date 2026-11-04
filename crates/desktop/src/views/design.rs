@@ -1715,6 +1715,8 @@ impl Shell {
         }
         let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
         let key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
+        // The person's real data shows first only from this Mac's daemon.
+        self.design.local = !self.endpoint.is_remote();
         self.design.arrived(systems, folder, taste, &key);
         self.design_versions_follow();
         true
@@ -1832,7 +1834,7 @@ impl Shell {
             self.design.end_compare();
             let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
             let seen_key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
-            let systems = std::mem::take(&mut self.design.systems);
+            let systems = std::mem::take(&mut self.design.raw);
             let folder = self.design.folder.clone();
             let taste = std::mem::take(&mut self.design.taste);
             self.design.arrived(systems, folder, taste, &seen_key);
