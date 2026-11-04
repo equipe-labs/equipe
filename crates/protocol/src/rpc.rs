@@ -76,6 +76,8 @@ pub const PROTOCOL: u32 = 1;
 pub const DESKTOP: &str = "desktop";
 /// Who is busy: members mid-turn and requests waiting for the person.
 pub const BUSY: &str = "busy";
+/// How the daemon runs, as it sees itself: [`Runs`].
+pub const RUNS: &str = "runs";
 /// What uses the disk (`equipe disk`): → [`crate::disk::DiskReport`].
 pub const DISK: &str = "disk";
 /// Give back items of the daemon's look at the disk: [`DiskClean`] →
@@ -386,6 +388,26 @@ pub struct Busy {
     /// when. The rest is then unknown, and empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stalled: Option<Stall>,
+}
+
+/// How the daemon runs, as it sees itself — what `equipe daemon status`
+/// and a restart tell: a daemon started from an SSH connection runs in that
+/// connection's session, which the Mac's login Keychain is closed to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Runs {
+    pub pid: u32,
+    /// Its own environment carries an SSH connection's (`SSH_CONNECTION`,
+    /// `SSH_TTY`): it was started from one, not by its login service.
+    pub ssh: bool,
+    /// Started by its login service (launchd's job, systemd's unit).
+    #[serde(default)]
+    pub service: bool,
+    /// Inside the Mac's login session; `None`: not a Mac, or it couldn't tell.
+    #[serde(default)]
+    pub login_session: Option<bool>,
+    /// The login Keychain open to it; `None`: not a Mac, or it couldn't tell.
+    #[serde(default)]
+    pub keychain: Option<bool>,
 }
 
 /// A step of the daemon's core that hasn't ended.
