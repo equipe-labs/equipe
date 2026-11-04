@@ -101,9 +101,9 @@ work into small tickets, each with an owner (a role on the team, or yourself), a
 criteria, written so its owner can start without asking. Work that went through a brief, or that will take several \
 tickets, gets a plan before any ticket, as your `planning` skill says; a small fix skips it. A ticket for the \
 designer, or one that changes a screen, follows your `working-with-design` skill. Keep track of what was decided and what is in flight. \
-Code is an engineer's to change: delegate it by default. Do a change yourself only when that is truly better — a tiny \
-or urgent one (a typo, a config value, a doc, a one-line fix), when nobody on the team fits, or when handing it over \
-would cost more than doing it — and never work an engineer is already on. Then it is a `code` ticket you own, on your \
+Code is an engineer's to change: delegate it, every time someone on the team can do it, however small — whatever you \
+change yourself waits for the person to accept, and they would rather not. Do a change yourself only when nobody on the \
+team can do it, and never work an engineer is already on. Then it is a `code` ticket you own, on your \
 own branch in a worktree of your own — never in the conversation — and the person accepts it, not you. The person may talk with you about \
 anything, tied to no project: work that belongs to none happens in the squad's folder. When they want a new project \
 (an app, a repository), or ask you to add one they have, add it with `add_project`: a new one's folder where they say \
@@ -516,7 +516,7 @@ work in review (\"accept them all\", \"accept T-1 and T-3\", \"merge it too\", \
 away: it puts a confirmation card in front of them. Don't lecture them about buttons or where to click — say in one line, \
 in their language, that the card is up (\"The card is up\"). Their words aren't the acceptance, and yours never are: only their click \
 on the card accepts, merges or sends back. Give each ticket to the member whose role fits; own one yourself only when \
-nobody on the team could do it, or it is a change too small or urgent to hand over — while you work a ticket, the person waits to talk to you, and there is only one \
+nobody on the team could do it — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
 touching the same files, and give each to a role (`backend`), not to a numbered member: a member with a big ticket \
 splits it across subagents running at once, and so do you with yours. The team is the person's to change, never yours: when more hands \
@@ -849,15 +849,17 @@ mod tests {
     }
 
     #[test]
-    fn the_pm_delegates_code_first_and_does_a_change_itself_only_when_that_is_truly_better() {
+    fn the_pm_delegates_all_code_a_teammate_can_do_and_changes_it_only_when_nobody_can() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "frontend", role: "frontend" }];
         let text = charter(role(PM).unwrap(), "pm", &Context { home: Some("/h"), ..ctx(&team, &[], true) });
         let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        // Delegate by default…
-        assert!(flat.contains("Code is an engineer's to change: delegate it by default"), "{flat}");
-        // …with the exceptions named…
-        for part in ["a typo, a config value, a doc, a one-line fix", "nobody on the team fits", "handing it over would cost more than doing it"] {
-            assert!(flat.contains(part), "{part}: {flat}");
+        // Delegate whenever someone can, however small — the person accepts what the PM changes…
+        assert!(flat.contains("delegate it, every time someone on the team can do it, however small"), "{flat}");
+        assert!(flat.contains("waits for the person to accept"), "{flat}");
+        // …and only when nobody can does the PM change it — no "too small to hand over" exception.
+        assert!(flat.contains("Do a change yourself only when nobody on the team can do it"), "{flat}");
+        for gone in ["a one-line fix", "handing it over would cost more", "too small or urgent to hand over"] {
+            assert!(!flat.contains(gone), "{gone}: {flat}");
         }
         // …never work an engineer is on, never in the conversation, and never accepted by itself.
         assert!(flat.contains("never work an engineer is already on"), "{flat}");
@@ -1695,7 +1697,7 @@ invent one."), "{id}: true numbers");
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(member.contains("never their words, nor yours") && member.contains("don't walk them through buttons") && !member.contains("`propose_accept`"), "{member}");
-        // Code is an engineer's first: the PM changes it only on a ticket of its own, when that is truly better.
+        // Code is an engineer's first: the PM changes it only on a ticket of its own, when nobody on the team can.
         assert!(text.contains("Code is an engineer's to change"), "{text}");
         assert!(!text.contains("software squad"), "{text}");
         // Nothing in a role's duties says all work is code.
