@@ -96,7 +96,7 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             .child(icon(Icon::Info, 13., p.muted))
             .child(div().min_w_0().child(t!("design.talk_no_designer")))
     });
-    let viewing = to.is_some_and(|(m, _)| shell.model.selected == Some(m.session) && shell.model.opened.is_none());
+    let viewing = to.is_some_and(|(m, _)| shell.model.shows_own(m.session));
     let body: AnyElement = match to {
         None => hint(p, t!("design.talk_nobody").into()),
         Some(_) if !viewing || shell.chat.blocks.is_empty() => hint(p, t!("design.talk_empty").into()),
@@ -296,8 +296,7 @@ pub fn in_bubble(p: Palette, labels: &[String]) -> AnyElement {
 impl Shell {
     /// Whom the panel talks to: the designer, else the PM (`true`).
     pub fn design_talk_to(&self) -> Option<(&Member, bool)> {
-        let designer = self.model.members.iter().find(|m| m.role == "designer" && m.presence != Presence::Closed);
-        designer.map(|d| (d, false)).or_else(|| self.model.members.iter().find(|m| crate::state::Model::is_pm(m)).map(|pm| (pm, true)))
+        self.model.design_talker()
     }
 
     /// The room beside the sidebar.
@@ -330,7 +329,7 @@ impl Shell {
     /// The panel shows whom it talks to, and the composer writes to them.
     pub fn design_talk_follow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.design_talk_to().map(|(m, _)| m.session) else { return };
-        if self.model.selected == Some(session) && self.model.opened.is_none() {
+        if self.model.shows_own(session) {
             return;
         }
         self.model.select(session);
@@ -340,7 +339,45 @@ impl Shell {
 
     /// Whether the conversation beside isn't the one it should show yet.
     pub fn design_talk_behind(&self) -> bool {
-        self.design_talk_to().is_some_and(|(m, _)| self.model.selected != Some(m.session) || self.model.opened.is_some())
+        self.design_talk_to().is_some_and(|(m, _)| !self.model.shows_own(m.session))
+    }
+
+    /// An ask from the design screen — carry on with the setup, a video of a
+    /// flow, a fix, a picture to draw…: `to_designer` to the designer, else
+    /// `to_pm` to the PM, about the system on show. It goes in the
+    /// conversation beside, opened if folded, the person staying on the
+    /// design screen — never to a conversation open elsewhere, and never with
+    /// what the box holds, which stays the person's.
+    pub fn design_ask_beside(&mut self, to_designer: String, to_pm: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pm) = self.design_talk_to().map(|(_, pm)| pm) else {
+            self.composer.flash = Some(t!("design.no_one_to_ask").into());
+            cx.notify();
+            return;
+        };
+        if self.screen != Screen::Design {
+            self.open_design(cx);
+        }
+        if self.design_talk_open(window, cx) {
+            self.design_talk_follow(window, cx);
+        } else {
+            self.design_talk_fold(false, window, cx);
+        }
+        let project = self.design.current().map_or_else(|| self.model.focus.clone(), |s| s.project.clone());
+        let plan = crate::compose::ask(&self.model, &to_designer, &to_pm, project.clone());
+        let sent = !plan.commands.is_empty();
+        for command in plan.commands {
+            self.send_command(command);
+        }
+        // The PM's conversation beside shows another project's thread: where it went.
+        let shown = self.model.chat_slice(self.chat.follow).flatten();
+        let elsewhere = pm && sent && shown.is_some() && shown != project;
+        self.composer.flash = match (plan.flash, project) {
+            (Some(flash), _) => Some(flash),
+            (None, Some(project)) if elsewhere => Some(t!("design.ask_sent_to_pm_about", project = project)),
+            _ => None,
+        };
+        self.chat.follow_tail(cx);
+        cx.notify();
     }
 
     /// Point at `ctx` from any view: the panel opens on the design screen's

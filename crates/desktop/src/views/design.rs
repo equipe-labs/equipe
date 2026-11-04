@@ -1388,6 +1388,12 @@ fn human_size(bytes: u64) -> String {
     if bytes >= 1 << 20 { format!("{:.1} MB", bytes as f64 / f64::from(1 << 20)) } else { format!("{} KB", bytes.div_ceil(1024)) }
 }
 
+/// What couldn't be read, as the ask to fix it: a few of them named.
+fn fix_message(problems: &[String], map: bool) -> String {
+    let examples = problems.iter().take(5).cloned().collect::<Vec<_>>().join("; ");
+    if map { t!("flows.fix_message", count = problems.len(), examples = examples) } else { t!("design.fix_message", count = problems.len(), examples = examples) }
+}
+
 fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let remote = shell.endpoint.is_remote();
@@ -1936,7 +1942,7 @@ impl Shell {
 
     /// "designer에게 만들어 달라고 하기": the request goes as the person's
     /// message, the way the composer sends one — to the designer, or to the
-    /// PM to bring one in when the team has none — and the conversation opens.
+    /// PM to bring one in when the team has none — in the conversation beside.
     pub fn design_ask_designer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.design_ask_with(t!("design.ask_designer_message").into(), t!("design.ask_pm_message").into(), window, cx);
     }
@@ -1944,37 +1950,14 @@ impl Shell {
     /// The same with other words: `to_designer` to the designer, `to_pm` to
     /// the PM when the team has none (화면 지도's asks).
     pub fn design_ask_with(&mut self, to_designer: String, to_pm: String, window: &mut Window, cx: &mut Context<Self>) {
-        let designer = self.model.members.iter().find(|m| m.role == "designer" && m.presence != crate::state::Presence::Closed).map(|m| m.session);
-        let pm = self.model.members.iter().find(|m| crate::state::Model::is_pm(m)).map(|m| m.session);
-        let (to, text) = match (designer, pm) {
-            (Some(d), _) => (d, to_designer),
-            (None, Some(pm)) => (pm, to_pm),
-            (None, None) => {
-                self.composer.flash = Some(t!("design.no_one_to_ask").into());
-                cx.notify();
-                return;
-            }
-        };
-        self.select_member(to, window, cx);
-        self.composer.set_text(&text, window, cx);
-        self.send(window, cx);
+        self.design_ask_beside(to_designer, to_pm, window, cx);
     }
 
     /// "designer에게 고쳐 달라고 하기": what couldn't be read goes to the
     /// designer (or the PM) as the person's message, a few of them named.
     pub fn design_ask_fix(&mut self, problems: &[String], map: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let designer = self.model.members.iter().find(|m| m.role == "designer" && m.presence != crate::state::Presence::Closed).map(|m| m.session);
-        let pm = self.model.members.iter().find(|m| crate::state::Model::is_pm(m)).map(|m| m.session);
-        let Some(to) = designer.or(pm) else {
-            self.composer.flash = Some(t!("design.no_one_to_ask").into());
-            cx.notify();
-            return;
-        };
-        let examples = problems.iter().take(5).cloned().collect::<Vec<_>>().join("; ");
-        let text = if map { t!("flows.fix_message", count = problems.len(), examples = examples) } else { t!("design.fix_message", count = problems.len(), examples = examples) };
-        self.select_member(to, window, cx);
-        self.composer.set_text(&text, window, cx);
-        self.send(window, cx);
+        let text = fix_message(problems, map);
+        self.design_ask_beside(text.clone(), text, window, cx);
     }
 
     /// The design screen's keys: ←/→ and 1–9 move between sections (in
