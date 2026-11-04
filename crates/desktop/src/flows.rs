@@ -288,15 +288,17 @@ pub fn with_data(map: &FlowMap, data: Data) -> FlowMap {
     map
 }
 
-/// The version a picture was shot with against the one installed now:
-/// `찍은 버전 0.103.22 · 지금 0.103.23` when they differ, the first alone
-/// when they don't, nothing when it doesn't say.
-pub fn shot_with(picture: &Picture, installed: Option<&str>) -> Option<String> {
+/// The version a picture was shot with against the one the person uses
+/// now: `찍은 버전 0.103.22 · 지금 0.103.23` when they differ — with the
+/// machine of their screen, `on`, when it is one's — the first alone when
+/// they don't, nothing when it doesn't say.
+pub fn shot_with(picture: &Picture, installed: Option<&str>, on: Option<&str>) -> Option<String> {
     let words = crate::i18n::catalog();
     let shot = picture.shot_with.clone()?;
-    Some(match installed.filter(|now| now.trim() != shot.trim()) {
-        Some(now) => words.fill("flows.shot_with_now", &[("shot", shot), ("now", now.to_owned())]),
-        None => words.fill("flows.shot_with", &[("shot", shot)]),
+    Some(match (installed.filter(|now| now.trim() != shot.trim()), on.filter(|m| !m.trim().is_empty())) {
+        (Some(now), Some(machine)) => words.fill("flows.shot_with_now_on", &[("shot", shot), ("now", now.to_owned()), ("machine", machine.to_owned())]),
+        (Some(now), None) => words.fill("flows.shot_with_now", &[("shot", shot), ("now", now.to_owned())]),
+        (None, _) => words.fill("flows.shot_with", &[("shot", shot)]),
     })
 }
 
@@ -622,8 +624,11 @@ mod tests {
         let example = with_data(&map, Data::Example);
         assert_eq!(shown(&example), [vec![("light".to_owned(), false)], vec![("light".to_owned(), false)]]);
         assert!(!example.flows[0].screens[0].stale, "the examples are as fresh as they were");
-        assert_eq!(shot_with(&real.flows[0].screens[0].states[0].pictures[0], map.installed.as_deref()).as_deref(), Some("찍은 버전 0.103.22 · 지금 0.103.23"));
-        assert_eq!(shot_with(&live("dark", 1440), Some("0.103.22")).as_deref(), Some("찍은 버전 0.103.22"));
-        assert_eq!(shot_with(&picture("light", 1200), Some("0.103.23")), None, "a picture that doesn't say");
+        assert_eq!(shot_with(&real.flows[0].screens[0].states[0].pictures[0], map.installed.as_deref(), None).as_deref(), Some("찍은 버전 0.103.22 · 지금 0.103.23"));
+        assert_eq!(shot_with(&live("dark", 1440), Some("0.103.22"), None).as_deref(), Some("찍은 버전 0.103.22"));
+        assert_eq!(shot_with(&picture("light", 1200), Some("0.103.23"), None), None, "a picture that doesn't say");
+        // The version on the person's own screen, which says where.
+        assert_eq!(shot_with(&live("dark", 1440), Some("0.103.25"), Some("MacBook")).as_deref(), Some("찍은 버전 0.103.22 · 지금 MacBook에서 0.103.25"));
+        assert_eq!(shot_with(&live("dark", 1440), Some("0.103.22"), Some("MacBook")).as_deref(), Some("찍은 버전 0.103.22"), "the same: no need to say where");
     }
 }

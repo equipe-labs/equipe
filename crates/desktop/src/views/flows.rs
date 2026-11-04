@@ -602,8 +602,9 @@ fn notes(shell: &Shell, screen: &Screen, chip: Option<&Chip>, picture: Option<&P
     }
     // Shot with another version than the one installed: stale for that,
     // whatever the code did — said with the two versions.
-    let installed = shell.design.current().and_then(|s| s.flows.as_ref()).and_then(|m| m.installed.clone());
-    let version = picture.and_then(|pic| fm::shot_with(pic, installed.as_deref()));
+    let map = shell.design.current().and_then(|s| s.flows.as_ref());
+    let (installed, on) = (map.and_then(|m| m.installed.clone()), map.and_then(|m| m.installed_on.clone()));
+    let version = picture.and_then(|pic| fm::shot_with(pic, installed.as_deref(), on.as_deref()));
     let other_version = picture.is_some_and(|pic| equipe_core::design::flows::outdated(pic.shot_with.as_deref(), installed.as_deref()));
     if screen.stale && !other_version {
         meta = meta.child(h_flex().gap_1p5().items_center().child(icon(Icon::Clock, 12., p.text2)).child(div().text_color(p.text2).child(t!("flows.stale_note"))));

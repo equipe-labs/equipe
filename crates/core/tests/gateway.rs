@@ -348,6 +348,86 @@ async fn a_screen_that_said_hello_reads_back_an_upload_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn the_look_of_the_screen_used_last_is_kept_and_outlives_it() {
+    use equipe_core::protocol::look::{PersonLook, ScreenLook, Theme};
+    use equipe_core::protocol::rpc::{self, Message};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let look = |machine: &str, lang: &str, idle: Option<u64>| ScreenLook {
+        machine: machine.into(),
+        app: "equipe-desktop".into(),
+        version: if machine == "MacBook" { "0.103.25".into() } else { "0.86.3".into() },
+        lang: lang.into(),
+        theme: Theme::Light,
+        width: 1300,
+        height: 800,
+        sidebar_width: Some(180),
+        zoom: 100,
+        idle,
+        ..ScreenLook::default()
+    };
+    // A screen of its own: the hello, then what it tells; asked back on another line.
+    let screen = async |hello: bool, told: &[ScreenLook]| -> (tokio::net::unix::OwnedWriteHalf, tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>) {
+        let (reader, mut writer) = tokio::net::UnixStream::connect(&socket).await.unwrap().into_split();
+        let mut lines = BufReader::new(reader).lines();
+        if hello {
+            writer.write_all(Message::request(1, rpc::HELLO, serde_json::json!({ "version": "app", "squad": "acme" })).to_line().as_bytes()).await.unwrap();
+            while Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap().id != Some(1) {}
+        }
+        for look in told {
+            writer.write_all(Message::notification(rpc::SCREEN_LOOK, look).to_line().as_bytes()).await.unwrap();
+        }
+        (writer, lines)
+    };
+    let asked = async || -> PersonLook {
+        let (mut writer, mut lines) = screen(false, &[]).await;
+        // What a screen tells lands off the line: asked until it is there, a moment at most.
+        writer.write_all(Message::request(9, rpc::PERSON_LOOK, serde_json::json!({})).to_line().as_bytes()).await.unwrap();
+        loop {
+            let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if message.id == Some(9) {
+                return message.result_as::<PersonLook>().expect("an answer, empty or not");
+            }
+        }
+    };
+    let settled = async |want: &str| -> PersonLook {
+        for _ in 0..100 {
+            let got = asked().await;
+            if got.look.as_ref().is_some_and(|s| s.look.machine == want) {
+                return got;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("{want}'s look never became the person's: {:?}", asked().await);
+    };
+    assert_eq!(asked().await, PersonLook::default(), "no screen ever said");
+    // Told before hello: no squad to keep it for.
+    drop(screen(false, &[look("Stranger", "fr", Some(0))]).await);
+    // The MacBook, in use; the Mac mini's app after it, with nobody at it.
+    let macbook = screen(true, &[look("MacBook", "en", Some(0))]).await;
+    let person = settled("MacBook").await.look.unwrap();
+    assert_eq!((person.look.lang.as_str(), person.look.version.as_str(), person.look.sidebar_width), ("en", "0.103.25", Some(180)));
+    let mini = screen(true, &[look("Mac mini", "ko", None)]).await;
+    for _ in 0..100 {
+        if equipe_core::looks::of(&home, "acme").screens.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(equipe_core::looks::of(&home, "acme").screens.len(), 2, "the mini's kept too");
+    assert_eq!(asked().await.look.unwrap().look.machine, "MacBook", "the screen used last, not the one heard from last");
+    // Both gone, the daemon still knows — and from the journal, the next one too.
+    drop((macbook, mini));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(asked().await.look.unwrap().look.machine, "MacBook");
+    assert_eq!(equipe_core::looks::person(&home).unwrap().look.machine, "MacBook");
+    assert!(!equipe_core::looks::of(&home, "acme").screens.iter().any(|s| s.look.machine == "Stranger"));
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
 async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
     use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
     use equipe_core::protocol::rpc::{self, ImageRead, Message, ReadImage};

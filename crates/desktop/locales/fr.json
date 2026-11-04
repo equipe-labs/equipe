@@ -1309,6 +1309,7 @@
   "flows.screen_note": "Cet écran",
   "flows.shot_with": "Prise avec la version {shot}",
   "flows.shot_with_now": "Prise avec la version {shot} · maintenant {now}",
+  "flows.shot_with_now_on": "Prise avec la version {shot} · maintenant {now} sur {machine}",
   "flows.stale": "pas à jour",
   "flows.stale_note": "Le code a changé depuis ces images",
   "flows.states_n.one": "{count} état",

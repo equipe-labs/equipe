@@ -1205,6 +1205,7 @@ mod tests {
             problems: vec![],
             unlisted: vec!["app/home/eror.light.390.png".into(), "app/home/eror.dark.390.png".into(), "old/home/x.png".into(), "app/loose.png".into()],
             installed: None,
+            installed_on: None,
         };
         assert_eq!(
             check(&map),

@@ -20,6 +20,8 @@ mod i18n;
 mod install;
 #[path = "../src/readonly.rs"]
 mod readonly;
+#[path = "../src/screen_look.rs"]
+mod screen_look;
 #[path = "../src/ssh.rs"]
 mod ssh;
 #[path = "../src/sshkey.rs"]

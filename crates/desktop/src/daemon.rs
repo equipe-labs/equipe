@@ -229,6 +229,18 @@ impl Link {
         Uploader(self.asking.clone())
     }
 
+    /// Tell the daemon the look this screen shows (`screen_look.rs`):
+    /// `false` while not attached — the next hello carries it.
+    pub fn tell_look(&self, look: &equipe_core::protocol::look::ScreenLook) -> bool {
+        match self.asking.lock().unwrap().as_ref() {
+            Some(door) => {
+                door.tell(equipe_core::protocol::rpc::SCREEN_LOOK, look);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Try again now (after the person fixed what was wrong).
     pub fn retry(&self) {
         self.retry.notify_one();
@@ -912,15 +924,17 @@ mod tests {
         // Commands go down the same line, as JSON-RPC lines.
         spawned.link.send(Command::Interrupt { session: 7 });
         let received = fake.dir.join("received");
+        // (The screen's look may go first: `screen_look.rs`.)
+        let command = |text: &str| text.lines().filter_map(|l| Message::from_line(l).ok()).find(|m| m.method.as_deref() == Some(rpc::COMMAND));
         let mut text = String::new();
         for _ in 0..100 {
             text = std::fs::read_to_string(&received).unwrap_or_default();
-            if !text.is_empty() {
+            if command(&text).is_some() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let message = Message::from_line(text.lines().next().expect("a line reached the far end")).unwrap();
+        let message = command(&text).expect("a command reached the far end");
         assert_eq!(message.params_as::<Command>(), Some(Command::Interrupt { session: 7 }));
     }
 

@@ -15,20 +15,24 @@
 //!   `equipe send-image` fills, uploads, side commands that change things,
 //!   the daemon started, restarted or updated, notices and the Dock's badge
 //!   ([`blocked`] at each place).
-//! - [`Look`]: what the person sees it in, read (only) from their own
-//!   `~/.equipe` before the first frame.
+//! - [`Look`]: what the person sees it in, before the first frame — that of
+//!   the screen they used last, as it told the daemon (`person_look`, a read:
+//!   their app is often on another Mac than the daemon's); only when no
+//!   screen ever told one, read (only) from this Mac's own `~/.equipe`.
 //!
 //! The window draws to the picture, not to the screen (`snapshot.rs`): it is
 //! never shown and nothing of the screen is captured.
 
 use std::path::Path;
+use std::time::Duration;
 
 use equipe_core::i18n::Lang;
+use equipe_core::protocol::look::{PersonLook, SeenLook, Theme};
 use equipe_core::protocol::Command;
 use equipe_core::protocol::metrics;
 use equipe_core::protocol::rpc;
 
-use crate::target::{Appearance, Remembered};
+use crate::target::{Appearance, Remembered, Zoom};
 
 /// The variable that turns it on, in a snapshot build.
 #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
@@ -167,6 +171,7 @@ pub const READ_METHODS: &[&str] = &[
     rpc::READ_IMAGE,
     rpc::LIST_IMAGES,
     rpc::TELEMETRY,
+    rpc::PERSON_LOOK,
     metrics::SOURCES,
     metrics::QUERY,
     metrics::SUMMARY,
@@ -215,8 +220,9 @@ pub fn blocked(what: &str) -> bool {
 }
 
 /// What the person sees the app in: their language, light or dark, and
-/// how they left its window and sidebar — read (only) from their own
-/// `~/.equipe`, as their app reads it when it starts.
+/// how they left its window and sidebar — as the screen they used last told
+/// the daemon, else read (only) from their own `~/.equipe`, as their app
+/// reads it when it starts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Look {
     pub lang: Lang,
@@ -224,9 +230,26 @@ pub struct Look {
     /// The window, in points: as left, else as the app opens it.
     pub window: (f32, f32),
     pub sidebar_width: Option<f32>,
+    pub sidebar_hidden: bool,
     /// The sidebar's projects folded to their header.
     pub folded: Vec<String>,
+    pub team_open: bool,
+    pub usage_folded: bool,
+    pub design_talk: Option<bool>,
     pub zoom: u16,
+    /// Whose screen it is; none: this Mac's own state.
+    pub from: Option<LookFrom>,
+}
+
+/// The screen a [`Look`] is of: its machine and its app's build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookFrom {
+    pub machine: String,
+    pub version: String,
+    pub commit: Option<String>,
+    /// When the daemon last heard of it, and when the person last used it (unix seconds).
+    pub seen: u64,
+    pub active: Option<u64>,
 }
 
 /// The window's size when the app opens and none was kept.
@@ -234,17 +257,45 @@ pub const WINDOW: (f32, f32) = (1200., 760.);
 
 static LOOK: std::sync::OnceLock<Option<Look>> = std::sync::OnceLock::new();
 
-/// At launch: in the real view, the person's look, read once (and said in
+/// At launch: in the real view, the person's look, asked once (and said in
 /// the log); `None` otherwise.
 pub fn begin() -> Option<&'static Look> {
     LOOK.get_or_init(|| {
         on().then(|| {
-            let look = Look::read(&equipe_providers::credentials::equipe_home(), &mac_languages());
-            eprintln!("equipe readonly: the person's look: {}", look.steps());
+            let home = equipe_providers::credentials::equipe_home();
+            let look = Look::choose(person_look(&home.join("equipe.sock")), || Look::read(&home, &mac_languages()));
+            match &look.from {
+                Some(from) => eprintln!("equipe readonly: the person's look, from their screen on {} ({}): {}", from.machine, from.version, look.steps()),
+                None => eprintln!("equipe readonly: the person's look, from this Mac's own state (no screen ever told one): {}", look.steps()),
+            }
             look
         })
     })
     .as_ref()
+}
+
+/// How long the daemon may take to say the person's look.
+const ASK_WAIT: Duration = Duration::from_secs(5);
+
+/// The look of the screen the person used last, asked of the daemon at
+/// `socket` (`person_look`, which reads): `None` when no screen ever told one
+/// — or the daemon can't say (one older than this).
+pub fn person_look(socket: &Path) -> Option<SeenLook> {
+    use std::io::{BufRead as _, Write as _};
+    if !lets_method(rpc::PERSON_LOOK) {
+        return None;
+    }
+    let stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    stream.set_read_timeout(Some(ASK_WAIT)).ok()?;
+    stream.set_write_timeout(Some(ASK_WAIT)).ok()?;
+    (&stream).write_all(rpc::Message::request(1, rpc::PERSON_LOOK, serde_json::json!({})).to_line().as_bytes()).ok()?;
+    for line in std::io::BufReader::new(&stream).lines() {
+        let message = rpc::Message::from_line(&line.ok()?).ok()?;
+        if message.id == Some(1) {
+            return message.result_as::<PersonLook>()?.look;
+        }
+    }
+    None
 }
 
 /// The person's look, once [`begin`] read it.
@@ -267,20 +318,82 @@ impl Look {
             appearance: remembered.appearance,
             window: remembered.window.unwrap_or(WINDOW),
             sidebar_width: remembered.sidebar_width,
+            sidebar_hidden: false,
             folded: remembered.folded.into_iter().collect(),
+            team_open: remembered.team_open,
+            usage_folded: remembered.usage_folded,
+            design_talk: remembered.design_talk,
             zoom: remembered.zoom.0,
+            from: None,
+        }
+    }
+
+    /// The look a screen told: as it showed the app, to the window's size.
+    pub fn of_screen(seen: &SeenLook) -> Self {
+        let look = &seen.look;
+        let window = if look.width > 0 && look.height > 0 { (look.width as f32, look.height as f32) } else { WINDOW };
+        Self {
+            lang: Lang::parse(&look.lang).unwrap_or(Lang::En),
+            appearance: match look.theme {
+                Theme::Light => Appearance::Light,
+                Theme::Dark => Appearance::Dark,
+            },
+            window,
+            sidebar_width: look.sidebar_width.map(|w| w as f32),
+            sidebar_hidden: look.sidebar_hidden,
+            folded: look.folded.clone(),
+            team_open: look.team_open,
+            usage_folded: look.usage_folded,
+            design_talk: look.design_talk,
+            zoom: Zoom::nearest(look.zoom).0,
+            from: Some(LookFrom { machine: look.machine.clone(), version: look.version.clone(), commit: look.commit.clone(), seen: seen.seen, active: seen.active }),
+        }
+    }
+
+    /// The screen's look when one ever told the daemon; else `local`, this
+    /// Mac's own.
+    pub fn choose(told: Option<SeenLook>, local: impl FnOnce() -> Self) -> Self {
+        match told {
+            Some(seen) => Self::of_screen(&seen),
+            None => local(),
+        }
+    }
+
+    /// The app's remembered state with this look laid over it, as it starts:
+    /// the sidebar, the folds, the zoom — what the steps don't bring.
+    pub fn lay_over(&self, remembered: &mut Remembered) {
+        remembered.appearance = self.appearance;
+        remembered.window = Some(self.window);
+        remembered.sidebar_width = self.sidebar_width;
+        remembered.folded = self.folded.iter().cloned().collect();
+        remembered.team_open = self.team_open;
+        remembered.usage_folded = self.usage_folded;
+        remembered.design_talk = self.design_talk;
+        remembered.zoom = Zoom(self.zoom);
+    }
+
+    /// For the note beside a picture: whose look it was shot in.
+    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
+    pub fn note(&self) -> serde_json::Value {
+        match &self.from {
+            Some(from) => serde_json::json!({ "machine": from.machine, "version": from.version, "commit": from.commit, "seen": from.seen, "active": from.active }),
+            None => serde_json::json!({ "machine": crate::screen_look::machine(), "local": true }),
         }
     }
 
     /// The steps (`snapshot.rs`'s) that bring the window to it, before the
     /// script's own — which may say otherwise. The rest of it (the sidebar,
-    /// the folds, the zoom) the app reads from the same file as it starts.
+    /// the folds, the zoom) is laid over what the app starts with
+    /// ([`Look::lay_over`]).
     pub fn steps(&self) -> String {
         let mut steps = vec![format!("lang:{}", self.lang.code()), format!("size:{}x{}", self.window.0.round(), self.window.1.round())];
         match self.appearance {
             Appearance::Light => steps.push("theme:light".into()),
             Appearance::Dark => steps.push("theme:dark".into()),
             Appearance::System => {}
+        }
+        if self.sidebar_hidden {
+            steps.push("sidebar".into());
         }
         steps.join(";")
     }
@@ -462,10 +575,11 @@ mod tests {
 
     #[test]
     fn only_requests_that_read_go() {
-        for method in [rpc::HELLO, rpc::SQUADS, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::READ_UPLOAD, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
+        for method in [rpc::HELLO, rpc::SQUADS, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::READ_UPLOAD, rpc::PERSON_LOOK, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
             assert!(reads_method(method), "{method}");
         }
-        for method in [rpc::UPLOAD, rpc::TELEMETRY_SET, rpc::DISK_CLEAN, rpc::BROWSER_WINDOW, rpc::BROWSER_STREAM, rpc::SHUTDOWN, rpc::TOOL, rpc::COMMAND, rpc::DESKTOP, metrics::CONNECT, metrics::DISCONNECT, metrics::REFRESH, "metrics.anything_new"] {
+        // The real view tells no look of its own: it isn't the person's screen.
+        for method in [rpc::SCREEN_LOOK, rpc::UPLOAD, rpc::TELEMETRY_SET, rpc::DISK_CLEAN, rpc::BROWSER_WINDOW, rpc::BROWSER_STREAM, rpc::SHUTDOWN, rpc::TOOL, rpc::COMMAND, rpc::DESKTOP, metrics::CONNECT, metrics::DISCONNECT, metrics::REFRESH, "metrics.anything_new"] {
             assert!(!reads_method(method), "{method}");
         }
         assert!(!blocked("nothing") && lets_method(rpc::UPLOAD), "outside the real view nothing is held back");
@@ -485,11 +599,113 @@ mod tests {
         equipe_core::i18n::save(&home, Some(Lang::En)).unwrap();
         let before = std::fs::read(Remembered::path(&home)).unwrap();
         let look = Look::read(&home, &["ko-KR".into()]);
-        assert_eq!(look, Look { lang: Lang::En, appearance: Appearance::Dark, window: (1440., 900.), sidebar_width: Some(312.), folded: vec![String::new(), "web".into()], zoom: 110 });
+        let left = Look {
+            lang: Lang::En,
+            appearance: Appearance::Dark,
+            window: (1440., 900.),
+            sidebar_width: Some(312.),
+            sidebar_hidden: false,
+            folded: vec![String::new(), "web".into()],
+            team_open: false,
+            usage_folded: false,
+            design_talk: None,
+            zoom: 110,
+            from: None,
+        };
+        assert_eq!(look, left);
         assert_eq!(look.steps(), "lang:en;size:1440x900;theme:dark", "a step of the script after it still says otherwise");
         assert_eq!(std::fs::read(Remembered::path(&home)).unwrap(), before, "read, never written");
         std::fs::remove_dir_all(home).unwrap();
         assert_eq!(parse_languages("(\n    \"ko-KR\",\n    en\n)\n"), ["ko-KR", "en"]);
         assert!(parse_languages("").is_empty());
+    }
+
+    fn told(machine: &str, lang: &str, sidebar: Option<u32>) -> SeenLook {
+        use equipe_core::protocol::look::ScreenLook;
+        let look = ScreenLook {
+            machine: machine.into(),
+            app: "equipe-desktop".into(),
+            version: "0.103.25".into(),
+            commit: Some("5a1288f".into()),
+            lang: lang.into(),
+            theme: Theme::Light,
+            width: 1300,
+            height: 820,
+            sidebar_width: sidebar,
+            sidebar_hidden: false,
+            folded: vec!["web".into()],
+            team_open: true,
+            usage_folded: true,
+            design_talk: Some(false),
+            zoom: 115,
+            idle: None,
+        };
+        SeenLook { look, seen: 200, active: Some(190) }
+    }
+
+    #[test]
+    fn the_look_of_the_persons_own_screen_wins_and_this_macs_only_when_none_ever_said() {
+        // This Mac's own state: Korean, dark, wide — the daemon's Mac, which nobody looks at.
+        let home = std::env::temp_dir().join(format!("equipe-look-told-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(Remembered::path(&home), "sidebar-width 312\nappearance dark\nwindow-size 1440x900\n").unwrap();
+        equipe_core::i18n::save(&home, Some(Lang::Ko)).unwrap();
+        let local = || Look::read(&home, &["ko-KR".into()]);
+        // A screen told one: it wins, whatever this Mac says.
+        let look = Look::choose(Some(told("MacBook", "en", Some(180))), local);
+        assert_eq!((look.lang, look.appearance, look.window, look.sidebar_width, look.zoom), (Lang::En, Appearance::Light, (1300., 820.), Some(180.), 110));
+        assert_eq!(look.from.as_ref().map(|f| (f.machine.as_str(), f.version.as_str(), f.active)), Some(("MacBook", "0.103.25", Some(190))));
+        assert_eq!(look.steps(), "lang:en;size:1300x820;theme:light");
+        assert_eq!(look.note()["machine"], "MacBook");
+        assert_eq!(look.note()["version"], "0.103.25");
+        // What the steps don't bring is laid over what the app starts with.
+        let mut remembered = Remembered::load(&home);
+        look.lay_over(&mut remembered);
+        assert_eq!((remembered.sidebar_width, remembered.appearance, remembered.zoom, remembered.team_open, remembered.usage_folded, remembered.design_talk), (Some(180.), Appearance::Light, Zoom(110), true, true, Some(false)));
+        assert_eq!(remembered.folded.iter().collect::<Vec<_>>(), ["web"]);
+        // The sidebar hidden there is hidden here; an unknown language reads as English.
+        let mut hidden = told("MacBook", "xx", None);
+        hidden.look.sidebar_hidden = true;
+        let look = Look::of_screen(&hidden);
+        assert_eq!((look.lang, look.sidebar_width), (Lang::En, None));
+        assert!(look.steps().ends_with(";sidebar"), "{}", look.steps());
+        // None ever said: this Mac's own, read only.
+        let look = Look::choose(None, local);
+        assert_eq!((look.lang, look.appearance, look.sidebar_width, look.from.clone()), (Lang::Ko, Appearance::Dark, Some(312.), None));
+        assert_eq!(look.note()["local"], true);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn the_daemon_is_asked_for_the_persons_look_and_a_daemon_that_cant_say_is_none() {
+        use std::io::{BufRead as _, Write as _};
+        let socket = std::path::PathBuf::from(format!("/tmp/eqro-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let answers = [Some(PersonLook { look: Some(told("MacBook", "en", Some(180))) }), Some(PersonLook::default()), None];
+        let serving = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for answer in answers {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(&stream).read_line(&mut line).unwrap();
+                let ask = rpc::Message::from_line(&line).unwrap();
+                asked.push(ask.method.clone().unwrap_or_default());
+                let id = ask.id.unwrap();
+                let reply = match answer {
+                    Some(answer) => rpc::Message::response(id, answer),
+                    None => rpc::Message::failure(id, -32601, "unknown method"),
+                };
+                (&stream).write_all(reply.to_line().as_bytes()).unwrap();
+            }
+            asked
+        });
+        assert_eq!(person_look(&socket).map(|s| s.look.machine), Some("MacBook".into()));
+        assert_eq!(person_look(&socket), None, "no screen ever said");
+        assert_eq!(person_look(&socket), None, "an older daemon");
+        assert_eq!(serving.join().unwrap(), [rpc::PERSON_LOOK; 3]);
+        let _ = std::fs::remove_file(&socket);
+        assert_eq!(person_look(&socket), None, "no daemon");
     }
 }

@@ -35,6 +35,13 @@
 //! - `metrics.sources`, `metrics.connect`, `metrics.disconnect`,
 //!   `metrics.refresh`, `metrics.query`, `metrics.summary` (requests): the
 //!   product's numbers, [`crate::metrics`] (docs/METRICS.md)
+//! - `screen_look` (notification, screen → daemon): [`crate::look::ScreenLook`],
+//!   the look the screen shows the app in and which app it is — told after
+//!   `hello` and again when it changes or the person uses the screen; kept
+//!   per machine for the squad followed
+//! - `person_look` (request): → [`crate::look::PersonLook`], the look of the
+//!   screen the person used last, following any squad (none: no screen ever
+//!   said) — the UI map's real view is shot in it
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
 //!   the first line a screen reads through the bridge, before anything the
 //!   daemon says
@@ -58,6 +65,8 @@ pub const READ_IMAGE: &str = "read_image";
 pub const LIST_IMAGES: &str = "list_images";
 pub const TELEMETRY: &str = "telemetry";
 pub const TELEMETRY_SET: &str = "telemetry_set";
+pub const SCREEN_LOOK: &str = "screen_look";
+pub const PERSON_LOOK: &str = "person_look";
 
 /// The wire's version: bumped when a change would break a screen built
 /// against the one before (a method or a field it relies on removed or
