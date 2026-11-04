@@ -1400,7 +1400,8 @@ impl Shell {
 
     /// The side panel's width now: as the person left it, within the window.
     pub fn side_width(&self, window: &Window) -> f32 {
-        doc::kept_width(self.remembered.side_width, window.viewport_size().width.into())
+        let sidebar = if self.board.sidebar_hidden { 0. } else { self.board.sidebar_width };
+        doc::kept_width(self.remembered.side_width, window.viewport_size().width.into(), sidebar)
     }
 
     fn side_released(&mut self, cx: &mut Context<Self>) {
@@ -1888,8 +1889,10 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &PairPhone, window, cx| this.open_pairing(window, cx)))
             // The Squad menu's 새 스쿼드… is the switcher's: the same sheet.
             .on_action(cx.listener(|this, _: &NewSquad, window, cx| this.open_new_squad(window, cx)))
-            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
                 screen_look::used();
+                // A selection dragged out in the terminal follows the pointer anywhere.
+                views::terminal::dragged(this, e, window, cx);
                 // A hairline between the sidebar's areas, held.
                 if this.board.side_split_drag.is_some() {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -1937,7 +1940,8 @@ impl Render for Shell {
                     }
                 }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, window, cx| {
+                views::terminal::released(this, e.position, window, cx);
                 this.sidebar_released(cx);
                 this.side_split_released(cx);
                 this.side_released(cx);
@@ -2021,7 +2025,8 @@ impl Render for Shell {
         // The design screen: the designer's conversation at its right (`views/design_talk.rs`).
         let talk = if away { None } else { views::design_talk::panel(self, window, cx) };
         let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
-        let middle = v_flex().flex_1().min_w_0().h_full().child(body).children(below);
+        // What doesn't fit the room beside the panel is cut at its edge, not drawn under it.
+        let middle = v_flex().flex_1().min_w_0().h_full().overflow_hidden().child(body).children(below);
         root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(talk).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
