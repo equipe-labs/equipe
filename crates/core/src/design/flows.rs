@@ -37,8 +37,20 @@
 //!   names the kinds (or ids) the screen should have — each one not among
 //!   its states, or among them with no picture, is `missing`.
 //! - A state's `url` (else the screen's) is what `equipe design flows shoot`
-//!   opens to take its pictures; a state that can't be reached by a URL is
-//!   drawn instead (an HTML mockup, `equipe design render`) to the same path.
+//!   opens to take its pictures.
+//! - An app that isn't a web page (a desktop app, a phone simulator, anything
+//!   with a screenshot harness of its own) is shot by a `command` instead: a
+//!   state's own, else its screen's, else its flow's; with a `command` and a
+//!   `url` both, the `command` is what runs. It is a shell command (`sh -c`)
+//!   run at the root of the repository the design folder is in, once for each
+//!   picture, that writes one PNG. It is given, as `{name}` in its text and as
+//!   `EQUIPE_SHOT_<NAME>` in its environment: `out` (the absolute path to
+//!   write), `mode` (`light` or `dark`), `width` (px), `flow`, `screen` and
+//!   `state`. In the text each is put in already quoted for the shell, so it
+//!   is written bare (`{out}`, never `"{out}"`); other braces are left as
+//!   they are. `"command": "scripts/design-shot.sh {mode} {width} {out} board"`.
+//! - A state neither a `url` nor a `command` reaches is drawn instead (an HTML
+//!   mockup, `equipe design render`) to the same path.
 //! - `source` paths are relative to the repository the design folder is in;
 //!   one modified after the screen's newest picture makes the screen `stale`.
 //! - A flow's `walk` is how to go through it, a step at a time, each with one
@@ -49,6 +61,11 @@
 //!   `{"millis": 8200, "marks": [{"screen": "login", "at": 3200}]}`, how long
 //!   it runs and where each screen starts. Recorded again, the last one moves
 //!   to `history/`, named by when it was recorded.
+//! - An app that records itself gives its flow a `record_command` instead of
+//!   a walk (it wins over one): run as a `command` is, given `out` (an
+//!   `.mp4` to write), `mode`, `width` and `flow` (`EQUIPE_RECORD_<NAME>`).
+//!   A `.json` it writes beside `out`, `{"millis": …, "marks": […]}`, is kept
+//!   beside the video.
 //!
 //! What can't be read is said, a line each, and left out; the rest still
 //! shows. Fields the file has that aren't these are passed over.
@@ -107,6 +124,12 @@ struct FlowFile<T> {
     screens: Vec<T>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     walk: Vec<Value>,
+    /// What shoots its states when neither they nor their screens say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    /// What records it, for an app that records itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    record_command: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -118,6 +141,8 @@ struct ScreenFile<T> {
     note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     source: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,6 +164,8 @@ struct StateFile {
     note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
 }
 
 /// The note beside a walkthrough.
@@ -284,12 +311,12 @@ fn parse(design: &Path, words: &Catalog, problems: &mut Vec<String>) -> Option<V
                     Err(problem) => problems.push(problem),
                 }
             }
-            screens.push(ScreenFile { id: screen.id, title: screen.title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, expects: screen.expects, states });
+            screens.push(ScreenFile { id: screen.id, title: screen.title, note: screen.note, url: screen.url, command: screen.command, source: screen.source, ticket: screen.ticket, expects: screen.expects, states });
         }
         let mut walk_problems = Vec::new();
         let walk = steps(&flow.walk, &flow.id, &screens, words, &mut walk_problems);
         problems.extend(walk_problems.iter().cloned());
-        out.push(Listed { file: FlowFile { id: flow.id, title: flow.title, summary: flow.summary, screens, walk: Vec::new() }, walk, walk_problems });
+        out.push(Listed { file: FlowFile { id: flow.id, title: flow.title, summary: flow.summary, screens, walk: Vec::new(), command: flow.command, record_command: flow.record_command }, walk, walk_problems });
     }
     Some(out)
 }
@@ -602,12 +629,13 @@ pub fn starter(lang: Lang) -> String {
     let words = crate::i18n::core(lang);
     let word = |key: &str| Some(words.get(key).to_owned());
     let url = "http://localhost:3000/login";
-    let state = |id: &str, label: &str, note: Option<&str>, url: Option<String>| StateFile { id: id.into(), label: word(label), kind: Some(id.into()), note: note.and_then(word), url };
+    let state = |id: &str, label: &str, note: Option<&str>, url: Option<String>| StateFile { id: id.into(), label: word(label), kind: Some(id.into()), note: note.and_then(word), url, command: None };
     let screen = ScreenFile {
         id: "login".into(),
         title: word("flows.starter_screen"),
         note: word("flows.starter_screen_note"),
         url: Some(url.into()),
+        command: None,
         source: vec!["src/app/login/page.tsx".into()],
         ticket: None,
         expects: vec!["error".into(), "loading".into()],
@@ -621,7 +649,7 @@ pub fn starter(lang: Lang) -> String {
         serde_json::json!({ "say": words.get("flows.starter_say") }),
         serde_json::json!({ "wait": 1500 }),
     ];
-    let flow = FlowFile { id: "onboarding".into(), title: word("flows.starter_flow"), summary: word("flows.starter_flow_summary"), screens: vec![screen], walk };
+    let flow = FlowFile { id: "onboarding".into(), title: word("flows.starter_flow"), summary: word("flows.starter_flow_summary"), screens: vec![screen], walk, command: None, record_command: None };
     let mut text = serde_json::to_string_pretty(&MapFile { flows: vec![flow] }).unwrap_or_default();
     text.push('\n');
     text
@@ -635,6 +663,9 @@ pub struct Shot {
     pub state: String,
     /// The state's own `url`, else its screen's.
     pub url: Option<String>,
+    /// The state's own `command`, else its screen's, else its flow's: what
+    /// runs instead of opening `url` when there is one.
+    pub command: Option<String>,
     /// `<design>/flows/<flow>/<screen>`: each picture is `picture_name` in it.
     pub dir: PathBuf,
 }
@@ -644,15 +675,74 @@ pub fn shots(design: &Path) -> Vec<Shot> {
     let Some(listed) = parse(design, crate::i18n::core(Lang::En), &mut Vec::new()) else { return Vec::new() };
     let mut out = Vec::new();
     for Listed { file: flow, .. } in listed {
+        let flow_command = given(flow.command);
         for screen in flow.screens {
             let dir = design.join(DIR).join(&flow.id).join(&screen.id);
+            let screen_command = given(screen.command).or_else(|| flow_command.clone());
             for state in screen.states {
                 let url = state.url.or_else(|| screen.url.clone());
-                out.push(Shot { flow: flow.id.clone(), screen: screen.id.clone(), state: state.id, url, dir: dir.clone() });
+                let command = given(state.command).or_else(|| screen_command.clone());
+                out.push(Shot { flow: flow.id.clone(), screen: screen.id.clone(), state: state.id, url, command, dir: dir.clone() });
             }
         }
     }
     out
+}
+
+/// A command as written, `None` when blank.
+fn given(command: Option<String>) -> Option<String> {
+    command.filter(|c| !c.trim().is_empty())
+}
+
+/// What a shot's command is given: each placeholder by name, the PNG to
+/// write first. In its environment each is `EQUIPE_SHOT_<NAME>`.
+pub fn shot_values(out: &Path, mode: &str, width: u32, shot: &Shot) -> Vec<(&'static str, String)> {
+    vec![("out", out.to_string_lossy().into_owned()), ("mode", mode.to_owned()), ("width", width.to_string()), ("flow", shot.flow.clone()), ("screen", shot.screen.clone()), ("state", shot.state.clone())]
+}
+
+/// What a flow's `record_command` is given (`EQUIPE_RECORD_<NAME>`): the
+/// video to write first.
+pub fn record_values(out: &Path, mode: &str, width: u32, flow: &str) -> Vec<(&'static str, String)> {
+    vec![("out", out.to_string_lossy().into_owned()), ("mode", mode.to_owned()), ("width", width.to_string()), ("flow", flow.to_owned())]
+}
+
+/// `values` as environment variables, each `<prefix><NAME>`
+/// (`EQUIPE_SHOT_OUT`).
+pub fn env_of(prefix: &str, values: &[(&str, String)]) -> Vec<(String, String)> {
+    values.iter().map(|(name, value)| (format!("{prefix}{}", name.to_ascii_uppercase()), value.clone())).collect()
+}
+
+/// `command` with each `{name}` of `values` put in, quoted for the shell, in
+/// one pass: what is put in is never read again, and braces naming nothing
+/// (`${HOME}`, `{}`) are left as they are.
+pub fn fill(command: &str, values: &[(&str, String)]) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(at) = rest.find('{') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let named = after.find('}').and_then(|end| values.iter().find(|(name, _)| *name == &after[..end]).map(|(_, value)| (end, value)));
+        match named {
+            Some((end, value)) => {
+                out.push_str(&shell_quote(value));
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `text` as one word to `sh`: bare when it is only letters, digits and
+/// `-_./:=@%+,`, else in single quotes, each quote in it closed, escaped and
+/// opened again.
+pub fn shell_quote(text: &str) -> String {
+    let plain = !text.is_empty() && text.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./:=@%+,".contains(&b));
+    if plain { text.to_owned() } else { format!("'{}'", text.replace('\'', "'\\''")) }
 }
 
 /// One thing a walk does.
@@ -684,6 +774,19 @@ pub struct WalkStep {
 /// for each reason: no map, no such flow, no walk, a bad step.
 pub fn walk(design: &Path, flow: &str, lang: Lang) -> Result<Vec<WalkStep>, String> {
     let words = crate::i18n::core(lang);
+    let found = listed_flow(design, flow, words)?;
+    if !found.walk_problems.is_empty() {
+        return Err(found.walk_problems.join("\n"));
+    }
+    if found.walk.is_empty() {
+        return Err(words.fill("flows.walk_empty", &[("flow", flow.to_owned())]));
+    }
+    Ok(found.walk)
+}
+
+/// Flow `flow` as `design`'s map lists it; `Err` when there is no map or no
+/// such flow, with what else couldn't be read.
+fn listed_flow(design: &Path, flow: &str, words: &Catalog) -> Result<Listed, String> {
     let mut problems = Vec::new();
     let Some(listed) = parse(design, words, &mut problems) else {
         return Err(words.fill("flows.walk_no_map", &[("path", design.join(DIR).join(FILE).to_string_lossy().into_owned())]));
@@ -692,13 +795,34 @@ pub fn walk(design: &Path, flow: &str, lang: Lang) -> Result<Vec<WalkStep>, Stri
         problems.push(words.fill("flows.walk_no_flow", &[("flow", flow.to_owned())]));
         return Err(problems.join("\n"));
     };
+    Ok(found)
+}
+
+/// How a flow is recorded: by its own `record_command`, or its walk
+/// followed in Chrome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recording {
+    Command(String),
+    Walk(Vec<WalkStep>),
+}
+
+/// How flow `flow` in `design` is recorded: its `record_command` when it
+/// has one, else its walk. `Err`, in `lang`, as `walk` says it — and, when
+/// it has neither, that an app that isn't a web page records itself by a
+/// `record_command`.
+pub fn recording(design: &Path, flow: &str, lang: Lang) -> Result<Recording, String> {
+    let words = crate::i18n::core(lang);
+    let found = listed_flow(design, flow, words)?;
+    if let Some(command) = given(found.file.record_command) {
+        return Ok(Recording::Command(command));
+    }
     if !found.walk_problems.is_empty() {
         return Err(found.walk_problems.join("\n"));
     }
     if found.walk.is_empty() {
-        return Err(words.fill("flows.walk_empty", &[("flow", flow.to_owned())]));
+        return Err(words.fill("flows.record_none", &[("flow", flow.to_owned())]));
     }
-    Ok(found.walk)
+    Ok(Recording::Walk(found.walk))
 }
 
 #[cfg(test)]
@@ -951,6 +1075,85 @@ mod tests {
         let urls: Vec<(&str, Option<&str>)> = found.iter().map(|s| (s.state.as_str(), s.url.as_deref())).collect();
         assert_eq!(urls, [("default", Some("http://localhost:3000/login")), ("error", Some("http://localhost:3000/login?fixture=wrong")), ("loading-slow", Some("http://localhost:3000/login"))]);
         assert!(found.iter().all(|s| s.flow == "onboarding" && s.screen == "login" && s.dir == design.join("flows/onboarding/login")));
+        std::fs::remove_dir_all(design).unwrap();
+    }
+
+    const COMMANDS: &str = r#"{ "flows": [
+      { "id": "desktop", "title": "Desktop", "command": "scripts/shot.sh {mode} {width} {out} flow", "record_command": "scripts/record.sh {out}",
+        "screens": [
+          { "id": "board", "title": "Board", "command": "scripts/shot.sh {mode} {width} {out} board", "url": "http://localhost:3000/board",
+            "states": [
+              { "id": "default", "label": "Default" },
+              { "id": "picked", "label": "Picked", "command": "scripts/shot.sh {mode} {width} {out} 'board;pick:2'", "window": "ignored" },
+              { "id": "blank", "label": "Blank", "command": "   " } ] },
+          { "id": "chat", "title": "Chat", "url": "http://localhost:3000/chat",
+            "states": [ { "id": "default", "label": "Default" } ] } ] },
+      { "id": "web", "title": "Web",
+        "screens": [ { "id": "home", "title": "Home", "url": "http://localhost:3000/",
+            "states": [ { "id": "default", "label": "Default" } ] },
+          { "id": "sketch", "title": "Sketch", "states": [ { "id": "default", "label": "Default" } ] } ] },
+      { "id": "bad", "title": "Bad", "screens": [ { "id": "x", "title": "X", "command": 7, "states": [ { "id": "default" } ] } ] } ] }"#;
+
+    #[test]
+    fn a_states_command_beats_its_screens_which_beats_its_flows_and_a_command_is_carried_beside_the_url() {
+        let design = dir("commands");
+        write(&design.join("flows/flows.json"), COMMANDS);
+        let found = shots(&design);
+        let got: Vec<(&str, &str, Option<&str>, Option<&str>)> = found.iter().map(|s| (s.screen.as_str(), s.state.as_str(), s.command.as_deref(), s.url.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                ("board", "default", Some("scripts/shot.sh {mode} {width} {out} board"), Some("http://localhost:3000/board")),
+                ("board", "picked", Some("scripts/shot.sh {mode} {width} {out} 'board;pick:2'"), Some("http://localhost:3000/board")),
+                ("board", "blank", Some("scripts/shot.sh {mode} {width} {out} board"), Some("http://localhost:3000/board")),
+                ("chat", "default", Some("scripts/shot.sh {mode} {width} {out} flow"), Some("http://localhost:3000/chat")),
+                ("home", "default", None, Some("http://localhost:3000/")),
+                ("sketch", "default", None, None),
+            ],
+            "the state's, else the screen's, else the flow's; a blank one is none; a screen whose command isn't text is left out"
+        );
+        let map = read(&design, None, Lang::En).unwrap();
+        assert_eq!(map.flows.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["desktop", "web", "bad"]);
+        assert!(map.flows[2].screens.is_empty());
+        assert_eq!(map.problems.len(), 1, "an unknown field is passed over, a command that isn't text isn't: {:?}", map.problems);
+        assert!(map.problems[0].contains("bad/#1"), "{:?}", map.problems);
+        std::fs::remove_dir_all(design).unwrap();
+    }
+
+    #[test]
+    fn placeholders_are_put_in_quoted_for_the_shell_in_one_pass() {
+        let shot = Shot { flow: "desktop".into(), screen: "board".into(), state: "it's-{mode}".into(), url: None, command: None, dir: PathBuf::from("/d") };
+        let values = shot_values(Path::new("/tmp/My Design/board/default.dark.1280.png"), "dark", 1280, &shot);
+        assert_eq!(
+            fill("scripts/shot.sh {mode} {width} {out} --state={state} {flow}/{screen}", &values),
+            "scripts/shot.sh dark 1280 '/tmp/My Design/board/default.dark.1280.png' --state='it'\\''s-{mode}' desktop/board",
+            "a value with a space or quote is quoted; what is put in is never filled again"
+        );
+        assert_eq!(fill("echo ${HOME} {} {nope} {out", &values), "echo ${HOME} {} {nope} {out", "braces naming nothing are left as they are");
+        assert_eq!(fill("{{mode}}", &values), "{dark}");
+        assert_eq!(fill("", &values), "");
+        assert_eq!((shell_quote("light"), shell_quote(""), shell_quote("a b"), shell_quote("$(rm -rf /)"), shell_quote("x;y")), ("light".into(), "''".into(), "'a b'".into(), "'$(rm -rf /)'".into(), "'x;y'".into()));
+        assert_eq!(
+            env_of("EQUIPE_SHOT_", &values).iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
+            ["EQUIPE_SHOT_OUT=/tmp/My Design/board/default.dark.1280.png", "EQUIPE_SHOT_MODE=dark", "EQUIPE_SHOT_WIDTH=1280", "EQUIPE_SHOT_FLOW=desktop", "EQUIPE_SHOT_SCREEN=board", "EQUIPE_SHOT_STATE=it's-{mode}"],
+            "in the environment as they are"
+        );
+        let record = record_values(Path::new("/w/walkthrough.mp4"), "light", 390, "desktop");
+        assert_eq!(fill("rec {out} {mode} {width} {flow} {state}", &record), "rec /w/walkthrough.mp4 light 390 desktop {state}");
+        assert_eq!(env_of("EQUIPE_RECORD_", &record)[0], ("EQUIPE_RECORD_OUT".to_owned(), "/w/walkthrough.mp4".to_owned()));
+    }
+
+    #[test]
+    fn a_flow_is_recorded_by_its_record_command_else_its_walk_and_with_neither_says_so() {
+        let design = dir("recording");
+        write(&design.join("flows/flows.json"), COMMANDS);
+        assert_eq!(recording(&design, "desktop", Lang::En), Ok(Recording::Command("scripts/record.sh {out}".into())));
+        let why = recording(&design, "web", Lang::En).unwrap_err();
+        assert!(why.contains("web") && why.contains("record_command") && why.contains("walk"), "{why}");
+        assert!(recording(&design, "web", Lang::Ko).unwrap_err().chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)));
+        assert!(recording(&design, "gone", Lang::En).unwrap_err().contains("gone"));
+        write(&design.join("flows/flows.json"), WALKED);
+        assert!(matches!(recording(&design, "onboarding", Lang::En), Ok(Recording::Walk(steps)) if steps.len() == 6));
         std::fs::remove_dir_all(design).unwrap();
     }
 

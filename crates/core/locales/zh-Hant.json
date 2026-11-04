@@ -29,6 +29,7 @@
   "flows.problem_source_outside": "{at}：{path} 在儲存庫之外，不追蹤它的變更",
   "flows.problem_step": "{at}：每一步只做一個動作：go、click、fill、press、wait 或 say",
   "flows.problem_step_screen": "{at}：{screen} 不是這個流程的畫面",
+  "flows.record_none": "{flow} 沒有可用的錄製方式：網頁請在 flows.json 裡寫 walk 步驟，能自己錄影的應用程式請寫 record_command",
   "flows.walk_no_map": "沒有可走的地圖：{path} 不存在",
   "flows.walk_no_flow": "flows.json 裡沒有流程 {flow}",
   "flows.walk_empty": "{flow} 在 flows.json 裡沒有 walk：走完它的步驟",

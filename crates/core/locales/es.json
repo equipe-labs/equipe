@@ -29,6 +29,7 @@
   "flows.problem_source_outside": "{at}: {path} está fuera del repositorio, así que no se siguen sus cambios",
   "flows.problem_step": "{at}: un paso tiene una sola acción: go, click, fill, press, wait o say",
   "flows.problem_step_screen": "{at}: {screen} no es una pantalla de este flujo",
+  "flows.record_none": "{flow} no tiene con qué grabarse: dale un walk en flows.json (los pasos por una página web) o un record_command para una app que se graba sola",
   "flows.walk_no_map": "No hay mapa que recorrer: {path} no existe",
   "flows.walk_no_flow": "flows.json no tiene el flujo {flow}",
   "flows.walk_empty": "{flow} no tiene walk en flows.json: los pasos para recorrerlo",

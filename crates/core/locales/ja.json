@@ -29,6 +29,7 @@
   "flows.problem_source_outside": "{at}: {path} はリポジトリの外にあるため、変更を追いません",
   "flows.problem_step": "{at}: ステップの動作は一つです：go、click、fill、press、wait、say のどれか",
   "flows.problem_step_screen": "{at}: {screen} はこのフローの画面ではありません",
+  "flows.record_none": "{flow} を録画する手段がありません。Web ページなら flows.json に walk の手順を、自分で録画できるアプリなら record_command を書いてください",
   "flows.walk_no_map": "たどるマップがありません：{path} がありません",
   "flows.walk_no_flow": "flows.json にフロー {flow} がありません",
   "flows.walk_empty": "{flow} に walk がありません。フローをたどる手順を flows.json に書いてください",
