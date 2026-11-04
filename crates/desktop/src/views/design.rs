@@ -1,19 +1,19 @@
-//! 디자인 시스템: the squad's design system as its designer keeps it
+//! Design system: the squad's design system as its designer keeps it
 //! (`docs/DESIGN-SYSTEM.md`), read through the daemon. A header — the
-//! project's when projects differ, a "검토 중 · T-n" pill for a draft in
-//! review, a quiet "만드는 중 · T-n" chip — its member's step, live — for
+//! project's when projects differ, an "In review · T-n" pill for a draft in
+//! review, a quiet "In the works · T-n" chip — its member's step, live — for
 //! work a ticket is still making (opened read-only, never accepted or
 //! compared), what changed since the person last looked — over sections:
-//! 개요 (logos on light and dark, the lead colours, a type sample), 색
+//! Overview (logos on light and dark, the lead colours, a type sample), Colour
 //! (swatches by group, light and dark side by side, contrast graded; a click
-//! copies), 타이포그래피 (live text in each style, a word when the font isn't
-//! here), 간격 · 모서리 · 그림자 · 모션 (specimens; a curve plays under the
-//! pointer), 에셋 (pictures on a checkerboard, big in a lightbox) and
-//! 가이드라인 (guidelines.md with its contents). With none yet, what one is
+//! copies), Typography (live text in each style, a word when the font isn't
+//! here), Spacing · Radius · Shadow · Motion (specimens; a curve plays under the
+//! pointer), Assets (pictures on a checkerboard, big in a lightbox) and
+//! Guidelines (guidelines.md with its contents). With none yet, what one is
 //! and a way to ask the designer. Each colour, type style and picture has
-//! "말하기" on hover: it goes, as a chip, to the designer's conversation
+//! "Talk" on hover: it goes, as a chip, to the designer's conversation
 //! docked at the right (`views/design_talk.rs`). ←/→ or 1–9 move between
-//! sections. Its other tab, 화면 지도, is `views/flows.rs`.
+//! sections. Its other tab, the UI map, is `views/flows.rs`.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -104,7 +104,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .child(body)
         .children(changes_popover(shell, cx))
         .children(super::compare::versions_popover(shell, cx))
-        // 수락 and 다시 부탁 wait a moment, to be taken back, as on the board.
+        // Accept and Ask again wait a moment, to be taken back, as on the board.
         .children(super::board::toast(shell, cx))
         .into_any_element()
 }
@@ -236,7 +236,7 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         }
         bar = bar.child(seg);
     }
-    // A narrow pane keeps the draft's pill and 비교하며 검토 on a strip of their
+    // A narrow pane keeps the draft's pill and Compare and review on a strip of their
     // own under the bar (`draft_strip`), so the bar's ends stay whole.
     if let Some(d) = draft.filter(|_| !narrow(ui)) {
         let viewing = current.is_some_and(ds::in_review);
@@ -386,7 +386,7 @@ fn narrow(ui: &ds::DesignUi) -> bool {
 }
 
 /// A narrow pane, the accepted system on screen and a draft of it in review:
-/// the bar's pill and 비교하며 검토, on a strip under it.
+/// the bar's pill and Compare and review, on a strip under it.
 fn draft_strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let ui = &shell.design;
@@ -702,7 +702,7 @@ fn name_button(shell: &Shell, token: &Token, cx: &mut Context<Shell>) -> AnyElem
         .into_any_element()
 }
 
-/// A contrast grade, as a small badge: AAA, AA, 큰 글자, or 미달 — with the ratio.
+/// A contrast grade, as a small badge: AAA, AA, Large, or Fails — with the ratio.
 fn grade_badge(p: Palette, ratio: f64, what: String, id: SharedString) -> AnyElement {
     let tones = crate::render::tones(&p);
     let grade = contrast::grade(ratio);
@@ -730,7 +730,7 @@ fn grade_badge(p: Palette, ratio: f64, what: String, id: SharedString) -> AnyEle
         .into_any_element()
 }
 
-// ── 개요 ──
+// ── Overview ──
 
 fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
@@ -948,7 +948,7 @@ fn type_hero(shell: &Shell, system: &DesignSystem, style: &Token) -> AnyElement 
         .into_any_element()
 }
 
-/// "Inter 없음 · Helvetica Neue로 표시" — a style's font isn't on this Mac.
+/// "No Inter here · shown in Helvetica Neue" — a style's font isn't on this Mac.
 fn font_missing(p: Palette, wanted: String, shown: String) -> impl IntoElement {
     h_flex()
         .flex_none()
@@ -964,7 +964,7 @@ fn font_missing(p: Palette, wanted: String, shown: String) -> impl IntoElement {
         .child(t!("design.font_missing", wanted = wanted, shown = shown))
 }
 
-// ── 색 ──
+// ── Colour ──
 
 /// A colour token's value in each mode it has (or its one value), parsed.
 fn modes_of(system: &DesignSystem, token: &Token) -> Vec<(Option<String>, Color)> {
@@ -1025,7 +1025,7 @@ fn asset_context(asset: &equipe_core::protocol::design::Asset) -> DesignContext 
     DesignContext::Asset { name: asset.name.clone(), path: asset.path.clone() }
 }
 
-/// "말하기" in a thing's top right corner, on hover.
+/// "Talk" in a thing's top right corner, on hover.
 fn say_corner(p: Palette, id: String, group: SharedString, ctx: DesignContext, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     div().absolute().top(px(8.)).right(px(8.)).child(super::design_talk::say(p, SharedString::from(id), group, ctx, cx))
 }
@@ -1118,7 +1118,7 @@ fn colors(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
     col.into_any_element()
 }
 
-// ── 타이포그래피 ──
+// ── Typography ──
 
 fn typography(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
@@ -1188,7 +1188,7 @@ fn typography(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> 
     col.into_any_element()
 }
 
-// ── 간격 · 모서리 · 그림자 ──
+// ── Spacing · Radius · Shadow ──
 
 fn specimen_meta(shell: &Shell, token: &Token, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
@@ -1268,7 +1268,7 @@ fn shadows(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> Any
     v_flex().child(heading(p, t!("design.section_shadow").into(), Some(t!("design.shadow_note").into()))).child(grid).into_any_element()
 }
 
-// ── 모션 ──
+// ── Motion ──
 
 /// A token's timing: how long, and on what curve — a curve alone plays
 /// for the system's first duration, a duration alone on its first curve.
@@ -1355,7 +1355,7 @@ fn motion_section(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>)
     col.into_any_element()
 }
 
-// ── 에셋 ──
+// ── Assets ──
 
 /// A checkerboard to show transparency on, light or dark: made once.
 fn checkerboard(dark: bool) -> Arc<Image> {
@@ -1501,7 +1501,7 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
     col.into_any_element()
 }
 
-/// An asset shown big over the window — or, in 화면 지도, the state on show:
+/// An asset shown big over the window — or, in the UI map, the state on show:
 /// ←/→ through the others, Esc closes.
 pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if shell.screen != Screen::Design {
@@ -1590,7 +1590,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     Some(motion::fade(backdrop, "design-lightbox-in", motion::BASE).into_any_element())
 }
 
-// ── 가이드라인 ──
+// ── Guidelines ──
 
 fn guidelines(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
@@ -1692,7 +1692,7 @@ impl Shell {
         self.design.current().is_some_and(|s| self.design.changes(&self.design_seen_key(s)).iter().any(|c| c.name() == name))
     }
 
-    /// 디자인 시스템 (the sidebar, `/design`): the screen, and the daemon asked.
+    /// Design system (the sidebar, `/design`): the screen, and the daemon asked.
     pub fn open_design(&mut self, cx: &mut Context<Self>) {
         self.screen = Screen::Design;
         if self.design.asked.is_none() {
@@ -1940,7 +1940,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "designer에게 만들어 달라고 하기": the request goes as the person's
+    /// "Ask the designer to make one": the request goes as the person's
     /// message, the way the composer sends one — to the designer, or to the
     /// PM to bring one in when the team has none — in the conversation beside.
     pub fn design_ask_designer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1948,12 +1948,12 @@ impl Shell {
     }
 
     /// The same with other words: `to_designer` to the designer, `to_pm` to
-    /// the PM when the team has none (화면 지도's asks).
+    /// the PM when the team has none (the UI map's asks).
     pub fn design_ask_with(&mut self, to_designer: String, to_pm: String, window: &mut Window, cx: &mut Context<Self>) {
         self.design_ask_beside(to_designer, to_pm, window, cx);
     }
 
-    /// "designer에게 고쳐 달라고 하기": what couldn't be read goes to the
+    /// "Ask to fix it": what couldn't be read goes to the
     /// designer (or the PM) as the person's message, a few of them named.
     pub fn design_ask_fix(&mut self, problems: &[String], map: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text = fix_message(problems, map);
@@ -1961,7 +1961,7 @@ impl Shell {
     }
 
     /// The design screen's keys: ←/→ and 1–9 move between sections (in
-    /// 화면 지도, `on_flows_key`'s); in the lightbox ←/→ step and Esc closes;
+    /// the UI map, `on_flows_key`'s); in the lightbox ←/→ step and Esc closes;
     /// Esc puts what changed away.
     pub fn on_design_key(&mut self, key: &str, m: &Modifiers, window: &Window, cx: &mut Context<Self>) -> bool {
         if self.screen != Screen::Design || m.platform || m.control || m.alt || m.function {
@@ -1995,7 +1995,7 @@ impl Shell {
         if self.design_redo.read(cx).focus_handle(cx).is_focused(window) {
             return false;
         }
-        // 수락 or 다시 부탁 held a moment: U takes it back, as on the board.
+        // Accept or Ask again held a moment: U takes it back, as on the board.
         if key == "u" && !self.board.undo.pending.is_empty() {
             self.board_undo(cx);
             return true;
@@ -2029,7 +2029,7 @@ impl Shell {
         true
     }
 
-    /// Dev tool (`snapshot.rs`): "말하기" on a colour or type style by its
+    /// Dev tool (`snapshot.rs`): "Talk" on a colour or type style by its
     /// name, or on asset `asset:<n>`.
     #[cfg(feature = "snapshot")]
     pub fn design_point_named(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {

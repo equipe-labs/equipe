@@ -1,9 +1,9 @@
-//! 디자인 셋업: how far the designer's first setup of the design system on
-//! screen has come — 브리프, 로고, 디자인 시스템, 화면 지도, 디자인 QA — in a
+//! Design setup: how far the designer's first setup of the design system on
+//! screen has come — Brief, Logo, Design system, UI map, Design QA — in a
 //! band over the design screen while a step is left: each step ticked or
 //! not, the one it is at and what that step makes, and a way to ask the
 //! designer to go on with it (the PM to bring one in, when the team has
-//! none) — or, while a ticket is already making it, "진행 중 · T-n", which
+//! none) — or, while a ticket is already making it, "Under way · T-n", which
 //! opens what is done so far. Once every step is done it is gone. The steps are the shown
 //! system's (`DesignSystem::setup`, read from its folder): a project's own,
 //! not the squad's, when they differ.
@@ -81,7 +81,7 @@ fn whose(system: &DesignSystem) -> String {
     }
 }
 
-/// The step's place while a ticket is making it: "진행 중 · T-378".
+/// The step's place while a ticket is making it: "Under way · T-378".
 pub fn working_word(ticket: equipe_core::protocol::TicketId) -> String {
     t!("design.setup_working", id = ticket)
 }
@@ -164,7 +164,7 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         );
     }
     let ask = if designer.is_some() { t!("design.setup_ask") } else { t!("design.setup_ask_pm") };
-    // "로고: 세 가지 시안 중 …", the step's name in the words' colour.
+    // "Logo: pick one of three options …", the step's name in the words' colour.
     let line = now_line(at);
     let named = line.find(label(at)).map(|from| from..from + label(at).len());
     let words = StyledText::new(line).with_highlights(named.map(|r| (r, HighlightStyle { color: Some(p.text.into()), font_weight: Some(FontWeight::MEDIUM), ..Default::default() })));
@@ -225,7 +225,7 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 }
 
 impl Shell {
-    /// "디자이너에게 이어서 부탁하기": the step the shown system's setup is at
+    /// "Ask the designer to carry on": the step the shown system's setup is at
     /// goes to the designer as the person's message, the way the empty
     /// screen's ask does — or, with no designer, to the PM to propose one —
     /// in the conversation beside.

@@ -115,8 +115,8 @@ pub fn tip_at<E: StatefulInteractiveElement + ParentElement + 'static>(el: E, p:
 }
 
 /// A tooltip as a screen reader says it: a name, what more it tells, and
-/// the keys that do the same — "찾기 ⌘K" is 찾기 with ⌘K, "web\n이 프로젝트로
-/// 전환" is web, then the rest.
+/// the keys that do the same — "Search ⌘K" is Search with ⌘K, "web\nSwitch to
+/// this project" is web, then the rest.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Spoken {
     pub name: String,

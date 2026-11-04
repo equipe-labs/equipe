@@ -35,7 +35,7 @@ fn trim_marks(word: &str) -> &str {
 }
 
 /// A sentence's end after a file's name (`listing.json.`), and Korean's
-/// particles on it (`listing.json을`), off.
+/// particles on it (Korean `listing.json을`), off.
 fn trim_tail(word: &str) -> &str {
     let mut w = trim_marks(word);
     while let Some(c) = w.chars().last() {
@@ -81,7 +81,7 @@ fn locate(written: &str, roots: &[PathBuf]) -> Option<PathBuf> {
 /// The files and folders `text` names: each code span that reads as a path,
 /// and each such word — a folder whose name has spaces taken whole when it
 /// is on this Mac under one of `roots`, or when a later word goes on with a
-/// `/` (`outputs/T-117 앱스토어 제출/shots/`).
+/// `/` (`outputs/T-117 App Store submission/shots/`).
 pub fn named(text: &str, roots: &[PathBuf]) -> Vec<Named> {
     let mut out: Vec<Named> = Vec::new();
     let mut push = |written: &str, at: Option<PathBuf>| {
@@ -151,7 +151,7 @@ pub fn named(text: &str, roots: &[PathBuf]) -> Vec<Named> {
             }
         }
     }
-    // A name alone (`A 그림 first-run.png`) beside a file named with its
+    // A name alone (`A picture first-run.png`) beside a file named with its
     // folder: looked for in that folder too, where it was handed over.
     let folders: Vec<PathBuf> = out.iter().filter_map(|n| n.at.as_ref()?.parent().map(Path::to_path_buf)).collect();
     for n in out.iter_mut().filter(|n| n.at.is_none() && !n.written.contains('/')) {

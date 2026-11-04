@@ -230,7 +230,7 @@ impl RenderOnce for Button {
 /// The ✕ of a small control that takes one thing away (a quote, a chip, a
 /// line), in a square of its own: typed as text, the font's metrics set the
 /// mark off the middle of its box and of the words beside it. `name` is what
-/// a screen reader calls it (닫기, 빼기).
+/// a screen reader calls it ("Close", "Remove").
 pub fn x_box(id: impl Into<ElementId>, color: impl Into<Hsla>, name: &str) -> Stateful<Div> {
     div().id(id).role(Role::Button).aria_label(name.to_owned()).size(px(18.)).flex_none().flex().items_center().justify_center().rounded(px(R_SM)).child(icon(Icon::X, 12., color))
 }

@@ -1,4 +1,4 @@
-//! 지표 (`metrics.rs`): the product's numbers from the services it reports to
+//! Metrics (`metrics.rs`): the product's numbers from the services it reports to
 //! — a card per metric against the period before, a banner where a service
 //! failed (its last value kept, dimmed), the form that connects one. Numbers
 //! come from the daemon's `metrics.*` alone; a key typed here is hidden, goes
@@ -35,7 +35,7 @@ const ASK_WAIT: Duration = Duration::from_secs(20);
 pub struct Inputs {
     boxes: Vec<(String, Entity<InputState>)>,
     subscriptions: Vec<Subscription>,
-    /// The connection whose "끊기" was pressed once.
+    /// The connection whose "Disconnect" was pressed once.
     disconnecting: Option<String>,
 }
 
@@ -175,7 +175,7 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .child(ui::button(p, "metrics-manage", Kind::Secondary, t!("metrics.manage")).on_click(cx.listener(|this, _, window, cx| this.metrics_open_connect(None, None, window, cx))))
 }
 
-/// "지표 · equipe-site": whose numbers these are, with what follows it under.
+/// "Metrics · equipe-site": whose numbers these are, with what follows it under.
 fn title(shell: &Shell, under: Option<String>) -> Div {
     let p = shell.palette;
     let project = shell.model.focus.clone().or_else(|| shell.metrics.connections().iter().find_map(|c| c.project.clone()));
@@ -358,8 +358,8 @@ fn title_line(p: Palette, label: String, dot: Rgba, source: String) -> Div {
         .child(h_flex().ml_auto().max_w_full().gap_1p5().items_start().child(div().flex_none().mt(px(7.)).size(px(7.)).rounded_full().bg(dot)).child(div().text_size(px(12.)).line_height(px(20.)).text_right().text_color(p.muted).child(source)))
 }
 
-/// The source and when it spoke, in the three forms: `PostHog · 오늘 07:00 갱신`,
-/// `PostHog · 11월 1일 기준`, and with no room `PostHog · 07:00`.
+/// The source and when it spoke, in the three forms: `PostHog · updated today 07:00`,
+/// `PostHog · as of Nov 1`, and with no room `PostHog · 07:00`.
 fn source_line(name: &str, fetched: u64, now: u64, as_of: Option<&str>, narrow: bool) -> String {
     let today = metrics::local_day_time(now).0;
     if let Some(day) = as_of.filter(|d| *d < today.as_str()) {
@@ -721,7 +721,7 @@ impl Shell {
         .detach();
     }
 
-    /// 지표, opened: the numbers are asked for again.
+    /// Metrics, opened: the numbers are asked for again.
     pub fn open_metrics(&mut self, cx: &mut Context<Self>) {
         self.show(Screen::Metrics, cx);
         self.metrics.flow = Flow::Dash;
@@ -789,7 +789,7 @@ impl Shell {
         self.metrics_load(cx);
     }
 
-    /// "새로고침" / "지금 다시 시도": the services are asked now, then the numbers again.
+    /// "Refresh" / "Try again now": the services are asked now, then the numbers again.
     pub fn metrics_refresh(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         if self.metrics.demo {
             return;
@@ -868,7 +868,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// 확인하고 연결: every required box filled, the values to the daemon — and out of the boxes at once.
+    /// Check and connect: every required box filled, the values to the daemon — and out of the boxes at once.
     pub fn metrics_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Flow::Connect(draft) = &self.metrics.flow else { return };
         let (Some(kind), true) = (draft.kind, !draft.sending) else { return };
@@ -919,7 +919,7 @@ impl Shell {
         });
     }
 
-    /// "연결 끊기": asked twice — the key leaves the Keychain.
+    /// "Disconnect": asked twice — the key leaves the Keychain.
     pub fn metrics_disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.metrics_ui.disconnecting.as_deref() != Some(id) {
             self.metrics_ui.disconnecting = Some(id.to_owned());

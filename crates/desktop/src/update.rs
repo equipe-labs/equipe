@@ -5,8 +5,8 @@
 //! feed every hour by itself and, with `SUAutomaticallyUpdate`, downloads a new
 //! version in the background and checks its signature. Ready, it tells our
 //! delegate — which keeps Sparkle's "install now" and shows the sidebar's
-//! "다시 시작해 업데이트" (src/relaunch.rs) — and installs it when the app
-//! quits in any case. The app menu's "업데이트 확인…" checks now.
+//! "Restart to Update" (src/relaunch.rs) — and installs it when the app
+//! quits in any case. The app menu's "Check for Updates…" checks now.
 //!
 //! Every step Sparkle takes comes to the delegate — found, downloading,
 //! downloaded, failed, the cycle's end — and goes to `relaunch` (the sidebar's
@@ -19,7 +19,7 @@
 //!
 //! The app never starts a session against one in progress: a quiet check only
 //! when Sparkle has none and no update is found, downloading or waiting
-//! (`relaunch::may_check_quietly`), and "지금 확인" with an update waiting
+//! (`relaunch::may_check_quietly`), and "Check now" with an update waiting
 //! installs it (Sparkle's own block, kept from `willInstallUpdateOnQuit`;
 //! Sparkle 2.3+ lets it be called again if a quit is cancelled) instead of
 //! starting a check.
@@ -287,7 +287,7 @@ impl Updater {
         Some(Self { controller, _delegate: delegate })
     }
 
-    /// "지금 확인": an update waiting goes in now (never a second session
+    /// "Check now": an update waiting goes in now (never a second session
     /// against it); else look, saying so in Sparkle's window either way —
     /// unless Sparkle is downloading on its own, which it then finishes.
     pub fn check(&self) {

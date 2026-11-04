@@ -144,16 +144,16 @@ pub enum Side {
 pub enum Section {
     /// A member asks for permission.
     Permission,
-    /// A member puts a decision to the person: questions with options. 결정 필요.
+    /// A member puts a decision to the person: questions with options. Decisions.
     Decide,
-    /// A ticket put down until the person does their part: 내 차례.
+    /// A ticket put down until the person does their part: Your turn.
     Waiting,
-    /// Work handed in: 검토.
+    /// Work handed in: Review.
     Review,
-    /// Suggested work to take on or drop: 제안.
+    /// Suggested work to take on or drop: Proposed.
     Proposed,
     /// Accepted, but not on main yet — and not left on its branch by the
-    /// person's choice: 수락했지만 아직 main에 안 합쳐짐.
+    /// person's choice: Accepted, not in main yet.
     NotOnMain,
 }
 
@@ -356,7 +356,7 @@ pub struct Model {
     /// The conversation with the PM open, when one the person opened is
     /// (`Side::Conversation`): it is what shows and what is said goes to.
     pub talk: Option<SessionId>,
-    /// A conversation with the PM about to start ("새 대화"), and its project
+    /// A conversation with the PM about to start ("New conversation"), and its project
     /// (`None`: the whole squad): it is made with its first message, so none
     /// is left empty.
     pub draft_talk: Option<(SessionId, Option<String>)>,
@@ -396,7 +396,7 @@ pub struct Model {
     /// another screen (`crate::yourturn`), for the cards that asked.
     pub answers: HashMap<TicketId, crate::yourturn::Answered>,
     /// Members' browser pages waiting for the person — a "verify you are
-    /// human" check, a sign-in, a code: in 나에게 until they pass or the
+    /// human" check, a sign-in, a code: in Needs you until they pass or the
     /// browser is handed back.
     pub browser_waits: Vec<BrowserWait>,
     /// Members' browsers handed to the person (`show_my_browser`), by lane,
@@ -1478,7 +1478,7 @@ impl Model {
 
     /// One of the daemon's browser events (the panel's, told here too): a
     /// member's page that starts waiting for the person, or a browser its
-    /// member hands them, goes into 나에게 and is announced; one that passed,
+    /// member hands them, goes into Needs you and is announced; one that passed,
     /// or a browser handed back, leaves.
     pub fn on_browser(&mut self, event: &Event) -> bool {
         let before = self.browser_waits.clone();
@@ -1523,7 +1523,7 @@ impl Model {
         before != self.browser_waits
     }
 
-    /// The browsers handed to the person whose tabs are known: in 나에게, on
+    /// The browsers handed to the person whose tabs are known: in Needs you, on
     /// the tab its member works in, announced the first time.
     fn settle_handed(&mut self) {
         let mut asked: Vec<(String, String)> = self.browser_asked.iter().map(|(l, w)| (l.clone(), w.clone())).collect();
@@ -1606,7 +1606,7 @@ impl Model {
     /// Everything waiting for the person, in one list, by section: requests
     /// for permission, tickets put down for them, work handed in, proposals,
     /// work accepted but not on main. The one definition the sidebar's count,
-    /// 나에게 and notifications all read. Tickets follow the project in focus
+    /// Needs you and notifications all read. Tickets follow the project in focus
     /// and leave once the person acted on them; requests always show.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();

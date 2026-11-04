@@ -1,14 +1,14 @@
 //! The card a ticket put down for the person is answered on — the same in
-//! the conversation and in the Inbox's peek: a header (내 차례 · T-n · who ·
+//! the conversation and in the Inbox's peek: a header (Your turn · T-n · who ·
 //! the title), the asks numbered, each with what it wants back — a box for
-//! words (a quick "괜찮음" where an OK is asked for) with "네가 정해 줘" and
-//! "모르겠어요" beside it, or for a thing to do "했음", "대신 해 줘" and
-//! "나중에" — one at a time, and "메모 추가" for a word on that ask; the files
+//! words (a quick "Looks good" where an OK is asked for) with "You decide" and
+//! "I don't know" beside it, or for a thing to do "Done", "Do it for me" and
+//! "Later" — one at a time, and "Add a note" for a word on that ask; the files
 //! it names as chips that open; under them a box for anything else to say to
-//! the member, and at its foot "답 보내기" (⌘↵), which sends what is set in one
+//! the member, and at its foot "Send answers" (⌘↵), which sends what is set in one
 //! message — what isn't goes as not yet, and stays open on the ticket — and
-//! puts the member back to work. Sent, it folds to one line, "답함 · 3개 ·
-//! 방금", that opens to what was sent; answered on another screen, it says so
+//! puts the member back to work. Sent, it folds to one line, "Answered · 3 ·
+//! just now", that opens to what was sent; answered on another screen, it says so
 //! the moment the ticket moves. The rules are `crate::yourturn`'s.
 
 use std::collections::HashMap;
@@ -44,7 +44,7 @@ pub enum Place {
 }
 
 /// A key on the card besides its boxes: an ask's pick (by its place among
-/// the ask's picks), its quick OK, its "메모 추가"; the card's send button.
+/// the ask's picks), its quick OK, its "Add a note"; the card's send button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Slot {
     Pick(u8),
@@ -62,7 +62,7 @@ pub struct TurnUi {
     pub fields: HashMap<(TicketId, usize), Entity<TextareaState>>,
     /// What is attached to each answer — a file the member asked for.
     pub strips: HashMap<(TicketId, usize), crate::attach::Strip>,
-    /// Each ask's note, once "메모 추가" opened it.
+    /// Each ask's note, once "Add a note" opened it.
     pub notes: HashMap<(TicketId, usize), Entity<TextareaState>>,
     /// The words to the member, at the card's foot.
     pub free: HashMap<TicketId, Entity<TextareaState>>,
@@ -180,7 +180,7 @@ impl Card {
     }
 
     /// Everything Tab goes through, in order: each ask's box, its picks, its
-    /// "메모 추가" and its note; the words to the member; the send button.
+    /// "Add a note" and its note; the words to the member; the send button.
     fn tab_order(&self, cx: &App) -> Vec<FocusHandle> {
         let mut out = Vec::new();
         for n in 0..self.asks.len() {
@@ -479,7 +479,7 @@ fn pick_words(pick: Pick, name: &str) -> (String, String) {
 }
 
 /// One ask: its number, its words (Markdown), the files it names, its box,
-/// its picks and "메모 추가", and its note when open.
+/// its picks and "Add a note", and its note when open.
 fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElement {
     let p = d.p;
     let key = d.key;
@@ -519,7 +519,7 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
             .on_drop(super::composer::on_answer_drop(to, d.handle.clone()))
             .when(picked, |c| c.opacity(0.45))
     });
-    // What is attached to the answer — a file the member asked for — and "첨부".
+    // What is attached to the answer — a file the member asked for — and "Attach".
     let attached = (answering && want != Want::Do && card.fields.get(n).is_some_and(Option::is_some))
         .then(|| super::composer::answer_attachments(p, to, hash(key, n), card.attached.get(n).cloned().unwrap_or_default(), d.handle.clone()));
     let choices = answering.then(|| choices(card, d, n, want));
@@ -543,7 +543,7 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
 }
 
 /// An ask's choices: its quick OK where it asks for one, its picks (one at
-/// a time, the chosen one marked), and "메모 추가".
+/// a time, the chosen one marked), and "Add a note".
 fn choices(card: &Card, d: &Draw<'_>, n: usize, want: Want) -> impl IntoElement {
     let p = d.p;
     let id = card.ticket;
@@ -765,7 +765,7 @@ fn settled(card: &Card, d: Draw<'_>, cx: &mut App) -> AnyElement {
     crate::motion::fade(v_flex().w_full().child(line).children(body), ("turn-settled", render::hash_of((key, format!("{:?}", card.phase)))), crate::motion::BASE).into_any_element()
 }
 
-/// What a ticket left open, under its head on the peek: "남은 것 N" and the asks.
+/// What a ticket left open, under its head on the peek: "N left open" and the asks.
 pub fn remaining(p: Palette, t: &Ticket) -> Option<AnyElement> {
     if t.remaining.is_empty() || t.status == TicketStatus::Waiting || t.status.is_closed() {
         return None;
@@ -898,7 +898,7 @@ impl Shell {
         asks::answer_message(&asks, &answers)
     }
 
-    /// "답 보내기": what is set to the member in one message; the ticket goes
+    /// "Send answers": what is set to the member in one message; the ticket goes
     /// back to it, and the card says it was answered.
     pub fn turn_send(&mut self, id: TicketId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.model.tickets.iter().find(|t| t.id == id && t.status == TicketStatus::Waiting).cloned() else { return };
@@ -928,7 +928,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// A quick answer ("괜찮음") into ask `n`'s box.
+    /// A quick answer ("Looks good") into ask `n`'s box.
     pub fn turn_say(&mut self, id: TicketId, n: usize, words: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.turn.fields.get(&(id, n)).cloned() {
             field.update(cx, |s, cx| {
@@ -973,7 +973,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "메모 추가": a box for a word on ask `n`, its keys at once; "메모 빼기"
+    /// "Add a note": a box for a word on ask `n`, its keys at once; "Remove note"
     /// takes it away, words and all.
     pub fn turn_note(&mut self, id: TicketId, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.turn.notes.remove(&(id, n)).is_some() {

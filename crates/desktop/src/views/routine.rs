@@ -1,8 +1,8 @@
 //! A routine the PM proposed, drawn: the card docked above the composer in
-//! the PM's conversation — "정기 업무 제안", its name, when it would run
-//! ("매주 월 09:00"), what the PM would be asked each time, the PM's reason,
-//! who proposed it, and [켜기 ⌘↵] [아니요] — and the same card in 나에게's
-//! peek, under "결정 필요". Turned on, it joins 정기 업무 (`views::routines`);
+//! the PM's conversation — "Routine proposal", its name, when it would run
+//! ("Every Mon 09:00"), what the PM would be asked each time, the PM's reason,
+//! who proposed it, and [Turn on ⌘↵] [No] — and the same card in the Inbox's
+//! peek, under "Decisions". Turned on, it joins Routines (`views::routines`);
 //! decided, the card leaves everywhere. The rules are `crate::routine`'s.
 
 use equipe_core::protocol::routines::RoutineProposal;
@@ -47,7 +47,7 @@ impl Shell {
     }
 
     /// ⌘⏎ turns on the proposal on show: above an empty composer when no
-    /// other card has the keys, or picked in 나에게's peek. True when taken.
+    /// other card has the keys, or picked in the Inbox's peek. True when taken.
     pub fn on_routine_key(&mut self, key: &str, m: &Modifiers, cx: &mut Context<Self>) -> bool {
         if key != "enter" || !m.platform || m.shift || m.control || m.alt || !self.can_act() {
             return false;
@@ -76,7 +76,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     Some(motion::rise(div().w_full().mb_3().child(body), ("routine-in", id)).into_any_element())
 }
 
-/// The card in 나에게's peek.
+/// The card in the Inbox's peek.
 pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     v_flex()
@@ -90,14 +90,14 @@ pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 나에게's row for a proposal: its name and when, who proposed it.
+/// The Inbox's row for a proposal: its name and when, who proposed it.
 pub fn row_text(shell: &Shell, id: u64) -> Option<(String, String, Rgba)> {
     let proposal = shell.model.routine_asks.get(id)?;
     let (name, color) = who(shell, proposal);
     Some((t!("routine_ask.row", title = proposal.routine.title, when = schedule_words(proposal.routine.when)), name, color))
 }
 
-/// The mark 나에게 shows a proposed routine with.
+/// The mark the Inbox shows a proposed routine with.
 pub fn mark(p: Palette) -> AnyElement {
     tip(div().id("routine-mark").size(px(14.)).flex_none().flex().items_center().justify_center().child(icon(Icon::Clock, 13., p.accent)), p, t!("routine_ask.title"), None).into_any_element()
 }

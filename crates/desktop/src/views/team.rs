@@ -1,10 +1,10 @@
 //! A change to the team the PM proposed, drawn: the card docked above the
-//! composer in the PM's conversation — "팀 변경 제안", what it does and what
+//! composer in the PM's conversation — "Team change", what it does and what
 //! waits for it, the PM's reason, the details (role, model, what it picks up
 //! first), that it runs on the person's plan alongside the team, and
-//! [추가하기 ⌘↵] [아니요] — and the same card in 나에게's peek, under "결정
-//! 필요". Decided, it leaves everywhere; the daemon's notice in the PM's
-//! conversation ("팀에 mobile-2을(를) 추가했어요") is what remains. The rules
+//! [Add ⌘↵] [No] — and the same card in the Inbox's peek, under "Decisions".
+//! Decided, it leaves everywhere; the daemon's notice in the PM's
+//! conversation ("Added mobile-2 to the team") is what remains. The rules
 //! are `crate::team`'s.
 
 use equipe_core::protocol::team::{Change, TeamChange};
@@ -48,7 +48,7 @@ impl Shell {
     }
 
     /// ⌘⏎ approves the change on show: above an empty composer when no other
-    /// card has the keys, or picked in 나에게's peek. True when taken.
+    /// card has the keys, or picked in the Inbox's peek. True when taken.
     pub fn on_team_key(&mut self, key: &str, m: &Modifiers, cx: &mut Context<Self>) -> bool {
         if key != "enter" || !m.platform || m.shift || m.control || m.alt || !self.can_act() {
             return false;
@@ -77,7 +77,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     Some(motion::rise(div().w_full().mb_3().child(body), ("team-in", id)).into_any_element())
 }
 
-/// The card in 나에게's peek.
+/// The card in the Inbox's peek.
 pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     v_flex()
@@ -91,14 +91,14 @@ pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 나에게's row for a change: its headline, who proposed it.
+/// The Inbox's row for a change: its headline, who proposed it.
 pub fn row_text(shell: &Shell, id: u64) -> Option<(String, String, Rgba)> {
     let change = shell.model.team.get(id)?;
     let (name, color) = who(shell, change);
     Some((headline(shell, change), name, color))
 }
 
-/// The mark 나에게 shows a change to the team with.
+/// The mark the Inbox shows a change to the team with.
 pub fn mark(p: Palette) -> AnyElement {
     tip(div().id("team-mark").size(px(14.)).flex_none().flex().items_center().justify_center().child(icon(Icon::Users, 13., p.accent)), p, t!("team.title"), None).into_any_element()
 }

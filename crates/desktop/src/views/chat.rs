@@ -88,7 +88,7 @@ pub struct Chat {
     shown: Option<Shown>,
     /// What each of `blocks` is about (`None`: the whole squad, or not said).
     about: Rc<Vec<Option<String>>>,
-    /// The conversation follows the project in focus (settings ▸ 일반).
+    /// The conversation follows the project in focus (settings ▸ General).
     pub follow: bool,
     /// The list was drawn anew for another slice: it fades in (by serial).
     faded_in: Option<u64>,
@@ -125,7 +125,7 @@ pub struct Chat {
     pub picked: Option<(String, u64)>,
     /// Bubbles taken back, fading out until the daemon says they are gone.
     pub leaving: Rc<HashSet<String>>,
-    /// Tab reaches the summary band's "다시 시도" and its close.
+    /// Tab reaches the summary band's "Try again" and its close.
     pub compact_focus: (FocusHandle, FocusHandle),
 }
 
@@ -1771,7 +1771,7 @@ fn keyed_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: impl In
 
 /// Your message, as Claude's apps show it: a quiet bubble on the right, as
 /// wide as your words up to most of the column, no name over it; what it
-/// attached just above it, its start only when it is long ("더 보기"), and on
+/// attached just above it, its start only when it is long ("Show more"), and on
 /// hover a small row of actions beneath.
 #[allow(clippy::too_many_arguments)]
 fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<String>, heard: bool, cx: &mut App) -> AnyElement {
@@ -1880,7 +1880,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
 }
 
 /// A routine that ran — handed over as the person's message, on its schedule
-/// or their click: not their bubble but a heading, "정기 업무 · 디자인 리뷰", that
+/// or their click: not their bubble but a heading, "Routine · Design review", that
 /// opens on what it asked. What answers it comes under it.
 fn routine_row(rows: &Rows, key: u64, text: &str, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
@@ -2223,7 +2223,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// The conversation follows the project in focus, or shows whole (settings ▸ 일반).
+    /// The conversation follows the project in focus, or shows whole (settings ▸ General).
     pub fn set_follow_project(&mut self, on: bool, cx: &mut Context<Self>) {
         self.remembered.whole_conversation = !on;
         self.remembered.save(&equipe_providers::credentials::equipe_home());
@@ -2261,7 +2261,7 @@ impl Shell {
     }
 
     /// Ask the last thing said again.
-    /// "이어서 하기" on a stopped turn: the member is asked to carry on from
+    /// "Carry on" on a stopped turn: the member is asked to carry on from
     /// where it stopped, as the person's message.
     pub fn resume_stopped(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.set_text(t!("chat.resume_words"), window, cx);
@@ -2375,7 +2375,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 }
 
 /// Whether block `ix` is a turn's "Stopped." with nothing the person said
-/// after it: the place for "이어서 하기".
+/// after it: the place for "Carry on".
 fn resumable(blocks: &[Block], ix: usize) -> bool {
     let stopped = equipe_core::i18n::note(crate::i18n::lang(), equipe_core::protocol::transcript::notes::STOPPED);
     matches!(blocks.get(ix), Some(Block::Note(text)) if *text == stopped) && !blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_)))

@@ -1,4 +1,4 @@
-//! 지표: a product's numbers, read from the daemon (`metrics.*`, docs/METRICS.md).
+//! Metrics: a product's numbers, read from the daemon (`metrics.*`, docs/METRICS.md).
 //! This is the screen's model — what the daemon said, turned into what is drawn
 //! (cards, banners, sparklines) — and none of its drawing (`views/metrics.rs`).
 //!
@@ -112,7 +112,7 @@ pub fn month_day(day: &str) -> Option<(u32, u32)> {
     ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((month, day))
 }
 
-/// A day in words, in the person's language order (`11월 2일`).
+/// A day in words, in the person's language order (`Nov 2`, Korean `11월 2일`).
 pub fn day_words(day: &str) -> String {
     match month_day(day) {
         Some((month, day)) => equipe_core::t!("metrics.date", month = month, day = day),
@@ -262,7 +262,7 @@ pub fn needs_key(code: ErrorCode) -> bool {
     matches!(code, ErrorCode::Auth | ErrorCode::Keychain)
 }
 
-/// The days of a period, as the screen words them: `10월 27일 ~ 11월 2일`.
+/// The days of a period, as the screen words them: `Oct 27 – Nov 2`.
 pub fn range_words(query: &QueryResult) -> String {
     equipe_core::t!("metrics.range", from = day_words(&query.from), to = day_words(&query.to), previous_from = day_words(&query.previous_from), previous_to = day_words(&query.previous_to))
 }
@@ -347,7 +347,7 @@ pub fn bar_height(value: f64, top: f64, h: f32) -> f32 {
 }
 
 /// The source's words in a card's title line, in the three forms the screen
-/// uses: `오늘 07:00 갱신` (today), `11월 1일 기준` (an earlier day) — the
+/// uses: `updated today 07:00` (today), `as of Nov 1` (an earlier day) — the
 /// bare time is for a card with no room.
 pub fn updated(at: u64, now: u64) -> Updated {
     let (day, time) = local_day_time(at);

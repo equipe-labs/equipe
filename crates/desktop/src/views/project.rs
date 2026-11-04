@@ -443,7 +443,7 @@ impl Shell {
         true
     }
 
-    /// A project's page, from its name in the sidebar (or ⌃1–⌃9, 현황).
+    /// A project's page, from its name in the sidebar (or ⌃1–⌃9, Status).
     pub fn open_project_page(&mut self, name: String, _window: &mut Window, cx: &mut Context<Self>) {
         // Another project: its conversations first — its work when it has none.
         if self.board.project_page.as_deref() != Some(name.as_str()) {

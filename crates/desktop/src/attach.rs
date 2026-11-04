@@ -766,7 +766,7 @@ impl Strip {
         }
     }
 
-    /// Its number among the pictures (`[이미지 2]`), for a picture.
+    /// Its number among the pictures (`[Image 2]`), for a picture.
     pub fn picture_number(&self, id: u64) -> Option<usize> {
         self.items.iter().filter(|i| i.kind == Kind::Image).position(|i| i.id == id).map(|n| n + 1)
     }

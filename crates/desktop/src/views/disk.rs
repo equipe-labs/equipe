@@ -1,5 +1,5 @@
-//! "디스크": the banner while the disk runs short, and the panel it opens —
-//! from the banner, settings, `/disk` and a news row's 정리하기. The panel shows
+//! "Disk": the banner while the disk runs short, and the panel it opens —
+//! from the banner, settings, `/disk` and a news row's Clean up. The panel shows
 //! the free space with a bar, the fixes worth making (most room first), and
 //! what uses the space, grouped; a fix of equipe's asks first with the exact
 //! list and its total, then says what it gave back. What only the person can
@@ -26,7 +26,7 @@ use crate::Shell;
 const WIDTH: f32 = 720.;
 /// Rows a group lists before it sums up the rest.
 const ROWS: usize = 6;
-/// How long "복사됨" stays on the button.
+/// How long "Copied" stays on the button.
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 /// The colour a level is drawn in: the bar, the pill, the banner's mark.
@@ -482,7 +482,7 @@ fn centered(p: Palette, id: &'static str, mark: AnyElement, title: String, text:
 // ── what the panel does ──
 
 impl Shell {
-    /// The banner's 정리하기, settings' 디스크, `/disk`, a news row: the panel opens and the daemon looks.
+    /// The banner's Clean up, settings' Disk, `/disk`, a news row: the panel opens and the daemon looks.
     pub fn open_disk(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         crate::tips::hide(cx);
         self.board.popup = None;
@@ -521,7 +521,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// A command (or a path) to the clipboard, "복사됨" on its button for a moment.
+    /// A command (or a path) to the clipboard, "Copied" on its button for a moment.
     pub fn copy_disk(&mut self, text: &str, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
         self.disk.copied = Some((text.to_owned(), Instant::now()));

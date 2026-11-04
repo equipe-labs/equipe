@@ -15,7 +15,7 @@ use crate::target::SshHost;
 /// A computer on the tailnet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
-    /// What its owner calls it ("Abel의 Mac mini").
+    /// What its owner calls it ("Abel's Mac mini").
     pub name: String,
     /// Its MagicDNS name, without the last dot (`tinums-mac-mini.tail3383cf.ts.net`).
     pub dns: String,

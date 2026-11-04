@@ -1,9 +1,9 @@
 //! The sidebar, after Claude's: a strip by the traffic lights (hide ⌘\,
-//! search ⌘K, back and forward), then a few quiet rows — 새 메시지 ⌘N,
-//! PM 대화, 나에게 (a badge), 작업 중 (a count), 모든 일 — and the live work as
+//! search ⌘K, back and forward), then a few quiet rows — New message ⌘N,
+//! PM, Inbox (a badge), In progress (a count), All work — and the live work as
 //! Claude lists sessions: under a header per project, one line each for what
 //! a member is at now (a spinner) and what waits on the person (an orange
-//! dot), the title cut with an ellipsis, five at most and "+N개 더". A
+//! dot), the title cut with an ellipsis, five at most and "+N more". A
 //! project with nothing live is its header alone; its name switches the
 //! project slice, its chevron folds it. Finished work is one line at the
 //! list's foot. The team is pinned under the list, always in reach, then the
@@ -88,12 +88,12 @@ pub const TEAM_ROW: f32 = 28.;
 pub const TEAM_SHOWN: usize = 6;
 /// A subagent's row under its member, shorter.
 pub const SUB_ROW: f32 = 22.;
-/// A member shows this many of its subagents as rows, then "+N개 더".
+/// A member shows this many of its subagents as rows, then "+N more".
 pub const SUBS_SHOWN: usize = 3;
 /// The subagents' rows always have room for this many, however many members.
 const SUB_ROOM: usize = 6;
 
-/// A project taken off the squad, while "되돌리기" can put it back.
+/// A project taken off the squad, while "Undo" can put it back.
 #[derive(Debug, Clone)]
 pub struct Removed {
     pub name: String,
@@ -106,7 +106,7 @@ pub struct Removed {
 pub enum Popup {
     /// The squads and machines.
     Account,
-    /// Every subagent of a member at work, as "+N개 더" opens them.
+    /// Every subagent of a member at work, as "+N more" opens them.
     Subagents(SessionId),
 }
 
@@ -221,7 +221,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 this.open_side_menu(Menu::Inbox, cx);
             }
         })))
-        // 진행 상황: a red dot once work under way needs a look.
+        // Progress: a red dot once work under way needs a look.
         .child(
             nav("nav-working", glyph(IconName::LoaderCircle, progress_on), t!("progress.title").into(), 0, working, progress_on)
                 .when(risky > 0, |r| r.child(div().flex_none().size(px(7.)).rounded_full().bg(p.danger())))
@@ -231,7 +231,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     }
                 })),
         )
-        // The squad's other screens, named, behind "더 보기".
+        // The squad's other screens, named, behind "More".
         .children(more_rows(shell, cx));
 
     // A group per project, its conversations under it; what is live in it
@@ -243,7 +243,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     if !projects.is_empty() || !model.projects.is_empty() {
         list.push(projects_heading(shell, cx));
     }
-    // Every project with something in it; the quiet ones past a few behind "+N개 더".
+    // Every project with something in it; the quiet ones past a few behind "+N more".
     let talked: Vec<bool> = projects.iter().map(|g| !g.is_quiet() || g.name.as_ref().is_some_and(|n| model.conversations().iter().any(|l| l.project.as_deref() == Some(n.as_str())))).collect();
     let (shown_groups, hidden) = shown_projects(&talked, shell.board.side_projects_all, PROJECTS_SHOWN);
     let mut after_rows = false;
@@ -383,7 +383,7 @@ enum Glyph {
     Own(crate::icons::Icon),
 }
 
-/// Whether one of the screens behind "더 보기" is on: then they show, so the
+/// Whether one of the screens behind "More" is on: then they show, so the
 /// person sees where they are.
 fn on_more(shell: &Shell) -> bool {
     let menu = shell.board.view.menu;
@@ -391,8 +391,8 @@ fn on_more(shell: &Shell) -> bool {
         || (shell.screen == Screen::Board && matches!(menu, Menu::All | Menu::View(_)))
 }
 
-/// The squad's other screens — every ticket, 현황, 로드맵, 지표, 디자인, what
-/// was finished, the ideas kept — named, one row each, behind "더 보기".
+/// The squad's other screens — every ticket, Status, Roadmap, Metrics, Design, what
+/// was finished, the ideas kept — named, one row each, behind "More".
 fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
     let open = shell.board.side_more || on_more(shell);
@@ -469,7 +469,7 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     rows
 }
 
-/// "프로젝트", over the squad's projects, and its "+" (the same as the
+/// "Projects", over the squad's projects, and its "+" (the same as the
 /// project list's "Add a project…").
 fn projects_heading(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
@@ -599,7 +599,7 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
         None => div().size(px(8.)).rounded_full().border_1().border_color(p.muted).into_any_element(),
     };
     let name_color = if focused { p.text } else { p.text2 };
-    // Waiting on the person: its share of 확인 필요, so the rows add up to it.
+    // Waiting on the person: its share of Needs you, so the rows add up to it.
     let waiting = shell.model.needs_by_project().get(&g.name).copied().unwrap_or(0);
     // One sign at the end: waiting on the person (an orange badge), else work
     // that needs a look (a red dot), else at work (a spinner).
@@ -777,7 +777,7 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
     rows
 }
 
-/// A project's conversations with the PM shown at once; the rest behind "+N개 더".
+/// A project's conversations with the PM shown at once; the rest behind "+N more".
 const TALKS_SHOWN: usize = 5;
 
 /// A conversation with the PM: a spinner while it answers, its first words,
@@ -825,7 +825,7 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
         .into_any_element()
 }
 
-/// "+N개 더" under the projects shown, or "접기" once all are.
+/// "+N more" under the projects shown, or "Show fewer" once all are.
 fn projects_more_row(shell: &Shell, hidden: usize, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let words = if shell.board.side_projects_all { t!("sidebar.fewer").to_owned() } else { t!("sidebar.more", n = hidden) };
@@ -1000,7 +1000,7 @@ pub fn remove_ask(model: &Model, name: &str, path: std::path::PathBuf) -> crate:
 }
 
 /// Every project with something in it stays; past `cap` the quiet ones go
-/// behind "+N개 더", unless all are asked for. The indices shown, in order,
+/// behind "+N more", unless all are asked for. The indices shown, in order,
 /// and how many are behind.
 pub fn shown_projects(busy: &[bool], all: bool, cap: usize) -> (Vec<usize>, usize) {
     if all || busy.len() <= cap {
@@ -1021,13 +1021,13 @@ pub fn shown_projects(busy: &[bool], all: bool, cap: usize) -> (Vec<usize>, usiz
     (shown, hidden)
 }
 
-/// Projects shown before "+N개 더", the busy ones always.
+/// Projects shown before "+N more", the busy ones always.
 const PROJECTS_SHOWN: usize = 6;
 /// How far a group's conversations sit in from its header: each mark under
 /// the group's own, each title under its name.
 const CHILD_INDENT: f32 = MARK_BOX + 8.;
 
-/// How long "뺐어요 · 되돌리기" stays.
+/// How long "Removed · Undo" stays.
 const REMOVED_SHOWN: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// A row's frame: full width less the insets, rounded, a soft fill when open.
@@ -1066,8 +1066,8 @@ fn mark_element(p: Palette, mark: Mark, turn: f32) -> AnyElement {
     }
 }
 
-/// The list's last line: "최근 끝남 · 오늘 N ›" — what finished today, local
-/// time — or, nothing yet today, "최근 끝남 ›", muted. It opens 모든 일 on the
+/// The list's last line: "Recently done · N today ›" — what finished today, local
+/// time — or, nothing yet today, "Recently done ›", muted. It opens All work on the
 /// finished.
 fn done_row(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
@@ -1109,7 +1109,7 @@ fn ideas_row(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 /// the rest scrolling inside. A click opens its conversation. Under a member
 /// at work, the subagents it handed work to, a short row each, easing in as
 /// they start and out as they hand back (`SubMotion`); three at most, then
-/// "+N개 더" — fewer when the block would outgrow its height, the members'
+/// "+N more" — fewer when the block would outgrow its height, the members'
 /// rows staying in sight.
 fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
@@ -1331,7 +1331,7 @@ fn child_room(members: usize) -> f32 {
     (TEAM_SHOWN.saturating_sub(members) as f32 * TEAM_ROW).max(SUB_ROOM as f32 * SUB_ROW)
 }
 
-/// How many rows `n` subagents take with `cap` shown: those, and "+N개 더"
+/// How many rows `n` subagents take with `cap` shown: those, and "+N more"
 /// for the rest. At `cap` 0 none: the member's row counts them.
 pub fn sub_rows(n: usize, cap: usize) -> usize {
     if cap == 0 || n == 0 { 0 } else { n.min(cap) + usize::from(n > cap) }
@@ -1401,7 +1401,7 @@ fn sub_leaving_row(p: Palette, gone: &SubLeaving) -> AnyElement {
         .into_any_element()
 }
 
-/// "+N개 더": the rest of a member's subagents, all of them in a popover.
+/// "+N more": the rest of a member's subagents, all of them in a popover.
 fn sub_more_row(p: Palette, member: SessionId, more: usize, cx: &mut Context<Shell>) -> AnyElement {
     sub_shell(p, SharedString::from(format!("sub-more-{member}")))
         .cursor_pointer()
@@ -1422,7 +1422,7 @@ pub enum TeamState {
     Compacting(u64),
     /// It asks the person's permission.
     Asks,
-    /// Its ticket waits on the person: 내 차례.
+    /// Its ticket waits on the person: Your turn.
     YourTurn,
     Resting,
     Closed,
@@ -1440,7 +1440,7 @@ impl TeamState {
         }
     }
 
-    /// "작업 중 · T-12", "내 차례", "쉬는 중".
+    /// "Working · T-12", "Your turn", "Idle".
     pub fn words(self) -> String {
         match self {
             TeamState::Working(Some(id)) => t!("sidebar.working_on", id = id),
@@ -1461,12 +1461,12 @@ impl TeamState {
 
 /// Someone on the team, compact: a spinner at work, the orange dot when it
 /// waits on the person, else its colour; the name; where it stands, muted —
-/// and, on the pointer, "대화하기". A click opens its conversation.
+/// and, on the pointer, "Talk". A click opens its conversation.
 fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let (_, hue) = crate::theme::look(&member.role, &member.name);
     let side = if Model::is_pm(member) { Side::Pm } else { Side::Member(member.session) };
-    // The PM's conversation lights PM 대화 above; here only the others'.
+    // The PM's conversation lights the PM row above; here only the others'.
     let on = side != Side::Pm && shell.screen == Screen::Chat && shell.model.opened.is_none() && shell.model.side_open() == Some(side);
     let session = member.session;
     let state = TeamState::of(&shell.model, member);
@@ -1959,7 +1959,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
 }
 
 impl Shell {
-    /// "+N개 더" under a member: all its subagents, or away again.
+    /// "+N more" under a member: all its subagents, or away again.
     pub fn toggle_subagents(&mut self, member: SessionId, cx: &mut Context<Self>) {
         self.toggle_popup(Popup::Subagents(member), cx);
     }
@@ -2058,7 +2058,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// ⌘K: find anything — 모든 일, its search box.
+    /// ⌘K: find anything — All work, its search box.
     pub fn search_everything(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_side_menu(Menu::All, cx);
         self.board.search.update(cx, |s, cx| s.focus(window, cx));
