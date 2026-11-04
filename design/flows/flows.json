@@ -1,0 +1,1282 @@
+{
+  "note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). Korean UI, as the person's Mac; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk`: `flows record` plays a walk in a browser, which can't drive the app.",
+  "flows": [
+    {
+      "id": "first-run",
+      "title": "First run",
+      "summary": "A Mac with no squad: the usage-data question, git, the AI (Claude Code install and sign-in), then the first squad. Each step is held by the snapshot tool's `setup:` without a daemon, as a Mac with no squad has none.",
+      "screens": [
+        {
+          "id": "usage-data",
+          "title": "Anonymous usage data",
+          "note": "Asked once, after the first run or the first open after the update; two buttons of the same weight.",
+          "source": [
+            "crates/desktop/src/views/telemetry.rs"
+          ],
+          "expects": [
+            "default",
+            "long"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: usage data unanswered"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: usage data unanswered; EQUIPE_LANG=de"
+            }
+          ]
+        },
+        {
+          "id": "git",
+          "title": "Git (developer tools)",
+          "note": "Shown only on a Mac without Apple's developer tools.",
+          "source": [
+            "crates/desktop/src/views/setup.rs",
+            "crates/desktop/src/setup.rs"
+          ],
+          "expects": [
+            "default",
+            "loading"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:nogit`; no daemon"
+            },
+            {
+              "id": "loading",
+              "label": "Loading / under way",
+              "kind": "loading",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:gitasked`; no daemon"
+            }
+          ]
+        },
+        {
+          "id": "ai",
+          "title": "AI setup (Claude Code)",
+          "note": "Install, sign in, ready. The install error is a canned curl failure.",
+          "source": [
+            "crates/desktop/src/views/setup.rs",
+            "crates/desktop/src/setup.rs",
+            "crates/desktop/src/engines.rs"
+          ],
+          "expects": [
+            "default",
+            "error",
+            "loading",
+            "long",
+            "success"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:missing`; no daemon"
+            },
+            {
+              "id": "confirm",
+              "label": "Install confirmed before it runs",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:confirm`; no daemon"
+            },
+            {
+              "id": "loading",
+              "label": "Loading / under way",
+              "kind": "loading",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:installing`; no daemon"
+            },
+            {
+              "id": "error",
+              "label": "Error",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:failed`; no daemon"
+            },
+            {
+              "id": "signedout",
+              "label": "Installed, signed out",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:signedout`; no daemon"
+            },
+            {
+              "id": "waiting",
+              "label": "Waiting for the browser sign-in",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:waiting`; no daemon"
+            },
+            {
+              "id": "success",
+              "label": "Done",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:ready`; no daemon"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:missing`; no daemon; EQUIPE_LANG=de"
+            }
+          ]
+        },
+        {
+          "id": "squad",
+          "title": "First squad",
+          "source": [
+            "crates/desktop/src/views/welcome.rs"
+          ],
+          "expects": [
+            "default",
+            "error",
+            "loading"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:squad`; no daemon"
+            },
+            {
+              "id": "loading",
+              "label": "Loading / under way",
+              "kind": "loading",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:creating;wait:300;scroll:20,-80`; no daemon"
+            },
+            {
+              "id": "error",
+              "label": "Error",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: script `setup:error;wait:300;scroll:20,-80`; no daemon"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "inbox",
+      "title": "Inbox (나에게) · decisions · permissions",
+      "summary": "What waits for the person: a member's questions, permission requests, a ticket put down for them, a team change, a routine, work to confirm.",
+      "screens": [
+        {
+          "id": "inbox",
+          "title": "나에게 (the inbox)",
+          "source": [
+            "crates/desktop/src/views/sidebar.rs",
+            "crates/desktop/src/views/board.rs",
+            "crates/desktop/src/views/peek.rs",
+            "crates/desktop/src/board.rs"
+          ],
+          "expects": [
+            "default",
+            "empty",
+            "long"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `menu:inbox`"
+            },
+            {
+              "id": "empty",
+              "label": "Empty",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_EMPTY=1 FAKE_ASKS=0; script `menu:inbox`"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: script `menu:inbox`; EQUIPE_LANG=de"
+            }
+          ]
+        },
+        {
+          "id": "decision",
+          "title": "A member's questions (decision card)",
+          "source": [
+            "crates/desktop/src/views/decide.rs",
+            "crates/desktop/src/decide.rs",
+            "crates/desktop/src/visuals.rs",
+            "crates/desktop/src/views/visuals.rs"
+          ],
+          "expects": [
+            "default",
+            "success"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DECIDE=1; script `menu:inbox;wait:600;dpick:9001`"
+            },
+            {
+              "id": "pictures",
+              "label": "With pictures",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DECIDE=logo; script `menu:inbox;wait:600;dpick:9003`"
+            },
+            {
+              "id": "success",
+              "label": "Answered: the next card comes up in the conversation",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DECIDE=1 FAKE_ASKS=0; script `menu:inbox;wait:600;dpick:9001;dkey:1;dkey:enter;wait:300;dkey:1;dkey:enter;wait:1500;chat;wait:800;decided`"
+            }
+          ]
+        },
+        {
+          "id": "permission",
+          "title": "Permission requests",
+          "note": "Allow once (Y/A), always (⇧A), decline (N).",
+          "source": [
+            "crates/desktop/src/views/approvals.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ASKS=3 FAKE_EMPTY=1; script `menu:inbox`"
+            }
+          ]
+        },
+        {
+          "id": "your-turn",
+          "title": "A ticket put down for the person",
+          "source": [
+            "crates/desktop/src/views/yourturn.rs",
+            "crates/desktop/src/yourturn.rs"
+          ],
+          "expects": [
+            "default",
+            "long"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_TURN=1; script `menu:inbox;wait:600;ppick:117`"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_TURN=files; script `menu:inbox;wait:600;ppick:117`"
+            }
+          ]
+        },
+        {
+          "id": "team-change",
+          "title": "A change to the team",
+          "source": [
+            "crates/desktop/src/views/team.rs",
+            "crates/desktop/src/team.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_TEAM=1; script `menu:inbox;wait:600;tpick:7001`"
+            }
+          ]
+        },
+        {
+          "id": "routine",
+          "title": "A routine the PM proposes",
+          "source": [
+            "crates/desktop/src/views/routine.rs",
+            "crates/desktop/src/routine.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ROUTINE=1; script `menu:inbox;wait:600;rpick:8001`"
+            }
+          ]
+        },
+        {
+          "id": "accept",
+          "title": "Work to confirm",
+          "source": [
+            "crates/desktop/src/views/accept.rs",
+            "crates/desktop/src/accept.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ACCEPT=1; script `menu:inbox;wait:600;cpick`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "conversation",
+      "title": "Conversation",
+      "summary": "The PM's conversation: replies streaming, the engine-switching card, long Korean text, pictures, ticket cards, a list of questions, diagrams and HTML cards, the summary band, the composer with attachments.",
+      "screens": [
+        {
+          "id": "chat",
+          "title": "PM conversation",
+          "note": "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on.",
+          "source": [
+            "crates/desktop/src/views/chat.rs",
+            "crates/desktop/src/render/view.rs",
+            "crates/desktop/src/render/prose.rs",
+            "crates/desktop/src/render/raster.rs",
+            "crates/desktop/src/views/compact.rs",
+            "crates/desktop/src/views/asklist.rs",
+            "crates/desktop/src/convo.rs"
+          ],
+          "expects": [
+            "default",
+            "empty",
+            "loading",
+            "long"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat`"
+            },
+            {
+              "id": "empty",
+              "label": "Empty",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ASKS=0; script `newtalk;wait:800`"
+            },
+            {
+              "id": "loading",
+              "label": "Loading / under way",
+              "kind": "loading",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=12 FAKE_ASKS=0; script `chat;say:지금 어디까지 했어?;wait:1500`"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_READING=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "pictures",
+              "label": "With pictures",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_REPLY_IMAGES=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-cards",
+              "label": "Ticket cards in a reply",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "ask-list",
+              "label": "A reply asking a numbered list",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ASKLIST=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "diagram",
+              "label": "Mermaid diagrams",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000`"
+            },
+            {
+              "id": "markdown",
+              "label": "Rich Markdown (headings, lists, callouts, code)",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 1;wait:6000`"
+            },
+            {
+              "id": "summarizing",
+              "label": "Being summarized (long)",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_COMPACT=long FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "summarize-failed",
+              "label": "Summary failed",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_COMPACT=fail FAKE_COMPACT_AFTER=500 FAKE_ASKS=0; script `chat;wait:3000`"
+            },
+            {
+              "id": "your-turn",
+              "label": "A ticket put down for the person, in the conversation",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_TURN=1 FAKE_ASKS=0; script `chat;wait:600`"
+            }
+          ]
+        },
+        {
+          "id": "engine-switch",
+          "title": "Engine switching card (over the composer)",
+          "note": "Error: Claude's week used up; Done: what equipe did in auto, with 되돌리기.",
+          "source": [
+            "crates/desktop/src/views/switching.rs",
+            "crates/desktop/src/switching.rs",
+            "crates/desktop/src/usage.rs"
+          ],
+          "expects": [
+            "default",
+            "error",
+            "success"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=claude86 FAKE_ASKS=0; script `chat`"
+            },
+            {
+              "id": "error",
+              "label": "Error",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=claude_out FAKE_ASKS=0; script `chat`"
+            },
+            {
+              "id": "success",
+              "label": "Done",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=claude86 FAKE_SWITCHING=auto FAKE_ASKS=0; script `chat`"
+            }
+          ]
+        },
+        {
+          "id": "composer",
+          "title": "Composer",
+          "source": [
+            "crates/desktop/src/views/composer.rs",
+            "crates/desktop/src/views/attached.rs",
+            "crates/desktop/src/attach.rs",
+            "crates/desktop/src/compose.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "attachments",
+              "label": "Two files attached",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ASKS=0; script `chat;attach:{ROOT}/design/brand/logo-in-use.png,{ROOT}/design/guidelines.md;wait:600`"
+            },
+            {
+              "id": "drop",
+              "label": "A file dragged over",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ASKS=0; script `chat;drag:{ROOT}/design/guidelines.md;wait:400`"
+            },
+            {
+              "id": "queued",
+              "label": "A message waiting while the member works",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=12 FAKE_ASKS=0; script `chat;say:첫 번째;wait:200;say:두 번째도 이어서 해 줘;wait:600`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "board",
+      "title": "Board · tickets",
+      "summary": "Every ticket by where it stands (티켓), what is at work (작업 중), and one ticket picked — peeking beside the list (Space) or as a page (⏎): its hand-in, review and pictures.",
+      "screens": [
+        {
+          "id": "board",
+          "title": "Board",
+          "source": [
+            "crates/desktop/src/views/tickets.rs",
+            "crates/desktop/src/views/ticket_card.rs",
+            "crates/desktop/src/views/sidebar.rs",
+            "crates/desktop/src/tickets.rs"
+          ],
+          "expects": [
+            "default",
+            "empty",
+            "long"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `menu:all`"
+            },
+            {
+              "id": "empty",
+              "label": "Nothing waiting for the person",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_EMPTY=1 FAKE_WORKING=0 FAKE_ASKS=0; script `menu:all`"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BUSY=1; script `menu:all`; EQUIPE_LANG=de"
+            },
+            {
+              "id": "busy",
+              "label": "Busy squad with subagents",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BUSY=1 FAKE_SUBAGENTS=1; script `menu:all`"
+            }
+          ]
+        },
+        {
+          "id": "working",
+          "title": "작업 중 (at work)",
+          "source": [
+            "crates/desktop/src/views/tickets.rs",
+            "crates/desktop/src/views/sidebar.rs",
+            "crates/desktop/src/board.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BUSY=1; script `menu:working`"
+            }
+          ]
+        },
+        {
+          "id": "ticket",
+          "title": "Ticket",
+          "source": [
+            "crates/desktop/src/views/peek.rs",
+            "crates/desktop/src/views/tickets.rs",
+            "crates/desktop/src/views/diffview.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `menu:all;wait:600;ppick:47`"
+            },
+            {
+              "id": "review",
+              "label": "In review, with a review",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=long FAKE_REVIEW=1; script `menu:all;wait:600;ppick:42`"
+            },
+            {
+              "id": "pictures",
+              "label": "With pictures",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_REPLY_IMAGES=1; script `menu:all;wait:600;ppick:4`"
+            },
+            {
+              "id": "page",
+              "label": "Opened as a page (⏎)",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `menu:all;wait:600;pick:42;wait:300;bkey:enter`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "overview",
+      "title": "Squad views: 현황 · 로드맵 · 정기 업무 · 지표 · 디자인 시스템",
+      "summary": "The sidebar's views of the whole squad: its projects side by side, the roadmap, the regular work the PM is handed, the numbers (metrics) and the design system.",
+      "screens": [
+        {
+          "id": "overview",
+          "title": "현황 (overview)",
+          "source": [
+            "crates/desktop/src/views/overview.rs",
+            "crates/desktop/src/portfolio.rs"
+          ],
+          "expects": [
+            "default",
+            "empty"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BUSY=1; script `overview`"
+            },
+            {
+              "id": "empty",
+              "label": "Empty",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_EMPTY=1 FAKE_WORKING=0 FAKE_ASKS=0; script `overview`"
+            }
+          ]
+        },
+        {
+          "id": "roadmap",
+          "title": "로드맵 (roadmap)",
+          "source": [
+            "crates/desktop/src/views/roadmap.rs",
+            "crates/desktop/src/roadmap.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `roadmap`"
+            }
+          ]
+        },
+        {
+          "id": "routines",
+          "title": "정기 업무 (routines)",
+          "note": "The two routines are the snapshot tool's own (`rseed`), no daemon asked.",
+          "source": [
+            "crates/desktop/src/views/routines.rs",
+            "crates/desktop/src/routine.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `overview;rseed`"
+            },
+            {
+              "id": "form",
+              "label": "Form open",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `overview;rseed;rnew:weekly`"
+            }
+          ]
+        },
+        {
+          "id": "metrics",
+          "title": "지표 (metrics)",
+          "note": "On the app's own sample (`metrics:`), no daemon asked.",
+          "source": [
+            "crates/desktop/src/views/metrics.rs",
+            "crates/desktop/src/metrics.rs"
+          ],
+          "expects": [
+            "default",
+            "empty",
+            "error"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `metrics:dash`"
+            },
+            {
+              "id": "empty",
+              "label": "Empty",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: script `metrics:empty`"
+            },
+            {
+              "id": "error",
+              "label": "Error",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: script `metrics:error`"
+            },
+            {
+              "id": "connect",
+              "label": "Connect a service",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `metrics:connect`"
+            }
+          ]
+        },
+        {
+          "id": "design",
+          "title": "디자인 시스템 (design system)",
+          "source": [
+            "crates/desktop/src/views/design.rs",
+            "crates/desktop/src/design.rs"
+          ],
+          "expects": [
+            "default",
+            "empty"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DESIGN=1; script `design:overview`"
+            },
+            {
+              "id": "empty",
+              "label": "Empty",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DESIGN=empty; script `design:overview`"
+            },
+            {
+              "id": "draft",
+              "label": "A draft in review",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DESIGN=draft; script `design:overview;wait:1500;ddraft`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "settings",
+      "title": "Settings",
+      "summary": "General (with privacy: anonymous usage data), AI platforms, squad and devices, team and signals, permissions, projects, browser, accounts, keys, about.",
+      "screens": [
+        {
+          "id": "general",
+          "title": "General · privacy",
+          "note": "Privacy (anonymous usage data) is a section of General.",
+          "source": [
+            "crates/desktop/src/views/settings.rs"
+          ],
+          "expects": [
+            "default",
+            "long"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:general`"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:general`; EQUIPE_LANG=de"
+            }
+          ]
+        },
+        {
+          "id": "engines",
+          "title": "AI platforms",
+          "source": [
+            "crates/desktop/src/views/engines.rs",
+            "crates/desktop/src/engines.rs",
+            "crates/desktop/src/views/settings_switching.rs"
+          ],
+          "expects": [
+            "default",
+            "error"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines`"
+            },
+            {
+              "id": "error",
+              "label": "Error",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=both_low; script `settings:engines`"
+            }
+          ]
+        },
+        {
+          "id": "squad",
+          "title": "Squad",
+          "source": [
+            "crates/desktop/src/views/settings.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:squad`"
+            }
+          ]
+        },
+        {
+          "id": "team",
+          "title": "Team · signals",
+          "note": "Signals are a card of their own under Team.",
+          "source": [
+            "crates/desktop/src/views/settings.rs",
+            "crates/desktop/src/views/settings_signals.rs",
+            "crates/desktop/src/views/team.rs"
+          ],
+          "expects": [
+            "default",
+            "empty"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:team`"
+            },
+            {
+              "id": "empty",
+              "label": "Empty",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SIGNALS=0; script `settings:team`"
+            }
+          ]
+        },
+        {
+          "id": "permissions",
+          "title": "Permissions",
+          "source": [
+            "crates/desktop/src/views/settings.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:permissions`"
+            }
+          ]
+        },
+        {
+          "id": "projects",
+          "title": "Projects",
+          "source": [
+            "crates/desktop/src/views/settings.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:projects`"
+            }
+          ]
+        },
+        {
+          "id": "browser",
+          "title": "Browser",
+          "source": [
+            "crates/desktop/src/views/settings.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:browser`"
+            }
+          ]
+        },
+        {
+          "id": "accounts",
+          "title": "Accounts (logins)",
+          "note": "The two logins are the snapshot tool's own (`lseed`).",
+          "source": [
+            "crates/desktop/src/views/accounts.rs"
+          ],
+          "expects": [
+            "default",
+            "empty"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:accounts;lseed`"
+            },
+            {
+              "id": "empty",
+              "label": "Empty",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:accounts`"
+            },
+            {
+              "id": "form",
+              "label": "Form open",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:accounts;lform;wait:300`"
+            }
+          ]
+        },
+        {
+          "id": "keys",
+          "title": "Keys",
+          "source": [
+            "crates/desktop/src/views/secrets.rs",
+            "crates/desktop/src/views/settings.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:keys`"
+            }
+          ]
+        },
+        {
+          "id": "about",
+          "title": "About",
+          "source": [
+            "crates/desktop/src/views/settings.rs",
+            "crates/desktop/src/update.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:about`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tools",
+      "title": "Panels and sheets",
+      "summary": "The browser panel, terminal, a document beside the conversation, a subagent, pairing a phone, the notifications sheet.",
+      "screens": [
+        {
+          "id": "browser",
+          "title": "Browser panel",
+          "source": [
+            "crates/desktop/src/views/browser.rs",
+            "crates/desktop/src/browse.rs"
+          ],
+          "expects": [
+            "default",
+            "empty"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BROWSER=1; script `chat`"
+            },
+            {
+              "id": "empty",
+              "label": "Empty",
+              "kind": "empty",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BROWSER=empty; script `chat;browser`"
+            },
+            {
+              "id": "handover",
+              "label": "Browser handed to the person",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BROWSER=handover; script `chat`"
+            }
+          ]
+        },
+        {
+          "id": "terminal",
+          "title": "Terminal panel",
+          "note": "A real shell on this Mac, in the shot's temporary home.",
+          "source": [
+            "crates/desktop/src/views/terminal.rs",
+            "crates/desktop/src/term.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;term;wait:3000;tkeys:ls -la~`"
+            }
+          ]
+        },
+        {
+          "id": "document",
+          "title": "Document panel",
+          "source": [
+            "crates/desktop/src/views/doc.rs",
+            "crates/desktop/src/doc.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/guidelines.md`"
+            }
+          ]
+        },
+        {
+          "id": "subagent",
+          "title": "A subagent",
+          "source": [
+            "crates/desktop/src/views/subagent.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SUBAGENTS=1; script `chat;subagent:frontend`"
+            }
+          ]
+        },
+        {
+          "id": "pair-phone",
+          "title": "Pair a phone",
+          "source": [
+            "crates/desktop/src/views/pair.rs",
+            "crates/desktop/src/pair.rs"
+          ],
+          "expects": [
+            "default",
+            "error",
+            "permission"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `pair`"
+            },
+            {
+              "id": "permission",
+              "label": "Asking permission",
+              "kind": "permission",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_PAIR=ask; script `pair`"
+            },
+            {
+              "id": "error",
+              "label": "Error",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_PAIR=relay; script `pair`"
+            }
+          ]
+        },
+        {
+          "id": "notifications",
+          "title": "Notifications sheet",
+          "source": [
+            "crates/desktop/src/views/bell.rs",
+            "crates/desktop/src/notify.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `bell:sheet`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "disk",
+      "title": "Disk",
+      "summary": "The disk panel when space runs short, a fix's sheet and its result.",
+      "screens": [
+        {
+          "id": "panel",
+          "title": "Disk panel",
+          "source": [
+            "crates/desktop/src/views/disk.rs",
+            "crates/desktop/src/disk.rs"
+          ],
+          "expects": [
+            "default",
+            "error"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DISK=low; script `disk`"
+            },
+            {
+              "id": "error",
+              "label": "Error",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DISK=critical; script `disk`"
+            },
+            {
+              "id": "full",
+              "label": "Disk full",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DISK=full; script `disk`"
+            }
+          ]
+        },
+        {
+          "id": "fix",
+          "title": "A fix's sheet",
+          "source": [
+            "crates/desktop/src/views/disk.rs",
+            "crates/desktop/src/disk.rs"
+          ],
+          "expects": [
+            "default",
+            "success"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DISK=low; script `disk;wait:1500;disk:fix1`"
+            },
+            {
+              "id": "success",
+              "label": "Done",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_DISK=low; script `disk;wait:1500;disk:fix1;wait:300;disk:yes;wait:2500`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "connection",
+      "title": "Daemon and machine",
+      "summary": "Attaching to the daemon: the daemon gone (under a banner, or with nothing to show yet), equipe not installed, the machine chooser.",
+      "screens": [
+        {
+          "id": "daemon",
+          "title": "Daemon",
+          "source": [
+            "crates/desktop/src/views/connect.rs",
+            "crates/desktop/src/daemon.rs",
+            "crates/desktop/src/views/header.rs"
+          ],
+          "expects": [
+            "offline"
+          ],
+          "states": [
+            {
+              "id": "offline",
+              "label": "Daemon gone (banner over the last state)",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: script `wait:2500`; fake daemon stopped 4000 ms after the app opened"
+            },
+            {
+              "id": "offline-first",
+              "label": "Daemon off, nothing shown yet",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: no daemon"
+            }
+          ]
+        },
+        {
+          "id": "install",
+          "title": "equipe not on this Mac",
+          "note": "No `equipe` command to wake the daemon with: the install line, copy and the install page.",
+          "source": [
+            "crates/desktop/src/main.rs",
+            "crates/desktop/src/install.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: no daemon"
+            }
+          ]
+        },
+        {
+          "id": "chooser",
+          "title": "Machine chooser",
+          "source": [
+            "crates/desktop/src/views/connect.rs",
+            "crates/desktop/src/ssh.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chooser;wait:500`"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

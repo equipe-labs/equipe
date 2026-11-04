@@ -1,0 +1,8 @@
+# Sample hosts for the machine chooser's picture.
+Host home-server
+  HostName 192.168.0.20
+  User maker
+
+Host staging
+  HostName staging.example.com
+  User deploy
