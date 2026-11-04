@@ -661,7 +661,11 @@ impl ToolLine {
 /// A call the engine refused by a rule it was given, not one that broke:
 /// Claude Code's words for a deny rule or a permission not granted.
 pub fn refused_by_rule(output: &str) -> bool {
-    output.contains("was blocked by a deny rule") || (output.contains("Permission to use ") && output.contains(" has been denied")) || harness_blocked(output)
+    output.contains("was blocked by a deny rule")
+        || (output.contains("Permission to use ") && output.contains(" has been denied"))
+        || harness_blocked(output)
+        // The engine's cap on subagents at once: held back, not broken.
+        || output.contains("Concurrent subagent limit reached")
 }
 
 /// Claude Code's harness refusing a call by its own rule (a foreground
@@ -1130,6 +1134,7 @@ mod tests {
         assert_eq!(lines[1].status, Status::Failed, "the system's own no is a failure");
         assert!(refused_by_rule("Permission to use Edit has been denied."));
         assert!(!refused_by_rule("Access denied"));
+        assert!(refused_by_rule("Concurrent subagent limit reached. You can run 20 subagents at once. Do not retry."), "the engine's cap holds it back");
     }
 
     #[test]

@@ -395,6 +395,8 @@
   "chat.pm_text": "簡單的事 PM 會直接回答；工作會變成左側的工單。打開工單即可查看進度並下指示。",
   "chat.pm_title": "與 PM 對話",
   "chat.replying": "正在回覆",
+  "chat.resume": "繼續",
+  "chat.resume_words": "請從停下的地方繼續剛才的工作。",
   "chat.retro_ran": "每週回顧 · {date}",
   "chat.retry_reply": "重試",
   "chat.routine_ran": "定期任務 · {title}",

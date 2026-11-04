@@ -395,6 +395,8 @@
   "chat.pm_text": "금방 끝나는 건 PM이 바로 답하고, 일은 티켓이 되어 왼쪽에 나타나요. 티켓을 열면 그 작업을 보고 바로 지시할 수 있어요.",
   "chat.pm_title": "PM에게 말하세요",
   "chat.replying": "답하는 중",
+  "chat.resume": "이어서 하기",
+  "chat.resume_words": "멈추기 직전까지 하던 일을 그대로 이어서 해 주세요.",
   "chat.retro_ran": "주간 회고 · {date}",
   "chat.retry_reply": "다시 시도",
   "chat.routine_ran": "정기 업무 · {title}",
