@@ -60,16 +60,17 @@ impl Inventory {
                     {
                         push(&mut inv.links, href);
                     }
-                    if matches!(tag.name.as_str(), "input" | "select" | "textarea") && tag.attr("type").is_none_or(|t| t != "hidden") {
-                        if let Some(name) = tag.attr("name").or_else(|| tag.attr("id")) {
-                            push(&mut inv.fields, name);
-                        }
+                    if matches!(tag.name.as_str(), "input" | "select" | "textarea")
+                        && tag.attr("type").is_none_or(|t| t != "hidden")
+                        && let Some(name) = tag.attr("name").or_else(|| tag.attr("id"))
+                    {
+                        push(&mut inv.fields, name);
                     }
                     for (attr, value) in &tag.attrs {
                         let is_handler = matches!(attr.as_str(), "onClick" | "onclick" | "@click" | "v-on:click" | "on:click" | "(click)" | "onSubmit" | "onsubmit" | "@submit" | "@submit.prevent" | "on:submit" | "(submit)" | "(ngSubmit)" | "action" | "formAction" | "hx-post" | "hx-get");
                         if is_handler && let Some(v) = value {
                             if attr == "action" || attr.starts_with("hx-") {
-                                push(&mut inv.actions, &format!("{} {v}", tag.attr("method").unwrap_or(if attr.starts_with("hx-") { &attr[3..] } else { "submit" })));
+                                push(&mut inv.actions, &format!("{} {v}", tag.attr("method").unwrap_or(attr.strip_prefix("hx-").unwrap_or("submit"))));
                             } else if let Some(h) = handler(v) {
                                 push(&mut inv.actions, &format!("{h}()"));
                             }

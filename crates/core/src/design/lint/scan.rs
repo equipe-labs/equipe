@@ -356,10 +356,13 @@ fn utility(class: &str, line: u32, system: &System, file: &str, on: (bool, bool,
         if prefix == "font" && typing && !system.families.is_empty() {
             family(&inner, system, file, line, out);
         }
-        if SPACE_UTILITIES.contains(&prefix) && spacing && let Some(v) = px(&inner) {
-            if v.abs() > 2. && system.space_token(v.abs()).is_none() {
-                out.push(Finding::new("token-space", file, Some(line), format!("{class} is off the spacing scale ({})", scale(&system.spacing))));
-            }
+        if SPACE_UTILITIES.contains(&prefix)
+            && spacing
+            && let Some(v) = px(&inner)
+            && v.abs() > 2.
+            && system.space_token(v.abs()).is_none()
+        {
+            out.push(Finding::new("token-space", file, Some(line), format!("{class} is off the spacing scale ({})", scale(&system.spacing))));
         }
         return;
     }
@@ -505,7 +508,7 @@ pub fn invented_claim(text: &str) -> Option<String> {
     None
 }
 
-/// A figure a claim is made of — `10,000+`, `2m`, `99.9%`, `4.9/5`, `1,000명` —
+/// A figure a claim is made of — `10,000+`, `2m`, `99.9%`, `4.9/5`, Korean `1,000명` —
 /// and whether it is rounded (`+`, `k`, `m`, `b`).
 fn figure(w: &str) -> Option<bool> {
     let w = w.trim_matches(|c: char| matches!(c, '(' | ')' | ',' | '.' | '!' | '“' | '"' | '”'));
@@ -819,7 +822,7 @@ fn centring_classes(source: &Source) -> Vec<String> {
     let mut out = Vec::new();
     for d in source.decls.iter().filter(|d| d.prop == "text-align" && d.value.trim() == "center") {
         for compound in d.selector.as_deref().unwrap_or("").split(',') {
-            if let Some(last) = compound.split([' ', '>', '+', '~']).filter(|p| !p.is_empty()).next_back() {
+            if let Some(last) = compound.split([' ', '>', '+', '~']).rfind(|p| !p.is_empty()) {
                 out.extend(last.split('.').skip(1).map(|c| c.split(':').next().unwrap_or(c).to_owned()));
             }
         }

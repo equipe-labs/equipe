@@ -62,10 +62,10 @@ impl Tag {
     pub fn classes(&self) -> Vec<&str> {
         let mut out = Vec::new();
         for (n, v) in &self.attrs {
-            if matches!(n.as_str(), "class" | "className" | ":class" | "class:list") {
-                if let Some(v) = v {
-                    out.extend(v.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '{' | '}' | ',' | '(' | ')')).filter(|c| !c.is_empty()));
-                }
+            if matches!(n.as_str(), "class" | "className" | ":class" | "class:list")
+                && let Some(v) = v
+            {
+                out.extend(v.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '{' | '}' | ',' | '(' | ')')).filter(|c| !c.is_empty()));
             }
         }
         out
