@@ -83,6 +83,11 @@ them, and note what they said on the ticket with `comment`, for the PM."
                 left.push(why);
                 continue;
             }
+            // Its own code goes to the person: nobody accepts their own work.
+            if let Some(why) = rules::own_code(&t, member) {
+                left.push(why);
+                continue;
+            }
             if !t.ready_for_review() {
                 left.push(format!("T-{ticket} waits for its design QA"));
                 continue;

@@ -350,9 +350,11 @@ pub struct Ticket {
     /// out otherwise, and absent from an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub design_qa: Option<TicketId>,
-    /// The plan it was cut from, or reviews: its path in the ticket's project
-    /// (`docs/plans/2026-11-04-sign-in.md`), or an absolute one in the squad's
-    /// folder. Left out otherwise, and absent from an older daemon.
+    /// The plan it was cut from, or reviews: its absolute path in the squad's
+    /// folder (`…/home/docs/web/plans/2026-11-04-sign-in.md`) — or, on a
+    /// ticket from before plans left the repositories, its path in the
+    /// ticket's project (`docs/plans/…`). Left out otherwise, and absent from
+    /// an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
 }

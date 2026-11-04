@@ -1595,6 +1595,7 @@
   "project.doc_settled": "Cerrado",
   "project.docs_empty": "Antes de construir algo grande, el PM te hace una pregunta a la vez y deja las respuestas en un brief. El plan sale de ahí.",
   "project.docs_empty_title": "Aún no hay briefs",
+  "project.docs_private": "Guardados en la carpeta propia del equipo, nunca en el repositorio, que puede ser público.",
   "project.gone": "Este proyecto ya no está en el equipo",
   "project.held_office_hours": "Primero horas de oficina",
   "project.menu_tip": "Menú del proyecto",

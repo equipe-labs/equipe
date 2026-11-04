@@ -16,3 +16,6 @@ adds or cuts; write their pick into the plan (`scope`). Decide small things your
 simpler way, what the code already does, what can be undone, the smaller scope when in doubt — and note each in the
 plan: ask only what changes the outcome. Then cut its tickets with `create_ticket`, each with `plan`, its acceptance
 criteria and its cases from the test plan (`tests`). A small fix skips all of this.
+The plan is kept in the squad's own folder, never in the project's repository: its tickets name it by its absolute
+path, which their owners read from their worktrees, and what in it is about the person or their team never goes into
+the repository's files, commits or pull requests.

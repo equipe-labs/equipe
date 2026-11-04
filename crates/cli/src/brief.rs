@@ -16,7 +16,7 @@ use equipe_core::protocol::Engine;
 pub enum BriefAction {
     /// Have the other engine read a brief sceptically: gaps, blind spots, settle or revise
     Critique {
-        /// The brief: docs/briefs/<date>-<slug>.md
+        /// The brief: its path in the squad's folder (…/docs/<project>/briefs/<date>-<slug>.md)
         file: PathBuf,
         /// Who reads it (default: the engine this isn't run on)
         #[arg(long, value_parser = ["codex", "claude"])]

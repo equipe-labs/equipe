@@ -27,7 +27,9 @@ pub struct Role {
     pub summary: &'static str,
     /// What the role is responsible for, as told to the engine.
     pub duties: &'static str,
-    /// Whether the role changes files (on its own branch, in its own worktree).
+    /// Whether the role's work is changing files (on its own branch, in its own
+    /// worktree). The PM's isn't, yet it may on a code ticket of its own:
+    /// [`edits_on_code_tickets`].
     pub edits: bool,
     pub tier: Tier,
 }
@@ -99,7 +101,10 @@ work into small tickets, each with an owner (a role on the team, or yourself), a
 criteria, written so its owner can start without asking. Work that went through a brief, or that will take several \
 tickets, gets a plan before any ticket, as your `planning` skill says; a small fix skips it. A ticket for the \
 designer, or one that changes a screen, follows your `working-with-design` skill. Keep track of what was decided and what is in flight. \
-You don't change a project's code yourself: that is a code ticket for an engineer. The person may talk with you about \
+Code is an engineer's to change: delegate it by default. Do a change yourself only when that is truly better — a tiny \
+or urgent one (a typo, a config value, a doc, a one-line fix), when nobody on the team fits, or when handing it over \
+would cost more than doing it — and never work an engineer is already on. Then it is a `code` ticket you own, on your \
+own branch in a worktree of your own — never in the conversation — and the person accepts it, not you. The person may talk with you about \
 anything, tied to no project: work that belongs to none happens in the squad's folder. When they want a new project \
 (an app, a repository), or ask you to add one they have, add it with `add_project`: a new one's folder where they say \
 (else beside their other projects), made and started as a repository for you. Only when they asked for it. \
@@ -247,6 +252,15 @@ pub fn role(id: &str) -> Option<&'static Role> {
 /// The role a member was given: built in, or custom under its own name.
 pub fn role_or_custom(id: &str) -> &'static Role {
     role(id).unwrap_or(&CUSTOM)
+}
+
+/// Whether a member changes a project's files on a code ticket it works, on
+/// that ticket's branch in its own worktree: a role that edits (`edits`: its
+/// role's say, or the person's for a custom role) — and the PM, which delegates
+/// first but may make a change itself on a code ticket of its own. Never in
+/// conversation: there every member only reads the squad's projects.
+pub fn edits_on_code_tickets(role: &str, edits: bool) -> bool {
+    edits || role == PM
 }
 
 /// Which engine each built-in role starts on when both are signed in: Claude
@@ -412,6 +426,7 @@ const PERSON_ACCEPTS: &str = "Only the person accepts finished work; tell them w
 const PM_ACCEPTS: &str = "Tickets are how the squad splits and runs its work — the person doesn't review each one. You \
 accept your team's finished work yourself: when a member hands in, check it — the hand-in, its diff and pictures, that it \
 does what the ticket asked and breaks nothing else — and call `accept_work` with what you checked; code merges into main. \
+Code you changed yourself is never yours to accept: put your own code ticket to the person with `propose_accept`. \
 What isn't right goes back to its member with `comment` and what to change. Members' proposals are yours to sort too: take \
 one on with `update_ticket` (status todo), fold it into another, or drop it (cancelled) — don't leave them for the person. \
 Put to the person, with `propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a \
@@ -501,7 +516,7 @@ work in review (\"accept them all\", \"accept T-1 and T-3\", \"merge it too\", \
 away: it puts a confirmation card in front of them. Don't lecture them about buttons or where to click — say in one line, \
 in their language, that the card is up (\"The card is up\"). Their words aren't the acceptance, and yours never are: only their click \
 on the card accepts, merges or sends back. Give each ticket to the member whose role fits; own one yourself only when \
-nobody on the team could do it — while you work a ticket, the person waits to talk to you, and there is only one \
+nobody on the team could do it, or it is a change too small or urgent to hand over — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
 touching the same files, and give each to a role (`backend`), not to a numbered member: a member with a big ticket \
 splits it across subagents running at once, and so do you with yours. The team is the person's to change, never yours: when more hands \
@@ -518,7 +533,7 @@ conversation, so the person can always reach you — long work done right in the
 Tickets are: `task` for \
 finding out, writing, calculating or paperwork, `action` for doing something in an app or the browser, `code` only \
 when a repository changes. When nobody on the team fits a task or an action, own it yourself, or propose someone with \
-`propose_team_change` (designer, frontend, backend, mobile, qa, data — or `custom` with a name). Code needs an engineer: when the team has none, propose one.",
+`propose_team_change` (designer, frontend, backend, mobile, qa, data — or `custom` with a name). Code needs an engineer: when the team has none, propose one — meanwhile only a small change is yours to make, on a code ticket of your own.",
         (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
 it meets its acceptance criteria. When you can't go on without something only the person can do — a token, an \
@@ -625,8 +640,11 @@ why it mattered, and ask the person (`ask_decision`, or `block_on_person` for wh
 goes on a ticket instead. On a `task` or `action` ticket you work in a worktree of this folder, whatever your \
 role, and leave what you produce under `outputs/` or `notes/`; it goes into the folder when the person accepts. \
 Anything that reaches outside — sending, submitting, paying — asks the person first, \
-wherever you are. Other squads' folders are private. What you hand over as fact says where it came from — a link, \
-a document, a page — and what you couldn't confirm is marked unconfirmed, never stated as settled."
+wherever you are. Other squads' folders are private. The squad's briefs and plans are kept here too, under \
+`docs/` — a project's in `docs/<project>/briefs/` and `docs/<project>/plans/` — never in a project's repository: a \
+ticket cut from a plan names it by its absolute path, so read it there from your worktree. What you hand over as \
+fact says where it came from — a link, a document, a page — and what you couldn't confirm is marked unconfirmed, \
+never stated as settled."
         ),
         None => String::new(),
     };
@@ -756,14 +774,39 @@ when the change itself can't be split, subagents still take the reading, surveyi
 alone what truly can't split. The person sees each subagent at work under your name, so describe each in a few plain words. \
 Your engine runs at most 20 subagents at once: for more, start up to 20 and start the rest as earlier ones hand back, \
 never past the cap (a call past it is refused, not queued). When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
-their preferences, and anything they asked for that isn't done. {language} Be concise.",
+their preferences, and anything they asked for that isn't done. {PRIVATE} {language} Be concise.",
         duties
     )
 }
 
+/// Every member, every turn: what a repository must never carry.
+pub const PRIVATE: &str = "A project's repository may be public: never put the person's personal information — names, \
+contacts, schedules, private plans, money, health, anything about them or their team that isn't the product's — into \
+its files, commits, branch names, or pull requests' titles and bodies; it belongs in the squad's own folder or its memory. \
+Product documents meant for the public — a README, a changelog, user docs — are fine.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_member_is_told_a_repository_may_be_public_and_keeps_the_persons_life_out_of_it() {
+        let team = [Teammate { name: "pm", role: PM }];
+        for r in ROLES.iter().chain([&CUSTOM]) {
+            for tools in [true, false] {
+                let text = charter(r, r.id, &ctx(&team, &[], tools)).split_whitespace().collect::<Vec<_>>().join(" ");
+                for part in ["A project's repository may be public", "the person's personal information", "names, contacts, schedules, private plans, money, health", "files, commits, branch names, or pull requests' titles and bodies", "in the squad's own folder or its memory", "a README, a changelog, user docs — are fine"] {
+                    assert!(text.contains(part), "{} ({tools}): {part}", r.id);
+                }
+            }
+        }
+        // Where briefs and plans are, for a member on a ticket whose worktree doesn't have them.
+        let home = charter(role("backend").unwrap(), "backend", &Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) });
+        let home = home.split_whitespace().collect::<Vec<_>>().join(" ");
+        for part in ["briefs and plans are kept here too", "`docs/<project>/plans/`", "never in a project's repository", "by its absolute path, so read it there from your worktree"] {
+            assert!(home.contains(part), "{part}: {home}");
+        }
+    }
 
     #[test]
     fn ids_are_unique_lowercase_words() {
@@ -791,11 +834,43 @@ mod tests {
     }
 
     #[test]
-    fn the_pm_plans_and_does_not_edit() {
+    fn the_pm_plans_and_edits_only_on_a_code_ticket_of_its_own() {
         let pm = role(PM).unwrap();
+        // It joins to plan, not to build: its conversation only reads the projects…
         assert!(!pm.edits);
         assert_eq!(pm.tier, Tier::Top);
         assert!(role("frontend").unwrap().edits);
+        // …but on a code ticket it owns it changes files as an engineer does, in its worktree.
+        assert!(edits_on_code_tickets(PM, false));
+        assert!(edits_on_code_tickets("frontend", true));
+        assert!(!edits_on_code_tickets("qa", false) && !edits_on_code_tickets("designer", false));
+        // A custom role as the person said.
+        assert!(edits_on_code_tickets(CUSTOM.id, true) && !edits_on_code_tickets(CUSTOM.id, false));
+    }
+
+    #[test]
+    fn the_pm_delegates_code_first_and_does_a_change_itself_only_when_that_is_truly_better() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "frontend", role: "frontend" }];
+        let text = charter(role(PM).unwrap(), "pm", &Context { home: Some("/h"), ..ctx(&team, &[], true) });
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        // Delegate by default…
+        assert!(flat.contains("Code is an engineer's to change: delegate it by default"), "{flat}");
+        // …with the exceptions named…
+        for part in ["a typo, a config value, a doc, a one-line fix", "nobody on the team fits", "handing it over would cost more than doing it"] {
+            assert!(flat.contains(part), "{part}: {flat}");
+        }
+        // …never work an engineer is on, never in the conversation, and never accepted by itself.
+        assert!(flat.contains("never work an engineer is already on"), "{flat}");
+        assert!(flat.contains("a `code` ticket you own, on your own branch in a worktree of your own — never in the conversation"), "{flat}");
+        assert!(flat.contains("In conversation the squad's projects are for reading only"), "{flat}");
+        assert!(!flat.contains("You don't change a project's code yourself"), "{flat}");
+        // Where the PM accepts its team's work, its own code still goes to the person.
+        let accepting = charter(role(PM).unwrap(), "pm", &Context { pm_accepts: true, ..ctx(&team, &[], true) });
+        let accepting = accepting.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(accepting.contains("Code you changed yourself is never yours to accept"), "{accepting}");
+        // An engineer is told nothing of it.
+        let frontend = charter(role("frontend").unwrap(), "frontend", &Context { pm_accepts: true, ..ctx(&team, &[], true) });
+        assert!(!frontend.contains("Code you changed yourself"), "{frontend}");
     }
 
     #[test]
@@ -1595,8 +1670,8 @@ invent one."), "{id}: true numbers");
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(member.contains("never their words, nor yours") && member.contains("don't walk them through buttons") && !member.contains("`propose_accept`"), "{member}");
-        // The rule for code stays: the PM doesn't change a project's code.
-        assert!(text.contains("You don't change a project's code yourself"), "{text}");
+        // Code is an engineer's first: the PM changes it only on a ticket of its own, when that is truly better.
+        assert!(text.contains("Code is an engineer's to change"), "{text}");
         assert!(!text.contains("software squad"), "{text}");
         // Nothing in a role's duties says all work is code.
         assert!(ROLES.iter().chain([&CUSTOM]).all(|r| !r.duties.contains("you don't edit files")));

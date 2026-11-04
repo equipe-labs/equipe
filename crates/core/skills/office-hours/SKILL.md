@@ -32,3 +32,5 @@ show it, get a second opinion from the other engine: `equipe brief critique <its
 and say what you changed. Show it with its path; it is settled only when the person says so — then `write_brief` again
 with status settled, and only then the plan and the tickets, each naming the brief. When they let it go, status
 dropped.
+The brief is kept in the squad's own folder, never in the project's repository, which may be public: nothing in it —
+the people it names, their numbers, their plans — goes into the repository's files, commits or pull requests.

@@ -1047,6 +1047,74 @@ async fn a_ticket_goes_to_its_owner_who_hands_it_in_and_the_person_accepts_it() 
     assert!(matches!(notices.last(), Some(Event::Notice { text, .. }) if text.starts_with("You accepted T-1")), "{notices:#?}");
 }
 
+/// The deny rules a recorded turn passed to Claude Code.
+fn denied(call: &[String]) -> Vec<String> {
+    settings_of(call)["permissions"]["deny"].as_array().map(|a| a.iter().filter_map(|r| r.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+}
+
+#[tokio::test]
+async fn the_pm_changes_code_only_on_a_ticket_of_its_own_in_its_worktree_and_never_accepts_it_itself() {
+    let repo = repo();
+    let turn = format!("case \"$*\" in *\"You're on T-\"*) sleep 3; echo fixed > FIX.md;; esac\n{}", answering_per_call("ok"));
+    let (claude, recorded) = recording_claude(&turn);
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let only_read = format!("Edit(/{}/**)", repo.display());
+
+    // In conversation the PM only reads the project, as every member does.
+    handle.send(Command::Submit { session: 1, text: "fix the typo in the README".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let desk = latest_call(&recorded, |p| p.contains("fix the typo in the README")).await;
+    assert!(denied(&desk).contains(&only_read), "{:?}", denied(&desk));
+    let edit = tool(&handle, "pm", "approve", serde_json::json!({ "tool_name": "Edit", "input": { "file_path": repo.join("README.md") }, "tool_use_id": "t" })).await;
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&edit.text).unwrap()["behavior"], "deny", "{edit:?}");
+
+    // A one-line fix it does itself is a code ticket it owns: its own worktree and branch.
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "README typo", "body": "teh → the", "owner": "pm" })).await;
+    assert_eq!(made.text, "Created T-1.");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { session: 1, workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    assert!(ws.branch.starts_with("equipe/pm-t1-"), "{}", ws.branch);
+    assert!(!ws.path.starts_with(&repo), "{}", ws.path.display());
+    // Its ticket's turn edits there, as an engineer's does.
+    let call = latest_call(&recorded, |p| p.starts_with("[equipe] You're on T-1")).await;
+    assert_eq!(arg(&call, "--permission-mode"), Some("acceptEdits"));
+    assert!(!denied(&call).contains(&only_read), "its worktree is its to write: {:?}", denied(&call));
+
+    // Its conversation, beside the work, still only reads the project.
+    handle.send(Command::Submit { session: 1, text: "how is it going?".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session != 1 && *session != 2)).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { of: 1, .. })), "{seen:#?}");
+    let beside = latest_call(&recorded, |p| p.contains("how is it going?")).await;
+    assert!(denied(&beside).contains(&only_read), "{:?}", denied(&beside));
+
+    // Handed in: on its branch, the person's checkout untouched.
+    let handed = tool(&handle, "pm", "submit_for_review", serde_json::json!({ "summary": "Fixed the typo." })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
+    let branch = ticket_changed(&review).pop().unwrap().branch.unwrap();
+    assert_eq!(git(&repo, &["show", &format!("{branch}:FIX.md")]), "fixed");
+    assert!(!repo.join("FIX.md").exists());
+
+    // Where the PM accepts its team's work, its own still goes to the person.
+    assert!(handle.snapshot("acme").await.pm_accepts);
+    let own = tool(&handle, "pm", "accept_work", serde_json::json!({ "tickets": [1], "checked": "Read my diff." })).await;
+    assert!(!own.is_error && own.text.starts_with("Nothing accepted.") && own.text.contains("your own") && own.text.contains("propose_accept"), "{own:?}");
+    let status = |t: Vec<Ticket>| t.into_iter().find(|t| t.id == 1).map(|t| t.status);
+    assert_eq!(status(handle.snapshot("acme").await.tickets), Some(TicketStatus::Review));
+    // On the person's click it is accepted and merged, as anyone's.
+    tool(&handle, "pm", "propose_accept", serde_json::json!({ "verdict": "merge", "tickets": [1] })).await;
+    let up = until(&mut events, |e| matches!(e, Event::AcceptProposed { .. })).await;
+    let Some(Event::AcceptProposed { proposal, .. }) = up.last() else { panic!("{up:#?}") };
+    let pick = equipe_core::protocol::accept::Confirmed { ticket: 1, merge: Some(equipe_core::protocol::accept::Land::Merge) };
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: proposal.id, tickets: vec![pick] });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert_eq!(git(&repo, &["show", "main:FIX.md"]), "fixed");
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn accepted_work_is_where_the_next_ticket_starts_and_lands_on_main_only_when_the_person_merges() {
     let repo = repo();
@@ -4486,11 +4554,52 @@ async fn a_review_that_cant_run_says_why_and_never_the_key() {
 
 // ── the plan step ──
 
+/// The repository as it was: the same commit, nothing changed or added, no `docs/`.
+fn untouched(repo: &Path, head: &str) {
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), head, "no commit in the project's repository");
+    assert_eq!(git(repo, &["status", "--porcelain", "--untracked-files=all"]), "", "nothing written into it");
+    assert_eq!(git(repo, &["branch", "--format=%(refname:short)"]), "main", "no branch either");
+    assert!(!repo.join("docs").exists());
+}
+
 #[tokio::test]
-async fn a_plan_is_committed_on_main_reviewed_at_once_and_cut_into_tickets_carrying_their_cases() {
+async fn a_brief_is_kept_in_the_squads_folder_and_never_written_or_committed_into_the_project() {
     let repo = repo();
+    let head = git(&repo, &["rev-parse", "HEAD"]);
     let claude = fake_claude(true, &answering("ok"));
-    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let project = equipe_core::board::project_name(&repo);
+    let wrote = tool(&handle, "pm", "write_brief", serde_json::json!({
+        "project": project, "title": "Checkout with Mina", "slug": "checkout", "mode": "startup", "body": "## Who\n\nMina, our designer, on 010-1234-5678.",
+    }))
+    .await;
+    assert!(!wrote.is_error, "{}", wrote.text);
+    let folder = squad_home::path(&home, "acme");
+    let kept = folder.join("docs").join(&project).join("briefs");
+    let name = std::fs::read_dir(&kept).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.ends_with("-checkout.md")).expect("kept in the squad's folder");
+    assert!(wrote.text.contains(&kept.join(&name).to_string_lossy().into_owned()) && wrote.text.contains("not in any repository"), "{}", wrote.text);
+    untouched(&repo, &head);
+    // Saved there as the PM's change, which the person can take back.
+    let change = squad_home::changes(&folder, 1).unwrap().remove(0);
+    assert_eq!(change.by, "pm");
+    assert_eq!(change.files, [("saved", format!("docs/{project}/briefs/{name}"))]);
+    // Listed for the project's page, from there.
+    handle.send(Command::ProjectDocs { squad: "acme".into() });
+    let got = until(&mut events, |e| matches!(e, Event::ProjectDocs { docs, .. } if !docs.is_empty())).await;
+    let Some(Event::ProjectDocs { docs, .. }) = got.last() else { panic!() };
+    assert_eq!(docs.len(), 1);
+    assert_eq!((docs[0].project.as_deref(), docs[0].path.as_str()), (Some(project.as_str()), kept.join(&name).to_str().unwrap()));
+}
+
+#[tokio::test]
+async fn a_plan_is_kept_in_the_squads_folder_reviewed_at_once_and_cut_into_tickets_carrying_their_cases() {
+    let repo = repo();
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "backend")).await;
     add(&handle, &mut events, 3, member(&repo, "qa")).await;
@@ -4501,24 +4610,29 @@ async fn a_plan_is_committed_on_main_reviewed_at_once_and_cut_into_tickets_carry
     .await;
     assert!(!wrote.is_error, "{}", wrote.text);
     assert!(wrote.text.contains("Asked backend (T-1), qa (T-2)"), "{}", wrote.text);
-    let name = git(&repo, &["ls-tree", "--name-only", "main", "docs/plans/"]);
-    assert!(name.starts_with("docs/plans/") && name.ends_with("-magic-link.md"), "{name}");
-    let on_main = git(&repo, &["show", &format!("main:{name}")]);
-    assert!(on_main.contains("status: in_review") && on_main.contains("- TP-2: a used link fails"), "{on_main}");
-    // Each reviewer's ticket: ready at once, from its angle, naming the plan.
+    let project = equipe_core::board::project_name(&repo);
+    let plans = squad_home::path(&home, "acme").join("docs").join(&project).join("plans");
+    let file = std::fs::read_dir(&plans).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with("-magic-link.md")).expect("kept in the squad's folder");
+    let name = file.to_string_lossy().into_owned();
+    let kept = std::fs::read_to_string(&file).unwrap();
+    assert!(kept.contains("status: in_review") && kept.contains("- TP-2: a used link fails"), "{kept}");
+    untouched(&repo, &head);
+    // Each reviewer's ticket: ready at once, from its angle, naming the plan by its absolute path.
     let board = handle.snapshot("acme").await.tickets;
     let reviews: Vec<_> = board.iter().filter(|t| t.plan.as_deref() == Some(name.as_str())).collect();
     assert_eq!(reviews.iter().map(|t| t.owner.as_deref().unwrap()).collect::<Vec<_>>(), ["backend", "qa"]);
-    assert!(reviews.iter().all(|t| t.kind == equipe_core::protocol::TicketKind::Task && t.body.contains(&name)));
+    assert!(reviews.iter().all(|t| t.kind == equipe_core::protocol::TicketKind::Task && t.body.contains(&name) && t.project.as_deref() == Some(repo.as_path())));
 
-    // A reviewer writes only its own notes.
+    // A reviewer writes only its own notes — naming the plan by its path, or its slug.
     let refused = tool(&handle, "backend", "write_plan", serde_json::json!({ "plan": name, "goal": "mine" })).await;
     assert!(refused.is_error && refused.text.contains("the PM's"), "{}", refused.text);
     let noted = tool(&handle, "qa", "write_plan", serde_json::json!({ "plan": "magic-link", "review": "TP-2 needs two browsers." })).await;
     assert!(!noted.is_error, "{}", noted.text);
-    let on_main = git(&repo, &["show", &format!("main:{name}")]);
-    assert!(on_main.contains("## Review notes\n\n### qa\n\nTP-2 needs two browsers."), "{on_main}");
-    assert!(on_main.contains("Sign in without a password."), "the rest stays: {on_main}");
+    let noted = tool(&handle, "backend", "write_plan", serde_json::json!({ "plan": name, "review": "Fine." })).await;
+    assert!(!noted.is_error, "{}", noted.text);
+    let kept = std::fs::read_to_string(&file).unwrap();
+    assert!(kept.contains("## Review notes\n\n### qa\n\nTP-2 needs two browsers."), "{kept}");
+    assert!(kept.contains("Sign in without a password."), "the rest stays: {kept}");
 
     // A ticket cut from it carries its slice of the test plan, and is listed in it.
     let cut = tool(&handle, "pm", "create_ticket", serde_json::json!({
@@ -4533,11 +4647,14 @@ async fn a_plan_is_committed_on_main_reviewed_at_once_and_cut_into_tickets_carry
     assert!(made.body.starts_with("Expired links say so.\n\nPlan: `") && made.body.contains("- TP-1: an expired link says so") && !made.body.contains("TP-2"), "{}", made.body);
     let mut listed = String::new();
     for _ in 0..50 {
-        listed = git(&repo, &["show", &format!("main:{name}")]);
+        listed = std::fs::read_to_string(&file).unwrap();
         if listed.contains("tickets: [") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(listed.contains(&format!("status: settled\ntickets: [{}]", made.id)), "{listed}");
+    // The code ticket's own branch may be cut by now; main never had the plan.
+    assert_eq!(git(&repo, &["rev-parse", "main"]), head);
+    assert_eq!(git(&repo, &["ls-tree", "-r", "--name-only", "main"]), "README.md");
 }

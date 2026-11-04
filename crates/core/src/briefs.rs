@@ -1,17 +1,22 @@
 //! Briefs and plans: what the squad settles with the person before it builds.
 //!
-//! After office hours the PM leaves a brief — `docs/briefs/<YYYY-MM-DD>-<slug>.md`
-//! in the project's repository, or in the squad's folder for work outside the
-//! projects — and the plan that follows it sits beside it in `docs/plans/`.
-//! Each opens with a front matter of flat `key: value` lines between `---`
-//! (a brief's: `title`, `date`, `status` — draft, settled or dropped —
-//! `ticket`, `mode` — startup or builder), then the document.
+//! After office hours the PM leaves a brief, and the plan that follows it sits
+//! beside it — both in the squad's own folder, never in a project's
+//! repository: any repository may be public, and a brief holds the person's
+//! plans, the people they name and their numbers. A project's are
+//! `docs/<project>/briefs/<YYYY-MM-DD>-<slug>.md` and `docs/<project>/plans/…`
+//! there ([`Target`]), work outside the projects `docs/briefs/…` and
+//! `docs/plans/…`. Each opens with a front matter of flat `key: value` lines
+//! between `---` (a brief's: `title`, `date`, `status` — draft, settled or
+//! dropped — `ticket`, `mode` — startup or builder), then the document.
 //!
-//! In a repository one is written by committing that file alone onto the
-//! main branch ([`worktree::commit_file_on_main`]), so every worktree cut from
-//! main reads it and nothing else in the person's checkout moves; in the
-//! squad's folder it is written in place. Reads stay inside the folder (no
-//! links out) and are size-limited, as `design/folder.rs` reads.
+//! One is written in place and saved at once as a change of the squad's
+//! folder (`crate::squad_home`), by whoever wrote it — kept, told apart and
+//! taken back as every change there is. Members on a ticket read it there by
+//! its absolute path: their worktree doesn't have it. Reads stay inside the
+//! folder (no links out) and are size-limited, as `design/folder.rs` reads.
+//! What equipe once committed into the repositories is copied over, once
+//! ([`keep_from_repos`]), and left where it was.
 //!
 //! A second opinion on a brief comes from the other engine
 //! (`equipe brief critique`), the way `design::critique` gets one on pictures.
@@ -191,25 +196,122 @@ pub fn doc_of(kind: Kind, project: Option<&str>, path: &Path, text: &str) -> Pro
     }
 }
 
+// ── where they are kept ──
+
+/// Their folder, from the top of the squad's.
+pub const DOCS: &str = "docs";
+
+/// Where a squad's briefs and plans are kept: in the squad's own folder (its
+/// home, a git repository equipe keeps for it), never in a project's
+/// repository — any project may be public, and a brief holds the person's
+/// plans, people and numbers. A project's are under `docs/<project>/`, the
+/// squad's own work's under `docs/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// The squad's folder.
+    home: PathBuf,
+    /// The project they are about, by name; none: the squad's own.
+    project: Option<String>,
+}
+
+/// Whether a project's name can be a folder of its own under `docs/`.
+fn is_folder_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\', '\0']) && name.len() <= 200
+}
+
+impl Target {
+    /// The squad's own, for work outside the projects: `docs/briefs`, `docs/plans`.
+    pub fn squad(home: &Path) -> Target {
+        Target { home: home.to_owned(), project: None }
+    }
+
+    /// `project`'s (its name): `docs/<project>/briefs`, `docs/<project>/plans`.
+    pub fn project(home: &Path, project: &str) -> Result<Target, String> {
+        if !is_folder_name(project) {
+            return Err(format!("A project called {project:?} can't have a folder of its own in the squad's folder."));
+        }
+        Ok(Target { home: home.to_owned(), project: Some(project.to_owned()) })
+    }
+
+    /// Whose a brief or plan named by its absolute path is, and which kind:
+    /// `<home>/docs/<project>/plans/<file>`, or `<home>/docs/plans/<file>`.
+    pub fn of_path(home: &Path, path: &Path) -> Option<(Target, Kind)> {
+        let rel = path.strip_prefix(home.join(DOCS)).ok()?;
+        let parts: Vec<String> = rel
+            .components()
+            .map(|c| match c {
+                std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        let kind_of = |folder: &str| Kind::ALL.into_iter().find(|k| k.folder() == folder);
+        match parts.as_slice() {
+            [folder, _file] => Some((Target::squad(home), kind_of(folder)?)),
+            [project, folder, _file] => Some((Target::project(home, project).ok()?, kind_of(folder)?)),
+            _ => None,
+        }
+    }
+
+    /// The squad's folder they are in.
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// The project they are about, by name.
+    pub fn project_name(&self) -> Option<&str> {
+        self.project.as_deref()
+    }
+
+    /// `kind`'s folder, from the top of the squad's.
+    pub fn rel(&self, kind: Kind) -> String {
+        match &self.project {
+            None => kind.dir().to_owned(),
+            Some(project) => format!("{DOCS}/{project}/{}", kind.folder()),
+        }
+    }
+
+    /// The folder their kinds' folders are in: `<home>/docs[/<project>]`.
+    pub fn root(&self) -> PathBuf {
+        match &self.project {
+            None => self.home.join(DOCS),
+            Some(project) => self.home.join(DOCS).join(project),
+        }
+    }
+
+    /// Where `kind`'s file called `name` is.
+    pub fn path(&self, kind: Kind, name: &str) -> PathBuf {
+        self.home.join(self.rel(kind)).join(name)
+    }
+
+    /// The names of the files in `kind`'s folder.
+    fn names(&self, kind: Kind) -> Vec<String> {
+        names_in(&self.home.join(self.rel(kind)))
+    }
+}
+
+fn names_in(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir).map(|e| e.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default()
+}
+
 // ── reading ──
 
-/// The briefs and plans in `root` (a repository's checkout, or the squad's
-/// folder), each kind newest first: Markdown files right in each kind's
-/// folder that stay inside `root`, read no further than [`MAX`].
-pub fn list(root: &Path, project: Option<&str>) -> Vec<ProjectDoc> {
+/// The briefs and plans `target` keeps, each kind newest first: Markdown
+/// files right in each kind's folder that stay inside the squad's folder,
+/// read no further than [`MAX`].
+pub fn list(target: &Target) -> Vec<ProjectDoc> {
     let mut out = Vec::new();
     for kind in Kind::ALL {
-        let Ok(entries) = std::fs::read_dir(root.join(kind.dir())) else { continue };
-        let mut names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".md") && !n.starts_with('.')).collect();
+        let mut names: Vec<String> = target.names(kind).into_iter().filter(|n| n.ends_with(".md") && !n.starts_with('.')).collect();
         names.sort_by(|a, b| b.cmp(a));
+        let dir = target.rel(kind);
         let mut docs: Vec<ProjectDoc> = names
             .iter()
             .take(LISTED)
             .filter_map(|name| {
-                let rel = format!("{}/{name}", kind.dir());
-                let bytes = inside(root, &rel, MAX)?;
+                let rel = format!("{dir}/{name}");
+                let bytes = inside(target.home(), &rel, MAX)?;
                 let text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX as usize)]);
-                Some(doc_of(kind, project, &root.join(&rel), &text))
+                Some(doc_of(kind, target.project_name(), &target.home().join(&rel), &text))
             })
             .collect();
         docs.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.path.cmp(&a.path)));
@@ -218,52 +320,24 @@ pub fn list(root: &Path, project: Option<&str>) -> Vec<ProjectDoc> {
     out
 }
 
-/// Every brief and plan of `squad`: each project's, then its own folder's.
+/// Every brief and plan of `squad`, all in its own folder: each project's,
+/// then its own work's. Nothing is read from a project's repository.
 pub fn catalog(home: &Path, squad: &str) -> Vec<ProjectDoc> {
     let mut out = Vec::new();
+    let folder = crate::squad_home::path(home, squad);
     let db = crate::journal::squad_dir(home, squad).join("squad.db");
     if crate::squads::valid_name(squad)
         && db.exists()
         && let Ok(journal) = crate::journal::Journal::open(&db)
     {
         for project in journal.projects().unwrap_or_default() {
-            out.extend(list(&project, Some(&crate::board::project_name(&project))));
+            if let Ok(target) = Target::project(&folder, &crate::board::project_name(&project)) {
+                out.extend(list(&target));
+            }
         }
     }
-    out.extend(list(&crate::squad_home::path(home, squad), None));
+    out.extend(list(&Target::squad(&folder)));
     out
-}
-
-// ── writing ──
-
-/// Where a brief or plan is written.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Target {
-    /// A project's repository: committed onto its main branch.
-    Repo(PathBuf),
-    /// A folder (the squad's): written in place.
-    Folder(PathBuf),
-}
-
-impl Target {
-    pub fn root(&self) -> &Path {
-        match self {
-            Target::Repo(dir) | Target::Folder(dir) => dir,
-        }
-    }
-
-    /// A repository with a main branch to commit onto; else its folder.
-    fn commits(&self) -> bool {
-        matches!(self, Target::Repo(dir) if worktree::main_branch(dir).is_ok())
-    }
-
-    /// The names of the files in `kind`'s folder: on main, in a repository.
-    fn names(&self, kind: Kind) -> Vec<String> {
-        if self.commits() {
-            return worktree::names_on_main(self.root(), kind.dir()).unwrap_or_default();
-        }
-        std::fs::read_dir(self.root().join(kind.dir())).map(|e| e.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default()
-    }
 }
 
 /// The name of `kind`'s file with `slug`, when there is one — the earliest
@@ -274,23 +348,21 @@ pub fn find(target: &Target, kind: Kind, slug: &str) -> Option<String> {
     names.into_iter().next()
 }
 
-/// What `kind`'s file with `slug` says: from main, in a repository.
+/// What `kind`'s file with `slug` says.
 pub fn read(target: &Target, kind: Kind, slug: &str) -> Option<String> {
     let name = find(target, kind, slug)?;
-    let rel = format!("{}/{name}", kind.dir());
-    let bytes = if target.commits() {
-        let main = worktree::main_branch(target.root()).ok()?;
-        worktree::read_blob(target.root(), &main, Path::new(&rel), MAX).ok()?
-    } else {
-        inside(target.root(), &rel, MAX).filter(|b| b.len() as u64 <= MAX)?
-    };
+    let bytes = inside(target.home(), &format!("{}/{name}", target.rel(kind)), MAX).filter(|b| b.len() as u64 <= MAX)?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Write `text` as `kind`'s file with `slug` — the one there already (its date
-/// kept), else `<today>-<slug>.md`. In a repository it is committed onto main
-/// alone; in a folder written in place, never through a link. Returns where it is.
-pub fn save(target: &Target, kind: Kind, slug: &str, text: &str, today: &str) -> Result<PathBuf, String> {
+// ── writing ──
+
+/// Write `text` as `kind`'s file with `slug` — the one there already (its
+/// date kept), else `<today>-<slug>.md` — in the squad's folder, in place and
+/// never through a link, and save it there as a change by `by` that the
+/// person can take back, as every change to the folder is. Nothing goes near
+/// a project's repository. Returns where it is.
+pub fn save(target: &Target, kind: Kind, slug: &str, text: &str, today: &str, by: &str) -> Result<PathBuf, String> {
     if !is_slug(slug) {
         return Err(format!("`{slug}` isn't a slug: a few lowercase ASCII words joined by dashes (`checkout-redesign`)."));
     }
@@ -298,23 +370,11 @@ pub fn save(target: &Target, kind: Kind, slug: &str, text: &str, today: &str) ->
         return Err(format!("It is {} KB; a {} is at most {} KB.", text.len() >> 10, kind.word(), MAX >> 10));
     }
     let name = find(target, kind, slug).unwrap_or_else(|| file_name(today, slug));
-    let rel = format!("{}/{name}", kind.dir());
-    let root = target.root();
-    if target.commits() {
-        let title = split_front(text).and_then(|(f, _)| field(&f, "title").map(str::to_owned)).unwrap_or_else(|| slug.to_owned());
-        worktree::commit_file_on_main(root, &rel, text.as_bytes(), &format!("docs: {} — {title}", kind.word()))?;
-        return Ok(root.join(rel));
-    }
-    // In place: each folder on the way a real one inside `root`, the file no link.
-    let mut at = root.to_path_buf();
-    for part in kind.dir().split('/') {
-        at.push(part);
-        match std::fs::symlink_metadata(&at) {
-            Ok(meta) if meta.is_dir() => {}
-            Ok(_) => return Err(format!("{} isn't a folder of its own.", at.display())),
-            Err(_) => std::fs::create_dir(&at).map_err(|e| format!("{}: {e}", at.display()))?,
-        }
-    }
+    let dir = target.rel(kind);
+    let rel = format!("{dir}/{name}");
+    // Whatever the person changed in it themselves is saved as theirs first.
+    let _ = crate::squad_home::save_in(target.home(), crate::squad_home::PERSON, "changed in the squad's folder", &[&rel]);
+    let at = real_folder(target.home(), &dir)?;
     let file = at.join(&name);
     if std::fs::symlink_metadata(&file).is_ok_and(|m| !m.is_file()) {
         return Err(format!("{} isn't a file of its own.", file.display()));
@@ -322,7 +382,106 @@ pub fn save(target: &Target, kind: Kind, slug: &str, text: &str, today: &str) ->
     let partial = at.join(format!(".{name}.partial"));
     std::fs::write(&partial, text).map_err(|e| format!("{}: {e}", partial.display()))?;
     std::fs::rename(&partial, &file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let title = split_front(text).and_then(|(f, _)| field(&f, "title").map(str::to_owned)).unwrap_or_else(|| slug.to_owned());
+    // A change of its own; should git be busy, the next save takes it in.
+    let _ = crate::squad_home::save_in(target.home(), by, &format!("wrote the {} {title}", kind.word()), &[&rel]);
     Ok(file)
+}
+
+/// `rel`'s folder under `root`, made where it isn't: each folder on the way a
+/// real one inside `root`, never a link elsewhere.
+fn real_folder(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let mut at = root.to_path_buf();
+    for part in rel.split('/') {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(format!("{} isn't a folder of its own.", at.display())),
+            Err(_) => std::fs::create_dir(&at).map_err(|e| format!("{}: {e}", at.display()))?,
+        }
+    }
+    Ok(at)
+}
+
+// ── what equipe once wrote into the repositories ──
+
+/// Whether `text`, in a file called `name`, is a brief or plan equipe wrote:
+/// named `<date>-<slug>.md`, its front matter equipe's — a title, a date, a
+/// status of `kind`'s, and a brief's mode.
+pub fn written_by_equipe(kind: Kind, name: &str, text: &str) -> bool {
+    let Some((fields, _)) = split_front(text) else { return false };
+    let status = field(&fields, "status").unwrap_or_default();
+    let mode = field(&fields, "mode").unwrap_or_default().to_ascii_lowercase();
+    parse_name(name).is_some()
+        && field(&fields, "title").is_some()
+        && field(&fields, "date").is_some_and(|d| parse_name(&format!("{d}-x.md")).is_some())
+        && match kind {
+            Kind::Brief => ["draft", "settled", "dropped"].contains(&status) && ["startup", "builder"].contains(&mode.as_str()),
+            Kind::Plan => ["draft", "in_review", "settled"].contains(&status),
+        }
+}
+
+/// A brief or plan equipe once committed into a project's repository, and
+/// where the squad's folder keeps a copy of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftInRepo {
+    pub kind: Kind,
+    /// Where it is in the repository: `docs/plans/2026-11-04-sign-in.md`.
+    pub from: String,
+    /// Where its copy goes.
+    pub to: PathBuf,
+    bytes: Vec<u8>,
+}
+
+/// The briefs and plans equipe wrote into `repo` (on its main branch, else
+/// in its folder) that `target` doesn't have yet. Only read: the repository
+/// is left as it is.
+pub fn left_in_repo(repo: &Path, target: &Target) -> Vec<LeftInRepo> {
+    let main = worktree::main_branch(repo).ok();
+    let mut out = Vec::new();
+    for kind in Kind::ALL {
+        let names = match &main {
+            Some(_) => worktree::names_on_main(repo, kind.dir()).unwrap_or_default(),
+            None => names_in(&repo.join(kind.dir())),
+        };
+        let have = target.names(kind);
+        for name in names.into_iter().filter(|n| n.ends_with(".md") && !have.contains(n)) {
+            let from = format!("{}/{name}", kind.dir());
+            let bytes = match &main {
+                Some(main) => worktree::read_blob(repo, main, Path::new(&from), MAX).ok(),
+                None => inside(repo, &from, MAX),
+            };
+            let Some(bytes) = bytes.filter(|b| b.len() as u64 <= MAX) else { continue };
+            if written_by_equipe(kind, &name, &String::from_utf8_lossy(&bytes)) {
+                out.push(LeftInRepo { kind, from, to: target.path(kind, &name), bytes });
+            }
+        }
+    }
+    out
+}
+
+/// Copy what equipe once wrote into the squad's `projects` into the squad's
+/// folder `home`, so the PM's history stays where briefs and plans are kept
+/// now — saved there as one change, the repositories left untouched. Returns
+/// what was copied.
+pub fn keep_from_repos(home: &Path, projects: &[PathBuf]) -> Result<Vec<LeftInRepo>, String> {
+    let mut copied = Vec::new();
+    for repo in projects {
+        let Ok(target) = Target::project(home, &crate::board::project_name(repo)) else { continue };
+        for doc in left_in_repo(repo, &target) {
+            let at = real_folder(home, &target.rel(doc.kind))?;
+            let file = at.join(doc.to.file_name().unwrap_or_default());
+            if std::fs::symlink_metadata(&file).is_ok() {
+                continue;
+            }
+            std::fs::write(&file, &doc.bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+            copied.push(doc);
+        }
+    }
+    if !copied.is_empty() {
+        crate::squad_home::save_in(home, "equipe", "kept the briefs and plans from the projects' repositories in the squad's folder", &[DOCS])?;
+    }
+    Ok(copied)
 }
 
 // ── the PM's tool ──
@@ -385,10 +544,11 @@ pub fn tool() -> Value {
     json!({
         "name": WRITE_BRIEF,
         "description": "Write the brief office hours lead to — or rewrite it: the same slug is the same brief. equipe writes \
-`docs/briefs/<date>-<slug>.md` with its front matter (title, date, status, ticket, mode) in the project's repository, \
-committed onto its main branch alone so every ticket's worktree reads it — or in the squad's folder when it belongs to \
-no project — and shows it on the project's page. Write it in the person's language. status: draft until the person \
-says it is settled; settled only on their word; dropped when they let it go.",
+it with its front matter (title, date, status, ticket, mode) into the squad's own folder — \
+`docs/<project>/briefs/<date>-<slug>.md`, or `docs/briefs/…` when it belongs to no project — never into a project's \
+repository, which may be public; saves it there as a change the person can take back; and shows it on the project's \
+page. Write it in the person's language. status: draft until the person says it is settled; settled only on their \
+word; dropped when they let it go.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -545,11 +705,20 @@ mod tests {
         assert_eq!((nameless.title.as_str(), nameless.date.as_str()), ("odd", ""));
     }
 
+    /// A squad's folder as equipe makes it: a git repository of its own.
+    fn squad_folder(name: &str) -> PathBuf {
+        let home = scratch(name);
+        crate::squad_home::ensure(&home, "acme", None).unwrap();
+        crate::squad_home::path(&home, "acme")
+    }
+
     #[test]
-    fn a_folder_lists_its_briefs_then_its_plans_newest_first_and_nothing_from_outside() {
+    fn a_projects_briefs_then_plans_are_listed_from_the_squads_folder_newest_first_and_nothing_from_outside() {
         let root = scratch("list");
-        let briefs = root.join("docs/briefs");
-        let plans = root.join("docs/plans");
+        let web = Target::project(&root, "web").unwrap();
+        let briefs = root.join("docs/web/briefs");
+        let plans = root.join("docs/web/plans");
+        assert_eq!((web.rel(Kind::Brief), web.root()), ("docs/web/briefs".to_owned(), root.join("docs/web")));
         std::fs::create_dir_all(&briefs).unwrap();
         std::fs::create_dir_all(&plans).unwrap();
         std::fs::write(briefs.join("2026-11-01-old.md"), "---\ntitle: Old\nstatus: dropped\n---\n").unwrap();
@@ -560,74 +729,125 @@ mod tests {
         std::fs::write(outside.join("secret.md"), "---\ntitle: Secret\n---\n").unwrap();
         std::os::unix::fs::symlink(outside.join("secret.md"), briefs.join("2026-11-09-link.md")).unwrap();
         std::fs::write(briefs.join("2026-11-08-huge.md"), format!("---\ntitle: Huge\n---\n{}", "x".repeat(MAX as usize + 10))).unwrap();
-        let docs = list(&root, Some("web"));
+        let docs = list(&web);
         let titles: Vec<(Kind, &str)> = docs.iter().map(|d| (d.kind, d.title.as_str())).collect();
         assert_eq!(titles, [(Kind::Brief, "Huge"), (Kind::Brief, "Checkout: one tap"), (Kind::Brief, "Old"), (Kind::Plan, "Plan")], "a link out is left out; a big one is read only so far");
         assert_eq!(docs[3].status, "in_review");
-        assert!(docs[1].path.ends_with("docs/briefs/2026-11-04-checkout.md"));
-        assert!(list(&outside, None).is_empty());
+        assert!(docs.iter().all(|d| d.project.as_deref() == Some("web")));
+        assert_eq!(docs[1].path, root.join("docs/web/briefs/2026-11-04-checkout.md").to_string_lossy());
+        // The squad's own work beside them, and another project's: each only its own.
+        assert!(list(&Target::squad(&root)).is_empty());
+        assert!(list(&Target::project(&root, "api").unwrap()).is_empty());
+        assert!(list(&Target::project(&outside, "web").unwrap()).is_empty());
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]
-    fn in_a_folder_a_brief_is_written_in_place_and_a_rewrite_keeps_its_date() {
-        let root = scratch("folder");
-        let target = Target::Folder(root.clone());
-        let at = save(&target, Kind::Brief, "checkout", BRIEF, "2026-11-04").unwrap();
-        assert_eq!(at, root.join("docs/briefs/2026-11-04-checkout.md"));
-        let again = save(&target, Kind::Brief, "checkout", "---\ntitle: v2\n---\n", "2026-11-06").unwrap();
-        assert_eq!(again, at, "the same file, its first date");
-        assert_eq!(read(&target, Kind::Brief, "checkout").as_deref(), Some("---\ntitle: v2\n---\n"));
+    fn a_project_needs_a_name_that_can_be_a_folder_and_a_path_says_whose_it_is() {
+        let root = Path::new("/h/squads/acme/home");
+        for bad in ["", "..", ".hidden", "a/b", "a\\b"] {
+            assert!(Target::project(root, bad).is_err(), "{bad:?}");
+        }
+        let web = Target::project(root, "web").unwrap();
+        assert_eq!(web.path(Kind::Plan, "2026-11-04-x.md"), root.join("docs/web/plans/2026-11-04-x.md"));
+        assert_eq!(Target::squad(root).path(Kind::Brief, "2026-11-04-x.md"), root.join("docs/briefs/2026-11-04-x.md"));
+        assert_eq!(Target::of_path(root, &root.join("docs/web/plans/2026-11-04-x.md")), Some((web, Kind::Plan)));
+        assert_eq!(Target::of_path(root, &root.join("docs/briefs/2026-11-04-x.md")), Some((Target::squad(root), Kind::Brief)));
+        assert_eq!(Target::of_path(root, &root.join("docs/plans/briefs/x.md")).map(|(t, k)| (t.project, k)), Some((Some("plans".into()), Kind::Brief)), "a project called plans");
+        assert!(Target::of_path(root, &root.join("docs/web/notes/x.md")).is_none());
+        assert!(Target::of_path(root, &root.join("docs/web/../../x/plans/a.md")).is_none());
+        assert!(Target::of_path(root, Path::new("/elsewhere/docs/plans/x.md")).is_none());
+        assert!(Target::of_path(root, Path::new("docs/plans/x.md")).is_none(), "a path in a repository is no folder's");
+    }
+
+    #[test]
+    fn a_brief_goes_into_the_squads_folder_as_a_change_that_can_be_taken_back_and_never_into_the_repository() {
+        let dir = repo("repo");
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+        let folder = squad_folder("folder-home");
+        let target = Target::project(&folder, "web").unwrap();
+        let at = save(&target, Kind::Brief, "checkout", BRIEF, "2026-11-04", "pm").unwrap();
+        assert_eq!(at, folder.join("docs/web/briefs/2026-11-04-checkout.md"));
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), BRIEF);
+        // The repository: not a commit, not a file, not a change.
+        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+        assert!(git(&dir, &["status", "--porcelain", "--untracked-files=all"]).is_empty());
+        assert!(!dir.join("docs").exists());
+        // The squad's folder: saved at once, by the PM, for what it is.
+        let change = crate::squad_home::changes(&folder, 1).unwrap().remove(0);
+        assert_eq!((change.by.as_str(), change.why.as_str()), ("pm", "wrote the brief Checkout: one tap"));
+        assert_eq!(change.files, [("saved", "docs/web/briefs/2026-11-04-checkout.md".to_owned())]);
+        // A rewrite: the same file, its first date, a change of its own.
+        let v2 = BRIEF.replace("settled", "draft");
+        assert_eq!(save(&target, Kind::Brief, "checkout", &v2, "2026-11-07", "pm").unwrap(), at, "the same file, its first date");
+        assert_eq!(read(&target, Kind::Brief, "checkout").as_deref(), Some(v2.as_str()));
         assert!(read(&target, Kind::Plan, "checkout").is_none());
-        assert!(save(&target, Kind::Brief, "../escape", BRIEF, "2026-11-04").is_err());
-        assert!(save(&target, Kind::Brief, "big", &"x".repeat(MAX as usize + 1), "2026-11-04").is_err());
-        // A folder on the way that is a link elsewhere: refused.
-        let elsewhere = scratch("folder-elsewhere");
-        std::os::unix::fs::symlink(&elsewhere, root.join("docs/plans")).unwrap();
-        assert!(save(&target, Kind::Plan, "checkout", BRIEF, "2026-11-04").is_err());
+        // What the person changed in it themselves is kept as theirs, first.
+        std::fs::write(&at, "my own words\n").unwrap();
+        save(&target, Kind::Brief, "checkout", BRIEF, "2026-11-08", "pm").unwrap();
+        let two = crate::squad_home::changes(&folder, 2).unwrap();
+        assert_eq!((two[0].by.as_str(), two[1].by.as_str()), ("pm", crate::squad_home::PERSON));
+        // Taken back like any change to the folder.
+        crate::squad_home::undo(&folder, 1).unwrap();
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), "my own words\n");
+        // The squad's own work: under docs/ itself.
+        let own = save(&Target::squad(&folder), Kind::Plan, "trip", "---\ntitle: Trip\n---\n", "2026-11-04", "pm").unwrap();
+        assert_eq!(own, folder.join("docs/plans/2026-11-04-trip.md"));
+        assert!(git(&folder, &["status", "--porcelain"]).is_empty(), "everything saved");
+        assert!(save(&target, Kind::Brief, "../escape", BRIEF, "2026-11-04", "pm").is_err());
+        assert!(save(&target, Kind::Brief, "big", &"x".repeat(MAX as usize + 1), "2026-11-04", "pm").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(folder.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_folder_on_the_way_that_is_a_link_elsewhere_is_refused() {
+        let root = scratch("linked");
+        let elsewhere = scratch("linked-elsewhere");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("docs/web")).unwrap();
+        assert!(save(&Target::project(&root, "web").unwrap(), Kind::Plan, "checkout", BRIEF, "2026-11-04", "pm").is_err());
         assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing written through it");
+        // No git under it (a bare folder): written in place all the same.
+        assert!(save(&Target::squad(&root), Kind::Brief, "x", BRIEF, "2026-11-04", "pm").unwrap().is_file());
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&elsewhere);
     }
 
     #[test]
-    fn in_a_repository_a_brief_is_committed_onto_main_alone_and_the_checkout_follows() {
-        let dir = repo("repo");
-        std::fs::write(dir.join("README.md"), "the person's own edit\n").unwrap();
-        let target = Target::Repo(dir.clone());
-        let at = save(&target, Kind::Brief, "checkout", BRIEF, "2026-11-04").unwrap();
-        assert_eq!(at, dir.join("docs/briefs/2026-11-04-checkout.md"));
-        assert_eq!(std::fs::read_to_string(&at).unwrap(), BRIEF, "the checkout has it");
-        assert_eq!(git(&dir, &["log", "-1", "--format=%s"]), "docs: brief — Checkout: one tap");
-        assert_eq!(git(&dir, &["show", "--name-only", "--format=", "HEAD"]), "docs/briefs/2026-11-04-checkout.md", "that file alone");
-        assert_eq!(std::fs::read_to_string(dir.join("README.md")).unwrap(), "the person's own edit\n", "their change kept, uncommitted");
-        assert!(git(&dir, &["status", "--porcelain"]).contains("M README.md"));
-        // A rewrite: the same file, a commit of its own; the same bytes again: nothing.
-        let v2 = BRIEF.replace("settled", "draft");
-        assert_eq!(save(&target, Kind::Brief, "checkout", &v2, "2026-11-07").unwrap(), at);
-        assert_eq!(read(&target, Kind::Brief, "checkout").as_deref(), Some(v2.as_str()));
-        let count = git(&dir, &["rev-list", "--count", "HEAD"]);
-        save(&target, Kind::Brief, "checkout", &v2, "2026-11-07").unwrap();
-        assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]), count);
-        // A plan beside it, listed with it.
-        save(&target, Kind::Plan, "checkout", "---\ntitle: Plan\nstatus: draft\n---\n", "2026-11-05").unwrap();
-        let docs = list(&dir, Some("web"));
-        assert_eq!(docs.iter().map(|d| d.kind).collect::<Vec<_>>(), [Kind::Brief, Kind::Plan]);
-        // The person's uncommitted file at that path: refused, nothing moves.
-        std::fs::write(dir.join("docs/plans/2026-11-05-checkout.md"), "mine").unwrap();
+    fn what_equipe_once_committed_into_a_repository_is_copied_into_the_squads_folder_once_and_left_where_it_was() {
+        let dir = repo("web");
+        std::fs::create_dir_all(dir.join("docs/briefs")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        let plan = "---\ntitle: Plan\ndate: 2026-11-05\nstatus: in_review\nbrief: docs/briefs/2026-11-04-checkout.md\ntickets: [3]\n---\n\n# Plan\n";
+        std::fs::write(dir.join("docs/briefs/2026-11-04-checkout.md"), BRIEF).unwrap();
+        std::fs::write(dir.join("docs/plans/2026-11-05-checkout.md"), plan).unwrap();
+        // The project's own docs that equipe didn't write: no front matter, another one, another name.
+        std::fs::write(dir.join("docs/briefs/2026-11-01-press.md"), "# Press brief\n").unwrap();
+        std::fs::write(dir.join("docs/plans/roadmap.md"), "---\ntitle: Roadmap\ndate: 2026-11-01\nstatus: draft\n---\n").unwrap();
+        std::fs::write(dir.join("docs/plans/2026-11-02-launch.md"), "---\ntitle: Launch\nstatus: shipped\n---\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "docs"]);
         let head = git(&dir, &["rev-parse", "HEAD"]);
-        assert!(save(&target, Kind::Plan, "checkout", "---\ntitle: Plan 2\n---\n", "2026-11-05").is_err());
+        let folder = squad_folder("kept-home");
+        let target = Target::project(&folder, &crate::board::project_name(&dir)).unwrap();
+        let left = left_in_repo(&dir, &target);
+        assert_eq!(left.iter().map(|d| d.from.as_str()).collect::<Vec<_>>(), ["docs/briefs/2026-11-04-checkout.md", "docs/plans/2026-11-05-checkout.md"]);
+        assert_eq!(left[1].to, target.path(Kind::Plan, "2026-11-05-checkout.md"));
+        let copied = keep_from_repos(&folder, std::slice::from_ref(&dir)).unwrap();
+        assert_eq!(copied.len(), 2);
+        assert_eq!(std::fs::read_to_string(target.path(Kind::Plan, "2026-11-05-checkout.md")).unwrap(), plan, "word for word");
+        assert_eq!(list(&target).len(), 2);
+        assert_eq!(git(&folder, &["log", "-1", "--format=%s"]), "equipe: kept the briefs and plans from the projects' repositories in the squad's folder", "saved as equipe's");
+        assert!(git(&folder, &["status", "--porcelain"]).is_empty());
+        // The repository as it was; a second pass finds nothing left to copy.
         assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+        assert!(git(&dir, &["status", "--porcelain"]).is_empty());
+        assert!(dir.join("docs/briefs/2026-11-04-checkout.md").is_file());
+        assert!(keep_from_repos(&folder, std::slice::from_ref(&dir)).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_folder_that_is_no_repository_yet_is_written_in_place() {
-        let dir = scratch("norepo");
-        let at = save(&Target::Repo(dir.clone()), Kind::Brief, "x", BRIEF, "2026-11-04").unwrap();
-        assert!(at.is_file());
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(folder.parent().unwrap().parent().unwrap().parent().unwrap());
     }
 
     #[test]

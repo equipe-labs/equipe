@@ -1595,6 +1595,7 @@
   "project.doc_settled": "Arrêté",
   "project.docs_empty": "Avant de construire quoi que ce soit d’important, le PM vous pose une question à la fois et consigne les réponses dans un brief. Le plan en découle.",
   "project.docs_empty_title": "Aucun brief pour l’instant",
+  "project.docs_private": "Gardés dans le dossier propre à l'équipe — jamais dans le dépôt, qui peut être public.",
   "project.gone": "Ce projet ne fait plus partie de l’équipe",
   "project.held_office_hours": "Heures de bureau d’abord",
   "project.menu_tip": "Menu du projet",

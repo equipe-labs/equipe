@@ -401,8 +401,8 @@ fn board() -> Vec<Ticket> {
     if std::env::var("FAKE_PLAN").is_ok_and(|v| v == "1")
         && let Some(t) = out.iter_mut().find(|t| t.id == 42)
     {
-        let plan = "docs/plans/2026-11-04-checkout-payment.md";
-        t.plan = Some(plan.into());
+        let plan = briefs::folder().join("docs/web/plans/2026-11-04-checkout-payment.md").to_string_lossy().into_owned();
+        t.plan = Some(plan.clone());
         t.body.push_str(&format!("\n\n계획: `{plan}`\n\n이 티켓의 테스트 계획:\n\n- TP-1: 카드를 고르고 결제하면 주문이 만들어진다\n- TP-3: 새로고침해도 고른 결제 수단이 남는다"));
     }
     if your_turn().is_some() {

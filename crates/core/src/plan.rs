@@ -1,5 +1,6 @@
-//! A plan: what the PM writes after the brief and before the tickets, in the
-//! project's repository at `docs/plans/<YYYY-MM-DD>-<slug>.md`. Its front
+//! A plan: what the PM writes after the brief and before the tickets, kept in
+//! the squad's own folder — never a project's repository — at
+//! `docs/<project>/plans/<YYYY-MM-DD>-<slug>.md` (`crate::briefs::Target`). Its front
 //! matter says what it is (`title`, `date`, `status`, `brief`, `scope`,
 //! `tickets`); its sections follow in one order — goal, approach,
 //! architecture and data flow, edge cases, test plan, design notes, risks,
@@ -11,9 +12,6 @@
 
 use crate::i18n::{self, Lang};
 use equipe_protocol::TicketId;
-
-/// Where plans live in a repository (or the squad's folder, without one).
-pub const DIR: &str = "docs/plans";
 
 /// Where a plan stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -577,8 +575,9 @@ pub fn slug_of(arg: &str) -> Option<String> {
 }
 
 /// What a member on a ticket cut from a plan is told: where the plan is and
-/// how to read it, and on a review, where its notes go. `main` names the
-/// branch it is on, for a checkout that has another out.
+/// how to read it, and on a review, where its notes go. A plan is kept in the
+/// squad's folder, named by its absolute path; one from before, committed in
+/// a repository (`repo`), is read on `main` there.
 pub fn work_note(path: &str, repo: Option<(&std::path::Path, &str)>) -> String {
     let read = match repo {
         Some((repo, main)) => format!(
@@ -586,7 +585,7 @@ pub fn work_note(path: &str, repo: Option<(&std::path::Path, &str)>) -> String {
             repo.display(),
             repo.display()
         ),
-        None => format!("`{path}`"),
+        None => format!("`{path}` — in the squad's folder, not in your worktree: read it there, by that absolute path"),
     };
     format!(
         "\nThis ticket comes from the plan {read}. Read it before you start: its goal, approach, edge cases and test \
@@ -770,10 +769,16 @@ mod tests {
 
     #[test]
     fn a_member_on_a_plans_ticket_is_told_where_it_is_and_writes_only_its_own_notes() {
-        let note = work_note("docs/plans/2026-11-04-sign-in.md", Some((std::path::Path::new("/p/site"), "main")));
-        assert!(note.contains("`git -C /p/site show main:docs/plans/2026-11-04-sign-in.md`"), "{note}");
+        // Kept in the squad's folder: its absolute path, outside the worktree.
+        let path = "/h/squads/acme/home/docs/site/plans/2026-11-04-sign-in.md";
+        let note = work_note(path, None);
+        assert!(note.contains(&format!("`{path}`")), "{note}");
+        assert!(note.contains("in the squad's folder, not in your worktree") && note.contains("by that absolute path"), "{note}");
+        assert!(!note.contains("git -C"), "{note}");
         assert!(note.contains("`write_plan` (`plan`, \n`review`)") || note.contains("`write_plan` (`plan`, `review`)"), "{note}");
         assert!(note.contains("only your own notes"), "{note}");
-        assert!(!work_note("/h/docs/plans/x.md", None).contains("git -C"));
+        // One from before plans left the repositories: where it was committed.
+        let old = work_note("docs/plans/2026-11-04-sign-in.md", Some((std::path::Path::new("/p/site"), "main")));
+        assert!(old.contains("`git -C /p/site show main:docs/plans/2026-11-04-sign-in.md`"), "{old}");
     }
 }
