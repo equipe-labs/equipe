@@ -167,6 +167,17 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
+    /// Check a member's tool call before its engine runs it: Claude Code's
+    /// hook, the call's JSON on stdin (equipe sets this up for its members)
+    #[command(hide = true)]
+    Hook {
+        /// The member's working directory: never refused
+        #[arg(long)]
+        work: std::path::PathBuf,
+        /// A folder the member only reads in this work
+        #[arg(long = "read-only")]
+        read_only: Vec<std::path::PathBuf>,
+    },
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
     Mcp {
@@ -406,10 +417,31 @@ fn install_tls() {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Asked before each of a member's calls: answered at once, nothing else started.
+    if let Some(Command::Hook { work, read_only }) = &cli.command {
+        return hook(work, read_only);
+    }
     // Before any thread: opened from Finder, the app's equipe (and the daemon
     // it starts) has launchd's bare PATH, where no member's tool is found.
     equipe_providers::tools_path::widen(runs_long(&cli));
     tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("start the async runtime").block_on(run(cli))
+}
+
+/// Claude Code's `PreToolUse` hook for a member: equipe's guard's answer to
+/// the call on stdin — a refusal, or nothing for the engine's own rules to
+/// decide. A call it can't read is let through: the guard only refuses.
+fn hook(work: &std::path::Path, read_only: &[std::path::PathBuf]) -> ExitCode {
+    let mut input = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
+        return ExitCode::SUCCESS;
+    }
+    let Ok(call) = serde_json::from_str::<serde_json::Value>(&input) else {
+        return ExitCode::SUCCESS;
+    };
+    if let Some(answer) = equipe_core::guard::answer(&call, work, read_only) {
+        println!("{answer}");
+    }
+    ExitCode::SUCCESS
 }
 
 /// Whether this command is, or sets up, the daemon: worth asking the login
@@ -578,6 +610,11 @@ async fn run(cli: Cli) -> ExitCode {
                 Err(why) => Err(Failure::new(why)),
             }
         }
+        // A member's command: the window would hold its turn until closed.
+        Command::Browser { .. } if equipe_core::guard::run_by_member(std::env::var_os(equipe_core::guard::MEMBER_ENV)) => {
+            eprintln!("{}", equipe_core::guard::BROWSER_REFUSED);
+            return ExitCode::FAILURE;
+        }
         Command::Browser { max: Some(n), .. } => match settings::browser_max(&equipe_providers::credentials::equipe_home(), n.as_deref()) {
             Ok(line) => {
                 println!("  {line}");
@@ -616,6 +653,8 @@ async fn run(cli: Cli) -> ExitCode {
             }
         }
         Command::Mcp { server, squad, member, role, home } => serve_mcp(&server, squad, member, role, home).await,
+        // Answered in `main`, before anything starts.
+        Command::Hook { .. } => Ok(()),
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
             DesktopAction::Setup { sign } => desktop::Action::Setup { sign },
             DesktopAction::Status => desktop::Action::Status,

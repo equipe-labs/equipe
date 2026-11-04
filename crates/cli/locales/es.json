@@ -846,6 +846,7 @@
   "view.decide_images.one": "{count} imagen",
   "view.decide_images.other": "{count} imágenes",
   "view.decide_multi": "Elige todas las que apliquen",
+  "view.decide_recommended": "Recomendado",
   "view.decide_next": "siguiente",
   "view.decide_other": "tu propia respuesta",
   "view.decide_pick": "elegir",

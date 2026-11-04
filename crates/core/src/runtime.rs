@@ -40,6 +40,7 @@ use crate::browser;
 use crate::desktop_gate::{self, Act, Verdict};
 use crate::desktop;
 use crate::eta;
+use crate::guard;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
@@ -3624,6 +3625,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Codex's CLI to read by path; Codex over the API reads nothing, so it
         // gets them inline — as it does when they can't be written.
         let reads_files = has_tools(session);
+        // A member on Claude Code has equipe's guard asked before each of its
+        // calls (`guard`): what it refuses, the charter needn't ask for.
+        let guarded = session.member.is_some() && session.engine == Engine::Claude && self.config.equipe_binary.is_some();
         let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
@@ -3648,6 +3652,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 facts: facts.len(),
                 edits,
                 skills: skills::Delivery::Inline,
+                guard: guarded,
             };
             let role = roles::role_or_custom(&m.role);
             let offered = skills::offered(role, &ctx);
@@ -3709,21 +3714,31 @@ for one project goes to it as tickets for its owners, with that project — and 
         {
             env.push(("CARGO_PROFILE_DEV_DEBUG".to_owned(), debug.to_owned()));
         }
+        // A member's commands know they are a member's: `equipe browser` refuses there.
+        if let Some(m) = &session.member {
+            env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
+        }
         let writable: Vec<String> = builds.iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
-        // squad's home is read at all.
+        // squad's home is read at all. Where the guard is asked, it keeps the
+        // directories read only — the file tools out, and a command's writes,
+        // with the operating system's fence besides — and copying out of one
+        // is reading it: Claude Code's own rule for a directory takes `cp`'s
+        // source for a write, and refused it.
         let other_homes = squad.as_deref().map(|s| squad_home::others(&self.config.home, s)).unwrap_or_default();
         let deny: Vec<String> = if member_rules {
             let rule = |tool: &str, dir: &Path| format!("{tool}(/{}/**)", dir.display());
             add_dirs
                 .iter()
+                .filter(|_| !guarded)
                 .flat_map(|d| [rule("Edit", d), rule("Write", d)])
                 .chain(other_homes.iter().flat_map(|d| [rule("Read", d), rule("Edit", d)]))
                 .collect()
         } else {
             Vec::new()
         };
+        let hooks = guarded.then(|| self.config.equipe_binary.as_deref().map(|binary| guard::hooks(binary, &cwd, &add_dirs))).flatten();
         let read_only: Vec<String> = add_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         let prompt_tool = (mcp_config.is_some() && matches!(access, claude_code::Access::EditFiles | claude_code::Access::Ask))
             .then(|| format!("mcp__{MCP_SERVER}__{}", permissions::APPROVE_TOOL));
@@ -3929,6 +3944,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if member_rules && mcp_config.is_some() {
                     blocked.push(ENGINE_QUESTION_TOOL.to_owned());
                 }
+                // A window that holds the turn until it is closed: the guard says why first.
+                if member_rules {
+                    blocked.extend(guard::deny_rules(self.config.equipe_binary.as_deref()));
+                }
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
                 let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
@@ -3969,6 +3988,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         prompt_tool: prompt_tool.as_deref(),
                         env: &env,
                         effort: effort.as_deref(),
+                        hooks: hooks.as_ref(),
                     };
                     // A browser just started may still be loading.
                     if let Some(port) = browser {

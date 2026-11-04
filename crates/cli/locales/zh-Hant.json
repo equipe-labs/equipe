@@ -826,6 +826,7 @@
   "view.decide_closed": "未回答，已關閉",
   "view.decide_images.other": "{count} 張圖片",
   "view.decide_multi": "可複選",
+  "view.decide_recommended": "推薦",
   "view.decide_next": "下一步",
   "view.decide_other": "自行回答",
   "view.decide_pick": "選擇",

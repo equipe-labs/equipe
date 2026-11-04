@@ -2524,7 +2524,6 @@
   "match.priority_low": "baja",
   "match.this_mac": "este mac|este Mac",
   "match.all_members": "todos",
-  "match.recommended": "recomendado|recomendada",
   "settings.links_words": "enlace navegador abrir link url browser open",
   "settings.disk_words": "disco espacio limpiar disk space storage clean target build /disk",
   "settings.phone_words": "teléfono móvil dispositivo phone iphone android mobile app pair qr device equipe",

@@ -606,7 +606,10 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .iter()
         .enumerate()
         .filter(|_| !q.is_visual())
-        .map(|(n, option)| option_row(p, id, n, &option.label, &option.description, draft.picked(n), draft.cursor == n, q.multi_select, &handle))
+        .map(|(n, option)| {
+            let (label, recommended) = option.shown();
+            option_row(p, id, n, &label, recommended, &option.description, draft.picked(n), draft.cursor == n, q.multi_select, &handle)
+        })
         .collect();
     let other_on = draft.cursor >= q.options.len() || typing;
     let other = field.map(|field| {
@@ -810,10 +813,12 @@ fn key_badge(p: Palette, key: &str, on: bool) -> impl IntoElement {
         .child(key.to_owned())
 }
 
-/// One option: its label (strong), what it means (quiet), its number key;
-/// picked, filled and outlined in the accent; the keys on it, outlined.
+/// One option: its label (strong) — "Recommended" beside it, in the
+/// screen's language, when it is the one recommended — what it means
+/// (quiet), its number key; picked, filled and outlined in the accent; the
+/// keys on it, outlined.
 #[allow(clippy::too_many_arguments)]
-fn option_row(p: Palette, id: u64, n: usize, label: &str, description: &str, picked: bool, cursor: bool, multi: bool, handle: &WeakEntity<Shell>) -> AnyElement {
+fn option_row(p: Palette, id: u64, n: usize, label: &str, recommended: bool, description: &str, picked: bool, cursor: bool, multi: bool, handle: &WeakEntity<Shell>) -> AnyElement {
     let handle = handle.clone();
     let check = multi.then(|| {
         div()
@@ -854,7 +859,12 @@ fn option_row(p: Palette, id: u64, n: usize, label: &str, description: &str, pic
                 .flex_1()
                 .min_w_0()
                 .gap_0p5()
-                .child(div().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label.to_owned()))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().min_w_0().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label.to_owned()))
+                        .when(recommended, |r| r.child(super::visuals::badge(p, false))),
+                )
                 .when(!description.is_empty(), |c| c.child(div().text_size(px(12.5)).line_height(px(18.)).text_color(if picked { p.text2 } else { p.muted }).child(description.to_owned()))),
         )
         .child(div().pt(px(1.)).child(key_badge(p, &(n + 1).to_string(), picked)))
@@ -888,7 +898,7 @@ fn card_tallest(shell: &Shell, place: Place) -> f32 {
 fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, picked: bool, cursor: bool, w: f32, described: bool, actions: Option<Actions>, handle: &WeakEntity<Shell>, cx: &mut App) -> AnyElement {
     let p = shots.p;
     let option = &q.options[n];
-    let (label, recommended) = visual::recommended(&option.label);
+    let (label, recommended) = option.shown();
     let key = render::hash_of(("decide-tile", id, step, n));
     let (fw, h) = (w - 2., (w * visual::RATIO).floor());
     let frame = visual::frame(visual::TileState { picked, cursor, hover: 0. });

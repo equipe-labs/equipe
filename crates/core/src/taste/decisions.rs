@@ -167,7 +167,7 @@ pub fn from_history(body: &str) -> Vec<Decision> {
 /// record, each with where its chosen picture is now: a question whose pick
 /// has a picture. (One answered in words alone stays in what equipe learned.)
 pub fn from_answers(set: &crate::protocol::decide::QuestionSet, answers: &[crate::protocol::decide::Answer], today: &str) -> Vec<(Decision, String)> {
-    let label = |l: &str| l.trim().trim_end_matches("(Recommended)").trim().to_owned();
+    let label = |l: &str| crate::protocol::decide::recommended(l).0;
     set.questions
         .iter()
         .zip(answers)

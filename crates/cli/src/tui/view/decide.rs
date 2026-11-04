@@ -50,8 +50,13 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
         };
         let number = format!("{} ", n + 1);
         let label_style = if picked { theme.accent().add_modifier(Modifier::BOLD) } else { theme.bold() };
-        let used = cols(&number) + cols(mark) + cols(&option.label);
-        let mut spans = vec![Span::styled(number, theme.bold()), Span::styled(mark, if picked { theme.accent() } else { theme.dim() }), Span::styled(ui::fit(&option.label, width.saturating_sub(4)), label_style)];
+        // The one recommended says so once, in the screen's language.
+        let label = match option.shown() {
+            (label, true) => format!("{label} ({})", t!("view.decide_recommended")),
+            (label, false) => label,
+        };
+        let used = cols(&number) + cols(mark) + cols(&label);
+        let mut spans = vec![Span::styled(number, theme.bold()), Span::styled(mark, if picked { theme.accent() } else { theme.dim() }), Span::styled(ui::fit(&label, width.saturating_sub(4)), label_style)];
         if !option.description.is_empty() && used + 4 < width {
             spans.push(Span::styled(format!(" — {}", ui::fit(&option.description, width - used - 3)), theme.dim()));
         }
@@ -208,6 +213,20 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_key(KeyEvent::new(code, KeyModifiers::NONE), std::time::Instant::now());
+    }
+
+    #[test]
+    fn the_recommended_option_is_marked_once_in_the_screens_words() {
+        let mut questions = set();
+        // Marked by equipe, and still written into its label by an older member: one mark.
+        questions.questions[0].options[0].recommended = true;
+        questions.questions[0].options[1] = Choice { label: "Google".into(), ..Choice::default() };
+        let mut app = pm();
+        app.on_event(Event::QuestionsAsked { squad: "acme".into(), questions });
+        let shot = screen(&app, 110, 30);
+        assert_eq!(shot.matches("Recommended").count(), 1, "{shot}");
+        assert!(shot.contains("1 ○ Magic link (Recommended)"), "{shot}");
+        assert!(shot.contains("2 ○ Google") && !shot.contains("Google (Recommended)"), "{shot}");
     }
 
     #[test]

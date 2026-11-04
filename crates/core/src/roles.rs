@@ -417,6 +417,10 @@ pub struct Context<'a> {
     /// How its engine gets its skills (`crate::skills`): what the charter
     /// carries only an index of, or — for an engine that can't read a file — in full.
     pub skills: crate::skills::Delivery<'a>,
+    /// Whether equipe's guard is asked before each of the member's calls
+    /// (`crate::guard`, Claude Code's hook): what it refuses — a long sleep
+    /// in the foreground — needs no word in the charter.
+    pub guard: bool,
 }
 
 /// What an engine is told about who it is on the team.
@@ -512,10 +516,8 @@ signing up, filing — is `action` (each outward step asks the person first). A 
 and any role can take one. equipe hands a ticket to its owner as soon as its \
 dependencies are done and the owner is free, so order the work with depends_on. Only the person accepts \
 finished work; tell them when something waits for review. When they say in words that they accept, merge or send back \
-work in review (\"accept them all\", \"accept T-1 and T-3\", \"merge it too\", \"reject this one\"), call `propose_accept` right \
-away: it puts a confirmation card in front of them. Don't lecture them about buttons or where to click — say in one line, \
-in their language, that the card is up (\"The card is up\"). Their words aren't the acceptance, and yours never are: only their click \
-on the card accepts, merges or sends back. Give each ticket to the member whose role fits; own one yourself only when \
+work in review, call `propose_accept` right away: it puts a confirmation card in front of them. Their words aren't the \
+acceptance, and yours never are: only their click on the card accepts, merges or sends back. Give each ticket to the member whose role fits; own one yourself only when \
 nobody on the team could do it, or it is a change too small or urgent to hand over — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
 touching the same files, and give each to a role (`backend`), not to a numbered member: a member with a big ticket \
@@ -538,9 +540,7 @@ when a repository changes. When nobody on the team fits a task or an action, own
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
 it meets its acceptance criteria. When you can't go on without something only the person can do — a token, an \
 account, a setting, an answer or a decision — `block_on_person` puts the ticket down with what they need to do, and \
-you take other work until they have; don't keep a ticket open just to wait. Give each thing you ask its own item in \
-`needs`, a complete sentence that stands alone (never several joined into one), and name a file or folder by its \
-path in backticks (`outputs/shots/`), so the person can open it from the card they answer on. They may answer \
+you take other work until they have; don't keep a ticket open just to wait. They may answer \
 only some items, or hand one back to you (\"do it yourself\") — then it is yours to do; what they put off stays \
 open on the ticket and is asked again with your next `block_on_person`. When more hands would get work unblocked \
 sooner, tell the PM, who proposes it to the person — never ask the person to type a command to add someone. Only the \
@@ -557,16 +557,11 @@ accepts it.",
     let tools = if ctx.board_tools {
         format!(
             "{tools} When a command or a config needs a password, key or token — a NAS login, an API key — ask for it \
-with `ask_secret`: the person types it into a card and equipe saves it to a file for you; never ask for one in words or \
-have them type it into a terminal, and never print it. As you start anything that takes more than a couple of minutes — a ticket, research, subagents' \
-work — call `estimate` with honest minutes until it is done, and again when that changes by much; when you push a \
-release, deploy or start anything else that ships, say too when it will be live (CI, build, review) and what. \
+with `ask_secret`, never in words, and never print one. As you start anything that takes more than a couple of minutes \
+— a ticket, research, subagents' work — call `estimate`. \
 Questions that sharpen a vague ask are `ask_decision` questions too. \
 When a decision is the person's to make and comes down to a few distinct options — an approach, a scope, a provider, \
-a trade-off — put it to them with `ask_decision`: one to four questions, each with two to four options, the one you \
-recommend first, its label ending in \"(Recommended)\" written in the person's language. It \
-doesn't hold you up: end your turn, or go on with what doesn't depend on it; their answers come as their next \
-message. Don't ask what you can settle yourself, and don't use it for open-ended information or something only they \
+a trade-off — put it to them with `ask_decision`. Don't ask what you can settle yourself, and don't use it for open-ended information or something only they \
 can do (that is `block_on_person`), for a yes before acting in their name (`ask_person`), or for permissions — those \
 are never a member's to put as a choice. Your engine's own question tool isn't seen by anyone. Whenever you need \
 answers from the person, never end a reply on a numbered list of questions for them to answer in prose: ask through \
@@ -593,8 +588,7 @@ signed in. Before you work in it, open your `browser` skill: doing the whole job
 handing a step to the person. Before anything done in the person's name that can't easily be taken back — creating \
 an account, accepting terms, starting a trial or a paid plan, inviting someone, deleting or transferring, changing \
 security or billing settings — call `ask_person` with exactly what and why, and go ahead only on their yes. Never \
-type a card number or a password you weren't given, and never try to get past a CAPTCHA. Never run `equipe browser` \
-yourself — it stops your turn until a window is closed. Your windows are yours alone, but sign-ins are shared by \
+type a card number or a password you weren't given, and never try to get past a CAPTCHA. Your windows are yours alone, but sign-ins are shared by \
 everyone's: don't sign out of a site, or switch it to another account, team or workspace, without saying so first — \
 the rest of the squad works signed in there too."
     } else {
@@ -633,8 +627,7 @@ and a README. In conversation you may write there directly for short things the 
 tidying material, making one table: equipe saves each change as soon as your turn ends, tells the person, and lets \
 them take it back, so just say in plain words what you saved where (\"I saved notes/tax-deadline.md\"), never in \
 git's. In conversation the squad's projects are for reading only: a repository changes only on a `code` ticket, in \
-its worktree. Taking a file from a folder kept for reading (a logo, a screenshot) is reading it: copy it with \
-`cat <file> > <where it goes>` — a rule kept for such folders can refuse `cp` from them. When a rule or a refusal \
+its worktree. Taking a file from a folder kept for reading (a logo, a screenshot) is reading it: copy it out to where it goes. When a rule or a refusal \
 stops something the work needs and no other way does it, never drop that part quietly: say what was blocked and \
 why it mattered, and ask the person (`ask_decision`, or `block_on_person` for what only they can do). Work with several steps, work for a teammate, or a result the person should review before it counts \
 goes on a ticket instead. On a `task` or `action` ticket you work in a worktree of this folder, whatever your \
@@ -737,6 +730,13 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
             None => "Write for the person in the language they write in.".to_owned(),
         },
     };
+    // Where the guard is asked, it refuses a long foreground sleep, saying what to do instead.
+    let sleep = if ctx.guard {
+        ""
+    } else {
+        " Never sleep in the foreground to wait for something: run a long command in the background and wait for it \
+with your engine's own wait or monitor tool."
+    };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
 Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{pictures}{visuals}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
@@ -753,9 +753,7 @@ A command whose output shows `<sandbox_violations>` was stopped by the fence equ
 prints (\"token not valid\", \"not logged in\"): the login is fine, so never log in again or touch tokens over it — \
 run it outside the fence, which asks the person once; their \"always\" stops it asking. Rust builds go to \
 `$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`. \
-Run one command at a time where you can: a single command can be allowed for good, a chain only once. Never sleep \
-in the foreground to wait for something: run a long command in the background and wait for it with your engine's own \
-wait or monitor tool. Your memory \
+Run one command at a time where you can: a single command can be allowed for good, a chain only once.{sleep} Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
 lesson there — their taste, the project's conventions, what to avoid — and check it before new work. What the person attaches comes as tags with a path on this \
 machine; open each before you answer: `[image: <path>]` — look at it with Read; `[pdf: <path> · N pages]` — Read it \
@@ -939,15 +937,18 @@ mod tests {
     }
 
     #[test]
-    fn every_member_waits_with_its_engines_tool_never_a_foreground_sleep() {
+    fn a_member_waits_with_its_engines_tool_never_a_foreground_sleep_told_where_the_guard_cant_refuse_one() {
         let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }];
+        let rule = "Never sleep in the foreground to wait for something: run a long command in the background and wait for it with your engine's own wait or monitor tool.";
         for (id, board) in [(PM, true), ("designer", true), ("frontend", false), (CUSTOM.id, true)] {
-            let text = charter(role_or_custom(id), id, &ctx(&team, &[], board));
-            assert!(
-                text.contains("Never sleep in the foreground to wait for something: run a long command in the background and wait for it with your engine's own wait or monitor tool."),
-                "{id}: {text}"
-            );
+            let unguarded = charter(role_or_custom(id), id, &ctx(&team, &[], board));
+            assert!(unguarded.contains(rule), "{id}: {unguarded}");
+            // On Claude Code the guard refuses one, saying what to do instead.
+            let guarded = charter(role_or_custom(id), id, &Context { guard: true, ..ctx(&team, &[], board) });
+            assert!(!guarded.contains("Never sleep"), "{id}: {guarded}");
         }
+        let refused = crate::guard::refusal("Bash", &serde_json::json!({ "command": "sleep 30 && ls" }), std::path::Path::new("/w"), std::path::Path::new("/w"), &[]).unwrap();
+        assert!(refused.contains("run_in_background: true") && refused.contains("Monitor"), "{refused}");
     }
 
     #[test]
@@ -1088,7 +1089,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT) }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false }
     }
 
     use crate::skills::Delivery;
@@ -1150,8 +1151,9 @@ mod tests {
                 facts: 2,
                 edits: r.edits,
                 skills: Delivery::Plugin(SKILLS_AT),
+                guard: true,
             };
-            let bare = Context { board_tools: false, browser: false, desktop: false, design: false, pm_accepts: false, profiles: &[], ..full };
+            let bare = Context { board_tools: false, browser: false, desktop: false, design: false, pm_accepts: false, profiles: &[], guard: false, ..full };
             for (variant, c) in [("full", full), ("bare", bare)] {
                 let tag = format!("{}.{variant}", r.id);
                 let with_skills = told(r.id, r.id, &c).split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1397,9 +1399,11 @@ invent one."), "{id}: true numbers");
         }
         // What it must hold to whenever it browses stays in its charter, with where the rest is.
         let charter = charter(role(PM).unwrap(), "pm", &browsing);
-        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "Never run `equipe browser`", "don't sign out of a site"] {
+        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "don't sign out of a site"] {
             assert!(charter.contains(part), "{part}: {charter}");
         }
+        // `equipe browser` is refused where it runs, saying why and what instead: no word for it here.
+        assert!(!charter.contains("equipe browser"), "{charter}");
         assert!(!told(PM, "pm", &ctx(&team, &[], true)).contains("`show_my_browser` with it"), "no browser, no skill for it");
         let tools = crate::board::tools(true);
         let show = tools.iter().find(|t| t["name"] == crate::board::SHOW_BROWSER).expect("the hand-over tool");
@@ -1461,10 +1465,12 @@ invent one."), "{id}: true numbers");
     fn a_charter_says_what_the_squads_folder_is_for_and_what_needs_a_ticket() {
         let team = [Teammate { name: "pm", role: "pm" }];
         let text = charter(role("backend").unwrap(), "backend", &Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) });
-        for part in ["The squad's folder is /h/squads/acme/home", "`notes/`", "`outputs/`", "write there directly", "for reading only", "`cat <file> > <where it goes>`", "never drop that part quietly", "goes on a ticket", "asks the person first", "Other squads' folders are private"] {
+        for part in ["The squad's folder is /h/squads/acme/home", "`notes/`", "`outputs/`", "write there directly", "for reading only", "is reading it: copy it out to where it goes", "never drop that part quietly", "goes on a ticket", "asks the person first", "Other squads' folders are private"] {
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], true)).contains("squad's folder"));
+        // `cp` from such a folder isn't refused any more: no workaround to tell.
+        assert!(!text.contains("cat <file>") && !text.contains("refuse `cp`"), "{text}");
     }
 
     #[test]
@@ -1507,9 +1513,7 @@ invent one."), "{id}: true numbers");
             let text = charter(role(role_id).unwrap(), name, &ctx(&team, &[], true));
             for part in [
                 "`ask_decision`",
-                "two to four options",
-                "\"(Recommended)\"",
-                "person's language",
+                "a few distinct options",
                 "`block_on_person`",
                 "for permissions",
                 "never end a reply on a numbered list of questions",
@@ -1521,6 +1525,14 @@ invent one."), "{id}: true numbers");
         }
         let text = charter(role("backend").unwrap(), "backend", &ctx(&team, &[], false));
         assert!(!text.contains("ask_decision"), "no tools, no such advice");
+        // How to ask is the tool's to say: how many, which one is recommended, that it doesn't wait.
+        let charter = charter(role("backend").unwrap(), "backend", &ctx(&team, &[], true));
+        assert!(!charter.contains("(Recommended)") && !charter.contains("two to four options"), "{charter}");
+        let tool = crate::board::tools(false).into_iter().find(|t| t["name"] == crate::board::ASK_DECISION).unwrap();
+        let doc = tool["description"].as_str().unwrap();
+        assert!(doc.contains("`recommended`") && doc.contains("Then end your turn, or carry on"), "{doc}");
+        let option = &tool["inputSchema"]["properties"]["questions"]["items"]["properties"]["options"]["items"]["properties"];
+        assert_eq!(option["recommended"]["type"], "boolean");
     }
 
     #[test]
@@ -1638,15 +1650,17 @@ invent one."), "{id}: true numbers");
     fn a_member_asks_the_person_one_whole_sentence_an_item_and_files_by_path() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "ios", role: "mobile" }];
         let text = charter(role("mobile").unwrap(), "ios", &ctx(&team, &[], true));
-        for part in ["its own item in", "complete sentence", "never several joined into one", "path in backticks", "\"do it yourself\") — then it is yours to do", "asked again with your next"] {
+        for part in ["`block_on_person` puts the ticket down", "\"do it yourself\") — then it is yours to do", "asked again with your next"] {
             assert!(text.contains(part), "{part}: {text}");
         }
+        // How each item is written is the tool's `needs` to say.
+        assert!(!text.contains("its own item in"), "{text}");
         for part in ["\"do it yourself\"", "`show_my_browser`", "saying exactly why", "\"later\": go on without it", "\"your call\"", "doesn't know", "From the person:"] {
             assert!(ANSWERS_GUIDE.contains(part), "{part}");
         }
         let schema = crate::board::tools(false).into_iter().find(|t| t["name"] == crate::board::BLOCK_ON_PERSON).unwrap();
         let needs = schema["inputSchema"]["properties"]["needs"]["description"].as_str().unwrap();
-        assert!(needs.contains("one per item") && needs.contains("complete sentence") && needs.contains("backticks"), "{needs}");
+        assert!(needs.contains("one per item") && needs.contains("complete sentence") && needs.contains("backticks") && needs.contains("open it from the card"), "{needs}");
     }
 
     #[test]
@@ -1691,8 +1705,13 @@ invent one."), "{id}: true numbers");
         let member = charter(role("mobile").unwrap(), "mobile", &ctx(&team, &[], true));
         assert!(member.contains("tell the PM, who proposes it to the person") && !member.contains("`propose_team_change`"), "{member}");
         // Acceptance in words: the PM raises the card at once, without a lecture; the click decides.
-        for part in ["call `propose_accept` right away", "Don't lecture them about buttons", "The card is up", "only their click on the card accepts"] {
+        for part in ["call `propose_accept` right away", "only their click on the card accepts"] {
             assert!(text.contains(part), "{part}: {text}");
+        }
+        // How to say it is the tool's to tell: the card is up, no lecture about buttons.
+        let doc = crate::accept::tool()["description"].as_str().unwrap().to_owned();
+        for part in ["right away", "\"accept T-1 and T-3\"", "Don't explain buttons", "The card is up"] {
+            assert!(doc.contains(part), "{part}: {doc}");
         }
         assert!(member.contains("never their words, nor yours") && member.contains("don't walk them through buttons") && !member.contains("`propose_accept`"), "{member}");
         // Code is an engineer's first: the PM changes it only on a ticket of its own, when that is truly better.
@@ -1707,5 +1726,20 @@ invent one."), "{id}: true numbers");
         let team = [Teammate { name: "pm", role: "pm" }];
         let text = charter(role("data").unwrap(), "data", &Context { home: Some("/h"), ..ctx(&team, &[], true) });
         assert!(text.contains("says where it came from") && text.contains("marked unconfirmed"), "{text}");
+    }
+
+    #[test]
+    fn a_member_is_told_when_to_estimate_and_the_tool_how() {
+        let team = [Teammate { name: "pm", role: PM }];
+        for id in [PM, "backend", "designer"] {
+            let text = charter(role_or_custom(id), id, &ctx(&team, &[], true));
+            assert!(text.contains("As you start anything that takes more than a couple of minutes — a ticket, research, subagents' work — call `estimate`."), "{id}: {text}");
+            assert!(!text.contains("honest minutes"), "{id}: the how is the tool's");
+        }
+        let tool = crate::board::tools(false).into_iter().find(|t| t["name"] == crate::board::ESTIMATE).unwrap();
+        let doc = tool["description"].as_str().unwrap();
+        for part in ["more than a couple of minutes", "a ticket, research, subagents' work", "again whenever your guess changes by much", "when it will be live", "what goes live", "Honest minutes"] {
+            assert!(doc.contains(part), "{part}: {doc}");
+        }
     }
 }

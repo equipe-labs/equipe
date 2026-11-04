@@ -1,4 +1,5 @@
 {
   "match.answers": "dime|indica|elige|decide|cuál|cuándo|quién",
-  "match.confirms": "revisa|comprueba|está bien|de acuerdo"
+  "match.confirms": "revisa|comprueba|está bien|de acuerdo",
+  "match.recommended": "recomendado|recomendada"
 }

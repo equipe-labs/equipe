@@ -533,7 +533,7 @@ have done it. Your changes so far are kept. Then end your turn.",
                         "items": { "type": "string" },
                         "description": "Each thing the person has to do or answer, one per item — never several joined into one. \
 Each a complete sentence that stands on its own, concrete enough to do without asking; a file or folder named by its path in \
-backticks (`outputs/T-12/shots/`). In the person's language.",
+backticks (`outputs/T-12/shots/`), so the person can open it from the card they answer on. In the person's language.",
                     },
                     "why": { "type": "string", "description": "What it is for, in one line — in the person's language." },
                 },
@@ -619,8 +619,8 @@ wrote and answers yes or no; wait for the answer and do only what they said yes 
         "description": "Put questions to the person, 1 to 4 at once, each answered in its own place — never write \
 them as a numbered list in your reply instead. A decision: a question with 2 to 4 options to pick from, for a real \
 choice between distinct options that is theirs to make (an approach, a scope, a provider, a trade-off), not one you \
-can settle yourself — the one you recommend first, its label ending in \"(Recommended)\" in the person's language; \
-they can also pick several where multi_select is set, or write their own answer. A plain question: leave `options` \
+can settle yourself — the one you recommend first, with `recommended` set: equipe marks it for the person in their \
+language, so never write \"Recommended\" into a label; they can also pick several where multi_select is set, or write their own answer. A plain question: leave `options` \
 out, and they answer in their own words — for what only they know (a phone number, an email, a name, a date). They \
 may skip any. It doesn't wait, and needs no ticket: the person answers when they can, and their answers come to you \
 as their next message (\"Answers to your question: 1) … → …\"). Then end your turn, or carry on with work that \
@@ -655,6 +655,7 @@ this one, this one with an aspect of another (a mix), or another round.",
                                         "description": { "type": "string", "description": "One line: what it means, or what it costs." },
                                         "images": IMAGES_SCHEMA.clone(),
                                         "aspects": ASPECTS_SCHEMA.clone(),
+                                        "recommended": { "type": "boolean", "description": "Set on the option you recommend — one at most, put first. equipe shows the person it is the recommended one, in their language." },
                                     },
                                     "required": ["label"],
                                 },
@@ -697,8 +698,8 @@ or card number, a password: remember where the original file is instead.",
     tools.push(json!({
         "name": ESTIMATE,
         "description": "Tell the person when what you're doing will be done, so they can see it at a glance — call it \
-as you start anything that takes more than a couple of minutes, and again whenever your guess changes by much. When \
-you push a release, deploy or start anything else that ships, also say when it will be live (CI, a build, a store \
+as you start anything that takes more than a couple of minutes (a ticket, research, subagents' work), and again \
+whenever your guess changes by much. When you push a release, deploy or start anything else that ships, also say when it will be live (CI, a build, a store \
 review, DNS…) and what goes live. Honest minutes, not hopeful ones.",
         "inputSchema": {
             "type": "object",
@@ -884,14 +885,29 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
                     description: arg_str(o, "description").unwrap_or_default().to_owned(),
                     images: arg_strs(o, "images"),
                     aspects: aspects_arg(o),
+                    recommended: o.get("recommended").and_then(Value::as_bool).unwrap_or(false),
                 }),
+            })
+            // A label that says it is recommended, in any language: the mark,
+            // which screens show in theirs, never twice.
+            .map(|mut c| {
+                let (label, said) = crate::protocol::decide::recommended(&c.label);
+                c.label = label;
+                c.recommended |= said;
+                c
             })
             .filter(|c| !c.label.is_empty())
             .collect();
+        // One recommendation a question: the first marked.
+        let mut options = options;
+        if let Some(first) = options.iter().position(|o| o.recommended) {
+            for option in options.iter_mut().skip(first + 1) {
+                option.recommended = false;
+            }
+        }
         // None: answered in the person's own words.
         let given = item.get("options").and_then(Value::as_array).is_some_and(|o| !o.is_empty());
         // The question's aspects, for every option that names none of its own.
-        let mut options = options;
         let shared = aspects_arg(item);
         for option in options.iter_mut().filter(|o| o.aspects.is_empty()) {
             option.aspects = shared.clone();
@@ -1330,10 +1346,11 @@ mod tests {
     #[test]
     fn a_decision_asks_one_to_four_questions_of_two_to_four_options() {
         let q = |options: Value| json!({ "question": "Which database?", "header": "Database", "options": options });
-        let two = json!([{ "label": "Postgres (Recommended)", "description": "Relational" }, { "label": "SQLite" }]);
+        let two = json!([{ "label": "Postgres", "description": "Relational", "recommended": true }, { "label": "SQLite" }]);
         let asked = questions_arg(&json!({ "questions": [q(two.clone()), { "question": "Ship what?", "options": ["Auth", "Pay", "Search"], "multi_select": true }] })).unwrap();
         assert_eq!(asked.len(), 2);
-        assert_eq!((asked[0].header.as_str(), asked[0].options[0].label.as_str(), asked[0].options[0].description.as_str()), ("Database", "Postgres (Recommended)", "Relational"));
+        assert_eq!((asked[0].header.as_str(), asked[0].options[0].label.as_str(), asked[0].options[0].description.as_str()), ("Database", "Postgres", "Relational"));
+        assert_eq!(asked[0].options.iter().map(|o| o.recommended).collect::<Vec<_>>(), [true, false]);
         assert!(asked[1].multi_select && asked[1].options.len() == 3 && asked[1].header.is_empty());
         // One question on its own counts.
         assert_eq!(questions_arg(&json!({ "questions": q(two.clone()) })).unwrap().len(), 1);
@@ -1359,10 +1376,33 @@ mod tests {
             let options = &questions["items"]["properties"]["options"];
             assert_eq!((options["minItems"].as_u64(), options["maxItems"].as_u64()), (Some(2), Some(4)));
             let doc = tool["description"].as_str().unwrap();
-            assert!(doc.contains("(Recommended)") && doc.contains("block_on_person") && doc.contains("permissions"), "{doc}");
+            assert!(doc.contains("`recommended`") && !doc.contains("(Recommended)") && doc.contains("block_on_person") && doc.contains("permissions"), "{doc}");
+            assert_eq!(options["items"]["properties"]["recommended"]["type"], "boolean");
             assert!(doc.contains("leave `options` out") && doc.contains("never write them as a numbered list"), "{doc}");
             assert_eq!(questions["items"]["required"], json!(["question"]));
         }
+    }
+
+    #[test]
+    fn the_recommended_option_is_marked_once_by_equipe_never_by_its_label() {
+        let options = |options: Value| questions_arg(&json!({ "questions": [{ "question": "Which database?", "options": options }] })).unwrap().remove(0).options;
+        let marked = |options: &[crate::protocol::decide::Choice]| options.iter().map(|o| (o.label.clone(), o.recommended)).collect::<Vec<_>>();
+        // A label that still says it, in any language equipe speaks, says it once: as the mark.
+        for written in ["Postgres (Recommended)", "Postgres (추천)", "Postgres（おすすめ）", "Postgres (Empfohlen)", "Postgres (recomendado)", "Postgres (推荐)"] {
+            let got = options(json!([written, "SQLite"]));
+            assert_eq!(marked(&got), [("Postgres".to_owned(), true), ("SQLite".to_owned(), false)], "{written}");
+        }
+        // Flagged and written both: one mark, the label clean.
+        let got = options(json!([{ "label": "Postgres (Recommended)", "recommended": true }, "SQLite"]));
+        assert_eq!(marked(&got), [("Postgres".to_owned(), true), ("SQLite".to_owned(), false)]);
+        // Only one per question: the first.
+        let got = options(json!([{ "label": "A", "recommended": true }, { "label": "B", "recommended": true }]));
+        assert_eq!(marked(&got), [("A".to_owned(), true), ("B".to_owned(), false)]);
+        // Its own brackets stay.
+        let got = options(json!(["Blue (navy)", "Grey"]));
+        assert_eq!(marked(&got), [("Blue (navy)".to_owned(), false), ("Grey".to_owned(), false)]);
+        // Two labels the same once the mark comes off are one option twice.
+        assert!(questions_arg(&json!({ "questions": [{ "question": "?", "options": ["A (Recommended)", "A"] }] })).unwrap_err().contains("same label"));
     }
 
     #[test]

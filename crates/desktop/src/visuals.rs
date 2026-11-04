@@ -468,26 +468,10 @@ pub fn all_failed(looks: &[Option<&Look>]) -> Option<ImageWhy> {
     [ImageWhy::Missing, ImageWhy::TooBig, ImageWhy::Outside, ImageWhy::Unreadable].into_iter().max_by_key(|w| count(*w))
 }
 
-/// The words members mark the option they recommend with, in the languages
-/// the person may speak — "(Recommended)", Korean "(추천)".
-fn recommended_words() -> &'static [&'static str] {
-    crate::i18n::every("match.recommended")
-}
-
-/// An option's label without its "(Recommended)", and whether it had one.
+/// A label without the "(Recommended)" a member wrote at its end, in any
+/// language the person may speak, and whether it had one.
 pub fn recommended(label: &str) -> (String, bool) {
-    let trimmed = label.trim_end();
-    for (open, close) in [('(', ')'), ('（', '）')] {
-        if let Some(inner) = trimmed.strip_suffix(close)
-            && let Some(at) = inner.rfind(open)
-        {
-            let word = inner[at + open.len_utf8()..].trim().to_lowercase();
-            if recommended_words().contains(&word.as_str()) {
-                return (inner[..at].trim_end().to_owned(), true);
-            }
-        }
-    }
-    (label.to_owned(), false)
+    equipe_core::protocol::decide::recommended(label)
 }
 
 // ── shown big ──
