@@ -395,6 +395,8 @@
   "chat.pm_text": "简单的事 PM 会立即回答；工作会变成左侧的工单。打开工单可查看其工作并给出指示。",
   "chat.pm_title": "与 PM 对话",
   "chat.replying": "正在回复",
+  "chat.resume": "继续",
+  "chat.resume_words": "请从停下的地方继续刚才的工作。",
   "chat.retro_ran": "每周复盘 · {date}",
   "chat.retry_reply": "重试",
   "chat.routine_ran": "定期任务 · {title}",

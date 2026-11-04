@@ -395,6 +395,8 @@
   "chat.pm_text": "簡単なことはPMがすぐ答え、作業は左側のチケットになります。チケットを開くと作業の様子を見て指示を出せます。",
   "chat.pm_title": "PMと話す",
   "chat.replying": "返信中",
+  "chat.resume": "続ける",
+  "chat.resume_words": "止まる直前までしていた作業をそのまま続けてください。",
   "chat.retro_ran": "週次の振り返り · {date}",
   "chat.retry_reply": "再試行",
   "chat.routine_ran": "定期業務 · {title}",

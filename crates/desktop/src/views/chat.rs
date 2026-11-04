@@ -915,6 +915,22 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .into_any_element(),
         Block::Summarized => super::compact::divider(p, rows.tones.added).into_any_element(),
         Block::Background { summary, failed, file } => background_row(rows, key, summary, *failed, file.as_deref(), window, cx),
+        Block::Note(text) if resumable(&rows.blocks, ix) && rows.step_since.is_none() => {
+            // The turn stopped (Esc, ⌘., Stop) and nothing has been said since:
+            // one click picks the work up where it stopped.
+            let handle = rows.handle.clone();
+            h_flex()
+                .gap_3()
+                .items_center()
+                .text_size(px(SMALL))
+                .line_height(px(SMALL_LINE))
+                .text_color(p.muted)
+                .child(text.clone())
+                .child(crate::ui::button(p, ("resume-turn", key), crate::ui::Kind::Secondary, t!("chat.resume")).icon(Icon::Play).on_click(move |_, window, cx| {
+                    handle.update(cx, |shell, cx| shell.resume_stopped(window, cx)).ok();
+                }))
+                .into_any_element()
+        }
         Block::Note(text) => {
             // A ticket's heading (`── T-12 …`).
             let chapter = text.starts_with('─');
@@ -2238,6 +2254,13 @@ impl Shell {
     }
 
     /// Ask the last thing said again.
+    /// "이어서 하기" on a stopped turn: the member is asked to carry on from
+    /// where it stopped, as the person's message.
+    pub fn resume_stopped(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.set_text(t!("chat.resume_words"), window, cx);
+        self.send(window, cx);
+    }
+
     pub fn retry_last(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(text) = self.chat.blocks.iter().rev().find_map(|b| if let Block::User(t) = b { Some(t.clone()) } else { None }) else { return };
         self.composer.set_text(&text, window, cx);
@@ -2344,8 +2367,26 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     v_flex().flex_1().min_h_0().child(header::render(shell, cx)).child(render(shell, cx))
 }
 
+/// Whether block `ix` is a turn's "Stopped." with nothing the person said
+/// after it: the place for "이어서 하기".
+fn resumable(blocks: &[Block], ix: usize) -> bool {
+    let stopped = equipe_core::i18n::note(crate::i18n::lang(), equipe_core::protocol::transcript::notes::STOPPED);
+    matches!(blocks.get(ix), Some(Block::Note(text)) if *text == stopped) && !blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_)))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_stopped_turn_offers_to_carry_on_until_the_person_says_something() {
+        let stopped = equipe_core::i18n::note(crate::i18n::lang(), equipe_core::protocol::transcript::notes::STOPPED).into_owned();
+        let blocks = vec![Block::User("research".into()), Block::Note(stopped.clone())];
+        assert!(super::resumable(&blocks, 1));
+        let said = vec![Block::User("research".into()), Block::Note(stopped), Block::User("why did it stop?".into())];
+        assert!(!super::resumable(&said, 1), "they spoke since: their words lead");
+        assert!(!super::resumable(&[Block::Note("other".into())], 0));
+    }
+
     use super::{Block, changed, escape_markdown, find_hits, occurrences, turn_ends};
     use gpui_kit::{ListAlignment, ListOffset, ListState, px};
 

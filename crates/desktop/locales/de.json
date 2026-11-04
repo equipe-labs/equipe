@@ -408,6 +408,8 @@
   "chat.pm_text": "Der PM beantwortet Kurzes sofort; Arbeit wird links zu Tickets. Öffne ein Ticket, um die Arbeit zu verfolgen und Anweisungen zu geben.",
   "chat.pm_title": "Mit dem PM sprechen",
   "chat.replying": "Antwortet",
+  "chat.resume": "Weitermachen",
+  "chat.resume_words": "Bitte mach dort weiter, wo du aufgehört hast.",
   "chat.retro_ran": "Wöchentlicher Rückblick · {date}",
   "chat.retry_reply": "Erneut versuchen",
   "chat.routine_ran": "Routine · {title}",

@@ -408,6 +408,8 @@
   "chat.pm_text": "Le PM répond tout de suite aux questions simples ; le travail devient des tickets à gauche. Ouvrez un ticket pour suivre son travail et donner des consignes.",
   "chat.pm_title": "Parler au PM",
   "chat.replying": "Répond",
+  "chat.resume": "Reprendre",
+  "chat.resume_words": "Reprends ce que tu faisais au moment de l’arrêt, s’il te plaît.",
   "chat.retro_ran": "Rétro de la semaine · {date}",
   "chat.retry_reply": "Réessayer",
   "chat.routine_ran": "Routine · {title}",

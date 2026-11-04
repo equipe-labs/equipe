@@ -408,6 +408,8 @@
   "chat.pm_text": "The PM answers quick things right away; work becomes tickets on the left. Open a ticket to watch its work and give directions.",
   "chat.pm_title": "Talk to the PM",
   "chat.replying": "Replying",
+  "chat.resume": "Carry on",
+  "chat.resume_words": "Please carry on with what you were doing when you stopped.",
   "chat.retro_ran": "Weekly retro · {date}",
   "chat.retry_reply": "Retry",
   "chat.routine_ran": "Routine · {title}",

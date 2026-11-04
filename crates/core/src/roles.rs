@@ -1042,7 +1042,9 @@ split into parts that don't depend on each other and give each a subagent of its
 so they run at once (in the background when you have other work meanwhile), each told exactly its part and to report \
 back briefly; then you put their results together and check them. Parts that change files never touch the same ones; \
 when the change itself can't be split, subagents still take the reading, surveying and testing around it. Work only \
-alone what truly can't split. The person sees each subagent at work under your name, so describe each in a few plain words. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
+alone what truly can't split. The person sees each subagent at work under your name, so describe each in a few plain words. \
+Your engine runs at most 20 subagents at once: for more, start up to 20 and start the rest as earlier ones hand back, \
+never past the cap (a call past it is refused, not queued). When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
 their preferences, and anything they asked for that isn't done. {language} Be concise.",
         duties
     )
@@ -1473,6 +1475,7 @@ invent one."), "{id}: true numbers");
             let text = charter(role(r).unwrap(), name, &ctx(&team, &[], true));
             assert!(text.contains("more than about 20 minutes"), "{name}");
             assert!(text.contains("in one message"), "{name}");
+            assert!(text.contains("at most 20 subagents at once") && text.contains("as earlier ones hand back"), "{name}: waves under the engine's cap");
             assert!(!text.contains("you may give each part"), "{name}");
         }
         let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
