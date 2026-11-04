@@ -168,7 +168,10 @@ async fn codex_signs_in_with_its_own_tool_on_the_daemons_machine_and_out_again()
     assert!(out.iter().any(|e| e.engine == Engine::Codex && e.state == EngineState::SignedOut && e.legacy), "{out:?}");
     assert!(out.iter().any(|e| e.engine == Engine::Claude && e.state == EngineState::SignedIn), "Claude Code's own login stays");
 
-    // Claude Code signs in on its own: equipe offers no sign-in for it.
+    // A daemon outside the Mac's login session (started over SSH) doesn't
+    // sign Claude Code in: its login would land where members never read it.
+    // SAFETY: only this test asks where the daemon runs.
+    unsafe { std::env::set_var("EQUIPE_LOGIN_SESSION", "outside") };
     core.send(Command::SignIn { engine: Engine::Claude, device: false });
     assert!(matches!(sign_in(&mut events).await, SignInStep::Failed { why: SignInFailure::Unsupported, .. }));
 }

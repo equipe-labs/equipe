@@ -458,5 +458,6 @@
   "control.disallow": "Retirer la règle « toujours autoriser » {rule}",
   "control.merge_push": "Fusionner la branche de T-{ticket} dans main et la pousser vers origin",
   "control.merge": "Fusionner la branche de T-{ticket} dans main",
-  "control.keep_on_branch": "Laisser le travail de T-{ticket} sur sa branche"
+  "control.keep_on_branch": "Laisser le travail de T-{ticket} sur sa branche",
+  "news.sign_in_carried_on": "{engine} est de nouveau connecté : le travail interrompu reprend."
 }

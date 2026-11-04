@@ -454,5 +454,6 @@
   "control.disallow": "'항상 허락' 규칙 {rule}을(를) 거둬요",
   "control.merge_push": "T-{ticket}의 브랜치를 main에 머지하고 origin에 올려요",
   "control.merge": "T-{ticket}의 브랜치를 main에 머지해요",
-  "control.keep_on_branch": "T-{ticket}의 작업을 브랜치에 그대로 둬요"
+  "control.keep_on_branch": "T-{ticket}의 작업을 브랜치에 그대로 둬요",
+  "news.sign_in_carried_on": "{engine}에 다시 로그인돼서, 멈췄던 일을 이어서 해요."
 }
