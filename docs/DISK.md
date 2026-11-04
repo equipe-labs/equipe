@@ -28,7 +28,7 @@ again, members are told and the held code tickets start.
 
 A member's tool or turn that says `No space left on device` (or `ENOSPC`, `os error 28`)
 makes the level full at once and puts a plain news row in that member's conversation —
-"디스크가 가득 차서 frontend의 빌드가 실패했어요 · 정리하기" — once until there's room again;
+"The disk is full, so frontend's build failed · Clean up" — once until there's room again;
 the member is told not to retry the build.
 
 ## What takes the space
@@ -88,8 +88,8 @@ on its own (the worktree and branch stay), and `daemon.log` says so.
 - `equipe disk` — the status, what takes the space by group, and what to do.
 - `equipe disk clean [--yes]` — what would go, and a y/N.
 - `equipe disk debug [lines|off|full] [--squad <name>]`.
-- Desktop: the banner's 정리하기, settings → 스쿼드와 기기 → 디스크, `/disk`, a news row's
-  정리하기. TUI: a warning in the header; `/disk` says where things stand.
+- Desktop: the banner's Clean up, settings → Squad & machine → Disk, `/disk`, a news row's
+  Clean up. TUI: a warning in the header; `/disk` says where things stand.
 - Phone: `disk_level` events and a push at critical and full (`docs/remote-protocol.md`).
 - Screens' RPC: `disk` → `DiskReport`, `disk_clean { ids }` → `DiskCleaned`.
 - Fake daemon: `FAKE_DISK=low|critical|full`.

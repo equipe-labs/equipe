@@ -1,7 +1,7 @@
 # "Verify you are human" checks in the browser panel
 
-The report: in the browser panel, on dash.cloudflare.com's "보안 확인 수행 중 /
-사람인지 확인하십시오" (Cloudflare Turnstile, reached from the OAuth page
+The report: in the browser panel, on dash.cloudflare.com's "Performing security verification /
+Verify you are human" (in Korean on that Mac; Cloudflare Turnstile, reached from the OAuth page
 `wrangler login` opened in the PM's browser), the person clicks the checkbox
 and the check never passes. It comes back every time. A person is there and
 clicked, so the click should count.
@@ -25,7 +25,7 @@ laid out at the panel's box with `Emulation.setDeviceMetricsOverride`.
 
 `scripts/browser-check-lab.cjs` drives the host the way the daemon and the
 panel do. A member's lane navigates with its tools, the panel watches and fits
-the page, the person takes it (직접 하기), moves the pointer over the picture,
+the page, the person takes it (Take over), moves the pointer over the picture,
 clicks, then hands it back. The page is a stand-in wall on `127.0.0.1` holding
 a **cross-site iframe** from `localhost`, which Chrome runs out of process the
 way it runs Cloudflare's challenge frame. Both frames report to the lab what
@@ -117,7 +117,7 @@ All in the browser host's visibility and lifecycle handling and the input path:
 1. **The stage** (`restage`, `putOnStage`, `sizeStage` in browser-host.cjs).
    While the person drives a page the panel shows, that tab comes to the front
    of a real, normal (not minimized) window. "Drives" means a member's page in
-   their hands (직접 하기, a check equipe handed them, or their click or key),
+   their hands (Take over, a check equipe handed them, or their click or key),
    or their own tab once they put a hand on it. The window is sized so the
    page's viewport is the panel's box, so it is laid out the same with no
    device-metrics emulation. It is brought up behind the app the person is in
@@ -162,14 +162,14 @@ equipe hides none of the rest and adds nothing to hide it. A check that
 refuses any DevTools-driven browser will still refuse this one.
 
 For that case the banner now has a way out. On a check the person answers by
-clicking (Challenge or Captcha), it offers **"이 Mac의 Chrome 창에서 열기"**
-alongside 직접 하기, and again in the "on it" line once the person is on it.
+clicking (Challenge or Captcha), it offers **"Open the Chrome window on this Mac"**
+alongside Take over, and again in the "on it" line once the person is on it.
 It brings the member's own Chrome window up on the daemon's Mac, un-minimized,
 in front and focused, with that member's tab. The person then clicks the check
 there with their own mouse: real OS input and a real window. It is the same
 browser with the same sign-ins, and nothing is copied between browsers. When
 the panel is attached to a daemon on another Mac (SSH), the button says
-"{host}의 Chrome 창 띄우기", and the banner says plainly that the browser runs
+"Bring up Chrome on {host}", and the banner says plainly that the browser runs
 on that Mac. Use it at that Mac or over screen sharing, because the window
 comes up there, not here. Its place is then left to Chrome: this window's
 position means nothing on the other Mac.
