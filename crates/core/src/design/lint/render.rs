@@ -202,7 +202,7 @@ fn collapse(found: Vec<Finding>) -> Vec<Finding> {
     let mut out: Vec<(Finding, Vec<u32>)> = Vec::new();
     for f in found {
         match out.iter_mut().find(|(g, _)| g.rule == f.rule && g.evidence == f.evidence) {
-            Some((_, widths)) => widths.extend(f.width),
+            Some((_, widths)) => widths.extend(f.width.filter(|w| !widths.contains(w))),
             None => {
                 let widths = f.width.into_iter().collect();
                 out.push((f, widths));

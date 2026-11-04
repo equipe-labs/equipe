@@ -191,7 +191,8 @@ impl Report {
     pub fn text(&self) -> String {
         let mut out = String::new();
         for tier in [Tier::Floor, Tier::Habit, Tier::Finish] {
-            let found: Vec<&Finding> = self.findings.iter().filter(|f| f.tier == tier).collect();
+            let mut found: Vec<&Finding> = self.findings.iter().filter(|f| f.tier == tier).collect();
+            found.sort_by_key(|f| RULES.iter().position(|r| r.id == f.rule));
             if found.is_empty() {
                 continue;
             }
