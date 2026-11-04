@@ -13,6 +13,7 @@ use equipe_core::t;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use equipe_core::protocol::engines::Window;
 
 use crate::switching::{self as rules, Answer, Gauge, Meter, Tone};
 use crate::icons::{Icon, icon};
@@ -121,7 +122,10 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .children(glance)
         .when(!folded, |h| h.child(div().flex_none().font_weight(FontWeight::NORMAL).text_size(px(11.)).child(rules::mode_word(model.engines.mode))))
         .children(waiting.then(|| div().flex_none().size(px(6.)).rounded_full().bg(p.accent)));
-    let rows: Vec<AnyElement> = if folded { Vec::new() } else { meters.iter().map(|m| meter_row(shell, m, now, cx)).collect() };
+    // The windows any plan has, in order: a slot no plan fills would only
+    // push the others aside (both plans weekly-only: one column, not two).
+    let windows: Vec<Window> = [Window::FiveHour, Window::Weekly].into_iter().filter(|w| meters.iter().any(|m| m.gauges.iter().any(|g| g.window == *w))).collect();
+    let rows: Vec<AnyElement> = if folded { Vec::new() } else { meters.iter().map(|m| meter_row(shell, m, &windows, now, cx)).collect() };
     // Its hairline above is the sidebar's, to drag (`sidebar::split_area`).
     Some(v_flex().flex_none().pt(px(6.)).pb_1().child(head).children(rows).into_any_element())
 }
@@ -129,7 +133,7 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 /// One engine: its name, then each window — a short label, a thin bar of
 /// what is left, the percent left — and under it, once a reading is old, how
 /// old. Never read: "아직 모름" and how it gets read.
-fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> AnyElement {
+fn meter_row(shell: &Shell, m: &Meter, windows: &[Window], now: i64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let name = rules::engine_name(m.engine);
     let mut row = h_flex()
@@ -172,8 +176,8 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         // One slot per window, the same on every row: a plan with only a weekly
         // window keeps its bar under the others' weekly bar, not across both.
         // A narrow sidebar has no room for the bars: the label and percent alone.
-        let bars = shell.board.sidebar_width >= BARS_FROM;
-        for window in [equipe_core::protocol::engines::Window::FiveHour, equipe_core::protocol::engines::Window::Weekly] {
+        let bars = shell.board.sidebar_width >= bars_from(windows.len());
+        for &window in windows {
             row = row.child(match m.gauges.iter().find(|g| g.window == window) {
                 Some(g) => gauge(p, m, g, now, bars),
                 None => div().flex_1().min_w(px(if bars { GAUGE_MIN } else { 0. })).into_any_element(),
@@ -181,7 +185,8 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         }
     }
     // An old reading says how old, under the windows it is about.
-    let age = rules::age_words(m, now).map(|words| div().h(px(14.)).pl(px(NAME_W + 8.)).mt(px(-3.)).text_size(px(10.5)).text_color(p.muted).truncate().child(words));
+    // An old reading says how old, a caption under the engine's name.
+    let age = rules::age_words(m, now).map(|words| div().h(px(14.)).mt(px(-4.)).mb(px(2.)).text_size(px(10.5)).text_color(p.muted).truncate().child(words));
     v_flex()
         .id(SharedString::from(format!("meter-{name}")))
         .mx_2()
@@ -201,9 +206,11 @@ const NAME_W: f32 = 42.;
 const GAUGE_MIN: f32 = LABEL_W + 4. + 8. + 4. + PERCENT_W;
 const LABEL_W: f32 = 16.;
 const PERCENT_W: f32 = 30.;
-/// The sidebar width a row's two bars fit in: its margins and padding, the
-/// engine's name, two gauges at their least and the gaps between.
-const BARS_FROM: f32 = 16. + 16. + NAME_W + 8. + GAUGE_MIN + 8. + GAUGE_MIN + 8.;
+/// The sidebar width a row's bars fit in, for `slots` windows: its margins
+/// and padding, the engine's name, each gauge at its least and the gaps.
+fn bars_from(slots: usize) -> f32 {
+    16. + 16. + NAME_W + 8. + slots.max(1) as f32 * (GAUGE_MIN + 8.)
+}
 
 /// A window: what is left of it, as a bar that empties and its percent —
 /// quiet while calm, coloured once watched, low or out; grey when the

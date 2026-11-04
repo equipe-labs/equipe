@@ -312,7 +312,8 @@ async fn a_designer_brings_a_weekly_review_that_waits_for_the_setup_and_comes_to
     handle.send(Command::RunRoutine { squad: "acme".into(), id: 3 });
     let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
     let nudge = said_to(&seen, 2).expect("the designer is nudged");
-    assert!(nudge.starts_with("[Routine · 디자인 리뷰]") && nudge.contains("브리프") && !nudge.contains("flows check"), "{nudge}");
+    let brief = equipe_core::i18n::core(lang).get("routine.design_review.step_brief");
+    assert!(nudge.starts_with(&format!("[Routine · {named}]")) && nudge.contains(brief) && !nudge.contains("flows check"), "{nudge}");
     assert_eq!(said_to(&seen, 1), None, "not the PM's");
     // A decision put now is no review.
     let asked = |text: &str| json!({ "questions": [{ "question": text, "options": ["A (Recommended)", "B"] }] });
@@ -325,7 +326,7 @@ async fn a_designer_brings_a_weekly_review_that_waits_for_the_setup_and_comes_to
     handle.send(Command::RunRoutine { squad: "acme".into(), id: 3 });
     let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
     let handed = said_to(&seen, 2).expect("the review is handed to the designer");
-    assert!(handed.starts_with("[Routine · 디자인 리뷰]") && handed.contains("equipe design flows check"), "{handed}");
+    assert!(handed.starts_with(&format!("[Routine · {named}]")) && handed.contains("equipe design flows check"), "{handed}");
     assert!(handed.contains(&format!("(Design folders: {}.)", project.join("design").display())), "{handed}");
     tool(&handle, "designer", "ask_decision", asked("Which header?")).await;
     tool(&handle, "designer", "ask_decision", asked("Which footer?")).await;
@@ -367,7 +368,7 @@ async fn a_pm_brings_a_weekly_retro_from_the_weeks_facts_and_only_confirmed_less
     handle.send(Command::RunRoutine { squad: "acme".into(), id: 2 });
     let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
     let handed = said_to(&seen, 1).expect("the retro is handed to the PM");
-    assert!(handed.starts_with("[Routine · 주간 회고]") && handed.contains("ask_decision"), "{handed}");
+    assert!(handed.starts_with(&format!("[Routine · {named}]")) && handed.contains("ask_decision"), "{handed}");
     for must in ["[Retro facts · ", "a turn failed", "git push origin equipe/t-7 — 1h 00m, allowed", "- backend (backend): 1 turn"] {
         assert!(handed.contains(must), "{must}: {handed}");
     }
