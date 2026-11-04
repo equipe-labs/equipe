@@ -455,5 +455,6 @@
   "control.disallow": "「常に許可」ルール {rule} を取り消します",
   "control.merge_push": "T-{ticket} のブランチを main にマージして origin にプッシュします",
   "control.merge": "T-{ticket} のブランチを main にマージします",
-  "control.keep_on_branch": "T-{ticket} の作業をブランチに残します"
+  "control.keep_on_branch": "T-{ticket} の作業をブランチに残します",
+  "news.sign_in_carried_on": "{engine}に再びサインインできたので、止まっていた作業を続けます。"
 }

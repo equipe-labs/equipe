@@ -338,6 +338,12 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
         Card::Idle => return None,
         Card::Starting { .. } => Line::new(t!("engines.starting"), "").label_el(waiting(t!("engines.starting").to_owned())).control(cancel(cx)),
         Card::Elsewhere => Line::new(t!("engines.elsewhere"), "").label_el(waiting(t!("engines.elsewhere").to_owned())).control(cancel(cx)),
+        // Claude Code's page, from a conversation's card: its code is pasted there.
+        Card::Paste { url } => {
+            let open = url.clone();
+            let controls = h_flex().gap_2().items_center().child(button(shell, at, 3, "engine-open-page", Kind::Ghost, t!("engines.open_page")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(&open)));
+            Line::new(t!("signin.paste_settings"), "").label_el(waiting(t!("signin.paste_settings").to_owned())).control(controls.child(cancel(cx)))
+        }
         Card::Browser { url } => {
             let mut controls = h_flex().gap_2().items_center();
             if let Some(url) = url.clone() {
@@ -489,7 +495,7 @@ impl Shell {
     }
 
     /// Look again after `wait`: a silent daemon, a start nobody answered.
-    fn engines_later(&self, wait: std::time::Duration, cx: &mut Context<Self>) {
+    pub(crate) fn engines_later(&self, wait: std::time::Duration, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
             let _ = this.update(cx, |this, cx| {

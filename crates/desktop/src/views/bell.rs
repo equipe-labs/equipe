@@ -46,11 +46,11 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 }
 
 impl Shell {
-    /// Follow what macOS allows, where clicks go, and whether the window is in
-    /// front of the person. Once, as the window opens.
-    pub fn start_bell(&mut self, clicks: tokio::sync::mpsc::UnboundedSender<notify::Go>, window: &mut Window, cx: &mut Context<Self>) {
-        notify::follow_clicks(clicks);
-        notify::set_in_sight(window.is_window_active());
+    /// Follow what macOS allows, and whether the window — its squad — is in
+    /// front of the person. Once, as the window opens. (Where clicks go is
+    /// the app's: `main::follow_notice_clicks`.)
+    pub fn start_bell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        notify::set_in_sight(self.seat().route(), window.is_window_active());
         let mut permission = notify::permission();
         self.bell.permission = *permission.borrow_and_update();
         cx.spawn_in(window, async move |this, cx| {
@@ -69,9 +69,9 @@ impl Shell {
         })
         .detach();
         // Back in front: the person may have changed what macOS allows meanwhile.
-        cx.observe_window_activation(window, |_, window, _| {
+        cx.observe_window_activation(window, |this, window, _| {
             let active = window.is_window_active();
-            notify::set_in_sight(active);
+            notify::set_in_sight(this.seat().route(), active);
             if active {
                 notify::refresh();
             }
@@ -84,18 +84,25 @@ impl Shell {
     /// first time there is something to tell, the sheet waits for them,
     /// saying why before macOS asks.
     pub fn announce(&mut self, alerts: Vec<Alert>, window: &Window, cx: &mut Context<Self>) {
-        // With several windows open, the first tells: nothing comes twice.
-        if cx.windows().first().is_some_and(|w| w.window_id() != window.window_handle().window_id()) {
-            return;
-        }
+        // With several windows open nothing comes twice: a squad's notices
+        // from the first window on that machine and squad, the app's own
+        // (an update) from the app's first window.
+        let (first, tells) = (crate::windows::first(self.window_id), crate::windows::tells(self.window_id));
         let pings = self.remembered.pings;
-        let alerts: Vec<Alert> = notify::only_awaited(alerts, &self.bell.awaiting).into_iter().filter(|a| pings.wants(a)).collect();
-        // In sight, the cards say it — but a browser waiting for the person's
-        // hands is told even then, unless that very page is on screen: the
-        // person may be reading elsewhere while a member waits on them.
-        let active = window.is_window_active();
+        let alerts: Vec<Alert> = notify::only_awaited(alerts, &self.bell.awaiting).into_iter().filter(|a| pings.wants(a) && if a.is_the_apps() { first } else { tells }).collect();
+        // In sight, the cards say it — this window, or another on the same
+        // squad, in front — but a browser waiting for the person's hands is
+        // told even then, unless that very page is on screen: the person may
+        // be reading elsewhere while a member waits on them.
+        let route = self.seat().route();
         let browser = self.browser.read(cx);
-        let alerts: Vec<Alert> = alerts.into_iter().filter(|a| !active || matches!(a, Alert::Browser { page, .. } if !browser.showing(*page))).collect();
+        let alerts: Vec<Alert> = alerts
+            .into_iter()
+            .filter(|a| {
+                let seen = window.is_window_active() || notify::in_sight(if a.is_the_apps() { None } else { Some(route) });
+                !seen || matches!(a, Alert::Browser { page, .. } if !browser.showing(*page))
+            })
+            .collect();
         if alerts.is_empty() {
             return;
         }
@@ -103,8 +110,11 @@ impl Shell {
             self.bell.sheet = true;
             cx.notify();
         }
-        for toast in notify::toasts(&alerts, &self.model.squad, true) {
-            notify::send(&toast, pings.sound);
+        let (apps, squads): (Vec<Alert>, Vec<Alert>) = alerts.into_iter().partition(Alert::is_the_apps);
+        for (alerts, route) in [(apps, None), (squads, Some(route))] {
+            for toast in notify::toasts(&alerts, &self.model.squad, true) {
+                notify::send(&toast, route, pings.sound);
+            }
         }
     }
 
@@ -141,12 +151,11 @@ impl Shell {
         cx.notify();
     }
 
-    /// The Dock's number: what waits for the person (나에게), when they want it.
+    /// The Dock's number: what waits for the person (나에게), when they want
+    /// it — each machine's squad once, however many windows show it.
     pub fn sync_badge(&mut self) {
-        let want = notify::badge(self.model.needs_you_count(), &self.remembered.pings);
-        if self.bell.badge != Some(want) {
+        if let Some(want) = crate::windows::badge(self.window_id, self.model.needs_you_count(), &self.remembered.pings) {
             notify::set_badge(want);
-            self.bell.badge = Some(want);
         }
     }
 }
@@ -160,7 +169,7 @@ pub fn notify_test() {
         #[cfg(target_os = "macos")]
         notify::system::VERBOSE.store(true, std::sync::atomic::Ordering::Relaxed);
         notify::start();
-        let (clicks, mut clicked) = tokio::sync::mpsc::unbounded_channel();
+        let (clicks, mut clicked) = tokio::sync::mpsc::unbounded_channel::<notify::Click>();
         notify::follow_clicks(clicks);
         let say = |what: String| eprintln!("notify-test: {what}");
         say(format!("bundle id {:?}", notify_bundle()));
@@ -196,7 +205,7 @@ pub fn notify_test() {
             ];
             for toast in notify::toasts(&alerts, "equipe", true) {
                 say(format!("posting {:?} / {:?} in thread {}", toast.title, toast.body, toast.thread));
-                notify::send(&toast, true);
+                notify::send(&toast, None, true);
             }
             if *permission.borrow() == Permission::Allowed {
                 say("waiting 120 s for a click".into());
@@ -225,7 +234,7 @@ fn notify_bundle() -> Option<String> {
 }
 
 /// The next click, or `None` after `ms`.
-async fn futures_timeout(clicked: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Go>, cx: &AsyncApp, ms: u64) -> Option<notify::Go> {
+async fn futures_timeout(clicked: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Click>, cx: &AsyncApp, ms: u64) -> Option<notify::Click> {
     for _ in 0..ms / 100 {
         if let Ok(go) = clicked.try_recv() {
             return Some(go);

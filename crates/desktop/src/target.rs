@@ -116,14 +116,14 @@ impl Endpoint {
         matches!(self, Self::Ssh(_))
     }
 
-    fn saved(&self) -> String {
+    pub(crate) fn saved(&self) -> String {
         match self {
             Self::Local { .. } => "local".to_owned(),
             Self::Ssh(host) => format!("ssh {}", host.spec()),
         }
     }
 
-    fn from_saved(text: &str) -> Option<Self> {
+    pub(crate) fn from_saved(text: &str) -> Option<Self> {
         match text.trim() {
             "local" => Some(Self::this_mac()),
             other => other.strip_prefix("ssh ").and_then(|spec| SshHost::parse(spec).ok()).map(Self::Ssh),

@@ -459,5 +459,6 @@
   "control.disallow": "Take back the \"always allow\" rule {rule}",
   "control.merge_push": "Merge T-{ticket}'s branch into main and push it to origin",
   "control.merge": "Merge T-{ticket}'s branch into main",
-  "control.keep_on_branch": "Leave T-{ticket}'s work on its branch"
+  "control.keep_on_branch": "Leave T-{ticket}'s work on its branch",
+  "news.sign_in_carried_on": "{engine} is signed in again, so the work it stopped carries on."
 }

@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>` (a lost sign-in's card in the conversation) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|reply|copy|type:<words>|write:<words>|add|cancel|edit:<n>|remove:<n>|peek:<n>|card:<quote>|<words>|send|close|jump>` (asking about — replying to — the words selected; a card's 답글, ✕, the pointer on it; a card made at once) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
@@ -20,7 +20,7 @@
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines|taste>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dwork` (the work under way on it, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
 //! `dtab:<map|system>` (화면 지도 or 디자인 시스템) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fdata:<real|example>` (실제 데이터 or 예시 데이터) · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` (말하기 on the open state) · `dsay:<token>` / `dsay:asset:<n>` (말하기 on a colour or type style by name, or asset n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
 //! `dcompare[:off]` (비교하며 검토, begun or ended) · `dside:<now|after>` · `dstep[:prev]` (the next or previous changed screen) · `daccept` · `dredo[:<words>]` (다시 부탁's box, with words) · `dredosend` · `dversions` (버전 기록, opened or closed) · `drestore:<n>` (row n asked back: its confirmation) · `dtaste:<add|edit:<n>|type:<words>|save|cancel|remove:<n>|confirm:<n>|evidence:<n>>` (a taste note: write a new one, rewrite note n, type in its box, keep it, put the box away, remove note n, say 맞아요 to note n, open or close its evidence) ·
-//! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `newsquad[:type:<name>|create|tab[:back]|close|failed|far|farout]` (새 스쿼드…'s sheet: a name, its Create, Tab, closed, a refusal shown; the window as if on another machine, attached or not) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `newsquad[:type:<name>|create|tab[:back]|close|failed|far|farout]` (새 스쿼드…'s sheet: a name, its Create, Tab, closed, a refusal shown; the window as if on another machine, attached or not) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `newwindow[:<squad>]` (New Window, ⌘⇧N; a squad's "open in a new window") · `win:<n|first|last>` (the steps after it act on that window) · `titles[:<file>]` (every window's title, as the Window menu lists them) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
 //! `shot:` names its file with `{mode}` and `{width}` put in as the window is
@@ -68,7 +68,7 @@ fn shot_note(squad: &str, mode: &str, width: u32, height: u32) -> String {
     serde_json::to_string_pretty(&note).unwrap_or_default()
 }
 
-pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
+pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) {
     let script = match (std::env::var("EQUIPE_SCRIPT"), std::env::var("EQUIPE_SNAPSHOT")) {
         (Ok(script), _) => script,
         (_, Ok(path)) => format!("wait:{};shot:{path};quit", std::env::var("EQUIPE_SNAPSHOT_MS").unwrap_or_else(|_| "3000".into())),
@@ -85,7 +85,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
     // frames: it draws them itself, as a shown one would be asked to, a
     // frame's time apart while it waits and after each step.
     let hidden = crate::readonly::on();
-    let frame = move |cx: &mut AsyncApp| {
+    let frame = move |handle: AnyWindowHandle, cx: &mut AsyncApp| {
         if hidden {
             let _ = cx.update_window(handle, |_, window, cx| {
                 window.refresh();
@@ -101,7 +101,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 let until = std::time::Instant::now() + Duration::from_millis(arg.parse().unwrap_or(500));
                 while hidden && std::time::Instant::now() < until {
                     cx.background_executor().timer(Duration::from_millis(16)).await;
-                    frame(cx);
+                    frame(handle, cx);
                 }
                 let left = until.saturating_duration_since(std::time::Instant::now());
                 cx.background_executor().timer(left).await;
@@ -109,8 +109,26 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
             }
             // What the steps before it changed, drawn before the picture is taken.
             if verb == "shot" || verb == "shotlast" {
-                frame(cx);
-                frame(cx);
+                frame(handle, cx);
+                frame(handle, cx);
+            }
+            // `win:<n|first|last>`: the steps after it act on that window (in
+            // the order the windows opened).
+            if verb == "win" {
+                let found = cx.update(|_| {
+                    let open = crate::windows::shells();
+                    let at = match arg.as_str() {
+                        "first" => Some(0),
+                        "last" => open.len().checked_sub(1),
+                        n => n.parse().ok(),
+                    };
+                    at.and_then(|at| open.get(at).cloned()).and_then(|(h, s)| Some((h, s.upgrade()?)))
+                });
+                match found {
+                    Some((h, s)) => (handle, shell) = (h, s),
+                    _ => eprintln!("win: no window {arg}"),
+                }
+                continue;
             }
             if verb == "quit" {
                 cx.update(|cx| cx.quit());
@@ -181,6 +199,21 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
             let timed = verb.clone();
             let _ = cx.update_window(handle, move |_, window, cx| match verb.as_str() {
                 "windows" => eprintln!("windows: {}", cx.windows().len()),
+                // New Window (⌘⇧N), or `newwindow:<squad>` (a squad's "open in a new window").
+                "newwindow" => shell.update(cx, |shell, cx| shell.new_window((!arg.is_empty()).then(|| arg.clone()), cx)),
+                // Every window's title, as the Mac's Window menu lists them; with a path, written there too.
+                "titles" => {
+                    // The window running the step is busy: its own title is read here.
+                    let here = window.window_handle().window_id();
+                    let titles: Vec<String> = crate::windows::shells()
+                        .iter()
+                        .filter_map(|(h, _)| if h.window_id() == here { Some(window.window_title()) } else { h.update(cx, |_, window, _| window.window_title()).ok() })
+                        .collect();
+                    eprintln!("titles: {titles:?}");
+                    if !arg.is_empty() {
+                        eprintln!("titles {arg}: {:?}", std::fs::write(&arg, titles.join("\n") + "\n"));
+                    }
+                }
                 // What a screen reader — or an agent reading the accessibility
                 // tree — is told: on from the next frame, then written as JSON.
                 "a11yon" => window.activate_a11y(),
@@ -805,6 +838,11 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "dfold" => shell.update(cx, |shell, cx| shell.fold_doc(arg != "open", cx)),
                 "term" => shell.update(cx, |shell, cx| shell.open_terminal((!arg.is_empty()).then(|| arg.to_owned()), window, cx)),
                 "tmove" => shell.update(cx, |shell, cx| shell.move_terminal(cx)),
+                // What ⌘C would copy from the terminal, written to a file.
+                "tcopy" => shell.update(cx, |shell, _| {
+                    let text = shell.terminal.as_ref().and_then(|ui| ui.term.selected()).unwrap_or_default();
+                    let _ = std::fs::write(&arg, text);
+                }),
                 "tkeys" => shell.update(cx, |shell, _| {
                     if let Some(ui) = shell.terminal.as_ref() {
                         ui.term.write(arg.replace('~', "\r"));
@@ -932,6 +970,36 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                             let at = crate::engines::PLATFORMS.iter().position(|p| p.engine == engine).unwrap_or(0);
                             if let Some(focus) = shell.settings.engine_keys.get(at * crate::views::engines::KEYS) {
                                 window.focus(focus, cx);
+                            }
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                }),
+                // The conversation's card for a lost sign-in: `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>`
+                // (its 다시 로그인, 로그인 세션에서 다시 띄우기, 다시 확인, 취소, 이어서 하기; `far`, the window as if on another Mac; a code typed and sent, or only typed).
+                "signin" => shell.update(cx, |shell, cx| {
+                    use crate::views::signin::Offer;
+                    let engine = shell.model.convo().and_then(|c| crate::views::signin::live(&c.blocks())).map_or(equipe_core::protocol::Engine::Claude, |(_, e)| e);
+                    let (act, rest) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+                    match act {
+                        "go" => shell.signin_offer(engine, Offer::SignIn, window, cx),
+                        "move" => shell.signin_offer(engine, Offer::Move, window, cx),
+                        "check" => shell.signin_offer(engine, Offer::Check, window, cx),
+                        "cancel" => shell.signin_offer(engine, Offer::Cancel, window, cx),
+                        "carry" => shell.signin_offer(engine, Offer::CarryOn, window, cx),
+                        // The window as if on another Mac than the daemon's: drawn only, nothing reached.
+                        "far" => {
+                            if let Ok(endpoint) = crate::target::Endpoint::parse("mac-mini") {
+                                shell.endpoint = endpoint;
+                            }
+                        }
+                        "type" | "paste" => {
+                            if let Some(input) = shell.signin_code.clone() {
+                                input.update(cx, |s, cx| s.set_value(rest.to_owned(), window, cx));
+                            }
+                            if act == "paste" {
+                                shell.signin_paste(engine, window, cx);
                             }
                         }
                         _ => {}

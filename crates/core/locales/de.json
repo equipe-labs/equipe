@@ -459,5 +459,6 @@
   "control.disallow": "Die Regel „immer erlauben“ {rule} zurücknehmen",
   "control.merge_push": "Den Branch von T-{ticket} in main zusammenführen und nach origin pushen",
   "control.merge": "Den Branch von T-{ticket} in main zusammenführen",
-  "control.keep_on_branch": "Die Arbeit von T-{ticket} auf ihrem Branch lassen"
+  "control.keep_on_branch": "Die Arbeit von T-{ticket} auf ihrem Branch lassen",
+  "news.sign_in_carried_on": "{engine} ist wieder angemeldet – die angehaltene Arbeit geht weiter."
 }

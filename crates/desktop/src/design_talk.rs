@@ -285,4 +285,42 @@ mod tests {
         assert_eq!(width(Some(100.), 1400.), MIN_WIDTH);
         assert_eq!(width(Some(900.), 700.), MIN_WIDTH, "never narrower than its least");
     }
+
+    /// The bodies of the functions in `source` whose names start with `prefix`.
+    fn bodies<'a>(source: &'a str, prefix: &str) -> Vec<(&'a str, &'a str)> {
+        let mut found = Vec::new();
+        let mut rest = source;
+        while let Some(at) = rest.find(&format!("pub fn {prefix}")) {
+            let from = &rest[at + 7..];
+            let name = &from[..from.find('(').unwrap()];
+            let end = from.find("
+    }
+").unwrap();
+            found.push((name, &from[..end]));
+            rest = &from[end..];
+        }
+        found
+    }
+
+    #[test]
+    fn every_ask_from_the_design_screen_goes_beside_and_never_through_the_box_or_the_chat_screen() {
+        let sources = [include_str!("views/design.rs"), include_str!("views/design_setup.rs"), include_str!("views/flows.rs"), include_str!("views/design_talk.rs")];
+        let mut asks = Vec::new();
+        for source in sources {
+            asks.extend(bodies(source, "design_ask_"));
+            asks.extend(bodies(source, "flows_ask_"));
+        }
+        let names: Vec<&str> = asks.iter().map(|(n, _)| *n).collect();
+        for expected in ["design_ask_setup", "design_ask_designer", "design_ask_with", "design_ask_fix", "design_ask_beside", "flows_ask_draw", "flows_ask_map", "flows_ask_video"] {
+            assert!(names.contains(&expected), "{expected} in {names:?}");
+        }
+        for (name, body) in asks {
+            // Choosing someone switches to the chat screen; the box is the
+            // person's, its words for whatever conversation they belong to.
+            for never in ["select_member", "composer.set_text", "self.send(", "send_as(", "Screen::Chat"] {
+                assert!(!body.contains(never), "{name} uses {never}");
+            }
+            assert!(name == "design_ask_beside" || ["design_ask_beside(", "design_ask_with("].iter().any(|via| body.contains(via)), "{name} goes some other way");
+        }
+    }
 }

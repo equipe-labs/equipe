@@ -23,12 +23,15 @@ pub fn width(window: f32) -> f32 {
     (window * 0.42).clamp(380., 820.)
 }
 
-/// The width the person dragged it to, kept within the window: the
-/// conversation keeps room to be read.
-pub fn kept_width(dragged: Option<f32>, window: f32) -> f32 {
-    let most = (window - 420.).max(MIN_WIDTH);
-    dragged.map_or_else(|| width(window), |w| w.clamp(MIN_WIDTH, most))
+/// The width the person dragged it to — else a share of the window — kept
+/// within what the sidebar leaves: the conversation keeps room to be read.
+pub fn kept_width(dragged: Option<f32>, window: f32, sidebar: f32) -> f32 {
+    let most = (window - sidebar - CHAT_LEAST).max(MIN_WIDTH);
+    dragged.unwrap_or_else(|| width(window)).clamp(MIN_WIDTH, most)
 }
+
+/// The conversation's narrowest beside the panel.
+pub const CHAT_LEAST: f32 = 420.;
 
 /// The panel's narrowest.
 pub const MIN_WIDTH: f32 = 320.;
@@ -278,10 +281,15 @@ mod tests {
 
     #[test]
     fn a_dragged_width_leaves_the_conversation_room() {
-        assert_eq!(kept_width(None, 1000.), 420.);
-        assert_eq!(kept_width(Some(600.), 1400.), 600.);
-        assert_eq!(kept_width(Some(100.), 1400.), MIN_WIDTH);
-        assert_eq!(kept_width(Some(1300.), 1400.), 980.);
+        assert_eq!(kept_width(None, 1000., 0.), 420.);
+        assert_eq!(kept_width(Some(600.), 1400., 0.), 600.);
+        assert_eq!(kept_width(Some(100.), 1400., 0.), MIN_WIDTH);
+        assert_eq!(kept_width(Some(1300.), 1400., 0.), 980.);
+        // Beside the sidebar, the conversation keeps its room: the panel gives way…
+        assert_eq!(kept_width(None, 1000., 260.), MIN_WIDTH);
+        assert_eq!(kept_width(Some(900.), 1400., 260.), 1400. - 260. - CHAT_LEAST);
+        // …down to its narrowest.
+        assert_eq!(kept_width(None, 800., 260.), MIN_WIDTH);
     }
 
     #[test]

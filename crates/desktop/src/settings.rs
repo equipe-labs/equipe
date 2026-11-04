@@ -136,6 +136,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         s(window, "⌘0", t!("main.menu_actual_size")),
         s(window, "⌘⇧O", t!("settings.key_folds")),
         s(window, "⌘⇧K", t!("settings.key_machine")),
+        s(window, "⌘⇧N", t!("menu.new_window")),
         s(compose, "⏎", t!("composer.tip_send")),
         s(compose, "⇧⏎ · ⌥⏎ · ⌃J", t!("settings.key_newline")),
         s(compose, "Tab", t!("composer.tip_memo")),

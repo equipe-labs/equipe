@@ -236,7 +236,7 @@ pub fn follow(url: &str, modifiers: Modifiers, scope: u64, window: &mut Window, 
     let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
     match links::classify(url, &base) {
         // ⌘-click (⇧, ⌥⌘): in a window of its own, as a link opens elsewhere.
-        Link::Ticket(n) if crate::views::elsewhere::wants_window(&modifiers) => crate::views::elsewhere::open(crate::views::elsewhere::Goal::Ticket(n), cx),
+        Link::Ticket(n) if crate::views::elsewhere::wants_window(&modifiers) => crate::views::elsewhere::open_beside(crate::views::elsewhere::Goal::Ticket(n), cx),
         Link::Ticket(n) => with_shell(cx, |shell, cx| shell.open_ticket(n, cx)),
         // Where the person chose (settings), ⌘-click the other place.
         Link::Web(url) => {

@@ -21,7 +21,7 @@ use equipe_protocol::harness;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
-    Access, Approval, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
+    Access, Approval, AuthState, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
     Estimate, OffMain, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
@@ -557,6 +557,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
+        sign_in_codes: HashMap::new(),
+        auth: HashMap::new(),
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
@@ -568,6 +570,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.restore();
         runtime.prune();
         memos = runtime.resume_work();
+        runtime.restore_stopped();
     }
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);
@@ -827,6 +830,12 @@ enum Internal {
     Wake { session: SessionId, prompt: String },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
+    /// A turn failed for want of `engine`'s sign-in: kept to carry on.
+    SignInLost { engine: Engine, session: SessionId, prompt: String },
+    /// Why `engine` can't serve members here, as just looked at.
+    AuthChecked(Engine, equipe_protocol::AuthState, String),
+    /// Time to look at `engine` again while its turns wait.
+    AuthRecheck(Engine),
     /// A signal's command ran off the loop: its reading.
     SignalRead { squad: String, key: String, reading: crate::signals::Reading },
     /// Where the engines stand, as just looked at off the loop.
@@ -995,6 +1004,11 @@ struct Runtime {
     /// Sign-ins under way on this machine, by engine: which one, and its task.
     sign_ins: HashMap<Engine, (u64, JoinHandle<()>)>,
     next_sign_in: u64,
+    /// The code each sign-in under way waits for (Claude Code's, pasted on a screen).
+    sign_in_codes: HashMap<Engine, mpsc::UnboundedSender<String>>,
+    /// Engines whose lost sign-in stopped turns here: why, as last looked
+    /// at, and the turns to carry on once it is signed in again.
+    auth: HashMap<Engine, AuthFix>,
     /// Engines whose tool is being installed on this machine.
     installs: std::collections::HashSet<Engine>,
     /// The `codex` the person's Codex sign-in runs.
@@ -1064,6 +1078,9 @@ impl Wake {
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
+            Wake::Internal(Internal::SignInLost { .. }) => Borrowed("a turn stopped by a lost sign-in"),
+            Wake::Internal(Internal::AuthChecked(..)) => Borrowed("why an engine can't sign in"),
+            Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
@@ -1159,6 +1176,10 @@ impl Runtime {
                     if self.disk.status.level == crate::disk::DiskLevel::Full {
                         let _ = tx.send(Event::Error { session: None, message: say!(self, "error.disk_full"), next: None });
                     }
+                    // Why an engine can't sign in, as last looked at.
+                    for (engine, fix) in &self.auth {
+                        let _ = tx.send(fix.event(*engine));
+                    }
                     self.subscribers.push((Some(squad.clone()), tx));
                     self.keep_awake();
                     let _ = reply.send((self.snapshot(&squad), rx));
@@ -1250,6 +1271,9 @@ impl Runtime {
                     }
                 }
                 Internal::Engines(engines) => self.publish_engines(engines),
+                Internal::SignInLost { engine, session, prompt } => self.sign_in_lost(engine, session, prompt),
+                Internal::AuthChecked(engine, state, detail) => self.auth_checked(engine, state, detail).await,
+                Internal::AuthRecheck(engine) => self.check_engine(engine),
                 Internal::ClaudeReady(ok) => self.claude_ready(ok),
                 Internal::InstallEnded(engine) => {
                     self.installs.remove(&engine);
@@ -1258,6 +1282,12 @@ impl Runtime {
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
                         self.sign_ins.remove(&engine);
+                        self.sign_in_codes.remove(&engine);
+                    }
+                    // Signed in (or not): looked at again, and what it stopped carried on.
+                    if let Some(fix) = self.auth.get_mut(&engine) {
+                        fix.carried_on_at = None;
+                        self.check_engine(engine);
                     }
                     // Maybe another account now: its plan and usage read afresh.
                     if engine == Engine::Codex {
@@ -1832,6 +1862,18 @@ impl Runtime {
                     self.look_at_engines();
                 }
             }
+            Command::SignInCode { engine, code } => {
+                // Straight to the tool's prompt: never kept, never logged.
+                if let (Some(tx), Some(code)) = (self.sign_in_codes.get(&engine), crate::engine_auth::pasted(&code)) {
+                    let _ = tx.send(code);
+                }
+            }
+            Command::CheckEngine { engine } => {
+                // The person says they did something: what was carried on before counts no more.
+                self.auth.entry(engine).or_default().carried_on_at = None;
+                self.check_engine(engine);
+            }
+            Command::MoveIntoLogin => self.move_into_login(),
             Command::SignOut { engine } => self.sign_out(engine),
             Command::InstallEngine { engine } => self.install_engine(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
@@ -1906,27 +1948,49 @@ impl Runtime {
             status.members = members;
             status.signing_in = self.sign_ins.contains_key(&status.engine);
         }
+        // Signed in by whatever means — a terminal at the Mac's own screen —
+        // while turns wait: they are looked at again, and carried on.
+        let back: Vec<Engine> = engines
+            .iter()
+            .filter(|s| s.state == equipe_protocol::EngineState::SignedIn && self.auth.get(&s.engine).is_some_and(|f| !f.stopped.is_empty() && !f.checking && f.carried_on_at.is_none()))
+            .map(|s| s.engine)
+            .collect();
         self.publish(Event::Engines { engines });
+        for engine in back {
+            self.check_engine(engine);
+        }
     }
 
-    /// Sign Codex in with its own tool, here on the daemon's machine; every
-    /// screen hears each step (the code to enter, when `device`), then where
-    /// the engines stand. A new sign-in stops the one under way.
+    /// Sign an engine in with its own tool, here on the daemon's machine;
+    /// every screen hears each step (the code to enter, when `device`; for
+    /// Claude Code, the page whose code is pasted back), then where the
+    /// engines stand. A new sign-in stops the one under way. Claude Code
+    /// isn't signed in from outside the Mac's login session: its login would
+    /// land where the members never read it.
     fn sign_in(&mut self, engine: Engine, device: bool) {
         use equipe_protocol::{SignInFailure, SignInStep};
-        if engine != Engine::Codex {
-            self.publish(Event::SignIn { engine, step: SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() } });
-            return;
-        }
         if let Some((_, old)) = self.sign_ins.remove(&engine) {
             old.abort();
         }
+        self.sign_in_codes.remove(&engine);
         let id = self.next_sign_in;
         self.next_sign_in += 1;
         let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        let codes = (engine == Engine::Claude).then(|| {
+            let (tx, rx) = mpsc::unbounded_channel();
+            self.sign_in_codes.insert(engine, tx);
+            rx
+        });
         let task = tokio::spawn(async move {
             let tell = |step| drop(internal.send(Internal::Event(Box::new(Event::SignIn { engine, step }))));
-            let end = crate::engines::codex_login(&codex, device, tell).await;
+            let end = match codes {
+                None => crate::engines::codex_login(&codex, device, tell).await,
+                Some(_) if crate::engine_auth::in_login_session() == Some(false) => {
+                    let _ = internal.send(Internal::AuthRecheck(engine));
+                    SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() }
+                }
+                Some(codes) => crate::engine_auth::claude_login(&claude, codes, tell).await,
+            };
             tell(end);
             let _ = internal.send(Internal::SignInEnded(engine, id));
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
@@ -1975,6 +2039,178 @@ impl Runtime {
             }
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
         });
+    }
+
+    // ── a lost sign-in ──
+
+    /// A turn failed for want of `engine`'s sign-in: kept (with what it was
+    /// asked) to carry on once it is signed in again, and why looked at.
+    fn sign_in_lost(&mut self, engine: Engine, session: SessionId, prompt: String) {
+        let member = self.sessions.get(&session).filter(|s| s.lane.is_none()).and_then(session_member);
+        let fix = self.auth.entry(engine).or_default();
+        match fix.stopped.iter_mut().find(|s| s.session == session) {
+            Some(stopped) if !stopped.prompts.contains(&prompt) => stopped.prompts.push(prompt),
+            Some(_) => {}
+            None => fix.stopped.push(crate::engine_auth::Stopped { engine, session, member, prompts: vec![prompt], at: now_secs() }),
+        }
+        fix.since.get_or_insert(now_secs());
+        self.save_stopped();
+        self.check_engine(engine);
+    }
+
+    /// Look at why `engine` can't serve members here, off the loop; every
+    /// screen hears it's being looked at the first time, and what was found.
+    fn check_engine(&mut self, engine: Engine) {
+        let fix = self.auth.entry(engine).or_default();
+        if fix.checking || fix.state == AuthState::Moving {
+            return;
+        }
+        fix.checking = true;
+        // Looked at again while the card says why: it keeps saying it until something changes.
+        if matches!(fix.state, AuthState::Checking | AuthState::SignedIn { .. } | AuthState::Unknown) && fix.detail.is_empty() {
+            fix.state = AuthState::Checking;
+            let event = fix.event(engine);
+            self.publish(event);
+        }
+        let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        tokio::spawn(async move {
+            let (state, detail) = crate::engine_auth::check(engine, &claude, &codex, &store).await;
+            let _ = internal.send(Internal::AuthChecked(engine, state, detail));
+        });
+    }
+
+    /// What a look at `engine` found. Signed in: the turns it stopped carry
+    /// on — unless they just did and failed again, when the sign-in its
+    /// tool still lists no longer works and only signing in again will do.
+    /// Anything else is told, and looked at again while turns wait, so an
+    /// unlocked Keychain or a sign-in made at the Mac's own screen is
+    /// noticed without anyone asking.
+    async fn auth_checked(&mut self, engine: Engine, state: AuthState, detail: String) {
+        let now = now_secs();
+        let Some(fix) = self.auth.get_mut(&engine) else { return };
+        fix.checking = false;
+        if fix.state == AuthState::Moving {
+            return;
+        }
+        let state = match state {
+            AuthState::SignedIn { .. } if fix.carried_on_at.is_some_and(|at| now.saturating_sub(at) < CARRIED_ON_FOR) && !fix.stopped.is_empty() => AuthState::SignedOut,
+            state => state,
+        };
+        if let AuthState::SignedIn { .. } = state {
+            let stopped = std::mem::take(&mut fix.stopped);
+            fix.carried_on_at = (!stopped.is_empty()).then_some(now);
+            fix.since = None;
+            let mut resumed = 0;
+            for stopped in stopped {
+                if self.carry_on_signed_in(&stopped).await {
+                    resumed += 1;
+                }
+            }
+            let Some(fix) = self.auth.get_mut(&engine) else { return };
+            (fix.state, fix.detail) = (AuthState::SignedIn { resumed }, String::new());
+            let event = fix.event(engine);
+            self.save_stopped();
+            self.publish(event);
+            return;
+        }
+        (fix.state, fix.detail) = (state, detail);
+        let event = fix.event(engine);
+        let again = !fix.stopped.is_empty()
+            && matches!(state, AuthState::KeychainLocked | AuthState::SignedOut | AuthState::Unknown)
+            && fix.since.is_some_and(|since| now.saturating_sub(since) < AUTH_WATCH.as_secs());
+        self.publish(event);
+        if again {
+            let internal = self.internal.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(AUTH_RECHECK).await;
+                let _ = internal.send(Internal::AuthRecheck(engine));
+            });
+        }
+    }
+
+    /// One stopped turn carried on, as its member is told why it stopped:
+    /// its own session, or the member's as this daemon knows it. Not when
+    /// it works again already, or is gone.
+    async fn carry_on_signed_in(&mut self, stopped: &crate::engine_auth::Stopped) -> bool {
+        let found = self
+            .sessions
+            .get(&stopped.session)
+            .filter(|s| stopped.member.is_none() || session_member(s) == stopped.member)
+            .map(|_| stopped.session)
+            .or_else(|| self.sessions.iter().find(|(_, s)| s.lane.is_none() && stopped.member.is_some() && session_member(s) == stopped.member).map(|(id, _)| *id));
+        let Some(id) = found.filter(|id| self.sessions.get(id).is_some_and(|s| !s.is_working())) else {
+            return false;
+        };
+        let text = say!(self, "news.sign_in_carried_on", engine = engine_name(stopped.engine));
+        self.publish(Event::Notice { session: id, text });
+        self.set_going(id, crate::engine_auth::carry_on_prompt(stopped.engine, &stopped.prompts)).await;
+        true
+    }
+
+    /// A turn of `session`'s answered: nothing of it waits on a sign-in.
+    fn no_longer_stopped(&mut self, session: SessionId) {
+        let mut changed = false;
+        for fix in self.auth.values_mut() {
+            let before = fix.stopped.len();
+            fix.stopped.retain(|s| s.session != session);
+            changed |= fix.stopped.len() != before;
+        }
+        if changed {
+            self.save_stopped();
+        }
+    }
+
+    /// The members' stopped turns, for the daemon that comes after this one.
+    fn save_stopped(&self) {
+        if !self.config.persist {
+            return;
+        }
+        let all: Vec<crate::engine_auth::Stopped> = self.auth.values().flat_map(|f| f.stopped.iter().cloned()).collect();
+        crate::engine_auth::save_stopped(&self.config.home, &all);
+    }
+
+    /// What an earlier daemon kept of its members' stopped turns, matched to
+    /// their sessions here, then looked at: signed in, they carry on.
+    fn restore_stopped(&mut self) {
+        for mut stopped in crate::engine_auth::load_stopped(&self.config.home, now_secs()) {
+            let Some(id) = self.sessions.iter().find(|(_, s)| s.lane.is_none() && session_member(s) == stopped.member).map(|(id, _)| *id) else { continue };
+            stopped.session = id;
+            let engine = stopped.engine;
+            let fix = self.auth.entry(engine).or_default();
+            fix.since.get_or_insert(stopped.at);
+            fix.stopped.push(stopped);
+        }
+        for engine in self.auth.keys() {
+            let _ = self.internal.send(Internal::AuthRecheck(*engine));
+        }
+    }
+
+    /// The daemon, started outside the Mac's login session, starts again
+    /// inside it through its login service, as the person asked: its
+    /// members' stopped turns kept for the one that comes next.
+    fn move_into_login(&mut self) {
+        if crate::engine_auth::in_login_session() != Some(false) {
+            // Inside already: nothing to move; what's wrong is looked at.
+            return self.check_engine(Engine::Claude);
+        }
+        let exe = std::env::current_exe();
+        let (Some(plist), Ok(exe)) = (crate::engine_auth::service_plist(), exe) else {
+            let fix = self.auth.entry(Engine::Claude).or_default();
+            fix.state = AuthState::OutsideLogin { movable: false };
+            let event = fix.event(Engine::Claude);
+            return self.publish(event);
+        };
+        self.save_stopped();
+        let fix = self.auth.entry(Engine::Claude).or_default();
+        match crate::engine_auth::move_into_login(&exe, &plist) {
+            Ok(()) => {
+                crate::daemon_log!("equipe: started outside the Mac's login session, the daemon starts again inside it, as the person asked");
+                (fix.state, fix.detail) = (AuthState::Moving, String::new());
+            }
+            Err(err) => (fix.state, fix.detail) = (AuthState::Unknown, err.to_string()),
+        }
+        let event = fix.event(Engine::Claude);
+        self.publish(event);
     }
 
     // ── squads ──
@@ -3611,7 +3847,11 @@ for one project goes to it as tickets for its owners, with that project — and 
                     }
                     let thread = outcome.as_ref().ok().and_then(|turn| turn.thread_id.clone());
                     let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, lang) } else { codex_cli_failure(err, lang) });
+                    let lost = !nebius && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Codex));
                     let reply = finish_turn(&emit, id, result, streamed);
+                    if lost {
+                        let _ = internal.send(Internal::SignInLost { engine: Engine::Codex, session: id, prompt: prompt.clone() });
+                    }
                     let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session: thread, ticket }));
                 })
             }
@@ -3738,7 +3978,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                     .await;
                     let claude_session = outcome.as_ref().ok().and_then(|turn| turn.session_id.clone());
                     let result = outcome.map(|turn| turn.result).map_err(claude_failure);
+                    let lost = matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Claude));
                     let reply = finish_turn(&emit, id, result, streamed);
+                    // After the error is told: the screens hear what it was, then why.
+                    if lost {
+                        let _ = internal.send(Internal::SignInLost { engine: Engine::Claude, session: id, prompt: prompt.clone() });
+                    }
                     let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session, ticket }));
                 })
             }
@@ -3842,6 +4087,10 @@ for one project goes to it as tickets for its owners, with that project — and 
     }
 
     async fn on_turn_done(&mut self, done: TurnDone) {
+        // A turn that answered: whatever its engine's sign-in stopped of it is over.
+        if done.reply.is_some() {
+            self.no_longer_stopped(done.session);
+        }
         // A browser asked onto the screen during the turn comes up now.
         if let Some(session) = self.sessions.get_mut(&done.session) {
             session.turn = None;
@@ -7648,7 +7897,7 @@ fn codex_plan(limits: &equipe_providers::turn::Limits) -> equipe_protocol::PlanU
 /// A Codex CLI turn's failure, and what to do about it.
 fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
     match &err {
-        equipe_providers::Error::CodexSignedOut => (crate::i18n::core(lang).get("error.codex_cli_signed_out").to_owned(), Some("equipe login codex")),
+        equipe_providers::Error::CodexSignedOut => (crate::i18n::core(lang).get("error.codex_cli_signed_out").to_owned(), Some(crate::engine_auth::CODEX_HINT)),
         equipe_providers::Error::Login(_) => (err.to_string(), Some("equipe status")),
         _ => (err.to_string(), None),
     }
@@ -7687,6 +7936,50 @@ fn nebius_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (Str
     codex_cli_failure(err, lang)
 }
 
+/// An engine whose lost sign-in stopped turns here, and its fix.
+#[derive(Debug)]
+struct AuthFix {
+    /// Why it can't serve members, as last looked at.
+    state: AuthState,
+    detail: String,
+    /// The turns to carry on once it is signed in again.
+    stopped: Vec<crate::engine_auth::Stopped>,
+    /// A look under way.
+    checking: bool,
+    /// When stopped turns were last carried on (unix seconds): failing again
+    /// soon after, the sign-in its tool lists doesn't work.
+    carried_on_at: Option<u64>,
+    /// Since when turns have waited (unix seconds): looked at again for [`AUTH_WATCH`].
+    since: Option<u64>,
+}
+
+impl Default for AuthFix {
+    fn default() -> Self {
+        Self { state: AuthState::Checking, detail: String::new(), stopped: Vec::new(), checking: false, carried_on_at: None, since: None }
+    }
+}
+
+impl AuthFix {
+    fn event(&self, engine: Engine) -> Event {
+        Event::EngineAuth { engine, state: self.state, detail: self.detail.clone(), stopped: self.stopped.iter().map(|s| s.session).collect() }
+    }
+}
+
+/// While turns wait on a sign-in, it is looked at again this often…
+const AUTH_RECHECK: Duration = Duration::from_secs(15);
+/// …for this long.
+const AUTH_WATCH: Duration = Duration::from_secs(2 * 60 * 60);
+/// Turns carried on that fail again within this long (seconds) mean the sign-in doesn't work.
+const CARRIED_ON_FOR: u64 = 15 * 60;
+
+/// An engine's name, as the person knows it.
+fn engine_name(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Claude => "Claude Code",
+        Engine::Codex => "Codex",
+    }
+}
+
 fn codex_failure(err: equipe_providers::Error) -> (String, Option<&'static str>) {
     let next = matches!(err, equipe_providers::Error::Unauthorized { .. }).then_some("equipe login codex");
     (err.to_string(), next)
@@ -7698,10 +7991,11 @@ fn claude_failure(err: equipe_providers::Error) -> (String, Option<&'static str>
     let next = if lower.contains("not installed") {
         Some("see https://code.claude.com/docs/en/setup")
     } else if lower.contains("failed to authenticate") || lower.contains("oauth") {
-        // The sign-in Claude Code has expired. Signed in again over SSH, it
-        // lands in a file; a daemon run as a login service reads the Keychain,
-        // which only a sign-in at the Mac's own screen updates.
-        Some("claude auth login — in Terminal on this Mac's own screen (Screen Sharing is fine), not over SSH")
+        // The sign-in Claude Code reads no longer works here: expired, kept
+        // in a Keychain that is locked, or out of reach of a daemon started
+        // over SSH. equipe looks at which (`engine_auth`); the hint is what an
+        // older screen shows.
+        Some(crate::engine_auth::CLAUDE_HINT)
     } else if lower.contains("login") || lower.contains("logged in") {
         Some("equipe login claude")
     } else {
