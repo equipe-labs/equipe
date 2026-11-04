@@ -184,8 +184,48 @@ say when (`crates/core/skills/design-tools/` and the rest).
 | `render <file…> [--widths 390,1280] [--dark] [--out dir]` | Draws HTML or SVG mockups to PNG at each width, light and dark. |
 | `check [dir] [--json]` | What to fix before handing in: tokens the screen can't read, no semantic layer, no component tokens, no dark values, text under AA (a component's text against its own fill), no family for the script the product is written in (read from the language of `brand.md` and `guidelines.md` — Korean, Japanese, Chinese, Arabic, Hebrew, Thai, Devanagari; right to left said where it applies), body line height, no `brand.md` or voice, no logo or dark logo, no component previews, the stock looks of AI-made screens. Exits non-zero on errors. |
 
+| `lint <files\|folder\|url> [--render] [--url …] [--widths …] [--tier floor\|all] [--screen flow/screen] [--json]` | Holds a screen to its design system in code (below). Exits 1 when the floor fails, 2 when habits are left, 0 when clean. `--waive <id> --why "…"` keeps a habit; `--rules` lists every rule. |
+| `second-look <flow/screen> [--first] [--criteria …]` | A fresh, read-only reviewer judges the checked pictures, given only them, the brief and criteria, and the system's guidelines and tokens; its verdict is kept on the screen's record. `--prompt` / `--answer <file>` for a fresh subagent when no engine can run. |
+| `direction propose\|choose\|list` | The directions proposed and chosen (`design/directions/log.json`) by layout, type, palette, density and motion; a proposal that repeats a recent chosen one in every dimension the brand leaves free, or differs from its fellow options only in colour, is refused. |
+| `kept record\|check <files\|url> --screen …` | A screen's links, fields, actions and headings, recorded before a redesign (`design/kept/`) and checked after; a removal only where the brief or a decision says `Remove <kind>: <item>`. |
+
 The scripts and the one npm package they import (`playwright`, no browser
 download) live in `~/.equipe/design-kit`, set up on first use.
+
+### Design checks — `equipe design lint`
+
+The rules are data in `crates/core/src/design/lint/rules.rs`, each with an
+id, a tier, what it checks and how to fix it (`equipe design lint --rules`).
+
+- **Floor** — never waived: colours, type and spacing only from the system's
+  tokens (a literal the system holds is a finishing note to name the token);
+  focus that shows; a reduced-motion version of whatever moves; no invented
+  proof (rounded audience figures, uptime, ratings, testimonials, logo walls,
+  placeholder names, lorem ipsum — real figures carry `data-source`); every
+  control named; and, drawn, no sideways overflow, no clipped text, text
+  contrast, the `data-primary` action in the first screenful.
+- **Habits** of generated screens — fixed, or kept with a reason written in
+  `design/decisions/` as `Waive <id> [(screen)]: <reason>` (a floor rule's
+  waiver is refused and said): a label over every heading, spaced capitals,
+  one coloured word, a gradient first screen, cards in cards, emoji as
+  icons, everything centred, one radius and shadow everywhere, decorative
+  dots, a form that pretends to send.
+- **Finish** — said, never blocking: name the token, tabular figures, heading
+  order, image size, line length, touch targets.
+
+The source is read loosely (CSS, HTML, JSX, Vue, Svelte). `--render` draws
+the page in the Mac's Chrome at 360, 390, 768, 1024, 1280, 1440 and 1920:
+`assets/design/lint.mjs` only measures, the core judges. A drawn check is
+kept in `design/checks/<flow>/<screen>.json` with its pictures; the UI map
+shows each screen's latest, and a member's conversation shows each check and
+second look as a card.
+
+On Claude Code, a designer's and a frontend engineer's skills plugin has a
+`PostToolUse` hook: after each edit to a UI file the floor is read in what was
+just written and handed back in the same turn. A designer's edits are also
+written to `design/checks/pending.json`, and its hand-in is refused until each
+was drawn and checked, passed the floor, and had a passing second look after
+the check (a new screen's first screenful looked at first).
 
 ## Remixing references — the `design` tools (equipe-design)
 
