@@ -227,24 +227,12 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 impl Shell {
     /// "디자이너에게 이어서 부탁하기": the step the shown system's setup is at
     /// goes to the designer as the person's message, the way the empty
-    /// screen's ask does — or, with no designer, to the PM to propose one.
+    /// screen's ask does — or, with no designer, to the PM to propose one —
+    /// in the conversation beside.
     pub fn design_ask_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(system) = self.design.current() else { return };
-        let designer = designer(&self.model).map(|m| m.session);
-        let pm = self.model.members.iter().find(|m| Model::is_pm(m)).map(|m| m.session);
-        let (to, text) = match (designer, pm) {
-            (Some(d), _) => (d, request(system)),
-            (None, Some(pm)) => (pm, pm_request(system)),
-            (None, None) => {
-                self.composer.flash = Some(t!("design.no_one_to_ask").into());
-                cx.notify();
-                return;
-            }
-        };
-        let Some(text) = text else { return };
-        self.select_member(to, window, cx);
-        self.composer.set_text(&text, window, cx);
-        self.send(window, cx);
+        let (Some(to_designer), Some(to_pm)) = (request(system), pm_request(system)) else { return };
+        self.design_ask_beside(to_designer, to_pm, window, cx);
     }
 }
 

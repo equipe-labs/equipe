@@ -768,18 +768,34 @@ impl Model {
         self.members.iter().find(|m| m.name == name && m.presence != Presence::Closed)
     }
 
-    /// Show a member's conversation. True when that changed what is on screen.
+    /// Show a member's conversation — its own: not a ticket's work, nor a
+    /// conversation the person opened with the PM, which would otherwise stay
+    /// in view and take what is said. True when that changed what is on screen.
     pub fn select(&mut self, session: SessionId) -> bool {
-        if (self.selected == Some(session) && self.opened.is_none()) || !self.members.iter().any(|m| m.session == session) {
+        if self.shows_own(session) || !self.members.iter().any(|m| m.session == session) {
             return false;
         }
         for convo in self.convos.values_mut() {
             convo.showing = None;
         }
         self.opened = None;
+        self.talk = None;
+        self.draft_talk = None;
         self.selected = Some(session);
         self.revision += 1;
         true
+    }
+
+    /// Whom the design screen talks to and asks: the designer — at work or
+    /// not, while on the team — else the PM (`true`).
+    pub fn design_talker(&self) -> Option<(&Member, bool)> {
+        let designer = self.members.iter().find(|m| m.role == "designer" && m.presence != Presence::Closed);
+        designer.map(|d| (d, false)).or_else(|| self.members.iter().find(|m| Self::is_pm(m)).map(|pm| (pm, true)))
+    }
+
+    /// Whether member `session`'s own conversation is the one in view.
+    pub fn shows_own(&self, session: SessionId) -> bool {
+        self.selected == Some(session) && self.opened.is_none() && self.talk.is_none() && self.draft_talk.is_none()
     }
 
     /// The names of the squad's projects, as chips show them.

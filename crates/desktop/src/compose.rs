@@ -487,6 +487,31 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
     out
 }
 
+/// An ask from the design screen (carry on with the setup, a video of a
+/// flow, a fix…): `to_designer` to the designer — at work on a ticket or
+/// not — else `to_pm` to the PM, about `project`, the design screen's
+/// (`None`: the squad's own). Always to that member's own conversation,
+/// whatever is open in view and whatever the box holds; a member at work
+/// has it as a line from the box would come (a steer, or a memo where it
+/// can't be steered). To the PM the words name the project, if they don't.
+pub fn ask(model: &Model, to_designer: &str, to_pm: &str, project: Option<String>) -> Plan {
+    let Some((member, pm)) = model.design_talker() else { return Plan::say(t!("design.no_one_to_ask")) };
+    let text = if pm { to_pm } else { to_designer }.trim();
+    if text.is_empty() {
+        return Plan::default();
+    }
+    let text = match &project {
+        Some(name) if pm && !text.contains(name.as_str()) => t!("design.ask_about_project", project = name, request = text),
+        _ => text.to_owned(),
+    };
+    let (session, about) = (member.session, Some(project));
+    match model.presence_to_talk(member) {
+        Presence::Closed => Plan::say(t!("compose.member_gone", name = member.name)),
+        Presence::Working if member.engine.is_none() => Plan::send(Command::SubmitLater { session, text, about }),
+        _ => Plan::send(Command::Submit { session, text, about }),
+    }
+}
+
 fn said(model: &Model, text: &str, later: bool) -> Plan {
     let text = text.trim();
     if text.is_empty() {
@@ -1184,6 +1209,85 @@ mod tests {
         assert_eq!(model.selected, Some(1), "the PM is where the window starts");
         assert_eq!(plan(&model, "  안녕하세요  "), Plan { commands: vec![submit(1, "안녕하세요")], ..Plan::default() });
         assert_eq!(plan(&model, "   "), Plan::default());
+    }
+
+    /// The PM's conversation about `app` open (a kept lane), and a designer
+    /// at work on a ticket — the person then on the design screen of `site`.
+    fn designing_while_a_conversation_is_open() -> Model {
+        let mut talk = session(50, "pm", SessionState::Ready);
+        talk.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: true });
+        talk.title = Some("how is the app going?".into());
+        let mut model = squad(vec![session(1, "pm", SessionState::Ready), talk, session(4, "designer", SessionState::Working)]);
+        model.members[1].ticket = Some(396);
+        model.focus = Some("app".into());
+        assert!(model.open(crate::state::Side::Conversation(50)));
+        model
+    }
+
+    #[test]
+    fn choosing_a_member_leaves_a_conversation_opened_with_the_pm_and_what_is_said_goes_to_that_member() {
+        let mut model = designing_while_a_conversation_is_open();
+        assert_eq!(model.viewed(), Some(50));
+        // What the design screen's asks did: choose the designer, then send.
+        assert!(model.select(4));
+        assert_eq!((model.viewed(), model.talk, model.side_open()), (Some(4), None, Some(crate::state::Side::Member(4))), "the designer's own, not the PM's conversation about app");
+        assert_eq!(plan(&model, "record the flow").commands, vec![Command::Submit { session: 4, text: "record the flow".into(), about: Some(Some("app".into())) }]);
+        // And the PM chosen: its own conversation, not the one opened beside it.
+        assert!(model.open(crate::state::Side::Conversation(50)));
+        assert!(model.select(1), "the PM's own is another conversation");
+        assert_eq!(model.viewed(), Some(1));
+        model.draft_conversation(Some("site".into()));
+        assert!(model.select(4));
+        assert_eq!((model.viewed(), model.draft_talk.clone()), (Some(4), None), "a new conversation not yet made is let go too");
+    }
+
+    fn ask_about(model: &Model, project: &str) -> Plan {
+        super::ask(model, "record the first visit flow", "we need a video of the first visit flow", Some(project.into()))
+    }
+
+    #[test]
+    fn a_design_ask_goes_to_the_designer_at_work_in_its_own_conversation_whatever_is_open() {
+        let mut model = designing_while_a_conversation_is_open();
+        let to_designer = |session| vec![Command::Submit { session, text: "record the first visit flow".into(), about: Some(Some("site".into())) }];
+        assert_eq!(ask_about(&model, "site").commands, to_designer(4), "on a ticket is no reason to go to the PM, nor to the conversation open");
+        assert_eq!(model.viewed(), Some(50), "nothing on screen moved for it");
+        model.open(crate::state::Side::Pm);
+        assert_eq!(ask_about(&model, "site").commands, to_designer(4));
+        model.members[1].ticket = None;
+        model.members[1].presence = Presence::Ready;
+        assert_eq!(ask_about(&model, "site").commands, to_designer(4), "free: the same");
+        // One that can't be steered: a memo for when its turn ends.
+        model.members[1].presence = Presence::Working;
+        model.members[1].engine = None;
+        assert_eq!(ask_about(&model, "site").commands, vec![Command::SubmitLater { session: 4, text: "record the first visit flow".into(), about: Some(Some("site".into())) }]);
+        // The squad's own system: about the whole squad.
+        assert!(matches!(&super::ask(&model, "go on", "pm", None).commands[..], [Command::SubmitLater { session: 4, about: Some(None), .. }]));
+    }
+
+    #[test]
+    fn with_no_designer_a_design_ask_goes_to_the_pm_about_the_design_screens_project_and_says_which() {
+        let mut model = designing_while_a_conversation_is_open();
+        model.members[1].presence = Presence::Closed;
+        let plan = ask_about(&model, "site");
+        let [Command::Submit { session: 1, text, about: Some(Some(about)) }] = &plan.commands[..] else { panic!("to the PM's own: {:?}", plan.commands) };
+        assert_eq!(about, "site", "the design screen's project, not the conversation open about app nor the focus");
+        assert!(text.contains("site") && text.contains("we need a video of the first visit flow"), "{text}");
+        // Words naming it already aren't told twice.
+        let plan = super::ask(&model, "x", "carry on the setup of site's design", Some("site".into()));
+        assert!(matches!(&plan.commands[..], [Command::Submit { session: 1, text, .. }] if text == "carry on the setup of site's design"));
+        // No one to ask at all: said so, nothing sent.
+        model.members.retain(|m| m.role != "pm");
+        let plan = ask_about(&model, "site");
+        assert!(plan.commands.is_empty() && plan.flash.is_some());
+    }
+
+    #[test]
+    fn a_design_ask_carries_only_its_own_words_and_nothing_for_a_box() {
+        let model = designing_while_a_conversation_is_open();
+        let plan = ask_about(&model, "site");
+        assert_eq!((plan.restore, plan.effect), (None, None), "no box filled or emptied, no view changed");
+        let said: Vec<&str> = plan.commands.iter().filter_map(|c| match c { Command::Submit { text, .. } | Command::SubmitLater { text, .. } => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(said, ["record the first visit flow"], "a draft half written anywhere isn't part of it");
     }
 
     #[test]
