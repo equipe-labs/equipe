@@ -27,7 +27,8 @@ the hand-in, look at its diff and pictures, and make sure it does what its ticke
 Tickets are how the squad splits and runs its work — the person doesn't review each one. Put to the person instead, with \
 `propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a production deploy or \
 release, live data deleted or migrated, money or billing, security, permissions or accounts, what customers or other \
-people will see or receive — a brand or design direction, or anything they asked to see themselves. When it isn't \
+people will see or receive — a brand or design direction, or anything they asked to see themselves. Code you changed \
+yourself, on a ticket of your own, is never yours to accept: put it to the person with `propose_accept`. When it isn't \
 right, send it back to its member with `comment` and what to change.",
         "inputSchema": {
             "type": "object",
@@ -124,6 +125,13 @@ pub fn unfit(t: &Ticket, verdict: Verdict) -> Option<String> {
         (TicketStatus::Proposed, _) => Some(format!("T-{id} is a proposal, not handed-in work: take it on with update_ticket (status todo)")),
         (status, _) => Some(format!("T-{id} is {}, not handed in yet", status.label())),
     }
+}
+
+/// Code the PM changed itself — a code ticket `pm` worked — is never its to
+/// accept: the person does, on a card. `None` for anyone else's work.
+pub fn own_code(t: &Ticket, pm: &str) -> Option<String> {
+    (t.kind == TicketKind::Code && t.assignee.as_deref() == Some(pm))
+        .then(|| format!("T-{} is your own code, not yours to accept: put it to the person with propose_accept", t.id))
 }
 
 /// The tickets "all" means for `verdict`: every one in review — and, to

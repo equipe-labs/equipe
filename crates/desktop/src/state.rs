@@ -1653,8 +1653,9 @@ impl Model {
             // A designer checks its screens first.
             TicketStatus::Review if t.in_design_qa() => None,
             // Where the PM accepts, handed-in work is the PM's: the person sees
-            // only what it puts to them, on a card.
-            TicketStatus::Review if self.pm_accepts => None,
+            // only what it puts to them, on a card — and code the PM changed
+            // itself, which is never its own to accept.
+            TicketStatus::Review if self.pm_accepts && !self.pm_coded(t) => None,
             TicketStatus::Review => Some(Section::Review),
             // …and so are members' proposals; the PM's own are for the person,
             // as is an idea of theirs the PM brings back, whoever kept it.
@@ -1665,6 +1666,11 @@ impl Model {
             TicketStatus::Done if t.waits_to_merge() => Some(Section::NotOnMain),
             _ => None,
         }
+    }
+
+    /// Whether `t` is code the PM changed itself, on a ticket of its own.
+    fn pm_coded(&self, t: &Ticket) -> bool {
+        t.kind == equipe_core::protocol::TicketKind::Code && t.assignee.as_deref().is_some_and(|a| self.is_pm_name(a))
     }
 
     /// Whether `name` is the squad's PM (or one of them).

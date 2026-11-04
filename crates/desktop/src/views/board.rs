@@ -1590,7 +1590,8 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         }
         Popover::Filter => {
             let mut words: Vec<String> = shell.model.project_names().into_iter().map(|n| format!("project:{n}")).collect();
-            let mut members: Vec<String> = shell.model.members.iter().filter(|m| !Model::is_pm(m)).map(|m| format!("member:{}", m.name)).collect();
+            // The PM too: it works tickets of its own, code among them.
+            let mut members: Vec<String> = shell.model.members.iter().map(|m| format!("member:{}", m.name)).collect();
             members.dedup();
             words.extend(members);
             words.extend(["status:review", "status:waiting", "status:in_progress", "status:todo", "status:proposed", "status:done"].map(String::from));

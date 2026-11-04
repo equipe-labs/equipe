@@ -1212,6 +1212,17 @@ mod tests {
     }
 
     #[test]
+    fn code_the_pm_changed_itself_waits_for_the_person_even_where_the_pm_accepts() {
+        let mut own = ticket(2, "review", "/p", &[]);
+        own.assignee = Some("pm".into());
+        let mut teams = ticket(3, "review", "/p", &[]);
+        teams.assignee = Some("frontend".into());
+        let mut m = model(vec![own, teams], &["/p"]);
+        m.pm_accepts = true;
+        assert_eq!(ids(&inbox(&m, &Filter::default())), vec![2], "the PM's own work is the person's to accept; the team's is the PM's");
+    }
+
+    #[test]
     fn ideas_wait_quietly_in_their_own_view_until_the_pm_brings_one_back_and_a_starts_it() {
         let mut brought = ticket(2, "proposed", "/p", &[]);
         brought.note = Some(format!("{}지금 출시 직후라 맞아요", equipe_core::protocol::WHY_NOW));

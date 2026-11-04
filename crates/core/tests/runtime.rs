@@ -1047,6 +1047,74 @@ async fn a_ticket_goes_to_its_owner_who_hands_it_in_and_the_person_accepts_it() 
     assert!(matches!(notices.last(), Some(Event::Notice { text, .. }) if text.starts_with("You accepted T-1")), "{notices:#?}");
 }
 
+/// The deny rules a recorded turn passed to Claude Code.
+fn denied(call: &[String]) -> Vec<String> {
+    settings_of(call)["permissions"]["deny"].as_array().map(|a| a.iter().filter_map(|r| r.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+}
+
+#[tokio::test]
+async fn the_pm_changes_code_only_on_a_ticket_of_its_own_in_its_worktree_and_never_accepts_it_itself() {
+    let repo = repo();
+    let turn = format!("case \"$*\" in *\"You're on T-\"*) sleep 3; echo fixed > FIX.md;; esac\n{}", answering_per_call("ok"));
+    let (claude, recorded) = recording_claude(&turn);
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let only_read = format!("Edit(/{}/**)", repo.display());
+
+    // In conversation the PM only reads the project, as every member does.
+    handle.send(Command::Submit { session: 1, text: "fix the typo in the README".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let desk = latest_call(&recorded, |p| p.contains("fix the typo in the README")).await;
+    assert!(denied(&desk).contains(&only_read), "{:?}", denied(&desk));
+    let edit = tool(&handle, "pm", "approve", serde_json::json!({ "tool_name": "Edit", "input": { "file_path": repo.join("README.md") }, "tool_use_id": "t" })).await;
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&edit.text).unwrap()["behavior"], "deny", "{edit:?}");
+
+    // A one-line fix it does itself is a code ticket it owns: its own worktree and branch.
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "README typo", "body": "teh → the", "owner": "pm" })).await;
+    assert_eq!(made.text, "Created T-1.");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { session: 1, workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    assert!(ws.branch.starts_with("equipe/pm-t1-"), "{}", ws.branch);
+    assert!(!ws.path.starts_with(&repo), "{}", ws.path.display());
+    // Its ticket's turn edits there, as an engineer's does.
+    let call = latest_call(&recorded, |p| p.starts_with("[equipe] You're on T-1")).await;
+    assert_eq!(arg(&call, "--permission-mode"), Some("acceptEdits"));
+    assert!(!denied(&call).contains(&only_read), "its worktree is its to write: {:?}", denied(&call));
+
+    // Its conversation, beside the work, still only reads the project.
+    handle.send(Command::Submit { session: 1, text: "how is it going?".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session != 1 && *session != 2)).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { of: 1, .. })), "{seen:#?}");
+    let beside = latest_call(&recorded, |p| p.contains("how is it going?")).await;
+    assert!(denied(&beside).contains(&only_read), "{:?}", denied(&beside));
+
+    // Handed in: on its branch, the person's checkout untouched.
+    let handed = tool(&handle, "pm", "submit_for_review", serde_json::json!({ "summary": "Fixed the typo." })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
+    let branch = ticket_changed(&review).pop().unwrap().branch.unwrap();
+    assert_eq!(git(&repo, &["show", &format!("{branch}:FIX.md")]), "fixed");
+    assert!(!repo.join("FIX.md").exists());
+
+    // Where the PM accepts its team's work, its own still goes to the person.
+    assert!(handle.snapshot("acme").await.pm_accepts);
+    let own = tool(&handle, "pm", "accept_work", serde_json::json!({ "tickets": [1], "checked": "Read my diff." })).await;
+    assert!(!own.is_error && own.text.starts_with("Nothing accepted.") && own.text.contains("your own") && own.text.contains("propose_accept"), "{own:?}");
+    let status = |t: Vec<Ticket>| t.into_iter().find(|t| t.id == 1).map(|t| t.status);
+    assert_eq!(status(handle.snapshot("acme").await.tickets), Some(TicketStatus::Review));
+    // On the person's click it is accepted and merged, as anyone's.
+    tool(&handle, "pm", "propose_accept", serde_json::json!({ "verdict": "merge", "tickets": [1] })).await;
+    let up = until(&mut events, |e| matches!(e, Event::AcceptProposed { .. })).await;
+    let Some(Event::AcceptProposed { proposal, .. }) = up.last() else { panic!("{up:#?}") };
+    let pick = equipe_core::protocol::accept::Confirmed { ticket: 1, merge: Some(equipe_core::protocol::accept::Land::Merge) };
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: proposal.id, tickets: vec![pick] });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert_eq!(git(&repo, &["show", "main:FIX.md"]), "fixed");
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn accepted_work_is_where_the_next_ticket_starts_and_lands_on_main_only_when_the_person_merges() {
     let repo = repo();

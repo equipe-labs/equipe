@@ -771,6 +771,12 @@ impl Session {
         self.member.is_some() && self.access == Access::EditFiles
     }
 
+    /// Whether it changes a project's files on a code ticket it works, in that
+    /// ticket's worktree: as it edits — and the PM, on a code ticket of its own.
+    fn edits_on_code_tickets(&self) -> bool {
+        self.member.as_ref().is_some_and(|m| roles::edits_on_code_tickets(&m.role, self.edits()))
+    }
+
     /// Free for a new ticket: not on one, not mid-turn.
     fn is_free(&self) -> bool {
         self.work.is_none() && !self.is_working()
@@ -3298,6 +3304,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let board_tools = session.member.is_some() && has_tools(session) && self.config.equipe_binary.is_some();
         let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
         let edits = session.edits();
+        let edits_code = session.edits_on_code_tickets();
         let mode = session.mode.or_else(|| squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::mode)).unwrap_or_default();
         // A browser in any mode that may change things — signed in wherever the
         // person (or a teammate) signed in, if anywhere yet. In Auto and Full
@@ -3429,7 +3436,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     Some(_) => home.iter().cloned().collect(),
                     None => Vec::new(),
                 };
-                let writes = (edits || work.kind.in_home()) && work.sandbox.is_some();
+                let writes = (edits_code || work.kind.in_home()) && work.sandbox.is_some();
                 (work.cwd.clone(), access_for(mode, writes), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
             }
             None => {
@@ -4204,6 +4211,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         let role_edits = session.edits();
+        // The PM, which delegates first, on a code ticket of its own.
+        let pm_codes = !role_edits && session.edits_on_code_tickets();
         let board_tools = has_tools(session) && self.config.equipe_binary.is_some();
         let projects = self.projects(&squad);
         let home_dir = squad_home::path(&home, &squad);
@@ -4223,8 +4232,10 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         let workplace = if kind.in_home() { home_dir.clone() } else { project.clone() };
-        // In the squad home every role writes, in its own worktree.
-        let edits = role_edits || kind.in_home();
+        // In the squad home every role writes, in its own worktree; on a code
+        // ticket a role that edits does — and the PM, when the project is a
+        // repository: on a plain folder it reads, as it always did.
+        let edits = role_edits || kind.in_home() || (pm_codes && worktree::repo_root(&workplace).is_ok());
 
         let sandbox = if edits {
             let checkout = worktree::repo_root(&workplace).and_then(|repo| {
@@ -4507,13 +4518,16 @@ todo); or drop it if it's no longer wanted.]"
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
         }
         // Work now ready for review — this ticket handed in, or the one a
-        // designer's QA just passed — when the PM accepts it.
+        // designer's QA just passed — when the PM accepts it. Code the PM
+        // changed itself isn't: it waits for the person.
+        let pm_name = self.pm_of(&squad).and_then(|pm| self.sessions.get(&pm)).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
+        let the_pms = |t: &Ticket| crate::accept::own_code(t, &pm_name).is_some();
         let ready_for_pm = if !self.journal(&squad).is_some_and(|j| j.pm_accepts()) {
             None
         } else if ticket.ready_for_review() {
-            Some(ticket.id)
+            (!the_pms(&ticket)).then_some(ticket.id)
         } else {
-            about.as_ref().map(|(id, _)| *id).filter(|id| self.journal(&squad).and_then(|j| j.ticket(*id).ok().flatten()).is_some_and(|t| t.ready_for_review()))
+            about.as_ref().map(|(id, _)| *id).filter(|id| self.journal(&squad).and_then(|j| j.ticket(*id).ok().flatten()).is_some_and(|t| t.ready_for_review() && !the_pms(&t)))
         };
         let ticket_id = ticket.id;
         let (about_id, about_title) = about.unwrap_or_else(|| (ticket.id, ticket.title.clone()));
