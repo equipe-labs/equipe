@@ -588,6 +588,8 @@
   "composer.effort_set": "{name} piensa con esfuerzo {effort} desde el próximo turno",
   "composer.effort_short": "esfuerzo",
   "composer.engine_next": "desde el próximo ticket",
+  "composer.esc_again": "Pulsa Esc otra vez para detener el trabajo de {name}",
+  "composer.esc_again_subs": "Pulsa Esc otra vez para detener el trabajo de {name} y sus {count} subagentes",
   "composer.failed_summary": "{n} no se pudieron adjuntar",
   "composer.hint_idle": "⏎ enviar · ⇧⏎ nueva línea · ⌘U adjuntar · / comandos · @ mencionar",
   "composer.inbox_attached": "Se adjuntaron las imágenes enviadas desde la Mac",

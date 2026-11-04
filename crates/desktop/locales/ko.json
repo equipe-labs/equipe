@@ -565,6 +565,8 @@
   "composer.effort_set": "{name}은(는) 다음 턴부터 {effort}로 생각해요",
   "composer.effort_short": "깊이",
   "composer.engine_next": "다음 티켓부터",
+  "composer.esc_again": "Esc를 한 번 더 누르면 {name}의 작업을 멈춰요",
+  "composer.esc_again_subs": "Esc를 한 번 더 누르면 {name}의 작업과 서브에이전트 {count}개가 함께 멈춰요",
   "composer.failed_summary": "{n}개를 붙이지 못했어요",
   "composer.hint_idle": "⏎ 보내기 · ⇧⏎ 줄바꿈 · ⌘U 첨부 · / 명령 · @ 언급",
   "composer.inbox_attached": "Mac에서 보낸 이미지를 붙였어요",

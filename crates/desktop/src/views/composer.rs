@@ -245,6 +245,10 @@ pub struct Composer {
     guard: EnterGuard,
     /// One quiet line over the box: what the last send did.
     pub flash: Option<String>,
+    /// Esc on an empty box while a member works: when it was pressed, and in
+    /// whose conversation. A second press soon after stops the turn
+    /// (`stop_on_escape`); one alone only says how.
+    pub stop_armed: Option<(SessionId, std::time::Instant)>,
     /// The cards over the box until sent (`views/quote.rs`): passages of the
     /// conversation replied to ("답글 달기"), or only quoted to ask about
     /// ("Ask about this"). Kept with the draft.
@@ -327,6 +331,7 @@ impl Composer {
             drafts: Drafts::load(Drafts::file(&equipe_providers::credentials::equipe_home())),
             guard: EnterGuard::default(),
             flash: None,
+            stop_armed: None,
             replies: Vec::new(),
             card: None,
             peek: None,
@@ -688,7 +693,30 @@ impl Shell {
         self.send_as(working && steerable, window, cx);
     }
 
-    /// Stop the turn in progress (Esc on an empty box, ⌘., or the Stop button).
+    /// Esc on an empty box: a member's turn stops on the second press, soon
+    /// after the first — a stray Esc says how, and stops nothing.
+    fn escape_to_stop(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.model.viewed() else { return };
+        if self.model.viewed_presence() != Some(Presence::Working) {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if stop_on_escape(self.composer.stop_armed, session, now) {
+            self.composer.stop_armed = None;
+            self.composer.flash = None;
+            self.interrupt(cx);
+            return;
+        }
+        self.composer.stop_armed = Some((session, now));
+        let member = self.model.selected_member();
+        let name = member.map(|m| m.name.clone()).unwrap_or_default();
+        // What a second press would stop, its subagents with it.
+        let subs = member.map_or(0, |m| self.model.subagents_of(m.session).len());
+        self.composer.flash = Some(if subs > 0 { t!("composer.esc_again_subs", name = name, count = subs) } else { t!("composer.esc_again", name = name) });
+        cx.notify();
+    }
+
+    /// Stop the turn in progress (Esc twice on an empty box, ⌘., or the Stop button).
     pub fn interrupt(&mut self, cx: &mut Context<Self>) {
         // Only the conversation in view stops; a member's others go on.
         let Some(session) = self.model.viewed() else { return };
@@ -1546,7 +1574,7 @@ impl Shell {
                     self.composer.dismissed = Some(text);
                     self.composer.choices.clear();
                 } else if !self.composer.guard.composing() && text.is_empty() {
-                    self.interrupt(cx);
+                    self.escape_to_stop(cx);
                 }
                 cx.notify();
                 true
@@ -2959,8 +2987,27 @@ pub fn on_answer_drop(to: AttachTo, handle: WeakEntity<Shell>) -> impl Fn(&Exter
     }
 }
 
+/// How soon a second Esc must follow the first to stop a turn.
+const ESC_AGAIN: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Whether this Esc stops `session`'s turn: the second press in its
+/// conversation within [`ESC_AGAIN`] of the first.
+fn stop_on_escape(armed: Option<(SessionId, std::time::Instant)>, session: SessionId, now: std::time::Instant) -> bool {
+    armed.is_some_and(|(at, when)| at == session && now.duration_since(when) <= ESC_AGAIN)
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_stray_esc_stops_nothing_and_a_second_one_soon_after_stops_the_turn() {
+        let t0 = std::time::Instant::now();
+        assert!(!super::stop_on_escape(None, 7, t0), "the first press only says how");
+        assert!(super::stop_on_escape(Some((7, t0)), 7, t0 + std::time::Duration::from_millis(900)));
+        assert!(!super::stop_on_escape(Some((7, t0)), 7, t0 + std::time::Duration::from_millis(2000)), "too late: it arms again");
+        assert!(!super::stop_on_escape(Some((7, t0)), 8, t0 + std::time::Duration::from_millis(300)), "another conversation's");
+    }
+
     use super::{Act, Engine, Menu, MenuKind, Row, efforts, pm_about, short_model, shows_recipient, takes};
     use crate::state::Model;
 

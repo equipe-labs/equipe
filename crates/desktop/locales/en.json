@@ -588,6 +588,8 @@
   "composer.effort_set": "{name} thinks at {effort} from the next turn",
   "composer.effort_short": "effort",
   "composer.engine_next": "from the next ticket",
+  "composer.esc_again": "Press Esc again to stop {name}’s work",
+  "composer.esc_again_subs": "Press Esc again to stop {name}’s work and its {count} subagents",
   "composer.failed_summary": "{n} couldn't be attached",
   "composer.hint_idle": "⏎ send · ⇧⏎ new line · ⌘U attach · / commands · @ mention",
   "composer.inbox_attached": "Attached the images sent from the Mac",

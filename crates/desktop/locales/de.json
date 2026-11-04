@@ -588,6 +588,8 @@
   "composer.effort_set": "{name} denkt ab der nächsten Runde mit {effort}",
   "composer.effort_short": "Tiefe",
   "composer.engine_next": "ab dem nächsten Ticket",
+  "composer.esc_again": "Noch einmal Esc, um die Arbeit von {name} anzuhalten",
+  "composer.esc_again_subs": "Noch einmal Esc hält die Arbeit von {name} und {count} Subagenten an",
   "composer.failed_summary": "{n} konnten nicht angehängt werden",
   "composer.hint_idle": "⏎ senden · ⇧⏎ neue Zeile · ⌘U anhängen · / Befehle · @ erwähnen",
   "composer.inbox_attached": "Vom Mac gesendete Bilder angehängt",
