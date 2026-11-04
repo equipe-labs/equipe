@@ -232,6 +232,74 @@ pub fn context(flow: &Flow, screen: &Screen, state: &str) -> String {
     format!("{} › {} › {}", flow.title, screen.title, state)
 }
 
+// ── real data or examples ──
+
+/// Which pictures the map shows: the person's own — their squad, read-only,
+/// in their language and look, kept on the daemon's machine outside any
+/// repository — or the repository's examples, the ones to share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Data {
+    Real,
+    Example,
+}
+
+impl Data {
+    pub const ALL: [Data; 2] = [Data::Real, Data::Example];
+
+    pub fn label(self) -> &'static str {
+        crate::i18n::catalog().get(match self {
+            Data::Real => "flows.data_real",
+            Data::Example => "flows.data_example",
+        })
+    }
+}
+
+/// Whether `map` has a picture of the person's real data.
+pub fn has_live(map: &FlowMap) -> bool {
+    map.flows.iter().flat_map(|f| &f.screens).flat_map(|s| &s.states).flat_map(|s| &s.pictures).any(|p| p.live)
+}
+
+/// The data shown: the person's pick; else their real data where there is
+/// some and the daemon is this Mac's, else the examples.
+pub fn data_shown(picked: Option<Data>, map: &FlowMap, local: bool) -> Data {
+    picked.unwrap_or(if local && has_live(map) { Data::Real } else { Data::Example })
+}
+
+/// `map` with the pictures of `data`: a state's real ones when it has some
+/// and real data is shown — the states the squad isn't in (empty, error, a
+/// first run) keep their examples — else its examples alone. A screen is
+/// stale as the pictures it shows are.
+pub fn with_data(map: &FlowMap, data: Data) -> FlowMap {
+    let mut map = map.clone();
+    for screen in map.flows.iter_mut().flat_map(|f| &mut f.screens) {
+        let (mut real, mut example) = (false, false);
+        for state in &mut screen.states {
+            if data == Data::Real && state.pictures.iter().any(|p| p.live) {
+                state.pictures.retain(|p| p.live);
+                real = true;
+            } else {
+                state.pictures.retain(|p| !p.live);
+                example |= !state.pictures.is_empty();
+            }
+        }
+        screen.stale = (real && screen.live_stale) || (example && screen.stale);
+        screen.live_stale = false;
+    }
+    map
+}
+
+/// The version a picture was shot with against the one installed now:
+/// `찍은 버전 0.103.22 · 지금 0.103.23` when they differ, the first alone
+/// when they don't, nothing when it doesn't say.
+pub fn shot_with(picture: &Picture, installed: Option<&str>) -> Option<String> {
+    let words = crate::i18n::catalog();
+    let shot = picture.shot_with.clone()?;
+    Some(match installed.filter(|now| now.trim() != shot.trim()) {
+        Some(now) => words.fill("flows.shot_with_now", &[("shot", shot), ("now", now.to_owned())]),
+        None => words.fill("flows.shot_with", &[("shot", shot)]),
+    })
+}
+
 // ── the tab's state ──
 
 /// Where the person is in the map: the flow, the screen open below the
@@ -379,7 +447,7 @@ mod tests {
     use super::*;
 
     fn picture(mode: &str, width: u32) -> Picture {
-        Picture { path: format!("/d/flows/x/{mode}.{width}.png"), mode: mode.into(), width, taken: 1, hash: None }
+        Picture { path: format!("/d/flows/x/{mode}.{width}.png"), mode: mode.into(), width, taken: 1, ..Default::default() }
     }
 
     fn state(id: &str, kind: &str, pictures: Vec<Picture>) -> ScreenState {
@@ -532,5 +600,30 @@ mod tests {
         ui.arrived(None);
         assert_eq!((ui.screen.as_deref(), ui.mode.as_deref()), (None, Some("dark")));
         assert_eq!(MapUi::default().mode(true), "dark");
+    }
+
+    #[test]
+    fn the_persons_real_data_shows_in_place_of_the_examples_on_this_mac_and_the_states_it_lacks_keep_theirs() {
+        let live = |mode: &str, width: u32| Picture { live: true, shot_with: Some("0.103.22".into()), ..picture(mode, width) };
+        let inbox = Screen {
+            live_stale: true,
+            ..screen("inbox", vec![state("default", "default", vec![picture("light", 1200), live("dark", 1440)]), state("empty", "empty", vec![picture("light", 1200)])], &[], false)
+        };
+        let map = FlowMap { flows: vec![Flow { id: "app".into(), title: "App".into(), screens: vec![inbox], ..Default::default() }], installed: Some("0.103.23".into()), ..Default::default() };
+        assert!(has_live(&map) && !has_live(&FlowMap::default()));
+        assert_eq!(data_shown(None, &map, true), Data::Real, "real when there is some, on this Mac");
+        assert_eq!(data_shown(None, &map, false), Data::Example, "a daemon elsewhere: the examples unless asked");
+        assert_eq!(data_shown(Some(Data::Example), &map, true), Data::Example, "the person's pick wins");
+        assert_eq!(data_shown(None, &FlowMap::default(), true), Data::Example);
+        let real = with_data(&map, Data::Real);
+        let shown = |m: &FlowMap| m.flows[0].screens[0].states.iter().map(|s| s.pictures.iter().map(|p| (p.mode.clone(), p.live)).collect::<Vec<_>>()).collect::<Vec<_>>();
+        assert_eq!(shown(&real), [vec![("dark".to_owned(), true)], vec![("light".to_owned(), false)]], "the empty state the squad isn't in keeps its example");
+        assert!(real.flows[0].screens[0].stale, "shot with another version than installed: stale, as its real pictures are");
+        let example = with_data(&map, Data::Example);
+        assert_eq!(shown(&example), [vec![("light".to_owned(), false)], vec![("light".to_owned(), false)]]);
+        assert!(!example.flows[0].screens[0].stale, "the examples are as fresh as they were");
+        assert_eq!(shot_with(&real.flows[0].screens[0].states[0].pictures[0], map.installed.as_deref()).as_deref(), Some("찍은 버전 0.103.22 · 지금 0.103.23"));
+        assert_eq!(shot_with(&live("dark", 1440), Some("0.103.22")).as_deref(), Some("찍은 버전 0.103.22"));
+        assert_eq!(shot_with(&picture("light", 1200), Some("0.103.23")), None, "a picture that doesn't say");
     }
 }

@@ -50,6 +50,10 @@ pub struct Place {
     pub project: Option<String>,
     pub draft: Option<DraftOf>,
     pub dir: PathBuf,
+    /// Where the pictures of its map with the person's real data are
+    /// (`flows::live_dir`): an accepted system's only — a draft shows the
+    /// repository's.
+    pub live: Option<PathBuf>,
 }
 
 /// Whether `dir` is a design system: a folder (not a link to one) with
@@ -63,16 +67,19 @@ pub fn is_design_dir(dir: &Path) -> bool {
 /// and the work a ticket in progress (or waiting on the person) is making in
 /// its worktree, marked `working`, so the screen fills in as it lands.
 pub fn places(home: &Path, squad: &str) -> Vec<Place> {
-    let mut out = vec![Place { project: None, draft: None, dir: crate::squad_home::path(home, squad).join(DIR) }];
+    let valid = crate::squads::valid_name(squad);
+    let live = |project: Option<&str>| valid.then(|| super::flows::live_dir(home, squad, project));
+    let mut out = vec![Place { project: None, draft: None, dir: crate::squad_home::path(home, squad).join(DIR), live: live(None) }];
     let db = crate::journal::squad_dir(home, squad).join("squad.db");
-    if !crate::squads::valid_name(squad) || !db.exists() {
+    if !valid || !db.exists() {
         return out;
     }
     let Ok(journal) = crate::journal::Journal::open(&db) else { return out };
     for project in journal.projects().unwrap_or_default() {
         let dir = project.join(DIR);
         if is_design_dir(&dir) {
-            out.push(Place { project: Some(crate::board::project_name(&project)), draft: None, dir });
+            let name = crate::board::project_name(&project);
+            out.push(Place { live: live(Some(&name)), project: Some(name), draft: None, dir });
         }
     }
     for ticket in journal.tickets().unwrap_or_default() {
@@ -85,7 +92,7 @@ pub fn places(home: &Path, squad: &str) -> Vec<Place> {
         let dir = worktree.join(DIR);
         if is_design_dir(&dir) {
             let project = if ticket.kind == TicketKind::Code { ticket.project.as_deref().map(crate::board::project_name) } else { None };
-            out.push(Place { project, draft: Some(DraftOf { ticket: ticket.id, title: ticket.title.clone(), working }), dir });
+            out.push(Place { project, draft: Some(DraftOf { ticket: ticket.id, title: ticket.title.clone(), working }), dir, live: None });
         }
     }
     out
@@ -145,6 +152,12 @@ pub fn stamp(places: &[Place]) -> u64 {
             meta.modified().ok().hash(&mut h);
             // A link's target counts too: retargeted, it shows something else.
             std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h);
+        }
+        // The person's real-data pictures, shot again or taken away.
+        for (path, meta) in place.live.as_deref().map(super::flows::live_files).unwrap_or_default() {
+            path.hash(&mut h);
+            meta.len().hash(&mut h);
+            meta.modified().ok().hash(&mut h);
         }
     }
     h.finish()
@@ -254,7 +267,7 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
     system.assets = assets(&place.dir);
     // A project's folder is in its repository, where the screens' code is.
     let repo = place.project.as_ref().and_then(|_| place.dir.parent());
-    system.flows = super::flows::read(&place.dir, repo, lang);
+    system.flows = super::flows::read_with(&place.dir, repo, place.live.as_deref(), lang, &super::flows::installed);
     system.setup = super::flows::setup(&place.dir);
     system.stamp = stamp(std::slice::from_ref(place));
     system
@@ -307,10 +320,19 @@ pub fn fingerprint(systems: &mut [DesignSystem]) {
 /// and its recordings left out, so a worktree's copy reads as the same.
 fn map_shown(map: Option<&FlowMap>) -> Option<FlowMap> {
     let mut map = map.cloned()?;
+    map.installed = None;
     for flow in &mut map.flows {
         flow.videos.clear();
         for screen in &mut flow.screens {
             screen.stale = false;
+            screen.live_stale = false;
+            // The person's real data is the accepted system's alone: a draft is held to the repository's.
+            for state in &mut screen.states {
+                state.pictures.retain(|p| !p.live);
+                if state.pictures.is_empty() && !screen.missing.contains(&state.id) {
+                    screen.missing.push(state.id.clone());
+                }
+            }
             for picture in screen.states.iter_mut().flat_map(|s| &mut s.pictures) {
                 picture.path.clear();
                 picture.taken = 0;
@@ -363,9 +385,16 @@ pub fn shown(home: &Path, squad: &str) -> (Vec<String>, Vec<PathBuf>) {
             continue;
         }
         paths.extend(assets(&place.dir).into_iter().map(|a| a.path));
-        let map = super::flows::read(&place.dir, None, Lang::En).unwrap_or_default();
+        let map = super::flows::read_with(&place.dir, None, place.live.as_deref(), Lang::En, &|_| None).unwrap_or_default();
         let states = map.flows.into_iter().flat_map(|f| f.screens).flat_map(|s| s.states);
-        paths.extend(states.flat_map(|s| s.pictures).map(|p| p.path));
+        let pictures: Vec<_> = states.flat_map(|s| s.pictures).collect();
+        // The real data's folder only while one of its pictures is shown.
+        if pictures.iter().any(|p| p.live)
+            && let Some(live) = place.live
+        {
+            roots.push(live);
+        }
+        paths.extend(pictures.into_iter().map(|p| p.path));
         roots.push(place.dir);
     }
     (paths, roots)
@@ -434,7 +463,7 @@ mod tests {
         std::fs::write(root.join("elsewhere.json"), TOKENS_JSON).unwrap();
         symlink(root.join("elsewhere.json"), design.join(TOKENS)).unwrap();
         std::fs::write(design.join(GUIDELINES), "가".repeat(GUIDELINES_MAX)).unwrap();
-        let place = Place { project: None, draft: None, dir: design.clone() };
+        let place = Place { project: None, draft: None, dir: design.clone(), live: None };
         let system = read(&place, Lang::En);
         assert!(system.tokens.is_empty(), "a tokens.json that is a link out of the folder isn't read");
         let text = system.guidelines.unwrap();
@@ -451,7 +480,7 @@ mod tests {
     fn the_stamp_moves_when_anything_in_the_folder_does() {
         let root = dir("stamp");
         let design = root.join("design");
-        let place = [Place { project: None, draft: None, dir: design.clone() }];
+        let place = [Place { project: None, draft: None, dir: design.clone(), live: None }];
         let missing = stamp(&place);
         std::fs::create_dir_all(&design).unwrap();
         std::fs::write(design.join(TOKENS), TOKENS_JSON).unwrap();
@@ -546,6 +575,20 @@ mod tests {
         assert!(paths.iter().any(|p| p.ends_with("home/design/flows/app/home/default.light.390.png")), "the UI map's pictures too");
         assert!(!paths.iter().any(|p| p.ends_with("stray.light.390.png")), "not one of no state");
         assert_eq!(systems[0].flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures.len(), 1);
+        // The person's real data, shot into the squad's folder: the accepted
+        // system shows it, its stamp moves, read_image may give it — and the
+        // draft that only copied the folder is still no draft.
+        let before = stamp(&places(&home, "acme"));
+        let live = super::super::flows::live_dir(&home, "acme", None);
+        png(&live.join("app/home/default.dark.1200.png"));
+        assert_ne!(stamp(&places(&home, "acme")), before);
+        let (systems, _) = catalog(&home, "acme", Lang::En);
+        assert_eq!(systems.iter().map(|s| s.key()).collect::<Vec<_>>(), keys);
+        let pictures = &systems[0].flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures;
+        assert_eq!(pictures.iter().map(|p| p.live).collect::<Vec<_>>(), [false, true]);
+        assert!(systems[2].flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures.iter().all(|p| !p.live), "a draft shows the repository's");
+        let (paths, roots) = shown(&home, "acme");
+        assert!(paths.iter().any(|p| p.ends_with("ui-map/_squad/app/home/default.dark.1200.png")) && roots.contains(&live));
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -630,8 +673,8 @@ mod tests {
         let accepted = folder("main", [20, 90, 250, 255]);
         let reshot = folder("t170", [250, 90, 20, 255]);
         let copy = folder("t171", [20, 90, 250, 255]);
-        let draft = |n: u32, dir: PathBuf| Place { project: None, draft: Some(DraftOf { ticket: n, title: format!("T{n}"), working: false }), dir };
-        let alone = [Place { project: None, draft: None, dir: accepted.clone() }];
+        let draft = |n: u32, dir: PathBuf| Place { project: None, draft: Some(DraftOf { ticket: n, title: format!("T{n}"), working: false }), dir, live: None };
+        let alone = [Place { project: None, draft: None, dir: accepted.clone(), live: None }];
         let (systems, _) = catalog_of(&alone, Lang::En);
         let pictures = |s: &DesignSystem| s.flows.as_ref().unwrap().flows[0].screens.iter().map(|sc| sc.states[0].pictures[0].hash.clone()).collect::<Vec<_>>();
         assert!(pictures(&systems[0]).iter().all(Option::is_none), "no draft: nothing read for it");

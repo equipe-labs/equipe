@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use equipe_core::protocol::design::{Flow, FlowMap, Screen, Walkthrough};
+use equipe_core::protocol::design::{Flow, FlowMap, Picture, Screen, Walkthrough};
 use equipe_core::t;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -76,7 +76,7 @@ pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .id("flows")
                 .flex_1()
                 .min_h_0()
-                .child(counts_bar(shell, map))
+                .child(counts_bar(shell, map, cx))
                 .child(h_flex().flex_1().min_h_0().items_start().child(flow_list(shell, map, changes.as_ref(), cx)).child(main(shell, map, changes.as_ref(), cx)))
                 .into_any_element()
         }
@@ -84,9 +84,21 @@ pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     }
 }
 
-/// 화면 12 · 상태 31 · 빠진 상태 4 · 오래됨 1.
-fn counts_bar(shell: &Shell, map: &FlowMap) -> impl IntoElement + use<> {
+/// 화면 12 · 상태 31 · 빠진 상태 4 · 오래됨 1 — and, when the map has the
+/// person's real data, 실제 데이터 | 예시 데이터 at its right.
+fn counts_bar(shell: &Shell, map: &FlowMap, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
+    let data = shell.design.data_on_show().map(|on| {
+        let options = fm::Data::ALL
+            .into_iter()
+            .map(|d| {
+                let pick: Pick = Box::new(move |this, cx| this.flows_data(d, cx));
+                (d.label().to_owned(), d == on, pick)
+            })
+            .collect();
+        let tip = if on == fm::Data::Real { t!("flows.data_real_tip") } else { t!("flows.data_example_tip") };
+        h_flex().flex_none().ml_auto().pl_4().id("flows-data").child(segment(p, "flows-data", options, cx)).tip(p, tip, None)
+    });
     let Counts { screens, states, missing, stale } = fm::counts(map);
     let part = |label: String, n: usize, tone: Rgba| h_flex().gap_1().items_baseline().child(div().text_color(p.text2).child(label)).child(div().font_weight(FontWeight::SEMIBOLD).text_color(tone).child(n.to_string()));
     let dot = || div().text_color(p.muted).child("·");
@@ -108,6 +120,7 @@ fn counts_bar(shell: &Shell, map: &FlowMap) -> impl IntoElement + use<> {
         .child(part(t!("flows.count_missing").into(), missing, if missing > 0 { p.danger() } else { p.text }))
         .child(dot())
         .child(part(t!("flows.count_stale").into(), stale, p.text))
+        .children(data)
 }
 
 /// The flows, a row each: its title, and what it lacks or how many screens.
@@ -495,7 +508,7 @@ fn detail(shell: &Shell, flow: &Flow, n: usize, screen: &Screen, changes: Option
         .child({
             // Comparing: a state there is, as it is now and after; one it lacks, as always.
             let both = changes.is_some() && shown.as_ref().is_some_and(|c| c.state.is_some());
-            let said = notes(shell, screen, shown.as_ref(), picture.map(|p| p.taken), cx);
+            let said = notes(shell, screen, shown.as_ref(), picture, cx);
             if both {
                 // The two sides take the width; what the state is for, under them.
                 v_flex().gap_4().child(super::compare::stage(shell, flow, screen, shown.as_ref(), cx)).child(said)
@@ -553,7 +566,7 @@ fn stage(shell: &Shell, flow: &Flow, screen: &Screen, chip: Option<&Chip>, path:
 }
 
 /// What the state and the screen are for, and where they come from.
-fn notes(shell: &Shell, screen: &Screen, chip: Option<&Chip>, taken: Option<u64>, cx: &mut Context<Shell>) -> AnyElement {
+fn notes(shell: &Shell, screen: &Screen, chip: Option<&Chip>, picture: Option<&Picture>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let block = |title: String, text: String| v_flex().gap_0p5().child(div().text_size(px(META)).font_weight(FontWeight::MEDIUM).text_color(p.muted).child(title)).child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(text));
     let mut col = v_flex().flex_1().min_w(px(220.)).max_w(px(420.)).gap_4();
@@ -587,10 +600,21 @@ fn notes(shell: &Shell, screen: &Screen, chip: Option<&Chip>, taken: Option<u64>
             ),
         );
     }
-    if screen.stale {
+    // Shot with another version than the one installed: stale for that,
+    // whatever the code did — said with the two versions.
+    let installed = shell.design.current().and_then(|s| s.flows.as_ref()).and_then(|m| m.installed.clone());
+    let version = picture.and_then(|pic| fm::shot_with(pic, installed.as_deref()));
+    let other_version = picture.is_some_and(|pic| equipe_core::design::flows::outdated(pic.shot_with.as_deref(), installed.as_deref()));
+    if screen.stale && !other_version {
         meta = meta.child(h_flex().gap_1p5().items_center().child(icon(Icon::Clock, 12., p.text2)).child(div().text_color(p.text2).child(t!("flows.stale_note"))));
     }
-    if let Some(at) = taken.filter(|t| *t > 0) {
+    if let Some(version) = version {
+        meta = meta.child(h_flex().gap_1p5().items_center().when(other_version, |r| r.child(icon(Icon::Clock, 12., p.text2))).child(div().text_color(if other_version { p.text2 } else { p.muted }).child(version)));
+    }
+    if picture.is_some_and(|pic| pic.live) {
+        meta = meta.child(div().child(t!("flows.data_real_note")));
+    }
+    if let Some(at) = picture.map(|pic| pic.taken).filter(|t| *t > 0) {
         meta = meta.child(div().child(t!("flows.taken", ago = crate::activity::ago(now_secs().saturating_sub(at)))));
     }
     if let Some(url) = &screen.url {
@@ -730,6 +754,14 @@ impl Shell {
 
     pub fn flows_width(&mut self, width: u32, cx: &mut Context<Self>) {
         self.design.map.width = Some(width);
+        cx.notify();
+    }
+
+    /// 실제 데이터 or 예시 데이터; the mode and width as the pictures shown are.
+    pub fn flows_data(&mut self, data: fm::Data, cx: &mut Context<Self>) {
+        self.design.pick_data(data);
+        self.design.map.mode = None;
+        self.design.map.width = None;
         cx.notify();
     }
 

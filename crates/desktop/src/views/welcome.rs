@@ -281,7 +281,7 @@ impl Shell {
     /// The first squad, made where the terminal's first run makes it, then
     /// followed: its team joins as soon as the window is attached.
     fn create_first_squad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.welcome.busy {
+        if self.welcome.busy || crate::readonly::blocked("a new squad") {
             return;
         }
         let home = equipe_providers::credentials::equipe_home();

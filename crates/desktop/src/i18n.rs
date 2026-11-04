@@ -26,6 +26,10 @@ equipe_core::words!(test = Lang::Ko, front = Front::App);
 pub fn migrate(home: &std::path::Path) {
     let mut remembered = crate::target::Remembered::load(home);
     let Some(old) = remembered.lang.take() else { return };
+    // The real view reads that pick as it is (`readonly::Look`), moving nothing.
+    if crate::readonly::blocked("the language picked before") {
+        return;
+    }
     if equipe_core::i18n::saved(home).is_none()
         && let Some(lang) = Lang::parse(&old)
     {

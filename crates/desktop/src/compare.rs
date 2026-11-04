@@ -206,7 +206,7 @@ mod tests {
     use equipe_core::protocol::design::Flow;
 
     fn picture(screen: &str, state: &str, mode: &str, width: u32, hash: Option<&str>, taken: u64) -> Picture {
-        Picture { path: format!("/d/{screen}/{state}.{mode}.{width}.png"), mode: mode.into(), width, taken, hash: hash.map(str::to_owned) }
+        Picture { path: format!("/d/{screen}/{state}.{mode}.{width}.png"), mode: mode.into(), width, taken, hash: hash.map(str::to_owned), ..Default::default() }
     }
 
     fn screen(id: &str, states: Vec<(&str, Vec<Picture>)>) -> Screen {

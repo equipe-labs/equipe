@@ -448,6 +448,10 @@ pub fn ask() {
 /// Show `toast`, with the system's sound or silently. Nothing when macOS
 /// doesn't allow it — the badge and the window's cards still say it.
 pub fn send(toast: &Toast, sound: bool) {
+    // The real view tells nobody anything: the person's own app does.
+    if crate::readonly::on() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     system::send(toast, sound);
     #[cfg(not(target_os = "macos"))]
@@ -492,6 +496,9 @@ pub fn set_in_sight(in_sight: bool) {
 
 /// The number on the Dock's icon; `None` takes it off.
 pub fn set_badge(count: Option<usize>) {
+    if crate::readonly::on() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     system::set_badge(count);
     #[cfg(not(target_os = "macos"))]

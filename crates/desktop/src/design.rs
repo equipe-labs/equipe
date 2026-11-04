@@ -292,6 +292,9 @@ pub fn load_seen(home: &Path) -> BTreeMap<String, Seen> {
 }
 
 pub fn save_seen(home: &Path, seen: &BTreeMap<String, Seen>) {
+    if crate::readonly::blocked(&seen_path(home).display().to_string()) {
+        return;
+    }
     let _ = std::fs::create_dir_all(home);
     if let Ok(text) = serde_json::to_string(seen) {
         let _ = std::fs::write(seen_path(home), text);
@@ -301,7 +304,16 @@ pub fn save_seen(home: &Path, seen: &BTreeMap<String, Seen>) {
 // ── the screen ──
 
 pub struct DesignUi {
+    /// As shown: each map with the pictures of the data on show
+    /// (`flows::with_data`).
     pub systems: Vec<DesignSystem>,
+    /// As the daemon sent them: every map's real-data pictures and examples.
+    pub raw: Vec<DesignSystem>,
+    /// 실제 데이터 or 예시 데이터, as the person picked; `None`: real where
+    /// there is some and the daemon is this Mac's.
+    pub data: Option<crate::flows::Data>,
+    /// The daemon is this Mac's.
+    pub local: bool,
     /// The person's taste and the decisions made, by source.
     pub taste: Vec<Taste>,
     /// The notes whose evidence is open, by their words.
@@ -368,6 +380,9 @@ impl Default for DesignUi {
     fn default() -> Self {
         Self {
             systems: Vec::new(),
+            raw: Vec::new(),
+            data: None,
+            local: true,
             taste: Vec::new(),
             evidence_open: HashSet::new(),
             folder: String::new(),
@@ -493,12 +508,46 @@ impl DesignUi {
         })
     }
 
+    /// `systems` as shown: each map with the data on show's pictures.
+    fn shown(&self, systems: &[DesignSystem]) -> Vec<DesignSystem> {
+        let mut out = systems.to_vec();
+        for system in &mut out {
+            if let Some(map) = system.flows.as_mut() {
+                let data = if self.compare { crate::flows::Data::Example } else { crate::flows::data_shown(self.data, map, self.local) };
+                *map = crate::flows::with_data(map, data);
+            }
+        }
+        out
+    }
+
+    /// The data the system on show's map shows; `None`: it has none of the
+    /// person's real data, so there is nothing to pick between.
+    pub fn data_on_show(&self) -> Option<crate::flows::Data> {
+        let map = self.raw_current()?.flows.as_ref()?;
+        (crate::flows::has_live(map) && !self.compare).then(|| crate::flows::data_shown(self.data, map, self.local))
+    }
+
+    /// The system on show, as the daemon sent it.
+    fn raw_current(&self) -> Option<&DesignSystem> {
+        let key = self.current()?.key();
+        self.raw.iter().find(|s| s.key() == key)
+    }
+
+    /// 실제 데이터 or 예시 데이터: every map shows it from now on.
+    pub fn pick_data(&mut self, data: crate::flows::Data) {
+        self.data = Some(data);
+        self.systems = self.shown(&self.raw);
+        let map = self.current().and_then(|s| s.flows.clone());
+        self.map.arrived(map.as_ref());
+    }
+
     /// The daemon's word: keep it, keep the person's place where it still is,
     /// and note what each system was when first seen this look.
     pub fn arrived(&mut self, systems: Vec<DesignSystem>, folder: String, taste: Vec<Taste>, seen_key: &dyn Fn(&DesignSystem) -> String) {
         self.loaded = true;
         self.folder = folder;
-        self.systems = systems;
+        self.systems = self.shown(&systems);
+        self.raw = systems;
         self.taste = taste;
         if !self.sources().contains(&self.source) {
             self.source = self.sources().into_iter().next().unwrap_or_else(|| "squad".into());
@@ -611,6 +660,8 @@ impl DesignUi {
             return false;
         }
         self.compare = true;
+        // Both sides as the repository has them: the draft's are examples.
+        self.systems = self.shown(&self.raw);
         self.show_side(Side::After);
         true
     }
@@ -618,6 +669,7 @@ impl DesignUi {
     pub fn end_compare(&mut self) {
         self.compare = false;
         self.redo_open = false;
+        self.systems = self.shown(&self.raw);
     }
 
     /// 지금 or 바뀐 뒤 on show: the whole screen flips, the place in the map kept where it is.
@@ -636,9 +688,13 @@ impl DesignUi {
 
     /// The UI maps compared: the accepted one's and the draft's (an empty one
     /// for a side that has none).
+    /// Both as examples: a draft is the repository's, so the person's real
+    /// data is never held against it.
     pub fn compared_maps(&self) -> Option<(FlowMap, FlowMap)> {
-        let (now, after) = (self.accepted_of(&self.source)?, self.draft_of(&self.source)?);
-        Some((now.flows.clone().unwrap_or_default(), after.flows.clone().unwrap_or_default()))
+        let now = self.raw.iter().find(|s| s.draft.is_none() && base_key(s) == self.source)?;
+        let after = self.raw.iter().find(|s| in_review(s) && base_key(s) == self.source)?;
+        let example = |s: &DesignSystem| s.flows.as_ref().map(|m| crate::flows::with_data(m, crate::flows::Data::Example)).unwrap_or_default();
+        Some((example(now), example(after)))
     }
 
     /// What the draft changed in the UI map, while comparing.
@@ -860,7 +916,7 @@ mod tests {
         let screen = |(id, shots): &(&str, usize)| Screen {
             id: (*id).into(),
             title: (*id).into(),
-            states: vec![ScreenState { id: "default".into(), label: "기본".into(), kind: "default".into(), note: None, pictures: (0..*shots).map(|n| Picture { path: format!("/w/{id}.{n}.png"), mode: "light".into(), width: 390, taken: 1, hash: None }).collect() }],
+            states: vec![ScreenState { id: "default".into(), label: "기본".into(), kind: "default".into(), note: None, pictures: (0..*shots).map(|n| Picture { path: format!("/w/{id}.{n}.png"), mode: "light".into(), width: 390, taken: 1, ..Default::default() }).collect() }],
             ..Default::default()
         };
         let (first, rest) = screens.split_at(screens.len().min(2));
@@ -1074,7 +1130,7 @@ mod tests {
             .map(|(id, hash)| Screen {
                 id: (*id).into(),
                 title: (*id).into(),
-                states: vec![ScreenState { id: "default".into(), label: "기본".into(), kind: "default".into(), note: None, pictures: vec![Picture { path: format!("/d/{id}.png"), mode: "light".into(), width: 390, taken: 1, hash: Some((*hash).into()) }] }],
+                states: vec![ScreenState { id: "default".into(), label: "기본".into(), kind: "default".into(), note: None, pictures: vec![Picture { path: format!("/d/{id}.png"), mode: "light".into(), width: 390, taken: 1, hash: Some((*hash).into()), ..Default::default() }] }],
                 ..Default::default()
             })
             .collect();
