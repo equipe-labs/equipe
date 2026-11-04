@@ -90,9 +90,9 @@ impl Shots {
         self.shots.borrow_mut().in_row(path, row);
     }
 
-    /// The size of `path` as any copy of it that came says.
+    /// The size of `path` as any copy of it that came says — kept after it went.
     pub fn best_dims(&self, path: &str) -> Option<(u32, u32)> {
-        self.shots.borrow().best(path).and_then(|s| s.dims)
+        self.shots.borrow().dims(path)
     }
 
     /// The conversation's column, as wide as it was last drawn (at most the measure).
@@ -821,6 +821,29 @@ pub fn badge(p: Palette, on_dark: bool) -> impl IntoElement {
         .child(t!("visuals.recommended"))
 }
 
+/// Pictures the window let go (`Visuals::take_released`): what GPUI decoded
+/// of each, and its tiles in every window's atlas, go too — they stayed for
+/// good otherwise. Every window then draws anew, so no view drawn before
+/// shows a tile let go; one drawn again is asked for again.
+pub fn release(images: Vec<Arc<Image>>, cx: &mut App) {
+    if images.is_empty() {
+        return;
+    }
+    let windows = cx.windows();
+    for image in images {
+        let source = ImageSource::Image(image);
+        if let Some(decoded) = source.decoded(cx) {
+            for window in &windows {
+                let _ = window.update(cx, |_, window, _| window.drop_image(decoded.clone()));
+            }
+        }
+        source.remove_asset(cx);
+    }
+    for window in &windows {
+        let _ = window.update(cx, |_, window, _| window.refresh());
+    }
+}
+
 impl Shell {
     /// Load what was asked about: each picture off the UI thread, from the
     /// daemon on this Mac or another — it gives only what the squad shows.
@@ -883,11 +906,47 @@ impl Shell {
         shots.put(path, size, look);
         // A reply's picture: its row is measured again, its size known now.
         let rows = if size == Size::Inline { shots.rows_of(path) } else { Vec::new() };
+        let past = shots.trim() && !std::mem::replace(&mut shots.trimming, true);
+        let released = shots.take_released();
         drop(shots);
+        if !released.is_empty() {
+            cx.defer(move |cx| release(released, cx));
+        }
+        // Past the budget with what was drawn lately: looked at again once
+        // that is no longer lately, and again until back within it.
+        if past {
+            self.trim_shots_later(generation, cx);
+        }
         for row in rows {
             self.chat.remeasure_row(row, cx);
         }
         cx.notify();
+    }
+
+    fn trim_shots_later(&mut self, generation: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(rules::DRAWN_LATELY + Duration::from_secs(1)).await;
+                let again = this.update(cx, |this, cx| {
+                    let mut shots = this.shots.borrow_mut();
+                    if shots.generation != generation {
+                        return false;
+                    }
+                    let past = shots.trim();
+                    shots.trimming = past;
+                    let released = shots.take_released();
+                    drop(shots);
+                    if !released.is_empty() {
+                        cx.defer(move |cx| release(released, cx));
+                    }
+                    past
+                });
+                if !matches!(again, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn listing_arrived(&mut self, generation: u64, folder: &str, listing: Listing, cx: &mut Context<Self>) {

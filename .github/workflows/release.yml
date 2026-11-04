@@ -124,24 +124,22 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
           # The app in 16 pieces: twice as fast to build, 7% larger.
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: |
-          cargo build --release --locked -p equipe-desktop --target ${{ matrix.arch }}-apple-darwin
-          # The `equipe` the app carries: its daemon and command line.
-          cargo build --release --locked -p equipe --bin equipe --target ${{ matrix.arch }}-apple-darwin
+        # The `equipe` the app carries — its daemon and command line — is the
+        # build job's (the one people install), in one piece: built here in
+        # 16 it was 3.8 MB larger a chip, and twice.
+        run: cargo build --release --locked -p equipe-desktop --target ${{ matrix.arch }}-apple-darwin
 
       - uses: actions/upload-artifact@v5
         with:
           name: equipe-desktop-${{ matrix.arch }}
-          path: |
-            target/${{ matrix.arch }}-apple-darwin/release/equipe-desktop
-            target/${{ matrix.arch }}-apple-darwin/release/equipe
+          path: target/${{ matrix.arch }}-apple-darwin/release/equipe-desktop
 
   desktop:
     name: desktop (equipe.dmg)
     concurrency:
       group: release-desktop-dmg
       cancel-in-progress: true
-    needs: desktop-bin
+    needs: [desktop-bin, build]
     runs-on: macos-15
     env:
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
@@ -165,6 +163,18 @@ jobs:
         with:
           pattern: equipe-desktop-*
           path: prebuilt
+
+      # The CLI for each chip, as the build job packed it.
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: equipe-*-apple-darwin
+          path: prebuilt-cli
+
+      - name: Unpack the CLI
+        run: |
+          for arch in aarch64 x86_64; do
+            tar -xzf "prebuilt-cli/equipe-$arch-apple-darwin/equipe-$arch-apple-darwin.tar.gz" -C prebuilt-cli
+          done
 
       - name: Developer ID certificate
         if: env.MACOS_CERTIFICATE != ''
@@ -195,9 +205,9 @@ jobs:
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           EQUIPE_DMG_PREBUILT: prebuilt/equipe-desktop-aarch64/equipe-desktop prebuilt/equipe-desktop-x86_64/equipe-desktop
-          EQUIPE_DMG_PREBUILT_CLI: prebuilt/equipe-desktop-aarch64/equipe prebuilt/equipe-desktop-x86_64/equipe
+          EQUIPE_DMG_PREBUILT_CLI: prebuilt-cli/equipe-aarch64-apple-darwin/equipe prebuilt-cli/equipe-x86_64-apple-darwin/equipe
         run: |
-          chmod +x prebuilt/*/equipe-desktop prebuilt/*/equipe
+          chmod +x prebuilt/*/equipe-desktop prebuilt-cli/*/equipe
           scripts/desktop-dmg.sh
 
       - name: Check the DMG
