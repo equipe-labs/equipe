@@ -96,7 +96,8 @@
 //! `FAKE_ENGINES`: settings' AI platforms in each state (`fake_daemon/engines.rs`).
 //! `FAKE_DESIGN=1`: the squad's design system and the web project's own,
 //! modelled on T-144's brand guideline; `draft`: T-144 in review with its
-//! draft; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
+//! draft; `working`: T-378 still making the squad's UI map, the designer at
+//! it; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
 //! `read_image`, as from the daemon. `FAKE_NO_DESIGNER=1`: a team with no designer.
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
@@ -1153,6 +1154,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", working() >= 1, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
                         let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", working() >= 2, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
                         let designer = on(info(4, "designer", vec![]), 60, "app", "온보딩 세 화면 시안", false, ("Read", "brief.md"), Some(Estimate { done_at: Some(now.saturating_sub(12 * 60)), ..Default::default() }));
+                        // `FAKE_DESIGN=working`: the designer mid-turn on T-378, shooting the map.
+                        let designer = if design::mode().as_deref() == Some("working") {
+                            let what = Estimate { done_at: Some(now + 18 * 60), what: Some("결제 흐름 상태 찍는 중".into()), ..Default::default() };
+                            on(info(4, "designer", vec![]), design::WORKING_TICKET, "app", "화면 지도 만들기", true, ("Write", "design/flows/checkout/pay/default.light.390.png"), Some(what))
+                        } else {
+                            designer
+                        };
                         // Settings have something to show: a member on its own mode and effort, rules kept.
                         let mut designer = designer;
                         designer.mode = Some(equipe_core::protocol::Mode::Ask);

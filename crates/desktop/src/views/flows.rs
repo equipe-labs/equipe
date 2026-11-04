@@ -7,7 +7,8 @@
 //! dark, at each width, its notes, and "말하기" to talk about it in the
 //! conversation beside (`views/design_talk.rs`), the picture going with the
 //! words. ←/→ move between screens, ↑/↓ between flows, Esc closes. With no
-//! map yet, what one is and a way to ask the designer.
+//! map yet, what one is and a way to ask the designer — or, once it is at
+//! it, what it is doing and what has landed, to see as it fills in.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -204,6 +205,8 @@ fn flow_head(shell: &Shell, flow: &Flow, cx: &mut Context<Shell>) -> impl IntoEl
     let id = flow.id.clone();
     let watch: AnyElement = match fm::video(flow) {
         Some(video) => walkthrough(shell, flow, video, cx),
+        // Work under way is only looked at: nothing is asked of it until it is handed in.
+        None if shell.design.working => div().into_any_element(),
         None => ui::button(p, "flows-ask-video", ui::Kind::Secondary, t!("flows.video_ask"))
             .icon(Icon::Play)
             .on_click(cx.listener(move |this, _, window, cx| this.flows_ask_video(&id, window, cx)))
@@ -543,7 +546,7 @@ fn stage(shell: &Shell, flow: &Flow, screen: &Screen, chip: Option<&Chip>, path:
                 .gap_3()
                 .p_6()
                 .child(div().max_w(px(320.)).text_center().text_size(px(SMALL)).text_color(p.text2).child(t!("flows.missing_stage", state = label)))
-                .child(ui::button(p, "flows-ask-draw", ui::Kind::Secondary, t!("flows.ask_draw")).icon(Icon::PenTool).on_click(cx.listener(move |this, _, window, cx| this.flows_ask_draw(&about, window, cx))))
+                .when(!shell.design.working, |d| d.child(ui::button(p, "flows-ask-draw", ui::Kind::Secondary, t!("flows.ask_draw")).icon(Icon::PenTool).on_click(cx.listener(move |this, _, window, cx| this.flows_ask_draw(&about, window, cx)))))
                 .into_any_element()
         }
     }
@@ -596,10 +599,16 @@ fn notes(shell: &Shell, screen: &Screen, chip: Option<&Chip>, taken: Option<u64>
     col.child(meta).into_any_element()
 }
 
-/// No map yet: what it is, and a way to ask for one.
+/// No map yet: what it is, and a way to ask for one — or, the designer
+/// already at it, who, on which ticket, what it is doing now and what has
+/// landed, with a way to see it so far.
 fn empty(shell: &Shell, map: Option<&FlowMap>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let has_designer = shell.design_talk_to().is_some_and(|(_, pm)| !pm);
+    // Its panel not while the work itself is on show (its map still empty):
+    // the strip above says so. Never asked again while it is under way.
+    let under_way = shell.design.making(&shell.model);
+    let making = under_way.clone().filter(|_| !shell.design.working);
     let point = |text: String| h_flex().gap_2().items_start().child(div().mt(px(9.)).size(px(4.)).flex_none().rounded_full().bg(p.muted)).child(div().flex_1().min_w_0().child(text));
     let problems = map.map(fm::problems).unwrap_or_default();
     v_flex()
@@ -620,9 +629,10 @@ fn empty(shell: &Shell, map: Option<&FlowMap>, cx: &mut Context<Shell>) -> AnyEl
                     .max_w(px(520.))
                     .gap_4()
                     .child(div().size(px(44.)).rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).flex().items_center().justify_center().child(icon(Icon::AppWindow, 22., p.text2)))
-                    .child(div().text_size(px(20.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("flows.empty_title")))
-                    .child(div().text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.text2).child(t!("flows.empty_text")))
-                    .child(
+                    .child(div().text_size(px(20.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(if under_way.is_some() { t!("flows.working_title") } else { t!("flows.empty_title") }))
+                    .child(div().text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.text2).child(if under_way.is_some() { t!("flows.working_text") } else { t!("flows.empty_text") }))
+                    .children(making.as_ref().map(|m| super::design::making_panel(shell, m, cx)))
+                    .when(under_way.is_none(), |d| d.child(
                         v_flex()
                             .gap_1()
                             .text_size(px(SMALL))
@@ -631,14 +641,14 @@ fn empty(shell: &Shell, map: Option<&FlowMap>, cx: &mut Context<Shell>) -> AnyEl
                             .child(point(t!("flows.empty_flows").into()))
                             .child(point(t!("flows.empty_states").into()))
                             .child(point(t!("flows.empty_talk").into())),
-                    )
-                    .child(
+                    ))
+                    .when(under_way.is_none(), |d| d.child(
                         h_flex().pt_2().gap_2().child(
                             ui::button(p, "flows-ask", ui::Kind::Primary, if has_designer { t!("flows.ask_designer") } else { t!("design.ask_pm") })
                                 .icon(Icon::Message)
                                 .on_click(cx.listener(|this, _, window, cx| this.flows_ask_map(window, cx))),
                         ),
-                    ),
+                    )),
                 "flows-empty-in",
             ),
         )

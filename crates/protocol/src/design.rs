@@ -21,8 +21,9 @@ pub struct DesignSystem {
     pub project: Option<String>,
     /// Its folder, on the daemon's machine.
     pub dir: String,
-    /// A draft a ticket handed in and the person hasn't accepted: not the
-    /// design system yet. `None`: the accepted one.
+    /// A draft a ticket handed in and the person hasn't accepted — or, marked
+    /// `working`, one still being made: not the design system yet. `None`:
+    /// the accepted one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftOf>,
     /// Its modes, the first the default: `["light", "dark"]`. Empty: one look.
@@ -75,6 +76,12 @@ impl DesignSystem {
 pub struct DraftOf {
     pub ticket: TicketId,
     pub title: String,
+    /// Work still under way (the ticket in progress or waiting), not handed
+    /// in: shown as it fills in, never offered for accepting or comparing.
+    /// `false`: in review — left off the wire, so a draft in review reads
+    /// as it always did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub working: bool,
 }
 
 /// A design token: its name (the path of groups, dotted: `color.bg`), its
@@ -500,10 +507,17 @@ mod tests {
         assert!(empty.is_empty());
         assert_eq!(empty.key(), "squad");
         let token = Token { name: "color.bg".into(), kind: "color".into(), value: "#F6F5F1".into(), modes: BTreeMap::from([("dark".into(), "#0A0A0C".into())]), description: None, alias: None };
-        let draft = DesignSystem { project: Some("web".into()), draft: Some(DraftOf { ticket: 144, title: "브랜드".into() }), tokens: vec![token.clone()], ..empty };
+        let draft = DesignSystem { project: Some("web".into()), draft: Some(DraftOf { ticket: 144, title: "브랜드".into(), working: false }), tokens: vec![token.clone()], ..empty };
         assert_eq!(draft.key(), "project:web#T-144");
-        let back: DesignSystem = serde_json::from_str(&serde_json::to_string(&draft).unwrap()).unwrap();
+        let wire = serde_json::to_string(&draft).unwrap();
+        assert!(wire.contains(r#""draft":{"ticket":144,"title":"브랜드"}"#), "in review, as before: {wire}");
+        let back: DesignSystem = serde_json::from_str(&wire).unwrap();
         assert_eq!(back, draft);
+        // Work under way says so; read back, it stays so.
+        let working = DesignSystem { draft: Some(DraftOf { ticket: 378, title: "화면 지도".into(), working: true }), ..draft.clone() };
+        let wire = serde_json::to_string(&working).unwrap();
+        assert!(wire.contains(r#""working":true"#), "{wire}");
+        assert_eq!(serde_json::from_str::<DesignSystem>(&wire).unwrap(), working);
         assert_eq!(serde_json::to_value(&token).unwrap()["type"], "color");
         assert_eq!((token.group(), token.leaf()), ("color", "bg"));
         assert_eq!(token.value_in(Some("dark")), "#0A0A0C");

@@ -258,6 +258,41 @@ pub fn seed_draft(draft: &Path, accepted: &Path) {
     let _ = std::fs::copy(video_path(accepted, "onboarding"), video_path(draft, "onboarding"));
 }
 
+/// `FAKE_DESIGN=working`: T-378's worktree mid-way through the squad's
+/// map — `flows.json` naming 온보딩 and 결제, read the daemon's way; 온보딩
+/// shot, 결제 only its first screen so far.
+pub fn seed_working(design: &Path) {
+    let flows: Vec<serde_json::Value> = FLOWS
+        .iter()
+        .take(2)
+        .map(|f| {
+            let screens: Vec<serde_json::Value> = f
+                .screens
+                .iter()
+                .map(|s| {
+                    let states: Vec<serde_json::Value> = s.states.iter().map(|(id, label, kind, note, _)| serde_json::json!({ "id": id, "label": label, "kind": kind, "note": note })).collect();
+                    serde_json::json!({ "id": s.id, "title": s.title, "note": s.note, "states": states })
+                })
+                .collect();
+            serde_json::json!({ "id": f.id, "title": f.title, "summary": f.summary, "screens": screens })
+        })
+        .collect();
+    std::fs::create_dir_all(design.join("flows")).unwrap();
+    std::fs::write(design.join("flows/flows.json"), serde_json::to_string_pretty(&serde_json::json!({ "flows": flows })).unwrap()).unwrap();
+    for (fi, f) in FLOWS.iter().take(2).enumerate() {
+        let shot = if fi == 0 { f.screens.len() } else { 1 };
+        for (si, s) in f.screens.iter().enumerate().take(shot) {
+            for (state, _, kind, _, drawn) in s.states {
+                for (mode, width) in shots(*drawn) {
+                    let path = picture_path(design, f.id, s.id, state, mode, width);
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    draw(kind, mode == "dark", width, fi * 7 + si * 3).save(&path).unwrap();
+                }
+            }
+        }
+    }
+}
+
 /// Every picture the map names, for `read_image`.
 pub fn pictures(systems: &[DesignSystem]) -> Vec<String> {
     systems.iter().filter_map(|s| s.flows.as_ref()).flat_map(|m| &m.flows).flat_map(|f| &f.screens).flat_map(|s| &s.states).flat_map(|s| &s.pictures).map(|p| p.path.clone()).collect()
