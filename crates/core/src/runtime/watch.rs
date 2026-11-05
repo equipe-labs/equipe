@@ -149,6 +149,11 @@ impl Runtime {
         }
     }
 
+    /// Whether `id`'s engine runs a command of the member's now.
+    pub(super) fn command_running(&self, id: SessionId) -> bool {
+        self.commands.by.get(&id).is_some_and(|w| w.pid.is_some() && !w.open.is_empty())
+    }
+
     /// Stop the command `id`'s engine runs now: what runs for it ends, off
     /// the loop — asked nicely first, then killed what didn't. A process of it
     /// that leads a group of its own ends with its group: what it started

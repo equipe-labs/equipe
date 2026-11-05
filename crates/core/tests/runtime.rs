@@ -721,49 +721,88 @@ async fn steers_read_as_one_are_still_each_their_own() {
 }
 
 #[tokio::test]
-async fn send_now_stops_the_turn_and_sends_what_waits_as_one_message() {
-    let claude = fake_claude(true, &format!("case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\n{}", answering("ok")));
+async fn send_now_never_stops_the_turn_a_memo_waiting_is_read_at_the_next_step() {
+    // A message sent mid-work is never the end of the work: "Send now" has
+    // the member read what waits at its next step — a memo too — and it
+    // decides for itself what to do about it.
+    let dir = scratch("stdin");
+    let claude = fake_claude(true, &reading_two(&dir, false));
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
+    handle.send(Command::Submit { session: 1, text: "fix the page".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
     handle.send(Command::Submit { session: 1, text: "steer one".into(), about: None });
     handle.send(Command::SubmitLater { session: 1, text: "a memo".into(), about: None });
-    handle.send(Command::Submit { session: 1, text: "steer two".into(), about: None });
-    until(&mut events, |e| matches!(e, Event::SteerQueued { text, .. } if text == "steer two")).await;
-    // In the order the screen shows them.
-    handle.send(Command::SendNow { session: 1, texts: vec!["steer one".into(), "a memo".into(), "steer two".into()] });
-    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    let sent = seen.iter().position(|e| matches!(e, Event::QueueSent { texts, .. } if *texts == ["steer one", "a memo", "steer two"])).expect("said what went");
-    let stopped = seen.iter().position(|e| matches!(e, Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. })).expect("stopped");
-    assert!(sent < stopped);
-    assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "steer one\n\na memo\n\nsteer two"), "{seen:#?}");
-    assert!(!seen.iter().any(|e| matches!(e, Event::MessageQueued { .. })), "nothing waits again: {seen:#?}");
-    let after = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    assert!(!after.iter().any(|e| matches!(e, Event::UserMessage { .. } | Event::Steered { .. })), "once: {after:#?}");
-    // Nothing waits: nothing to send.
-    handle.send(Command::SendNow { session: 1, texts: vec![] });
+    until(&mut events, |e| matches!(e, Event::MessageQueued { text, .. } if text == "a memo")).await;
+    handle.send(Command::SendNow { session: 1, texts: vec!["steer one".into(), "a memo".into()] });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let withdrawn = seen.iter().position(|e| matches!(e, Event::MemoWithdrawn { text, .. } if text == "a memo")).expect("no longer a memo");
+    let steering = seen.iter().position(|e| matches!(e, Event::SteerQueued { text, .. } if text == "a memo")).expect("read at the next step instead");
+    assert!(withdrawn < steering);
+    assert_eq!(steered(&seen), ["steer one", "a memo"], "both read, in order, by the turn under way: {seen:#?}");
+    assert!(matches!(seen.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "never stopped: {seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::QueueSent { .. })), "{seen:#?}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(e) = events.try_recv() {
-        assert!(!matches!(e, Event::QueueSent { .. } | Event::TurnEnded { .. }), "{e:?}");
+        assert!(!matches!(e, Event::MessageQueued { .. } | Event::UserMessage { .. }), "none delivered again: {e:?}");
     }
 }
 
 #[tokio::test]
-async fn send_now_without_an_order_sends_the_steers_then_the_memos() {
+async fn send_now_with_only_steers_waiting_stops_nothing() {
     let claude = fake_claude(true, &format!("case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\n{}", answering("ok")));
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
     handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    handle.send(Command::SubmitLater { session: 1, text: "memo".into(), about: None });
     handle.send(Command::Submit { session: 1, text: "steer".into(), about: None });
     until(&mut events, |e| matches!(e, Event::SteerQueued { .. })).await;
     handle.send(Command::SendNow { session: 1, texts: vec![] });
-    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "steer\n\nmemo"), "{seen:#?}");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    while let Ok(e) = events.try_recv() {
+        assert!(!matches!(e, Event::TurnEnded { .. } | Event::QueueSent { .. } | Event::UserMessage { .. }), "the work goes on: {e:?}");
+    }
+    handle.send(Command::Interrupt { session: 1 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. })).await;
+}
+
+#[tokio::test]
+async fn send_now_while_a_command_runs_stops_only_the_command_and_the_message_is_read_next() {
+    // The step the message waits for never comes while the command hangs:
+    // the command ends, the engine hears it failed, and reads the message.
+    let turn = r#"cat <<EOF
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 30; echo hangs-for-equipe"}}]}}
+EOF
+sh -c 'sleep 30; echo hangs-for-equipe' > /dev/null
+cat <<EOF
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"Exit code 143"}]}}
+EOF
+IFS= read -r said
+text=$(printf '%s' "$said" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["message"]["content"]))')
+cat <<EOF
+{"type":"user","isReplay":true,"message":{"role":"user","content":"count the rows"}}
+{"type":"user","isReplay":true,"message":{"role":"user","content":$text}}
+{"type":"result","subtype":"success","is_error":false,"result":"read it","usage":{"input_tokens":3,"output_tokens":1}}
+EOF"#;
+    let claude = fake_claude(true, turn);
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "count the rows".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::ToolUse { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "is 28 minutes right?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::SteerQueued { .. })).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let asked = std::time::Instant::now();
+    handle.send(Command::SendNow { session: 1, texts: vec![] });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(asked.elapsed() < Duration::from_secs(10), "not waited out");
+    assert!(seen.iter().any(|e| matches!(e, Event::ToolResult { outcome, .. } if !outcome.ok)), "the command failed, as the engine heard: {seen:#?}");
+    assert_eq!(steered(&seen), ["is 28 minutes right?"]);
+    assert!(matches!(seen.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "the turn went on: {seen:#?}");
 }
 
 #[tokio::test]

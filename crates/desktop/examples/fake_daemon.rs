@@ -1538,11 +1538,20 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 if order.is_empty() {
                                     continue;
                                 }
-                                let _ = events.send(Event::QueueSent { session, texts: order.clone() });
-                                if let Some(task) = turns.lock().await.remove(&session) {
-                                    task.abort();
+                                // Like the daemon: never the end of the work. At work, read at
+                                // its next step — at once when a command it sat on is stopped.
+                                if turns.lock().await.get(&session).is_some_and(|t| !t.is_finished()) {
+                                    if command::mode().is_some()
+                                        && let Some(task) = turns.lock().await.remove(&session)
+                                    {
+                                        task.abort();
+                                        tokio::spawn(command::stopped_and_read(session, events.clone(), order));
+                                    } else {
+                                        tokio::spawn(command::read_at_next_step(session, events.clone(), order));
+                                    }
+                                    continue;
                                 }
-                                let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
+                                let _ = events.send(Event::QueueSent { session, texts: order.clone() });
                                 let _ = events.send(Event::UserMessage { session, text: order.join("\n\n") });
                                 turns.lock().await.insert(session, tokio::spawn(turn(session, events.clone(), seconds)));
                             }

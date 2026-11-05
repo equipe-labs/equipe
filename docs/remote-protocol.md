@@ -697,8 +697,11 @@ The daemon follows a device like one more screen, with less reach than the termi
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it
-  (`steer_queued`, with its `project`); `send_now` stops the turn and sends what waits — the
-  `texts` first, in that order — as one message (`queue_sent`, then the turn's end).
+  (`steer_queued`, with its `project`); `send_now` has what waits read now, never stopping the
+  turn: memos become steers (`memo_withdrawn`, then `steer_queued`) — the `texts` first, in that
+  order — read at the member's next step, and a command it runs is stopped (as `stop_command`)
+  so that step comes at once. With no turn under way it sends what waits as one message
+  (`queue_sent`).
 - **may not:** any other `metrics.*` (`sources`, `connect`, `disconnect`, `refresh`, `query`:
   keys and connections stay at the Mac), `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
   `set_engine_switching`, `show_engine_setup`, `propose_accept` — nor the person's
