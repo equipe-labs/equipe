@@ -136,6 +136,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         member: Some(Member { role: role.into(), name: role.into() }),
         engine: Engine::Claude,
         model: Some("demo".into()),
+        asked_model: None,
         access: if role == "pm" { Access::ReadOnly } else { Access::EditFiles },
         workspace: None,
         state: SessionState::Ready,

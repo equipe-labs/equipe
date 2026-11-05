@@ -10,7 +10,7 @@ use std::time::Duration;
 use equipe_core::journal::{self, Journal};
 use equipe_core::protocol::rpc::{ToolCall, ToolResult};
 use equipe_core::protocol::{
-    Access, Command, CompactTrigger, Engine, Entry, Event, OffMain, Priority, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
+    Access, Command, CompactTrigger, Engine, Entry, Event, OffMain, Priority, RoleModel, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
 };
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::{squad_home, squads};
@@ -3515,13 +3515,51 @@ async fn a_members_model_changes_between_turns_and_its_conversation_carries_on()
     handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.send(Command::SetModel { session: 1, model: "opus".into() });
-    until(&mut events, |e| matches!(e, Event::ModelKnown { session: 1, model } if model == "opus")).await;
+    until(&mut events, |e| matches!(e, Event::ModelKnown { session: 1, model, .. } if model == "opus")).await;
     handle.send(Command::Submit { session: 1, text: "two".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let all = calls(&recorded);
     assert_eq!(arg(&all[0], "--model"), Some("sonnet"));
     assert_eq!(arg(&all[1], "--model"), Some("opus"));
     assert_eq!(arg(&all[1], "--resume"), Some("sess-1"));
+}
+
+#[tokio::test]
+async fn an_alias_stays_what_is_asked_for_while_the_screens_hear_what_it_ran_as() {
+    let cwd = scratch("alias");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    // The engine named what `sonnet` is on this machine; the member is still set to `sonnet`.
+    assert!(seen.iter().any(|e| matches!(e, Event::ModelKnown { session: 1, model, asked: Some(asked) } if model == "claude-test" && asked == "sonnet")), "{seen:#?}");
+    let snapshot = handle.snapshot("acme").await;
+    let info = snapshot.sessions.iter().find(|s| s.session == 1).unwrap();
+    assert_eq!((info.model.as_deref(), info.asked_model.as_deref()), (Some("claude-test"), Some("sonnet")));
+    handle.send(Command::Submit { session: 1, text: "two".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    assert_eq!(arg(&all[1], "--model"), Some("sonnet"), "asked by its alias again, never pinned to what it ran as");
+}
+
+#[tokio::test]
+async fn a_new_member_starts_with_the_model_and_effort_the_person_set_for_its_role() {
+    let cwd = scratch("role-model");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    let default = RoleModel { role: "frontend".into(), engine: Engine::Claude, model: Some("claude-opus-5-5".into()), effort: Some("max".into()) };
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default: default.clone() });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.len() == 1)).await;
+    assert_eq!(handle.snapshot("acme").await.role_models, [default]);
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    assert_eq!((arg(&all[0], "--model"), arg(&all[0], "--effort")), (Some("claude-opus-5-5"), Some("max")));
+    // Cleared: the recommendation again for the next one.
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default: RoleModel { role: "frontend".into(), engine: Engine::Claude, model: None, effort: None } });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.is_empty())).await;
 }
 
 #[tokio::test]

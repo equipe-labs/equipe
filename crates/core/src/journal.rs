@@ -618,6 +618,25 @@ impl Journal {
         self.set_meta("pm_accepts", if on { "on" } else { "off" })
     }
 
+    /// What new members of a role start with on an engine, where the person
+    /// set it; every other role takes equipe's recommendation.
+    pub fn role_models(&self) -> Vec<equipe_protocol::RoleModel> {
+        self.meta("role_models").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    /// Keep `default` for its role and engine: one with neither a model nor
+    /// an effort goes back to the recommendation.
+    pub fn set_role_model(&self, default: equipe_protocol::RoleModel) -> Result<Vec<equipe_protocol::RoleModel>> {
+        let mut all = self.role_models();
+        all.retain(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine));
+        if default.model.is_some() || default.effort.is_some() {
+            all.push(default);
+        }
+        all.sort_by(|a, b| (a.role.as_str(), a.engine as u8).cmp(&(b.role.as_str(), b.engine as u8)));
+        self.set_meta("role_models", &serde_json::to_string(&all).unwrap_or_default())?;
+        Ok(all)
+    }
+
     /// What engine switching keeps for the squad (`runtime/engines.rs`), as JSON.
     pub fn engines_record(&self) -> Option<String> {
         self.meta("engines")
@@ -1854,6 +1873,30 @@ mod tests {
         assert!(!j.browsers_all_shown());
         j.show_browser(None, true, &[]).unwrap();
         assert!(j.browsers_all_shown());
+    }
+
+    #[test]
+    fn what_a_role_starts_with_is_kept_per_engine_and_cleared_back_to_the_recommendation() {
+        use equipe_protocol::{Engine, RoleModel};
+        let home = temp_home();
+        let set = |role: &str, engine, model: Option<&str>, effort: Option<&str>| RoleModel { role: role.into(), engine, model: model.map(Into::into), effort: effort.map(Into::into) };
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            assert!(j.role_models().is_empty(), "the recommendation until the person sets one");
+            j.set_role_model(set("frontend", Engine::Claude, Some("claude-opus-5-5"), None)).unwrap();
+            j.set_role_model(set("frontend", Engine::Codex, None, Some("high"))).unwrap();
+            j.set_role_model(set("designer", Engine::Claude, Some("fable"), Some("max"))).unwrap();
+            // Set again: the newer replaces it.
+            j.set_role_model(set("frontend", Engine::Claude, Some("sonnet"), None)).unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(
+            j.role_models(),
+            [set("designer", Engine::Claude, Some("fable"), Some("max")), set("frontend", Engine::Codex, None, Some("high")), set("frontend", Engine::Claude, Some("sonnet"), None)]
+        );
+        let left = j.set_role_model(set("frontend", Engine::Codex, None, None)).unwrap();
+        assert_eq!(left.len(), 2, "nothing set is the recommendation again");
+        assert_eq!(j.role_models(), left);
     }
 
     #[test]

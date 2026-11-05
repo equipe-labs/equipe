@@ -208,6 +208,7 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,

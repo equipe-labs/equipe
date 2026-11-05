@@ -1625,6 +1625,8 @@ impl App {
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
+                | Event::RoleModelsChanged { .. }
+                | Event::Models { .. }
                 | Event::SecretAsked { .. }
                 | Event::SecretClosed { .. }
                 | Event::Allowed { .. }

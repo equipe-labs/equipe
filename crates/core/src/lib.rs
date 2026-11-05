@@ -40,6 +40,7 @@ pub mod metrics;
 pub mod permissions;
 pub mod plan;
 pub mod mock;
+pub mod models;
 pub mod nemotron;
 pub mod pairing;
 pub mod retro;

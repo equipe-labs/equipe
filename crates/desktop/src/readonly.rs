@@ -75,6 +75,7 @@ pub fn reads(command: &Command) -> bool {
         | C::BrowserProfiles
         | C::Devices
         | C::Engines
+        | C::Models { .. }
         | C::Design { .. }
         | C::ProjectDocs { .. }
         | C::DesignVersions { .. }
@@ -166,6 +167,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SignOut { .. }
         | C::SetEngineSwitching { .. }
         | C::SetPmAccepts { .. }
+        | C::SetRoleModel { .. }
         | C::ApplyEngineProposal { .. }
         | C::DismissEngineProposal { .. }
         | C::UndoEngineProposal { .. }
@@ -540,6 +542,8 @@ mod tests {
             Command::SignOut { engine: Engine::Codex },
             Command::SetEngineSwitching { squad: s(), mode: engines::Switching::default() },
             Command::SetPmAccepts { squad: s(), on: false },
+            Command::Models { engine: Engine::Codex },
+            Command::SetRoleModel { squad: s(), default: equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: None, effort: None } },
             Command::ApplyEngineProposal { squad: s(), id: 1 },
             Command::DismissEngineProposal { squad: s(), id: 1 },
             Command::UndoEngineProposal { squad: s(), id: 1 },
@@ -587,7 +591,7 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "engines", "design", "project_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "engines", "models", "design", "project_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
         for kept in ["submit", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "taste", "disk_clean"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");

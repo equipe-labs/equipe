@@ -94,6 +94,7 @@ mod tests {
             member: Some(Member { role: role.into(), name: role.into() }),
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,

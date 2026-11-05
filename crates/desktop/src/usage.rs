@@ -111,6 +111,7 @@ mod tests {
             member: Some(Who { role: name.into(), name: name.into() }),
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,

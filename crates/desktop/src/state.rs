@@ -96,7 +96,11 @@ pub struct Member {
     pub memos: usize,
     /// How full its context is, in percent, once known.
     pub context: Option<u8>,
+    /// The model it runs, as its engine named it — else what it is set to.
     pub model: Option<String>,
+    /// What it is set to, when that differs from `model`: an alias its
+    /// engine resolved (`opus`, running as `claude-opus-4-8`).
+    pub asked: Option<String>,
     pub engine: Option<Engine>,
     /// When it expects what it is doing done, as it said (or equipe guessed).
     pub estimate: Option<Estimate>,
@@ -305,6 +309,11 @@ pub struct Model {
     /// The PM accepts the team's handed-in work itself: the person's inbox
     /// keeps only what is theirs.
     pub pm_accepts: bool,
+    /// What new members of a role start with, where the person set it.
+    pub role_models: Vec<equipe_core::protocol::RoleModel>,
+    /// The models each engine offers on the daemon's machine, as last listed
+    /// ([`Event::Models`]); none yet: what this app knows of them.
+    pub catalogs: HashMap<Engine, Vec<equipe_core::protocol::ModelChoice>>,
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub idle_wake_hours: u32,
     /// The squad's signals, each with its latest readings.
@@ -469,6 +478,8 @@ impl Model {
             routines: Vec::new(),
             logins: Vec::new(),
             pm_accepts: false,
+            role_models: Vec::new(),
+            catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
             signals: Vec::new(),
             put_away: Vec::new(),
@@ -518,6 +529,12 @@ impl Model {
             board_rev: 0,
             squad_errors: 0,
         }
+    }
+
+    /// The models `engine` offers, as the daemon last listed them (none yet:
+    /// the menus offer what this app knows).
+    pub fn listed(&self, engine: Option<Engine>) -> &[equipe_core::protocol::ModelChoice] {
+        engine.and_then(|e| self.catalogs.get(&e)).map_or(&[], Vec::as_slice)
     }
 
     /// The member on screen.
@@ -945,6 +962,7 @@ impl Model {
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
         self.pm_accepts = snapshot.pm_accepts;
+        self.role_models = snapshot.role_models.clone();
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
         self.signals = snapshot.signals.clone();
@@ -1011,6 +1029,7 @@ impl Model {
                     memos: s.queued.len(),
                     context: s.context.and_then(percent),
                     model: s.model.clone(),
+                    asked: s.asked_model.clone(),
                     engine: Some(s.engine),
                     estimate: s.estimate.clone(),
                     target: s.recent.iter().rev().find_map(|e| match e {
@@ -1061,6 +1080,14 @@ impl Model {
             }
             Event::PmAcceptsChanged { squad, on } if *squad == self.squad => {
                 self.pm_accepts = *on;
+                self.revision += 1;
+            }
+            Event::RoleModelsChanged { squad, defaults } if *squad == self.squad => {
+                self.role_models = defaults.clone();
+                self.revision += 1;
+            }
+            Event::Models { engine, models } => {
+                self.catalogs.insert(*engine, models.clone());
                 self.revision += 1;
             }
             Event::IdleWakeChanged { squad, hours } if *squad == self.squad => {
@@ -1261,6 +1288,7 @@ impl Model {
                     memos: 0,
                     context: None,
                     model,
+                    asked: None,
                     engine: Some(engine),
                     estimate: None,
                     target: None,
@@ -1320,7 +1348,11 @@ impl Model {
                         member.presence = Presence::Working;
                         member.verb = Verb::Writing;
                     }
-                    Event::ModelKnown { model, .. } => member.model = Some(model),
+                    Event::ModelKnown { model, asked, .. } => {
+                        // What it is set to, kept apart only while it differs.
+                        member.asked = asked.filter(|a| *a != model);
+                        member.model = Some(model);
+                    }
                     Event::TurnEnded { usage, outcome, .. } => {
                         member.failed = outcome == TurnOutcome::Failed;
                         if member.failed {
@@ -2032,6 +2064,7 @@ mod tests {
             member: Some(Who { role: role.into(), name: name.into() }),
             engine: Engine::Claude,
             model: Some("opus".into()),
+            asked_model: None,
             access: Access::EditFiles,
             workspace: None,
             state,
@@ -2138,6 +2171,29 @@ mod tests {
         model.set_focus(Some("app".into()));
         model.select(2);
         assert_eq!(model.chat_slice(true), None);
+    }
+
+    #[test]
+    fn a_member_keeps_what_it_is_set_to_apart_from_what_its_engine_runs() {
+        let mut model = Model::new("acme");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        pm.model = Some("claude-opus-4-8".into());
+        pm.asked_model = Some("opus".into());
+        let mut snapshot = Snapshot { squad: "acme".into(), sessions: vec![pm], ..Default::default() };
+        snapshot.role_models = vec![equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: Some("claude-opus-5-5".into()), effort: None }];
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        assert_eq!((model.members[0].model.as_deref(), model.members[0].asked.as_deref()), (Some("claude-opus-4-8"), Some("opus")));
+        assert_eq!(model.role_models.len(), 1);
+        // Set to the newest by its id: once it runs as that, nothing is kept apart.
+        model.apply(Update::Event(Event::ModelKnown { session: 1, model: "claude-opus-5-5".into(), asked: Some("claude-opus-5-5".into()) }), T0);
+        assert_eq!((model.members[0].model.as_deref(), model.members[0].asked.as_deref()), (Some("claude-opus-5-5"), None));
+        // The daemon's lists, for the menus; and what a role starts with, changed.
+        let listed = vec![equipe_core::protocol::ModelChoice { id: "gpt-6.1-sol".into(), ..Default::default() }];
+        model.apply(Update::Event(Event::Models { engine: Engine::Codex, models: listed.clone() }), T0);
+        assert_eq!(model.listed(Some(Engine::Codex)), listed.as_slice());
+        assert!(model.listed(Some(Engine::Claude)).is_empty() && model.listed(None).is_empty());
+        model.apply(Update::Event(Event::RoleModelsChanged { squad: "acme".into(), defaults: vec![] }), T0);
+        assert!(model.role_models.is_empty());
     }
 
     #[test]

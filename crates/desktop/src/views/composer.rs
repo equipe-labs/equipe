@@ -98,6 +98,8 @@ enum Act {
     Refresh(bool),
     /// The member onto the other engine, at its next ticket.
     Engine(Engine),
+    /// The engine's tool updated on the daemon's machine (its own installer).
+    UpdateEngine(Engine),
 }
 
 impl MenuKind {
@@ -210,14 +212,6 @@ impl Menu {
                 return;
             }
         }
-    }
-}
-
-/// The efforts each engine takes.
-pub(crate) fn efforts(engine: Option<Engine>) -> &'static [&'static str] {
-    match engine {
-        Some(Engine::Codex) => &["minimal", "low", "medium", "high"],
-        _ => &["low", "medium", "high", "xhigh", "max"],
     }
 }
 
@@ -1326,20 +1320,17 @@ impl Shell {
             MenuKind::Model => {
                 let Some(member) = member else { return };
                 title = Some(t!("composer.menu_model", name = member.name));
-                let mut models = compose::engine_models(member.engine, member.model.as_deref());
-                if models.is_empty() {
-                    models.extend(member.model.clone());
+                let listed = self.model.listed(member.engine);
+                let (asked, ran) = (member.asked.as_deref().or(member.model.as_deref()), member.model.as_deref());
+                let mut rows: Vec<Row> = Vec::new();
+                // What runs isn't what was asked for: said first, with the fix.
+                if let Some((line, update)) = crate::models::gap_line(member.engine, asked, ran, listed) {
+                    rows.push(Row::note(line));
+                    if update {
+                        rows.push(Row::new(t!("models.update"), "", Act::UpdateEngine(Engine::Claude)).icon(Icon::ArrowUp));
+                    }
                 }
-                let now = member.model.clone().unwrap_or_default();
-                let exact = models.contains(&now);
-                let mut rows: Vec<Row> = models
-                    .into_iter()
-                    .map(|m| {
-                        let short = short_model(&m);
-                        let hint = if short == m { String::new() } else { m.clone() };
-                        Row::new(short, hint, Act::Model(m.clone())).checked(now == m || (!exact && now.contains(&m)))
-                    })
-                    .collect();
+                rows.extend(crate::models::choices(member.engine, asked, ran, listed).into_iter().map(|c| Row::new(c.label, c.hint, Act::Model(c.model)).checked(c.on)));
                 // Which engine it works on: the other one, at its next ticket.
                 let on = member.engine;
                 rows.push(Row::note(t!("composer.menu_engine")));
@@ -1354,7 +1345,15 @@ impl Shell {
                 title = Some(t!("composer.menu_effort", name = member.name));
                 let now = self.model.efforts.get(&member.session).cloned();
                 let mut rows = vec![Row::new(t!("composer.effort_default"), "", Act::Effort(None)).checked(now.is_none())];
-                rows.extend(efforts(member.engine).iter().map(|e| Row::new(*e, "", Act::Effort(Some((*e).to_owned()))).checked(now.as_deref() == Some(*e))));
+                // Only what its model takes — and the one set, though it doesn't.
+                let model = member.asked.as_deref().or(member.model.as_deref());
+                let mut levels = crate::models::efforts(member.engine, model, self.model.listed(member.engine));
+                let stray = now.clone().filter(|n| !levels.contains(n));
+                levels.extend(stray.clone());
+                rows.extend(levels.into_iter().map(|e| {
+                    let hint = if stray.as_ref() == Some(&e) { t!("models.effort_not_taken") } else { "" };
+                    Row::new(e.clone(), hint, Act::Effort(Some(e.clone()))).checked(now.as_deref() == Some(e.as_str()))
+                }));
                 rows
             }
             MenuKind::Mode => {
@@ -1414,10 +1413,16 @@ impl Shell {
                     self.composer.flash = Some(t!("compose.engine_moving", names = name, engine = crate::switching::engine_name(engine)));
                 }
             }
+            Act::UpdateEngine(engine) => {
+                for command in self.engines.install(engine) {
+                    self.send_command(command);
+                }
+                self.composer.flash = Some(t!("models.updating").to_owned());
+            }
             Act::Model(model) => {
                 if let Some((session, name)) = member {
                     self.send_command(Command::SetModel { session, model: model.clone() });
-                    self.composer.flash = Some(t!("compose.model_set", name = name, wanted = model));
+                    self.composer.flash = Some(t!("compose.model_set", name = name, wanted = crate::models::label(&model, self.model.listed(self.model.selected_member().and_then(|m| m.engine)))));
                 }
             }
             Act::Effort(effort) => {
@@ -3022,7 +3027,7 @@ mod tests {
         assert!(!super::stop_on_escape(Some((7, t0)), 8, t0 + std::time::Duration::from_millis(300)), "another conversation's");
     }
 
-    use super::{Act, Engine, Menu, MenuKind, Row, efforts, pm_about, short_model, shows_recipient, suggestion_hint, takes, takes_suggestion};
+    use super::{Act, Engine, Menu, MenuKind, Row, pm_about, short_model, shows_recipient, suggestion_hint, takes, takes_suggestion};
 
     #[test]
     fn tab_takes_the_greyed_suggestion_as_the_arrow_does_and_the_box_says_so() {
@@ -3069,9 +3074,11 @@ mod tests {
     }
 
     #[test]
-    fn effort_choices_follow_the_engine() {
-        assert_eq!(efforts(Some(Engine::Claude)), ["low", "medium", "high", "xhigh", "max"]);
-        assert_eq!(efforts(Some(Engine::Codex))[0], "minimal");
+    fn effort_choices_follow_the_engine_and_its_model() {
+        let efforts = |engine, model| crate::models::efforts(Some(engine), model, &[]);
+        assert_eq!(efforts(Engine::Claude, None), ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(efforts(Engine::Claude, Some("claude-sonnet-4-6")), ["low", "medium", "high", "max"]);
+        assert_eq!(efforts(Engine::Codex, None)[0], "minimal");
     }
 
     #[test]

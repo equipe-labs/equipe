@@ -889,6 +889,7 @@ fn snapshot() -> Snapshot {
                 member: Some(Member { role: "pm".into(), name: "pm".into() }),
                 engine: Engine::Claude,
                 model: Some("claude-opus-5-5".into()),
+                asked_model: None,
                 access: Access::ReadOnly,
                 workspace: None,
                 state: SessionState::Ready,
@@ -923,6 +924,7 @@ fn snapshot() -> Snapshot {
                 member: Some(Member { role: "backend".into(), name: "backend".into() }),
                 engine: Engine::Claude,
                 model: Some("claude-sonnet-5-5".into()),
+                asked_model: None,
                 access: Access::EditFiles,
                 workspace: None,
                 state: SessionState::Working,
@@ -966,6 +968,7 @@ fn snapshot() -> Snapshot {
         plans: vec![plan(Engine::Claude, 86, 41), plan(Engine::Codex, 12, 18)],
         engine_switching: Switching::Suggest,
         pm_accepts: true,
+        role_models: Vec::new(),
         secret_asks: Vec::new(),
         engine_proposals: vec![engine_proposal(Why::Shift, false)],
         suggestions_off: false,
@@ -1176,7 +1179,7 @@ fn message_vectors() -> Value {
     // What follows is about a project (null: the whole squad).
     tell(&mut core, &mut examples, "event: thread", Event::Thread { session: pm, project: Some("web".into()) });
     tell(&mut core, &mut examples, "event: thread, the whole squad", Event::Thread { session: pm, project: None });
-    tell(&mut core, &mut examples, "event: model known", Event::ModelKnown { session: pm, model: "claude-opus-5-5".into() });
+    tell(&mut core, &mut examples, "event: model known", Event::ModelKnown { session: pm, model: "claude-opus-5-5".into(), asked: None });
     // What waits, sent now: the turn stops and it goes as one message.
     ask(&mut core, &mut examples, "send now", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "send_now", "session": pm, "texts": ["푸터는 빼 줘", "그리고 테스트도"] } }));
     tell(&mut core, &mut examples, "event: queue sent", Event::QueueSent { session: pm, texts: vec!["푸터는 빼 줘".into(), "그리고 테스트도".into()] });

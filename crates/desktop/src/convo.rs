@@ -1872,6 +1872,7 @@ mod tests {
             member: None,
             engine: equipe_core::protocol::Engine::Claude,
             model: None,
+            asked_model: None,
             access: equipe_core::protocol::Access::EditFiles,
             workspace: None,
             state: SessionState::Working,

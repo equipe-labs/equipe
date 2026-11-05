@@ -540,7 +540,7 @@ mod tests {
         let quiet = [
             Event::SteerQueued { session: 1, text: "그리고 하나 더".into(), project: None },
             Event::Output { session: 1, tokens: 12 },
-            Event::ModelKnown { session: 1, model: "claude-opus-5-5".into() },
+            Event::ModelKnown { session: 1, model: "claude-opus-5-5".into(), asked: None },
             Event::Suggestion { session: 1, text: "다음".into() },
             Event::SubagentStep { session: 1, id: "a".into(), step: "Read a.rs".into() },
             Event::Estimated { session: 1, estimate: None },
@@ -583,7 +583,7 @@ mod tests {
         t.apply(&delta("Look"));
         assert!(t.apply(&Event::SteerQueued { session: 1, text: "skip the footer".into(), project: None }).is_empty());
         assert!(t.apply(&Event::SubagentStep { session: 1, id: "a".into(), step: "Read x".into() }).is_empty());
-        assert!(t.apply(&Event::ModelKnown { session: 1, model: "m".into() }).is_empty());
+        assert!(t.apply(&Event::ModelKnown { session: 1, model: "m".into(), asked: None }).is_empty());
         t.apply(&delta("ing."));
         assert_eq!(t.entries(), &[Entry::Reply { text: "Looking.".into() }]);
         // Read where it was: the reply so far is final, the steer follows it.

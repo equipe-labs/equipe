@@ -997,8 +997,18 @@ pub fn parse_limits(snapshot: &Value) -> Option<Limits> {
     })
 }
 
-/// Usable model ids from `model/list`, the account's default first; hidden ones left out.
-pub fn model_ids(listing: &Value) -> Vec<String> {
+/// A model `model/list` offers: its id, the name Codex gives it, and the
+/// reasoning efforts it takes (empty: not said).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: Option<String>,
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+}
+
+/// Usable models from `model/list`, the account's default first; hidden ones left out.
+pub fn model_infos(listing: &Value) -> Vec<ModelInfo> {
     let models: Vec<&Value> = listing
         .get("data")
         .and_then(Value::as_array)
@@ -1006,11 +1016,29 @@ pub fn model_ids(listing: &Value) -> Vec<String> {
         .flatten()
         .filter(|m| m.get("hidden").and_then(Value::as_bool) != Some(true))
         .collect();
-    let id = |m: &&Value| m.get("id").or_else(|| m.get("model")).and_then(Value::as_str).map(str::to_owned);
-    let default = models.iter().filter(|m| m.get("isDefault").and_then(Value::as_bool) == Some(true)).filter_map(id);
-    let rest = models.iter().filter(|m| m.get("isDefault").and_then(Value::as_bool) != Some(true)).filter_map(id);
+    let info = |m: &&Value| -> Option<ModelInfo> {
+        let id = m.get("id").or_else(|| m.get("model")).and_then(Value::as_str)?.to_owned();
+        let text = |k: &str| m.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        // Each effort as a word, or as `{ reasoningEffort, description }`.
+        let efforts = m
+            .get("supportedReasoningEfforts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.as_str().or_else(|| e.get("reasoningEffort").and_then(Value::as_str)).map(str::to_owned))
+            .collect();
+        Some(ModelInfo { name: text("displayName").filter(|n| *n != id), id, efforts, default_effort: text("defaultReasoningEffort") })
+    };
+    let is_default = |m: &&&Value| m.get("isDefault").and_then(Value::as_bool) == Some(true);
+    let default = models.iter().filter(is_default).filter_map(info);
+    let rest = models.iter().filter(|m| !is_default(m)).filter_map(info);
     let mut seen = HashSet::new();
-    default.chain(rest).filter(|m| seen.insert(m.clone())).collect()
+    default.chain(rest).filter(|m| seen.insert(m.id.clone())).collect()
+}
+
+/// Usable model ids from `model/list`, the account's default first; hidden ones left out.
+pub fn model_ids(listing: &Value) -> Vec<String> {
+    model_infos(listing).into_iter().map(|m| m.id).collect()
 }
 
 /// The plan's usage now, without running a turn.
@@ -1046,13 +1074,18 @@ fn account_of(read: &Value) -> Option<Account> {
 
 /// The models the person's Codex offers, its default first.
 pub async fn list_models(binary: &str, cwd: &Path) -> Result<Vec<String>> {
+    Ok(list_model_infos(binary, cwd).await?.into_iter().map(|m| m.id).collect())
+}
+
+/// The same, with each one's name and efforts.
+pub async fn list_model_infos(binary: &str, cwd: &Path) -> Result<Vec<ModelInfo>> {
     let mut server = Server::start(binary, cwd, &[], &[]).await?;
-    let mut ids = Vec::new();
+    let mut ids: Vec<ModelInfo> = Vec::new();
     let mut cursor: Option<String> = None;
     // Pages, as many as there are — a few at most.
     for _ in 0..10 {
         let listing = server.call("model/list", json!({ "cursor": cursor }), ANSWER_WAIT).await?;
-        ids.extend(model_ids(&listing));
+        ids.extend(model_infos(&listing));
         cursor = listing.get("nextCursor").and_then(Value::as_str).map(str::to_owned);
         if cursor.is_none() {
             break;
@@ -1605,6 +1638,20 @@ mod tests {
             { "id": "gpt-6-astra", "hidden": false, "isDefault": false },
         ], "nextCursor": null });
         assert_eq!(model_ids(&listing), ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]);
+    }
+
+    #[test]
+    fn each_model_in_the_catalog_brings_its_name_and_the_efforts_it_takes() {
+        let listing = json!({ "data": [
+            { "id": "gpt-6.1-sol", "displayName": "GPT-6.1 Sol", "isDefault": true, "defaultReasoningEffort": "medium",
+              "supportedReasoningEfforts": [{ "reasoningEffort": "low", "description": "fast" }, { "reasoningEffort": "medium" }, { "reasoningEffort": "xhigh" }] },
+            { "id": "gpt-6-luna", "displayName": "gpt-6-luna", "supportedReasoningEfforts": ["minimal", "low"] },
+            { "id": "gpt-6-astra" },
+        ] });
+        let infos = model_infos(&listing);
+        assert_eq!(infos[0], ModelInfo { id: "gpt-6.1-sol".into(), name: Some("GPT-6.1 Sol".into()), efforts: vec!["low".into(), "medium".into(), "xhigh".into()], default_effort: Some("medium".into()) });
+        assert_eq!((infos[1].name.as_deref(), infos[1].efforts.as_slice()), (None, &["minimal".to_owned(), "low".to_owned()][..]), "a name that is only the id says nothing");
+        assert!(infos[2].efforts.is_empty() && infos[2].default_effort.is_none());
     }
 
     #[test]

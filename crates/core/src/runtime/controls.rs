@@ -25,7 +25,9 @@ impl Runtime {
             let name = s.name().unwrap_or_default();
             let own = s.mode.map_or_else(|| "the squad's".to_owned(), |m| mode_word(m).to_owned());
             let effort = s.effort.as_deref().unwrap_or("default");
-            out.push(format!("- {name}: engine {:?}, model {}, effort {effort}, mode {own}.", s.engine, s.model.as_deref().unwrap_or("default")));
+            // An alias the engine resolved: what it runs as, too.
+            let ran = s.ran.as_deref().filter(|r| s.model.as_deref() != Some(*r)).map(|r| format!(" (runs as {r})")).unwrap_or_default();
+            out.push(format!("- {name}: engine {:?}, model {}{ran}, effort {effort}, mode {own}.", s.engine, s.model.as_deref().unwrap_or("default")));
         }
         out.push(format!("You accept the team's handed-in work yourself (pm_accepts): {}.", on(pm_accepts)));
         out.push(format!("An empty board wakes you after (idle_wake_hours): {}.", if idle == 0 { "off".to_owned() } else { format!("{idle} h") }));
