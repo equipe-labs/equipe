@@ -73,6 +73,7 @@ mod motion;
 mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
+mod models;
 mod roadmap;
 mod sent;
 mod releases;
@@ -1040,6 +1041,8 @@ impl Shell {
                         }
                         if let daemon::Update::Attached(hello) = &update {
                             this.disk.attached(hello.snapshot.disk.clone());
+                            // The models Codex offers there, listed off the daemon's loop, for the menus.
+                            this.send_command(Command::Models { engine: equipe_core::protocol::Engine::Codex });
                         }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad

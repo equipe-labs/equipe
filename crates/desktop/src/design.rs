@@ -984,7 +984,7 @@ mod tests {
         assert_eq!(m.so_far(), "지금까지 흐름 2 · 화면 3 · 그림 5");
         // The designer at it, mid-turn, saying what it is at.
         let designer = |presence, what: Option<&str>, target: Option<&str>| Member {
-            session: 4, name: "designer".into(), role: "designer".into(), presence, verb: Verb::Editing, ticket: Some(378), memos: 0, context: None, model: None, engine: None,
+            session: 4, name: "designer".into(), role: "designer".into(), presence, verb: Verb::Editing, ticket: Some(378), memos: 0, context: None, model: None, asked: None, engine: None,
             estimate: what.map(|w| equipe_core::protocol::Estimate { what: Some(w.into()), ..Default::default() }), target: target.map(Into::into), last_seen: 0, failed: false,
         };
         model.members = vec![designer(Presence::Working, Some("결제 흐름 상태 찍는 중"), Some("/w/t378/design/flows/checkout/plans/default.light.390.png"))];

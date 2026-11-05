@@ -834,6 +834,14 @@ pub enum Command {
     /// The model a member's turns run on from now — any its engine offers.
     /// Its conversation carries on.
     SetModel { session: SessionId, model: String },
+    /// The models `engine` offers on the daemon's machine, as its own tool
+    /// lists them: answered, to every screen, by [`Event::Models`]. A daemon
+    /// that predates it says nothing, and the screen offers what it knows.
+    Models { engine: Engine },
+    /// The model and effort a new member of a role starts with on an engine
+    /// (both `None`: equipe's recommendation again). Kept for the squad;
+    /// answered by [`Event::RoleModelsChanged`].
+    SetRoleModel { squad: SquadName, default: RoleModel },
     /// Members' browsers open on screen (`show`) or run hidden: one member's,
     /// or (`member: None`) everyone's. Kept for the squad.
     ShowBrowser { squad: SquadName, member: Option<String>, show: bool },
@@ -1053,6 +1061,32 @@ pub struct NebiusStatus {
     /// The provider's name: `Nebius Token Factory`, or another server's host.
     #[serde(default)]
     pub provider: String,
+}
+
+/// A model an engine offers ([`Event::Models`]): its id, the name its tool
+/// gives it, and the efforts it takes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The efforts it takes, lowest first; empty: not said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+}
+
+/// What a new member of `role` starts with on `engine`, as the person set it
+/// for the squad; `None`: equipe's recommendation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleModel {
+    pub role: String,
+    pub engine: Engine,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// Where an engine stands on the daemon's machine ([`Event::Engines`]).
@@ -1641,8 +1675,15 @@ pub enum Event {
     /// of the conversation: a screen may show it while it comes.
     Thinking { session: SessionId, text: String },
     /// The engine named its model (Claude Code does on its first turn), or the
-    /// person changed it.
-    ModelKnown { session: SessionId, model: String },
+    /// person changed it. `model` is the one that runs; `asked`, what the
+    /// member is set to — an alias such as `opus` the engine resolved by its
+    /// own version, or the same id. `None` from a daemon that predates it.
+    ModelKnown {
+        session: SessionId,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asked: Option<String>,
+    },
     /// What a watched member's browser shows now: a picture (JPEG, or PNG from
     /// a browser of its own), base64, and the page.
     BrowserFrame { session: SessionId, image: String, url: Option<String> },
@@ -1860,6 +1901,9 @@ pub enum Event {
     },
     /// Installing `engine`'s tool moved on ([`Command::InstallEngine`]).
     EngineInstall { engine: Engine, step: InstallStep },
+    /// The models `engine` offers on the daemon's machine ([`Command::Models`]),
+    /// its default first.
+    Models { engine: Engine, models: Vec<ModelChoice> },
     /// Nebius Token Factory on the daemon's machine: sent with
     /// [`Event::Engines`], and when its key is saved or forgotten.
     Nebius { status: NebiusStatus },
@@ -1878,6 +1922,8 @@ pub enum Event {
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
     /// Whether the PM accepts the team's work now ([`Command::SetPmAccepts`]).
     PmAcceptsChanged { squad: SquadName, on: bool },
+    /// What new members of each role start with now ([`Command::SetRoleModel`]).
+    RoleModelsChanged { squad: SquadName, defaults: Vec<RoleModel> },
     /// The squad's projects now ([`Command::AddProject`]): their folders.
     /// The logins kept, without their passwords: every screen's.
     Logins { logins: Vec<vault::Login> },
@@ -1964,6 +2010,7 @@ impl Event {
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
             | Event::PmAcceptsChanged { squad, .. }
+            | Event::RoleModelsChanged { squad, .. }
             | Event::SecretAsked { squad, .. }
             | Event::SecretClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
@@ -2037,6 +2084,7 @@ impl Event {
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
             | Event::PmAcceptsChanged { .. }
+            | Event::RoleModelsChanged { .. }
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
             | Event::ProjectsChanged { .. }
@@ -2073,7 +2121,8 @@ impl Event {
             | Event::Nebius { .. }
             | Event::SignIn { .. }
             | Event::EngineAuth { .. }
-            | Event::EngineInstall { .. } => None,
+            | Event::EngineInstall { .. }
+            | Event::Models { .. } => None,
         }
     }
 
@@ -2091,6 +2140,7 @@ impl Event {
                 | Event::SignIn { .. }
                 | Event::EngineAuth { .. }
                 | Event::EngineInstall { .. }
+                | Event::Models { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
@@ -2210,7 +2260,12 @@ pub struct SessionInfo {
     #[serde(default)]
     pub member: Option<Member>,
     pub engine: Engine,
+    /// The model it runs — what its engine named, else what it is set to.
     pub model: Option<String>,
+    /// What it is set to, when that differs from `model`: an alias the engine
+    /// resolved (`opus` running as `claude-opus-4-8`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_model: Option<String>,
     pub access: Access,
     pub workspace: Option<Workspace>,
     pub state: SessionState,
@@ -2382,6 +2437,10 @@ pub struct Snapshot {
     /// `false` from a daemon that predates it, where the person accepts all.
     #[serde(default)]
     pub pm_accepts: bool,
+    /// What new members of a role start with, where the person set it
+    /// ([`Command::SetRoleModel`]); every other role, equipe's recommendation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub role_models: Vec<RoleModel>,
     /// Secrets members asked for that wait for the person.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_asks: Vec<secrets::SecretAsk>,
@@ -2750,6 +2809,7 @@ mod tests {
             plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
             engine_switching: engines::Switching::Auto,
             pm_accepts: true,
+            role_models: vec![RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) }],
             secret_asks: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
@@ -2759,6 +2819,7 @@ mod tests {
                 member: Some(Member { role: "pm".into(), name: "pm".into() }),
                 engine: Engine::Codex,
                 model: Some("m".into()),
+                asked_model: None,
                 access: Access::ReadOnly,
                 workspace: None,
                 state: SessionState::Working,

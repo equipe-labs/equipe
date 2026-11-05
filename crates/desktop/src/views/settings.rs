@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use equipe_core::i18n::{Front, Lang};
-use equipe_core::protocol::{Command, Mode, SessionId};
+use equipe_core::protocol::{Command, Engine, EngineState, Mode, RoleModel, SessionId};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{h_flex, v_flex};
@@ -50,6 +50,9 @@ pub enum Pop {
     Model(SessionId),
     Effort(SessionId),
     Mode(SessionId),
+    /// What new members of a role start with: its model, its effort.
+    RoleModel(&'static str),
+    RoleEffort(&'static str),
 }
 
 /// What a pop-up's row does.
@@ -61,6 +64,9 @@ enum Act {
     Model(SessionId, String),
     Effort(SessionId, Option<String>),
     Mode(SessionId, Option<Mode>),
+    /// A role's default on an engine (`None`: the recommendation again).
+    RoleModel(&'static str, Engine, Option<String>),
+    RoleEffort(&'static str, Engine, Option<String>),
 }
 
 pub struct SettingsUi {
@@ -659,7 +665,13 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             };
             let desc = [Some(m.role.clone()).filter(|r| !r.is_empty() && *r != m.name), Some(engine.to_owned()).filter(|e| !e.is_empty())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
             let label = h_flex().gap_2().items_center().child(crate::theme::avatar(p, &m.role, &m.name, 18.)).child(m.name.clone());
-            let model_name = m.model.as_deref().map(super::composer::short_model).unwrap_or_else(|| t!("settings.engine_default").to_owned());
+            let listed = model.listed(m.engine);
+            let asked = m.asked.as_deref().or(m.model.as_deref());
+            let model_name = asked.map(|a| crate::models::label(a, listed)).unwrap_or_else(|| t!("settings.engine_default").to_owned());
+            // What runs isn't what it is set to: said in its place, in the warning colour.
+            let gap = crate::models::gap_line(m.engine, asked, m.model.as_deref(), listed).map(|(line, _)| line);
+            let warned = gap.is_some();
+            let desc = gap.unwrap_or(desc);
             let effort = model.efforts.get(&m.session).cloned().unwrap_or_else(|| t!("settings.engine_default").to_owned());
             let mode = model.member_modes.get(&m.session).map(|m| mode_label(*m).to_owned()).unwrap_or_else(|| t!("settings.mode_follows").to_owned());
             let controls = h_flex()
@@ -670,7 +682,7 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
                         .child(with_tip(picker(shell, Pop::Effort(s), t!("composer.tip_effort"), effort.clone(), 96., cx), format!("tip-effort-{s}"), p, t!("composer.tip_effort")))
                         .child(with_tip(picker(shell, Pop::Mode(s), t!("composer.tip_mode"), mode.clone(), 124., cx), format!("tip-mode-{s}"), p, t!("composer.tip_mode")))
                 });
-            Line::new(m.name.clone(), desc).label_el(label).words(format!("{} {model_name} {effort} {mode}", m.role)).control(controls)
+            Line::new(m.name.clone(), desc).warn(warned).label_el(label).words(format!("{} {model_name} {effort} {mode}", m.role)).control(controls)
         })
         .collect();
     let lines = if lines.is_empty() { vec![Line::new(t!("settings.no_members"), t!("settings.no_members_desc"))] } else { lines };
@@ -694,8 +706,75 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         // Its own card, so the footnote above reads as the PM's accepting alone.
         Section::new("", vec![idle_wake]),
         signals::section(shell, connected, cx),
+        role_models(shell, connected, cx),
         Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
     ]
+}
+
+/// The roles a squad's new members are given models for, in the order a
+/// squad is put together.
+const ROLE_ORDER: [&str; 9] = [equipe_core::roles::PM, "designer", "frontend", "backend", "mobile", "qa", "security", "marketing", "data"];
+
+/// A role as the page names it.
+fn role_name(id: &str) -> &'static str {
+    match id {
+        "pm" => t!("welcome.role_pm"),
+        "designer" => t!("welcome.role_designer"),
+        "frontend" => t!("welcome.role_frontend"),
+        "backend" => t!("welcome.role_backend"),
+        "mobile" => t!("settings.role_mobile"),
+        "qa" => t!("welcome.role_qa"),
+        "security" => t!("welcome.role_security"),
+        "marketing" => t!("welcome.role_marketing"),
+        _ => t!("welcome.role_data"),
+    }
+}
+
+/// The engine a new member of `role` starts on: its first, unless only the
+/// other is signed in.
+fn role_engine(shell: &Shell, role: &str) -> Engine {
+    let ready = |e: Engine| shell.engines.statuses.iter().flatten().any(|s| s.engine == e && s.state == EngineState::SignedIn);
+    let [first, second] = equipe_core::roles::engine_preference(equipe_core::roles::role_or_custom(role));
+    if !ready(first) && ready(second) { second } else { first }
+}
+
+/// What the person set for `role` on `engine`, if anything.
+fn role_default<'a>(shell: &'a Shell, role: &str, engine: Engine) -> Option<&'a RoleModel> {
+    shell.model.role_models.iter().find(|d| d.role == role && d.engine == engine)
+}
+
+/// The model equipe recommends a new member of `role` on `engine`, when it
+/// can say without the engine's list.
+fn recommended(shell: &Shell, role: &str, engine: Engine) -> Option<String> {
+    let ids: Vec<String> = shell.model.listed(Some(engine)).iter().map(|m| m.id.clone()).collect();
+    equipe_core::roles::recommended_model_for(equipe_core::roles::role_or_custom(role), engine, &ids)
+}
+
+/// New members: the model and effort each role starts with, the
+/// recommendation until the person picks.
+fn role_models(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
+    let p = shell.palette;
+    let lines = ROLE_ORDER
+        .iter()
+        .map(|&role| {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine);
+            let listed = shell.model.listed(Some(engine));
+            let model_name = match set.and_then(|d| d.model.as_deref()) {
+                Some(m) => crate::models::label(m, listed),
+                None => t!("models.recommended", model = recommended(shell, role, engine).map_or_else(|| t!("settings.engine_default").to_owned(), |m| crate::models::label(&m, listed))),
+            };
+            let effort = set.and_then(|d| d.effort.clone()).unwrap_or_else(|| equipe_core::roles::default_effort(role).map_or_else(|| t!("settings.engine_default").to_owned(), str::to_owned));
+            let controls = h_flex().gap_2().when(connected, |c| {
+                c.child(with_tip(picker(shell, Pop::RoleModel(role), t!("composer.tip_model"), model_name.clone(), 150., cx), format!("tip-role-model-{role}"), p, t!("composer.tip_model")))
+                    .child(with_tip(picker(shell, Pop::RoleEffort(role), t!("composer.tip_effort"), effort.clone(), 96., cx), format!("tip-role-effort-{role}"), p, t!("composer.tip_effort")))
+            });
+            let name = role_name(role);
+            let label = h_flex().gap_2().items_center().child(crate::theme::avatar(p, role, role, 18.)).child(name);
+            Line::new(name, crate::engines::platform(engine).name).label_el(label).words(format!("{role} {model_name} {effort}")).control(controls)
+        })
+        .collect();
+    Section::new(t!("settings.section_role_models"), lines).foot(t!("settings.role_models_foot"))
 }
 
 /// `el` with a tooltip, in a box of its own that can be hovered.
@@ -1122,19 +1201,38 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
         Pop::Squad => (240., shell.squads.iter().map(|s| (s.clone(), String::new(), *s == model.squad, Act::Squad(s.clone()))).collect()),
         Pop::Model(session) => {
             let Some(m) = member(session) else { return (0., Vec::new()) };
-            let mut models = crate::compose::engine_models(m.engine, m.model.as_deref());
-            if models.is_empty() {
-                models.extend(m.model.clone());
-            }
-            let now = m.model.clone().unwrap_or_default();
-            let exact = models.contains(&now);
-            (260., models.into_iter().map(|x| (super::composer::short_model(&x), x.clone(), now == x || (!exact && now.contains(&x)), Act::Model(session, x))).collect())
+            let asked = m.asked.as_deref().or(m.model.as_deref());
+            let choices = crate::models::choices(m.engine, asked, m.model.as_deref(), model.listed(m.engine));
+            (280., choices.into_iter().map(|c| (c.label, c.hint, c.on, Act::Model(session, c.model))).collect())
         }
         Pop::Effort(session) => {
             let Some(m) = member(session) else { return (0., Vec::new()) };
             let now = model.efforts.get(&session).cloned();
             let mut rows = vec![(t!("settings.engine_default").to_owned(), String::new(), now.is_none(), Act::Effort(session, None))];
-            rows.extend(super::composer::efforts(m.engine).iter().map(|e| ((*e).to_owned(), String::new(), now.as_deref() == Some(*e), Act::Effort(session, Some((*e).to_owned())))));
+            let levels = crate::models::efforts(m.engine, m.asked.as_deref().or(m.model.as_deref()), model.listed(m.engine));
+            rows.extend(effort_rows(levels, now.as_deref(), |e| Act::Effort(session, e)));
+            (200., rows)
+        }
+        Pop::RoleModel(role) => {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine).and_then(|d| d.model.clone());
+            let listed = model.listed(Some(engine));
+            let recommended = recommended(shell, role, engine).map_or_else(|| t!("settings.engine_default").to_owned(), |m| crate::models::label(&m, listed));
+            let mut rows = vec![(t!("models.recommended", model = recommended), String::new(), set.is_none(), Act::RoleModel(role, engine, None))];
+            // Codex's own list, once the daemon has sent it; else only what is set.
+            let choices = crate::models::choices(Some(engine), set.as_deref(), None, listed);
+            rows.extend(choices.into_iter().map(|c| (c.label, c.hint, c.on && set.is_some(), Act::RoleModel(role, engine, Some(c.model)))));
+            (280., rows)
+        }
+        Pop::RoleEffort(role) => {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine);
+            let now = set.and_then(|d| d.effort.clone());
+            let recommended = equipe_core::roles::default_effort(role).map_or_else(|| t!("settings.engine_default").to_owned(), |e| t!("models.recommended", model = e));
+            let mut rows = vec![(recommended, String::new(), now.is_none(), Act::RoleEffort(role, engine, None))];
+            let model_now = set.and_then(|d| d.model.clone()).or_else(|| self::recommended(shell, role, engine));
+            let levels = crate::models::efforts(Some(engine), model_now.as_deref(), model.listed(Some(engine)));
+            rows.extend(effort_rows(levels, now.as_deref(), |e| Act::RoleEffort(role, engine, e)));
             (200., rows)
         }
         Pop::Mode(session) => {
@@ -1144,6 +1242,20 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             (240., rows)
         }
     }
+}
+
+/// The efforts a model takes as pop-up rows, `now` checked — and listed,
+/// though the model doesn't take it, so what is set is never hidden.
+fn effort_rows(mut levels: Vec<String>, now: Option<&str>, act: impl Fn(Option<String>) -> Act) -> Vec<(String, String, bool, Act)> {
+    let stray = now.filter(|n| !levels.iter().any(|l| l == n)).map(str::to_owned);
+    levels.extend(stray.clone());
+    levels
+        .into_iter()
+        .map(|e| {
+            let hint = if stray.as_ref() == Some(&e) { t!("models.effort_not_taken").to_owned() } else { String::new() };
+            (e.clone(), hint, now == Some(e.as_str()), act(Some(e)))
+        })
+        .collect()
 }
 
 fn pop_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
@@ -1204,6 +1316,9 @@ fn pop_number(pop: Pop) -> u64 {
         Pop::Model(s) => 3 + s * 8,
         Pop::Effort(s) => 4 + s * 8,
         Pop::Mode(s) => 5 + s * 8,
+        // Between the members' numbers: theirs are 3 to 5 apart from a multiple of 8.
+        Pop::RoleModel(role) => 7 + 8 * ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0) as u64,
+        Pop::RoleEffort(role) => 8 * (ROLE_ORDER.len() + ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0)) as u64,
     }
 }
 
@@ -1315,8 +1430,17 @@ impl Shell {
             Act::Model(session, model) => {
                 if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session) {
                     m.model = Some(model.clone());
+                    m.asked = None;
                 }
                 self.send_command(Command::SetModel { session, model });
+            }
+            Act::RoleModel(role, engine, model) => {
+                let effort = self.model.role_models.iter().find(|d| d.role == role && d.engine == engine).and_then(|d| d.effort.clone());
+                self.set_role_model(RoleModel { role: role.to_owned(), engine, model, effort });
+            }
+            Act::RoleEffort(role, engine, effort) => {
+                let model = self.model.role_models.iter().find(|d| d.role == role && d.engine == engine).and_then(|d| d.model.clone());
+                self.set_role_model(RoleModel { role: role.to_owned(), engine, model, effort });
             }
             Act::Effort(session, effort) => {
                 self.send_command(Command::SetEffort { session, effort: effort.clone() });
@@ -1332,6 +1456,17 @@ impl Shell {
             }
         }
         cx.notify();
+    }
+
+    /// What new members of a role start with, kept for the squad; shown at
+    /// once, as the daemon will tell every screen.
+    fn set_role_model(&mut self, default: RoleModel) {
+        let squad = self.model.squad.clone();
+        self.model.role_models.retain(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine));
+        if default.model.is_some() || default.effort.is_some() {
+            self.model.role_models.push(default.clone());
+        }
+        self.send_command(Command::SetRoleModel { squad, default });
     }
 
     /// The language picked in settings (`None`: System, the Mac's — the

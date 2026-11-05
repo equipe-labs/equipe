@@ -12,9 +12,12 @@
 //! 되돌리기 (backend moved already, frontend at its next ticket); `off`, no
 //! card. `FAKE_SETUP=1` shows the recommended setup card instead.
 //! `FAKE_ENGINES_MIXED=1` puts backend on Codex (gpt-6.1-sol).
+//! `FAKE_MODELS=1` has the PM set to `opus` while an older Claude Code runs
+//! it as Opus 4.8, backend on Codex, Codex's list of models with their
+//! efforts, and the designer's new members started on Fable at `max`.
 
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
-use equipe_core::protocol::{Command, Engine, EnginePlan, Event, PlanUsage, PlanWindow, SessionInfo};
+use equipe_core::protocol::{Command, Engine, EnginePlan, Event, ModelChoice, PlanUsage, PlanWindow, RoleModel, SessionInfo};
 use tokio::sync::broadcast;
 
 fn env(name: &str) -> Option<String> {
@@ -139,13 +142,38 @@ fn setup() -> Proposal {
 
 /// `FAKE_ENGINES_MIXED`: backend runs on Codex.
 pub fn mix(sessions: &mut [SessionInfo]) {
-    if env("FAKE_ENGINES_MIXED").is_none() {
+    let models = env("FAKE_MODELS").is_some();
+    if models {
+        for s in sessions.iter_mut().filter(|s| s.member.as_ref().is_some_and(|m| m.name == "pm")) {
+            s.model = Some("claude-opus-4-8".into());
+            s.asked_model = Some("opus".into());
+        }
+    }
+    if env("FAKE_ENGINES_MIXED").is_none() && !models {
         return;
     }
     for s in sessions.iter_mut().filter(|s| s.member.as_ref().is_some_and(|m| m.name == "backend")) {
         s.engine = Engine::Codex;
         s.model = Some("gpt-6.1-sol".into());
     }
+}
+
+/// What new members of a role start with (`FAKE_MODELS`).
+pub fn role_models() -> Vec<RoleModel> {
+    if env("FAKE_MODELS").is_none() {
+        return Vec::new();
+    }
+    vec![RoleModel { role: "designer".into(), engine: Engine::Claude, model: Some("fable".into()), effort: Some("max".into()) }]
+}
+
+/// Codex's models as its own list gives them, with their efforts.
+fn codex_models() -> Vec<ModelChoice> {
+    let efforts = |e: &[&str]| e.iter().map(|e| (*e).to_owned()).collect();
+    vec![
+        ModelChoice { id: "gpt-6.1-sol".into(), name: Some("GPT-6.1 Sol".into()), efforts: efforts(&["low", "medium", "high", "xhigh"]), default_effort: Some("medium".into()) },
+        ModelChoice { id: "gpt-6-astra".into(), name: Some("GPT-6 Astra".into()), efforts: efforts(&["low", "medium", "high"]), default_effort: Some("high".into()) },
+        ModelChoice { id: "gpt-6-luna".into(), name: Some("GPT-6 Luna".into()), efforts: efforts(&["minimal", "low", "medium"]), default_effort: Some("low".into()) },
+    ]
 }
 
 /// The person's answers, as the daemon would take them. Whether it was one.
@@ -164,6 +192,14 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         }
         Command::ShowEngineSetup { .. } => {
             let _ = events.send(Event::EngineProposed { squad: squad(), proposal: setup() });
+        }
+        Command::Models { engine: Engine::Codex } if env("FAKE_MODELS").is_some() || env("FAKE_ENGINES_MIXED").is_some() => {
+            let _ = events.send(Event::Models { engine: Engine::Codex, models: codex_models() });
+        }
+        Command::SetRoleModel { default, .. } => {
+            let mut defaults: Vec<RoleModel> = role_models().into_iter().filter(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine)).collect();
+            defaults.extend((default.model.is_some() || default.effort.is_some()).then(|| default.clone()));
+            let _ = events.send(Event::RoleModelsChanged { squad: squad(), defaults });
         }
         _ => return false,
     }

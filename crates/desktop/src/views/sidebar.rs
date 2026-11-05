@@ -2334,7 +2334,7 @@ mod tests {
     }
 
     fn member(session: u64, name: &str, presence: Presence, ticket: Option<u32>) -> Member {
-        Member { session, name: name.into(), role: name.into(), presence, verb: Verb::Working, ticket, memos: 0, context: None, model: None, engine: None, estimate: None, target: None, last_seen: 0, failed: false }
+        Member { session, name: name.into(), role: name.into(), presence, verb: Verb::Working, ticket, memos: 0, context: None, model: None, asked: None, engine: None, estimate: None, target: None, last_seen: 0, failed: false }
     }
 
     #[test]

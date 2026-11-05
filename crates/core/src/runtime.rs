@@ -22,7 +22,7 @@ use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
     Access, Approval, AuthState, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
-    Estimate, OffMain, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Estimate, ModelChoice, OffMain, RoleModel, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::codex_app;
@@ -541,6 +541,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_read: None,
         codex_reading: false,
         codex_models: None,
+        codex_listing: false,
         questions: HashMap::new(),
         team_changes: HashMap::new(),
         routine_proposals: HashMap::new(),
@@ -646,7 +647,11 @@ struct Session {
     /// When it joined, for a stable team order (ids are random).
     joined: u64,
     engine: Engine,
+    /// The model it is set to, as its engine is asked for it: an alias
+    /// (`opus`) or an id.
     model: Option<String>,
+    /// The model its engine named when it last started a turn, if it did.
+    ran: Option<String>,
     access: Access,
     /// Where desk turns run — and, for a plain editing session, its worktree.
     cwd: PathBuf,
@@ -851,6 +856,9 @@ enum Internal {
     SignInEnded(Engine, u64),
     /// Installing an engine's tool ended.
     InstallEnded(Engine),
+    /// The Codex CLI's models, as just listed off the loop for the screens;
+    /// `None`: they couldn't be.
+    CodexModels(Option<Vec<codex_app::ModelInfo>>),
     /// Whether Claude is signed in, as just looked at off the loop.
     ClaudeReady(bool),
     /// A squad's design systems looked at off the loop: their stamp, and —
@@ -972,7 +980,9 @@ struct Runtime {
     codex_read: Option<std::time::Instant>,
     codex_reading: bool,
     /// The models the Codex CLI offers, as last listed.
-    codex_models: Option<(std::time::Instant, Vec<String>)>,
+    codex_models: Option<(std::time::Instant, Vec<codex_app::ModelInfo>)>,
+    /// A listing for the screens is under way.
+    codex_listing: bool,
     /// The Mac's screen, one member at a time, across squads.
     desktop: desktop::Desktop,
     /// Members' questions waiting for the person, by squad (`decide`).
@@ -1094,6 +1104,7 @@ impl Wake {
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
+            Wake::Internal(Internal::CodexModels(_)) => Borrowed("the Codex models listed"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
@@ -1282,6 +1293,14 @@ impl Runtime {
                 Internal::AuthChecked(engine, state, detail) => self.auth_checked(engine, state, detail).await,
                 Internal::AuthRecheck(engine) => self.check_engine(engine),
                 Internal::ClaudeReady(ok) => self.claude_ready(ok),
+                Internal::CodexModels(listed) => {
+                    self.codex_listing = false;
+                    if let Some(models) = listed.filter(|m| !m.is_empty()) {
+                        let choices = models.iter().map(model_choice).collect();
+                        self.codex_models = Some((std::time::Instant::now(), models));
+                        self.publish(Event::Models { engine: Engine::Codex, models: choices });
+                    }
+                }
                 Internal::InstallEnded(engine) => {
                     self.installs.remove(&engine);
                     self.publish_nebius();
@@ -1390,6 +1409,12 @@ impl Runtime {
             // It changed now: the screens know when it finished.
             ticket.updated_at = Some(now_secs());
         }
+        // The model the engine named, beside the one the member is set to.
+        if let Event::ModelKnown { session, asked: asked @ None, .. } = &mut event
+            && let Some(s) = self.sessions.get(session)
+        {
+            asked.clone_from(&s.model);
+        }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
             && tool.ends_with("browser_navigate")
@@ -1428,7 +1453,8 @@ impl Runtime {
                 Event::UserMessage { text, .. } if session.title.is_none() => {
                     session.title = text.lines().next().map(str::to_owned);
                 }
-                Event::ModelKnown { model, .. } => session.model = Some(model.clone()),
+                // What runs; what it is set to stays (an alias is asked for again each turn).
+                Event::ModelKnown { model, .. } => session.ran = Some(model.clone()),
                 Event::Steered { text, .. } => {
                     if let Some(at) = session.steering.iter().position(|t| t == text) {
                         session.steering.remove(at);
@@ -1574,17 +1600,56 @@ impl Runtime {
         if let Some((at, models)) = &self.codex_models
             && at.elapsed() < CODEX_MODELS_KEPT
         {
-            return Ok(models.clone());
+            return Ok(models.iter().map(|m| m.id.clone()).collect());
         }
         let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
-        let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_models(&self.config.codex_binary, &cwd)).await;
+        let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_model_infos(&self.config.codex_binary, &cwd)).await;
         let models = match listed {
             Ok(Ok(models)) => models,
             Ok(Err(err)) => return Err(err.to_string()),
             Err(_) => return Err(format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs())),
         };
-        self.codex_models = Some((std::time::Instant::now(), models.clone()));
-        Ok(models)
+        let ids = models.iter().map(|m| m.id.clone()).collect();
+        self.codex_models = Some((std::time::Instant::now(), models));
+        Ok(ids)
+    }
+
+    /// The models `engine` offers, for the screens ([`Command::Models`]):
+    /// Claude Code's from the catalog; the Codex CLI's as it lists them, off
+    /// the loop, kept a while. Nothing when the Codex CLI isn't here.
+    fn models_asked(&mut self, engine: Engine) {
+        match engine {
+            Engine::Claude => {
+                let aliases = crate::models::CLAUDE_FAMILIES.iter().map(|f| f.alias);
+                let ids = crate::models::CLAUDE_MODELS.iter().map(|p| p.id);
+                let models = aliases
+                    .chain(ids)
+                    .map(|id| {
+                        let efforts = crate::models::efforts(Engine::Claude, Some(id)).iter().map(|e| (*e).to_owned()).collect();
+                        ModelChoice { id: id.to_owned(), name: crate::models::name(id), efforts, default_effort: None }
+                    })
+                    .collect();
+                self.publish(Event::Models { engine, models });
+            }
+            Engine::Codex => {
+                if let Some((at, models)) = &self.codex_models
+                    && at.elapsed() < CODEX_MODELS_KEPT
+                {
+                    let models = models.iter().map(model_choice).collect();
+                    return self.publish(Event::Models { engine, models });
+                }
+                if self.codex_listing || codex_app::find(&self.config.codex_binary).is_none() {
+                    return;
+                }
+                self.codex_listing = true;
+                let (binary, internal) = (self.config.codex_binary.clone(), self.internal.clone());
+                let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
+                tokio::spawn(async move {
+                    let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_model_infos(&binary, &cwd)).await;
+                    let _ = internal.send(Internal::CodexModels(listed.ok().and_then(Result::ok)));
+                });
+            }
+        }
     }
 
     /// The squads screens follow now, and those with a journal open.
@@ -1746,13 +1811,29 @@ impl Runtime {
                 let model = model.trim().to_owned();
                 if let Some(s) = self.sessions.get_mut(&session).filter(|_| !model.is_empty()) {
                     s.model = Some(model.clone());
+                    // Its engine names what this runs as at its next turn.
+                    s.ran = None;
                     let squad = s.squad.clone();
                     if let Some(journal) = squad.as_deref().and_then(|q| journal_for(&mut self.journals, &self.config.home, q)) {
                         let _ = journal.set_model(session, &model);
                     }
-                    self.publish(Event::ModelKnown { session, model: model.clone() });
+                    self.publish(Event::ModelKnown { session, model: model.clone(), asked: Some(model.clone()) });
                     let text = say!(self, "notice.model", model = model);
                     self.publish(Event::Notice { session, text });
+                }
+            }
+            Command::Models { engine } => self.models_asked(engine),
+            Command::SetRoleModel { squad, default } => {
+                let default = RoleModel {
+                    model: default.model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()),
+                    effort: default.effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty()),
+                    ..default
+                };
+                if let Some(journal) = self.journal(&squad) {
+                    match journal.set_role_model(default) {
+                        Ok(defaults) => self.publish(Event::RoleModelsChanged { squad, defaults }),
+                        Err(err) => self.error(None, err.to_string(), None),
+                    }
                 }
             }
             Command::Unqueue { session, text } => self.unqueue(session, &text),
@@ -2705,7 +2786,13 @@ runbooks and reports live there, and work across the projects or on running them
             return fail(self, say!(self, "error.codex_edits"), Some("codex login"));
         }
 
-        let mut model = spec.model.clone();
+        // What the person set for the role on this engine, if anything.
+        let role_default = match (&squad, role) {
+            (Some(squad), Some(role)) => self.journal(squad).and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.engine == engine)),
+            _ => None,
+        };
+        let mut model = spec.model.clone().or_else(|| role_default.as_ref().and_then(|d| d.model.clone()));
+        let role_effort = role_default.and_then(|d| d.effort);
         let mut codex_cred = None;
         match engine {
             Engine::Codex if codex_cli => {
@@ -2874,6 +2961,7 @@ runbooks and reports live there, and work across the projects or on running them
                 joined,
                 engine,
                 model: model.clone(),
+                ran: None,
                 access,
                 cwd,
                 sandbox,
@@ -2902,7 +2990,7 @@ runbooks and reports live there, and work across the projects or on running them
                 subagents: Vec::new(),
                 compacting: None,
                 answers_person: false,
-                effort: None,
+                effort: role_effort,
                 briefing: Vec::new(),
                 memory,
                 mode: None,
@@ -6780,7 +6868,8 @@ it back there once they have done it.{again} End your turn now with a short line
                     project: s.project.clone(),
                     member: s.member.clone(),
                     engine: s.engine,
-                    model: s.model.clone(),
+                    model: s.ran.clone().or_else(|| s.model.clone()),
+                    asked_model: s.model.clone().filter(|m| s.ran.as_ref().is_some_and(|r| r != m)),
                     access: s.access,
                     workspace: s.sandbox.as_ref().map(workspace_of),
                     state: if s.is_working() { SessionState::Working } else { SessionState::Ready },
@@ -6867,6 +6956,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
+            role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
             engine_proposals: self.engines.proposals(squad),
             desktop: self.desktop.state(),
@@ -6985,6 +7075,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         joined,
                         engine: record.engine,
                         model: record.model,
+                        ran: None,
                         access: record.access,
                         cwd: record.cwd,
                         sandbox: None,
@@ -7724,6 +7815,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         joined: m.joined,
         engine: m.engine,
         model: m.model.clone(),
+        ran: m.ran.clone(),
         access: m.access,
         cwd: m.cwd.clone(),
         sandbox: None,
@@ -7785,7 +7877,8 @@ fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], t
                 saw(journal.set_title_if_empty(id, title));
             }
         }
-        Event::ModelKnown { model, .. } => saw(journal.set_model(id, model)),
+        // What the member is set to, so an alias stays one; what runs when nothing was asked.
+        Event::ModelKnown { model, asked, .. } => saw(journal.set_model(id, asked.as_deref().unwrap_or(model))),
         Event::TurnEnded { usage: Some(u), .. } => saw(journal.add_tokens(id, u.total())),
         Event::BranchLanded { branch, .. } => saw(journal.set_outcome(id, &format!("landed {branch}"))),
         Event::NothingChanged { .. } => saw(journal.set_outcome(id, "no changes")),
@@ -7916,7 +8009,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
             Event::ToolResult { session: id, tool: done.name, target: done.target, outcome }
         }
         Activity::Thinking(text) => Event::Thinking { session: id, text },
-        Activity::Model(model) => Event::ModelKnown { session: id, model },
+        Activity::Model(model) => Event::ModelKnown { session: id, model, asked: None },
         Activity::Output(tokens) => Event::Output { session: id, tokens },
         Activity::SubagentStarted { id: sub, what, brief } => Event::SubagentStarted { session: id, id: sub, what, brief },
         Activity::SubagentStep { id: sub, step } => Event::SubagentStep { session: id, id: sub, step },
@@ -8063,10 +8156,25 @@ fn claude_failure(err: equipe_providers::Error) -> (String, Option<&'static str>
         Some(crate::engine_auth::CLAUDE_HINT)
     } else if lower.contains("login") || lower.contains("logged in") {
         Some("equipe login claude")
+    } else if refuses_the_model(&lower) {
+        // A pinned model this Claude Code is older than.
+        Some("claude update")
     } else {
         None
     };
     (message, next)
+}
+
+/// Whether an engine's error says it can't run the model asked for (Claude
+/// Code: "There's an issue with the selected model … It may not exist").
+fn refuses_the_model(lower: &str) -> bool {
+    lower.contains("model")
+        && ["selected model", "not exist", "not found", "not_found", "invalid model", "unknown model", "not available", "not supported"].iter().any(|w| lower.contains(w))
+}
+
+/// A model the Codex CLI listed, as screens are told of it.
+fn model_choice(m: &codex_app::ModelInfo) -> ModelChoice {
+    ModelChoice { id: m.id.clone(), name: m.name.clone(), efforts: m.efforts.clone(), default_effort: m.default_effort.clone() }
 }
 
 /// How often a squad's stale work is looked at, and how long work sits

@@ -1023,6 +1023,7 @@ pub(crate) mod tests {
             member: None,
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,

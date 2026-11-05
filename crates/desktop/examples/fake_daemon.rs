@@ -138,6 +138,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         member: Some(Member { role: role.into(), name: role.into() }),
         engine: Engine::Claude,
         model: Some("claude-opus-5-5".into()),
+        asked_model: None,
         access: Access::EditFiles,
         workspace: None,
         state: SessionState::Ready,
@@ -1284,6 +1285,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             plan: switching::claude().or_else(engines::plan),
                             engine_switching: switching::switching(),
                             pm_accepts: true,
+                            role_models: switching::role_models(),
                             // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.
                             secret_asks: if std::env::var_os("FAKE_SECRET").is_some() {
                                 vec![equipe_core::protocol::secrets::SecretAsk {
