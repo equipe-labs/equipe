@@ -406,6 +406,21 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
   turn. A steer not read before the turn ends becomes a memo (`message_queued`) and is
   delivered after it.
   `memo_withdrawn` `{ "session", "text" }` takes back a memo or a steer not read yet.
+- `command_watch` `{ "session", "watch"? }` — what runs under the member's engine for its
+  command under way (a `tool_use` of `Bash`, not in the background), as the daemon looked at it
+  on the member's machine a moment ago: every five seconds or so while the command runs, and
+  once without `watch` when it no longer does. `watch` is `{ "engine", "process"?, "quiet_secs",
+  "state" }`: `process` `{ "name", "cpu_percent", "secs" }` is the program shown (its busiest,
+  else its deepest that isn't a shell around it; `cpu_percent` is the whole command's since the
+  last look, of one core — a build on six cores reads 600), absent when nothing runs for it;
+  `quiet_secs`, how long the engine has said nothing; `state` `{ "kind" }` one of `working`,
+  `busy` (a good deal of CPU: at work, however long), `nothing` (nothing runs under the engine
+  for it), `awaiting_you` (a request of the member's waits for the person), `stuck`
+  (`"idle_secs"`: next to no CPU — or nothing running — that long, and the engine silent for
+  minutes). Never `stuck` while the command uses the CPU. Not a line.
+  `stop_command` `{ "session" }` stops that command, and only it — never the engine nor
+  anything not under it: the engine hears it failed (`tool_result`) and goes on with its turn,
+  reading what the person sent meanwhile.
 - `thread` `{ "session", "project" }` — what follows is about `project` (`null`: the whole
   squad): a message sent looking at it, news of its ticket, a ticket's work. Never shown itself;
   a screen shows one project's slice.
@@ -674,7 +689,7 @@ The daemon follows a device like one more screen, with less reach than the termi
 
 - **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` and
   `list_images` (a member's pictures, of a squad it follows: see A member's pictures),
-  `metrics.summary` (the project's numbers, of a squad it follows: see The project's numbers), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
+  `metrics.summary` (the project's numbers, of a squad it follows: see The project's numbers), and the commands `submit`, `interrupt`, `send_now`, `stop_command`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
   `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
   `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`, `focus`, `refresh`,

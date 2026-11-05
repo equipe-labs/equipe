@@ -1252,6 +1252,9 @@ pub async fn run_turn(
         _ => Vec::new(),
     };
     let mut server = Server::start(binary, cwd, &args, request.env).await?;
+    if let Some(pid) = server.child.id() {
+        on_activity(Activity::Engine { pid });
+    }
     // Signed out, the turn would fail somewhere inside: say so first.
     let account = server.call("account/read", json!({}), ANSWER_WAIT).await?;
     if account.get("account").is_none_or(Value::is_null) && account.get("requiresOpenaiAuth").and_then(Value::as_bool) != Some(false) {
