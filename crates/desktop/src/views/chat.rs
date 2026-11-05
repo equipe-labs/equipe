@@ -647,6 +647,8 @@ struct Rows {
     turn_ends: HashSet<usize>,
     /// Since when the call under way has run.
     step_since: Option<std::time::Instant>,
+    /// What runs for the command under way, as the daemon last looked.
+    watch: Option<Rc<super::watch::Shown>>,
     base: std::path::PathBuf,
     arrived: Rc<HashMap<u64, std::time::Instant>>,
     /// A hand-in's pictures, under the news of it: what they are drawn with, and whose.
@@ -757,6 +759,11 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     let slice = shell.model.chat_slice(shell.chat.follow);
     let every = slice.is_some() && names.len() > 1;
     let log_name = who.name.clone();
+    let watch = shell.model.convo().and_then(|c| {
+        let steers = c.queue.items().iter().any(|i| i.kind == crate::queue::Kind::Steer);
+        let watched = activity::watched(c.command_watch()?, &who.name, steers)?;
+        Some(Rc::new(super::watch::Shown { watched, stopping: c.stopping_command }))
+    });
     let rows = Rc::new(Rows {
         p,
         tones: render::tones(&p),
@@ -771,6 +778,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         latest_reply,
         turn_ends,
         step_since: shell.model.convo().and_then(|c| c.step_since()),
+        watch,
         base: render::base_dir(shell),
         arrived: shell.chat.arrived.clone(),
         attached: attached::Ctx::of(shell, cx.entity().downgrade(), COLUMN - 120.),
@@ -1584,7 +1592,16 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         };
         motion::Reveal::new(("group-body", key), progress, div().opacity(progress).pt_1().pb_1().child(inner).into_any_element())
     });
-    v_flex().child(head).children(body).into_any_element()
+    // A command that has run a while: what really runs for it, and — stuck —
+    // what to do about it.
+    let commanding = lines.iter().any(|l| l.status == Status::Running && l.verb == "run" && !l.background);
+    let watch = rows
+        .watch
+        .as_ref()
+        .filter(|_| status == Status::Running && commanding)
+        .filter(|_| rows.step_since.is_some_and(|since| since.elapsed() >= super::watch::AFTER))
+        .map(|shown| super::watch::under_step(shown, p, t, key, rows.handle.clone()));
+    v_flex().child(head).children(watch).children(body).into_any_element()
 }
 
 /// `+12 −3`, an edit's change counted.

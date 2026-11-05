@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use equipe_core::protocol::harness;
 use equipe_core::protocol::transcript::scope;
+use equipe_core::protocol::watch::CommandWatch;
 use equipe_core::protocol::{CompactTrigger, Entry, Event, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
 use equipe_core::t;
 
@@ -131,6 +132,11 @@ pub struct Convo {
     thoughts: Vec<String>,
     /// Since when the call under way has run: its line counts the seconds.
     step_since: Option<Instant>,
+    /// What runs under the engine for the command under way, as the daemon
+    /// last looked ([`Event::CommandWatch`]).
+    watch: Option<CommandWatch>,
+    /// The person asked to stop that command, and it hasn't answered yet.
+    pub stopping_command: bool,
 }
 
 /// The transcript line where reasoning ended: `THOUGHT` + its number + `:` +
@@ -170,6 +176,8 @@ impl Convo {
             thinking: None,
             thoughts: Vec::new(),
             step_since: None,
+            watch: None,
+            stopping_command: false,
         }
     }
 
@@ -216,7 +224,17 @@ impl Convo {
         self.transcript.apply(event);
         match event {
             Event::ToolUse { .. } => self.step_since = Some(now),
-            Event::ToolResult { .. } | Event::TextDelta { .. } | Event::TurnEnded { .. } => self.step_since = None,
+            Event::ToolResult { .. } | Event::TextDelta { .. } | Event::TurnEnded { .. } => {
+                self.step_since = None;
+                self.watch = None;
+                self.stopping_command = false;
+            }
+            Event::CommandWatch { watch, .. } => {
+                self.watch = watch.clone();
+                if watch.is_none() {
+                    self.stopping_command = false;
+                }
+            }
             _ => {}
         }
         match event {
@@ -346,6 +364,11 @@ impl Convo {
 
     pub fn step_since(&self) -> Option<Instant> {
         self.step_since.filter(|_| self.working_since.is_some())
+    }
+
+    /// What runs for the command under way, while one does.
+    pub fn command_watch(&self) -> Option<&CommandWatch> {
+        self.watch.as_ref().filter(|_| self.step_since().is_some())
     }
 
     /// What the reasoning numbered `n` was.

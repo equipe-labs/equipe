@@ -13,6 +13,8 @@
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
 //! `FAKE_WORKING=<n>` has only the first n of frontend and backend at work (`0`: nobody).
+//! `FAKE_COMMAND=working|busy|nothing|asks|stuck|stuck_nothing`: a turn sits on a
+//! command, the daemon's look at it shown (`fake_daemon/command.rs`).
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -982,6 +984,8 @@ mod engines;
 
 #[path = "fake_daemon/disk.rs"]
 mod disk;
+#[path = "fake_daemon/command.rs"]
+mod command;
 
 #[path = "fake_daemon/switching.rs"]
 mod switching;
@@ -1549,6 +1553,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 }
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
                             }
+                            // Only the command: its step fails, and the turn goes on to its end.
+                            Command::StopCommand { session } => {
+                                if let Some(task) = turns.lock().await.remove(&session) {
+                                    task.abort();
+                                    tokio::spawn(command::stopped(session, events.clone()));
+                                }
+                            }
                             Command::Decide { squad, approval, decision, words } => {
                                 eprintln!("decide {approval} {decision:?} {words:?}");
                                 asks().lock().unwrap().retain(|a| a.id != approval);
@@ -1684,6 +1695,9 @@ async fn turn(session: SessionId, events: broadcast::Sender<Event>, seconds: f32
     for step in [tool("Read", "/tmp/fake/site/a.rs"), tool("Read", "/tmp/fake/site/b.rs"), tool("Edit", "/tmp/fake/site/a.rs")] {
         let _ = events.send(step);
         tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+    if let Some(mode) = command::mode() {
+        return command::run(session, &events, &mode).await;
     }
     let long = std::env::var("FAKE_LONG_REPLY").is_ok_and(|v| v == "1").then(history::long_reply);
     let chars: Vec<char> = long.as_deref().unwrap_or(REPLY).chars().collect();

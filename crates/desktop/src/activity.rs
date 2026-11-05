@@ -1,10 +1,11 @@
 //! How the conversation's activity reads: tool calls gathered into groups,
 //! each group in one line (what it was for, or a count of what it did), each
 //! call as a verb phrase and its object; equipe's news as event lines, each
-//! of a kind; how long ago a turn ended. No UI types here, so the rules are
-//! tested without a window.
+//! of a kind; how long ago a turn ended; what a command under way runs. No
+//! UI types here, so the rules are tested without a window.
 
 use equipe_core::i18n::{Lang, core};
+use equipe_core::protocol::watch::{CommandWatch, WatchState};
 
 use crate::convo::{Status, ToolLine};
 
@@ -380,6 +381,50 @@ fn match_template(template: &str, text: &str) -> Option<Vec<(String, String)>> {
     args.iter().all(|(name, value)| !matches!(name.as_str(), "id" | "count") || value.chars().all(|c| c.is_ascii_digit())).then_some(args)
 }
 
+/// How a command under way reads under its step, from the daemon's look at
+/// what runs for it ([`CommandWatch`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Watched {
+    /// One quiet line: what runs and how hard (`sqlite3 · 0% CPU · 27m`),
+    /// that nothing does, or that it waits on the person.
+    Line(String),
+    /// It looks stuck: why, in a sentence, and what stopping does. `command`:
+    /// there is a command to stop; otherwise only the turn can be.
+    Stuck { says: String, hint: String, command: bool },
+}
+
+/// What a command's watch shows, for member `name`; `steers`: a message of
+/// the person's waits to be read at the next step. Nothing while it is just
+/// starting.
+pub fn watched(watch: &CommandWatch, name: &str, steers: bool) -> Option<Watched> {
+    let words = crate::i18n::catalog();
+    let engine = crate::switching::engine_name(watch.engine).to_owned();
+    let process = watch.process.as_ref();
+    let line = |key: &str| {
+        let p = process?;
+        Some(words.fill(key, &[("process", p.name.clone()), ("cpu", p.cpu_percent.to_string()), ("time", crate::state::short_span(p.secs))]))
+    };
+    Some(match watch.state {
+        WatchState::Busy => Watched::Line(line("chat.watch_busy")?),
+        WatchState::Working => Watched::Line(line("chat.watch_line")?),
+        WatchState::Nothing => Watched::Line(words.fill("chat.watch_nothing", &[("engine", engine)])),
+        WatchState::AwaitingYou => Watched::Line(words.fill("chat.watch_asks", &[("name", name.to_owned())])),
+        WatchState::Stuck { idle_secs } => {
+            let (idle, quiet) = (crate::state::short_span(idle_secs), crate::state::short_span(watch.quiet_secs));
+            let says = match process {
+                Some(p) => words.fill("chat.stuck_idle", &[("process", p.name.clone()), ("idle", idle), ("engine", engine), ("quiet", quiet)]),
+                None => words.fill("chat.stuck_nothing", &[("idle", idle), ("engine", engine), ("quiet", quiet)]),
+            };
+            let hint = match (process.is_some(), steers) {
+                (true, true) => words.fill("chat.stuck_steer_hint", &[("name", name.to_owned())]),
+                (true, false) => words.fill("chat.stuck_stop_hint", &[("name", name.to_owned())]),
+                (false, _) => words.fill("chat.stuck_turn_hint", &[("name", name.to_owned())]),
+            };
+            Watched::Stuck { says, hint, command: process.is_some() }
+        }
+    })
+}
+
 /// `just now`, `5m ago`, `3h ago`, `2d ago`.
 pub fn ago(secs: u64) -> String {
     let words = crate::i18n::catalog();
@@ -482,6 +527,31 @@ mod tests {
         assert_eq!(news_of("── T-4 · Research"), None, "a ticket's heading is not news");
         assert_eq!(news_of("plain words"), None);
         assert_eq!(news_of("You accepted T-x · 헤더."), None, "a number where the number is");
+    }
+
+    fn watch(process: Option<(&str, u32)>, state: WatchState) -> CommandWatch {
+        use equipe_core::protocol::watch::WatchedProcess;
+        let process = process.map(|(name, cpu_percent)| WatchedProcess { name: name.into(), cpu_percent, secs: 27 * 60 + 5 });
+        CommandWatch { engine: equipe_core::protocol::Engine::Claude, process, quiet_secs: 28 * 60 + 6, state }
+    }
+
+    #[test]
+    fn a_command_under_way_reads_as_what_runs_and_how_hard() {
+        assert_eq!(watched(&watch(Some(("sqlite3", 0)), WatchState::Working), "pm", false), Some(Watched::Line("sqlite3 · CPU 0% · 27분".into())));
+        assert_eq!(watched(&watch(Some(("cargo", 640)), WatchState::Busy), "pm", false), Some(Watched::Line("cargo 작업 중 · CPU 640% · 27분".into())));
+        assert_eq!(watched(&watch(None, WatchState::Nothing), "pm", false), Some(Watched::Line("Claude 응답 대기 중 — 실행 중인 것 없음".into())));
+        assert_eq!(watched(&watch(None, WatchState::AwaitingYou), "pm", false), Some(Watched::Line("pm의 요청에 대한 답을 기다리는 중".into())));
+        assert_eq!(watched(&watch(None, WatchState::Working), "pm", false), None, "just starting: nothing to say yet");
+    }
+
+    #[test]
+    fn a_stuck_command_says_why_and_what_stopping_it_does() {
+        let Some(Watched::Stuck { says, hint, command: true }) = watched(&watch(Some(("sqlite3", 0)), WatchState::Stuck { idle_secs: 27 * 60 }), "pm", true) else { panic!() };
+        assert_eq!(says, "sqlite3 프로세스가 27분 동안 CPU를 거의 쓰지 않았고, Claude도 28분 동안 아무 말이 없어요.");
+        assert!(hint.contains("오류를 받고") && hint.contains("메시지도"), "a message waiting is read once it stops: {hint}");
+        let Some(Watched::Stuck { says, hint, command: false }) = watched(&watch(None, WatchState::Stuck { idle_secs: 600 }), "pm", false) else { panic!() };
+        assert!(says.starts_with("이 명령으로 10분 동안"), "{says}");
+        assert!(hint.contains("작업을 멈추면"), "only the turn can be stopped: {hint}");
     }
 
     #[test]
