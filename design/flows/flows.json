@@ -1,41 +1,15 @@
 {
-  "note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). Korean UI, as the person's Mac; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk`: `flows record` plays a walk in a browser, which can't drive the app.",
+  "note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). Korean UI, as the person's Mac; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk` (`flows record` plays a walk in a browser, which can't drive the app): a recorded flow has a `record_command`, design/flows/record-desktop.py, which steps the same snapshot build through it and writes the video with its screen marks — record with `--widths 1200,760`.",
   "flows": [
     {
       "id": "first-run",
       "title": "First run",
-      "summary": "A Mac with no squad: the usage-data question, git, the AI (Claude Code install and sign-in), then the first squad. Each step is held by the snapshot tool's `setup:` without a daemon, as a Mac with no squad has none.",
+      "summary": "A Mac with no squad: git, connecting the AI (ChatGPT sign-in, or Claude Code install and sign-in), the first squad, then the usage-data question. The steps up to the squad are held by the snapshot tool's `setup:` without a daemon, as a Mac with no squad has none; the usage question needs the daemon, so it comes once the squad is made.",
       "screens": [
-        {
-          "id": "usage-data",
-          "title": "Anonymous usage data",
-          "note": "Asked once, after the first run or the first open after the update; two buttons of the same weight.",
-          "source": [
-            "crates/desktop/src/views/telemetry.rs"
-          ],
-          "expects": [
-            "default",
-            "long"
-          ],
-          "states": [
-            {
-              "id": "default",
-              "label": "Default",
-              "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: usage data unanswered"
-            },
-            {
-              "id": "long",
-              "label": "Long text (German)",
-              "kind": "long",
-              "note": "shot by design/flows/shoot-desktop.py: usage data unanswered; EQUIPE_LANG=de"
-            }
-          ]
-        },
         {
           "id": "git",
           "title": "Git (developer tools)",
-          "note": "Shown only on a Mac without Apple's developer tools.",
+          "note": "A card at the top of the AI screen (먼저 AI를 연결할게요), shown only on a Mac without Apple's developer tools.",
           "source": [
             "crates/desktop/src/views/setup.rs",
             "crates/desktop/src/setup.rs"
@@ -61,8 +35,8 @@
         },
         {
           "id": "ai",
-          "title": "AI setup (Claude Code)",
-          "note": "Install, sign in, ready. The install error is a canned curl failure.",
+          "title": "Connect the AI (ChatGPT · Claude Code)",
+          "note": "Two cards: ChatGPT (sign in, the easiest way) and Claude Code (install, then sign in; edits files). Next lights up once one is connected. The install error is a canned curl failure.",
           "source": [
             "crates/desktop/src/views/setup.rs",
             "crates/desktop/src/setup.rs",
@@ -157,8 +131,35 @@
               "note": "shot by design/flows/shoot-desktop.py: script `setup:error;wait:300;scroll:20,-80`; no daemon"
             }
           ]
+        },
+        {
+          "id": "usage-data",
+          "title": "Anonymous usage data",
+          "note": "Asked once, after the first squad is made on a first run, or the first open after the update; two buttons of the same weight.",
+          "source": [
+            "crates/desktop/src/views/telemetry.rs"
+          ],
+          "expects": [
+            "default",
+            "long"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: usage data unanswered"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: usage data unanswered; EQUIPE_LANG=de"
+            }
+          ]
         }
-      ]
+      ],
+      "record_command": "python3 design/flows/record-desktop.py --flow first-run --out {out} --mode {mode} --width {width}"
     },
     {
       "id": "inbox",

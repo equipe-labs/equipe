@@ -169,7 +169,7 @@ for _path, _env, _steps, _opts in STATES:
 # ── The map: flows, screens, what each state is ────────────────────────────
 V = "crates/desktop/src/"
 FLOWS = [
-    ("first-run", "First run", "A Mac with no squad: the usage-data question, git, the AI (Claude Code install and sign-in), then the first squad. Each step is held by the snapshot tool's `setup:` without a daemon, as a Mac with no squad has none."),
+    ("first-run", "First run", "A Mac with no squad: git, connecting the AI (ChatGPT sign-in, or Claude Code install and sign-in), the first squad, then the usage-data question. The steps up to the squad are held by the snapshot tool's `setup:` without a daemon, as a Mac with no squad has none; the usage question needs the daemon, so it comes once the squad is made."),
     ("inbox", "Inbox (나에게) · decisions · permissions", "What waits for the person: a member's questions, permission requests, a ticket put down for them, a team change, a routine, work to confirm."),
     ("conversation", "Conversation", "The PM's conversation: replies streaming, the engine-switching card, long Korean text, pictures, ticket cards, a list of questions, diagrams and HTML cards, the summary band, the composer with attachments."),
     ("board", "Board · tickets", "Every ticket by where it stands (티켓), what is at work (작업 중), and one ticket picked — peeking beside the list (Space) or as a page (⏎): its hand-in, review and pictures."),
@@ -180,10 +180,10 @@ FLOWS = [
     ("connection", "Daemon and machine", "Attaching to the daemon: the daemon gone (under a banner, or with nothing to show yet), equipe not installed, the machine chooser."),
 ]
 SCREENS = {
-    "first-run/usage-data": ("Anonymous usage data", ["views/telemetry.rs"], "Asked once, after the first run or the first open after the update; two buttons of the same weight."),
-    "first-run/git": ("Git (developer tools)", ["views/setup.rs", "setup.rs"], "Shown only on a Mac without Apple's developer tools."),
-    "first-run/ai": ("AI setup (Claude Code)", ["views/setup.rs", "setup.rs", "engines.rs"], "Install, sign in, ready. The install error is a canned curl failure."),
+    "first-run/git": ("Git (developer tools)", ["views/setup.rs", "setup.rs"], "A card at the top of the AI screen (먼저 AI를 연결할게요), shown only on a Mac without Apple's developer tools."),
+    "first-run/ai": ("Connect the AI (ChatGPT · Claude Code)", ["views/setup.rs", "setup.rs", "engines.rs"], "Two cards: ChatGPT (sign in, the easiest way) and Claude Code (install, then sign in; edits files). Next lights up once one is connected. The install error is a canned curl failure."),
     "first-run/squad": ("First squad", ["views/welcome.rs"], None),
+    "first-run/usage-data": ("Anonymous usage data", ["views/telemetry.rs"], "Asked once, after the first squad is made on a first run, or the first open after the update; two buttons of the same weight."),
     "inbox/inbox": ("나에게 (the inbox)", ["views/sidebar.rs", "views/board.rs", "views/peek.rs", "board.rs"], None),
     "inbox/decision": ("A member's questions (decision card)", ["views/decide.rs", "decide.rs", "visuals.rs", "views/visuals.rs"], None),
     "inbox/permission": ("Permission requests", ["views/approvals.rs"], "Allow once (Y/A), always (⇧A), decline (N)."),
@@ -236,6 +236,9 @@ LABELS = {
     "queued": "A message waiting while the member works", "handover": "Browser handed to the person", "form": "Form open", "draft": "A draft in review",
     "connect": "Connect a service", "full": "Disk full",
 }
+# Flows recorded as a video by design/flows/record-desktop.py (its FLOWS).
+RECORDED = {"first-run"}
+
 # States that no fake daemon or snapshot step reaches: drawn as HTML mockups
 # (design/flows/mockups/) and rendered to the same paths.
 MOCKUPS = {}
@@ -288,8 +291,11 @@ def write_map():
             sc["expects"] = sorted({s["kind"] for s in states})
             sc["states"] = states
             screens.append(sc)
-        flows.append({"id": fid, "title": title, "summary": summary, "screens": screens})
-    doc = {"note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). Korean UI, as the person's Mac; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk`: `flows record` plays a walk in a browser, which can't drive the app.", "flows": flows}
+        flow = {"id": fid, "title": title, "summary": summary, "screens": screens}
+        if fid in RECORDED:
+            flow["record_command"] = f"python3 design/flows/record-desktop.py --flow {fid} --out {{out}} --mode {{mode}} --width {{width}}"
+        flows.append(flow)
+    doc = {"note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). Korean UI, as the person's Mac; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk` (`flows record` plays a walk in a browser, which can't drive the app): a recorded flow has a `record_command`, design/flows/record-desktop.py, which steps the same snapshot build through it and writes the video with its screen marks — record with `--widths 1200,760`.", "flows": flows}
     with open(os.path.join(HERE, "flows.json"), "w") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)
         f.write("\n")
