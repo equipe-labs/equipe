@@ -621,6 +621,7 @@
   "models.recommended": "Recomendado · {model}",
   "settings.section_role_models": "Miembros nuevos",
   "settings.role_mobile": "Móvil",
+  "settings.role_recommended": "recomendado",
   "settings.role_models_foot": "Con qué empieza un miembro nuevo de cada rol. Los miembros que ya están en el equipo conservan el suyo; cámbialo en Miembros.",
   "composer.menu_recent": "Recientes",
   "composer.menu_screenshot": "Captura de pantalla",

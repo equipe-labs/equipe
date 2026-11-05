@@ -598,6 +598,7 @@
   "models.recommended": "추천 · {model}",
   "settings.section_role_models": "새 멤버",
   "settings.role_mobile": "모바일",
+  "settings.role_recommended": "추천",
   "settings.role_models_foot": "역할마다 새 멤버가 처음 쓰는 모델과 생각 깊이예요. 이미 팀에 있는 멤버는 그대로이고, 멤버에서 바꿀 수 있어요.",
   "composer.menu_recent": "최근 첨부",
   "composer.menu_screenshot": "스크린샷",

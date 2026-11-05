@@ -760,9 +760,11 @@ fn role_models(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Secti
             let engine = role_engine(shell, role);
             let set = role_default(shell, role, engine);
             let listed = shell.model.listed(Some(engine));
+            // Unset, the recommendation shows in the control and is said so beside the engine.
+            let chosen = set.is_some_and(|d| d.model.is_some() || d.effort.is_some());
             let model_name = match set.and_then(|d| d.model.as_deref()) {
                 Some(m) => crate::models::label(m, listed),
-                None => t!("models.recommended", model = recommended(shell, role, engine).map_or_else(|| t!("settings.engine_default").to_owned(), |m| crate::models::label(&m, listed))),
+                None => recommended(shell, role, engine).map_or_else(|| t!("settings.engine_default").to_owned(), |m| crate::models::label(&m, listed)),
             };
             let effort = set.and_then(|d| d.effort.clone()).unwrap_or_else(|| equipe_core::roles::default_effort(role).map_or_else(|| t!("settings.engine_default").to_owned(), str::to_owned));
             let controls = h_flex().gap_2().when(connected, |c| {
@@ -771,7 +773,9 @@ fn role_models(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Secti
             });
             let name = role_name(role);
             let label = h_flex().gap_2().items_center().child(crate::theme::avatar(p, role, role, 18.)).child(name);
-            Line::new(name, crate::engines::platform(engine).name).label_el(label).words(format!("{role} {model_name} {effort}")).control(controls)
+            let platform = crate::engines::platform(engine).name;
+            let desc = if chosen { platform.to_owned() } else { format!("{platform} · {}", t!("settings.role_recommended")) };
+            Line::new(name, desc).label_el(label).words(format!("{role} {model_name} {effort}")).control(controls)
         })
         .collect();
     Section::new(t!("settings.section_role_models"), lines).foot(t!("settings.role_models_foot"))

@@ -598,6 +598,7 @@
   "models.recommended": "推荐 · {model}",
   "settings.section_role_models": "新成员",
   "settings.role_mobile": "移动端",
+  "settings.role_recommended": "推荐",
   "settings.role_models_foot": "每个角色的新成员起步时使用的模型和思考深度。已在团队中的成员保持不变，可在“成员”中修改。",
   "composer.menu_recent": "最近",
   "composer.menu_screenshot": "截屏",

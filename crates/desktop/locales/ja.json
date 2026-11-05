@@ -598,6 +598,7 @@
   "models.recommended": "おすすめ · {model}",
   "settings.section_role_models": "新しいメンバー",
   "settings.role_mobile": "モバイル",
+  "settings.role_recommended": "おすすめ",
   "settings.role_models_foot": "各ロールの新しいメンバーが最初に使うモデルと思考の深さです。すでにチームにいるメンバーはそのままで、「メンバー」で変えられます。",
   "composer.menu_recent": "最近の添付",
   "composer.menu_screenshot": "スクリーンショット",
