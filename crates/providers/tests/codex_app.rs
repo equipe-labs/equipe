@@ -87,7 +87,8 @@ async fn a_recorded_turn_streams_as_entries_and_writes_its_files() {
     assert_eq!((usage.output_tokens, usage.context_window), (Some(309), Some(258400)));
 
     let a = &run.activities;
-    assert_eq!(a[0], Activity::Model("gpt-6.1-sol".into()));
+    assert!(matches!(a[0], Activity::Engine { pid } if pid > 0), "the engine's process first, for a look at what runs under it");
+    assert_eq!(a[1], Activity::Model("gpt-6.1-sol".into()));
     assert!(a.contains(&Activity::Thinking("Looking at the repo".into())));
     assert_eq!(text(a), "I'll add the file, then test.DONE");
     let tools: Vec<(&str, Option<&str>)> = a.iter().filter_map(|x| if let Activity::Tool { name, target, .. } = x { Some((name.as_str(), target.as_deref())) } else { None }).collect();

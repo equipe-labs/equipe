@@ -42,6 +42,7 @@ pub mod team;
 pub mod transcript;
 pub mod vault;
 pub mod review;
+pub mod watch;
 pub mod words;
 
 pub use briefs::ProjectDoc;
@@ -860,6 +861,12 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         texts: Vec<String>,
     },
+    /// Stop the command the member's engine runs now, as the daemon last
+    /// looked at it ([`Event::CommandWatch`]): its processes end, and only
+    /// those — never the engine, never anything not under it. The engine
+    /// hears the command failed and goes on with its turn, reading at its
+    /// next step what the person said meanwhile. Nothing when no command runs.
+    StopCommand { session: SessionId },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -1737,6 +1744,15 @@ pub enum Event {
     },
     /// The member read a steering message, at this point of its turn.
     Steered { session: SessionId, text: String },
+    /// What runs under the member's engine for its command under way, as the
+    /// daemon looked at it a moment ago — every few seconds while it runs —
+    /// or `None` once it no longer does. A screen that doesn't know this
+    /// event shows the step as before. See [`watch`].
+    CommandWatch {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        watch: Option<watch::CommandWatch>,
+    },
     /// The member's conversation is being compacted — summarized to make room
     /// — by its engine (mid-turn) or by equipe (a desk conversation starting
     /// afresh). It works on once [`Event::Compacted`] or
@@ -2002,6 +2018,7 @@ impl Event {
             | Event::LaneMoved { session, .. }
             | Event::ConversationBack { session, .. }
             | Event::Steered { session, .. }
+            | Event::CommandWatch { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
             | Event::Compacting { session, .. }

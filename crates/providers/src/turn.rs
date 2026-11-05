@@ -47,6 +47,9 @@ pub enum Activity {
     Thinking(String),
     /// The model the engine is running, reported at startup.
     Model(String),
+    /// The engine's process started, with this id: what runs under it is the
+    /// turn's — its commands among them.
+    Engine { pid: u32 },
     /// The Claude plan's usage windows: five-hour and seven-day, each as the
     /// share used (0–1) and when it resets (Unix seconds).
     Plan { five_hour: Option<(f64, i64)>, seven_day: Option<(f64, i64)> },

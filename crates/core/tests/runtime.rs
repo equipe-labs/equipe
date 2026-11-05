@@ -518,6 +518,41 @@ else sleep 5; fi"#;
 }
 
 #[tokio::test]
+async fn a_command_under_the_engine_is_watched_and_stopping_it_lets_the_turn_carry_on() {
+    // The engine runs a command that would take half a minute; the screens
+    // hear what runs under it, and stopping the command (not the turn) hands
+    // the engine an error it goes on from.
+    let turn = r#"cat <<EOF
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 30; echo watched-by-equipe"}}]}}
+EOF
+sh -c 'sleep 30; echo watched-by-equipe' > /dev/null
+cat <<EOF
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"Exit code 143"}]}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"carried on"}}}
+{"type":"result","subtype":"success","is_error":false,"result":"carried on","usage":{"input_tokens":3,"output_tokens":1}}
+EOF"#;
+    let claude = fake_claude(true, turn);
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "count the rows".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::CommandWatch { watch: Some(w), .. } if w.process.as_ref().is_some_and(|p| p.name == "sleep"))).await;
+    let Some(Event::CommandWatch { watch: Some(watch), .. }) = seen.last() else { unreachable!() };
+    assert_eq!(watch.engine, Engine::Claude);
+    assert!(!watch.state.is_stuck(), "seconds in: {watch:?}");
+
+    let asked = std::time::Instant::now();
+    handle.send(Command::StopCommand { session: 1 });
+    let after = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(asked.elapsed() < Duration::from_secs(10), "stopped, not waited out");
+    assert!(after.iter().any(|e| matches!(e, Event::ToolResult { outcome, .. } if !outcome.ok)), "the engine heard it failed: {after:#?}");
+    assert!(after.iter().any(|e| matches!(e, Event::CommandWatch { watch: None, .. })), "and the screens that nothing runs any more");
+    assert!(after.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "carried on")), "the turn went on");
+    assert!(matches!(after.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "{after:#?}");
+}
+
+#[tokio::test]
 async fn esc_delivers_waiting_memos_at_once() {
     let claude = fake_claude(true, "case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\necho");
     let (handle, mut events) = start(&claude);

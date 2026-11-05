@@ -173,6 +173,7 @@ pub fn allowed(command: Command) -> Option<Command> {
         c @ (Command::Submit { .. }
         | Command::Interrupt { .. }
         | Command::SendNow { .. }
+        | Command::StopCommand { .. }
         | Command::Accept { .. }
         | Command::Reopen { .. }
         | Command::Resume { .. }

@@ -82,6 +82,7 @@ mod compact;
 mod controls;
 mod review;
 mod retro;
+mod watch;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -555,6 +556,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         disk: Default::default(),
+        commands: Default::default(),
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
@@ -803,6 +805,10 @@ type MergeResult = Result<(String, Option<Result<(), String>>), String>;
 
 enum Internal {
     Event(Box<Event>),
+    /// A turn's engine started, as this process.
+    EngineStarted { session: SessionId, pid: u32 },
+    /// Every process, as a look at members' commands found them (`None`: `ps` couldn't say).
+    Processes(Option<Vec<crate::command_watch::Proc>>),
     Done(TurnDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
@@ -1006,6 +1012,8 @@ struct Runtime {
     merging: std::collections::HashSet<(String, TicketId)>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
+    /// Members' commands under way, as watched running (`watch.rs`).
+    commands: watch::Commands,
     /// The Mac held awake while members work or a screen is attached.
     awake: crate::awake::Awake,
     /// Sign-ins under way on this machine, by engine: which one, and its task.
@@ -1069,6 +1077,8 @@ impl Wake {
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
+            Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
+            Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
             Wake::Internal(Internal::Apply(_)) => Borrowed("a change the person said yes to"),
@@ -1235,19 +1245,27 @@ impl Runtime {
                 }
             },
             Wake::Internal(message) => match message {
-                Internal::Event(event) => match *event {
-                    // What the engine echoes as it reads the person's steers: each said as it was.
-                    Event::Steered { session, text } => self.steered(session, &text),
-                    event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
-                    event => {
-                        // A build that failed for want of room says so plainly.
-                        let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
-                        self.publish(event);
-                        if let Some(id) = no_room {
-                            self.member_out_of_room(id);
+                Internal::Event(event) => {
+                    // The engine said something: it isn't silent, whatever it runs.
+                    if let Some(id) = event.session() {
+                        self.engine_heard(id);
+                    }
+                    match *event {
+                        // What the engine echoes as it reads the person's steers: each said as it was.
+                        Event::Steered { session, text } => self.steered(session, &text),
+                        event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
+                        event => {
+                            // A build that failed for want of room says so plainly.
+                            let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
+                            self.publish(event);
+                            if let Some(id) = no_room {
+                                self.member_out_of_room(id);
+                            }
                         }
                     }
-                },
+                }
+                Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
+                Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
                 Internal::Apply(command) => Box::pin(self.handle(*command)).await,
@@ -1317,6 +1335,7 @@ impl Runtime {
                 if self.desktop.expire() {
                     self.publish_desktop();
                 }
+                self.look_at_commands();
             }
             Wake::Frames => self.take_frames(),
             Wake::DesignTick => self.design_tick(),
@@ -1376,6 +1395,8 @@ impl Runtime {
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
     fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
+        // A command step starting or answered, a turn's end: its watch follows.
+        self.follow_commands(&event);
         // A turn that ends mid-compaction cuts it short: said first.
         if let Event::TurnEnded { session, .. } = &event
             && self.sessions.get(session).is_some_and(|s| s.compacting.is_some())
@@ -1757,6 +1778,7 @@ impl Runtime {
             }
             Command::Unqueue { session, text } => self.unqueue(session, &text),
             Command::SendNow { session, texts } => self.send_now(session, texts).await,
+            Command::StopCommand { session } => self.stop_command(session),
             Command::SetEffort { session, effort } => {
                 let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
                 if let Some(s) = self.sessions.get_mut(&session) {
@@ -3855,6 +3877,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                             Activity::Limits(limits) => {
                                 let _ = internal.send(Internal::CodexLimits(Some(limits)));
                             }
+                            Activity::Engine { pid } => {
+                                let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            }
                             activity => {
                                 if let Some(event) = activity_event(id, activity) {
                                     emit(event);
@@ -4001,6 +4026,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                     let outcome = claude_code::run_turn(&binary, &cwd, request, Some(steer_rx), |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
+                        }
+                        if let Activity::Engine { pid } = activity {
+                            let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            return;
                         }
                         if let Some(event) = activity_event(id, activity) {
                             emit(event);
@@ -7943,6 +7972,8 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
             Event::PlanUsage { usage: equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) }, engine: Engine::Claude }
         }
         Activity::Limits(_) => return None,
+        // The loop's to know, never a screen's: sent apart by the turn.
+        Activity::Engine { .. } => return None,
     })
 }
 
