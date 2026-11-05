@@ -3088,15 +3088,57 @@ runbooks and reports live there, and work across the projects or on running them
         }
     }
 
-    /// Send what waits for `id` now ([`Command::SendNow`]): its turn stops
-    /// and the steers not read and the memos — `first` in its order, then
-    /// the rest — go to it together, as one message about their project
-    /// (each part with its own, when they are about several).
+    /// Have what waits for `id` read now ([`Command::SendNow`]) — never by
+    /// stopping the work: a message is for the member to weigh, not the end
+    /// of what it does. At work, the memos go in as steers, read at its next
+    /// step with those already sent; a command it runs now is stopped (just
+    /// it), so that step comes at once. An engine that can't read mid-turn
+    /// keeps them for the turn's end, as memos are. With no turn under way,
+    /// what waits goes to it now as one message.
     async fn send_now(&mut self, id: SessionId, first: Vec<String>) {
         let waits = |s: &Session| !s.steering.is_empty() || !s.queued.is_empty();
         let Some(id) = self.holder(id, waits) else {
             return;
         };
+        if self.sessions.get(&id).is_some_and(Session::is_working) {
+            self.memos_to_steers(id, &first);
+            if self.command_running(id) {
+                self.stop_command(id);
+            }
+            return;
+        }
+        self.deliver_waiting(id, first).await;
+    }
+
+    /// The memos waiting for `id`, at work, sent into its turn as steers —
+    /// `first` in its order, then the rest — each with its project. Where the
+    /// engine can't take one, it stays a memo.
+    fn memos_to_steers(&mut self, id: SessionId, first: &[String]) {
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let Some(steer) = session.steer.clone() else { return };
+        let memos: Vec<(String, Option<String>)> =
+            std::mem::take(&mut session.queued).into_iter().zip(std::mem::take(&mut session.memo_threads).into_iter().chain(std::iter::repeat(None))).collect();
+        for (text, project) in steers::order(memos, first) {
+            let said = self.steer_words(id, &text, project.as_deref());
+            let Some(session) = self.sessions.get_mut(&id) else { return };
+            if steer.send(said).is_ok() {
+                session.steering.push(text.clone());
+                session.steer_threads.push(project.clone());
+                self.publish(Event::MemoWithdrawn { session: id, text: text.clone() });
+                self.publish(Event::SteerQueued { session: id, text, project });
+            } else {
+                session.queued.push(text);
+                session.memo_threads.push(project);
+            }
+        }
+        self.save_waiting(id);
+    }
+
+    /// What waits for `id`, with no turn under way: the steers not read and
+    /// the memos — `first` in its order, then the rest — go to it together,
+    /// as one message about their project (each part with its own, when they
+    /// are about several).
+    async fn deliver_waiting(&mut self, id: SessionId, first: Vec<String>) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -3124,7 +3166,6 @@ runbooks and reports live there, and work across the projects or on running them
         self.save_waiting(id);
         self.publish(Event::QueueSent { session: id, texts: texts.clone() });
         let project = if one { about[0].clone() } else { None };
-        let stopped = self.stop_turn(id);
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -3132,13 +3173,12 @@ runbooks and reports live there, and work across the projects or on running them
         session.memo_threads.insert(0, project);
         session.send_now_prompt = prompt;
         // A turn that finished already ends as it lands, delivering this first.
-        let landing = !stopped && session.turn.is_some();
+        let landing = session.turn.is_some();
         if !landing {
-            // The turn's end, as Esc's: its work handed in, what waits delivered —
-            // this message first.
+            // What waits delivered — this message first.
             self.after_turn(id).await;
         }
-        // What went into the stopped turn unread is in the message now: an
+        // What went into the finished turn unread is in the message now: an
         // echo of it still on its way is not shown twice.
         if let Some(session) = self.sessions.get_mut(&id) {
             session.taken_back.extend(texts);

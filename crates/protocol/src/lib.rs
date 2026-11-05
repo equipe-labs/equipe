@@ -851,11 +851,15 @@ pub enum Command {
     /// read yet: the first one with this text. Answered by
     /// [`Event::MemoWithdrawn`]; nothing when it was delivered (or read) already.
     Unqueue { session: SessionId, text: String },
-    /// Send what waits for a member at work now: its turn stops (as
-    /// [`Command::Interrupt`]) and the steers it hasn't read and the memos
-    /// left — `texts` first, in that order, then any others — go to it at
-    /// once, together, as one message. Answered by [`Event::QueueSent`], then
-    /// the turn's end and the message.
+    /// Have what waits for a member read now — never by stopping its turn.
+    /// At work: its memos go in as steers (each [`Event::MemoWithdrawn`],
+    /// then [`Event::SteerQueued`]) — `texts` first, in that order, then any
+    /// others — read at its next step with the steers already sent, and a
+    /// command it runs now is stopped (as [`Command::StopCommand`]) so that
+    /// step comes at once; the member weighs what it reads and decides what
+    /// to do. An engine that can't read mid-turn keeps them for the turn's
+    /// end. With no turn under way, they go to it at once, together, as one
+    /// message: [`Event::QueueSent`], then the message.
     SendNow {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
