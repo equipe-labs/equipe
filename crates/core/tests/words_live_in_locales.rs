@@ -1,7 +1,8 @@
 //! Every word a person reads, and every word matched in what they or a page
 //! write, lives in a crate's `locales/` — none in the code. Korean written in
 //! the code would show to someone reading English (or never match Japanese);
-//! a language's words go in its own file.
+//! a language's words go in its own file. And the code is read by people
+//! everywhere: its comments are in English too.
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +23,13 @@ fn hangul(c: char) -> bool {
     matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}')
 }
 
+/// A comment may show Korean only as an example of how Korean itself is
+/// handled — an IME syllable, a particle after a ticket number — and then says
+/// so on the same line.
+fn labelled(comment: &str) -> bool {
+    comment.contains("Korean") || comment.contains("Hangul")
+}
+
 #[test]
 fn no_korean_is_written_into_the_code() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
@@ -32,6 +40,7 @@ fn no_korean_is_written_into_the_code() {
         }
     }
     let mut found = Vec::new();
+    let mut comments = Vec::new();
     for path in files {
         let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
         if TEST_ONLY.contains(&rel.as_str()) {
@@ -51,6 +60,9 @@ fn no_korean_is_written_into_the_code() {
             }
             test_next = false;
             if code.starts_with("//") {
+                if code.chars().any(hangul) && !labelled(code) {
+                    comments.push(format!("{rel}:{}: {}", n + 1, code));
+                }
                 continue;
             }
             // What follows a `//` outside a string is a comment.
@@ -69,10 +81,17 @@ fn no_korean_is_written_into_the_code() {
             }
             if code[..cut].chars().any(hangul) {
                 found.push(format!("{rel}:{}: {}", n + 1, code));
+            } else if code[cut..].chars().any(hangul) && !labelled(&code[cut..]) {
+                comments.push(format!("{rel}:{}: {}", n + 1, code));
             }
         }
     }
     assert!(found.is_empty(), "Korean in the code — move it to the crate's locales/:\n{}", found.join("\n"));
+    assert!(
+        comments.is_empty(),
+        "Korean in a comment — write it in English (a UI label as its English words, or its locale key); an example of how Korean is handled says \"Korean\" on its line:\n{}",
+        comments.join("\n")
+    );
 }
 
 /// Files built into equipe and handed to people as they are (a design

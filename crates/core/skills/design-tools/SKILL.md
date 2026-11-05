@@ -13,8 +13,14 @@ a system from its tokens alone (two real screens light and dark, palette with co
 shadow); `render <file> --widths 390,1280 --dark` draws any HTML or SVG mockup to PNG; `shoot <url>…` shoots running
 pages (`http://localhost:<port>/…` included) at 390, 768 and 1280, light and dark; `diff <spec.png> <built.png>` puts
 a mockup and what was built side by side and lights up where they differ; `check` says what is wrong — tokens equipe's
-screen can't read, a missing layer, no dark values, text under AA, no Korean-capable family, no brand.md or logo, the
-stock look. Look at every picture yourself before you show it, and hand a design system in only when `check` has
+screen can't read, a missing layer, no dark values, text under AA, no family for the product's script, no brand.md or logo, the
+stock look. `lint <files or URL> --render
+--screen <flow/screen>` holds a mockup or a page to the design system in code at seven widths — the floor, the habits
+of generated screens, finishing notes (`--rules` lists every rule, `--tier floor` the floor alone, `--waive <id> --why
+"…"` keeps a habit with its reason) — and keeps the check and its pictures in `design/checks/`; `second-look
+<flow/screen>` has fresh eyes judge those pictures against the brief and the system; `direction` keeps the log of
+directions proposed and chosen; `kept record` and `kept check` make sure a redesign loses no link, field, action or
+heading. Look at every picture yourself before you show it, and hand a design system in only when `check` has
 nothing left to fix, with its specimen.
 {{#if browser}}
 

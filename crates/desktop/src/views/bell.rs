@@ -14,7 +14,7 @@ use crate::ui::{self, Kind};
 
 const WIDTH: f32 = 440.;
 
-/// "창 밖에서도 알려 드릴까요?": why, before macOS asks.
+/// "Notify you outside the window too?": why, before macOS asks.
 pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if !shell.bell.sheet {
         return None;
@@ -126,7 +126,7 @@ impl Shell {
         }
     }
 
-    /// The sheet, when macOS was never asked (a switch turned on, "알림 켜기").
+    /// The sheet, when macOS was never asked (a switch turned on, "Turn On Notifications").
     pub fn offer_notifications(&mut self, cx: &mut Context<Self>) {
         if self.bell.permission == Permission::NotAsked {
             self.bell.sheet = true;
@@ -134,7 +134,7 @@ impl Shell {
         }
     }
 
-    /// "알림 켜기": macOS's own question, now.
+    /// "Turn On Notifications": macOS's own question, now.
     pub fn allow_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.bell.sheet = false;
         notify::ask();
@@ -142,7 +142,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "나중에": not asked again on its own; settings still offers it.
+    /// "Not Now": not asked again on its own; settings still offers it.
     pub fn notify_later(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.bell.sheet = false;
         self.remembered.notify_later = true;
@@ -151,7 +151,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// The Dock's number: what waits for the person (나에게), when they want
+    /// The Dock's number: what waits for the person (the Inbox), when they want
     /// it — each machine's squad once, however many windows show it.
     pub fn sync_badge(&mut self) {
         if let Some(want) = crate::windows::badge(self.window_id, self.model.needs_you_count(), &self.remembered.pings) {

@@ -1,4 +1,4 @@
-//! The work screens: 나에게, 작업 중, 모든 일 and the saved views — a list of
+//! The work screens: Inbox, In progress, All work and the saved views — a list of
 //! 32px rows, the picked one peeking at the right (Space), opened as a page
 //! (⏎), or its changes in the diff (D). Every need answers to the same keys:
 //! A yes, ⇧A how, R in words, N no, C talk, M merge; j/k move and the peek
@@ -112,9 +112,9 @@ pub struct BoardUi {
     pub side_talks_all: std::collections::HashSet<String>,
     /// Every project shown, the quiet ones past the first few too.
     pub side_projects_all: bool,
-    /// The sidebar's other screens shown, named, under "더 보기".
+    /// The sidebar's other screens shown, named, under "More".
     pub side_more: bool,
-    /// 진행 상황: since when "since you last looked" counts, and whether it shows today instead.
+    /// Progress: since when "since you last looked" counts, and whether it shows today instead.
     pub progress_since: u64,
     pub progress_today: bool,
     /// The project whose page is open (or was last), and its tab.
@@ -155,7 +155,7 @@ pub struct BoardUi {
     pub peek_drag: Option<(f32, f32)>,
     /// Sends what is held back when its time comes (`Shell::ensure_undo_timer`).
     _undo_timer: Option<Task<()>>,
-    /// 티켓's own: menus, the board's drag, the new ticket sheet, the page's edits.
+    /// Tickets' own: menus, the board's drag, the new ticket sheet, the page's edits.
     pub tk: super::tickets::TicketsUi,
 }
 
@@ -272,7 +272,7 @@ impl Shell {
         board::rows(&self.model, &self.board.view, &self.saved_views())
     }
 
-    /// The thing picked in the list — on 티켓's board, only a card picked
+    /// The thing picked in the list — on Tickets' board, only a card picked
     /// by hand (the board shows whole until one is).
     pub fn picked_need(&self) -> Option<Need> {
         if self.tickets_board() {
@@ -417,8 +417,8 @@ impl Shell {
         cx.notify();
     }
 
-    /// Make ticket `id` the pick, peeking, in the list that holds it: 나에게
-    /// when it waits for the person, else 모든 일 (searching for it when even
+    /// Make ticket `id` the pick, peeking, in the list that holds it: the Inbox
+    /// when it waits for the person, else All work (searching for it when even
     /// that would not show it).
     pub fn board_reveal(&mut self, id: TicketId) {
         let need = Need::Ticket(id);
@@ -491,7 +491,7 @@ impl Shell {
         self.board_changed(cx);
     }
 
-    /// `/find words`, from the conversation: 모든 일, narrowed.
+    /// `/find words`, from the conversation: All work, narrowed.
     pub fn board_find(&mut self, words: &str, cx: &mut Context<Self>) {
         self.board.view.menu = Menu::All;
         self.board.view.query = words.to_owned();
@@ -606,7 +606,7 @@ impl Shell {
         }
     }
 
-    /// Leave accepted work on its branch for good: out of 나에게, and the
+    /// Leave accepted work on its branch for good: out of the Inbox, and the
     /// daemon remembers it was the person's choice.
     pub fn board_keep(&mut self, id: TicketId, cx: &mut Context<Self>) {
         if let Some(t) = self.model.tickets.iter().find(|t| t.id == id && t.waits_to_merge()).cloned() {
@@ -1052,7 +1052,7 @@ impl Shell {
         if self.board.typing(window, cx) {
             return false;
         }
-        // 티켓's own: its menus, the sheet, V, C, P S O E, the board's arrows.
+        // Tickets' own: its menus, the sheet, V, C, P S O E, the board's arrows.
         if self.board.diff.is_none() && self.on_tickets_key(key, m, window, cx) {
             return true;
         }
@@ -1100,7 +1100,7 @@ impl Shell {
             return true;
         }
         if m.alt && key == "v" {
-            // 티켓: the views, to pick one or keep this one; elsewhere, keep it.
+            // Tickets: the views, to pick one or keep this one; elsewhere, keep it.
             if self.tickets_on() {
                 self.board.tk.views_open = !self.board.tk.views_open;
                 cx.notify();
@@ -1142,7 +1142,7 @@ impl Shell {
                 return true;
             }
         }
-        // A waiting ticket's checklist: 1–9 tick its lines off (a card's things to do: 했음).
+        // A waiting ticket's checklist: 1–9 tick its lines off (a card's things to do: Done).
         if let (Some(d @ 1..=9), Some(t)) = (key.parse::<usize>().ok(), self.picked().filter(|t| t.status == TicketStatus::Waiting)) {
             let asks = t.asks();
             if !asks.is_empty() {
@@ -1338,7 +1338,7 @@ pub fn menu_title(menu: Menu, views: &[SavedView]) -> String {
     }
 }
 
-/// "작업 중 4 · 다음 완료 ~14:30 · 조용함 1" (without the count: "다음 완료 ~14:30 · 조용함 1").
+/// "In progress 4 · next done ~14:30 · Quiet 1" (without the count: "next done ~14:30 · Quiet 1").
 pub fn working_summary(model: &Model, count: bool) -> String {
     let working: Vec<&Ticket> = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && model.in_focus(t)).collect();
     let mut parts = if count { vec![format!("{} {}", status_word(TicketStatus::InProgress), working.len())] } else { Vec::new() };
@@ -1840,7 +1840,7 @@ pub fn short_target(target: &str) -> String {
     leaf.chars().take(28).collect()
 }
 
-/// What a member is doing now: `수정 중 checkout.tsx`.
+/// What a member is doing now: `editing checkout.tsx`.
 pub fn live_activity(model: &Model, t: &Ticket) -> Option<String> {
     let m = model.member_on(t.id)?;
     if m.presence != Presence::Working {
@@ -2253,7 +2253,7 @@ fn bulk_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     Some(bar.into_any_element())
 }
 
-/// "T-42 수락 · web에 병합+push 예정  U 되돌리기 (5)".
+/// "Accept T-42 · to merge into web and push  U Undo (5)".
 pub fn toast(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let pending = shell.board.undo.latest()?;

@@ -40,6 +40,7 @@ use crate::browser;
 use crate::desktop_gate::{self, Act, Verdict};
 use crate::desktop;
 use crate::eta;
+use crate::guard;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
@@ -2200,7 +2201,7 @@ impl Runtime {
             return self.check_engine(Engine::Claude);
         }
         let exe = std::env::current_exe();
-        let (Some(plist), Ok(exe)) = (crate::engine_auth::service_plist(), exe) else {
+        let (Some(_), Ok(exe)) = (crate::engine_auth::service_plist(), exe) else {
             let fix = self.auth.entry(Engine::Claude).or_default();
             fix.state = AuthState::OutsideLogin { movable: false };
             let event = fix.event(Engine::Claude);
@@ -2208,7 +2209,7 @@ impl Runtime {
         };
         self.save_stopped();
         let fix = self.auth.entry(Engine::Claude).or_default();
-        match crate::engine_auth::move_into_login(&exe, &plist) {
+        match crate::engine_auth::move_into_login(&exe) {
             Ok(()) => {
                 crate::daemon_log!("equipe: started outside the Mac's login session, the daemon starts again inside it, as the person asked");
                 (fix.state, fix.detail) = (AuthState::Moving, String::new());
@@ -3624,6 +3625,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Codex's CLI to read by path; Codex over the API reads nothing, so it
         // gets them inline — as it does when they can't be written.
         let reads_files = has_tools(session);
+        // A member on Claude Code has equipe's guard asked before each of its
+        // calls (`guard`): what it refuses, the charter needn't ask for.
+        let guarded = session.member.is_some() && session.engine == Engine::Claude && self.config.equipe_binary.is_some();
         let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
@@ -3648,11 +3652,16 @@ for one project goes to it as tickets for its owners, with that project — and 
                 facts: facts.len(),
                 edits,
                 skills: skills::Delivery::Inline,
+                guard: guarded,
             };
             let role = roles::role_or_custom(&m.role);
             let offered = skills::offered(role, &ctx);
             let written = (reads_files && !offered.is_empty())
-                .then(|| skills::materialise(&self.config.home, &self.config.client_version, role.id, &offered))
+                .then(|| {
+                    // On Claude Code, a designer's and a frontend engineer's edits are checked as they make them.
+                    let hooks = self.config.equipe_binary.as_deref().filter(|_| session.engine == Engine::Claude).and_then(|bin| skills::hooks(role.id, bin));
+                    skills::materialise(&self.config.home, &self.config.client_version, role.id, &offered, hooks.as_deref())
+                })
                 .and_then(|written| written.map_err(|err| crate::daemon_log!("{}'s skills weren't written: {err}", m.name)).ok());
             let Some(dir) = written else {
                 return roles::charter(role, &m.name, &ctx);
@@ -3709,21 +3718,31 @@ for one project goes to it as tickets for its owners, with that project — and 
         {
             env.push(("CARGO_PROFILE_DEV_DEBUG".to_owned(), debug.to_owned()));
         }
+        // A member's commands know they are a member's: `equipe browser` refuses there.
+        if let Some(m) = &session.member {
+            env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
+        }
         let writable: Vec<String> = builds.iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
-        // squad's home is read at all.
+        // squad's home is read at all. Where the guard is asked, it keeps the
+        // directories read only — the file tools out, and a command's writes,
+        // with the operating system's fence besides — and copying out of one
+        // is reading it: Claude Code's own rule for a directory takes `cp`'s
+        // source for a write, and refused it.
         let other_homes = squad.as_deref().map(|s| squad_home::others(&self.config.home, s)).unwrap_or_default();
         let deny: Vec<String> = if member_rules {
             let rule = |tool: &str, dir: &Path| format!("{tool}(/{}/**)", dir.display());
             add_dirs
                 .iter()
+                .filter(|_| !guarded)
                 .flat_map(|d| [rule("Edit", d), rule("Write", d)])
                 .chain(other_homes.iter().flat_map(|d| [rule("Read", d), rule("Edit", d)]))
                 .collect()
         } else {
             Vec::new()
         };
+        let hooks = guarded.then(|| self.config.equipe_binary.as_deref().map(|binary| guard::hooks(binary, &cwd, &add_dirs))).flatten();
         let read_only: Vec<String> = add_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         let prompt_tool = (mcp_config.is_some() && matches!(access, claude_code::Access::EditFiles | claude_code::Access::Ask))
             .then(|| format!("mcp__{MCP_SERVER}__{}", permissions::APPROVE_TOOL));
@@ -3929,6 +3948,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if member_rules && mcp_config.is_some() {
                     blocked.push(ENGINE_QUESTION_TOOL.to_owned());
                 }
+                // A window that holds the turn until it is closed: the guard says why first.
+                if member_rules {
+                    blocked.extend(guard::deny_rules(self.config.equipe_binary.as_deref()));
+                }
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
                 let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
@@ -3969,6 +3992,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         prompt_tool: prompt_tool.as_deref(),
                         env: &env,
                         effort: effort.as_deref(),
+                        hooks: hooks.as_ref(),
                     };
                     // A browser just started may still be loading.
                     if let Some(port) = browser {
@@ -6549,6 +6573,7 @@ there, end your turn, and carry on when they say they're done."
                 let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
                     .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then hand in again."))?;
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
+                self.designer_hand_in(id)?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
                 work.handed_in = Some(summary);

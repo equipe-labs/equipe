@@ -21,7 +21,7 @@ pub const SEND: &str = "Send";
 
 /// The squad's messaging apps until the person changes the list: by the name
 /// macOS shows. An entry may also be a bundle id.
-pub const DEFAULT_APPS: [&str; 14] = [
+pub const DEFAULT_APPS: [&str; 15] = [
     "Microsoft Teams",
     "Slack",
     "Mail",
@@ -33,6 +33,7 @@ pub const DEFAULT_APPS: [&str; 14] = [
     "Telegram",
     "WhatsApp",
     "LINE",
+    "WeChat",
     "Signal",
     "Spark",
     "Webex",
@@ -40,7 +41,7 @@ pub const DEFAULT_APPS: [&str; 14] = [
 
 /// Bundle ids of the defaults, so an app still counts when its shown name
 /// changes (Teams has been "Microsoft Teams (work or school)").
-const BUNDLES: [(&str, &str); 14] = [
+const BUNDLES: [(&str, &str); 15] = [
     ("com.microsoft.teams2", "Microsoft Teams"),
     ("com.tinyspeck.slackmacgap", "Slack"),
     ("com.apple.mail", "Mail"),
@@ -52,6 +53,7 @@ const BUNDLES: [(&str, &str); 14] = [
     ("ru.keepcoder.Telegram", "Telegram"),
     ("net.whatsapp.WhatsApp", "WhatsApp"),
     ("jp.naver.line.mac", "LINE"),
+    ("com.tencent.xinWeChat", "WeChat"),
     ("org.whispersystems.signal-desktop", "Signal"),
     ("com.readdle.SparkDesktop", "Spark"),
     ("Cisco-Systems.Spark", "Webex"),

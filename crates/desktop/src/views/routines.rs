@@ -1,4 +1,4 @@
-//! 정기 업무, in 현황: the squad's routines — the person's regular work that
+//! Routines, in Status: the squad's routines — the person's regular work that
 //! the PM is handed on its schedule (`protocol::routines`). A row each: on or
 //! off, its name, when it runs and runs next, run now, change, delete (a
 //! second click). Adding one starts from a preset or blank, in a form in the
@@ -103,7 +103,7 @@ pub fn parse_time(typed: &str) -> Option<(u8, u8)> {
     (hour < 24 && minute < 60).then_some((hour, minute))
 }
 
-/// `매일 09:00`, `매주 월 09:00`.
+/// `Every day 09:00`, `Every Mon 09:00`.
 pub fn schedule_words(when: Schedule) -> String {
     match when {
         Schedule::Daily { hour, minute } => t!("routines.daily", time = clock(hour, minute)),
@@ -111,7 +111,7 @@ pub fn schedule_words(when: Schedule) -> String {
     }
 }
 
-/// When it runs next, as this Mac's clock reads it: `오늘 09:00`, `내일 09:00`, `10/24 (금) 16:00`.
+/// When it runs next, as this Mac's clock reads it: `Today 09:00`, `Tomorrow 09:00`, `10/24 (Fri) 16:00`.
 pub fn next_words(at: u64, now: u64) -> String {
     let (when, today) = (Local.parts(at), Local.parts(now));
     let time = clock(when.hour, when.minute);

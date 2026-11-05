@@ -771,7 +771,7 @@ impl Render for TicketCard {
     }
 }
 
-/// "T-999 · 찾을 수 없어요": a number the squad has no ticket for.
+/// "T-999 · Not found": a number the squad has no ticket for.
 fn missing(p: Palette, id: TicketId) -> AnyElement {
     h_flex()
         .h(px(34.))

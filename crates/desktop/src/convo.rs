@@ -85,7 +85,7 @@ impl Sub {
 
 /// How long a summary may run before the band says it is taking a while.
 pub const COMPACT_LONG: Duration = Duration::from_secs(60);
-/// How long "요약했어요" stays up before it goes.
+/// How long "Summarized" stays up before it goes.
 pub const COMPACT_DONE_SHOWN: Duration = Duration::from_secs(4);
 
 /// Where a conversation's compaction stands (`Event::Compacting` and after).
@@ -137,7 +137,7 @@ pub struct Convo {
 /// seconds. A private-use character, so no other note starts so.
 pub const THOUGHT: char = '\u{E000}';
 
-/// The transcript line where a summary finished: the divider "요약했어요".
+/// The transcript line where a summary finished: the divider "Summarized".
 pub const COMPACTED: char = '\u{E002}';
 
 /// When something began, `ms` since the unix epoch, as an `Instant` (never
@@ -716,6 +716,12 @@ pub enum Block {
     /// it from, and give it back; `live` on the member's latest (an earlier
     /// one is past).
     HandOver { name: String, why: String, live: bool },
+    /// A design check that ran to its end (`equipe design lint`): what it
+    /// said on its last line — the floor, habits, notes and widths.
+    DesignCheck(Box<equipe_core::design::lint::Summary>),
+    /// A second look's verdict (`equipe design second-look`): the screen
+    /// and what fresh eyes said of it.
+    SecondLook { screen: String, verdict: Box<equipe_core::design::lint::record::Verdict> },
 }
 
 impl Block {
@@ -732,6 +738,8 @@ impl Block {
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
             Block::YourTurn { news, .. } => Some(news.clone()),
             Block::HandOver { name, why, .. } => Some(format!("{name}\n{why}")),
+            Block::DesignCheck(s) => Some(format!("{}\n{}\n{}", t!("check.title"), s.screen.clone().unwrap_or_default(), crate::checks::details(s).iter().map(|d| format!("{} {}", d.rule, d.said)).collect::<Vec<_>>().join("\n"))),
+            Block::SecondLook { screen, verdict } => Some(format!("{}\n{screen}\n{}\n{}", t!("look.name"), verdict.summary, verdict.fixes.iter().map(crate::checks::fix).collect::<Vec<_>>().join("\n"))),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
@@ -748,7 +756,7 @@ fn thought_of(text: &str) -> Option<(usize, u64)> {
 }
 
 /// How long a turn worked, and when it ended: the time of day it was then,
-/// and (kept by this app since it learned to) the moment, for "5분 전".
+/// and (kept by this app since it learned to) the moment, for "5m ago".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worked {
     pub secs: u64,
@@ -757,7 +765,7 @@ pub struct Worked {
 }
 
 impl Worked {
-    /// `1분 05초 작업함`.
+    /// `Worked 1m 05s`.
     pub fn took(&self) -> String {
         t!("chat.worked_for", took = elapsed(Duration::from_secs(self.secs)))
     }
@@ -784,6 +792,19 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
     let mut replied = false;
     for entry in entries {
         let entry = entry.as_ref();
+        // A design check or a second look that ran to its end: its own card.
+        if let Entry::Tool { tool, target: Some(target), outcome: Some(o), .. } = entry
+            && let Some(ran) = crate::checks::ran(tool, target, &o.output)
+        {
+            if !run.is_empty() {
+                blocks.extend(crate::activity::groups(std::mem::take(&mut run)).into_iter().map(Block::Steps));
+            }
+            blocks.push(match ran {
+                crate::checks::Ran::Check(summary) => Block::DesignCheck(summary),
+                crate::checks::Ran::Look { screen, verdict } => Block::SecondLook { screen, verdict },
+            });
+            continue;
+        }
         match entry {
             Entry::Thread { .. } => continue,
             // Claude Code loading tool descriptions: its business, not the person's.

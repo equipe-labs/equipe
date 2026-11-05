@@ -15,7 +15,7 @@ use crate::{SessionId, TicketId};
 pub struct SecretField {
     /// `NAS_USER`: uppercase letters, digits and `_`.
     pub key: String,
-    /// `NAS 아이디`, in the person's language.
+    /// `NAS username`, in the person's language.
     pub label: String,
     /// Typed hidden (a password, a key); `false` for a username.
     #[serde(default)]

@@ -207,6 +207,10 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     if !permissions.is_empty() {
         settings.insert("permissions".into(), Value::Object(permissions));
     }
+    // What runs before each of the turn's tool calls: equipe's guard.
+    if let Some(hooks) = request.hooks {
+        settings.insert("hooks".into(), hooks.clone());
+    }
     if !settings.is_empty() {
         args.extend(["--settings".to_owned(), Value::Object(settings).to_string()]);
     }
@@ -264,6 +268,9 @@ pub struct TurnRequest<'a> {
     /// for reading only.
     pub deny: &'a [String],
     pub sandbox: Option<Sandbox<'a>>,
+    /// Hooks for the turn, as Claude Code's settings take them: equipe's
+    /// guard, asked before each tool call (`equipe_core::guard`).
+    pub hooks: Option<&'a Value>,
     /// The MCP tool that answers permission prompts (`mcp__equipe__approve`).
     pub prompt_tool: Option<&'a str>,
     /// More environment for the turn's process, and so for its commands.
@@ -1433,6 +1440,17 @@ mod tests {
         assert!(args.windows(2).any(|w| w[0] == "--allowedTools" && w[1] == "mcp__equipe"));
         // The prompt isn't among them: it goes in on stdin.
         assert!(!args.iter().any(|a| a == "x"));
+    }
+
+    #[test]
+    fn equipes_guard_is_asked_before_each_call_in_the_members_settings() {
+        let hooks = json!({ "PreToolUse": [{ "matcher": "Bash|Edit", "hooks": [{ "type": "command", "command": "/opt/equipe hook --work /w" }] }] });
+        let args = turn_args(&TurnRequest { prompt: "x", hooks: Some(&hooks), ..Default::default() });
+        let at = args.iter().position(|a| a == "--settings").expect("settings passed");
+        let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
+        assert_eq!(settings["hooks"], hooks);
+        let none = turn_args(&TurnRequest { prompt: "x", ..Default::default() });
+        assert!(!none.iter().any(|a| a == "--settings"), "no guard, no settings");
     }
 
     // ── stream ──

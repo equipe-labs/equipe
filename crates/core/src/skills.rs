@@ -77,6 +77,7 @@ const SOURCES: &[Source] = &[
         offered: |r, _| r.id == "designer",
     },
     Source { dir: "design-qa", files: &[file!("design-qa", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "ui-floor", files: &[file!("ui-floor", "SKILL.md")], offered: |r, _| r.id == "frontend" },
     Source { dir: "design-remix", files: &[file!("design-remix", "SKILL.md")], offered: |r, c| r.id == "designer" && c.design },
     Source { dir: "security-review", files: &[file!("security-review", "SKILL.md")], offered: |r, _| r.id == crate::roles::SECURITY },
     Source { dir: "marketing-playbook", files: &[file!("marketing-playbook", "SKILL.md")], offered: |r, _| r.id == crate::roles::MARKETING },
@@ -192,11 +193,48 @@ pub fn skill_md(dir: &Path, name: &str) -> PathBuf {
     dir.join("skills").join(name).join("SKILL.md")
 }
 
+/// The roles whose edits to UI files are checked as they are made: the floor
+/// of `equipe design lint`, handed back in the same turn.
+pub fn checks_edits(role: &str) -> bool {
+    matches!(role, "designer" | "frontend")
+}
+
+/// The plugin's `hooks/hooks.json` for a member of `role` on Claude Code:
+/// after each edit to a file, `equipe design lint --hook` reads the floor in
+/// what was just written and hands failures back (a designer's edits are
+/// also written down, to be checked whole before its hand-in). `None` for a
+/// role whose edits aren't checked.
+pub fn hooks(role: &str, equipe: &Path) -> Option<String> {
+    if !checks_edits(role) {
+        return None;
+    }
+    let mut command = format!("'{}' design lint --hook", equipe.to_string_lossy().replace('\'', "'\\''"));
+    if role == "designer" {
+        command.push_str(" --ledger");
+    }
+    let hooks = serde_json::json!({
+        "hooks": {
+            "PostToolUse": [{
+                "matcher": "Edit|MultiEdit|Write",
+                "hooks": [{ "type": "command", "command": command, "timeout": 20 }],
+            }],
+        },
+    });
+    Some(format!("{hooks:#}\n"))
+}
+
 /// The folder a member's skills go in: one per version and content, so a
 /// member's engine sees the same files — and the same prompt — turn after turn.
 pub fn folder(home: &Path, version: &str, role: &str, skills: &[Skill]) -> PathBuf {
+    folder_with(home, version, role, skills, None)
+}
+
+fn folder_with(home: &Path, version: &str, role: &str, skills: &[Skill], hooks: Option<&str>) -> PathBuf {
     let mut hash = Fnv::default();
     hash.add(version);
+    if let Some(hooks) = hooks {
+        hash.add(hooks);
+    }
     for skill in skills {
         hash.add(&skill.name);
         for (path, text) in &skill.files {
@@ -208,10 +246,11 @@ pub fn folder(home: &Path, version: &str, role: &str, skills: &[Skill]) -> PathB
     home.join("skills").join(version).join(format!("{role}-{:016x}", hash.0))
 }
 
-/// Write a member's skills as a Claude Code plugin — `.claude-plugin/plugin.json`
-/// and `skills/<name>/…` — unless they are there already. Returns the folder.
-pub fn materialise(home: &Path, version: &str, role: &str, skills: &[Skill]) -> std::io::Result<PathBuf> {
-    let dir = folder(home, version, role, skills);
+/// Write a member's skills as a Claude Code plugin — `.claude-plugin/plugin.json`,
+/// `skills/<name>/…` and, given, its `hooks/hooks.json` ([`hooks`]) — unless
+/// they are there already. Returns the folder.
+pub fn materialise(home: &Path, version: &str, role: &str, skills: &[Skill], hooks: Option<&str>) -> std::io::Result<PathBuf> {
+    let dir = folder_with(home, version, role, skills, hooks);
     let manifest = dir.join(".claude-plugin").join("plugin.json");
     if manifest.is_file() {
         return Ok(dir);
@@ -227,6 +266,10 @@ pub fn materialise(home: &Path, version: &str, role: &str, skills: &[Skill]) -> 
             "description": "What an equipe squad member needs only for some kinds of work.",
         });
         std::fs::write(draft.join(".claude-plugin").join("plugin.json"), format!("{plugin:#}\n"))?;
+        if let Some(hooks) = hooks {
+            std::fs::create_dir_all(draft.join("hooks"))?;
+            std::fs::write(draft.join("hooks").join("hooks.json"), hooks)?;
+        }
         for skill in skills {
             for (path, text) in &skill.files {
                 let file = draft.join("skills").join(&skill.name).join(path);
@@ -304,6 +347,7 @@ mod tests {
             facts: 0,
             edits: false,
             skills: Delivery::Inline,
+            guard: false,
         }
     }
 
@@ -405,7 +449,8 @@ mod tests {
         assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
         assert_eq!(names("designer", &base), ["plan-review", "research-report", "design-system", "design-process", "design-tools", "ui-map", "design-qa"]);
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
-        for id in ["frontend", "backend", "mobile", "qa"] {
+        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "ui-floor"]);
+        for id in ["backend", "mobile", "qa"] {
             assert_eq!(names(id, &base), ["plan-review", "research-report"], "{id}");
         }
         assert_eq!(names("data", &base), ["research-report"]);
@@ -423,7 +468,7 @@ mod tests {
         let home = scratch("plugin");
         let team = [Teammate { name: "pm", role: PM }];
         let skills = offered(role(PM).unwrap(), &ctx(&team));
-        let dir = materialise(&home, "1.2.3", PM, &skills).unwrap();
+        let dir = materialise(&home, "1.2.3", PM, &skills, None).unwrap();
         assert!(dir.starts_with(home.join("skills").join("1.2.3")), "{}", dir.display());
         let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(".claude-plugin/plugin.json")).unwrap()).unwrap();
         assert_eq!(manifest["name"], PLUGIN);
@@ -433,14 +478,36 @@ mod tests {
         // The same skills: the same folder, left as it was.
         let marker = dir.join("skills/planning/SKILL.md");
         std::fs::write(&marker, "kept").unwrap();
-        assert_eq!(materialise(&home, "1.2.3", PM, &skills).unwrap(), dir);
+        assert_eq!(materialise(&home, "1.2.3", PM, &skills, None).unwrap(), dir);
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "kept", "not written again");
         // Other content, another version: another folder.
         let other = offered(role(PM).unwrap(), &Context { hq: Some("ops"), ..ctx(&team) });
-        assert_ne!(materialise(&home, "1.2.3", PM, &other).unwrap(), dir);
+        assert_ne!(materialise(&home, "1.2.3", PM, &other, None).unwrap(), dir);
         assert_ne!(folder(&home, "1.2.4", PM, &skills), dir);
         assert!(!std::fs::read_dir(home.join("skills/1.2.3")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("draft")), "no draft left");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_designers_and_a_frontend_engineers_plugin_checks_their_edits_as_they_make_them() {
+        let equipe = Path::new("/Applications/equipe.app/Contents/MacOS/equipe");
+        let designer: serde_json::Value = serde_json::from_str(&hooks("designer", equipe).unwrap()).unwrap();
+        let hook = &designer["hooks"]["PostToolUse"][0];
+        assert_eq!(hook["matcher"], "Edit|MultiEdit|Write");
+        assert_eq!(hook["hooks"][0]["command"], "'/Applications/equipe.app/Contents/MacOS/equipe' design lint --hook --ledger");
+        let frontend: serde_json::Value = serde_json::from_str(&hooks("frontend", equipe).unwrap()).unwrap();
+        assert!(frontend["hooks"]["PostToolUse"][0]["hooks"][0]["command"].as_str().unwrap().ends_with("design lint --hook"), "an engineer's edits aren't written down for a hand-in");
+        for role in [PM, "backend", "qa"] {
+            assert!(hooks(role, equipe).is_none(), "{role}");
+        }
+        let home = scratch("hooks");
+        let skills = offered(crate::roles::role("designer").unwrap(), &ctx(&[]));
+        let with = hooks("designer", equipe);
+        let dir = materialise(&home, "1.2.3", "designer", &skills, with.as_deref()).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("hooks/hooks.json")).unwrap(), with.unwrap());
+        let without = materialise(&home, "1.2.3", "designer", &skills, None).unwrap();
+        assert_ne!(dir, without, "a plugin with hooks is another folder");
+        assert!(!without.join("hooks").exists());
     }
 
     #[test]
@@ -448,7 +515,7 @@ mod tests {
         let home = scratch("index");
         let team = [Teammate { name: "pm", role: PM }];
         let skills = offered(role(PM).unwrap(), &ctx(&team));
-        let dir = materialise(&home, "1.2.3", PM, &skills).unwrap();
+        let dir = materialise(&home, "1.2.3", PM, &skills, None).unwrap();
         let at = dir.to_string_lossy().into_owned();
         let files = for_charter(&skills, Delivery::Files(&at));
         let plugin = for_charter(&skills, Delivery::Plugin(&at));

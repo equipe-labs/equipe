@@ -9,6 +9,7 @@
 //! would — and so do the person's own create, edit, move and comment (by
 //! `equipe_core::board`'s rules), each kept in the ticket's record.
 //! `FAKE_EMPTY=1` starts with nothing waiting for the person;
+//! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
 //! `FAKE_WORKING=<n>` has only the first n of frontend and backend at work (`0`: nobody).
@@ -62,6 +63,8 @@
 //!
 //! `FAKE_HISTORY=<n>`: the PM's history is a long day's, `n` lines of it
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
+//! `FAKE_HISTORY_PICTURES=<n>`: its screenshots are n different ones, and every
+//! other reply embeds one too — for measuring what pictures hold (`EQUIPE_SNAPSHOT_HIDDEN`, `snapshot.rs`).
 //! `FAKE_READING=1`: it ends on a long Korean reply with every kind of text
 //! (`fake_daemon/reading.rs`), to compare how the conversation reads.
 //!
@@ -75,6 +78,8 @@
 //! routine's message and the review in the designer's conversation, its
 //! proposal waiting in 나에게 as a visual question (`fake_daemon/review.rs`).
 //!
+//! `FAKE_CHECKS=1`: the designer's conversation checks a screen in code and has a
+//! second look at it (`fake_daemon/checks.rs`); `FAKE_CHECKS=fail` stops at a failing check.
 //! `FAKE_NOISE=1`: the designer's conversation holds the engine's own turns —
 //! background tasks ending, a reminder, a `sleep` refused (`fake_daemon/noise.rs`).
 //!
@@ -234,7 +239,7 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
             reason: reason.map(Into::into),
             preview: None,
         };
-        let on = std::env::var("FAKE_ASKS").map_or(true, |v| v != "0");
+        let on = std::env::var("FAKE_ASKS").map_or(true, |v| v != "0") && !crowd::on();
         std::sync::Mutex::new(if on {
             vec![
                 ask(7, 3, "backend", "Bash", "cargo test -p equipe-core -- --nocapture\ncat > /tmp/out.txt <<EOF\nx\nEOF", Some("테스트를 돌리기 전에 허가가 필요합니다")),
@@ -358,6 +363,9 @@ fn ticket(id: u32, status: &str, project: &str, who: &str, title: &str, body: &s
 
 /// The board: work in every state, across three projects.
 fn board() -> Vec<Ticket> {
+    if crowd::on() {
+        return crowd::tickets();
+    }
     let empty = std::env::var("FAKE_EMPTY").is_ok_and(|v| v == "1");
     let mut out = vec![
         ticket(47, "in_progress", "web", "frontend", "상품 상세 페이지 이미지 갤러리", "스와이프와 확대를 지원하는 갤러리.", &[], Some("equipe/t-47-gallery"), None),
@@ -995,9 +1003,14 @@ mod retro;
 
 #[path = "fake_daemon/noise.rs"]
 mod noise;
+#[path = "fake_daemon/checks.rs"]
+mod checks;
 
 #[path = "fake_daemon/signin.rs"]
 mod signin;
+
+#[path = "fake_daemon/crowd.rs"]
+mod crowd;
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
@@ -1191,6 +1204,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             designer.work = None;
                             designer.recent = noise::history();
                         }
+                        // `FAKE_CHECKS=1`: the designer checks a screen in code and has fresh eyes look at it.
+                        if checks::on() {
+                            designer.work = None;
+                            designer.state = SessionState::Ready;
+                            designer.recent = checks::history();
+                        }
                         let mut backend = backend;
                         backend.effort = Some("high".into());
                         let mut frontend = frontend;
@@ -1285,7 +1304,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             },
                             engine_proposals: switching::proposals(),
                             squad: params.squad,
-                            projects: vec![repo("web"), repo("app"), repo("api")],
+                            projects: if crowd::on() { crowd::projects() } else { vec![repo("web"), repo("app"), repo("api")] },
                             sessions,
                             approvals: asks().lock().unwrap().clone(),
                             questions: questions().lock().unwrap().clone(),
@@ -1373,7 +1392,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     // design system's, checked as the daemon checks it.
                     (Some(rpc::READ_IMAGE), Some(id)) => {
                         let ask: rpc::ReadImage = message.params_as().unwrap();
-                        let reply = match pictures::read(&ask).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }) {
+                        let reply = match pictures::read(&ask).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)) {
                             Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };

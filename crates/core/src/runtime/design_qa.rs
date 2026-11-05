@@ -30,6 +30,29 @@ impl Runtime {
         self.tickets(squad).into_iter().find(|t| t.design_qa == Some(qa))
     }
 
+    /// What a designer's own hand-in needs (`design::lint::record::hand_in`):
+    /// each UI file it edited drawn and checked, the floor passed, and a fresh
+    /// second look that passed after the check. Refused with what to do;
+    /// on the way through, the edits' ledger is cleared for the next ticket.
+    /// Reads two or three small files in its worktree's `design/`.
+    pub(super) fn designer_hand_in(&self, id: SessionId) -> Result<(), String> {
+        let Some(session) = self.sessions.get(&id) else { return Ok(()) };
+        if session.member.as_ref().is_none_or(|m| m.role != DESIGNER) {
+            return Ok(());
+        }
+        let cwd = session.work.as_ref().map_or_else(|| session.cwd.clone(), |w| w.cwd.clone());
+        let design = cwd.join(crate::design::DIR);
+        let needs = crate::design::lint::record::hand_in(&design);
+        if !needs.is_empty() {
+            return Err(format!(
+                "Not yet — a screen you made goes to the person only checked and seen fresh:\n{}\nThen hand in again.",
+                needs.iter().map(|n| format!("- {n}")).collect::<Vec<_>>().join("\n")
+            ));
+        }
+        crate::design::lint::record::handed_in(&design);
+        Ok(())
+    }
+
     /// What `submit_for_review` asks of a code ticket in a squad with a
     /// designer: whether users see the change, and if so its screenshots.
     /// `Ok(true)`: it goes to design QA when the turn ends.

@@ -1,4 +1,4 @@
-//! 티켓: every ticket, the person's to shape. A list (the default) or a board
+//! Tickets: every ticket, the person's to shape. A list (the default) or a board
 //! of columns by status (V, remembered); in the list each row edits its
 //! priority, owner and status in place; on the board a card dragged to
 //! another column means what that column would (`crate::tickets::drop_card`)
@@ -188,7 +188,7 @@ impl TicketsUi {
         self.quick_input.update(cx, |s, cx| s.set_placeholder(t!("tickets.quick_placeholder"), window, cx));
     }
 
-    /// Whether one of 티켓's boxes has the keyboard.
+    /// Whether one of Tickets' boxes has the keyboard.
     pub fn typing(&self, window: &Window, cx: &App) -> bool {
         self.sheet_title.read(cx).focus_handle(cx).is_focused(window)
             || self.sheet_body.read(cx).focus_handle(cx).is_focused(window)
@@ -215,7 +215,7 @@ pub enum Choice {
 // ── what a click or a key does ──
 
 impl Shell {
-    /// 티켓 is on screen (모든 일's place, or a saved view of it).
+    /// Tickets is on screen (All work's place, or a saved view of it).
     pub fn tickets_on(&self) -> bool {
         matches!(self.board.view.menu, Menu::All | Menu::View(_))
     }
@@ -224,7 +224,7 @@ impl Shell {
         self.tickets_on() && self.board.view.layout == Layout::Board
     }
 
-    /// Wire 티켓's boxes: Enter and ⌘⏎ where they mean something.
+    /// Wire Tickets' boxes: Enter and ⌘⏎ where they mean something.
     pub fn tickets_subscriptions(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
         let tk = &self.board.tk;
         let (title, body, criterion, dep, title_input, body_input, comment) =
@@ -607,7 +607,7 @@ impl Shell {
         }
     }
 
-    /// C: the quick line, at the top of 티켓.
+    /// C: the quick line, at the top of Tickets.
     pub fn open_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_act() {
             return;
@@ -722,7 +722,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// Bring 티켓's waiting things up to date: open a ticket just made, settle
+    /// Bring Tickets' waiting things up to date: open a ticket just made, settle
     /// edits the daemon answered (or put back those it refused), ask for the
     /// record of the page open.
     pub fn tickets_sync(&mut self, cx: &mut Context<Self>) {
@@ -799,7 +799,7 @@ impl Shell {
         self.board_changed(cx);
     }
 
-    /// 티켓's own keys, before the work screens': its menus' digits, the
+    /// Tickets' own keys, before the work screens': its menus' digits, the
     /// sheet's ⌘⏎, V, C, P S O E, and the board's arrows. True when taken.
     pub fn on_tickets_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let plain = !(m.control || m.alt || m.platform || m.shift || m.function);
@@ -915,7 +915,7 @@ impl Shell {
         }
     }
 
-    /// "분류 필요": the proposals alone, the first picked — or back to the list.
+    /// "To sort": the proposals alone, the first picked — or back to the list.
     pub fn set_triage(&mut self, on: bool, cx: &mut Context<Self>) {
         self.board.view.triage = on;
         self.board.view.selected = None;
@@ -928,7 +928,7 @@ impl Shell {
         self.board_changed(cx);
     }
 
-    /// Esc on 티켓: a menu, the sheet, an edit — true when one was closed.
+    /// Esc on Tickets: a menu, the sheet, an edit — true when one was closed.
     pub fn tickets_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.board.view.triage && self.board.flow.is_none() && self.board.tk.menu.is_none() {
             self.set_triage(false, cx);
@@ -1077,7 +1077,7 @@ fn pill(p: Palette, id: SharedString, enabled: bool) -> Stateful<Div> {
 
 // ── the list's rows ──
 
-/// A ticket's row in 티켓's list, by what it is and where it stands: status
+/// A ticket's row in Tickets' list, by what it is and where it stands: status
 /// (pulsing while its member works) · T-n · title · what it waits on · project
 /// · who, and what they are doing now or where it is in their queue · its
 /// diff · priority · when it last changed. Status, owner and priority are
@@ -1129,7 +1129,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     let changed = tickets::changed_at(model, t);
     let when = (changed > 0).then(|| short_span(model.unix.saturating_sub(changed)));
     let live = model.is_live(t);
-    // Waiting for the person, and not acted on yet: lit, as in 나에게.
+    // Waiting for the person, and not acted on yet: lit, as in the Inbox.
     let yours = model.needs_you().iter().any(|(_, n)| *n == need);
     // What its member is doing now, how long it has been at it — or its place in their queue.
     let doing: Option<(String, Rgba)> = match t.status {
@@ -1287,7 +1287,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     el.into_any_element()
 }
 
-/// Above 티켓's list: the proposals waiting to be sorted, a click into triage —
+/// Above Tickets' list: the proposals waiting to be sorted, a click into triage —
 /// or, in triage, the way back.
 pub fn triage_banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
@@ -2058,7 +2058,7 @@ pub fn views_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> 
     )
 }
 
-/// "+ 새 티켓".
+/// "+ New ticket".
 pub fn new_button(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     anchored(

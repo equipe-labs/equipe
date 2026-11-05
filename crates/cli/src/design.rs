@@ -25,7 +25,7 @@ pub enum DesignAction {
         /// The design folder (default: ./design)
         dir: Option<PathBuf>,
     },
-    /// Check a design folder before handing it in: tokens equipe reads, layers, dark, contrast, Korean type, brand, logo
+    /// Check a design folder before handing it in: tokens equipe reads, layers, dark, contrast, type for the product's script, brand, logo
     Check {
         dir: Option<PathBuf>,
         /// The findings as JSON
@@ -113,6 +113,20 @@ pub enum DesignAction {
         /// Where the sheet and files go (default: ./design/audit)
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Hold a screen to the design system in code: the floor (never waived), the habits of generated screens, finishing notes — in its source, and with --render as Chrome draws it at each width
+    Lint(crate::design_lint::LintArgs),
+    /// A fresh reviewer's verdict on a checked screen's pictures, given only them, the brief and the system — what a hand-in waits on
+    SecondLook(crate::design_lint::SecondLookArgs),
+    /// The directions proposed and chosen, by layout, type, palette, density and motion — so the next one differs
+    Direction {
+        #[command(subcommand)]
+        action: crate::design_lint::DirectionAction,
+    },
+    /// What a redesign must keep: a screen's links, fields, actions and headings, recorded before and checked after
+    Kept {
+        #[command(subcommand)]
+        action: crate::design_lint::KeptAction,
     },
     /// The UI map: every flow, its screens in order, each in every state, pictured light and dark at each width
     Flows {
@@ -273,6 +287,10 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
             run_script("audit.mjs", &[&url, "--pages", &pages.to_string(), "--out", out.to_string_lossy().as_ref()]).await
         }
         DesignAction::Flows { action } => flows_command(action).await,
+        DesignAction::Lint(args) => crate::design_lint::lint(args).await,
+        DesignAction::SecondLook(args) => crate::design_lint::second_look(args).await,
+        DesignAction::Direction { action } => crate::design_lint::direction(action),
+        DesignAction::Kept { action } => crate::design_lint::kept(action).await,
     }
 }
 
@@ -1208,13 +1226,14 @@ async fn ensure_kit() -> Result<PathBuf, String> {
         ("audit.mjs", include_str!("../assets/design/audit.mjs")),
         ("diff.mjs", include_str!("../assets/design/diff.mjs")),
         ("record.mjs", include_str!("../assets/design/record.mjs")),
+        ("lint.mjs", include_str!("../assets/design/lint.mjs")),
     ] {
         std::fs::write(dir.join(name), body).map_err(|e| e.to_string())?;
     }
     Ok(dir)
 }
 
-async fn run_script(name: &str, args: &[&str]) -> Result<(), String> {
+pub(crate) async fn run_script(name: &str, args: &[&str]) -> Result<(), String> {
     let dir = ensure_kit().await?;
     let (node, _) = node_tools()?;
     let status = tokio::process::Command::new(&node).arg(dir.join(name)).args(args).stdin(Stdio::null()).status().await.map_err(|e| format!("node: {e}"))?;

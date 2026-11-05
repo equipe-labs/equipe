@@ -1,12 +1,12 @@
 //! The browser panel: the shared Chrome the members browse in, live, beside
-//! the conversation (⌘⇧B, or the header's 브라우저 button). Like Claude
+//! the conversation (⌘⇧B, or the header's Browser button). Like Claude
 //! Code's browser pane, but the browser is equipe's own — one Chrome on the
 //! daemon's machine, signed in once — so what shows here is exactly what the
 //! members see, sign-ins and all.
 //!
 //! A row of tabs grouped by whose they are (each member a dot and its name,
-//! then its tabs; the person's own, 내 탭, last); back, forward, reload, the
-//! address, 따라가기, and "Chrome에서 열기" for what a picture can't do (a
+//! then its tabs; the person's own, My tabs, last); back, forward, reload, the
+//! address, Follow, and "Open in Chrome" for what a picture can't do (a
 //! passkey, a permission prompt); the page itself; and a control bar saying
 //! who has it in hand, with one button to take it or give it back. It follows
 //! the conversation on screen — that member's browser, the tab it last worked
@@ -18,10 +18,10 @@
 //! (the daemon takes the largest of the panels watching it, and waits for a
 //! member's step under way); a frame of another size is fitted, its shape kept.
 //! The person's mouse and keys go back to the page, mapped through the
-//! picture's frame. Touching a member's page (or 직접 하기) takes it into the
-//! person's hands (its tools wait); 돌려주기, Esc, or two idle minutes give it
+//! picture's frame. Touching a member's page (or Take over) takes it into the
+//! person's hands (its tools wait); Give back, Esc, or two idle minutes give it
 //! back. A page that waits for a person — a "verify you are human" check, a
-//! sign-in, a code — says so over the picture, with 직접 하기 (`browse::Hand`).
+//! sign-in, a code — says so over the picture, with Take over (`browse::Hand`).
 //! The rules are `crate::browse`, tested without a window.
 
 use std::cell::RefCell;
@@ -159,9 +159,9 @@ pub struct BrowserPanel {
     /// The person closed this tab: its going is no news.
     closing: Option<u64>,
     gone: Option<Gone>,
-    /// The page's keys go to it at the next draw (the person chose 직접 하기).
+    /// The page's keys go to it at the next draw (the person chose Take over).
     focus_next: bool,
-    /// A page picked from 나에게 or a notification, shown at the next draw.
+    /// A page picked from the Inbox or a notification, shown at the next draw.
     pending_reveal: Option<(String, u64)>,
     /// Members' browsers handed to the person, opened for once each.
     handovers: browse::Handovers,
@@ -636,7 +636,7 @@ impl BrowserPanel {
         self.rewatch(window, cx);
     }
 
-    /// 다시 시도: the line again, from nothing.
+    /// Try again: the line again, from nothing.
     fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.link = None;
         self._pump = None;
@@ -761,7 +761,7 @@ impl BrowserPanel {
         }
     }
 
-    /// 다시 시도 on a page whose pictures stopped: asked for from nothing.
+    /// Try again on a page whose pictures stopped: asked for from nothing.
     fn rewatch_fresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(link) = &self.link {
             link.send(StreamIn::Unwatch);
@@ -794,7 +794,7 @@ impl BrowserPanel {
         }
     }
 
-    /// 직접 하기: the member's browser into the person's hands, its keys to the page.
+    /// Take over: the member's browser into the person's hands, its keys to the page.
     fn take(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(lane) = self.lane_of_selected().filter(|l| !l.is_empty()).map(str::to_owned) {
             self.took(&lane);
@@ -922,7 +922,7 @@ impl BrowserPanel {
         };
         self.pointer_on_selected();
         // Moves never take a member's page: they go only once the person has
-        // it (직접 하기, a click, a key) — before that, the page never saw the
+        // it (Take over, a click, a key) — before that, the page never saw the
         // pointer, and the press that takes it moves it there first.
         if !self.drives_selected() {
             self.pointer.left();
@@ -1188,7 +1188,7 @@ impl BrowserPanel {
     /// On `page` of `lane`, the person driving.
     fn drive(&mut self, lane: String, page: u64, window: &mut Window, cx: &mut Context<Self>) {
         // Handed over by its member: the person drives it, the strip says what for.
-        // A page that waits for a person keeps its banner (직접 하기) until they act:
+        // A page that waits for a person keeps its banner (Take over) until they act:
         // a hold that came from detection alone never stops its member.
         let hand = self.hands.entry(lane.clone()).or_default();
         if hand.asked.is_some() {
@@ -1225,7 +1225,7 @@ impl BrowserPanel {
     }
 
     /// Close `pages` of `lane` — the person's own at once; a member's at work,
-    /// asked once first ("pm이 쓰는 중이에요. 닫을까요?"), its member told.
+    /// asked once first ("pm is using it. Close it?"), its member told.
     fn close_tabs(&mut self, lane: &str, pages: Vec<u64>, cx: &mut Context<Self>) {
         if pages.is_empty() {
             return;
@@ -1250,7 +1250,7 @@ impl BrowserPanel {
         cx.notify();
     }
 
-    /// The tab picked, closed (⌘W, 확인 그만하고 탭 닫기).
+    /// The tab picked, closed (⌘W, Stop the check and close the tab).
     fn close_selected(&mut self, cx: &mut Context<Self>) {
         if let Some((lane, page)) = self.selected.clone() {
             self.close_tabs(&lane, vec![page], cx);
@@ -1263,7 +1263,7 @@ impl BrowserPanel {
         self.close_tabs(lane, others, cx);
     }
 
-    /// 돌려주기 from outside the panel (the conversation's row): back to its member.
+    /// Give back from outside the panel (the conversation's row): back to its member.
     pub fn give_back_lane(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.toast_next = Some((t!("browser.gave_toast", name = self.member_name(lane)), TOAST_FOR));
         self.hands.entry(lane.to_owned()).or_default().give_back();
@@ -1272,7 +1272,7 @@ impl BrowserPanel {
         cx.notify();
     }
 
-    /// A page waiting for a person, from 나에게 or a notification: the panel
+    /// A page waiting for a person, from the Inbox or a notification: the panel
     /// opens on it, in the person's hands, its keys to the page.
     pub fn reveal(&mut self, page: u64, cx: &mut Context<Self>) {
         let Some(lane) = self.lanes.iter().find(|(_, l)| l.pages.iter().any(|p| p.id == page)).map(|(lane, _)| lane.clone()) else { return };
@@ -1559,7 +1559,7 @@ impl BrowserPanel {
         let none = page.is_none();
         let typing = self.url.read(cx).focus_handle(cx).is_focused(window);
         let shown = page.as_ref().and_then(|pg| browse::address(&pg.url)).filter(|_| !typing);
-        // Room for the words beside the icons: 따라가기 from 420 points, Chrome에서 열기 from 640.
+        // Room for the words beside the icons: Follow from 420 points, Open in Chrome from 640.
         let (wide, wider) = (self.width >= 420., self.width >= 640.);
         h_flex()
             .px_2()
@@ -2190,7 +2190,7 @@ impl Render for BrowserPanel {
                 });
             }));
         }
-        // A page waiting for the person, picked from 나에게: on screen, in their hands.
+        // A page waiting for the person, picked from the Inbox: on screen, in their hands.
         if let Some((lane, page)) = self.pending_reveal.take() {
             self.ensure_link(window, cx);
             self.select(lane, page, window, cx);
@@ -2275,13 +2275,13 @@ impl BrowserPanel {
         self.scroll(&e, cx);
     }
 
-    /// 직접 하기, or 돌려주기, as the bar's button.
+    /// Take over, or Give back, as the bar's button.
     pub fn hand(&mut self, take: bool, window: &mut Window, cx: &mut Context<Self>) {
         if take { self.take(window, cx) } else { self.give_back(cx) }
     }
 
 
-    /// Compose each of `steps` in turn (`ㅎ`, `하`, `한`), then commit the last.
+    /// Compose each of `steps` in turn (Korean IME: `ㅎ`, `하`, `한`), then commit the last.
     pub fn compose(&mut self, steps: &[&str], window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         for step in steps {
@@ -2369,7 +2369,7 @@ impl EntityInputHandler for BrowserPanel {
     }
 }
 
-// ── in 나에게: a member's page waiting for the person ──
+// ── in the Inbox: a member's page waiting for the person ──
 
 /// The row's words: what waits, the member's name and colour.
 pub fn need_row(shell: &crate::Shell, page: u64) -> Option<(String, String, Rgba)> {
@@ -2426,7 +2426,7 @@ pub fn need_peek(shell: &crate::Shell, page: u64, cx: &mut Context<crate::Shell>
 }
 
 impl crate::Shell {
-    /// A member's page waiting for the person (from 나에게, a notification):
+    /// A member's page waiting for the person (from the Inbox, a notification):
     /// the conversation with the browser panel beside it, on that page, in
     /// their hands.
     pub fn reveal_browser(&mut self, page: u64, cx: &mut Context<Self>) {
@@ -2435,7 +2435,7 @@ impl crate::Shell {
         cx.notify();
     }
 
-    /// 브라우저 열기 on a conversation's hand-over row: the panel beside it,
+    /// Open the browser on a conversation's hand-over row: the panel beside it,
     /// on that member's browser, in the person's hands.
     pub fn reveal_handed(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.show(crate::Screen::Chat, cx);
@@ -2443,7 +2443,7 @@ impl crate::Shell {
         cx.notify();
     }
 
-    /// 돌려주기 on a conversation's hand-over row: back to its member, which
+    /// Give back on a conversation's hand-over row: back to its member, which
     /// carries on.
     pub fn give_back_handed(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.browser.update(cx, |b, cx| b.give_back_lane(lane, cx));

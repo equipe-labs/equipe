@@ -1,4 +1,4 @@
-//! The work screens' rules, with no UI types: what 나에게, 작업 중, 모든 일
+//! The work screens' rules, with no UI types: what Needs you, In progress, All work
 //! and a saved view list, in which order, under which heading; the filter
 //! words; moving through the list and on after an action; the actions held
 //! back for a moment so they can be taken back; how accepting lands work.
@@ -16,18 +16,18 @@ use crate::state::{Model, Need, Section, status_word};
 /// The menu item the work screen shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Menu {
-    /// What waits for the person: 나에게.
+    /// What waits for the person: Needs you.
     #[default]
     Inbox,
-    /// Work in progress: 작업 중.
+    /// Work in progress: In progress.
     Working,
-    /// Every ticket: 모든 일.
+    /// Every ticket: All work.
     All,
     /// A saved view, by its place in the list of views.
     View(usize),
 }
 
-/// How 모든 일 (and a saved view) groups its tickets.
+/// How All work (and a saved view) groups its tickets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GroupBy {
     #[default]
@@ -142,9 +142,9 @@ pub struct View {
     pub chosen: BTreeSet<TicketId>,
     /// Where a ⇧↑↓ range started.
     pub anchor: Option<TicketId>,
-    /// 티켓 as rows or as a board.
+    /// Tickets as rows or as a board.
     pub layout: crate::tickets::Layout,
-    /// 티켓's triage: only the proposals, to take on (A) or drop (N).
+    /// Tickets' triage: only the proposals, to take on (A) or drop (N).
     pub triage: bool,
 }
 
@@ -191,9 +191,9 @@ pub enum Row {
     /// what it means, a line under it that does; and what its heading does to
     /// all of it at once.
     Heading { label: String, count: usize, tone: Tone, hint: Option<String>, all: Option<All> },
-    /// A thing listed, and how deep under what it waits for (the 의존 순서 grouping).
+    /// A thing listed, and how deep under what it waits for (the "Dependency order" grouping).
     Item { need: Need, depth: usize },
-    /// The finished group's own line: `끝남 · 7일 12 ▸`.
+    /// The finished group's own line: `Finished · 7 days 12 ▸`.
     Done { count: usize, total: usize, open: bool, window: DoneWindow },
 }
 
@@ -331,17 +331,17 @@ pub fn rows(model: &Model, view: &View, views: &[SavedView]) -> Vec<Row> {
     }
 }
 
-/// Proposals waiting to be sorted: out of 티켓's list, behind its "분류 필요"
+/// Proposals waiting to be sorted: out of Tickets' list, behind its "To sort"
 /// banner, in board order.
 pub fn proposals<'a>(model: &'a Model, filter: &Filter) -> Vec<&'a Ticket> {
-    // One the person just took on or dropped is out at once, as in 나에게.
+    // One the person just took on or dropped is out at once, as in Needs you.
     let acted = |t: &Ticket| model.acted.get(&t.id).is_some_and(|look| *look == crate::state::look_of(t));
     // Where the PM runs the work, only what it put up for the person is theirs to sort.
     let theirs = |t: &Ticket| model.section_of(t).is_some();
     crate::tickets::in_board_order(model.tickets.iter().filter(|t| t.status == TicketStatus::Proposed && theirs(t) && model.in_focus(t) && filter.matches(model, t) && !acted(t)).collect())
 }
 
-/// 티켓's triage: the proposals alone, one after another.
+/// Tickets' triage: the proposals alone, one after another.
 pub fn triage(model: &Model, filter: &Filter) -> Vec<Row> {
     let list = proposals(model, filter);
     if list.is_empty() {
@@ -352,7 +352,7 @@ pub fn triage(model: &Model, filter: &Filter) -> Vec<Row> {
     out
 }
 
-/// 나에게: by section, in [`Model::needs_you`]'s order.
+/// Needs you: by section, in [`Model::needs_you`]'s order.
 pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
     let mut out = Vec::new();
     for section in Section::ALL {
@@ -384,7 +384,7 @@ pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
     out
 }
 
-/// 작업 중: work in progress, the soonest done first.
+/// In progress: work in progress, the soonest done first.
 pub fn working(model: &Model, filter: &Filter) -> Vec<Row> {
     let mut tickets: Vec<&Ticket> = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && model.in_focus(t) && filter.matches(model, t)).collect();
     tickets.sort_by_key(|t| (model.eta(t).map_or(u64::MAX, |e| e.at), t.id));
@@ -415,7 +415,7 @@ fn finished<'a>(model: &'a Model, tickets: &[&'a Ticket], window: DoneWindow) ->
     done
 }
 
-/// 모든 일 and the saved views: grouped as asked; finished work in one group
+/// All work and the saved views: grouped as asked; finished work in one group
 /// that opens on a click, or by itself when the search reaches it.
 pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<Row> {
     // Proposals wait in triage and cancelled work stays out, unless the filter asks for them.
@@ -543,18 +543,18 @@ pub fn dependency_tree(model: &Model, open: &[&Ticket]) -> Vec<(TicketId, usize)
 // ── the sidebar ──
 
 /// How a ticket shows in the sidebar, which lists only live work: a member
-/// at it now, or the person's turn. Everything else is in 나에게 (proposed,
-/// handed in) or 모든 일 (to do, blocked, not started, finished).
+/// at it now, or the person's turn. Everything else is in Needs you (proposed,
+/// handed in) or All work (to do, blocked, not started, finished).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Live {
     /// A member is in the middle of a turn on it: a spinner.
     Working,
-    /// It waits on the person — 내 차례, or a member on it asks permission —
+    /// It waits on the person — "Your turn", or a member on it asks permission —
     /// and they haven't answered yet: the orange dot.
     YourTurn,
 }
 
-/// At most this many live rows under a project; the rest behind "+N개 더".
+/// At most this many live rows under a project; the rest behind "+N more".
 pub const SIDE_CAP: usize = 5;
 
 /// Whether a ticket is live work, and how.
@@ -622,7 +622,7 @@ pub fn side_groups(model: &Model) -> Vec<SideGroup> {
 }
 
 /// The built-in view of what finished lately, by its place in the views:
-/// where the sidebar's "최근 끝남" line goes.
+/// where the sidebar's "Recently done" line goes.
 pub fn recent_done_view() -> usize {
     builtin_views().iter().position(|v| v.query == "status:done").unwrap_or(0)
 }
@@ -731,7 +731,7 @@ pub fn project_talks<'a>(model: &'a Model, project: &str) -> (Vec<&'a crate::sta
 /// How long work may go unheard from before it counts as stuck, not quiet.
 pub const STUCK_AFTER: u64 = 30 * 60;
 
-/// Why work under way needs a look: what 진행 상황 puts first, in red.
+/// Why work under way needs a look: what Progress puts first, in red.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Risk {
     /// Its member's last turn failed, or said something went wrong.
@@ -775,7 +775,7 @@ pub fn step_words(what: Option<&str>, target: Option<&str>) -> Option<String> {
     Some(target.to_owned())
 }
 
-/// What 진행 상황 shows: work that needs a look first, then the rest under
+/// What Progress shows: work that needs a look first, then the rest under
 /// way by project, then what finished since `since`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Progress {
@@ -813,7 +813,7 @@ pub fn progress(model: &Model, since: u64) -> Progress {
     Progress { risks, working, done: done.into_iter().map(|t| t.id).collect() }
 }
 
-/// A project's conversations put away, the latest first: its page's 끝남.
+/// A project's conversations put away, the latest first: its page's "Ended".
 pub fn project_put_away<'a>(model: &'a Model, project: &str) -> Vec<&'a equipe_core::protocol::PutAway> {
     model.put_away.iter().filter(|c| c.project.as_deref() == Some(project)).collect()
 }
@@ -1025,7 +1025,7 @@ pub fn off_main_why(t: &Ticket, way: Option<MergeWay>) -> Option<String> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
     pub ticket: TicketId,
-    /// What the toast says: `T-42 수락 · web에 병합+push 예정`.
+    /// What the toast says: `T-42 accepted · merge + push into web`.
     pub text: String,
     pub commands: Vec<Command>,
     pub due: Instant,

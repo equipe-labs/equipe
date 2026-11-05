@@ -573,6 +573,18 @@ impl ImageSource {
         }
     }
 
+    /// equipe: what this source decoded to, if the asset system holds it now — never starting
+    /// a load. With it, [`Window::drop_image`] lets go of its atlas tiles before
+    /// [`Self::remove_asset`] lets go of the decoded pixels.
+    pub fn decoded(&self, cx: &App) -> Option<Arc<RenderImage>> {
+        match self {
+            ImageSource::Resource(resource) => cx.peek_asset::<ImgResourceLoader>(resource)?.ok(),
+            ImageSource::Custom(_) => None,
+            ImageSource::Render(data) => Some(data.clone()),
+            ImageSource::Image(data) => cx.peek_asset::<AssetLogger<ImageDecoder>>(data)?.ok(),
+        }
+    }
+
     /// Remove this image source from the asset system
     pub fn remove_asset(&self, cx: &mut App) {
         match self {

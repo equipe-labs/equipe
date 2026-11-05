@@ -10,7 +10,7 @@ use equipe_core::t;
 
 use super::{App, Pane};
 
-/// What a change does, in a few words: "mobile 한 명 더 추가", "qa-2 내보내기".
+/// What a change does, in a few words: "Add one more mobile", "Let qa-2 go".
 pub fn describe(change: &TeamChange) -> String {
     match (change.change, change.count) {
         (Change::Add, 1) => t!("app.team_add_one", role = change.role),

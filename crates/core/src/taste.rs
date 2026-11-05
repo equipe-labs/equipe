@@ -6,7 +6,7 @@
 //! go past a few dozen. No runtime types here.
 //!
 //! What it comes to is kept apart, for the person to see and edit on the
-//! design screen ("취향과 결정"): the notes the designer follows (`notes`),
+//! design screen ("Taste & decisions"): the notes the designer follows (`notes`),
 //! and the decisions made, each with why (`decisions`) — where both live
 //! and how they are read and written is `store`'s.
 
@@ -30,7 +30,7 @@ const KEEP: usize = 40;
 pub fn decided(set: &QuestionSet, answers: &[Answer], today: &str) -> Option<String> {
     let mut lines = Vec::new();
     for (question, answer) in set.questions.iter().zip(answers) {
-        let label = |i: &usize| question.options.get(*i).map(|o| o.label.trim().trim_end_matches("(Recommended)").trim().to_owned());
+        let label = |i: &usize| question.options.get(*i).map(|o| o.shown().0);
         let mut chose: Vec<String> = answer.picked.iter().filter_map(label).collect();
         // A mix: the one taken, with what of another; another round: none.
         match &answer.reaction {
@@ -48,11 +48,11 @@ pub fn decided(set: &QuestionSet, answers: &[Answer], today: &str) -> Option<Str
         if chose.is_empty() && said.is_none() {
             continue;
         }
-        let recommended = question.options.first().is_some_and(|o| o.label.contains("(Recommended)"));
+        let recommended = question.options.iter().position(|o| o.shown().1);
         let mut line = format!("- {}", question.question.trim());
         if !chose.is_empty() {
             line.push_str(&format!(" → chose {}", chose.join(", ")));
-            if recommended && answer.picked == [0] {
+            if recommended.is_some_and(|r| answer.picked == [r]) {
                 line.push_str(" (the recommendation)");
             }
         }
@@ -127,6 +127,11 @@ mod tests {
         assert!(entry.contains("Accent colour? → chose Clay; passed over Blue"), "{entry}");
         assert!(!entry.contains("Anything else?"), "nothing said, nothing kept");
         assert_eq!(decided(&set(), &[Answer::default(), Answer::default(), Answer::default()], "2026-11-03"), None);
+        // The mark equipe keeps says which was recommended, wherever it is.
+        let mut marked = set();
+        marked.questions[1].options[1].recommended = true;
+        let entry = decided(&marked, &[Answer::default(), Answer::pick(1), Answer::default()], "2026-11-03").unwrap();
+        assert!(entry.contains("Accent colour? → chose Clay (the recommendation); passed over Blue"), "{entry}");
     }
 
     #[test]

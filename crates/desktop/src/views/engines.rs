@@ -1,4 +1,4 @@
-//! Settings → AI 플랫폼: a card for each platform in `crate::engines::PLATFORMS`
+//! Settings → AI platforms: a card for each platform in `crate::engines::PLATFORMS`
 //! — its mark and name, who signs it in, where it stands, the members on it,
 //! its usage — and signing it in or out from the window. The rules are
 //! `crate::engines`; the rows and cards are settings' own (`super::settings`).
@@ -24,7 +24,7 @@ use crate::{Screen, Shell};
 /// Focus slots per card: its buttons, in the order Tab reaches them.
 pub const KEYS: usize = 4;
 
-/// Where the daemon is, as a card says it: "이 Mac", or the host.
+/// Where the daemon is, as a card says it: "this Mac", or the host.
 fn host(shell: &Shell) -> String {
     shell.endpoint.label()
 }
@@ -409,7 +409,7 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
     Some(line)
 }
 
-/// 사용량: the plan's windows where they are known; room for the rest.
+/// Usage: the plan's windows where they are known; room for the rest.
 fn usage(shell: &Shell, platform: &Platform, signed_in: bool) -> Line {
     let p = shell.palette;
     let line = Line::new(t!("engines.row_usage"), "");
@@ -506,7 +506,7 @@ impl Shell {
         .detach();
     }
 
-    /// "로그인": on the daemon's machine; from another Mac, with a code.
+    /// "Sign in": on the daemon's machine; from another Mac, with a code.
     pub fn engine_sign_in(&mut self, engine: Engine, cx: &mut Context<Self>) {
         for command in self.engines.sign_in(engine, self.endpoint.is_remote(), Instant::now()) {
             self.send_command(command);
@@ -536,7 +536,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// The code, or the page to open by hand, to the clipboard: "복사됨" a moment.
+    /// The code, or the page to open by hand, to the clipboard: "Copied" a moment.
     pub fn engine_copy(&mut self, engine: Engine, text: &str, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
         self.engines.copied = Some((engine, Instant::now()));
@@ -548,7 +548,7 @@ impl Shell {
         .detach();
     }
 
-    /// "터미널에서 로그인": Terminal opens on this Mac (the daemon's) running
+    /// "Sign in in Terminal": Terminal opens on this Mac (the daemon's) running
     /// the tool's own sign-in, for the person to finish themselves; the card
     /// looks again now and then until it is signed in.
     pub fn engine_terminal(&mut self, engine: Engine, cx: &mut Context<Self>) {

@@ -143,27 +143,55 @@ pub const SERVICE: &str = "im.equipe.daemon";
 
 /// What starts the daemon again inside the login session: once this one
 /// (`pid`) has stopped as `equipe daemon stop` asks — its work journaled, as
-/// at any restart — its login service is loaded into the person's graphical
-/// session, which runs it there (a few tries: launchd may still be letting
-/// go of an older one). Should that never take, a daemon is started anyway,
-/// so the screens find one — outside still, which its card would say again.
-pub fn relaunch_script(exe: &Path, pid: u32, uid: u32, plist: &Path) -> String {
-    let q = |p: &Path| crate::design::flows::shell_quote(&p.to_string_lossy());
-    let (exe, plist) = (q(exe), q(plist));
+/// at any restart — `equipe daemon start` has its login service run it in
+/// the person's graphical session: started again in place, or loaded afresh
+/// when launchd refuses it, a few tries each (launchd may still be letting
+/// go of an older one). It never starts one on its own beside the service:
+/// that one would be outside again, as this one is.
+pub fn relaunch_script(exe: &Path, pid: u32) -> String {
+    let exe = crate::design::flows::shell_quote(&exe.to_string_lossy());
     format!(
         "sleep 1\n{exe} daemon stop >/dev/null 2>&1\n\
          n=0; while kill -0 {pid} 2>/dev/null && [ $n -lt 150 ]; do sleep 0.2; n=$((n+1)); done\n\
-         i=0; while [ $i -lt 20 ]; do\n  launchctl bootout gui/{uid}/{SERVICE} 2>/dev/null\n  launchctl bootstrap gui/{uid} {plist} 2>/dev/null && exit 0\n  i=$((i+1)); sleep 0.5\ndone\n\
          exec {exe} daemon start >/dev/null 2>&1\n"
     )
 }
 
+/// How this daemon runs, as it sees itself ([`equipe_protocol::rpc::Runs`]).
+/// The Keychain is asked for its lock's state only — never an item, never a
+/// prompt; the caller asks off the async workers.
+pub fn runs_here() -> equipe_protocol::rpc::Runs {
+    let env = |name: &str| std::env::var(name).ok();
+    let home = user_home().unwrap_or_default();
+    equipe_protocol::rpc::Runs {
+        pid: std::process::id(),
+        ssh: ssh_bound(&env),
+        service: by_service(&env, std::process::id()),
+        login_session: in_login_session(),
+        keychain: match keychain(&home) {
+            Keychain::Unlocked => Some(true),
+            Keychain::Locked => Some(false),
+            Keychain::Unknown => None,
+        },
+    }
+}
+
+/// Whether an environment is an SSH connection's: what a process started
+/// from one inherits. (`SSH_AUTH_SOCK` alone is launchd's own agent.)
+pub fn ssh_bound(env: &dyn Fn(&str) -> Option<String>) -> bool {
+    ["SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"].iter().any(|name| env(name).is_some_and(|v| !v.is_empty()))
+}
+
+/// Whether process `pid` was started by its login service: launchd names
+/// its job in `XPC_SERVICE_NAME`, systemd its main process in `SYSTEMD_EXEC_PID`.
+pub fn by_service(env: &dyn Fn(&str) -> Option<String>, pid: u32) -> bool {
+    env("XPC_SERVICE_NAME").as_deref() == Some(SERVICE) || env("SYSTEMD_EXEC_PID").is_some_and(|p| p == pid.to_string())
+}
+
 /// Start [`relaunch_script`] on its own, outliving this daemon.
-pub fn move_into_login(exe: &Path, plist: &Path) -> std::io::Result<()> {
+pub fn move_into_login(exe: &Path) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt as _;
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    let script = relaunch_script(exe, std::process::id(), uid, plist);
+    let script = relaunch_script(exe, std::process::id());
     std::process::Command::new("/bin/sh").arg("-c").arg(script).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(drop)
 }
 
@@ -507,14 +535,31 @@ mod tests {
 
     #[test]
     fn the_daemon_starts_again_inside_once_it_has_stopped_and_never_alone_twice() {
-        let script = relaunch_script(Path::new("/Users/a b/.local/bin/equipe"), 4242, 501, Path::new("/Users/a b/Library/LaunchAgents/im.equipe.daemon.plist"));
+        let script = relaunch_script(Path::new("/Users/a b/.local/bin/equipe"), 4242);
         let stop = script.find("daemon stop").unwrap();
         let wait = script.find("kill -0 4242").unwrap();
-        let load = script.find("launchctl bootstrap gui/501 '/Users/a b/Library/LaunchAgents/im.equipe.daemon.plist'").unwrap();
-        assert!(stop < wait && wait < load, "{script}");
+        let start = script.find("exec '/Users/a b/.local/bin/equipe' daemon start").unwrap();
+        assert!(stop < wait && wait < start, "{script}");
         assert!(script.contains("'/Users/a b/.local/bin/equipe' daemon stop"), "{script}");
-        assert!(script.contains("&& exit 0"), "once loaded, nothing else starts one: {script}");
+        // `daemon start` goes through the login service, and never starts one beside it.
+        assert!(!script.contains("bootout") && !script.contains("daemon run"), "{script}");
         assert!(!script.contains("unlock") && !script.contains("security"), "never the Keychain");
+    }
+
+    #[test]
+    fn a_daemon_started_over_ssh_knows_it_and_so_does_one_its_service_started() {
+        fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+            move |name| vars.iter().find(|(n, _)| *n == name).map(|(_, v)| (*v).to_owned())
+        }
+        assert!(ssh_bound(&env(&[("SSH_CONNECTION", "100.93.184.56 54171 100.106.17.55 22")])));
+        assert!(ssh_bound(&env(&[("SSH_TTY", "/dev/ttys004")])));
+        assert!(!ssh_bound(&env(&[("SSH_AUTH_SOCK", "/private/tmp/com.apple.launchd.mM2GR5ssrV/Listeners")])), "launchd's own agent socket");
+        assert!(!ssh_bound(&env(&[("SSH_CONNECTION", "")])));
+        assert!(by_service(&env(&[("XPC_SERVICE_NAME", "im.equipe.daemon")]), 7));
+        assert!(!by_service(&env(&[("XPC_SERVICE_NAME", "application.com.apple.Terminal.123")]), 7), "a Terminal's");
+        assert!(by_service(&env(&[("SYSTEMD_EXEC_PID", "7")]), 7));
+        assert!(!by_service(&env(&[("SYSTEMD_EXEC_PID", "6")]), 7), "a shell its service started");
+        assert_eq!(runs_here().pid, std::process::id());
     }
 
     #[test]

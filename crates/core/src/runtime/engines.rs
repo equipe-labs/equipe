@@ -292,7 +292,7 @@ impl Runtime {
         }
     }
 
-    /// "35분", "2시간", "3일": how long until then.
+    /// "35m", "2h", "3d" (in the person's language): how long until then.
     fn span(&self, secs: i64) -> String {
         let secs = secs.max(60) as u64;
         match secs {

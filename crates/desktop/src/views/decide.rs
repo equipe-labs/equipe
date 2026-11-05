@@ -5,12 +5,12 @@
 //! person's own; Skip, Back and Next ⌘↵ (Submit on the last). A visual
 //! question's options are a grid of tiles instead — balanced rows of one
 //! size, fewer columns when narrow, nothing moving when one is picked — each
-//! picture opening big. A design choice's tiles each have "이걸로", sent at
-//! once, and "섞기", a menu of what the other options can give ("A에 B의
-//! 글꼴"); the card has "다시", another round, the box's words as why. The
-//! same card answers a set picked in 나에게's peek.
-//! Sent, the answers' message folds in the conversation to one line, "결정함 ·
-//! 2개", that opens to each question and what was decided. The rules are `crate::decide`'s.
+//! picture opening big. A design choice's tiles each have "This one", sent at
+//! once, and "Mix", a menu of what the other options can give ("A with B's
+//! type"); the card has "Again", another round, the box's words as why. The
+//! same card answers a set picked in the Inbox's peek.
+//! Sent, the answers' message folds in the conversation to one line, "Decided ·
+//! 2 questions", that opens to each question and what was decided. The rules are `crate::decide`'s.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -45,7 +45,7 @@ pub const PART_DECIDED: u32 = (1 << 20) + 9;
 pub enum Place {
     /// Above the composer: it folds (⌄) and closes (✕).
     Docked,
-    /// 나에게's peek, under its own heading.
+    /// The Inbox's peek, under its own heading.
     Peek,
 }
 
@@ -171,7 +171,7 @@ impl Shell {
 
     /// A keystroke, before anyone else sees it: the card's keys while it is
     /// open above an empty composer (or its own box has the typing); in
-    /// 나에게's peek, the digits, Space, Tab and ⌘↵ only — the list keeps ↑↓,
+    /// The Inbox's peek, the digits, Space, Tab and ⌘↵ only — the list keeps ↑↓,
     /// ⏎ and Esc.
     pub fn on_decide_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> Took {
         if m.control || m.alt || m.function {
@@ -319,7 +319,7 @@ impl Shell {
         }
     }
 
-    /// "이걸로" on option `n`.
+    /// "This one" on option `n`.
     pub fn decide_take(&mut self, id: u64, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.decide_react(id, window, cx, |draft, set, others| draft.take(set, n, others));
     }
@@ -329,12 +329,12 @@ impl Shell {
         self.decide_react(id, window, cx, |draft, set, others| draft.mix(set, base, from, &aspect, others));
     }
 
-    /// "다시": another round, the box's words as why.
+    /// "Again": another round, the box's words as why.
     pub fn decide_again(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         self.decide_react(id, window, cx, |draft, set, others| draft.again(set, others));
     }
 
-    /// "섞기": option `base`'s mix menu, opened or closed.
+    /// "Mix": option `base`'s mix menu, opened or closed.
     pub fn decide_mix_menu(&mut self, id: u64, base: usize, cx: &mut Context<Self>) {
         let step = self.decide.drafts.get(&id).map_or(0, |d| d.step);
         let which = (id, step, base);
@@ -352,7 +352,7 @@ impl Shell {
     }
 
     /// Dev tool (`snapshot.rs`): a design choice's one-click actions on the
-    /// card on show — `dtake:<n>` (option n's 이걸로), `dmix:<n>` (its mix
+    /// card on show — `dtake:<n>` (option n's This one), `dmix:<n>` (its mix
     /// menu opened) or `dmix:<n>,<k>` (that menu's kth line), `dagain`.
     #[cfg(feature = "snapshot")]
     pub fn decide_script_react(&mut self, verb: &str, arg: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -475,7 +475,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     Some(motion::rise(v_flex().w_full().min_h_0().mb_3().child(body), ("decide-in", id)).into_any_element())
 }
 
-/// The card in 나에게's peek.
+/// The card in the Inbox's peek.
 pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     v_flex()
@@ -606,7 +606,10 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .iter()
         .enumerate()
         .filter(|_| !q.is_visual())
-        .map(|(n, option)| option_row(p, id, n, &option.label, &option.description, draft.picked(n), draft.cursor == n, q.multi_select, &handle))
+        .map(|(n, option)| {
+            let (label, recommended) = option.shown();
+            option_row(p, id, n, &label, recommended, &option.description, draft.picked(n), draft.cursor == n, q.multi_select, &handle)
+        })
         .collect();
     let other_on = draft.cursor >= q.options.len() || typing;
     let other = field.map(|field| {
@@ -627,7 +630,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
             .on_drop(super::composer::on_answer_drop(super::composer::AttachTo::Answer(id, draft.step), handle.clone()))
             .into_any_element()
     });
-    // What is attached to this answer, and "첨부" to add more.
+    // What is attached to this answer, and "Attach" to add more.
     let attached = other.is_some().then(|| {
         let to = super::composer::AttachTo::Answer(id, draft.step);
         let items = shell.strip_of(to).map(|s| s.items().to_vec()).unwrap_or_default();
@@ -810,10 +813,12 @@ fn key_badge(p: Palette, key: &str, on: bool) -> impl IntoElement {
         .child(key.to_owned())
 }
 
-/// One option: its label (strong), what it means (quiet), its number key;
-/// picked, filled and outlined in the accent; the keys on it, outlined.
+/// One option: its label (strong) — "Recommended" beside it, in the
+/// screen's language, when it is the one recommended — what it means
+/// (quiet), its number key; picked, filled and outlined in the accent; the
+/// keys on it, outlined.
 #[allow(clippy::too_many_arguments)]
-fn option_row(p: Palette, id: u64, n: usize, label: &str, description: &str, picked: bool, cursor: bool, multi: bool, handle: &WeakEntity<Shell>) -> AnyElement {
+fn option_row(p: Palette, id: u64, n: usize, label: &str, recommended: bool, description: &str, picked: bool, cursor: bool, multi: bool, handle: &WeakEntity<Shell>) -> AnyElement {
     let handle = handle.clone();
     let check = multi.then(|| {
         div()
@@ -854,7 +859,12 @@ fn option_row(p: Palette, id: u64, n: usize, label: &str, description: &str, pic
                 .flex_1()
                 .min_w_0()
                 .gap_0p5()
-                .child(div().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label.to_owned()))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().min_w_0().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label.to_owned()))
+                        .when(recommended, |r| r.child(super::visuals::badge(p, false))),
+                )
                 .when(!description.is_empty(), |c| c.child(div().text_size(px(12.5)).line_height(px(18.)).text_color(if picked { p.text2 } else { p.muted }).child(description.to_owned()))),
         )
         .child(div().pt(px(1.)).child(key_badge(p, &(n + 1).to_string(), picked)))
@@ -878,7 +888,7 @@ fn card_tallest(shell: &Shell, place: Place) -> f32 {
 
 /// An option shown as its picture: the picture whole in the grid's 4:3 box
 /// (a click opens it big, among the others) — or, without one, a quiet box
-/// with its label — "추천" on it when it is the one recommended; under it
+/// with its label — "Recommended" on it when it is the one recommended; under it
 /// its label on one line, two of what it means (both whole under the
 /// pointer) and its number key. Every tile of a grid is one size in every
 /// state (`visuals::frame`): picked, a ring inside its border, a check on its
@@ -888,7 +898,7 @@ fn card_tallest(shell: &Shell, place: Place) -> f32 {
 fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, picked: bool, cursor: bool, w: f32, described: bool, actions: Option<Actions>, handle: &WeakEntity<Shell>, cx: &mut App) -> AnyElement {
     let p = shots.p;
     let option = &q.options[n];
-    let (label, recommended) = visual::recommended(&option.label);
+    let (label, recommended) = option.shown();
     let key = render::hash_of(("decide-tile", id, step, n));
     let (fw, h) = (w - 2., (w * visual::RATIO).floor());
     let frame = visual::frame(visual::TileState { picked, cursor, hover: 0. });
@@ -1017,9 +1027,9 @@ fn words_width(words: &str) -> f32 {
     words.chars().map(|c| if c.is_ascii() { 7.4 } else { 13.5 }).sum()
 }
 
-/// "이걸로" — filled on the tile picked or under the keys, else outlined —
-/// and "섞기" with its menu ("A에 B의 글꼴"), only when another option has
-/// something to give; on a tile too narrow for both words, "섞기" is its
+/// "This one" — filled on the tile picked or under the keys, else outlined —
+/// and "Mix" with its menu ("A with B's type"), only when another option has
+/// something to give; on a tile too narrow for both words, "Mix" is its
 /// chevron alone, named in a tip.
 #[allow(clippy::too_many_arguments)]
 fn tile_actions(p: Palette, id: u64, n: usize, key: u64, w: f32, actions: Actions, on: bool, handle: &WeakEntity<Shell>) -> AnyElement {
@@ -1195,7 +1205,7 @@ fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, mark: AnyElement, 
         .into_any_element()
 }
 
-/// The person's answers in the conversation: "결정함 · 2개" and what was
+/// The person's answers in the conversation: "Decided · 2 questions" and what was
 /// decided in short; opened, each question and its answer.
 #[allow(clippy::too_many_arguments)]
 pub fn decided_row(p: Palette, tones: render::Tones, handle: WeakEntity<Shell>, key: u64, decided: &Decided, open: bool, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -1249,7 +1259,7 @@ pub fn decided_row(p: Palette, tones: render::Tones, handle: WeakEntity<Shell>, 
     v_flex().w_full().child(line).children(body).into_any_element()
 }
 
-/// 나에게's row for a set: a mark, its ticket, the first question (and how
+/// The Inbox's row for a set: a mark, its ticket, the first question (and how
 /// many more), who asks.
 pub fn row_text(shell: &Shell, id: u64) -> Option<(String, Option<u32>, String, Rgba)> {
     let set = shell.model.asked.get(id)?;
@@ -1264,7 +1274,7 @@ pub fn row_text(shell: &Shell, id: u64) -> Option<(String, Option<u32>, String, 
     Some((title, set.ticket, name, color))
 }
 
-/// The mark 나에게 shows a decision with.
+/// The mark the Inbox shows a decision with.
 pub fn mark(p: Palette) -> AnyElement {
     tip(div().id("decide-mark").size(px(14.)).flex_none().flex().items_center().justify_center().child(icon(Icon::Message, 13., p.accent)), p, t!("state.section_decide"), None).into_any_element()
 }

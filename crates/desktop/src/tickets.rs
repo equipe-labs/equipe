@@ -1,4 +1,4 @@
-//! 티켓's rules, with no UI types: the list or the board (kanban), the board's
+//! Tickets' rules, with no UI types: the list or the board (kanban), the board's
 //! columns, what a card dropped somewhere means and sends, a ticket edited
 //! here as it will look once the daemon has it, a new ticket's body, and the
 //! edits several chosen tickets take at once. Every change is the person's
@@ -14,7 +14,7 @@ use equipe_core::t;
 use crate::board::{Filter, who};
 use crate::state::{Model, status_word};
 
-/// How 티켓 lays its tickets out.
+/// How Tickets lays its tickets out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Layout {
     /// Rows, grouped: the default.
@@ -125,7 +125,7 @@ pub enum Drop {
 }
 
 /// Why the person can't put a ticket there by hand. The statuses after
-/// 할 일 belong to the members' work and to accepting (A), not to a drag.
+/// To do belong to the members' work and to accepting (A), not to a drag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Why {
     /// A rule of the board's own (`equipe_core::board::move_rule`).
@@ -150,7 +150,7 @@ pub fn local_rank(model: &Model, id: TicketId, status: TicketStatus, before: Opt
 /// What the person may do to a ticket's status by hand — a drag, or the
 /// status menu: take a proposal or an idea on, keep a proposal or ready work
 /// as an idea, order what is ready (and the proposals and ideas), cancel
-/// anything open. Into 진행 중, 내 차례, 검토 or 끝남 it never goes by
+/// anything open. Into In progress, Your turn, Review or Done it never goes by
 /// hand: members and accepting own those.
 pub fn person_rule(t: &Ticket, to: TicketStatus) -> Result<Move, Why> {
     use TicketStatus::*;
@@ -192,7 +192,7 @@ pub fn drop_card(model: &Model, t: &Ticket, to: TicketStatus, before: Option<Tic
     if what == Move::Cancel {
         return Ok(Drop::ConfirmCancel);
     }
-    // Order means something where work waits to be picked up: 할 일, the proposals and the ideas.
+    // Order means something where work waits to be picked up: To do, the proposals and the ideas.
     let ordered = matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed | TicketStatus::Idea);
     let same_place = before == Some(t.id) || (what == Move::Reorder && next_in_column(model, t) == before && before.is_some());
     if what == Move::Reorder && (same_place || !ordered) {
@@ -217,7 +217,7 @@ fn next_in_column(model: &Model, t: &Ticket) -> Option<TicketId> {
     column.get(at + 1).map(|x| x.id)
 }
 
-/// The toast a move says, held for a moment: `T-12 → 할 일`.
+/// The toast a move says, held for a moment: `T-12 → To do`.
 pub fn move_words(t: &Ticket, what: Move, to: TicketStatus) -> String {
     match what {
         Move::Reorder => t!("tickets.toast_reordered", id = t.id),
@@ -299,7 +299,7 @@ pub fn changes_anything(t: &Ticket, edit: &TicketEdit) -> bool {
     edited(t, edit) != *t
 }
 
-/// The toast an edit says: `T-12 우선순위 → 긴급`.
+/// The toast an edit says: `T-12 Priority → Urgent`.
 pub fn edit_words(ids: &[TicketId], edit: &TicketEdit) -> String {
     let what = if let Some(priority) = edit.priority {
         format!("{} → {}", t!("tickets.prop_priority"), priority_word(priority))
@@ -416,7 +416,7 @@ pub enum Token {
     After(TicketId),
 }
 
-/// The quick line read: `@frontend #web !high after T-38 결제 오류 문구` — who,
+/// The quick line read: `@frontend #web !high after T-38 checkout error copy` — who,
 /// which project, how pressing, what it waits on; the other words are its
 /// title. A word naming nobody (or no project) stays in the title.
 pub fn parse_quick(text: &str, model: &Model) -> (Sheet, Vec<Token>) {
@@ -451,7 +451,7 @@ pub fn parse_quick(text: &str, model: &Model) -> (Sheet, Vec<Token>) {
     (sheet, tokens)
 }
 
-/// `!high`, `!긴급`, `!1` (urgent) … `!4` (low).
+/// `!high`, the locale's word for urgent (`match.priority_urgent`), `!1` (urgent) … `!4` (low).
 fn priority_of(word: &str) -> Option<Priority> {
     let is = |key: &str| crate::i18n::every(key).contains(&word);
     Priority::parse(word).or(match word {
@@ -606,13 +606,13 @@ mod tests {
         review.branch = Some("equipe/x".into());
         let m = model(vec![ticket(1, "proposed"), ticket(2, "todo"), ticket(3, "todo"), review.clone(), ticket(7, "in_progress"), ticket(8, "done")]);
         let t = |id| m.tickets.iter().find(|t| t.id == id).unwrap().clone();
-        // A proposal to 할 일: taken on, sent as a move, shown there at once.
+        // A proposal to To do: taken on, sent as a move, shown there at once.
         let Ok(Drop::Send { commands, after, what }) = drop_card(&m, &t(1), TicketStatus::Todo, Some(2)) else { panic!() };
         assert_eq!(what, Move::TakeOn);
         assert_eq!(commands, vec![Command::MoveTicket { squad: "acme".into(), ticket: 1, status: Some(TicketStatus::Todo), before: Some(2) }]);
         assert_eq!(after.status, TicketStatus::Todo);
         assert!(after.order_key() < t(2).order_key(), "above T-2");
-        // Within 할 일: only its place.
+        // Within To do: only its place.
         let Ok(Drop::Send { commands, .. }) = drop_card(&m, &t(3), TicketStatus::Todo, Some(2)) else { panic!() };
         assert_eq!(commands, vec![Command::MoveTicket { squad: "acme".into(), ticket: 3, status: None, before: Some(2) }]);
         assert_eq!(drop_card(&m, &t(2), TicketStatus::Todo, Some(3)), Ok(Drop::Stay), "where it was");

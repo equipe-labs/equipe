@@ -57,9 +57,9 @@ pub struct Choice {
     pub about: String,
     /// The characters of `label` the typed letters matched, to highlight.
     pub hits: Vec<usize>,
-    /// Where it comes from, as a small badge: `equipe`, `터미널`, a project.
+    /// Where it comes from, as a small badge: `equipe`, `terminal`, a project.
     pub badge: Option<String>,
-    /// The heading it is listed under (`멤버`, `파일`, `티켓`).
+    /// The heading it is listed under (`Members`, `Files`, `Tickets`).
     pub group: Option<&'static str>,
     /// The part of `text` that becomes one atomic token in the box once taken
     /// (a command's name), as a byte range.

@@ -1,14 +1,14 @@
 //! Asking about — and replying to — words in the conversation, as Claude's
 //! apps do: select a stretch of a reply (a call's output, a message of your
 //! own) and, the moment the button lets go, a small bar floats over the
-//! selection — "답글 달기", "Ask about this" and "Copy", each acting on the
+//! selection — "Reply", "Ask about this" and "Copy", each acting on the
 //! press.
 //!
 //! Replying opens a small box by the selection: what the person says to that
 //! passage, ⏎ making it a card in a row over the composer (Esc: nothing).
 //! They do this for as many passages as they like; each card shows their
 //! words beside a thin bar — the passage over it while the pointer is on it,
-//! and a click goes back to it — with ✕ and 답글 (the box again, to change
+//! and a click goes back to it — with ✕ and Reply (the box again, to change
 //! the words). Asking (a press, ⏎, ⌘⇧R) makes a card of the passage alone:
 //! the composer's words are the question. The cards are kept with the draft
 //! and go, in order, with the next message — the composer's words after
@@ -84,8 +84,8 @@ pub struct Offer {
     copied: bool,
 }
 
-/// The box for what the person says to a passage ("답글 달기", or a card's
-/// 답글): ⏎ makes — or changes — the card, Esc closes it.
+/// The box for what the person says to a passage ("Reply", or a card's
+/// Reply): ⏎ makes — or changes — the card, Esc closes it.
 pub struct Writing {
     session: SessionId,
     quote: String,
@@ -180,7 +180,7 @@ impl Shell {
         Some(offer)
     }
 
-    /// "복사": the words selected, to the clipboard; the bar says so a moment.
+    /// "Copy": the words selected, to the clipboard; the bar says so a moment.
     pub fn quote_copy(&mut self, cx: &mut Context<Self>) {
         let Some(offer) = self.quote.offer.as_mut() else { return };
         cx.write_to_clipboard(ClipboardItem::new_string(offer.text.clone()));
@@ -212,7 +212,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "답글 달기": the box opens by the selection, the keys in it.
+    /// "Reply": the box opens by the selection, the keys in it.
     pub fn quote_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(offer) = self.quote.offer.take() else { return };
         let ends = rules::place(None, offer.ends.get(), offer.released);
@@ -222,7 +222,7 @@ impl Shell {
         self.quote_write(offer.session, offer.text, card, ends, &words, window, cx);
     }
 
-    /// A card's 답글 (or ⏎ on it): its box again over it, its words in it.
+    /// A card's Reply (or ⏎ on it): its box again over it, its words in it.
     pub fn quote_edit(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(reply), Some(session)) = (self.composer.replies.get(n).cloned(), self.model.viewed()) else { return };
         self.composer.reveal_card(n);
@@ -670,7 +670,7 @@ pub fn cards(shell: &Shell, inset: f32, cx: &mut Context<Shell>) -> Option<AnyEl
 }
 
 /// A card: the person's words (only asked about: the passage) beside a
-/// thin bar, ✕, and 답글. A click on its words goes to the passage; the
+/// thin bar, ✕, and Reply. A click on its words goes to the passage; the
 /// pointer on it shows the passage over it.
 fn card(shell: &Shell, n: usize, reply: &Reply, editing: bool, cx: &mut Context<Shell>) -> AnyElement {
     use gpui_kit::base::ElementExt as _;

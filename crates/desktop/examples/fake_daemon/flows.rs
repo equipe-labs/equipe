@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_core::protocol::design::{DesignSystem, Flow, FlowMap, Mark, Picture, Screen, ScreenState, Walkthrough};
+use equipe_core::protocol::design::{DesignSystem, Flow, FlowMap, Look, Mark, Picture, Screen, ScreenCheck, ScreenState, Walkthrough};
 
 /// How a state is pictured: not at all, light and dark at 390, or at 390 and 1280.
 #[derive(Clone, Copy, PartialEq)]
@@ -124,6 +124,20 @@ const FLOWS: &[F] = &[
 ];
 
 /// `FAKE_LIVE=1`: the map has the person's real data beside its examples.
+/// The latest design check of some screens, as `design/checks/` would hold
+/// them: passed with its second look, failing the floor, waiting for its look.
+fn check(flow: &str, screen: &str) -> Option<ScreenCheck> {
+    let widths = vec![360, 390, 768, 1024, 1280, 1440, 1920];
+    let at = now() - 3_600;
+    match (flow, screen) {
+        ("onboarding", "login") => Some(ScreenCheck { floor: (11, 11), kept: 1, finish: 2, widths, at, look: Some(Look { pass: true, fixes: 0 }), ..Default::default() }),
+        ("onboarding", "signup") => Some(ScreenCheck { floor: (9, 11), habits: 1, finish: 1, widths, at, look: None, ..Default::default() }),
+        ("checkout", "plans") => Some(ScreenCheck { floor: (11, 11), habits: 0, finish: 1, widths, at, look: Some(Look { pass: false, fixes: 2 }), ..Default::default() }),
+        ("checkout", "pay") => Some(ScreenCheck { floor: (10, 10), widths, at, look: None, ..Default::default() }),
+        _ => None,
+    }
+}
+
 fn live() -> bool {
     std::env::var("FAKE_LIVE").is_ok_and(|v| v == "1")
 }
@@ -194,6 +208,7 @@ pub fn map(design: &Path) -> FlowMap {
                     missing: s.missing.iter().map(|m| (*m).to_owned()).collect(),
                     stale: s.stale,
                     live_stale: live(),
+                    check: check(f.id, s.id),
                 })
                 .collect(),
             videos: videos(design, f.id),

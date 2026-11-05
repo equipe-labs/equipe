@@ -732,7 +732,7 @@ pub enum Command {
     ApproveTeamChange { squad: SquadName, id: u64 },
     /// The person says no to it: nothing changes, and the PM is told.
     DeclineTeamChange { squad: SquadName, id: u64 },
-    /// A screen read the person's own words ("전부 수락", "accept T-1 and
+    /// A screen read the person's own words ("accept them all", "accept T-1 and
     /// T-3") as plainly accepting, merging or sending back handed-in work:
     /// the card to confirm it goes up in the conversation `session` at once,
     /// as [`Event::AcceptProposed`] — before the member there even answers,

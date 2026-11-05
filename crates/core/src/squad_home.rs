@@ -87,9 +87,10 @@ fn readme_text(squad: &str, language: Option<&str>) -> String {
     )
 }
 
-/// The language a squad's `language` (its English name: `Korean`) names; English when none.
+/// The language a squad's `language` (its English name: `French`) names; English when none,
+/// or when equipe doesn't speak it.
 pub(crate) fn named(language: Option<&str>) -> crate::i18n::Lang {
-    crate::i18n::Lang::ALL.into_iter().find(|l| Some(l.english_name()) == language).unwrap_or(crate::i18n::Lang::En)
+    language.and_then(crate::i18n::Lang::from_english_name).unwrap_or(crate::i18n::Lang::En)
 }
 
 /// One saved change to the home.

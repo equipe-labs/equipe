@@ -7,14 +7,14 @@ use std::sync::OnceLock;
 
 /// Every language's words, as compiled in.
 const FILES: &[(&str, &str)] = &[
-    ("ko", include_str!("../locales/ko.json")),
     ("en", include_str!("../locales/en.json")),
-    ("ja", include_str!("../locales/ja.json")),
-    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
-    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
+    ("de", include_str!("../locales/de.json")),
     ("es", include_str!("../locales/es.json")),
     ("fr", include_str!("../locales/fr.json")),
-    ("de", include_str!("../locales/de.json")),
+    ("ja", include_str!("../locales/ja.json")),
+    ("ko", include_str!("../locales/ko.json")),
+    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
+    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
 ];
 
 /// Each key's words in every language, read once.

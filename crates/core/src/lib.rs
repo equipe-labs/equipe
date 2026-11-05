@@ -21,6 +21,7 @@ pub mod scratch;
 pub mod browser;
 pub mod design;
 pub mod group;
+pub mod guard;
 pub mod heartbeat;
 pub mod desktop;
 pub mod desktop_gate;

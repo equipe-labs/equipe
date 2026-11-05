@@ -1,6 +1,6 @@
 //! Settings' engine switching, a section of its own — so the AI platforms'
 //! cards (each engine signed in) can sit beside it: how the squad moves
-//! members when a plan runs low (끄기 · 제안 · 자동), each plan as last read,
+//! members when a plan runs low (off · suggest · auto), each plan as last read,
 //! and the recommended setup for both engines, again. A child of
 //! `views/settings.rs`, drawn with its rows and controls.
 
@@ -18,7 +18,7 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// "엔진 자동 전환": the squad's choice, both plans, the setup again.
+/// "Engine switching": the squad's choice, both plans, the setup again.
 pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let p = shell.palette;
     let model = &shell.model;

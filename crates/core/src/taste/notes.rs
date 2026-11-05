@@ -1,9 +1,9 @@
 //! Taste notes as their files keep them: a Markdown bullet a note, where it
 //! came from and when in italics after it —
-//! `- 모서리는 둥글게 _(sent back on T-336, 2026-11-03)_`, and for the
+//! `- Round the corners _(sent back on T-336, 2026-11-03)_`, and for the
 //! designer's, the other tickets it was seen on and whether the person
 //! confirmed it — `_(noticed on T-301, 2026-11-03, seen on T-272 T-288,
-//! confirmed)_`; without `confirmed` it is "확인 전". A line the person
+//! confirmed)_`; without `confirmed` it is "Not confirmed". A line the person
 //! typed by hand, with nothing after it, is theirs. Whatever else the file
 //! holds (a heading, a word on what it is, the dated entries the old
 //! template kept there) is left as it is. Pure: no disk here.

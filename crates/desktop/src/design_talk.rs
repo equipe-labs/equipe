@@ -1,4 +1,4 @@
-//! 보면서 말하기: the designer's conversation docked beside the design
+//! Talk while looking: the designer's conversation docked beside the design
 //! screen, and what the person points at there attached to their words as
 //! context (`views/design_talk.rs` draws it). The rules, with no UI types:
 //! what a pointed-at thing is called on its chip, the block the member reads
@@ -23,7 +23,7 @@ pub enum DesignContext {
     /// and where it is on the daemon's machine.
     Asset { name: String, path: String },
     /// A screen of the UI map in one state: the ids (`onboarding`, `login`,
-    /// `error`), the title as the person reads it (`온보딩 › 로그인 › 오류`)
+    /// `error`), the title as the person reads it (`Onboarding › Log in › Error`)
     /// and the picture on show, if it has one.
     Screen { flow: String, screen: String, state: String, title: String, picture: Option<String> },
 }
@@ -47,7 +47,7 @@ fn is_logo(name: &str) -> bool {
 }
 
 impl DesignContext {
-    /// What its chip says: `색 · accent (#1D4ED8 / 다크 #8FB0FF)`, `로고 · mark.svg`, `온보딩 › 로그인 › 오류`.
+    /// What its chip says: `Colour · accent (#1D4ED8 / dark #8FB0FF)`, `Logo · mark.svg`, `Onboarding › Log in › Error`.
     pub fn label(&self) -> String {
         match self {
             Self::Token { name, value_light, value_dark } => {

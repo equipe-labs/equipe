@@ -16,19 +16,19 @@
 //!
 //! ```json
 //! { "flows": [
-//!   { "id": "onboarding", "title": "온보딩", "summary": "첫 실행부터 첫 프로젝트까지",
+//!   { "id": "onboarding", "title": "Onboarding", "summary": "From first launch to the first project",
 //!     "screens": [
-//!       { "id": "login", "title": "로그인", "note": "틀리면 필드 아래 한 줄로 알려요",
+//!       { "id": "login", "title": "Log in", "note": "A mistake is said in one line under the field",
 //!         "url": "http://localhost:3000/login", "source": ["src/app/login/page.tsx"], "ticket": 142,
 //!         "expects": ["empty", "error", "loading"],
 //!         "states": [
-//!           { "id": "default", "label": "기본", "kind": "default" },
-//!           { "id": "error", "label": "오류", "kind": "error", "note": "비밀번호가 틀렸을 때",
+//!           { "id": "default", "label": "Default", "kind": "default" },
+//!           { "id": "error", "label": "Error", "kind": "error", "note": "When the password is wrong",
 //!             "url": "http://localhost:3000/login?fixture=wrong-password" } ] } ],
 //!     "walk": [
 //!       { "go": "http://localhost:3000/login", "screen": "login" },
 //!       { "fill": ["#email", "ada@example.com"] }, { "click": "button[type=submit]" },
-//!       { "press": "Enter" }, { "wait": 800 }, { "say": "비밀번호가 틀리면", "screen": "login" } ] } ] }
+//!       { "press": "Enter" }, { "wait": 800 }, { "say": "With a wrong password", "screen": "login" } ] } ] }
 //! ```
 //!
 //! - Ids are folder names: lowercase letters, digits and `-`; no screen is
@@ -744,6 +744,22 @@ fn git_out(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     output_within(command, GIT_TIMEOUT).ok().filter(|out| out.status.success()).map(|out| out.stdout)
 }
 
+/// A screen's latest design check, in short, from `design/checks/<flow>/<screen>.json`
+/// (`super::lint::record`): its second look counted only when it came after the check.
+pub fn check_of(design: &Path, flow: &str, screen: &str) -> Option<crate::protocol::design::ScreenCheck> {
+    let r = super::lint::record::read(design, &format!("{flow}/{screen}"))?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Some(crate::protocol::design::ScreenCheck {
+        floor: (count(r.summary.floor.0), count(r.summary.floor.1)),
+        habits: count(r.summary.habits),
+        kept: count(r.summary.waived.len()),
+        finish: count(r.summary.finish),
+        widths: r.summary.widths.clone(),
+        at: r.at,
+        look: r.verdict.filter(|v| v.at >= r.at).map(|v| crate::protocol::design::Look { pass: v.pass, fixes: count(v.fixes.len()) }),
+    })
+}
+
 /// The map in `design` (a design folder), its pictures found and its
 /// missing and stale screens worked out; `repo`, the repository it is in
 /// (`None` for the squad's own folder: nothing is stale). `None` when there
@@ -840,7 +856,8 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
                 }
             }
             let title = screen.title.unwrap_or_else(|| screen.id.clone());
-            screens.push(Screen { id: screen.id, title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, states, missing, stale, live_stale });
+            let check = check_of(design, &flow.id, &screen.id);
+            screens.push(Screen { id: screen.id, title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, states, missing, stale, live_stale, check });
         }
         let mut videos = found.videos.remove(&flow.id).unwrap_or_default();
         videos.sort_by_key(|(v, at)| (!v.current, std::cmp::Reverse(*at), v.mode != "light", v.width));

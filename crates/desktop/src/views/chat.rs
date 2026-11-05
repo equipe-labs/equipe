@@ -67,6 +67,8 @@ const PART_NEWS: u32 = PART_MORE + 2;
 const PART_GROUP: u32 = PART_MORE + 3;
 const PART_ROUTINE: u32 = PART_MORE + 4;
 const PART_BACKGROUND: u32 = PART_MORE + 5;
+const PART_CHECK: u32 = PART_MORE + 6;
+const PART_LOOK: u32 = PART_MORE + 7;
 /// A call of an open group, by its number in it.
 const PART_ROW: u32 = 1 << 21;
 /// The side panel's width; the conversation keeps the rest.
@@ -88,7 +90,7 @@ pub struct Chat {
     shown: Option<Shown>,
     /// What each of `blocks` is about (`None`: the whole squad, or not said).
     about: Rc<Vec<Option<String>>>,
-    /// The conversation follows the project in focus (settings ▸ 일반).
+    /// The conversation follows the project in focus (settings ▸ General).
     pub follow: bool,
     /// The list was drawn anew for another slice: it fades in (by serial).
     faded_in: Option<u64>,
@@ -125,7 +127,7 @@ pub struct Chat {
     pub picked: Option<(String, u64)>,
     /// Bubbles taken back, fading out until the daemon says they are gone.
     pub leaving: Rc<HashSet<String>>,
-    /// Tab reaches the summary band's "다시 시도" and its close.
+    /// Tab reaches the summary band's "Try again" and its close.
     pub compact_focus: (FocusHandle, FocusHandle),
 }
 
@@ -1019,7 +1021,185 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .into_any_element(),
         Block::Pending { text, steer, at } => pending_row(rows, key, text, *steer, *at, rows.project_of(ix), cx),
         Block::HandOver { name, why, live } => handed_row(rows, key, name, why, *live),
+        Block::DesignCheck(summary) => check_row(rows, key, summary, superseded(&rows.blocks, ix), window, cx),
+        Block::SecondLook { screen, verdict } => look_row(rows, key, screen, verdict, superseded(&rows.blocks, ix), window, cx),
     }
+}
+
+/// Whether the check or look at `ix` has been run again on its screen since:
+/// then it is an earlier round, drawn as a quiet line that opens; the latest
+/// of each is a card. The method shows, and a long turn stays calm.
+fn superseded(blocks: &[Block], ix: usize) -> bool {
+    let later = &blocks[ix + 1..];
+    match &blocks[ix] {
+        Block::DesignCheck(s) => later.iter().any(|b| matches!(b, Block::DesignCheck(t) if t.screen == s.screen)),
+        Block::SecondLook { screen, verdict } => later.iter().any(|b| matches!(b, Block::SecondLook { screen: t, verdict: v } if t == screen && (v.first == verdict.first || verdict.first))),
+        _ => false,
+    }
+}
+
+/// A design check that ran: the floor's count with its dot, what else it
+/// found, the widths it was drawn at, and — opened — each finding. An
+/// earlier round on the same screen is one line that opens on the same.
+fn check_row(rows: &Rows, key: u64, s: &equipe_core::design::lint::Summary, earlier: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let tone = if s.passes() { rows.tones.added } else { rows.tones.danger };
+    let open = rows.is_open(key, PART_CHECK, false);
+    let progress = motion::openness(("check-open", key), open, window, cx);
+    let floor = crate::checks::floor(s);
+    let counts = crate::checks::counts(s);
+    let details = crate::checks::details(s);
+    let body = (progress > 0. && !details.is_empty()).then(|| {
+        motion::Reveal::new(("check-body", key), progress, div().opacity(progress).pt_1().child(check_details(p, rows.tones, key, &details)).into_any_element())
+    });
+    if earlier {
+        let mut said = vec![t!("check.title").to_owned(), floor];
+        said.extend(counts);
+        said.push(crate::checks::widths(s));
+        let head = disclosure_head(rows, ("check", key), PART_CHECK, key, false, window, cx)
+            .child(div().flex_none().child(if s.passes() { icon(Icon::Shield, 12., p.muted) } else { icon(Icon::Alert, 12., rows.tones.danger) }))
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(said.join(" · ")))
+            .child(chevron(p.muted, progress));
+        return v_flex().child(head).children(body).into_any_element();
+    }
+    let title = h_flex()
+        .gap(px(8.))
+        .items_center()
+        .text_size(px(SMALL))
+        .child(icon(Icon::Shield, 14., p.text2))
+        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("check.title")))
+        .children(s.screen.clone().map(|screen| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(META)).text_color(p.muted).child(screen)));
+    let mut line = h_flex()
+        .flex_wrap()
+        .gap_x(px(6.))
+        .items_center()
+        .text_size(px(SMALL))
+        .line_height(px(SMALL_LINE))
+        .child(super::board::dot(tone, 6.))
+        .child(div().font_weight(FontWeight::MEDIUM).text_color(p.text2).child(floor));
+    for c in counts {
+        line = line.child(div().text_color(p.muted).child("·")).child(div().text_color(p.muted).child(c));
+    }
+    let widths = h_flex().flex_wrap().gap(px(4.)).items_center().text_size(px(META)).line_height(px(META_LINE)).text_color(p.muted).child(div().mr_1().child(if s.widths.is_empty() { t!("check.source_only") } else { t!("check.drawn") })).children(
+        s.widths.iter().map(|w| div().px(px(5.)).rounded(px(R_SM)).border_1().border_color(p.hair).font_family(MONO).child(w.to_string())),
+    );
+    let more = (!details.is_empty()).then(|| {
+        disclosure_head(rows, ("check", key), PART_CHECK, key, false, window, cx).child(div().child(t!("check.details"))).child(chevron(p.muted, progress))
+    });
+    v_flex()
+        .w_full()
+        .max_w(px(MEASURE))
+        .px(px(14.))
+        .py(px(12.))
+        .gap(px(8.))
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(p.hair)
+        .child(title)
+        .child(tip(div().id(("check-tip", key)).child(line), p, t!("check.floor_tip"), None))
+        .child(widths)
+        .children(more)
+        .children(body)
+        .into_any_element()
+}
+
+/// Each finding, a line: its kind, the rule's name, what was seen (a kept
+/// habit's reason).
+fn check_details(p: Palette, tones: Tones, key: u64, details: &[crate::checks::Detail]) -> impl IntoElement {
+    use crate::checks::Kind as K;
+    v_flex().gap(px(4.)).pl(px(2.)).children(details.iter().enumerate().map(move |(n, d)| {
+        let (kind, color) = match d.kind {
+            K::Fails => (t!("check.kind_fails"), tones.danger),
+            K::Habit => (t!("check.kind_habit"), p.text2),
+            K::Kept => (t!("check.kind_kept"), p.muted),
+            K::Note => (t!("check.kind_note"), p.muted),
+            K::Skipped => (t!("check.kind_skipped"), p.muted),
+        };
+        h_flex()
+            .gap(px(8.))
+            .items_start()
+            .text_size(px(SMALL))
+            .line_height(px(SMALL_LINE))
+            .child(div().flex_none().w(px(76.)).text_size(px(META)).text_color(color).child(kind))
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .flex_1()
+                    .child(div().text_color(p.text2).child(d.rule.clone()))
+                    .when(!d.said.is_empty(), |c| c.child(div().text_color(p.muted).child(SelectableText::new(("check-said", key << 8 | n as u64), d.said.clone())))),
+            )
+    }))
+}
+
+/// A second look's verdict: fresh eyes, said apart from the member — who
+/// looked and on what, pass or the fixes it asks for, each where on the screen.
+fn look_row(rows: &Rows, key: u64, screen: &str, v: &equipe_core::design::lint::record::Verdict, earlier: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let tone = if v.pass { rows.tones.added } else { rows.tones.warning };
+    let fixes = v.fixes.iter().enumerate().map(|(n, f)| {
+        h_flex()
+            .gap(px(8.))
+            .items_start()
+            .text_size(px(SMALL))
+            .line_height(px(SMALL_LINE))
+            .child(div().flex_none().text_color(p.muted).child(format!("{}.", n + 1)))
+            .child(div().min_w_0().flex_1().text_color(p.prose).child(SelectableText::new(("look-fix", key << 8 | n as u64), crate::checks::fix(f))))
+    });
+    if earlier {
+        let open = rows.is_open(key, PART_LOOK, false);
+        let progress = motion::openness(("look-open", key), open, window, cx);
+        let head = disclosure_head(rows, ("look", key), PART_LOOK, key, false, window, cx)
+            .child(div().flex_none().child(icon(Icon::Eye, 12., if v.pass { p.muted } else { rows.tones.warning })))
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("{} · {}", t!("look.name"), crate::checks::verdict(v))))
+            .child(chevron(p.muted, progress));
+        let body = (progress > 0.).then(|| {
+            motion::Reveal::new(
+                ("look-body", key),
+                progress,
+                v_flex().opacity(progress).pt_1().pl(px(18.)).gap(px(4.)).text_size(px(SMALL)).child(div().text_color(p.muted).child(crate::checks::who(v))).when(!v.summary.is_empty(), |c| c.child(div().text_color(p.prose).child(v.summary.clone()))).children(fixes).into_any_element(),
+            )
+        });
+        return v_flex().child(head).children(body).into_any_element();
+    }
+    // Its own face: not the member's, so the verdict reads as someone else's.
+    let face = div().flex_none().size(px(24.)).rounded_full().border_1().border_color(p.hair).bg(p.raised).flex().items_center().justify_center().child(icon(Icon::Eye, 13., p.text2));
+    let head = h_flex()
+        .gap(px(10.))
+        .items_center()
+        .child(face)
+        .child(
+            v_flex()
+                .min_w_0()
+                .child(
+                    h_flex()
+                        .gap(px(8.))
+                        .items_center()
+                        .text_size(px(SMALL))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("look.name")))
+                        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(META)).text_color(p.muted).child(screen.to_owned())),
+                )
+                .child(div().text_size(px(META)).line_height(px(META_LINE)).text_color(p.muted).child(crate::checks::who(v))),
+        );
+    let verdict = h_flex()
+        .gap(px(6.))
+        .items_center()
+        .text_size(px(SMALL))
+        .child(super::board::dot(tone, 6.))
+        .child(div().font_weight(FontWeight::MEDIUM).text_color(p.text2).child(crate::checks::verdict(v)));
+    v_flex()
+        .w_full()
+        .max_w(px(MEASURE))
+        .px(px(14.))
+        .py(px(12.))
+        .gap(px(8.))
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(p.hair)
+        .child(head)
+        .child(verdict)
+        .when(!v.summary.is_empty(), |c| c.child(div().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.prose).child(SelectableText::new(("look-summary", key), v.summary.clone()))))
+        .children(fixes)
+        .into_any_element()
 }
 
 /// A command the member left in the background ended: a quiet line in its
@@ -1112,7 +1292,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized);
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::DesignCheck(_) | Block::SecondLook { .. });
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
@@ -1771,7 +1951,7 @@ fn keyed_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: impl In
 
 /// Your message, as Claude's apps show it: a quiet bubble on the right, as
 /// wide as your words up to most of the column, no name over it; what it
-/// attached just above it, its start only when it is long ("더 보기"), and on
+/// attached just above it, its start only when it is long ("Show more"), and on
 /// hover a small row of actions beneath.
 #[allow(clippy::too_many_arguments)]
 fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<String>, heard: bool, cx: &mut App) -> AnyElement {
@@ -1880,7 +2060,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
 }
 
 /// A routine that ran — handed over as the person's message, on its schedule
-/// or their click: not their bubble but a heading, "정기 업무 · 디자인 리뷰", that
+/// or their click: not their bubble but a heading, "Routine · Design review", that
 /// opens on what it asked. What answers it comes under it.
 fn routine_row(rows: &Rows, key: u64, text: &str, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
@@ -2223,7 +2403,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// The conversation follows the project in focus, or shows whole (settings ▸ 일반).
+    /// The conversation follows the project in focus, or shows whole (settings ▸ General).
     pub fn set_follow_project(&mut self, on: bool, cx: &mut Context<Self>) {
         self.remembered.whole_conversation = !on;
         self.remembered.save(&equipe_providers::credentials::equipe_home());
@@ -2261,7 +2441,7 @@ impl Shell {
     }
 
     /// Ask the last thing said again.
-    /// "이어서 하기" on a stopped turn: the member is asked to carry on from
+    /// "Carry on" on a stopped turn: the member is asked to carry on from
     /// where it stopped, as the person's message.
     pub fn resume_stopped(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.set_text(t!("chat.resume_words"), window, cx);
@@ -2375,7 +2555,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 }
 
 /// Whether block `ix` is a turn's "Stopped." with nothing the person said
-/// after it: the place for "이어서 하기".
+/// after it: the place for "Carry on".
 fn resumable(blocks: &[Block], ix: usize) -> bool {
     let stopped = equipe_core::i18n::note(crate::i18n::lang(), equipe_core::protocol::transcript::notes::STOPPED);
     matches!(blocks.get(ix), Some(Block::Note(text)) if *text == stopped) && !blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_)))

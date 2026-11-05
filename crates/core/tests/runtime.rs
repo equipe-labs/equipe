@@ -2575,7 +2575,8 @@ fn squads_home(home: &Path) -> PathBuf {
 
 #[tokio::test]
 async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_all() {
-    let (claude, recorded) = recording_claude(&answering("ok"));
+    let seen = scratch("member-env");
+    let (claude, recorded) = recording_claude(&format!("printf '%s' \"$EQUIPE_MEMBER\" > '{}/member'\n{}", seen.display(), answering("ok")));
     let (site, app) = (named("site"), named("app"));
     let home = squad_home(&[&site, &app]);
     squads::create(&home, "beta", &named("beta-app")).unwrap();
@@ -2591,14 +2592,25 @@ async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_
     assert_eq!(added, [site.to_str().unwrap(), app.to_str().unwrap()], "every project, read from the home");
     let settings = settings_of(call);
     let deny: Vec<&str> = settings["permissions"]["deny"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
-    for rule in [
-        format!("Edit(/{}/**)", site.display()),
-        format!("Write(/{}/**)", app.display()),
-        format!("Read(/{}/**)", beta.display()),
-    ] {
-        assert!(deny.contains(&rule.as_str()), "{rule} in {deny:?}");
-    }
+    assert!(deny.contains(&format!("Read(/{}/**)", beta.display()).as_str()), "{deny:?}");
     assert!(!deny.iter().any(|r| r.contains("/acme/home")), "its own home is its to write");
+    // equipe's guard keeps the projects read only — the file tools out, a command's
+    // writes too — rather than Claude Code's rule for them, which took `cp`'s source
+    // for a write: copying out of a project is reading it.
+    let guard = &settings["hooks"]["PreToolUse"][0];
+    assert_eq!(guard["matcher"], equipe_core::guard::MATCHER);
+    let command = guard["hooks"][0]["command"].as_str().unwrap();
+    assert!(command.starts_with("/opt/equipe hook --work "), "{command}");
+    for project in [&site, &app] {
+        assert!(command.contains(&format!("--read-only {}", project.display())) || command.contains(&format!("--read-only '{}'", project.display())), "{command}");
+        assert!(!deny.iter().any(|r| r.contains(project.to_str().unwrap())), "{deny:?}");
+    }
+    // `equipe browser` is refused by the engine's own rules too, by name and by path.
+    let refused: Vec<&str> = call.iter().skip_while(|a| *a != "--disallowedTools").skip(1).take_while(|a| !a.starts_with("--")).map(String::as_str).collect();
+    assert!(refused.contains(&"Bash(equipe browser:*)") && refused.contains(&"Bash(/opt/equipe browser:*)"), "{refused:?}");
+    // Its commands know they are a member's, and its charter needn't say what the guard refuses.
+    assert_eq!(std::fs::read_to_string(seen.join("member")).unwrap(), "frontend");
+    assert!(!arg(call, "--append-system-prompt").unwrap().contains("Never sleep"));
     assert_eq!(settings["sandbox"]["filesystem"]["denyWrite"], serde_json::json!([site, app]));
     assert!(settings["sandbox"]["filesystem"]["denyRead"].as_array().unwrap().contains(&serde_json::json!(beta)));
 
@@ -2685,6 +2697,37 @@ async fn a_visual_hand_in_shows_the_images_its_branch_made_and_they_follow_it_in
     let done = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Done)).await;
     let ticket = ticket_changed(&done).pop().unwrap();
     assert_eq!(ticket.images, [folder.canonicalize().unwrap().join("brand/logo-a.png").to_string_lossy().into_owned()]);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_designer_hands_a_screen_in_only_once_it_was_checked_and_seen_fresh() {
+    let site = named("site");
+    // Its edit-time check wrote down a mockup it edited and didn't check since.
+    let pending = r#"{"edited":[{"path":"design/mockups/home.html","at":1,"created":true}],"checked":[]}"#;
+    let (claude, _recorded) = recording_claude(&writing_turn("design/checks/pending.json", pending));
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Home", "body": "A first screen.", "owner": "designer", "kind": "task" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    let ledger = ws.path.join("design/checks/pending.json");
+    for _ in 0..100 {
+        if ledger.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let refused = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(refused.is_error && refused.text.contains("design/mockups/home.html was edited and not checked") && refused.text.contains("equipe design second-look"), "{refused:?}");
+
+    // Checked and seen: nothing is left in its ledger, and it hands in.
+    std::fs::remove_file(&ledger).unwrap();
+    let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(!handed.is_error, "{handed:?}");
     handle.shutdown().await;
 }
 

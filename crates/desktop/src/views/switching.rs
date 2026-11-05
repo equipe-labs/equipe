@@ -2,9 +2,9 @@
 //! plan was read — what is left of each engine's five hours and week, the
 //! reset on the pointer, a click opens `/usage`, foldable to the tightest
 //! window — and that window in the title bar while the sidebar is away; the
-//! card above the composer — "엔진 전환 제안" with [옮기기] [이번엔 그대로],
-//! what equipe did in `auto` with [되돌리기], the recommended
-//! setup once with [적용] [나중에], each with who moves from what to what; and
+//! card above the composer — "Engine switch" with [Move] [Not this time],
+//! what equipe did in `auto` with [Undo], the recommended
+//! setup once with [Apply] [Later], each with who moves from what to what; and
 //! the small badge by a member's name. The rules are `crate::switching`'.
 
 use equipe_core::protocol::Engine;
@@ -55,7 +55,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "추천 구성 다시 보기": the daemon proposes the setup again.
+    /// "See the recommended setup again": the daemon proposes the setup again.
     pub fn show_engine_setup(&mut self, cx: &mut Context<Self>) {
         let squad = self.model.squad.clone();
         self.send_command(equipe_core::protocol::Command::ShowEngineSetup { squad });
@@ -132,7 +132,7 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 
 /// One engine: its name, then each window — a short label, a thin bar of
 /// what is left, the percent left — and under it, once a reading is old, how
-/// old. Never read: "아직 모름" and how it gets read.
+/// old. Never read: "not read yet" and how it gets read.
 fn meter_row(shell: &Shell, m: &Meter, windows: &[Window], now: i64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let name = rules::engine_name(m.engine);
@@ -255,7 +255,7 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64, bars: bool) -> AnyElement {
 }
 
 /// The title bar's glance, while the sidebar is away: the tightest window's
-/// engine and what is left ("Claude 42% 남음"), its words on the pointer, a
+/// engine and what is left ("Claude 42% left"), its words on the pointer, a
 /// click opens `/usage`.
 pub fn glance(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;

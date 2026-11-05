@@ -7,7 +7,7 @@ exclude = ["vendor"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.103.34"
+version = "0.103.39"
 
 [profile.release]
 lto = "thin"
@@ -37,6 +37,10 @@ debug = false
 # - gpui-pre: a cached view is drawn again when an entity it read while drawn
 #   is notified between frames, not only itself (`Window::notified_entities`,
 #   `view.rs`; the desktop's panes, docs/PERF-2026-10.md 6).
+# - gpui-pre: `App::peek_asset` and `ImageSource::decoded` — what an image
+#   decoded to, without loading it, so the app can let a picture it no longer
+#   shows go from the asset cache and the atlas (`app.rs`, `elements/img.rs`;
+#   the desktop's `views::visuals::release`).
 # - gpui-component: dictation may use the platform's servers when the person
 #   agreed (`SystemRecognizer::servers`; macOS on-device otherwise).
 # - gpui-base: a text view's link underline and the room between list items

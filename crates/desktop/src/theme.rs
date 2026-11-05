@@ -137,8 +137,9 @@ impl Palette {
             on_primary: rgb(0x151513),
             on_accent: rgb(0x151513),
             amber: rgb(0xEABA67),
-            // What waits on the person: clear, not peach — and small, a
-            // number in it, one filled badge at most.
+            // What waits on the person: clear, not peach — filled once (the
+            // sidebar's total, a number in it), a dot beside the words and
+            // figures everywhere else (docs/DESIGN-SYSTEM.md).
             orange: rgb(0xFF7A45),
             red: rgb(0xF2857D),
             // One lightness and chroma (OKLCH 0.80, 0.11), so no member is louder.
@@ -238,7 +239,9 @@ pub const SANS: &str = ".SystemUIFont";
 
 /// The Mac's faces for what SF doesn't draw — Korean, Japanese, Chinese —
 /// the app's language's first: Han characters are shared, and each language
-/// wants its own shapes for them. All come with every Mac, in every weight.
+/// wants its own shapes for them. In a language written without them, the
+/// first of these the Mac's own languages name leads, else Simplified
+/// Chinese's. All come with every Mac, in every weight.
 pub fn fallbacks(lang: equipe_core::i18n::Lang) -> FontFallbacks {
     use equipe_core::i18n::Lang;
     static BY_LANG: std::sync::OnceLock<Vec<(Lang, FontFallbacks)>> = std::sync::OnceLock::new();
@@ -247,15 +250,18 @@ pub fn fallbacks(lang: equipe_core::i18n::Lang) -> FontFallbacks {
     const SC: &str = "PingFang SC";
     const TC: &str = "PingFang TC";
     let all = BY_LANG.get_or_init(|| {
+        let face = |lang: Lang| match lang {
+            Lang::Ko => Some(KO),
+            Lang::Ja => Some(JA),
+            Lang::ZhHans => Some(SC),
+            Lang::ZhHant => Some(TC),
+            _ => None,
+        };
+        let system = equipe_core::i18n::preferred().into_iter().find_map(face).unwrap_or(SC);
         Lang::ALL
             .iter()
             .map(|&lang| {
-                let first = match lang {
-                    Lang::Ja => JA,
-                    Lang::ZhHans => SC,
-                    Lang::ZhHant => TC,
-                    _ => KO,
-                };
+                let first = face(lang).unwrap_or(system);
                 let faces = std::iter::once(first).chain([KO, JA, SC, TC].into_iter().filter(|f| *f != first)).map(str::to_owned).collect();
                 (lang, FontFallbacks::from_fonts(faces))
             })
@@ -481,6 +487,22 @@ mod tests {
         }
     }
 
+    /// What waits on the person, as the sidebar says it: the one filled badge
+    /// (its figures on the orange at 4.5:1) and the wait dot before every
+    /// other count (a graphic, at 3:1 on every surface a row sits on).
+    #[test]
+    fn the_filled_badge_and_the_wait_dot_read_in_both_appearances() {
+        for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
+            let p = Palette::new(appearance);
+            assert!(contrast(p.on_accent, p.orange) >= 4.5, "badge figures ({appearance:?}): {:.2}", contrast(p.on_accent, p.orange));
+            for (surface, bg) in [("side", p.side), ("side_hover", p.side_hover), ("side_sel", p.side_sel)] {
+                for (mark, c) in [("wait", p.orange), ("risk", p.danger())] {
+                    assert!(contrast(c, bg) >= 3., "{mark} dot on {surface} ({appearance:?}): {:.2}", contrast(c, bg));
+                }
+            }
+        }
+    }
+
     /// Lightness (CIE L*, 0–100) of a colour.
     fn lightness(c: gpui_kit::Rgba) -> f32 {
         let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
@@ -537,12 +559,23 @@ mod tests {
     }
 
     /// Every language gets every CJK face, its own first: Japanese Han in
-    /// Hiragino's shapes, Chinese in PingFang's, Hangul (and Latin UIs) in
-    /// Apple SD Gothic Neo's.
+    /// Hiragino's shapes, Chinese in PingFang's, Hangul in Apple SD Gothic
+    /// Neo's; a Latin UI the first the Mac's languages name, else PingFang SC
+    /// — never Korean's for everyone.
     #[test]
     fn each_language_draws_cjk_in_its_own_faces_first() {
         use equipe_core::i18n::Lang;
-        for (lang, first) in [(Lang::Ko, "Apple SD Gothic Neo"), (Lang::Ja, "Hiragino Sans"), (Lang::ZhHans, "PingFang SC"), (Lang::ZhHant, "PingFang TC"), (Lang::En, "Apple SD Gothic Neo"), (Lang::De, "Apple SD Gothic Neo")] {
+        let latin = equipe_core::i18n::preferred()
+            .into_iter()
+            .find_map(|l| match l {
+                Lang::Ko => Some("Apple SD Gothic Neo"),
+                Lang::Ja => Some("Hiragino Sans"),
+                Lang::ZhHans => Some("PingFang SC"),
+                Lang::ZhHant => Some("PingFang TC"),
+                _ => None,
+            })
+            .unwrap_or("PingFang SC");
+        for (lang, first) in [(Lang::Ko, "Apple SD Gothic Neo"), (Lang::Ja, "Hiragino Sans"), (Lang::ZhHans, "PingFang SC"), (Lang::ZhHant, "PingFang TC"), (Lang::En, latin), (Lang::De, latin)] {
             let faces = super::fallbacks(lang);
             let faces = faces.fallback_list();
             assert_eq!(faces[0], first, "{lang:?}");

@@ -107,6 +107,9 @@ pub fn history(n: usize) -> Vec<Entry> {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut out = Vec::with_capacity(n + 16);
     let projects = [Some("app"), Some("web"), Some("api"), None];
+    // `FAKE_HISTORY_PICTURES=<n>`: that many different screenshots, not six
+    // over and over — every one a picture of its own, as a real day's are.
+    let pictures = std::env::var("FAKE_HISTORY_PICTURES").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&n| n > 0).unwrap_or(6);
     let mut turn = 0u64;
     while out.len() < n {
         if turn.is_multiple_of(6) {
@@ -116,7 +119,7 @@ pub fn history(n: usize) -> Vec<Entry> {
         let mut said = ASKS[rng.below(ASKS.len() as u64) as usize].to_owned();
         if turn % 12 == 5 {
             for k in 0..1 + rng.below(3) {
-                said.push_str(&format!(" [image: {}]", picture((turn + k) % 6)));
+                said.push_str(&format!(" [image: {}]", picture((turn + k) % pictures)));
             }
         }
         out.push(Entry::User { text: said });
@@ -136,7 +139,13 @@ pub fn history(n: usize) -> Vec<Entry> {
             };
             out.push(entry);
         }
-        out.push(Entry::Reply { text: reply(&mut rng, turn) });
+        let mut text = reply(&mut rng, turn);
+        // With `FAKE_HISTORY_PICTURES`, every other reply shows a screenshot
+        // of its own too, embedded (`read_image`, as from the daemon).
+        if pictures != 6 && turn.is_multiple_of(2) {
+            text.push_str(&format!("\n\n![screen]({})", picture(1000 + turn % pictures)));
+        }
+        out.push(Entry::Reply { text });
         if rng.below(3) == 0 {
             for k in 0..1 + rng.below(3) {
                 let t = 40 + (turn + k) % 90;
@@ -156,4 +165,12 @@ pub fn long_reply() -> String {
     text.push_str("\n\n");
     text.push_str(&reply(&mut rng, 8));
     text
+}
+
+/// `read_image` for the history's screenshots (`FAKE_HISTORY_PICTURES`).
+pub fn read(ask: &equipe_core::protocol::rpc::ReadImage) -> Result<equipe_core::protocol::rpc::ImageRead, String> {
+    if !ask.path.starts_with(SITE) {
+        return Err(format!("{} isn't a history picture", ask.path));
+    }
+    equipe_core::visuals::read(std::path::Path::new(&ask.path), &[std::path::PathBuf::from(SITE)], ask.max)
 }

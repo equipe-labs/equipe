@@ -2,7 +2,7 @@
 //! composer, under the accent bar: who asks, the question and where the
 //! person is (1/2), the options numbered (picked ones marked), `o` for their
 //! own words, and the keys. Answered, the message the answers went in reads
-//! as one line in the conversation: "✓ 결정함 · 2개 — …".
+//! as one line in the conversation: "✓ Decided · 2 questions — …".
 
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
@@ -50,8 +50,13 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
         };
         let number = format!("{} ", n + 1);
         let label_style = if picked { theme.accent().add_modifier(Modifier::BOLD) } else { theme.bold() };
-        let used = cols(&number) + cols(mark) + cols(&option.label);
-        let mut spans = vec![Span::styled(number, theme.bold()), Span::styled(mark, if picked { theme.accent() } else { theme.dim() }), Span::styled(ui::fit(&option.label, width.saturating_sub(4)), label_style)];
+        // The one recommended says so once, in the screen's language.
+        let label = match option.shown() {
+            (label, true) => format!("{label} ({})", t!("view.decide_recommended")),
+            (label, false) => label,
+        };
+        let used = cols(&number) + cols(mark) + cols(&label);
+        let mut spans = vec![Span::styled(number, theme.bold()), Span::styled(mark, if picked { theme.accent() } else { theme.dim() }), Span::styled(ui::fit(&label, width.saturating_sub(4)), label_style)];
         if !option.description.is_empty() && used + 4 < width {
             spans.push(Span::styled(format!(" — {}", ui::fit(&option.description, width - used - 3)), theme.dim()));
         }
@@ -104,7 +109,7 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
         .collect()
 }
 
-/// "이미지 2개 · logo-a.png, logo-b.png" under what shows them, indented
+/// "2 images · logo-a.png, logo-b.png" under what shows them, indented
 /// by `indent`; `None` without pictures.
 fn pictures_line(images: &[String], indent: &str, theme: Theme, width: usize) -> Option<Line<'static>> {
     if images.is_empty() {
@@ -208,6 +213,20 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_key(KeyEvent::new(code, KeyModifiers::NONE), std::time::Instant::now());
+    }
+
+    #[test]
+    fn the_recommended_option_is_marked_once_in_the_screens_words() {
+        let mut questions = set();
+        // Marked by equipe, and still written into its label by an older member: one mark.
+        questions.questions[0].options[0].recommended = true;
+        questions.questions[0].options[1] = Choice { label: "Google".into(), ..Choice::default() };
+        let mut app = pm();
+        app.on_event(Event::QuestionsAsked { squad: "acme".into(), questions });
+        let shot = screen(&app, 110, 30);
+        assert_eq!(shot.matches("Recommended").count(), 1, "{shot}");
+        assert!(shot.contains("1 ○ Magic link (Recommended)"), "{shot}");
+        assert!(shot.contains("2 ○ Google") && !shot.contains("Google (Recommended)"), "{shot}");
     }
 
     #[test]

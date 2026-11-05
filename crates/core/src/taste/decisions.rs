@@ -1,11 +1,11 @@
 //! Design decisions as their files keep them, the brand's decision record:
 //!
 //! ```md
-//! ## 2026-11-03 · 히어로 레이아웃
-//! - Chose: B — 한 단, 여백 넉넉히
-//! - Picture: decisions/2026-11-03-히어로-레이아웃.png
-//! - Passed over: A — 두 단; C — 꽉 찬 사진
-//! - Why: “좀 더 숨 쉬게”
+//! ## 2026-11-03 · Hero layout
+//! - Chose: B — one column, generous space
+//! - Picture: decisions/2026-11-03-hero-layout.png
+//! - Passed over: A — two columns; C — a full-bleed photo
+//! - Why: “let it breathe more”
 //! - Ticket: T-272
 //! ```
 //!
@@ -167,7 +167,7 @@ pub fn from_history(body: &str) -> Vec<Decision> {
 /// record, each with where its chosen picture is now: a question whose pick
 /// has a picture. (One answered in words alone stays in what equipe learned.)
 pub fn from_answers(set: &crate::protocol::decide::QuestionSet, answers: &[crate::protocol::decide::Answer], today: &str) -> Vec<(Decision, String)> {
-    let label = |l: &str| l.trim().trim_end_matches("(Recommended)").trim().to_owned();
+    let label = |l: &str| crate::protocol::decide::recommended(l).0;
     set.questions
         .iter()
         .zip(answers)
