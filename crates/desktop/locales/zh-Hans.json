@@ -1924,7 +1924,7 @@
   "settings.start": "启动后显示",
   "settings.start_desc": "打开应用时最先看到的画面",
   "settings.suggestions": "建议下一条消息",
-  "settings.suggestions_desc": "成员回答后，在空输入框中以灰字显示建议 · 按 → 采用",
+  "settings.suggestions_desc": "成员回答后，在空输入框中以灰字显示建议 · 按 Tab 采用",
   "settings.system_notifications": "系统通知权限",
   "settings.system_notifications_desc": "如果 macOS 关闭了 equipe 的通知，就什么也收不到",
   "settings.team_foot": "模型和思考强度从下一轮开始生效，对话会继续。“跟随小队”使用权限中的默认模式。",

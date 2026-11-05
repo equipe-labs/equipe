@@ -1978,7 +1978,7 @@
   "settings.start": "Opens on",
   "settings.start_desc": "What the window shows when the app opens",
   "settings.suggestions": "Suggest my next message",
-  "settings.suggestions_desc": "After a member answers, a greyed guess in the empty box · → takes it",
+  "settings.suggestions_desc": "After a member answers, a greyed guess in the empty box · Tab takes it",
   "settings.system_notifications": "System permission",
   "settings.system_notifications_desc": "If macOS has equipe's notifications off, none arrive",
   "settings.team_foot": "Model and effort apply from the next turn; the conversation carries on. “Squad's” uses the default mode under Permissions.",

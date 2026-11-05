@@ -1978,7 +1978,7 @@
   "settings.start": "Ouvre sur",
   "settings.start_desc": "Ce que la fenêtre montre à l'ouverture",
   "settings.suggestions": "Suggérer mon prochain message",
-  "settings.suggestions_desc": "Après la réponse d'un membre, une suggestion grisée dans la zone vide · → l'accepte",
+  "settings.suggestions_desc": "Après la réponse d'un membre, une suggestion grisée dans la zone vide · Tab l'accepte",
   "settings.system_notifications": "Autorisation du système",
   "settings.system_notifications_desc": "Si macOS a coupé les notifications d'equipe, aucune n'arrive",
   "settings.team_foot": "Le modèle et l'effort s'appliquent dès le tour suivant ; la conversation continue. « Celui de l'équipe » utilise le mode par défaut des Autorisations.",
