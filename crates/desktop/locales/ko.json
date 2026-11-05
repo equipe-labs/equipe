@@ -1924,7 +1924,7 @@
   "settings.start": "처음 보는 화면",
   "settings.start_desc": "앱을 열면 먼저 보이는 곳",
   "settings.suggestions": "다음 말 제안",
-  "settings.suggestions_desc": "멤버가 답한 뒤 빈 입력창에 할 말을 흐리게 보여 줘요 · →로 받기",
+  "settings.suggestions_desc": "멤버가 답한 뒤 빈 입력창에 할 말을 흐리게 보여 줘요 · Tab으로 받기",
   "settings.system_notifications": "시스템 알림 권한",
   "settings.system_notifications_desc": "macOS에서 equipe의 알림이 꺼져 있으면 아무것도 오지 않아요",
   "settings.team_foot": "모델과 생각 깊이는 다음 차례부터, 대화는 이어져요. ‘스쿼드 따름’은 권한의 기본 모드를 써요.",

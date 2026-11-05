@@ -453,7 +453,7 @@ impl Composer {
         }
         self.suggestion = guess;
         let hint = match &self.suggestion {
-            Some(g) => format!("{g}  →"),
+            Some(g) => suggestion_hint(g),
             None => placeholder(model),
         };
         if hint != self.placeholder {
@@ -505,6 +505,19 @@ fn pm_about(model: &Model) -> Option<String> {
 }
 
 /// What the empty box says: who it is for.
+/// Whether `key` takes the greyed suggestion: only in an empty box showing
+/// one, with no list of choices open, and for Tab only when no cards wait
+/// over the box (Tab from an empty box reaches those).
+fn takes_suggestion(key: &str, text: &str, suggested: bool, choices_open: bool, cards: bool) -> bool {
+    text.is_empty() && suggested && !choices_open && (key == "right" || (key == "tab" && !cards))
+}
+
+/// The greyed suggestion in an empty box, and the key that takes it: Tab, as
+/// in a terminal or an editor (→ takes it too).
+fn suggestion_hint(guess: &str) -> String {
+    format!("{guess}  · Tab")
+}
+
 fn placeholder(model: &Model) -> String {
     let Some(member) = model.selected_member() else {
         return t!("composer.placeholder").to_owned();
@@ -1621,8 +1634,9 @@ impl Shell {
                     None => false,
                 }
             }
-            // → on an empty box takes the greyed suggestion.
-            "right" if plain && text.is_empty() && self.composer.suggestion.is_some() => {
+            // Tab (or →) on an empty box takes the greyed suggestion; with
+            // cards over the box, Tab reaches them instead (below).
+            "tab" | "right" if plain && takes_suggestion(key, &text, self.composer.suggestion.is_some(), self.composer.open(), !self.composer.replies.is_empty()) => {
                 if let Some(guess) = self.composer.suggestion.clone() {
                     self.composer.set_text(&guess, window, cx);
                     cx.notify();
@@ -3008,7 +3022,19 @@ mod tests {
         assert!(!super::stop_on_escape(Some((7, t0)), 8, t0 + std::time::Duration::from_millis(300)), "another conversation's");
     }
 
-    use super::{Act, Engine, Menu, MenuKind, Row, efforts, pm_about, short_model, shows_recipient, takes};
+    use super::{Act, Engine, Menu, MenuKind, Row, efforts, pm_about, short_model, shows_recipient, suggestion_hint, takes, takes_suggestion};
+
+    #[test]
+    fn tab_takes_the_greyed_suggestion_as_the_arrow_does_and_the_box_says_so() {
+        assert!(takes_suggestion("tab", "", true, false, false), "Tab takes it");
+        assert!(takes_suggestion("right", "", true, false, false), "→ still does");
+        assert!(!takes_suggestion("tab", "", false, false, false), "no suggestion: Tab moves on as everywhere");
+        assert!(!takes_suggestion("tab", "fix the", true, false, false), "something written: it isn't taken over");
+        assert!(!takes_suggestion("tab", "", true, true, false), "a list of choices open: Tab takes the choice");
+        assert!(!takes_suggestion("tab", "", true, false, true), "cards over the box: Tab reaches them");
+        assert!(takes_suggestion("right", "", true, false, true));
+        assert!(suggestion_hint("Run the tests").ends_with("Tab"), "the box shows the key that takes it");
+    }
     use crate::state::Model;
 
     #[test]

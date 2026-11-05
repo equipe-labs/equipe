@@ -1978,7 +1978,7 @@
   "settings.start": "Abre en",
   "settings.start_desc": "Lo que muestra la ventana al abrir la app",
   "settings.suggestions": "Sugerir mi siguiente mensaje",
-  "settings.suggestions_desc": "Tras la respuesta de un miembro, una sugerencia en gris en el cuadro vacío · → la acepta",
+  "settings.suggestions_desc": "Tras la respuesta de un miembro, una sugerencia en gris en el cuadro vacío · Tab la acepta",
   "settings.system_notifications": "Permiso del sistema",
   "settings.system_notifications_desc": "Si macOS tiene desactivados los avisos de equipe, no llega ninguno",
   "settings.team_foot": "El modelo y el esfuerzo se aplican desde el siguiente turno; la conversación sigue. «La de la escuadra» usa el modo por defecto de Permisos.",

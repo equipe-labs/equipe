@@ -1978,7 +1978,7 @@
   "settings.start": "Öffnet mit",
   "settings.start_desc": "Was das Fenster beim Öffnen zeigt",
   "settings.suggestions": "Nächste Nachricht vorschlagen",
-  "settings.suggestions_desc": "Nach einer Antwort ein grauer Vorschlag im leeren Feld · → übernimmt ihn",
+  "settings.suggestions_desc": "Nach einer Antwort ein grauer Vorschlag im leeren Feld · Tab übernimmt ihn",
   "settings.system_notifications": "Systemberechtigung",
   "settings.system_notifications_desc": "Wenn macOS die Mitteilungen von equipe ausgeschaltet hat, kommt keine an",
   "settings.team_foot": "Modell und Denktiefe gelten ab dem nächsten Zug; das Gespräch geht weiter. „Wie der Squad“ nutzt den Standardmodus unter Berechtigungen.",

@@ -1924,7 +1924,7 @@
   "settings.start": "最初に開く画面",
   "settings.start_desc": "アプリを開いたとき最初に表示する場所",
   "settings.suggestions": "次のメッセージを提案",
-  "settings.suggestions_desc": "メンバーの返答後、空の入力欄に薄く提案を表示します · → で採用",
+  "settings.suggestions_desc": "メンバーの返答後、空の入力欄に薄く提案を表示します · Tab で採用",
   "settings.system_notifications": "システムの通知許可",
   "settings.system_notifications_desc": "macOS で equipe の通知がオフだと何も届きません",
   "settings.team_foot": "モデルと思考の深さは次のターンから適用され、会話は続きます。「スクワッドに従う」は権限の既定モードを使います。",
