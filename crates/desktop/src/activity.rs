@@ -425,6 +425,23 @@ pub fn watched(watch: &CommandWatch, name: &str, steers: bool) -> Option<Watched
     })
 }
 
+/// What "Send now" says it did, for member `name`, as the daemon will do it:
+/// never stopping the work. At work (`working`): a command running now
+/// (`commanding`) is stopped so the next step comes at once; else the member
+/// reads it at that step — or, on an engine that can't read mid-work
+/// (`steers` false), when the turn ends. Not at work: sent, `count` together.
+pub fn read_now(name: &str, working: bool, steers: bool, commanding: bool, count: usize) -> String {
+    let words = crate::i18n::catalog();
+    let name = [("name", name.to_owned())];
+    match (working, steers, commanding) {
+        (false, _, _) if count > 1 => words.fill("composer.sent_now_many", &[("count", count.to_string())]),
+        (false, _, _) => words.get("composer.sent_now").to_owned(),
+        (true, false, _) => words.fill("composer.read_now_later", &name),
+        (true, true, true) => words.fill("composer.read_now_command", &name),
+        (true, true, false) => words.fill("composer.read_now_next", &name),
+    }
+}
+
 /// `just now`, `5m ago`, `3h ago`, `2d ago`.
 pub fn ago(secs: u64) -> String {
     let words = crate::i18n::catalog();
@@ -552,6 +569,18 @@ mod tests {
         let Some(Watched::Stuck { says, hint, command: false }) = watched(&watch(None, WatchState::Stuck { idle_secs: 600 }), "pm", false) else { panic!() };
         assert!(says.starts_with("이 명령으로 10분 동안"), "{says}");
         assert!(hint.contains("작업을 멈추면"), "only the turn can be stopped: {hint}");
+    }
+
+    #[test]
+    fn send_now_never_says_the_work_was_stopped() {
+        assert_eq!(read_now("pm", true, true, true, 1), "명령을 멈추는 중 — pm이(가) 바로 읽고 어떻게 할지 정해요");
+        assert_eq!(read_now("pm", true, true, false, 2), "pm이(가) 곧 다음 단계에서 읽어요 — 하던 일은 계속돼요");
+        assert!(read_now("pm", true, false, false, 1).contains("이번 차례가 끝나면"), "an engine that can't read mid-work: at the turn's end");
+        assert_eq!(read_now("pm", false, true, false, 1), "지금 보냈어요");
+        assert_eq!(read_now("pm", false, true, false, 3), "기다리던 3개를 한 메시지로 지금 보냈어요");
+        for flash in [read_now("pm", true, true, true, 1), read_now("pm", true, true, false, 1), read_now("pm", true, false, false, 1), read_now("pm", false, true, false, 1)] {
+            assert!(!flash.contains("멈췄어요"), "{flash}");
+        }
     }
 
     #[test]

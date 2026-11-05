@@ -1252,15 +1252,25 @@ impl Shell {
         cx.notify();
     }
 
-    /// Send now: the member's turn stops, as Esc stops it, and everything
-    /// waiting goes to it at once — in the order shown, as one message.
+    /// Send now: what waits is read now — never by stopping the work. At
+    /// work, the member reads it at its next step (a command running now is
+    /// stopped, just it, so that step comes at once) and decides what to do;
+    /// not at work, it all goes as one message, in the order shown.
     pub fn send_pending_now(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.model.viewed() else { return };
         let Some(texts) = self.model.convo().map(|c| c.queue.texts()).filter(|t| !t.is_empty()) else { return };
         let n = texts.len();
+        let working = self.model.viewed_presence() == Some(Presence::Working);
+        let member = self.model.selected_member();
+        let name = member.map(|m| m.name.clone()).unwrap_or_default();
+        let steers = member.is_some_and(|m| m.engine.is_some());
+        let commanding = working && steers && self.model.convo().and_then(|c| c.command_watch()).is_some_and(|w| w.process.is_some());
         self.send_command(Command::SendNow { session, texts });
+        if commanding && let Some(convo) = self.model.convo_mut() {
+            convo.stopping_command = true;
+        }
         self.chat.picked = None;
-        self.composer.flash = Some(if n > 1 { t!("composer.sent_now_many", count = n) } else { t!("composer.sent_now").to_owned() });
+        self.composer.flash = Some(crate::activity::read_now(&name, working, steers, commanding, n));
         self.chat.follow_tail(cx);
         cx.notify();
     }

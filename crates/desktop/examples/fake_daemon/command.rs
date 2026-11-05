@@ -5,7 +5,8 @@
 //! no CPU, a build at six cores, nothing under the engine, a request waiting
 //! on the person, or stuck — with a process, or with nothing. "Stop this
 //! command" (`stop_command`) ends it as the daemon would: the step fails,
-//! the member says so and its turn ends.
+//! the member says so and its turn ends; "Send now" (`send_now`) does the
+//! same, and what waited is read at the step after it.
 
 use std::time::Duration;
 
@@ -47,13 +48,34 @@ pub async fn run(session: SessionId, events: &broadcast::Sender<Event>, mode: &s
 
 /// "Stop this command": the step fails, as the engine hears it, and the turn goes on to its end.
 pub async fn stopped(session: SessionId, events: broadcast::Sender<Event>) {
+    stopped_and_read(session, events, Vec::new()).await;
+}
+
+/// "Send now" while the command hangs: it is stopped, and what waited is read at the step that follows.
+pub async fn stopped_and_read(session: SessionId, events: broadcast::Sender<Event>, read: Vec<String>) {
     tokio::time::sleep(Duration::from_millis(600)).await;
     let _ = events.send(Event::CommandWatch { session, watch: None });
     let outcome = ToolOutcome { ok: false, exit: Some(143), ms: Some(1_686_000), output: "Terminated".into(), ..Default::default() };
     let _ = events.send(Event::ToolResult { session, tool: "Bash".into(), target: Some(COMMAND.into()), outcome });
+    for text in read {
+        let _ = events.send(Event::Steered { session, text });
+    }
     for chunk in ["The query was stopped. ", "I'll read the count from the journal instead."] {
         let _ = events.send(Event::TextDelta { session, text: chunk.into() });
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Completed, usage: None });
+}
+
+/// "Send now" with no command to stop: what waits is read at the next step,
+/// the work going on — a memo a steer first, as the daemon makes it.
+pub async fn read_at_next_step(session: SessionId, events: broadcast::Sender<Event>, read: Vec<String>) {
+    for text in &read {
+        let _ = events.send(Event::MemoWithdrawn { session, text: text.clone() });
+        let _ = events.send(Event::SteerQueued { session, text: text.clone(), project: None });
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    for text in read {
+        let _ = events.send(Event::Steered { session, text });
+    }
 }
