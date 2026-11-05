@@ -33,7 +33,7 @@ design/
 ## 재생성
 ```sh
 cd design
-npm ci               # style-dictionary ^4 (참조 해석에 사용; 출력은 scripts/build.mjs의 포맷터)
+npm ci               # style-dictionary ^5, Node 22+ (참조 해석에 사용; 출력은 scripts/build.mjs의 포맷터)
 npm run build        # tokens/ → tokens.json + build/{css,rust,swift,kotlin}
 npm run contrast     # 대비 계산 → docs/contrast.md (미달이 있으면 종료 코드 1)
 npm run lint:css     # reference/components.css에 원시값이 없는지
