@@ -3588,15 +3588,15 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad) else { return };
         let Ok(Some(c)) = journal.reopen_conversation(id) else { return };
-        let lines = journal.conversation(id).unwrap_or_default();
+        let (lines, lines_at) = journal.conversation_at(id).unwrap_or_default();
         let Some(m) = self.sessions.get(&pm) else { return };
         let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
         let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
         let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
         lane.title = title.clone();
-        lane.transcript = Transcript::from_entries(lines.clone());
+        lane.transcript = Transcript::with_times(lines.clone(), lines_at.clone());
         self.publish_lane(id, lane, pm, c.project, true);
-        self.publish(Event::ConversationBack { session: id, title, lines });
+        self.publish(Event::ConversationBack { session: id, title, lines, lines_at });
         self.publish_put_away(squad);
     }
 
@@ -6957,7 +6957,7 @@ it back there once they have done it.{again} End your turn now with a short line
             .filter(|(_, s)| s.squad.as_deref() == Some(squad))
             .map(|(&id, s)| {
                 let entries = s.transcript.entries();
-                let recent = scope::from(entries, entries.len().saturating_sub(SNAPSHOT_LINES));
+                let (recent, recent_at) = scope::from_at(entries, s.transcript.times(), entries.len().saturating_sub(SNAPSHOT_LINES));
                 let mut visuals = crate::visuals::diagram::kept(&self.config.home, squad, &recent);
                 visuals.extend(crate::visuals::card::kept(&self.config.home, squad, &recent));
                 SessionInfo {
@@ -6974,6 +6974,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     tokens: s.tokens,
                     context: s.context,
                     recent,
+                    recent_at,
                     queued: s.queued.clone(),
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),
@@ -7095,7 +7096,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     let _ = journal.close_session(record.id);
                     continue;
                 };
-                let conversation = journal.conversation(record.id).unwrap_or_default();
+                let (conversation, said_at) = journal.conversation_at(record.id).unwrap_or_default();
                 let history = conversation
                     .iter()
                     .filter_map(|entry| match entry {
@@ -7189,7 +7190,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         desk_context: None,
                         last_turn: None,
                         refresh,
-                        transcript: Transcript::from_entries(conversation),
+                        transcript: Transcript::with_times(conversation, said_at),
                         turn: None,
                         queued,
                         memo_threads,
@@ -7222,9 +7223,9 @@ it back there once they have done it.{again} End your turn now with a short line
                 for c in journal.conversations().unwrap_or_default() {
                     let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
                     let mut lane = lane_of(pm, &self.sessions[&pm], c.project, thread, true);
-                    let lines = journal.conversation(c.id).unwrap_or_default();
+                    let (lines, lines_at) = journal.conversation_at(c.id).unwrap_or_default();
                     lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
-                    lane.transcript = Transcript::from_entries(lines);
+                    lane.transcript = Transcript::with_times(lines, lines_at);
                     self.sessions.insert(c.id, lane);
                 }
             }

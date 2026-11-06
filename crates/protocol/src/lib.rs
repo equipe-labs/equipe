@@ -1583,6 +1583,9 @@ pub enum Event {
         title: Option<String>,
         #[serde(default)]
         lines: Vec<Entry>,
+        /// When each of `lines` was said, as [`SessionInfo::recent_at`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines_at: Vec<Option<u64>>,
     },
     /// The conversations put away, the latest first ([`Snapshot::put_away`]).
     PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
@@ -2333,6 +2336,12 @@ pub struct SessionInfo {
     /// The latest part of the conversation, oldest first. A reply still
     /// streaming is its last `Reply`.
     pub recent: Vec<Entry>,
+    /// When each line of `recent` was said, in unix seconds, one per line in
+    /// the same order: a message when it came, a reply when it was done.
+    /// `None` where not known (kept before times were, or still streaming);
+    /// empty from a daemon that predates it — then no line has a time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_at: Vec<Option<u64>>,
     /// Memos waiting for the turn in progress to end.
     #[serde(default)]
     pub queued: Vec<String>,
@@ -2887,6 +2896,7 @@ mod tests {
                 tokens: 12,
                 context: None,
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+                recent_at: vec![Some(1_762_300_000), None],
                 queued: vec!["and the tests".into()],
                 queued_project: None,
                 queued_in: vec![None],
@@ -2907,6 +2917,37 @@ mod tests {
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn when_lines_were_said_travels_beside_them_and_older_peers_go_without() {
+        let info = |recent_at: Option<serde_json::Value>| {
+            let mut v = json!({
+                "session": 2, "project": "/repo", "engine": "claude", "model": null, "access": "read_only", "workspace": null,
+                "state": "ready", "title": null, "tokens": 0, "recent": [{ "kind": "user", "text": "hi" }, { "kind": "reply", "text": "hello" }],
+            });
+            if let Some(at) = recent_at {
+                v["recent_at"] = at;
+            }
+            v
+        };
+        // An older daemon's snapshot: no times, and none shown.
+        let old: SessionInfo = serde_json::from_value(info(None)).unwrap();
+        assert!(old.recent_at.is_empty());
+        // A newer one's: one per line, `null` where not known.
+        let new: SessionInfo = serde_json::from_value(info(Some(json!([1_762_300_000, null])))).unwrap();
+        assert_eq!(new.recent_at, vec![Some(1_762_300_000), None]);
+        let sent = serde_json::to_value(&new).unwrap();
+        assert_eq!(sent["recent_at"], json!([1_762_300_000, null]));
+        assert_eq!(sent["recent"], info(None)["recent"], "the lines themselves as before, for an older screen");
+        assert!(serde_json::to_value(&old).unwrap().get("recent_at").is_none(), "none known: not sent");
+
+        let back = json!({ "type": "conversation_back", "session": 5, "lines": [{ "kind": "user", "text": "hi" }] });
+        let Event::ConversationBack { lines_at, .. } = serde_json::from_value(back).unwrap() else { panic!("conversation back") };
+        assert!(lines_at.is_empty());
+        let back = Event::ConversationBack { session: 5, title: None, lines: vec![Entry::User { text: "hi".into() }], lines_at: vec![Some(9)] };
+        assert_eq!(serde_json::to_value(&back).unwrap()["lines_at"], json!([9]));
+        assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&back).unwrap()).unwrap(), back);
     }
 
     #[test]

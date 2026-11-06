@@ -1032,6 +1032,7 @@ pub(crate) mod tests {
             tokens: 0,
             context: None,
             recent: (0..200).map(|_| Entry::Reply { text: line.clone() }).collect(),
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],
