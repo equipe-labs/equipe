@@ -208,7 +208,7 @@
   "mode.auto.summary": "edita, instala, compila y prueba por su cuenta, en el sandbox de su worktree; pregunta antes de todo lo demás (red, pushes, tus cuentas)",
   "mode.full": "acceso total",
   "mode.full.short": "no pregunta nada, salvo para actuar en tu nombre",
-  "mode.full.summary": "hace sin preguntar todo lo que tu cuenta puede, salvo lo que equipe siempre bloquea; sigue preguntando antes de actuar en tu nombre Con acceso total un miembro ejecuta todo lo que puede tu cuenta, así que equipe no puede impedir del todo que uno decidido actúe en tu nombre mediante un proceso que no ve — auto es la opción más segura por defecto.",
+  "mode.full.summary": "hace sin preguntar todo lo que tu cuenta puede, salvo lo que equipe siempre bloquea; sigue preguntando antes de actuar en tu nombre. Con acceso total un miembro ejecuta todo lo que puede tu cuenta, así que equipe no puede impedir del todo que uno decidido actúe en tu nombre mediante un proceso que no ve (auto es la opción más segura por defecto).",
   "mode.read_only": "solo lectura",
   "mode.read_only.short": "lee y planifica; no cambia nada",
   "mode.read_only.summary": "lee y planifica: no cambia nada y solo ejecuta lo que sirve para mirar",

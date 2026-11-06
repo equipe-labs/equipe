@@ -1900,7 +1900,7 @@
   "settings.mode_follows": "Wie der Squad",
   "settings.mode_foot": "⌘⇧M ändert ihn auch im Eingabefeld.",
   "settings.mode_full": "Vollzugriff",
-  "settings.mode_full_desc": "Tut alles, was dein Konto kann, ohne zu fragen – außer dem immer Gesperrten; fragt weiterhin, bevor es in deinem Namen handelt",
+  "settings.mode_full_desc": "Tut ohne zu fragen alles, was dein Konto kann, außer dem immer Gesperrten; fragt weiterhin, bevor es in deinem Namen handelt",
   "settings.mode_read_only": "Nur lesen",
   "settings.mode_read_only_desc": "Liest und plant; ändert nichts",
   "settings.no_members": "Noch keine Mitglieder",
