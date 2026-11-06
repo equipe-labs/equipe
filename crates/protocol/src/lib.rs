@@ -26,10 +26,20 @@ pub mod routines;
 pub mod secrets;
 pub mod signals;
 
-/// How many subagents a member runs at once unless the person sets it
-/// ([`Command::SetSubagentsAtOnce`]): Claude Code's own cap, which every
-/// member was held to before the squad could set it.
-pub const SUBAGENTS_AT_ONCE: u32 = 20;
+/// How many subagents Claude Code runs at once on its own
+/// (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` unset): what a Claude Code member
+/// runs until the person sets it ([`Command::SetSubagentsAtOnce`]).
+pub const CLAUDE_SUBAGENTS_AT_ONCE: u32 = 20;
+/// …and Codex on its own (`agents.max_concurrent_threads_per_session` unset).
+pub const CODEX_SUBAGENTS_AT_ONCE: u32 = 6;
+
+/// How many subagents `engine` runs at once on its own.
+pub fn engine_subagents_at_once(engine: Engine) -> u32 {
+    match engine {
+        Engine::Claude => CLAUDE_SUBAGENTS_AT_ONCE,
+        Engine::Codex => CODEX_SUBAGENTS_AT_ONCE,
+    }
+}
 /// The most the person can set: past it, a plan's limits run out long before
 /// the work is done.
 pub const MOST_SUBAGENTS_AT_ONCE: u32 = 50;
@@ -1003,9 +1013,10 @@ pub enum Command {
     /// keeps every acceptance for themselves.
     SetPmAccepts { squad: SquadName, on: bool },
     /// How many subagents each member of the squad runs at once, where its
-    /// engine has them: given to the engine and said in its charter.
+    /// engine has them: given to the engine and said in its charter. `None`:
+    /// each engine's own ([`engine_subagents_at_once`]), nothing given to it.
     /// Answered by [`Event::SubagentsAtOnceChanged`].
-    SetSubagentsAtOnce { squad: SquadName, at_once: u32 },
+    SetSubagentsAtOnce { squad: SquadName, at_once: Option<u32> },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
     /// each at its member's next ticket boundary. Only ever the person's.
     ApplyEngineProposal { squad: SquadName, id: u64 },
@@ -1981,8 +1992,9 @@ pub enum Event {
     /// How long an empty board waits before the PM is woken now
     /// ([`Command::SetIdleWake`]); 0: never.
     IdleWakeChanged { squad: SquadName, hours: u32 },
-    /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]).
-    SubagentsAtOnceChanged { squad: SquadName, at_once: u32 },
+    /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]);
+    /// `None`: each engine's own.
+    SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
     /// The squad's signals now, each with its latest readings: on a new
     /// reading, one turned on or off, or paused.
     SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
@@ -2459,7 +2471,7 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_wake_hours: Option<u32>,
     /// How many subagents a member runs at once ([`Command::SetSubagentsAtOnce`]).
-    /// `None` from a daemon that predates it.
+    /// `None`: each engine's own — as on a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagents_at_once: Option<u32>,
     /// The squad's signals, each with its latest readings.

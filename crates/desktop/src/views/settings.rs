@@ -53,6 +53,8 @@ pub enum Pop {
     /// What new members of a role start with: its model, its effort.
     RoleModel(&'static str),
     RoleEffort(&'static str),
+    /// How many subagents each member runs at once.
+    Subagents,
 }
 
 /// What a pop-up's row does.
@@ -67,6 +69,8 @@ enum Act {
     /// A role's default on an engine (`None`: the recommendation again).
     RoleModel(&'static str, Engine, Option<String>),
     RoleEffort(&'static str, Engine, Option<String>),
+    /// Subagents at once (`None`: each engine's own).
+    Subagents(Option<u32>),
 }
 
 pub struct SettingsUi {
@@ -306,54 +310,15 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// The steps "Subagents at once" moves through: one at a time near the
-/// bottom, where each makes a difference, wider above.
-const SUBAGENT_STEPS: [u32; 15] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+/// The numbers "Subagents at once" offers besides each engine's own: one at
+/// a time near the bottom, where each makes a difference, wider above.
+const SUBAGENT_CHOICES: [u32; 15] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
 
-/// The next step from `now`, fewer or more; `now` itself at either end.
-fn subagents_step(now: u32, more: bool) -> u32 {
-    let next = if more { SUBAGENT_STEPS.iter().find(|&&n| n > now) } else { SUBAGENT_STEPS.iter().rev().find(|&&n| n < now) };
-    next.copied().unwrap_or(now)
-}
-
-/// How many subagents each member runs at once: − and + either side of the
-/// number, as the zoom's pill; each step goes to the daemon.
-fn subagents_stepper(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let now = shell.model.subagents_at_once;
-    let step = |id: &'static str, glyph: Icon, more: bool, tip: &'static str, cx: &mut Context<Shell>| {
-        let to = subagents_step(now, more);
-        let enabled = connected && to != now;
-        let seg = h_flex()
-            .id(id)
-            .h_full()
-            .w(px(CONTROL))
-            .justify_center()
-            .items_center()
-            .rounded(px(R_SM))
-            .when(!enabled, |s| s.opacity(0.4))
-            .when(enabled, |s| {
-                s.cursor_pointer().on_click(cx.listener(move |this, _, _, _| {
-                    let squad = this.model.squad.clone();
-                    this.send_command(Command::SetSubagentsAtOnce { squad, at_once: to });
-                }))
-            })
-            .tip(p, tip, None)
-            .child(icon(glyph, ICON_SM, p.text2));
-        motion::hover_fill(seg, SharedString::from(format!("{id}-fill")), p.wash, false).into_any_element()
-    };
-    h_flex()
-        .flex_none()
-        .h(px(CONTROL))
-        .p(px(2.))
-        .gap(px(2.))
-        .items_center()
-        .rounded(px(R_MD))
-        .bg(if p.is_dark() { p.wash } else { p.code_bg })
-        .child(step("subagents-fewer", Icon::Minus, false, t!("settings.subagents_fewer"), cx))
-        .child(div().min_w(px(36.)).text_center().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(now.to_string()))
-        .child(step("subagents-more", Icon::Plus, true, t!("settings.subagents_more"), cx))
-        .into_any_element()
+/// "Engine default — Claude Code 20, Codex 6": what members run when the
+/// person hasn't set a number.
+fn subagents_engine_default() -> String {
+    use equipe_core::protocol::{CLAUDE_SUBAGENTS_AT_ONCE, CODEX_SUBAGENTS_AT_ONCE};
+    t!("settings.subagents_engine_default", claude = CLAUDE_SUBAGENTS_AT_ONCE, codex = CODEX_SUBAGENTS_AT_ONCE)
 }
 
 /// A pop-up button: what is chosen and ⌄; a click opens the list under it.
@@ -751,10 +716,16 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             let hours = if on { equipe_core::protocol::routines::IDLE_WAKE_HOURS } else { 0 };
             this.send_command(equipe_core::protocol::Command::SetIdleWake { squad, hours });
         }, cx);
-    // How many helpers each member starts at a time for big work, where its engine has them.
-    let subagents = Line::new(t!("settings.subagents_at_once"), t!("settings.subagents_at_once_desc"))
+    // How many helpers each member starts at a time for big work, where its
+    // engine has them: each engine's own, said plainly, or the person's number.
+    let set = model.subagents_at_once;
+    let (desc, now) = match set {
+        None => (subagents_engine_default(), t!("settings.engine_default").to_owned()),
+        Some(n) => (t!("settings.subagents_at_once_desc").to_owned(), n.to_string()),
+    };
+    let subagents = Line::new(t!("settings.subagents_at_once"), desc)
         .words(t!("settings.subagents_words"))
-        .control(subagents_stepper(shell, connected, cx));
+        .control(if connected { picker(shell, Pop::Subagents, t!("settings.subagents_at_once"), now, 96., cx) } else { value(p, now) });
     vec![
         Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
         // Its own card, so the footnote above reads as the PM's accepting alone.
@@ -1294,6 +1265,12 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             rows.extend(effort_rows(levels, now.as_deref(), |e| Act::RoleEffort(role, engine, e)));
             (200., rows)
         }
+        Pop::Subagents => {
+            let now = model.subagents_at_once;
+            let mut rows = vec![(subagents_engine_default(), String::new(), now.is_none(), Act::Subagents(None))];
+            rows.extend(SUBAGENT_CHOICES.into_iter().map(|n| (n.to_string(), String::new(), now == Some(n), Act::Subagents(Some(n)))));
+            (420., rows)
+        }
         Pop::Mode(session) => {
             let now = model.member_modes.get(&session).copied();
             let mut rows = vec![(t!("settings.mode_follows").to_owned(), mode_label(model.mode).to_owned(), now.is_none(), Act::Mode(session, None))];
@@ -1372,6 +1349,7 @@ fn pop_number(pop: Pop) -> u64 {
         Pop::Language => 1,
         Pop::Squad => 2,
         Pop::Dictation => 6,
+        Pop::Subagents => 0,
         Pop::Model(s) => 3 + s * 8,
         Pop::Effort(s) => 4 + s * 8,
         Pop::Mode(s) => 5 + s * 8,
@@ -1508,6 +1486,10 @@ impl Shell {
                     None => self.model.efforts.remove(&session),
                 };
             }
+            Act::Subagents(at_once) => {
+                let squad = self.model.squad.clone();
+                self.send_command(Command::SetSubagentsAtOnce { squad, at_once });
+            }
             Act::Mode(session, mode) => {
                 if let Some(name) = self.model.members.iter().find(|m| m.session == session).map(|m| m.name.clone()) {
                     self.send_command(Command::SetMode { squad: self.model.squad.clone(), member: Some(name), mode });
@@ -1629,20 +1611,17 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, mode_label, mode_summary, rule_words, short_path, subagents_step};
+    use super::{Mode, SUBAGENT_CHOICES, mode_label, mode_summary, rule_words, short_path, subagents_engine_default};
 
     #[test]
-    fn subagents_at_once_steps_one_at_a_time_low_and_wider_high_within_what_engines_take() {
-        assert_eq!(subagents_step(20, true), 25);
-        assert_eq!(subagents_step(20, false), 15);
-        assert_eq!(subagents_step(3, false), 2);
-        // At either end it stays, so the button greys out.
-        assert_eq!(subagents_step(1, false), 1);
-        assert_eq!(subagents_step(equipe_core::protocol::MOST_SUBAGENTS_AT_ONCE, true), equipe_core::protocol::MOST_SUBAGENTS_AT_ONCE);
-        // A number set off the steps (by an older app, or the daemon's clamp) moves to the nearest one.
-        assert_eq!((subagents_step(7, true), subagents_step(7, false)), (8, 6));
-        // The default is a step.
-        assert_eq!(subagents_step(subagents_step(equipe_core::protocol::SUBAGENTS_AT_ONCE, true), false), equipe_core::protocol::SUBAGENTS_AT_ONCE);
+    fn subagents_at_once_offers_each_engines_own_said_plainly_and_numbers_engines_take() {
+        use equipe_core::protocol::{CLAUDE_SUBAGENTS_AT_ONCE, CODEX_SUBAGENTS_AT_ONCE, MOST_SUBAGENTS_AT_ONCE, subagents_at_once};
+        let default = subagents_engine_default();
+        assert!(default.contains(&format!("Claude Code {CLAUDE_SUBAGENTS_AT_ONCE}")) && default.contains(&format!("Codex {CODEX_SUBAGENTS_AT_ONCE}")), "{default}");
+        // Each engine's own number can be picked too, and every number is one the daemon keeps as it is.
+        assert!(SUBAGENT_CHOICES.contains(&CLAUDE_SUBAGENTS_AT_ONCE) && SUBAGENT_CHOICES.contains(&CODEX_SUBAGENTS_AT_ONCE));
+        assert!(SUBAGENT_CHOICES.iter().all(|&n| subagents_at_once(n) == n) && SUBAGENT_CHOICES.last() == Some(&MOST_SUBAGENTS_AT_ONCE));
+        assert!(SUBAGENT_CHOICES.windows(2).all(|w| w[0] < w[1]));
     }
 
     #[test]

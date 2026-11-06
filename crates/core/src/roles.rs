@@ -425,10 +425,10 @@ pub struct Context<'a> {
     pub subagents: Option<Subagents>,
 }
 
-/// The subagents a member's engine runs, and how many at once: the squad's
-/// setting, which equipe gives the engine itself (Claude Code's
-/// `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, Codex's
-/// `agents.max_concurrent_threads_per_session`), so the number a member is
+/// The subagents a member's engine runs, and how many at once: the engine's
+/// own cap, or the squad's setting, which equipe then gives the engine
+/// itself (Claude Code's `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, Codex's
+/// `agents.max_concurrent_threads_per_session`) — so the number a member is
 /// told is the one its engine holds to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Subagents {
@@ -442,8 +442,10 @@ impl Subagents {
     /// `multi_agent` is off there (`codex_app::PLAIN_FEATURES_OFF`) — and
     /// Codex over the API has no tools at all: `None`, and big work goes into
     /// tickets through the PM. A helper tool of equipe's own, for an engine
-    /// without subagents, would be offered here.
-    pub fn of(engine: Engine, has_tools: bool, other_provider: bool, at_once: u32) -> Option<Self> {
+    /// without subagents, would be offered here. `set`: the squad's number;
+    /// `None`, the engine's own.
+    pub fn of(engine: Engine, has_tools: bool, other_provider: bool, set: Option<u32>) -> Option<Self> {
+        let at_once = set.unwrap_or_else(|| equipe_protocol::engine_subagents_at_once(engine));
         match engine {
             Engine::Claude => Some(Self { engine, at_once }),
             Engine::Codex if has_tools && !other_provider => Some(Self { engine, at_once }),
@@ -1529,6 +1531,20 @@ invent one."), "{id}: true numbers");
         let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(!pm.contains("decides for itself"));
         assert!(pm.contains("splits it across subagents"));
+    }
+
+    #[test]
+    fn unset_each_engine_runs_its_own_number_and_a_number_set_holds_for_both() {
+        assert_eq!(Subagents::of(Engine::Claude, true, false, None), Some(Subagents { engine: Engine::Claude, at_once: 20 }));
+        assert_eq!(Subagents::of(Engine::Codex, true, false, None), Some(Subagents { engine: Engine::Codex, at_once: 6 }));
+        assert_eq!(Subagents::of(Engine::Claude, true, false, Some(4)).map(|s| s.at_once), Some(4));
+        assert_eq!(Subagents::of(Engine::Codex, true, false, Some(4)).map(|s| s.at_once), Some(4));
+        // Codex on another provider, or over the API: none, whatever is set.
+        assert_eq!(Subagents::of(Engine::Codex, true, true, Some(4)), None);
+        assert_eq!(Subagents::of(Engine::Codex, false, false, None), None);
+        let team = [Teammate { name: "backend", role: "backend" }];
+        let codex = charter(role("backend").unwrap(), "backend", &Context { subagents: Subagents::of(Engine::Codex, true, false, None), ..ctx(&team, &[], true) });
+        assert!(codex.split_whitespace().collect::<Vec<_>>().join(" ").contains("Your engine runs at most 6 subagents at once: for more, start up to 6"), "{codex}");
     }
 
     #[test]

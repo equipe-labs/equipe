@@ -543,7 +543,7 @@ mod tests {
             Command::SignOut { engine: Engine::Codex },
             Command::SetEngineSwitching { squad: s(), mode: engines::Switching::default() },
             Command::SetPmAccepts { squad: s(), on: false },
-            Command::SetSubagentsAtOnce { squad: s(), at_once: 4 },
+            Command::SetSubagentsAtOnce { squad: s(), at_once: Some(4) },
             Command::Models { engine: Engine::Codex },
             Command::SetRoleModel { squad: s(), default: equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: None, effort: None } },
             Command::ApplyEngineProposal { squad: s(), id: 1 },

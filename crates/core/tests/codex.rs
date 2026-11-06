@@ -220,10 +220,10 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     assert_eq!(start["config"]["features"]["apps"], false);
     let instructions = start["developerInstructions"].as_str().unwrap();
     assert!(instructions.starts_with("You are qa, the QA engineer"));
-    // Its own subagents, by Codex's tool, as many at once as it is told and runs.
-    assert_eq!(start["config"]["agents"]["max_concurrent_threads_per_session"], equipe_core::protocol::SUBAGENTS_AT_ONCE);
+    // Its own subagents, by Codex's tool: unset, Codex is given nothing and runs its own 6, as its charter says.
+    assert!(start["config"].get("agents").is_none(), "{start}");
     let flat = instructions.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(flat.contains("(your `spawn_agent` tool)") && flat.contains("at most 20 subagents at once") && !flat.contains("Agent tool"), "{flat}");
+    assert!(flat.contains("(your `spawn_agent` tool)") && flat.contains("at most 6 subagents at once: for more, start up to 6") && !flat.contains("Agent tool"), "{flat}");
     // Its skills: an index of absolute paths it reads by, never Codex's own skill folders.
     let review = home.join("skills").join("test");
     let path = instructions.split('`').find(|p| p.ends_with("/plan-review/SKILL.md")).unwrap_or_else(|| panic!("{instructions}"));
@@ -231,6 +231,24 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     let text = std::fs::read_to_string(path).unwrap();
     assert!(text.starts_with("---\nname: plan-review\n") && text.contains("say whether it can be tested"), "{text}");
     assert!(instructions.contains("read the matching skill's `SKILL.md` at its path") && !instructions.contains("say whether it can be tested"), "{instructions}");
+}
+
+#[tokio::test]
+async fn a_codex_member_runs_the_squads_number_of_subagents_once_the_person_sets_one() {
+    let (codex, log) = fake_codex("");
+    let cwd = scratch("site");
+    let home = scratch("home");
+    squads::create(&home, "acme", &cwd).unwrap();
+    let (handle, mut events) = runtime::start(config(&codex, &home));
+    add(&handle, &mut events, 1, on_codex(&cwd, "qa")).await;
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: Some(4) });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "survey it".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let start = &params_of(&log, "thread/start")[0];
+    assert_eq!(start["config"]["agents"]["max_concurrent_threads_per_session"], 4, "{start}");
+    let flat = start["developerInstructions"].as_str().unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("Your engine runs at most 4 subagents at once: for more, start up to 4"), "{flat}");
 }
 
 #[tokio::test]

@@ -316,8 +316,9 @@ pub struct Model {
     pub catalogs: HashMap<Engine, Vec<equipe_core::protocol::ModelChoice>>,
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub idle_wake_hours: u32,
-    /// How many subagents each member runs at once, where its engine has them.
-    pub subagents_at_once: u32,
+    /// How many subagents each member runs at once, where its engine has
+    /// them, as the person set it; `None`: each engine's own.
+    pub subagents_at_once: Option<u32>,
     /// The squad's signals, each with its latest readings.
     pub signals: Vec<equipe_core::protocol::signals::SignalView>,
     /// Conversations with the PM the person put away, the latest first.
@@ -483,7 +484,7 @@ impl Model {
             role_models: Vec::new(),
             catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
-            subagents_at_once: equipe_core::protocol::SUBAGENTS_AT_ONCE,
+            subagents_at_once: None,
             signals: Vec::new(),
             put_away: Vec::new(),
             secret_asks: Vec::new(),
@@ -968,7 +969,7 @@ impl Model {
         self.role_models = snapshot.role_models.clone();
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
-        self.subagents_at_once = snapshot.subagents_at_once.unwrap_or(equipe_core::protocol::SUBAGENTS_AT_ONCE);
+        self.subagents_at_once = snapshot.subagents_at_once;
         self.signals = snapshot.signals.clone();
         self.put_away = snapshot.put_away.clone();
         self.secret_asks = snapshot.secret_asks.clone();
@@ -2888,11 +2889,13 @@ mod tests {
     fn how_many_subagents_a_member_runs_at_once_shows_and_follows_the_daemon() {
         let mut model = needs_model();
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
-        assert_eq!(model.subagents_at_once, equipe_core::protocol::SUBAGENTS_AT_ONCE, "an older daemon says nothing: the default");
-        assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: 6 }), T0));
-        assert_eq!(model.subagents_at_once, 6);
-        model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "other".into(), at_once: 40 }), T0);
-        assert_eq!(model.subagents_at_once, 6, "another squad's");
+        assert_eq!(model.subagents_at_once, None, "an older daemon says nothing: each engine's own");
+        assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: Some(4) }), T0));
+        assert_eq!(model.subagents_at_once, Some(4));
+        model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "other".into(), at_once: Some(40) }), T0);
+        assert_eq!(model.subagents_at_once, Some(4), "another squad's");
+        assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: None }), T0));
+        assert_eq!(model.subagents_at_once, None, "back to each engine's own");
     }
 
     #[test]

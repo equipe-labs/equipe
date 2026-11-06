@@ -922,24 +922,33 @@ async fn a_claude_member_runs_the_squads_number_of_subagents_at_once_and_is_told
     let home = squad_home(&[&cwd]);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     add(&handle, &mut events, 1, member(&cwd, "backend")).await;
-    assert_eq!(handle.snapshot("acme").await.subagents_at_once, Some(equipe_core::protocol::SUBAGENTS_AT_ONCE));
+    assert_eq!(handle.snapshot("acme").await.subagents_at_once, None, "unset: each engine's own");
+    let turn = async |events: &mut UnboundedReceiver<Event>, n: usize| {
+        handle.send(Command::Submit { session: 1, text: format!("survey it {n}"), about: None });
+        until(events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        let charter = arg(&calls(&recorded)[n], "--append-system-prompt").unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        (std::fs::read_to_string(seen.join("at-once")).unwrap(), charter)
+    };
 
-    // Unset: equipe's default, given to Claude Code and said in the charter alike.
-    handle.send(Command::Submit { session: 1, text: "survey it".into(), about: None });
-    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    assert_eq!(std::fs::read_to_string(seen.join("at-once")).unwrap(), "20");
-    let charter = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    // Unset: Claude Code is given nothing and runs its own 20 — the number its charter says.
+    let (env, charter) = turn(&mut events, 0).await;
+    assert_eq!(env, "", "nothing given");
     assert!(charter.contains("Your engine runs at most 20 subagents at once") && charter.contains("(your Agent tool)"), "{charter}");
 
     // The person sets it: every screen hears, and the next turn runs and is told the new number.
-    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: 6 });
-    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: 6, .. })).await;
-    assert_eq!(handle.snapshot("acme").await.subagents_at_once, Some(6));
-    handle.send(Command::Submit { session: 1, text: "and again".into(), about: None });
-    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    assert_eq!(std::fs::read_to_string(seen.join("at-once")).unwrap(), "6");
-    let charter = arg(&calls(&recorded)[1], "--append-system-prompt").unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(charter.contains("Your engine runs at most 6 subagents at once: for more, start up to 6"), "{charter}");
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: Some(4) });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: Some(4), .. })).await;
+    assert_eq!(handle.snapshot("acme").await.subagents_at_once, Some(4));
+    let (env, charter) = turn(&mut events, 1).await;
+    assert_eq!(env, "4");
+    assert!(charter.contains("Your engine runs at most 4 subagents at once: for more, start up to 4"), "{charter}");
+
+    // Back to the engine's own: nothing given again.
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: None });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: None, .. })).await;
+    let (env, charter) = turn(&mut events, 2).await;
+    assert_eq!(env, "");
+    assert!(charter.contains("at most 20 subagents at once"), "{charter}");
 }
 
 #[tokio::test]

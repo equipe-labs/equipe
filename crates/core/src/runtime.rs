@@ -1995,7 +1995,7 @@ impl Runtime {
             }
             // Each member's next turn runs it and is told it.
             Command::SetSubagentsAtOnce { squad, at_once } => {
-                let at_once = crate::protocol::subagents_at_once(at_once);
+                let at_once = at_once.map(crate::protocol::subagents_at_once);
                 if let Some(Err(err)) = self.journal(&squad).map(|j| j.set_subagents_at_once(at_once)) {
                     crate::daemon_log!("equipe: {squad}: subagents at once wasn't kept: {err}");
                 }
@@ -2418,9 +2418,10 @@ impl Runtime {
         journal_for(&mut self.journals, &self.config.home, squad)
     }
 
-    /// How many subagents a member of `squad` runs at once (`Journal::subagents_at_once`).
-    fn subagents_at_once(&self, squad: Option<&str>) -> u32 {
-        squad.and_then(|s| self.journals.get(s)).map_or(crate::protocol::SUBAGENTS_AT_ONCE, Journal::subagents_at_once)
+    /// How many subagents a member of `squad` runs at once, where the person
+    /// set it (`Journal::subagents_at_once`); `None`, each engine's own.
+    fn subagents_at_once(&self, squad: Option<&str>) -> Option<u32> {
+        squad.and_then(|s| self.journals.get(s)).and_then(Journal::subagents_at_once)
     }
 
     /// An anonymous usage event of `squad`'s, with its team's size and engines;
@@ -3791,9 +3792,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A member on Claude Code has equipe's guard asked before each of its
         // calls (`guard`): what it refuses, the charter needn't ask for.
         let guarded = session.member.is_some() && session.engine == Engine::Claude && self.config.equipe_binary.is_some();
-        // The subagents its engine runs, as many at once as the squad says:
-        // given to the engine below, and said in the charter.
-        let subagents = session.member.as_ref().and_then(|_| subagents_of(session, self.subagents_at_once(squad.as_deref())));
+        // The subagents its engine runs, as many at once as the squad says —
+        // given to the engine below — or as the engine runs on its own; said
+        // in the charter either way.
+        let set_at_once = self.subagents_at_once(squad.as_deref());
+        let subagents = session.member.as_ref().and_then(|_| subagents_of(session, set_at_once));
         let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
@@ -3889,10 +3892,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(m) = &session.member {
             env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
         }
-        // Claude Code's cap on subagents at once; Codex's goes in its thread's
-        // config (`codex_app::TurnRequest::subagents`).
-        if let Some(sub) = subagents.filter(|s| s.engine == Engine::Claude) {
-            env.push((CLAUDE_SUBAGENTS_ENV.to_owned(), sub.at_once.to_string()));
+        // Claude Code's cap on subagents at once, where the squad set it;
+        // Codex's goes in its thread's config (`codex_app::TurnRequest::subagents`).
+        if let (Some(sub), Some(at_once)) = (subagents.filter(|s| s.engine == Engine::Claude), set_at_once) {
+            debug_assert_eq!(sub.at_once, at_once);
+            env.push((CLAUDE_SUBAGENTS_ENV.to_owned(), at_once.to_string()));
         }
         let writable: Vec<String> = builds.iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
@@ -4013,7 +4017,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         writable: &writable,
                         env: &env,
                         provider: provider.as_ref(),
-                        subagents: subagents.map(|s| s.at_once),
+                        subagents: subagents.and(set_at_once),
                     };
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
@@ -7021,7 +7025,7 @@ it back there once they have done it.{again} End your turn now with a short line
         let routines = self.routines(squad);
         let routine_proposals = self.routine_proposals(squad).clone();
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
-        let subagents_at_once = Some(self.subagents_at_once(Some(squad)));
+        let subagents_at_once = self.subagents_at_once(Some(squad));
         let signals = self.signal_views(squad);
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
@@ -8061,11 +8065,12 @@ fn has_tools(session: &Session) -> bool {
 /// The environment variable Claude Code reads its cap on subagents running at once from.
 const CLAUDE_SUBAGENTS_ENV: &str = "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS";
 
-/// The subagents a session's engine runs, `at_once` at a time: none for
-/// Codex on Token Factory, whose turns go to another provider.
-fn subagents_of(session: &Session, at_once: u32) -> Option<roles::Subagents> {
+/// The subagents a session's engine runs, `set` at a time (`None`: as many
+/// as it runs on its own): none for Codex on Token Factory, whose turns go
+/// to another provider.
+fn subagents_of(session: &Session, set: Option<u32>) -> Option<roles::Subagents> {
     let other_provider = session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
-    roles::Subagents::of(session.engine, has_tools(session), other_provider, at_once)
+    roles::Subagents::of(session.engine, has_tools(session), other_provider, set)
 }
 
 /// A subagent at work for a member: what it was handed, its latest step,
