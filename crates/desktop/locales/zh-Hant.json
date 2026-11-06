@@ -1846,7 +1846,7 @@
   "settings.mode_follows": "跟隨小隊",
   "settings.mode_foot": "也可以在輸入框中用 ⌘⇧M 切換。",
   "settings.mode_full": "完全權限",
-  "settings.mode_full_desc": "你的帳號能做的事都不再詢問，只有始終禁止的事和以你名義行事時才會詢問",
+  "settings.mode_full_desc": "除了始終禁止的事，你的帳號能做的事都不再詢問；只有以你的名義行事時才會詢問",
   "settings.mode_read_only": "唯讀",
   "settings.mode_read_only_desc": "只閱讀和規劃，不做任何變更",
   "settings.no_members": "還沒有成員",

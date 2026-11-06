@@ -1846,7 +1846,7 @@
   "settings.mode_follows": "スクワッドに従う",
   "settings.mode_foot": "⌘⇧M で入力欄からも変更できます。",
   "settings.mode_full": "フルアクセス",
-  "settings.mode_full_desc": "あなたのアカウントでできることは確認せずに行います。常に禁止されていることと、あなたの名前で行うことだけは確認します",
+  "settings.mode_full_desc": "常に止められていること以外は、あなたのアカウントでできることを確認せずに行います。あなたの名前で行動するときだけ確認します。",
   "settings.mode_read_only": "読み取りのみ",
   "settings.mode_read_only_desc": "読んで計画するだけで、何も変更しません",
   "settings.no_members": "まだメンバーがいません",
