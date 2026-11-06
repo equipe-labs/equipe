@@ -452,7 +452,11 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
 The snapshot's sessions carry `recent`, the latest lines oldest first, each `{ "kind", … }`:
 `user` / `reply` `{ "text" }`, `tool` `{ "tool", "target", "outcome"? }`, `note` `{ "text" }`,
 `error` `{ "message", "next" }`, `landed` `{ "branch", "stat" }` and `thread` `{ "project" }`
-(lines before any `thread` are about the whole squad). Beside `queued` (memos, and `queued_in`:
+(lines before any `thread` are about the whole squad). `recent_at`, one per line in the same
+order, says when each was said in unix seconds — a message when it came, a reply when it was
+done — `null` where not known (still streaming, or kept before times were); absent from a daemon
+that predates it, when no line has a time. A screen watching live takes a line's time as it
+comes. `conversation_back` carries `lines_at` beside its `lines` the same way. Beside `queued` (memos, and `queued_in`:
 the project each was left about), `steering` lists the steers not read yet, and `steering_in`
 the project each was said about (`null`: the whole squad; absent when there are none). A
 session whose conversation is being compacted carries `compacting`
