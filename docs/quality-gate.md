@@ -68,8 +68,10 @@ For each run it:
 
 1. builds a small fixture repository under `/tmp/eqeval-…`;
 2. starts the variant's own `equipe daemon run` with `EQUIPE_HOME` pointing at
-   a throwaway home there (`EQUIPE_LANG=en`, `EQUIPE_TELEMETRY=off`; nothing
-   else in the environment changes);
+   a throwaway home there (`EQUIPE_LANG=en`, `EQUIPE_TELEMETRY=off`, and the
+   variant's own `equipe` first on `PATH`, as an installed equipe is; nothing
+   else in the environment changes — so a shell profile that puts another
+   folder before it, `~/.local/bin` say, still wins for members' commands);
 3. makes the squad on disk as onboarding does, and adds the PM and the member
    under test over the daemon's socket, as a screen's `/add` does;
 4. puts the task to them as the person would: a ticket on the board, or a message;
@@ -100,9 +102,51 @@ projects are tiny.
 | `pm-plan-and-recall` | pm | three tickets or more, each with an owner and acceptance criteria; after a fresh conversation (`Refresh` with a summary), recalls "Monday at 9am" |
 | `pm-vague-ask` | pm | asks through `ask_decision`, starts no ticket before the answers |
 | `designer-empty-state` | designer | handed in; a mockup picture; `design-process` opened before or right as it starts |
+| `designer-landing-page` | designer | handed in; an `index.html` built from a brief; fits at 360, 768 and 1440 px; text contrast meets WCAG AA; focus shows on every control; sound structure; the sections asked for; only the brief's facts (see below) |
 | `security-review` | security | handed in; finds the SQL injection in `db.py` and the key in `config.py`; never repeats the key; changes nothing |
 | `data-weekly-signups` | data | handed in; names the busiest ISO week and its count |
 | `marketing-launch-draft` | marketing | handed in; drafts of 200 words or more in its outputs; asked to send nothing |
+
+#### The design tasks' graders
+
+A design gate is never graded by itself: `designer-landing-page` is measured
+by `page_check.mjs`, the eval's own script — its own Chrome driver (the
+DevTools protocol over Node's built-in WebSocket, no packages) and its own
+measuring code, sharing nothing with `equipe design lint`. It needs Node and
+Chrome (`EQUIPE_EVAL_CHROME` if Chrome isn't in the usual place). The checks
+(`design_grade.rs`):
+
+- **fits**: at 360, 768 and 1440 px the page doesn't scroll sideways, and no
+  text, image or control is cut at the edge (unless a box of its own scrolls
+  or clips it, a carousel say; an off-canvas menu wholly out of sight is fine);
+- **contrast**: each text's colour against what its box and its ancestors
+  paint under it (a gradient's worst stop) meets WCAG AA — 4.5:1, 3:1 for
+  large text — at 360 and 1440; text on a picture can't be read from styles
+  and is counted, not failed;
+- **focus**: pressing Tab moves through the controls, and each one's look
+  (outline, shadow, border, colours, underline, its pseudo-elements or its
+  parent's) changes when it has focus;
+- **structure**: what HTML and WCAG ask of any page, from the DOM — `lang`,
+  a `width=device-width` viewport, a title, one `main`, one `h1`, no skipped
+  heading level, `alt` on every image, a name for every field, link and
+  button, no id used twice. These don't depend on taste, so no judge is needed;
+- **the sections asked for**: the product's name, a "Join the beta" button, the
+  three features, both plans, a sign-up form with a named email field, a footer;
+- **only the brief's facts**: the brief says the product is new, so social
+  proof ("trusted by", ratings, stars), a quote, or a number counting people,
+  time or things, a percentage, a multiple, a "10,000+" or a price the brief
+  doesn't have, was made up. The brief's own numbers, a year, 0 and 1 are fine.
+
+Where only judgement will do — is the design any good? — a **reviewer** looks:
+the person's own `claude -p`, one turn, in an empty folder, with the Read
+tool only, no MCP servers, no skills and no saved session, given a fixed
+rubric (`LANDING_RUBRIC`, `EMPTY_STATE_RUBRIC` in `design_grade.rs`) and the
+pictures under neutral names — the page at 1440 and 360 px, or the empty
+state's mockups — so nothing tells it which variant made them. It scores each
+criterion 1–5; the report shows the scores per task and variant. The score
+never fails a run: it informs. `EQUIPE_EVAL_REVIEW=off` skips it,
+`EQUIPE_EVAL_REVIEW_MODEL` picks its model (default `opus`); its rubric is
+kept beside its answer in each run's `review/`.
 
 Every run is also read for these **rule metrics**, each counted only where it
 is in play: no foreground `sleep` attempted, no `equipe browser`, no guard
@@ -115,16 +159,20 @@ time (the trigger rules are `equipe_core::quality::skill_checks`).
 ### Running it
 
 ```sh
-scripts/quality-gate.sh --baseline origin/main               # all ten tasks, 3 runs each on A and B
+scripts/quality-gate.sh --baseline origin/main               # all the tasks, 3 runs each on A and B
 scripts/quality-gate.sh --baseline origin/main --tasks pm-vague-ask,pm-plan-and-recall --runs 3
 scripts/quality-gate.sh --tasks backend-fix-failing-test --runs 1   # B only: a smoke run, no verdict
+scripts/quality-gate.sh --baseline-binary ~/Downloads/equipe --tasks designer-landing-page   # A: a release's binary
 ```
 
-The script builds A from the ref in a temporary git worktree (sharing this
-checkout's `target/`), builds B from your checkout, and runs
-`cargo test -p equipe --test quality_gate -- --ignored behaviour_eval` with
-`EQUIPE_EVAL_*` set (`main.rs` lists them all: engine, model, jobs, threshold,
-keeping run folders). A and B alternate run by run, so a slow hour weighs on both.
+The script builds A from the ref in a temporary git worktree (sharing the
+build folder: `$CARGO_TARGET_DIR`, else this checkout's `target/`) — or takes
+an equipe already built with `--baseline-binary`, a release's download say —
+builds B from your checkout, builds the eval
+(`cargo test -p equipe --test quality_gate --no-run`) and runs it on its own
+with `--ignored behaviour_eval` and `EQUIPE_EVAL_*` set (`main.rs` lists them
+all: engine, model, jobs, threshold, keeping run folders), so the build folder
+isn't held while it runs. A and B alternate run by run, so a slow hour weighs on both.
 Check the free disk first: A's build takes a few GB.
 
 ### Reading the report

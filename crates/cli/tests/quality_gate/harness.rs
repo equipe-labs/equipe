@@ -120,11 +120,17 @@ pub struct Daemon {
 
 impl Daemon {
     /// `binary daemon run` with its home at `home`, and nothing else changed
-    /// in its environment but the language equipe speaks and telemetry off.
+    /// in its environment but the language equipe speaks, telemetry off, and
+    /// the variant's own `equipe` first on `PATH` (as an installed equipe is),
+    /// so a member that runs `equipe …` gets this variant, not whichever
+    /// equipe this Mac has installed.
     pub fn start(binary: &Path, home: &Path, log: &Path) -> Self {
         let out = std::fs::File::create(log).unwrap();
+        let bin = home.parent().unwrap_or(home).join("bin");
+        let path = variant_path(binary, &bin, std::env::var_os("PATH").as_deref());
         let child = Process::new(binary)
             .args(["daemon", "run"])
+            .env("PATH", path)
             .env("EQUIPE_HOME", home)
             .env("EQUIPE_LANG", "en")
             .env("EQUIPE_TELEMETRY", "off")
@@ -162,6 +168,17 @@ impl Drop for Daemon {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// `PATH` with `bin` first, where `bin/equipe` is made a link to `binary`.
+pub fn variant_path(binary: &Path, bin: &Path, path: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+    std::fs::create_dir_all(bin).unwrap();
+    let link = bin.join("equipe");
+    let _ = std::fs::remove_file(&link);
+    let target = binary.canonicalize().unwrap_or_else(|_| binary.to_owned());
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let rest: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
+    std::env::join_paths(std::iter::once(bin.to_owned()).chain(rest)).unwrap()
 }
 
 /// A run under way.

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quillo — meeting notes from a recording</title>
+  <style>
+    :root { --ink: #1b1d22; --muted: #4a4f5c; --paper: #ffffff; --accent: #1f4fd1; --space: 8px; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 17px/1.6 system-ui, sans-serif; color: var(--ink); background: var(--paper); }
+    header, main, footer { max-width: 60rem; margin: 0 auto; padding: calc(var(--space) * 3); }
+    .cta { display: inline-block; padding: 12px 20px; background: var(--accent); color: #fff; border-radius: 6px; text-decoration: none; }
+    a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: calc(var(--space) * 3); padding: 0; list-style: none; }
+    p.muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header><a href="#top">Quillo</a></header>
+  <main id="top">
+    <h1>Quillo turns a recorded meeting into a one-page summary</h1>
+    <p class="muted">What was decided, who does what, and by when. The public beta opens on 3&nbsp;March.</p>
+    <a class="cta" href="#join">Join the beta</a>
+    <section>
+      <h2>What it does</h2>
+      <ul class="features">
+        <li><h3>Any recording</h3><p>Upload an audio or video file up to 2&nbsp;hours long.</p></li>
+        <li><h3>Decisions and to-dos</h3><p>Each decision and to-do is pulled out, with its owner.</p></li>
+        <li><h3>Share it</h3><p>Send the summary as a link or a PDF.</p></li>
+      </ul>
+    </section>
+    <section>
+      <h2>Pricing</h2>
+      <p><strong>Free</strong>: 3 meetings a month.</p>
+      <p><strong>Team</strong>: $8 per person per month.</p>
+    </section>
+    <section id="join">
+      <h2>Join the beta</h2>
+      <form>
+        <label for="email">Email</label>
+        <input id="email" type="email" name="email" autocomplete="email">
+        <button type="submit">Join the beta</button>
+      </form>
+    </section>
+  </main>
+  <footer><p>© 2026 Quillo</p></footer>
+</body>
+</html>
