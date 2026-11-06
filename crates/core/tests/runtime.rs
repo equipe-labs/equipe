@@ -915,6 +915,43 @@ async fn a_member_gets_its_charter_a_recommended_model_and_its_own_memory() {
 }
 
 #[tokio::test]
+async fn a_claude_member_runs_the_squads_number_of_subagents_at_once_and_is_told_that_number() {
+    let seen = scratch("subagents-env");
+    let (claude, recorded) = recording_claude(&format!("printf '%s' \"$CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS\" > '{}/at-once'\n{}", seen.display(), answering("ok")));
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&cwd, "backend")).await;
+    assert_eq!(handle.snapshot("acme").await.subagents_at_once, None, "unset: each engine's own");
+    let turn = async |events: &mut UnboundedReceiver<Event>, n: usize| {
+        handle.send(Command::Submit { session: 1, text: format!("survey it {n}"), about: None });
+        until(events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        let charter = arg(&calls(&recorded)[n], "--append-system-prompt").unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        (std::fs::read_to_string(seen.join("at-once")).unwrap(), charter)
+    };
+
+    // Unset: Claude Code is given nothing and runs its own 20 — the number its charter says.
+    let (env, charter) = turn(&mut events, 0).await;
+    assert_eq!(env, "", "nothing given");
+    assert!(charter.contains("Your engine runs at most 20 subagents at once") && charter.contains("(your Agent tool)"), "{charter}");
+
+    // The person sets it: every screen hears, and the next turn runs and is told the new number.
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: Some(4) });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: Some(4), .. })).await;
+    assert_eq!(handle.snapshot("acme").await.subagents_at_once, Some(4));
+    let (env, charter) = turn(&mut events, 1).await;
+    assert_eq!(env, "4");
+    assert!(charter.contains("Your engine runs at most 4 subagents at once: for more, start up to 4"), "{charter}");
+
+    // Back to the engine's own: nothing given again.
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: None });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: None, .. })).await;
+    let (env, charter) = turn(&mut events, 2).await;
+    assert_eq!(env, "");
+    assert!(charter.contains("at most 20 subagents at once"), "{charter}");
+}
+
+#[tokio::test]
 async fn a_members_skills_load_as_a_plugin_and_its_charter_keeps_only_their_index() {
     let (claude, recorded) = recording_claude(&answering("on it"));
     let cwd = scratch("cwd");
