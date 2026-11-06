@@ -42,6 +42,9 @@ of your last screenshot. Each click and keystroke is checked against the app you
 instead of retrying.",
 };
 
+/// The ticket's phone: `mcp__phone__…`.
+pub const PHONE: Server = Server { name: crate::phone::SERVER, instructions: crate::phone::INSTRUCTIONS };
+
 /// Decide what one client line asks for. `tools` is what `tools/list` offers.
 pub fn handle(line: &str, tools: &[Value], version: &str) -> Step {
     handle_for(&BOARD, line, tools, version)

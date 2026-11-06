@@ -3052,5 +3052,13 @@
   "side_chat.searching": "Searching:",
   "side_chat.send": "Send",
   "side_chat.thinking": "Thinking…",
-  "side_chat.title": "Side chat"
+  "side_chat.title": "Side chat",
+  "approvals.noun_install": "installing a tool",
+  "qa.kicker": "Tested on the phone",
+  "qa.verdict_pass": "Passed",
+  "qa.verdict_fail": "Failed",
+  "qa.verdict_blocked": "Not finished",
+  "qa.steps": "{passed} of {steps} steps passed",
+  "qa.play": "Play recording",
+  "qa.elsewhere": "The recording is on the Mac that runs the squad."
 }

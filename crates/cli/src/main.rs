@@ -186,7 +186,7 @@ enum Command {
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
     Mcp {
-        /// `equipe` (the board) or `desktop`
+        /// `equipe` (the board), `desktop` or `phone`
         #[arg(long, default_value = "equipe")]
         server: String,
         #[arg(long)]
@@ -775,8 +775,11 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
 
     let socket = equipe_core::gateway::socket_path(&home);
     let desktop = server == equipe_core::runtime::DESKTOP_SERVER;
+    let phone = server == equipe_core::phone::SERVER;
     let (info, tools) = if desktop {
         (mcp::DESKTOP, equipe_desktop_control::tools::tools())
+    } else if phone {
+        (mcp::PHONE, equipe_core::phone::tools())
     } else {
         (mcp::BOARD, equipe_core::helpers::with_board(&role, helpers))
     };
@@ -789,6 +792,8 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
                 let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments };
                 let result = if desktop {
                     equipe_core::gateway::call_desktop(&socket, &call).await
+                } else if phone {
+                    equipe_core::gateway::call_phone(&socket, &call).await
                 } else {
                     equipe_core::gateway::call_tool(&socket, &call).await
                 };

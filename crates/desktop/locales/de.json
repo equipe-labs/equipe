@@ -3052,5 +3052,13 @@
   "side_chat.searching": "Sucht:",
   "side_chat.send": "Senden",
   "side_chat.thinking": "Denkt nach …",
-  "side_chat.title": "Seitenchat"
+  "side_chat.title": "Seitenchat",
+  "approvals.noun_install": "Installation eines Werkzeugs",
+  "qa.kicker": "Auf dem Handy getestet",
+  "qa.verdict_pass": "Bestanden",
+  "qa.verdict_fail": "Fehlgeschlagen",
+  "qa.verdict_blocked": "Nicht abgeschlossen",
+  "qa.steps": "{passed} von {steps} Schritten bestanden",
+  "qa.play": "Aufnahme abspielen",
+  "qa.elsewhere": "Die Aufnahme liegt auf dem Mac, auf dem der Squad läuft."
 }

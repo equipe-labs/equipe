@@ -2987,5 +2987,13 @@
   "side_chat.searching": "正在搜索：",
   "side_chat.send": "发送",
   "side_chat.thinking": "思考中…",
-  "side_chat.title": "侧边聊天"
+  "side_chat.title": "侧边聊天",
+  "approvals.noun_install": "安装工具",
+  "qa.kicker": "在手机上测试",
+  "qa.verdict_pass": "通过",
+  "qa.verdict_fail": "未通过",
+  "qa.verdict_blocked": "未完成",
+  "qa.steps": "{steps} 个步骤中通过 {passed} 个",
+  "qa.play": "播放录屏",
+  "qa.elsewhere": "录屏保存在运行该小队的 Mac 上。"
 }

@@ -2987,5 +2987,13 @@
   "side_chat.searching": "検索中:",
   "side_chat.send": "送信",
   "side_chat.thinking": "考え中…",
-  "side_chat.title": "サイドチャット"
+  "side_chat.title": "サイドチャット",
+  "approvals.noun_install": "ツールのインストール",
+  "qa.kicker": "スマホでテスト",
+  "qa.verdict_pass": "合格",
+  "qa.verdict_fail": "不合格",
+  "qa.verdict_blocked": "未完了",
+  "qa.steps": "{steps} ステップ中 {passed} 合格",
+  "qa.play": "録画を再生",
+  "qa.elsewhere": "録画はスクワッドが動いている Mac にあります。"
 }

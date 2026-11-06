@@ -2987,5 +2987,13 @@
   "side_chat.searching": "正在搜尋：",
   "side_chat.send": "傳送",
   "side_chat.thinking": "思考中…",
-  "side_chat.title": "側邊聊天"
+  "side_chat.title": "側邊聊天",
+  "approvals.noun_install": "安裝工具",
+  "qa.kicker": "在手機上測試",
+  "qa.verdict_pass": "通過",
+  "qa.verdict_fail": "未通過",
+  "qa.verdict_blocked": "未完成",
+  "qa.steps": "{steps} 個步驟中通過 {passed} 個",
+  "qa.play": "播放錄影",
+  "qa.elsewhere": "錄影保存在執行該小隊的 Mac 上。"
 }

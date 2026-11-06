@@ -532,5 +532,9 @@
   "notice.provider_move": "次のチケットから {provider} の {model} に移り、Codex CLI のエージェントで動きます。",
   "error.provider_needs_codex": "{provider} のメンバーは Codex CLI のエージェントで動きます (無料・オープンソース、ChatGPT のサインイン不要)。先に codex CLI をインストールしてください。",
   "error.side_chat_busy": "サイドチャットはまだ答えています。待つか、閉じてください。",
-  "security.member_refused": "メンバー自身のプロセスが equipe のソケット経由であなたの代わりに操作しようとしました（承認・受け入れ・マージ・設定変更）。equipe はこれを拒否しました。決めるのはあなただけです。"
+  "security.member_refused": "メンバー自身のプロセスが equipe のソケット経由であなたの代わりに操作しようとしました（承認・受け入れ・マージ・設定変更）。equipe はこれを拒否しました。決めるのはあなただけです。",
+  "phone.install_action": "AXe {version}（オープンソース、MIT、約 {size} MB）を {folder} にインストールします。メンバーが iOS シミュレータの画面を見て、タップし、入力できるようになります。Mac のほかの部分は変わらず、権限も不要です。",
+  "phone.install_why": "{name} がチケット専用の iOS シミュレータでアプリをテストしています。",
+  "notice.qa_report": "▶ {name} が T-{ticket} で {flow} をテストしました: {steps} ステップ中 {passed} 合格 · {video}",
+  "disk.kind.recordings": "スマホの画面録画"
 }

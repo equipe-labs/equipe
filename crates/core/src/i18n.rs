@@ -707,6 +707,7 @@ pub mod label {
             K::Pnpm => "disk.kind.pnpm",
             K::Yarn => "disk.kind.yarn",
             K::Docker => "disk.kind.docker",
+            K::Recordings => "disk.kind.recordings",
         })
     }
 

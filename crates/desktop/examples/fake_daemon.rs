@@ -9,6 +9,7 @@
 //! would — and so do the person's own create, edit, move and comment (by
 //! `equipe_core::board`'s rules), each kept in the ticket's record.
 //! `FAKE_EMPTY=1` starts with nothing waiting for the person;
+//! `FAKE_PHONE_QA=<file>` ends the conversation on a phone test's report kept in that file;
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
@@ -1080,6 +1081,10 @@ mod words;
 #[path = "fake_daemon/side_chat.rs"]
 mod side_chat;
 
+// A phone test's report, at the conversation's end: `FAKE_PHONE_QA=<file with its note>`.
+#[path = "fake_daemon/phone_qa.rs"]
+mod phone_qa;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -1193,6 +1198,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         if pictures::on() {
                             history.push(Entry::Note { undo: None, text: pictures::NEWS.into() });
+                        }
+                        if let Some(text) = phone_qa::note() {
+                            history.push(Entry::Note { text });
                         }
                         if replies::on() {
                             history.extend(replies::history());
@@ -1478,7 +1486,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     // design system's, checked as the daemon checks it.
                     (Some(rpc::READ_IMAGE), Some(id)) => {
                         let ask: rpc::ReadImage = message.params_as().unwrap();
-                        let reply = match pictures::read(&ask).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)) {
+                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)) {
                             Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };

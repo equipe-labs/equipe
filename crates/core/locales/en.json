@@ -536,5 +536,9 @@
   "notice.provider_move": "Moves to {model} on {provider} at its next ticket, on the Codex CLI's agent.",
   "error.provider_needs_codex": "Members on {provider} run on the Codex CLI's agent (free, open source; no ChatGPT sign-in needed). Install the codex CLI first.",
   "error.side_chat_busy": "The side chat is still answering. Wait for it, or close it.",
-  "security.member_refused": "A member's own process tried to act as you — approve, accept, merge or change settings — over equipe's socket. equipe refused it: only you decide that."
+  "security.member_refused": "A member's own process tried to act as you — approve, accept, merge or change settings — over equipe's socket. equipe refused it: only you decide that.",
+  "phone.install_action": "Install AXe {version} (open source, MIT, about {size} MB) into {folder}, so members can see, tap and type in the iOS Simulator. Nothing else on the Mac changes, and it needs no permission.",
+  "phone.install_why": "{name} is testing the app on the ticket's own iOS Simulator.",
+  "notice.qa_report": "▶ {name} tested {flow} on T-{ticket}: {passed} of {steps} steps passed · {video}",
+  "disk.kind.recordings": "phone recordings"
 }

@@ -97,6 +97,7 @@ projects are tiny.
 | `backend-wait-for-server` | backend | a server that takes 20 s to start, waited for without a foreground sleep (a rule metric); tests pass; only `server.py` changed |
 | `frontend-clear-button` | frontend | handed in; `node --test` passes; the button, `clearItems` exported and tested; only the ticket's files changed |
 | `qa-planted-bug` | qa | handed in; its `test_found.py` fails on the planted boundary bug and passes on the fixed copy |
+| `qa-mobile-flow` | qa | handed in; drove a small SwiftUI app on the iOS Simulator with the phone tools; a report with a recording and a verdict and frame for every step; finds the planted wrong total (macOS with Xcode and an iOS runtime only; AXe is installed on the harness's yes) |
 | `pm-plan-and-recall` | pm | three tickets or more, each with an owner and acceptance criteria; after a fresh conversation (`Refresh` with a summary), recalls "Monday at 9am" |
 | `pm-vague-ask` | pm | asks through `ask_decision`, starts no ticket before the answers |
 | `designer-empty-state` | designer | handed in; a mockup picture; `design-process` opened before or right as it starts |
@@ -115,7 +116,7 @@ time (the trigger rules are `equipe_core::quality::skill_checks`).
 ### Running it
 
 ```sh
-scripts/quality-gate.sh --baseline origin/main               # all ten tasks, 3 runs each on A and B
+scripts/quality-gate.sh --baseline origin/main               # all eleven tasks, 3 runs each on A and B
 scripts/quality-gate.sh --baseline origin/main --tasks pm-vague-ask,pm-plan-and-recall --runs 3
 scripts/quality-gate.sh --tasks backend-fix-failing-test --runs 1   # B only: a smoke run, no verdict
 ```

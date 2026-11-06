@@ -568,8 +568,8 @@ fn task(name: &str) -> Task {
 }
 
 #[test]
-fn there_are_ten_tasks_across_the_roles_with_names_of_their_own() {
-    assert_eq!(TASKS.len(), 10);
+fn there_are_eleven_tasks_across_the_roles_with_names_of_their_own() {
+    assert_eq!(TASKS.len(), 11);
     let mut names: Vec<&str> = TASKS.iter().map(|t| t.name).collect();
     names.sort();
     names.dedup();

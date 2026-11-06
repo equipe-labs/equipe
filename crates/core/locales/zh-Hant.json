@@ -532,5 +532,9 @@
   "notice.provider_move": "從下一張工單起改用 {provider} 的 {model}，在 Codex CLI 的代理上執行。",
   "error.provider_needs_codex": "{provider} 上的成員在 Codex CLI 的代理上執行（免費、開源，無需登入 ChatGPT）。請先安裝 codex CLI。",
   "error.side_chat_busy": "側邊聊天還在回答。請稍候，或將其關閉。",
-  "security.member_refused": "某個成員自己的程序試圖透過 equipe 的 socket 以你的身分操作——核准、接受、合併或變更設定。equipe 已拒絕：只有你能決定。"
+  "security.member_refused": "某個成員自己的程序試圖透過 equipe 的 socket 以你的身分操作——核准、接受、合併或變更設定。equipe 已拒絕：只有你能決定。",
+  "phone.install_action": "將 AXe {version}（開源，MIT，約 {size} MB）安裝到 {folder}，讓成員能查看 iOS 模擬器、在其中點按和輸入。Mac 上的其他內容不會改變，也不需要任何權限。",
+  "phone.install_why": "{name} 正在工單專用的 iOS 模擬器上測試 App。",
+  "notice.qa_report": "▶ {name} 在 T-{ticket} 上測試了 {flow}：{steps} 個步驟中通過 {passed} 個 · {video}",
+  "disk.kind.recordings": "手機螢幕錄影"
 }

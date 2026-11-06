@@ -532,5 +532,9 @@
   "notice.provider_move": "다음 티켓부터 {provider}의 {model}로 옮겨 Codex CLI 에이전트에서 일해요.",
   "error.provider_needs_codex": "{provider}의 멤버는 Codex CLI 에이전트에서 일해요 (무료 오픈소스, ChatGPT 로그인 불필요). 먼저 codex CLI를 설치해 주세요.",
   "error.side_chat_busy": "사이드 채팅이 아직 답하고 있어요. 기다리거나 닫아 주세요.",
-  "security.member_refused": "멤버 자신의 프로세스가 equipe 소켓을 통해 나 대신 승인·수락·병합·설정 변경을 하려 했어요. equipe가 막았어요. 그건 나만 결정해요."
+  "security.member_refused": "멤버 자신의 프로세스가 equipe 소켓을 통해 나 대신 승인·수락·병합·설정 변경을 하려 했어요. equipe가 막았어요. 그건 나만 결정해요.",
+  "phone.install_action": "AXe {version}(오픈 소스, MIT, 약 {size}MB)를 {folder}에 설치해요. 멤버가 iOS 시뮬레이터 화면을 보고, 탭하고, 입력할 수 있게 돼요. Mac의 다른 것은 바뀌지 않고, 권한도 필요 없어요.",
+  "phone.install_why": "티켓 전용 iOS 시뮬레이터에서 앱을 테스트하려고 해요 ({name}).",
+  "notice.qa_report": "▶ {name} · T-{ticket} {flow} 테스트: {steps}단계 중 {passed}단계 통과 · {video}",
+  "disk.kind.recordings": "휴대폰 화면 녹화"
 }

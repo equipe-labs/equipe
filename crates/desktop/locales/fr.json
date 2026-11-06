@@ -3052,5 +3052,13 @@
   "side_chat.searching": "Recherche :",
   "side_chat.send": "Envoyer",
   "side_chat.thinking": "Réflexion…",
-  "side_chat.title": "Discussion annexe"
+  "side_chat.title": "Discussion annexe",
+  "approvals.noun_install": "l'installation d'un outil",
+  "qa.kicker": "Testé sur le téléphone",
+  "qa.verdict_pass": "Réussi",
+  "qa.verdict_fail": "Échec",
+  "qa.verdict_blocked": "Inachevé",
+  "qa.steps": "{passed} étapes réussies sur {steps}",
+  "qa.play": "Lire l'enregistrement",
+  "qa.elsewhere": "L'enregistrement est sur le Mac où tourne l'escouade."
 }

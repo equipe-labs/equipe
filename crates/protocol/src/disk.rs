@@ -111,6 +111,8 @@ pub enum DiskKind {
     Yarn,
     /// Docker's disk image.
     Docker,
+    /// A ticket's phone recordings and their frames, in its squad's folder.
+    Recordings,
 }
 
 /// Why an item may, or may not, be given back.

@@ -398,6 +398,7 @@ impl Runtime {
     /// (one whose removal failed, or kept) goes now, off the loop — rebuilt
     /// when wanted; the worktree and its branch stay. Logged.
     pub(super) fn clear_finished_builds(&mut self, squad: &str, ticket: &Ticket) {
+        self.clear_finished_phones(squad, ticket.id);
         let folder = if ticket.kind.in_home() {
             format!("{squad}.home")
         } else {

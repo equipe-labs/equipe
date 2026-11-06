@@ -74,6 +74,8 @@ pub const PERSON_LOOK: &str = "person_look";
 pub const PROTOCOL: u32 = 1;
 
 pub const DESKTOP: &str = "desktop";
+/// A member's phone tool call (`mcp__phone__…`): a [`ToolCall`], answered with a [`ToolResult`].
+pub const PHONE: &str = "phone";
 /// Who is busy: members mid-turn and requests waiting for the person.
 pub const BUSY: &str = "busy";
 /// How the daemon runs, as it sees itself: [`Runs`].

@@ -785,6 +785,9 @@ pub enum Block {
     /// A second look's verdict (`equipe design second-look`): the screen
     /// and what fresh eyes said of it.
     SecondLook { screen: String, verdict: Box<equipe_core::design::lint::record::Verdict> },
+    /// A flow a member tested on the ticket's phone: its steps, verdicts,
+    /// key frames and the recording to play (`crate::activity::qa_report_of`).
+    QaReport(Box<crate::activity::QaReport>),
 }
 
 impl Block {
@@ -803,6 +806,7 @@ impl Block {
             Block::HandOver { name, why, .. } => Some(format!("{name}\n{why}")),
             Block::DesignCheck(s) => Some(format!("{}\n{}\n{}", t!("check.title"), s.screen.clone().unwrap_or_default(), crate::checks::details(s).iter().map(|d| format!("{} {}", d.rule, d.said)).collect::<Vec<_>>().join("\n"))),
             Block::SecondLook { screen, verdict } => Some(format!("{}\n{screen}\n{}\n{}", t!("look.name"), verdict.summary, verdict.fixes.iter().map(crate::checks::fix).collect::<Vec<_>>().join("\n"))),
+            Block::QaReport(r) => Some(format!("{}\n{}\n{}", r.flow, r.name, r.steps.iter().map(|(_, n, step, seen)| format!("{n}. {step} — {seen}")).collect::<Vec<_>>().join("\n"))),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
@@ -973,6 +977,9 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
                     Some(Block::Reply { worked: slot, .. }) => *slot = Some(worked),
                     _ => blocks.push(Block::Worked(worked)),
                 },
+                (None, None) if crate::activity::qa_report_of(text).is_some() => {
+                    blocks.push(Block::QaReport(Box::new(crate::activity::qa_report_of(text).expect("just read"))));
+                }
                 (None, None) if crate::activity::handed_of(text).is_some() => {
                     let (name, why) = crate::activity::handed_of(text).unwrap_or_default();
                     blocks.push(Block::HandOver { name, why, live: false });

@@ -2988,5 +2988,13 @@
   "side_chat.searching": "검색 중:",
   "side_chat.send": "보내기",
   "side_chat.thinking": "생각 중…",
-  "side_chat.title": "사이드 채팅"
+  "side_chat.title": "사이드 채팅",
+  "approvals.noun_install": "도구 설치",
+  "qa.kicker": "휴대폰에서 테스트함",
+  "qa.verdict_pass": "통과",
+  "qa.verdict_fail": "실패",
+  "qa.verdict_blocked": "끝까지 확인 못 함",
+  "qa.steps": "{steps}단계 중 {passed}단계 통과",
+  "qa.play": "녹화 재생",
+  "qa.elsewhere": "녹화는 스쿼드가 돌아가는 Mac에 있어요."
 }
