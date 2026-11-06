@@ -977,6 +977,29 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
     },
+    /// The model providers connected on the daemon's machine, each with the
+    /// models it lists: answered, to every screen, by [`Event::Providers`].
+    /// Each provider not looked at yet is asked for its models then.
+    Providers,
+    /// Connect a model provider on the daemon's machine: one of equipe's
+    /// presets (`openrouter`, `groq`, `ollama`…) or `other`, an
+    /// OpenAI-compatible server at `base_url`. Its key, when it needs one, is
+    /// kept in a file there only the person can read — never sent back,
+    /// never logged. Answered by [`Event::Providers`], then by
+    /// [`Event::ProviderTested`] once its models are listed.
+    AddProvider {
+        preset: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<secrets::SecretValue>,
+    },
+    /// List a connected provider's models again (`GET /models`): answered
+    /// by [`Event::ProviderTested`].
+    TestProvider { id: String },
+    /// Forget a provider and its saved key. Members set to one of its
+    /// models say so at their next turn.
+    RemoveProvider { id: String },
     /// Sign `engine` out with its own tool (`codex logout`). Claude Code's
     /// login is the person's own: equipe never touches it. Answered by
     /// [`Event::Engines`].
@@ -1072,6 +1095,59 @@ pub struct NebiusStatus {
     /// The provider's name: `Nebius Token Factory`, or another server's host.
     #[serde(default)]
     pub provider: String,
+}
+
+/// Where a model provider's key comes from ([`ProviderStatus`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKey {
+    /// None: it can't be used yet.
+    #[default]
+    None,
+    /// Its variable in the daemon's environment, which wins over a saved key.
+    Environment,
+    /// Saved on the daemon's machine from a screen (or `equipe login nebius`).
+    Saved,
+    /// A server on the daemon's machine (Ollama, LM Studio): it needs none.
+    NotNeeded,
+}
+
+/// What listing a provider's models found ([`Command::TestProvider`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProviderTest {
+    /// Not looked at yet.
+    #[default]
+    Untested,
+    /// Being listed now.
+    Testing,
+    /// It answered with `count` models members can be set to.
+    Ok { count: usize },
+    /// It couldn't be listed: why, in plain words, in the person's language.
+    Failed { why: String },
+}
+
+/// A model provider connected on the daemon's machine ([`Event::Providers`]):
+/// never its key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderStatus {
+    /// Its id on that machine: a preset's (`openrouter`), or `other-<host>`.
+    /// A member's model on it reads `@<id>/<model>`.
+    pub id: String,
+    /// The preset it comes from (`openrouter`, `other`; `custom` for the
+    /// environment's `EQUIPE_MODEL_BASE_URL`).
+    pub preset: String,
+    pub name: String,
+    pub base_url: String,
+    pub key: ProviderKey,
+    /// Whether a screen can remove it: not one the environment sets.
+    #[serde(default)]
+    pub removable: bool,
+    /// The models members can be set to, by their `@<id>/<model>` ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelChoice>,
+    #[serde(default)]
+    pub test: ProviderTest,
 }
 
 /// A model an engine offers ([`Event::Models`]): its id, the name its tool
@@ -1927,6 +2003,15 @@ pub enum Event {
     /// Nebius Token Factory on the daemon's machine: sent with
     /// [`Event::Engines`], and when its key is saved or forgotten.
     Nebius { status: NebiusStatus },
+    /// The model providers connected on the daemon's machine
+    /// ([`Command::Providers`]), and whether the Codex CLI their members run on is there.
+    Providers {
+        providers: Vec<ProviderStatus>,
+        #[serde(default)]
+        codex: bool,
+    },
+    /// A provider's models were listed — or couldn't be ([`Command::TestProvider`]).
+    ProviderTested { id: String, test: ProviderTest },
     /// Moves between engines equipe proposes — or made on its own and tells
     /// of (`applied`), for the person to keep or undo.
     EngineProposed { squad: SquadName, proposal: engines::Proposal },
@@ -2140,6 +2225,8 @@ impl Event {
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
             | Event::Nebius { .. }
+            | Event::Providers { .. }
+            | Event::ProviderTested { .. }
             | Event::SignIn { .. }
             | Event::EngineAuth { .. }
             | Event::EngineInstall { .. }
@@ -2158,6 +2245,8 @@ impl Event {
                 | Event::DiskCleaned { .. }
                 | Event::Engines { .. }
                 | Event::Nebius { .. }
+                | Event::Providers { .. }
+                | Event::ProviderTested { .. }
                 | Event::SignIn { .. }
                 | Event::EngineAuth { .. }
                 | Event::EngineInstall { .. }
@@ -3192,5 +3281,26 @@ mod tests {
         assert_eq!(engines.iter().map(|e| (e.engine, e.state)).collect::<Vec<_>>(), [(Engine::Codex, EngineState::Unknown), (Engine::Claude, EngineState::SignedIn)]);
         let failed: SignInStep = serde_json::from_value(json!({ "kind": "failed", "why": "region_blocked" })).unwrap();
         assert_eq!(failed, SignInStep::Failed { why: SignInFailure::Failed, detail: String::new() });
+    }
+
+    #[test]
+    fn a_providers_key_goes_on_the_wire_but_never_in_a_log_and_its_status_never_carries_one() {
+        let add = Command::AddProvider { preset: "openrouter".into(), base_url: None, key: Some(secrets::SecretValue("sk-or-hunter2".into())) };
+        let wire = serde_json::to_value(&add).unwrap();
+        assert_eq!(wire, json!({ "type": "add_provider", "preset": "openrouter", "key": "sk-or-hunter2" }));
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), add);
+        assert!(!format!("{add:?}").contains("hunter2"));
+        let local: Command = serde_json::from_value(json!({ "type": "add_provider", "preset": "other", "base_url": "http://localhost:8000/v1" })).unwrap();
+        assert_eq!(local, Command::AddProvider { preset: "other".into(), base_url: Some("http://localhost:8000/v1".into()), key: None });
+        let status = ProviderStatus { id: "groq".into(), preset: "groq".into(), name: "Groq".into(), base_url: "https://api.groq.com/openai/v1".into(), key: ProviderKey::Saved, removable: true, models: vec![ModelChoice { id: "@groq/qwen/qwen3-32b".into(), ..Default::default() }], test: ProviderTest::Ok { count: 1 } };
+        let event = Event::Providers { providers: vec![status.clone()], codex: true };
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(text.contains(r#""state":"ok""#) && text.contains(r#""key":"saved""#), "{text}");
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), event);
+        // An older screen's minimum: what a newer daemon adds is optional.
+        let bare: ProviderStatus = serde_json::from_value(json!({ "id": "x", "preset": "other", "name": "x", "base_url": "http://localhost:1/v1", "key": "not_needed" })).unwrap();
+        assert_eq!((bare.test, bare.removable, bare.models.len()), (ProviderTest::Untested, false, 0));
+        assert!(event.for_everyone() && event.squad().is_none());
+        assert_eq!(serde_json::to_value(Command::Providers).unwrap(), json!({ "type": "providers" }));
     }
 }

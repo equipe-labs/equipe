@@ -3602,6 +3602,31 @@ async fn a_new_member_starts_with_the_model_and_effort_the_person_set_for_its_ro
 }
 
 #[tokio::test]
+async fn a_role_set_to_a_providers_model_starts_its_new_members_on_it_on_codexs_agent() {
+    let cwd = scratch("role-provider");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    // A server on this machine: no key needed.
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    // Set where the screen shows the role, on Claude Code: the member runs on Codex's agent all the same.
+    let default = RoleModel { role: "frontend".into(), engine: Engine::Claude, model: Some(model.clone()), effort: None };
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.len() == 1)).await;
+    let started = |id: u64| move |e: &Event| matches!(e, Event::SessionStarted { session, .. } | Event::Error { session: Some(session), .. } if *session == id);
+    handle.send(Command::Start { session: 1, spec: member(&cwd, "frontend") });
+    let seen = until(&mut events, started(1)).await;
+    let Some(Event::SessionStarted { engine: Engine::Codex, model: Some(on), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(on, &model);
+    // Another role keeps Claude Code.
+    handle.send(Command::Start { session: 2, spec: member(&cwd, "backend") });
+    let seen = until(&mut events, started(2)).await;
+    assert!(matches!(seen.last(), Some(Event::SessionStarted { engine: Engine::Claude, .. })), "{seen:#?}");
+}
+
+#[tokio::test]
 async fn a_folder_inside_a_repository_is_a_project_of_its_own_worked_in_its_folder() {
     let repo = repo();
     let desktop = repo.join("crates").join("desktop");

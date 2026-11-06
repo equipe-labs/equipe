@@ -104,8 +104,13 @@ impl Config {
     /// From the environment, else with the key saved under equipe's `home`
     /// ([`save_key`]: from a screen's settings or `equipe login nebius`).
     pub fn from_env_or_saved(home: &std::path::Path) -> Result<Self, ReviewError> {
+        Self::from_env_or_saved_with(home, |name| std::env::var(name).ok())
+    }
+
+    /// [`Config::from_env_or_saved`], with `var` reading the environment (a test's).
+    pub fn from_env_or_saved_with(home: &std::path::Path, var: impl Fn(&str) -> Option<String>) -> Result<Self, ReviewError> {
         let saved = saved_key(home);
-        Self::from_vars(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()).or_else(|| (name == "NEBIUS_API_KEY").then(|| saved.clone()).flatten()))
+        Self::from_vars(|name| var(name).filter(|v| !v.trim().is_empty()).or_else(|| (name == "NEBIUS_API_KEY").then(|| saved.clone()).flatten()))
     }
 
     /// From variables as `var` reads them, by name (the environment, or a test's).
@@ -149,6 +154,30 @@ impl Config {
             connect_timeout: CONNECT_TIMEOUT,
             backoff: Duration::from_secs(1),
         })
+    }
+
+    /// A provider the person connected ([`crate::model_providers`]): its key,
+    /// the variable Codex reads it from, the id Codex knows it by, its name
+    /// and its API's root. Asked in chat, which every such server speaks.
+    pub(crate) fn connected(key: String, key_var: &str, provider: &str, provider_name: &str, base_url: &str, wire: equipe_providers::relay::Wire) -> Self {
+        Self {
+            key,
+            key_var: key_var.to_owned(),
+            provider: provider.to_owned(),
+            provider_name: provider_name.to_owned(),
+            wire,
+            base_url: base_url.to_owned(),
+            model: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
+            timeout: REQUEST_TIMEOUT,
+            connect_timeout: CONNECT_TIMEOUT,
+            backoff: Duration::from_secs(1),
+        }
+    }
+
+    /// The variable Codex reads the key from (never the key).
+    pub fn key_var(&self) -> &str {
+        &self.key_var
     }
 
     fn url(&self, path: &str) -> String {
@@ -329,12 +358,12 @@ impl Config {
 
 /// Where the saved key is kept.
 pub fn key_path(home: &std::path::Path) -> std::path::PathBuf {
-    home.join("keys").join("nebius")
+    crate::model_providers::key_path(home, crate::model_providers::NEBIUS)
 }
 
 /// The saved key, if there is one.
 pub fn saved_key(home: &std::path::Path) -> Option<String> {
-    std::fs::read_to_string(key_path(home)).ok().map(|k| k.trim().to_owned()).filter(|k| !k.is_empty())
+    crate::model_providers::saved_key(home, crate::model_providers::NEBIUS)
 }
 
 /// Whether `key` looks like a key: no spaces or line breaks inside, not too short or long.
@@ -345,30 +374,12 @@ pub fn key_is_plausible(key: &str) -> bool {
 
 /// Save `key`, readable and writable by the person alone (the folder too).
 pub fn save_key(home: &std::path::Path, key: &str) -> std::io::Result<()> {
-    let path = key_path(home);
-    let dir = path.parent().unwrap_or(home);
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(".nebius.tmp");
-    let _ = std::fs::remove_file(&tmp);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-        std::io::Write::write_all(&mut file, key.trim().as_bytes())?;
-    }
-    #[cfg(not(unix))]
-    std::fs::write(&tmp, key.trim())?;
-    std::fs::rename(&tmp, &path)
+    crate::model_providers::save_key(home, crate::model_providers::NEBIUS, key)
 }
 
 /// Forget the saved key. Whether there was one.
 pub fn forget_key(home: &std::path::Path) -> std::io::Result<bool> {
-    match std::fs::remove_file(key_path(home)) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
-    }
+    crate::model_providers::forget_key(home, crate::model_providers::NEBIUS)
 }
 
 /// Where the key in use comes from.
