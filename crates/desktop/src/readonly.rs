@@ -82,6 +82,8 @@ pub fn reads(command: &Command) -> bool {
         | C::ProjectDocs { .. }
         | C::DesignVersions { .. }
         | C::DiskScan
+        // Where the plans went: a look.
+        | C::PlanUse { .. }
         | C::WordsLog { .. }
         // A picture of a member's page now and then: following, as a screen does.
         | C::WatchBrowser { .. } => true,
@@ -551,6 +553,7 @@ mod tests {
             Command::Devices,
             Command::Unpair { device: "d".into() },
             Command::DiskScan,
+            Command::PlanUse { engine: Engine::Claude, span: equipe_core::protocol::plan_use::Span::Week },
             Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None },
             Command::UndoWords { squad: s(), id: 1 },
             Command::WordsLog { squad: s() },
@@ -625,7 +628,7 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "words_log", "engines", "providers", "models", "design", "project_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
         for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");

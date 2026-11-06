@@ -561,6 +561,10 @@ pub struct TurnCollector {
     input: u64,
     cached: u64,
     output: u64,
+    /// Of `input`, what was written to the cache, where Codex says.
+    cache_written: u64,
+    /// The requests counted.
+    calls: u64,
     /// The context as of the latest request, and the window.
     context: Option<u64>,
     window: Option<u64>,
@@ -682,8 +686,10 @@ impl TurnCollector {
                 self.input += n("inputTokens").saturating_sub(cached);
                 self.cached += cached;
                 self.output += n("outputTokens");
+                self.cache_written += n("cacheWriteInputTokens");
                 if last.is_some() {
                     self.context = Some(n("totalTokens"));
+                    self.calls += 1;
                 }
                 if let Some(window) = usage.and_then(|u| u.get("modelContextWindow")).and_then(Value::as_u64) {
                     self.window = Some(window);
@@ -905,9 +911,13 @@ impl TurnCollector {
 
     fn usage(&self) -> Option<TurnUsage> {
         (self.input + self.cached + self.output > 0).then_some(TurnUsage {
-            input_tokens: Some(self.input),
+            input_tokens: Some(self.input.saturating_sub(self.cache_written)),
             output_tokens: Some(self.output),
-            cache_tokens: (self.cached > 0).then_some(self.cached),
+            cache_tokens: (self.cached + self.cache_written > 0).then_some(self.cached + self.cache_written),
+            cache_read_tokens: (self.cached > 0).then_some(self.cached),
+            cache_write_tokens: (self.cache_written > 0).then_some(self.cache_written),
+            cache_write_long_tokens: None,
+            calls: (self.calls > 0).then_some(self.calls),
             context_tokens: self.context,
             context_window: self.window,
         })
@@ -1682,6 +1692,7 @@ mod tests {
         let usage = result.usage.unwrap();
         assert_eq!((usage.input_tokens, usage.cache_tokens, usage.output_tokens), (Some(400), Some(1000), Some(100)));
         assert_eq!((usage.context_tokens, usage.context_window), (Some(1500), Some(258400)));
+        assert_eq!((usage.cache_read_tokens, usage.cache_write_tokens, usage.calls), (Some(1000), None, Some(1)), "cached input is read from the cache; one request");
     }
 
     #[test]

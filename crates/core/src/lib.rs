@@ -42,6 +42,7 @@ pub mod metrics;
 pub mod permissions;
 pub mod phone;
 pub mod plan;
+pub mod plan_use;
 pub mod quality;
 pub mod mock;
 pub mod models;

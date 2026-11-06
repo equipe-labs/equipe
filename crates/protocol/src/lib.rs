@@ -19,6 +19,7 @@ pub mod by_words;
 pub mod decide;
 pub mod disk;
 pub mod metrics;
+pub mod plan_use;
 pub mod engines;
 pub mod harness;
 pub mod design;
@@ -1031,6 +1032,9 @@ pub enum Command {
     Unpair { device: String },
     /// Look at what uses the disk ([`disk`]): answered by [`Event::DiskReport`].
     DiskScan,
+    /// Where an engine's plan went over `span` ([`plan_use`]): answered, to
+    /// every screen, by [`Event::PlanUse`]. Only reads.
+    PlanUse { engine: Engine, span: plan_use::Span },
     /// Give back the space of these items of the daemon's last look (their
     /// `id`s): only the ones it may remove, looked at again first. Answered by
     /// [`Event::DiskCleaned`], then a fresh [`Event::DiskReport`].
@@ -1655,6 +1659,18 @@ pub struct Usage {
     /// Input read from or written to the prompt cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_tokens: Option<u64>,
+    /// Of `cache_tokens`, what was read from the cache …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// … and what was written to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// Of `cache_write_tokens`, what was written to be kept an hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_long_tokens: Option<u64>,
+    /// How many requests the turn made of the model, subagents' included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<u64>,
     /// How full the conversation's context was at the end of the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
@@ -2198,6 +2214,12 @@ pub enum Event {
     DiskLevel { status: disk::DiskStatus },
     /// What uses the disk, as [`Command::DiskScan`] asked.
     DiskReport { report: disk::DiskReport },
+    /// Where an engine's plan went, as [`Command::PlanUse`] asked.
+    PlanUse { report: Box<plan_use::Report> },
+    /// One ticket, or the use outside equipe, burned a large share of an
+    /// engine's week in a short time: told once each, and again to a screen
+    /// that attaches while it is recent.
+    PlanBurn { burn: plan_use::Burn },
     /// What a [`Command::DiskClean`] gave back.
     DiskCleaned { cleaned: disk::DiskCleaned },
     /// Where each engine stands on the daemon's machine ([`Command::Engines`]),
@@ -2463,7 +2485,9 @@ impl Event {
             | Event::Devices { .. }
             | Event::DiskLevel { .. }
             | Event::DiskReport { .. }
-            | Event::DiskCleaned { .. } => None,
+            | Event::DiskCleaned { .. }
+            | Event::PlanUse { .. }
+            | Event::PlanBurn { .. } => None,
             // A side chat's own: never part of the conversation it is about.
             Event::SideChatOpened { .. }
             | Event::SideChat { .. }
@@ -2489,6 +2513,8 @@ impl Event {
                 | Event::DiskLevel { .. }
                 | Event::DiskReport { .. }
                 | Event::DiskCleaned { .. }
+                | Event::PlanUse { .. }
+                | Event::PlanBurn { .. }
                 | Event::Engines { .. }
                 | Event::Nebius { .. }
                 | Event::Providers { .. }

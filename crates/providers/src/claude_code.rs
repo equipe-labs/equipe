@@ -341,6 +341,9 @@ pub struct TurnCollector {
     replayed: usize,
     /// Compacting the conversation now: said once, though its status repeats.
     compacting: bool,
+    /// The model requests heard (the member's and its subagents'), by message
+    /// id: Claude Code writes a message once per content block.
+    calls: std::collections::HashSet<String>,
 }
 
 /// A subagent run in the background answers its tool call at once with this;
@@ -472,6 +475,9 @@ impl TurnCollector {
                 (None, None) => Vec::new(),
             },
             "assistant" => {
+                if let Some(id) = event.get("message").and_then(|m| m.get("id")).and_then(Value::as_str) {
+                    self.calls.insert(id.to_owned());
+                }
                 if let Some(u) = event.get("message").and_then(|m| m.get("usage")) {
                     let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
                     self.context = Some(
@@ -573,6 +579,7 @@ impl TurnCollector {
                 let mut result = result_from(event, &self.streamed, &self.last_message);
                 if let Ok(TurnResult { usage: Some(usage), .. }) = &mut result {
                     usage.context_tokens = self.context;
+                    usage.calls = (!self.calls.is_empty()).then_some(self.calls.len() as u64);
                 }
                 self.result = Some(result);
                 Vec::new()
@@ -875,18 +882,27 @@ fn result_from(event: &Value, streamed: &str, last_message: &str) -> Result<Turn
         .unwrap_or("")
         .to_owned();
     let usage = event.get("usage").and_then(|u| {
-        let input_tokens = u.get("input_tokens").and_then(Value::as_u64);
-        let output_tokens = u.get("output_tokens").and_then(Value::as_u64);
-        let cache = ["cache_read_input_tokens", "cache_creation_input_tokens"].iter().filter_map(|k| u.get(*k).and_then(Value::as_u64)).sum::<u64>();
+        let n = |v: &Value, k: &str| v.get(k).and_then(Value::as_u64);
+        let models = event.get("modelUsage").and_then(Value::as_object);
+        // Every model the turn used, its subagents' among them: what the plan
+        // counts. The turn's own `usage` is the member's alone.
+        let sum = |k: &str| models.map(|m| m.values().filter_map(|v| n(v, k)).sum::<u64>()).filter(|t| *t > 0);
+        let input_tokens = sum("inputTokens").max(n(u, "input_tokens"));
+        let output_tokens = sum("outputTokens").max(n(u, "output_tokens"));
+        let read = sum("cacheReadInputTokens").max(n(u, "cache_read_input_tokens"));
+        let write = sum("cacheCreationInputTokens").max(n(u, "cache_creation_input_tokens"));
+        let long = u.get("cache_creation").and_then(|c| n(c, "ephemeral_1h_input_tokens")).filter(|t| *t > 0).map(|t| t.min(write.unwrap_or(0)));
+        let cache = read.unwrap_or(0) + write.unwrap_or(0);
         // The window of the model that did the work (the first listed).
-        let context_window = event
-            .get("modelUsage")
-            .and_then(Value::as_object)
-            .and_then(|models| models.values().find_map(|m| m.get("contextWindow").and_then(Value::as_u64)));
+        let context_window = models.and_then(|models| models.values().find_map(|m| m.get("contextWindow").and_then(Value::as_u64)));
         (input_tokens.is_some() || output_tokens.is_some()).then_some(TurnUsage {
             input_tokens,
             output_tokens,
             cache_tokens: (cache > 0).then_some(cache),
+            cache_read_tokens: read.filter(|t| *t > 0),
+            cache_write_tokens: write.filter(|t| *t > 0),
+            cache_write_long_tokens: long,
+            calls: None,
             context_tokens: None,
             context_window,
         })
@@ -1573,6 +1589,25 @@ mod tests {
         assert_eq!(result.text, "pong");
         assert_eq!(result.status, "completed");
         assert_eq!(result.usage, Some(TurnUsage { input_tokens: Some(10), output_tokens: Some(2), ..Default::default() }));
+    }
+
+    #[test]
+    fn a_turn_counts_its_requests_once_each_and_every_model_it_used() {
+        let message = |id: &str, parent: Option<&str>| json!({ "type": "assistant", "parent_tool_use_id": parent, "message": { "id": id, "content": [{ "type": "text", "text": "x" }], "usage": { "input_tokens": 1, "output_tokens": 1 } } });
+        let result = json!({ "type": "result", "subtype": "success", "is_error": false, "result": "ok",
+            "usage": { "input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 300, "cache_creation": { "ephemeral_1h_input_tokens": 300, "ephemeral_5m_input_tokens": 0 } },
+            "modelUsage": {
+                "claude-opus-5-5": { "inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 900, "cacheCreationInputTokens": 300, "contextWindow": 1000000 },
+                "claude-haiku-5-5": { "inputTokens": 5, "outputTokens": 7, "cacheReadInputTokens": 100, "cacheCreationInputTokens": 0 }
+            } });
+        // A message comes once per content block; a subagent's requests count too.
+        let (_, turn) = collect(&[message("m1", None), message("m1", None), message("m2", None), message("s1", Some("toolu_1")), result]);
+        let usage = turn.unwrap().usage.unwrap();
+        assert_eq!(usage.calls, Some(3));
+        assert_eq!((usage.input_tokens, usage.output_tokens), (Some(15), Some(27)), "every model's, the subagent's Haiku among them");
+        assert_eq!((usage.cache_read_tokens, usage.cache_write_tokens, usage.cache_write_long_tokens), (Some(1000), Some(300), Some(300)));
+        assert_eq!(usage.cache_tokens, Some(1300), "the sum, as before");
+        assert_eq!(usage.context_window, Some(1_000_000));
     }
 
     #[test]

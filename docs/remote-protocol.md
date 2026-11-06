@@ -345,6 +345,25 @@ closes the card. Either way every screen then gets `engine_proposal_closed` `{ "
 engine out of its plan with its reset hours away (`why: "exhausted"`), category `engines`, once.
 `show_engine_setup` `{ "squad" }` proposes the recommended setup for both engines again.
 
+### Where the plans went
+
+`plan_use` `{ "engine", "span": "week" | "day" }` asks where an engine's plan went — its weekly
+window so far, or the last 24 hours — and every screen gets `plan_use` `{ "report" }`: `{ "engine",
+"span", "from", "to", "week"? (the plan's weekly window), "pace"? { "runs_out_at", "before_reset",
+"per_day_bp" }, "load", "week_load", "tokens" { "input", "output", "cache_write", "cache_read" },
+"calls", "outside"? (a slice, its `children` by folder), "projects", "tickets", "members", "beats"
+(an hour each: `{ "at", "load", "outside", "calls", "parts"? }`), "spikes" (`{ "from", "to",
+"slice" }`), "reading" }`. A slice is `{ "who", "label"?, "load", "share_bp", "week_bp"?, "tokens",
+"calls", "mostly": "rereading" | "loading" | "writing" | "input", "children"? }`; `who` is tagged
+by `kind`: `outside` `{ "folder"? }`, `project` `{ "squad"?, "project" }`, `home` `{ "squad" }`,
+`ticket` `{ "squad"?, "ticket" }`, `member` `{ "squad", "member" }`, `equipe`. Shares are of
+*load* — each kind of token weighed by the model's published prices — in basis points (10 000 =
+100 %): `share_bp` of the stretch's load, `week_bp` of the plan's week (its share of the week's
+load times the week's used percent). `plan_burn` `{ "burn": { "id", "engine", "who", "label"?,
+"week_bp", "hours", "at", "calls", "mostly" } }` says one ticket, or the use outside equipe, took
+a large share of the week in the last few hours; told once, and again to a screen that attaches
+while it is recent. Both only read: a phone may ask with `plan_use`.
+
 ### The design system
 
 The squad's design system (`docs/DESIGN-SYSTEM.md`) is asked for with the command `design`
@@ -765,7 +784,8 @@ The daemon follows a device like one more screen, with less reach than the termi
   `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
   `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`,
   `undo_home_change` (see Taking back a change to the squad's folder), `focus`, `refresh`,
-  `design`, `engines` (where the engines stand; never signing one in or out), `say` and
+  `design`, `engines` (where the engines stand; never signing one in or out), `plan_use` (where
+  the plans went: see Where the plans went), `say` and
   `undo_words` (see Deciding in words).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus

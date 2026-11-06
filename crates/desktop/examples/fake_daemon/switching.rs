@@ -6,7 +6,9 @@
 //!   with a card proposing backend and frontend move to Codex;
 //! - `claude_out`: Claude's week used up (resets in 3 days) — a card proposing
 //!   the work be handed over;
-//! - `both_low`: Claude 5h 91%, Codex week 88% — a card proposing lighter settings.
+//! - `both_low`: Claude 5h 91%, Codex week 88% — a card proposing lighter settings;
+//! - `week61`: Claude 5h 48% · week 61% (refills in 2 days 10 hours), Codex week 23% — and
+//!   T-42 burning it fast (`fake_daemon/plan_use.rs`).
 //!
 //! `FAKE_SWITCHING=auto` makes it the card that tells what equipe did, with
 //! Undo (backend moved already, frontend at its next ticket); `off`, no
@@ -54,6 +56,7 @@ pub fn plans() -> Vec<EnginePlan> {
         None => vec![],
         Some("claude86") => vec![plan(Engine::Claude, 86, 2 * H, 41, 3 * D, 60), plan(Engine::Codex, 12, 4 * H, 18, 5 * D, 300)],
         Some("claude_out") => vec![plan(Engine::Claude, 64, 3 * H, 100, 3 * D, 120), plan(Engine::Codex, 9, 4 * H, 14, 5 * D, 240)],
+        Some("week61") => vec![plan(Engine::Claude, 48, 3 * H, 61, 2 * D + 10 * H, 60), plan(Engine::Codex, 12, 4 * H, 23, 5 * D, 300)],
         Some("both_low") => vec![plan(Engine::Claude, 91, 3 * H, 58, 3 * D, 60), plan(Engine::Codex, 47, 2 * H, 88, 2 * D, 600)],
         // Plans with a weekly window only, Claude's read half an hour ago.
         Some("weekly") => [plan(Engine::Claude, 0, 0, 15, 3 * D, 31 * 60), plan(Engine::Codex, 0, 0, 4, 5 * D, 60)]

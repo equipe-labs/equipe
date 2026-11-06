@@ -164,6 +164,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::CheckEngine { .. }
         | C::ShowEngineSetup { .. }
         | C::DiskScan
+        | C::PlanUse { .. }
         | C::DiskClean { .. }
         | C::DiskRun { .. }
         | C::Design { .. }
@@ -533,6 +534,7 @@ mod tests {
             Command::WatchBrowser { squad: "a".into(), session: None },
             Command::Models { engine: crate::protocol::Engine::Claude },
             Command::DiskScan,
+            Command::PlanUse { engine: crate::protocol::Engine::Claude, span: crate::protocol::plan_use::Span::Week },
             Command::Language { lang: "ko".into() },
             Command::Logins,
             Command::OnPhone { command: Box::new(Command::Submit { session: 1, text: "hi".into(), about: None }) },

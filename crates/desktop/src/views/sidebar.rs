@@ -2264,6 +2264,7 @@ impl Shell {
             Screen::Roadmap => self.open_roadmap(cx),
             Screen::Metrics => self.open_metrics(cx),
             Screen::Progress => self.open_progress(cx),
+            Screen::Usage => self.open_usage(cx),
             Screen::Project => match self.board.project_page.clone() {
                 Some(name) => self.open_project_page(name, window, cx),
                 None => self.open_side(Side::Pm, window, cx),
