@@ -2968,5 +2968,13 @@
   "models.provider_more": "{count}개 더 · /model @{id}/<모델>",
   "models.provider_limits": "제공자 모델: 아직 서브에이전트·웹 검색·이미지 없음",
   "compose.provider_moving": "{name}은(는) 다음 티켓부터 {provider}의 {wanted}로 옮겨요.",
-  "models.provider_moves": "제공자 모델을 고르면 이 멤버는 다음 티켓부터 Codex CLI 에이전트로 옮겨요."
+  "models.provider_moves": "제공자 모델을 고르면 이 멤버는 다음 티켓부터 Codex CLI 에이전트로 옮겨요.",
+  "approvals.noun_install": "도구 설치",
+  "qa.kicker": "휴대폰에서 테스트함",
+  "qa.verdict_pass": "통과",
+  "qa.verdict_fail": "실패",
+  "qa.verdict_blocked": "끝까지 확인 못 함",
+  "qa.steps": "{steps}단계 중 {passed}단계 통과",
+  "qa.play": "녹화 재생",
+  "qa.elsewhere": "녹화는 스쿼드가 돌아가는 Mac에 있어요."
 }

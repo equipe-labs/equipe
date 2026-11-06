@@ -406,6 +406,8 @@ pub struct Context<'a> {
     pub desktop: bool,
     /// equipe-design's `design` tools: a designer's, when it is installed.
     pub design: bool,
+    /// The squad's mobile app, on the ticket's own simulator or emulator (`mcp__phone__…`, [`crate::phone`]).
+    pub phone: bool,
     /// The squad's home, where the member sits between tickets.
     pub home: Option<&'a str>,
     /// The squad's memory: its index as the member is given it, and how many facts it holds.
@@ -726,6 +728,13 @@ anything else to someone in the person's name asks the person first with `ask_pe
     } else {
         ""
     };
+    // Only where the squad has a mobile app: everyone else is told nothing new.
+    let phone = if ctx.phone {
+        "\n\nYou can test the squad's mobile app on the ticket's own simulator or emulator as a person would — see it, tap, \
+type, record a flow and check it frame by frame (the `phone` tools): open your `mobile-qa` skill before you test a flow."
+    } else {
+        ""
+    };
     let home = match ctx.home {
         Some(home) => format!(
             "\n\nThe squad's folder is {home} — your working directory between tickets, a folder the person can open \
@@ -846,7 +855,7 @@ with your engine's own wait or monitor tool."
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{pictures}{visuals}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{phone}{pictures}{visuals}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -1188,7 +1197,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, phone: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
     }
 
     /// A Claude Code member at Claude Code's own cap: what every charter said before the squad set it.
@@ -1359,6 +1368,7 @@ mod tests {
                 profiles: &profiles,
                 desktop: true,
                 design: r.id == "designer",
+                phone: false,
                 home: Some("/Users/x/.equipe/squads/acme/home"),
                 memory: Some(memory),
                 facts: 2,

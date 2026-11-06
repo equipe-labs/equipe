@@ -45,6 +45,30 @@ pub fn platforms(projects: &[std::path::PathBuf]) -> Platforms {
     Platforms { ios: found.ios && cfg!(target_os = "macos"), ..found }
 }
 
+/// How long a project's platforms are taken as read: each turn asks, and a
+/// project rarely becomes a mobile app between two turns.
+const FRESH: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// [`platforms`], each project read again at most every two minutes.
+pub fn platforms_cached(projects: &[std::path::PathBuf]) -> Platforms {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    use std::time::Instant;
+    static READ: LazyLock<Mutex<HashMap<std::path::PathBuf, (Instant, Platforms)>>> = LazyLock::new(Default::default);
+    let found = projects.iter().fold(Platforms::default(), |all, p| {
+        let cached = READ.lock().ok().and_then(|m| m.get(p).copied()).filter(|(at, _)| at.elapsed() < FRESH).map(|(_, f)| f);
+        let f = cached.unwrap_or_else(|| {
+            let f = of_project(p);
+            if let Ok(mut m) = READ.lock() {
+                m.insert(p.clone(), (Instant::now(), f));
+            }
+            f
+        });
+        all.or(f)
+    });
+    Platforms { ios: found.ios && cfg!(target_os = "macos"), ..found }
+}
+
 /// One project's platforms.
 pub fn of_project(root: &Path) -> Platforms {
     let mut found = Platforms::default();

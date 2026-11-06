@@ -3032,5 +3032,13 @@
   "models.provider_more": "{count} de plus · /model @{id}/<modèle>",
   "models.provider_limits": "Sur un fournisseur : pas encore de sous-agents, de recherche web ni d'images.",
   "compose.provider_moving": "{name} passe à {wanted} sur {provider} au prochain ticket.",
-  "models.provider_moves": "Avec le modèle d'un fournisseur, ce membre passe à l'agent de la CLI Codex au prochain ticket."
+  "models.provider_moves": "Avec le modèle d'un fournisseur, ce membre passe à l'agent de la CLI Codex au prochain ticket.",
+  "approvals.noun_install": "l'installation d'un outil",
+  "qa.kicker": "Testé sur le téléphone",
+  "qa.verdict_pass": "Réussi",
+  "qa.verdict_fail": "Échec",
+  "qa.verdict_blocked": "Inachevé",
+  "qa.steps": "{passed} étapes réussies sur {steps}",
+  "qa.play": "Lire l'enregistrement",
+  "qa.elsewhere": "L'enregistrement est sur le Mac où tourne l'escouade."
 }

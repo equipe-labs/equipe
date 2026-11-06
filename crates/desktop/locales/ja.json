@@ -2967,5 +2967,13 @@
   "models.provider_more": "ほか {count} 件 · /model @{id}/<モデル>",
   "models.provider_limits": "プロバイダーのモデル: サブエージェント・ウェブ検索・画像はまだなし",
   "compose.provider_moving": "{name} は次のチケットから {provider} の {wanted} に移ります。",
-  "models.provider_moves": "プロバイダーのモデルを選ぶと、このメンバーは次のチケットから Codex CLI のエージェントに移ります。"
+  "models.provider_moves": "プロバイダーのモデルを選ぶと、このメンバーは次のチケットから Codex CLI のエージェントに移ります。",
+  "approvals.noun_install": "ツールのインストール",
+  "qa.kicker": "スマホでテスト",
+  "qa.verdict_pass": "合格",
+  "qa.verdict_fail": "不合格",
+  "qa.verdict_blocked": "未完了",
+  "qa.steps": "{steps} ステップ中 {passed} 合格",
+  "qa.play": "録画を再生",
+  "qa.elsewhere": "録画はスクワッドが動いている Mac にあります。"
 }

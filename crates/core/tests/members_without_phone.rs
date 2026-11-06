@@ -59,6 +59,7 @@ fn told_now() -> Vec<(String, String)> {
             guard: true,
             subagents: Subagents::of(Engine::Claude, true, false, None),
             helpers: false,
+            phone: false,
         };
         let bare = Context { board_tools: false, browser: false, design: false, pm_accepts: false, profiles: &[], guard: false, ..full };
         let codex = Context { skills: Delivery::Files("/h/skills/1.0/x"), subagents: None, helpers: true, guard: false, ..full };
@@ -90,4 +91,41 @@ fn a_squad_without_a_mobile_project_tells_its_members_exactly_what_it_did() {
     let changed: Vec<&str> = now.lines().zip(pinned.lines()).filter(|(a, b)| a != b).map(|(a, _)| a.split('\t').next().unwrap_or(a)).collect();
     assert!(changed.is_empty(), "members without a mobile project are told something new: {changed:?}");
     assert_eq!(now.lines().count(), pinned.lines().count(), "the same members, told the same things");
+}
+
+#[test]
+fn in_a_squad_with_a_mobile_app_qa_and_mobile_are_told_of_the_phone_and_given_its_skill() {
+    let team = [Teammate { name: "qa", role: "qa" }];
+    let projects = ["app".to_owned()];
+    for id in ["qa", "mobile"] {
+        let role = roles::role(id).unwrap();
+        let ctx = Context {
+            team: &team,
+            projects: &projects,
+            hq: None,
+            equipe: None,
+            board_tools: true,
+            language: None,
+            screen_language: None,
+            browser: false,
+            pm_accepts: true,
+            profiles: &[],
+            desktop: false,
+            design: false,
+            home: None,
+            memory: None,
+            facts: 0,
+            edits: role.edits,
+            skills: Delivery::Plugin("/h/skills/1.0/x"),
+            guard: true,
+            subagents: Subagents::of(Engine::Claude, true, false, None),
+            helpers: false,
+            phone: true,
+        };
+        let charter = roles::charter(role, id, &ctx);
+        assert!(charter.contains("the `phone` tools") && charter.contains("`mobile-qa`"), "{id}");
+        assert!(skills::offered(role, &ctx).iter().any(|s| s.name == "mobile-qa"), "{id}");
+        let without = roles::charter(role, id, &Context { phone: false, ..ctx });
+        assert!(!without.contains("mobile-qa"));
+    }
 }

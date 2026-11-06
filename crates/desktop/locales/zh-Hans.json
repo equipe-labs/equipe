@@ -2967,5 +2967,13 @@
   "models.provider_more": "还有 {count} 个 · /model @{id}/<模型>",
   "models.provider_limits": "提供商模型：暂无子智能体、网页搜索和图片",
   "compose.provider_moving": "{name} 将在下一个工单改用 {provider} 的 {wanted}。",
-  "models.provider_moves": "选择提供商的模型后，这个成员会从下一个工单起改到 Codex CLI 的智能体上。"
+  "models.provider_moves": "选择提供商的模型后，这个成员会从下一个工单起改到 Codex CLI 的智能体上。",
+  "approvals.noun_install": "安装工具",
+  "qa.kicker": "在手机上测试",
+  "qa.verdict_pass": "通过",
+  "qa.verdict_fail": "未通过",
+  "qa.verdict_blocked": "未完成",
+  "qa.steps": "{steps} 个步骤中通过 {passed} 个",
+  "qa.play": "播放录屏",
+  "qa.elsewhere": "录屏保存在运行该小队的 Mac 上。"
 }

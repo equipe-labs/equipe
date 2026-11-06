@@ -485,6 +485,18 @@ async fn serve_client(
                     let _ = out.send(Message::response(id, result));
                 });
             }
+            (Some(rpc::PHONE), Some(id)) => {
+                let Some(call) = message.params_as::<ToolCall>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "phone needs { squad, member, name, arguments }"));
+                    continue;
+                };
+                let core = core.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let result = core.phone(call).await;
+                    let _ = out.send(Message::response(id, result));
+                });
+            }
             (Some(rpc::BUSY), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, core.busy().await));
             }
@@ -1041,6 +1053,11 @@ pub async fn call_tool(socket: &Path, call: &ToolCall) -> io::Result<ToolResult>
 /// Call a member's desktop tool through the daemon at `socket`.
 pub async fn call_desktop(socket: &Path, call: &ToolCall) -> io::Result<ToolResult> {
     call_on(socket, rpc::DESKTOP, call).await
+}
+
+/// Call a member's phone tool through the daemon at `socket`.
+pub async fn call_phone(socket: &Path, call: &ToolCall) -> io::Result<ToolResult> {
+    call_on(socket, rpc::PHONE, call).await
 }
 
 async fn call_on(socket: &Path, method: &str, call: &ToolCall) -> io::Result<ToolResult> {

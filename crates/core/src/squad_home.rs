@@ -71,8 +71,27 @@ pub fn ensure(home: &Path, squad: &str, language: Option<&str>) -> Result<bool, 
 /// No signing and no hooks, in the home's own settings too: tickets' worktrees of
 /// it commit and merge with plain git, which reads them.
 fn quiet(dir: &Path) -> Result<(), String> {
+    exclude_recordings(dir);
     git(dir, &["config", "commit.gpgsign", "false"])?;
     git(dir, &["config", "core.hooksPath", "/dev/null"]).map(|_| ())
+}
+
+/// Phone recordings (`crate::phone`) live in the folder, for members and the
+/// person to open, but never in its history: videos are big and go with their
+/// ticket. Kept out in git's own local list (`.git/info/exclude`), not the
+/// `.gitignore` the person sees and every ticket's worktree shares.
+fn exclude_recordings(dir: &Path) {
+    let file = dir.join(".git").join("info").join("exclude");
+    let line = format!("/{}/", crate::phone::RECORDINGS);
+    let now = std::fs::read_to_string(&file).unwrap_or_default();
+    if now.lines().any(|l| l.trim() == line) {
+        return;
+    }
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let sep = if now.is_empty() || now.ends_with('\n') { "" } else { "\n" };
+    let _ = std::fs::write(&file, format!("{now}{sep}{line}\n"));
 }
 
 fn readme_text(squad: &str, language: Option<&str>) -> String {
@@ -318,6 +337,21 @@ mod tests {
         assert!(changes(&dir, 10).unwrap().is_empty(), "making the folder isn't a change to show");
         assert_eq!(squad_of(&home, &dir.join("notes")).as_deref(), Some("acme"));
         assert_eq!(squad_of(&home, &home.join("squads/acme/members")), None);
+    }
+
+    #[test]
+    fn phone_recordings_stay_out_of_the_folders_history() {
+        let home = home();
+        ensure(&home, "acme", None).unwrap();
+        let dir = path(&home, "acme");
+        std::fs::create_dir_all(dir.join("recordings/T-3/checkout")).unwrap();
+        std::fs::write(dir.join("recordings/T-3/checkout.mp4"), b"video").unwrap();
+        std::fs::write(dir.join("recordings/T-3/checkout/01-0.0s.jpg"), b"frame").unwrap();
+        assert_eq!(save(&dir, "qa", "test checkout").unwrap(), None, "nothing to save: recordings aren't the folder's history");
+        assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), ".DS_Store\n*.tmp\n", "the person's .gitignore is left as it was");
+        ensure(&home, "acme", None).unwrap();
+        let exclude = std::fs::read_to_string(dir.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches("/recordings/").count(), 1, "said once: {exclude}");
     }
 
     #[test]

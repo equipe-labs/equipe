@@ -86,6 +86,7 @@ mod watch;
 mod words;
 mod helping;
 mod providers;
+mod phone;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -248,6 +249,8 @@ enum Request {
     PersonWindow(String, oneshot::Sender<bool>),
     BrowserHub(oneshot::Sender<std::sync::Arc<browser::Hub>>),
     Desktop(DesktopRequest),
+    /// A member's phone tools ([`crate::phone`]).
+    Phone(phone::PhoneRequest),
     /// An engine's plan, read outside a turn.
     Usage(Engine, equipe_protocol::PlanUsage),
     Shutdown(oneshot::Sender<()>),
@@ -1127,6 +1130,7 @@ impl Wake {
             Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
             Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
+            Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
@@ -1288,6 +1292,7 @@ impl Runtime {
                     let _ = reply.send(busy);
                 }
                 Some(Request::Desktop(request)) => self.on_desktop(request),
+                Some(Request::Phone(request)) => self.on_phone(request),
                 Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
                 Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),
                 Some(Request::Usage(engine, usage)) => {
@@ -3848,6 +3853,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         let desktop = wants_browser
             && cfg!(target_os = "macos")
             && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.journals.get(s).is_some_and(|j| j.desktop_enabled(&m.name)));
+        // A squad's mobile app: its QA and mobile members test it on the ticket's own phone.
+        let phone = board_tools && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.phone_offered(s, &m.role, mode));
         // A designer's `design` tools, when equipe-design is installed: never installed for it.
         let design = (board_tools && session.member.as_ref().is_some_and(|m| m.role == "designer"))
             .then(|| self.config.design_path.as_deref().and_then(|path| std::env::split_paths(path).map(|d| d.join("equipe-design")).find(|p| p.is_file())))
@@ -3912,6 +3919,13 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if let Some(design) = &design {
                     servers[DESIGN_SERVER] = json!({ "type": "stdio", "command": design, "args": ["mcp"] });
                 }
+                if phone {
+                    servers[crate::phone::SERVER] = json!({
+                        "type": "stdio",
+                        "command": binary,
+                        "args": ["mcp", "--server", crate::phone::SERVER, "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
+                    });
+                }
                 Some(json!({ "mcpServers": servers }).to_string())
             }
             _ => None,
@@ -3951,6 +3965,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 pm_accepts: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::pm_accepts),
                 desktop,
                 design: design.is_some(),
+                phone,
                 home: home.as_deref(),
                 memory: memory.as_deref(),
                 facts: facts.len(),
@@ -4117,6 +4132,13 @@ for one project goes to it as tickets for its owners, with that project — and 
                         if let Some(design) = &design {
                             servers[DESIGN_SERVER] = codex_app::mcp_server(design, &["mcp".to_owned()], matches!(mode, Mode::Auto | Mode::Full));
                         }
+                        // Only the ticket's own device: approved in every mode it is offered in.
+                        // Booting one takes a minute or two, past Codex's default wait.
+                        if phone {
+                            let mut server = codex_app::mcp_server(binary, &args(Some(crate::phone::SERVER)), true);
+                            server["tool_timeout_sec"] = json!(600);
+                            servers[crate::phone::SERVER] = server;
+                        }
                         Some(servers)
                     }
                     _ => None,
@@ -4260,6 +4282,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }
                 if design.is_some() && matches!(mode, Mode::Auto | Mode::Full) {
                     allowed.push(format!("mcp__{DESIGN_SERVER}"));
+                }
+                // The ticket's own simulator or emulator, nothing else: no asking.
+                if phone {
+                    allowed.push(format!("mcp__{}", crate::phone::SERVER));
                 }
                 // What the person always allows no longer asks, and reaches its service from inside the fence.
                 let outward = permissions::still_asks(&squad_rules);
@@ -6071,6 +6097,9 @@ there, end your turn, and carry on when they say they're done."
         let signal = if approval.tool == CONFIRM { self.signal_answered(&squad, &input, decision != Decision::Deny) } else { None };
         let _ = reply.send(if let Some(text) = signal {
             ToolResult { text, is_error: false, image: None }
+        } else if approval.tool == crate::phone::INSTALL {
+            // The phone tool waits on this: AXe is installed only on a yes.
+            Self::phone_install_answered(decision, why)
         } else if approval.tool == desktop_gate::SEND {
             // The desktop tool waits on this: nothing reaches the screen on a no.
             match decision {

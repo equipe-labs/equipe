@@ -4190,6 +4190,48 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
 }
 
 #[tokio::test]
+async fn only_qa_and_mobile_get_the_phone_and_only_in_a_squad_with_a_mobile_app() {
+    let servers = |call: &[String]| -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(arg(call, "--mcp-config").unwrap()).unwrap()["mcpServers"].clone()
+    };
+    let phone = |member: &str| ToolCall { squad: "acme".into(), member: member.into(), name: "look".into(), arguments: serde_json::json!({}) };
+    for mobile in [false, true] {
+        let (claude, recorded) = recording_claude(&answering("ok"));
+        let cwd = scratch("cwd");
+        if mobile {
+            std::fs::create_dir_all(cwd.join("android/app")).unwrap();
+            std::fs::write(cwd.join("android/app/build.gradle"), "apply plugin: 'com.android.application'\n").unwrap();
+        }
+        let home = squad_home(&[&cwd]);
+        let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+        add(&handle, &mut events, 1, member(&cwd, "qa")).await;
+        add(&handle, &mut events, 2, member(&cwd, "frontend")).await;
+        for session in [1, 2] {
+            handle.send(Command::Submit { session, text: "go".into(), about: None });
+            until(&mut events, |e| matches!(e, Event::TurnEnded { session: s, .. } if *s == session)).await;
+        }
+        let turns = calls(&recorded);
+        let (qa, frontend) = (&turns[turns.len() - 2], &turns[turns.len() - 1]);
+        assert!(servers(frontend).get("phone").is_none(), "a frontend member never gets the phone");
+        assert!(!frontend.iter().any(|a| a == "mcp__phone"));
+        if mobile {
+            let args: Vec<String> = servers(qa)["phone"]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_owned()).collect();
+            assert_eq!(&args[..3], ["mcp", "--server", "phone"]);
+            assert!(qa.iter().any(|a| a == "mcp__phone"), "the ticket's own device: used without asking");
+            // At the desk, with no ticket: a device is a ticket's, so nothing is started.
+            let desk = handle.phone(phone("qa")).await;
+            assert!(desk.is_error && desk.text.contains("ticket"), "{}", desk.text);
+        } else {
+            assert!(servers(qa).get("phone").is_none(), "no mobile app: QA is told and given exactly what it was");
+            assert!(!qa.iter().any(|a| a == "mcp__phone"));
+        }
+        let refused = handle.phone(phone("frontend")).await;
+        assert!(refused.is_error && refused.text.contains("QA and mobile"), "{}", refused.text);
+        handle.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn only_a_designer_gets_equipe_designs_tools_and_only_when_it_is_installed() {
     let servers = |call: &[String]| -> serde_json::Value {
         serde_json::from_str::<serde_json::Value>(arg(call, "--mcp-config").unwrap()).unwrap()["mcpServers"].clone()

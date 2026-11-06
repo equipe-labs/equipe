@@ -3032,5 +3032,13 @@
   "models.provider_more": "{count} weitere · /model @{id}/<Modell>",
   "models.provider_limits": "Auf einem Anbieter: noch keine Subagenten, keine Websuche, keine Bilder.",
   "compose.provider_moving": "{name} wechselt beim nächsten Ticket zu {wanted} auf {provider}.",
-  "models.provider_moves": "Mit dem Modell eines Anbieters wechselt dieses Mitglied beim nächsten Ticket zum Agenten der Codex-CLI."
+  "models.provider_moves": "Mit dem Modell eines Anbieters wechselt dieses Mitglied beim nächsten Ticket zum Agenten der Codex-CLI.",
+  "approvals.noun_install": "Installation eines Werkzeugs",
+  "qa.kicker": "Auf dem Handy getestet",
+  "qa.verdict_pass": "Bestanden",
+  "qa.verdict_fail": "Fehlgeschlagen",
+  "qa.verdict_blocked": "Nicht abgeschlossen",
+  "qa.steps": "{passed} von {steps} Schritten bestanden",
+  "qa.play": "Aufnahme abspielen",
+  "qa.elsewhere": "Die Aufnahme liegt auf dem Mac, auf dem der Squad läuft."
 }

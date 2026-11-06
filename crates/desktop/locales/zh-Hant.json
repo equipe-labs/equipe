@@ -2967,5 +2967,13 @@
   "models.provider_more": "還有 {count} 個 · /model @{id}/<模型>",
   "models.provider_limits": "供應商模型：暫無子代理、網頁搜尋和圖片",
   "compose.provider_moving": "{name} 將在下一張工單改用 {provider} 的 {wanted}。",
-  "models.provider_moves": "選擇供應商的模型後，這個成員會從下一張工單起改到 Codex CLI 的代理上。"
+  "models.provider_moves": "選擇供應商的模型後，這個成員會從下一張工單起改到 Codex CLI 的代理上。",
+  "approvals.noun_install": "安裝工具",
+  "qa.kicker": "在手機上測試",
+  "qa.verdict_pass": "通過",
+  "qa.verdict_fail": "未通過",
+  "qa.verdict_blocked": "未完成",
+  "qa.steps": "{steps} 個步驟中通過 {passed} 個",
+  "qa.play": "播放錄影",
+  "qa.elsewhere": "錄影保存在執行該小隊的 Mac 上。"
 }

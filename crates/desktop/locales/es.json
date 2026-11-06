@@ -3032,5 +3032,13 @@
   "models.provider_more": "{count} más · /model @{id}/<modelo>",
   "models.provider_limits": "En un proveedor: aún sin subagentes, búsqueda web ni imágenes.",
   "compose.provider_moving": "{name} pasa a {wanted} en {provider} en su próximo ticket.",
-  "models.provider_moves": "Con el modelo de un proveedor, este miembro pasa al agente de la CLI de Codex en su próximo ticket."
+  "models.provider_moves": "Con el modelo de un proveedor, este miembro pasa al agente de la CLI de Codex en su próximo ticket.",
+  "approvals.noun_install": "instalar una herramienta",
+  "qa.kicker": "Probado en el teléfono",
+  "qa.verdict_pass": "Superado",
+  "qa.verdict_fail": "Fallido",
+  "qa.verdict_blocked": "Sin terminar",
+  "qa.steps": "{passed} de {steps} pasos superados",
+  "qa.play": "Reproducir grabación",
+  "qa.elsewhere": "La grabación está en el Mac donde corre el squad."
 }

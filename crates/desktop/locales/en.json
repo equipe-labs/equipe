@@ -3032,5 +3032,13 @@
   "models.provider_more": "{count} more · /model @{id}/<model>",
   "models.provider_limits": "On a provider: no subagents or web search yet, and no images.",
   "compose.provider_moving": "{name} moves to {wanted} on {provider} at its next ticket.",
-  "models.provider_moves": "A provider's model moves this member to the Codex CLI's agent at its next ticket."
+  "models.provider_moves": "A provider's model moves this member to the Codex CLI's agent at its next ticket.",
+  "approvals.noun_install": "installing a tool",
+  "qa.kicker": "Tested on the phone",
+  "qa.verdict_pass": "Passed",
+  "qa.verdict_fail": "Failed",
+  "qa.verdict_blocked": "Not finished",
+  "qa.steps": "{passed} of {steps} steps passed",
+  "qa.play": "Play recording",
+  "qa.elsewhere": "The recording is on the Mac that runs the squad."
 }
