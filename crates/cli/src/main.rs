@@ -1616,6 +1616,7 @@ impl App {
                 | Event::WordsLive { .. }
                 | Event::WordsClosed { .. }
                 | Event::WordsLog { .. }
+                | Event::WordsAllChanged { .. }
                 | Event::EngineProposed { .. }
                 | Event::EngineProposalClosed { .. }
                 | Event::EngineSwitchingChanged { .. }

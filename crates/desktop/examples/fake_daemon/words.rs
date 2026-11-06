@@ -4,15 +4,16 @@
 //! and confirmed by the next message, outward ones counted down. The log of
 //! where words went wrong is a made-up week, every flag in it.
 //!
-//! `FAKE_WORDS=read_back|countdown|undo|which` has one waiting when a screen
-//! attaches (merging T-42, pushing it, accepting T-12, or a choice);
-//! `FAKE_WORDS_LANG=en` reads back in English (Korean otherwise).
+//! `FAKE_WORDS=read_back|countdown|undo|which|quote` has one waiting when a
+//! screen attaches (merging T-42, pushing it, accepting T-12, a choice, or
+//! paying in the person's name with the PM's words quoted) — and all by
+//! words on; `FAKE_WORDS_LANG=en` reads back in English (Korean otherwise).
 
 use std::sync::Mutex;
 
 use equipe_core::by_words::{self as rules, Ask, Step, Waiting};
 use equipe_core::i18n::Lang;
-use equipe_core::protocol::by_words::{Entry, Flag, Heard, Kind, Live, Outcome, Reply, Stage, Tier, Via};
+use equipe_core::protocol::by_words::{Entry, Flag, Heard, Kind, Live, Outcome, Quote, Reply, Stage, Tier, Tongues, Via};
 use equipe_core::protocol::{Command, Event, Ticket};
 use tokio::sync::broadcast;
 
@@ -21,6 +22,23 @@ const PM: u64 = 1;
 
 fn lang() -> Lang {
     std::env::var("FAKE_WORDS_LANG").ok().and_then(|l| Lang::parse(&l)).unwrap_or(Lang::Ko)
+}
+
+/// "All by words" for the squad, as the daemon keeps it: on with `FAKE_WORDS`.
+static ALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn all() -> bool {
+    ALL.load(std::sync::atomic::Ordering::Relaxed) || std::env::var_os("FAKE_WORDS").is_some()
+}
+
+pub fn set_all(on: bool, events: &broadcast::Sender<Event>) {
+    ALL.store(on, std::sync::atomic::Ordering::Relaxed);
+    let _ = events.send(Event::WordsAllChanged { squad: SQUAD.into(), on });
+}
+
+/// The languages read: the fake's, and English.
+fn tongues() -> Tongues {
+    Tongues::of(&[lang().code(), "ko"])
 }
 
 fn now_ms() -> u64 {
@@ -40,7 +58,7 @@ fn talks() -> &'static Mutex<Vec<Talk>> {
 
 #[allow(clippy::too_many_arguments)]
 fn live(id: u64, stage: Stage, tier: Tier, kind: Kind, read_back: String, items: Vec<String>, said: &str, wait: u64) -> Live {
-    Live { id, session: PM, stage, tier, kind, read_back, items, until: now_ms() + wait, said: said.into(), via: Via::Typed, asked_again: 0, device: None }
+    Live { id, session: PM, stage, tier, kind, read_back, items, quotes: Vec::new(), until: now_ms() + wait, said: said.into(), via: Via::Typed, asked_again: 0, device: None }
 }
 
 /// What waits when a screen attaches (`FAKE_WORDS`), read against the fake board.
@@ -49,14 +67,23 @@ pub fn on_hello(tickets: &[Ticket]) -> Vec<Live> {
     if all.is_empty() && let Some(mode) = std::env::var("FAKE_WORDS").ok().filter(|m| !m.is_empty()) {
         let w = Waiting { tickets, ..Default::default() };
         let (ask, stage, wait, said) = match mode.as_str() {
-            "countdown" => (Ask::Tickets { verb: rules::Verb::Push, tickets: vec![42] }, Stage::Countdown, 10_000, "T-42 머지하고 push"),
-            "undo" => (Ask::Tickets { verb: rules::Verb::Accept, tickets: vec![12] }, Stage::Undo, 5_000, "T-12 수락"),
-            "which" => (Ask::Tickets { verb: rules::Verb::Merge, tickets: vec![42] }, Stage::Which, 120_000, "승인"),
-            _ => (Ask::Tickets { verb: rules::Verb::Merge, tickets: vec![42] }, Stage::ReadBack, 120_000, "T-42 머지해 줘"),
+            "countdown" => (Ask::Tickets { verb: rules::Verb::Push, tickets: vec![42] }, Stage::Countdown, 10_000, "T-42 merge push"),
+            "undo" => (Ask::Tickets { verb: rules::Verb::Accept, tickets: vec![12] }, Stage::Undo, 5_000, "accept T-12"),
+            "which" => (Ask::Tickets { verb: rules::Verb::Merge, tickets: vec![42] }, Stage::Which, 120_000, "approve"),
+            _ => (Ask::Tickets { verb: rules::Verb::Merge, tickets: vec![42] }, Stage::ReadBack, 120_000, "merge T-42"),
         };
-        let (head, items) = rules::read_back(lang(), &ask, &w);
+        let back = rules::read_back(lang(), &ask, &w);
         let kind = rules::kind(&ask, &w);
-        let mut shown = live(9_100, stage, kind.tier(), kind, head, items, said, wait);
+        let mut shown = live(9_100, stage, kind.tier(), kind, back.head, back.items, said, wait);
+        if mode == "quote" {
+            // Paying in the person's name: equipe's line, and the PM's own words quoted as the PM's.
+            shown.kind = Kind::ActInName;
+            shown.tier = Tier::Outward;
+            shown.read_back = equipe_core::i18n::core(lang()).fill("words.do.act_in_name", &[("member", "pm".into())]);
+            shown.items = vec![equipe_core::i18n::core(lang()).fill("words.item.on", &[("ticket", "T-117".into())])];
+            shown.quotes = vec![Quote::of("pm", "Pay $99.00 a year to Apple for the developer account"), Quote::of("pm", "App Store submission needs it")];
+            shown.said = "approve".into();
+        }
         let mut choices = Vec::new();
         if stage == Stage::Which {
             choices = vec![ask.clone(), Ask::Tickets { verb: rules::Verb::Accept, tickets: vec![71] }];
@@ -68,9 +95,6 @@ pub fn on_hello(tickets: &[Ticket]) -> Vec<Live> {
     all.iter().map(|t| t.live.clone()).collect()
 }
 
-fn notice(events: &broadcast::Sender<Event>, text: String) {
-    let _ = events.send(Event::Notice { session: PM, text });
-}
 
 fn close(id: u64, outcome: Outcome, events: &broadcast::Sender<Event>) -> Option<Ask> {
     let talk = {
@@ -86,8 +110,7 @@ fn close(id: u64, outcome: Outcome, events: &broadcast::Sender<Event>) -> Option
         _ => "words.held",
     };
     let text = equipe_core::i18n::core(lang()).fill(key, &[("what", talk.live.read_back.clone()), ("said", talk.live.said.clone())]);
-    let _ = events.send(Event::WordsClosed { squad: SQUAD.into(), id, outcome, text: text.clone() });
-    notice(events, text);
+    let _ = events.send(Event::WordsClosed { squad: SQUAD.into(), id, outcome, text });
     talk.ask
 }
 
@@ -119,19 +142,19 @@ fn run(ask: &Ask, events: &broadcast::Sender<Event>) {
 }
 
 /// The person's message, as the daemon reads it. Whether it goes on to the member.
-pub fn on_say(text: &str, all: bool, pasted: bool, events: &broadcast::Sender<Event>) -> bool {
+pub fn on_say(text: &str, pasted: bool, events: &broadcast::Sender<Event>) -> bool {
     if pasted {
         return true;
     }
     let tickets = super::tickets().lock().unwrap().clone();
     let tickets = tickets.as_slice();
     let lang = lang();
-    let words = equipe_core::i18n::core(lang);
+    let t = tongues();
     let answering = talks().lock().unwrap().iter().filter(|t| matches!(t.live.stage, Stage::ReadBack | Stage::Which)).map(|t| (t.live.id, t.live.stage, t.live.tier, t.choices.len(), t.live.asked_again)).next_back();
     let waiting_stop = talks().lock().unwrap().iter().filter(|t| matches!(t.live.stage, Stage::Undo | Stage::Countdown)).map(|t| (t.live.id, t.live.stage, t.live.tier)).next_back();
-    let pick = answering.or(waiting_stop.filter(|_| equipe_core::protocol::by_words::stops(text)).map(|(id, stage, tier)| (id, stage, tier, 0, 0)));
+    let pick = answering.or(waiting_stop.filter(|_| equipe_core::protocol::by_words::stops(&t, text)).map(|(id, stage, tier)| (id, stage, tier, 0, 0)));
     if let Some((id, stage, tier, count, again)) = pick {
-        let (step, _) = rules::answer(stage, tier, text, count, again);
+        let (step, _) = rules::answer(&t, stage, tier, false, text, count, again);
         match step {
             Step::Pass => return true,
             Step::Run => {
@@ -148,7 +171,6 @@ pub fn on_say(text: &str, all: bool, pasted: bool, events: &broadcast::Sender<Ev
                     t.live.until = until;
                     t.live.clone()
                 };
-                notice(events, words.fill("words.countdown", &[("what", shown.read_back.clone()), ("seconds", "10".into())]));
                 let _ = events.send(Event::WordsLive { squad: SQUAD.into(), live: shown });
                 due(id, 10_000, until, events.clone());
             }
@@ -159,7 +181,6 @@ pub fn on_say(text: &str, all: bool, pasted: bool, events: &broadcast::Sender<Ev
                     t.live.asked_again += 1;
                     t.live.clone()
                 };
-                notice(events, format!("{} {}", words.get("words.again"), rules::ask_line(lang, tier)));
                 let _ = events.send(Event::WordsLive { squad: SQUAD.into(), live: shown });
             }
             Step::Choose(n) => {
@@ -168,9 +189,9 @@ pub fn on_say(text: &str, all: bool, pasted: bool, events: &broadcast::Sender<Ev
                     let mut all = talks().lock().unwrap();
                     let Some(t) = all.iter_mut().find(|t| t.live.id == id) else { return false };
                     let Some(ask) = t.choices.get(n - 1).cloned() else { return false };
-                    let (head, items) = rules::read_back(lang, &ask, &w);
+                    let back = rules::read_back(lang, &ask, &w);
                     let kind = rules::kind(&ask, &w);
-                    t.live = Live { stage: Stage::ReadBack, tier: kind.tier(), kind, read_back: head, items, ..t.live.clone() };
+                    t.live = Live { stage: Stage::ReadBack, tier: kind.tier(), kind, read_back: back.head, items: back.items, quotes: back.quotes, ..t.live.clone() };
                     t.ask = Some(ask);
                     t.choices.clear();
                     t.live.clone()
@@ -185,10 +206,11 @@ pub fn on_say(text: &str, all: bool, pasted: bool, events: &broadcast::Sender<Ev
         return false;
     }
     let w = Waiting { tickets, ..Default::default() };
-    let asks = rules::read(text, &w);
+    let asks = rules::read(text, &w, &t);
     let [ask] = asks.as_slice() else { return true };
     let kind = rules::kind(ask, &w);
-    let (head, items) = rules::read_back(lang, ask, &w);
+    let back = rules::read_back(lang, ask, &w);
+    let (head, items) = (back.head, back.items);
     let id = 9_200 + talks().lock().unwrap().len() as u64;
     match kind.tier() {
         Tier::Low => {
@@ -198,18 +220,10 @@ pub fn on_say(text: &str, all: bool, pasted: bool, events: &broadcast::Sender<Ev
             let _ = events.send(Event::WordsLive { squad: SQUAD.into(), live: shown });
             due(id, 5_000, until, events.clone());
         }
-        tier if all => {
-            let shown = live(id, Stage::ReadBack, tier, kind, head.clone(), items.clone(), text, 120_000);
+        tier if all() => {
+            let mut shown = live(id, Stage::ReadBack, tier, kind, head, items, text, 120_000);
+            shown.quotes = back.quotes;
             talks().lock().unwrap().push(Talk { live: shown.clone(), ask: Some(ask.clone()), choices: Vec::new() });
-            let mut lines = vec![head];
-            lines.extend(items);
-            lines.push(rules::ask_line(lang, tier));
-            // After the words themselves, as the daemon shows it.
-            let (later, text) = (events.clone(), lines.join("\n"));
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                notice(&later, text);
-            });
             let _ = events.send(Event::WordsLive { squad: SQUAD.into(), live: shown });
         }
         _ => {
@@ -247,6 +261,7 @@ pub fn log() -> Vec<Entry> {
         said: said.into(),
         read_back: read_back.into(),
         items: vec![],
+        quotes: if kind == Kind::AllowOutward { vec![Quote::of("frontend", "to ship the fix tonight")] } else { vec![] },
         asked_again: answers.iter().filter(|a| a.read == Reply::Unclear).count() as u32,
         decided_at: answers.last().map(|a| a.at).or(Some(at + 5_000)),
         answers,

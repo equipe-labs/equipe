@@ -88,6 +88,8 @@ pub fn reads(command: &Command) -> bool {
         | C::SubmitLater { .. }
         | C::Say { .. }
         | C::UndoWords { .. }
+        | C::ClearWordsLog { .. }
+        | C::SetWordsAll { .. }
         | C::Interrupt { .. }
         | C::Close { .. }
         | C::Accept { .. }
@@ -536,6 +538,8 @@ mod tests {
             Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None },
             Command::UndoWords { squad: s(), id: 1 },
             Command::WordsLog { squad: s() },
+            Command::ClearWordsLog { squad: s() },
+            Command::SetWordsAll { squad: s(), on: true },
             Command::DiskClean { ids: vec![] },
             Command::DiskRun { id: "i".into() },
             Command::Engines,

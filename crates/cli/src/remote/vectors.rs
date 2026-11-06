@@ -787,7 +787,7 @@ fn words_live(stage: equipe_core::protocol::by_words::Stage) -> equipe_core::pro
         Stage::ReadBack => (Tier::High, Kind::Merge, "Merge T-38 into main, on this Mac"),
         _ => (Tier::Low, Kind::AcceptTask, "Accept T-38"),
     };
-    Live { id: 12_000_001, session: 1_000_001, stage, tier, kind, read_back: read_back.into(), items: vec!["T-38 “로그인 API 에러 메시지”".into()], until: NOW + 5_000, said: "T-38 수락".into(), via: Via::Voice, asked_again: 0, device: Some(device_id()) }
+    Live { id: 12_000_001, session: 1_000_001, stage, tier, kind, read_back: read_back.into(), items: vec!["T-38 “로그인 API 에러 메시지”".into()], quotes: vec![], until: NOW + 5_000, said: "T-38 수락".into(), via: Via::Voice, asked_again: 0, device: Some(device_id()) }
 }
 
 fn accept_proposal() -> equipe_core::protocol::accept::AcceptProposal {
@@ -990,6 +990,7 @@ fn snapshot() -> Snapshot {
         reviews: vec![code_review()],
         put_away: Vec::new(),
         words: Some(vec![]),
+        words_all: false,
     }
 }
 

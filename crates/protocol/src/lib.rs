@@ -796,9 +796,11 @@ pub enum Command {
     /// ([`by_words`]) before it goes on, as [`Command::Submit`] (or, `later`,
     /// [`Command::SubmitLater`]), to the member. An answer to a words request
     /// waiting ([`Event::WordsLive`]) is equipe's and goes no further.
-    /// `all`: "All by words" is on on that screen. `pasted`: some of the text
-    /// was pasted, so none of it decides. `device`: the paired phone it came
-    /// from — set by the daemon's phone link, never by the phone.
+    /// `all`: ignored — whether high risk goes by words is the daemon's own
+    /// setting ([`Command::SetWordsAll`]); kept on the wire for screens that
+    /// send it. `pasted`: some of the text was pasted, so none of it decides.
+    /// `device`: the paired phone it came from — set by the daemon's phone
+    /// link, never by the phone.
     Say {
         squad: SquadName,
         session: SessionId,
@@ -822,6 +824,14 @@ pub enum Command {
     /// The log of decisions made in words, newest first: answered by
     /// [`Event::WordsLog`].
     WordsLog { squad: SquadName },
+    /// The log of decisions made in words, emptied: answered by an empty
+    /// [`Event::WordsLog`]. The Mac's screens only.
+    ClearWordsLog { squad: SquadName },
+    /// "All by words" for the squad: the person's words decide high-risk
+    /// requests too, read back and confirmed. Kept by the daemon; the Mac's
+    /// screens only — never a phone, never a message. Answered by
+    /// [`Event::WordsAllChanged`].
+    SetWordsAll { squad: SquadName, on: bool },
     /// How many extra members of a role equipe may bring in when several of
     /// its tickets are ready at once; 0 brings in none.
     Scale { squad: SquadName, extra: usize },
@@ -1708,6 +1718,8 @@ pub enum Event {
     /// The decisions made in words ([`Command::WordsLog`]), newest first,
     /// each flagged where it may have gone wrong.
     WordsLog { squad: SquadName, entries: Vec<by_words::Entry> },
+    /// "All by words" turned on or off for the squad ([`Command::SetWordsAll`]).
+    WordsAllChanged { squad: SquadName, on: bool },
     /// The squad's "always allow" rules changed (one added by an answer of
     /// [`Decision::Always`], one taken back): all of them, oldest first.
     Allowed { squad: SquadName, rules: Vec<String> },
@@ -2118,6 +2130,7 @@ impl Event {
             | Event::WordsLive { squad, .. }
             | Event::WordsClosed { squad, .. }
             | Event::WordsLog { squad, .. }
+            | Event::WordsAllChanged { squad, .. }
             | Event::Allowed { squad, .. }
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
@@ -2197,6 +2210,7 @@ impl Event {
             | Event::WordsLive { .. }
             | Event::WordsClosed { .. }
             | Event::WordsLog { .. }
+            | Event::WordsAllChanged { .. }
             | Event::Allowed { .. }
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
@@ -2595,6 +2609,9 @@ pub struct Snapshot {
     /// [`Command::Submit`], not [`Command::Say`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<Vec<by_words::Live>>,
+    /// "All by words" is on for the squad ([`Command::SetWordsAll`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub words_all: bool,
 }
 
 #[cfg(test)]
@@ -2866,6 +2883,7 @@ mod tests {
             hq: Some("/repo".into()),
             put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000 }],
             words: None,
+            words_all: false,
             routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
             reviews: vec![review::CodeReview {
@@ -3034,6 +3052,9 @@ mod tests {
         assert_eq!(before.words, None);
         let now = Snapshot { words: Some(vec![]), ..Snapshot::default() };
         assert_eq!(serde_json::to_value(&now).unwrap()["words"], json!([]));
+        assert!(!before.words_all, "off unless the person turned it on");
+        let set = Command::SetWordsAll { squad: "acme".into(), on: true };
+        assert_eq!(serde_json::to_value(&set).unwrap(), json!({ "type": "set_words_all", "squad": "acme", "on": true }));
         let closed = Event::WordsClosed { squad: "acme".into(), id: 4, outcome: by_words::Outcome::Undone, text: String::new() };
         assert_eq!(serde_json::to_value(&closed).unwrap(), json!({ "type": "words_closed", "squad": "acme", "id": 4, "outcome": "undone" }));
     }

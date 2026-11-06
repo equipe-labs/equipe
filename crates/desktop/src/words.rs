@@ -1,22 +1,30 @@
 //! Deciding in the person's own words, on this screen: what waits on them
-//! in words (`equipe_protocol::by_words::Live`, the daemon's), what the
-//! composer sends for their message — `say`, with how it came in, to a
-//! daemon that reads words; `submit` to one from before — and the words for
-//! the card over the composer and the log of where words went wrong. No UI
-//! types here, so the rules are tested without a window. The reading and
-//! the deciding are the daemon's (`equipe_core::by_words`).
+//! in words (`equipe_protocol::by_words::Live`, the daemon's), whether "all
+//! by words" is on for the squad (the daemon keeps it; only the Mac's
+//! screens change it), what the composer sends for their message — `say`,
+//! with how it came in, to a daemon that reads words; `submit` to one from
+//! before — and the words for the card over the composer and the log of
+//! where words went wrong. No UI types here, so the rules are tested
+//! without a window. The reading and the deciding are the daemon's
+//! (`equipe_core::by_words`).
+//!
+//! A paste is known only as ⌘V into the box (`views/composer.rs`): text
+//! dragged in, a Services menu, an autocompletion or an input method's
+//! suggestion reach the box as typed, and count as the person's own words.
 
 use equipe_core::protocol::by_words::{Entry, Flag, Live, Outcome, Reply, Stage, Tier, Via};
 use equipe_core::protocol::Command;
 use equipe_core::t;
 
-use crate::sheet::{Row, Sheet};
+use crate::sheet::{Ask, Button, Row, Sheet, Then};
 
 /// What waits in words for the squad on screen, and the log once asked for.
 #[derive(Debug, Clone, Default)]
 pub struct Words {
     /// The daemon reads the person's words (its snapshot says so).
     pub read: bool,
+    /// "All by words" is on for the squad, as the daemon keeps it.
+    pub all: bool,
     live: Vec<Live>,
     /// The log, as the daemon sent it, waiting to be shown.
     log: Option<Vec<Entry>>,
@@ -25,9 +33,10 @@ pub struct Words {
 impl Words {
     /// The snapshot's: what waits replaces everything — `None` from a daemon
     /// that reads no words.
-    pub fn load(&mut self, words: Option<Vec<Live>>) {
+    pub fn load(&mut self, words: Option<Vec<Live>>, all: bool) {
         self.read = words.is_some();
         self.live = words.unwrap_or_default();
+        self.all = all;
     }
 
     /// New, or a step on.
@@ -68,8 +77,6 @@ impl Words {
 pub struct Said {
     pub dictated: bool,
     pub pasted: bool,
-    /// "All by words" is on on this Mac.
-    pub all: bool,
 }
 
 /// What the composer sends for the person's message: to a daemon that reads
@@ -80,7 +87,7 @@ pub fn commands(commands: Vec<Command>, squad: &str, read: bool, said: Said) -> 
         return commands;
     }
     let via = if said.dictated { Via::Dictated } else { Via::Typed };
-    let say = |session, text, later, about| Command::Say { squad: squad.to_owned(), session, text, via, all: said.all, later, pasted: said.pasted, about, device: None };
+    let say = |session, text, later, about| Command::Say { squad: squad.to_owned(), session, text, via, all: false, later, pasted: said.pasted, about, device: None };
     commands
         .into_iter()
         .filter(|c| !matches!(c, Command::ProposeAccept { .. }))
@@ -109,9 +116,12 @@ pub fn seconds_left(live: &Live, now_ms: u64) -> u64 {
     live.until.saturating_sub(now_ms).div_ceil(1000)
 }
 
-/// The line under it: what answers it.
+/// The line under it: what answers it — and, asked again, that it was.
 pub fn hint(live: &Live, now_ms: u64) -> String {
     let seconds = seconds_left(live, now_ms).to_string();
+    if live.asked_again > 0 && matches!(live.stage, Stage::ReadBack | Stage::Which) {
+        return t!("words.hint_again", n = live.asked_again.to_string());
+    }
     match live.stage {
         Stage::Undo => t!("words.hint_undo", seconds = seconds),
         Stage::Countdown => t!("words.hint_countdown", seconds = seconds),
@@ -158,6 +168,7 @@ pub fn outcome(outcome: Outcome) -> &'static str {
         Outcome::Lapsed => t!("words.outcome_lapsed"),
         Outcome::Moot => t!("words.outcome_moot"),
         Outcome::NeedsCard => t!("words.outcome_needs_card"),
+        Outcome::Dropped => t!("words.outcome_dropped"),
     }
 }
 
@@ -170,6 +181,7 @@ pub fn flag(flag: Flag) -> &'static str {
         Flag::Ambiguous => t!("words.flag_ambiguous"),
         Flag::Held => t!("words.flag_held"),
         Flag::Lapsed => t!("words.flag_lapsed"),
+        Flag::Dropped => t!("words.flag_dropped"),
     }
 }
 
@@ -201,6 +213,9 @@ pub fn entry_row(e: &Entry) -> Row {
     if !e.read_back.is_empty() {
         parts.push(t!("words.log_read_back", what = e.read_back.clone()));
     }
+    for q in &e.quotes {
+        parts.push(t!("words.quote_line", member = q.by.clone(), text = q.text.clone()));
+    }
     for answer in &e.answers {
         parts.push(t!("words.log_answer", words = answer.words.clone(), read = read_as(answer.read)));
     }
@@ -216,8 +231,14 @@ pub fn entry_row(e: &Entry) -> Row {
     Row::text(head, parts.join(" → "))
 }
 
-/// The sheet: flagged first — where to look — then the rest, newest first.
-pub fn log_sheet(entries: &[Entry]) -> Sheet {
+/// What deleting the log asks first.
+pub fn delete_ask(squad: &str) -> Ask {
+    Ask { title: t!("words.delete_title").to_owned(), body: vec![t!("words.delete_body").to_owned()], yes: t!("words.delete_yes").to_owned(), then: Then::Send(vec![Command::ClearWordsLog { squad: squad.to_owned() }]) }
+}
+
+/// The sheet: flagged first — where to look — then the rest, newest first;
+/// and, when there is anything, the way to delete it.
+pub fn log_sheet(entries: &[Entry], squad: &str) -> Sheet {
     let (flagged, fine): (Vec<&Entry>, Vec<&Entry>) = entries.iter().partition(|e| !e.flags.is_empty());
     let mut rows = Vec::new();
     if entries.is_empty() {
@@ -231,26 +252,27 @@ pub fn log_sheet(entries: &[Entry]) -> Sheet {
         rows.push(Row { heading: true, ..Row::text("", t!("words.log_fine", n = fine.len().to_string())) });
         rows.extend(fine.into_iter().map(entry_row));
     }
-    Sheet { title: t!("words.log_title").to_owned(), lead: Some(t!("words.log_lead").to_owned()), rows, buttons: Vec::new(), foot: Some(t!("words.log_foot").to_owned()) }
+    let buttons = if entries.is_empty() { Vec::new() } else { vec![Button::Ask(t!("words.delete").to_owned(), Box::new(delete_ask(squad)))] };
+    Sheet { title: t!("words.log_title").to_owned(), lead: Some(t!("words.log_lead").to_owned()), rows, buttons, foot: Some(t!("words.log_foot").to_owned()) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use equipe_core::protocol::accept::Verdict;
-    use equipe_core::protocol::by_words::{Heard, Kind};
+    use equipe_core::protocol::by_words::{Heard, Kind, Quote};
 
     fn live(id: u64, stage: Stage) -> Live {
-        Live { id, session: 1, stage, tier: Tier::High, kind: Kind::Merge, read_back: "Merge T-1".into(), items: vec![], until: 10_000, said: "merge T-1".into(), via: Via::Typed, asked_again: 0, device: None }
+        Live { id, session: 1, stage, tier: Tier::High, kind: Kind::Merge, read_back: "Merge T-1".into(), items: vec![], quotes: vec![], until: 10_000, said: "merge T-1".into(), via: Via::Typed, asked_again: 0, device: None }
     }
 
     #[test]
     fn what_waits_in_words_follows_the_daemon_and_an_answer_it_waits_for_comes_first() {
         let mut words = Words::default();
-        words.load(None);
+        words.load(None, false);
         assert!(!words.read, "a daemon from before reads no words");
-        words.load(Some(vec![live(1, Stage::Undo)]));
-        assert!(words.read && words.any());
+        words.load(Some(vec![live(1, Stage::Undo)]), true);
+        assert!(words.read && words.any() && words.all);
         words.live(live(2, Stage::ReadBack));
         words.live(live(3, Stage::Countdown));
         assert_eq!(words.front().map(|l| l.id), Some(2), "the read-back waits for the next message");
@@ -273,18 +295,18 @@ mod tests {
         let new = Command::NewConversation { squad: "acme".into(), session: 1, project: None };
         let old = vec![raise.clone(), submit.clone()];
         assert_eq!(commands(old.clone(), "acme", false, Said::default()), old, "a daemon from before: as it was");
-        let said = Said { dictated: true, pasted: false, all: true };
+        let said = Said { dictated: true, pasted: false };
         assert_eq!(
             commands(vec![new.clone(), raise, submit, memo], "acme", true, said),
             vec![
                 new,
-                Command::Say { squad: "acme".into(), session: 1, text: "T-1 수락".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None },
-                Command::Say { squad: "acme".into(), session: 2, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: true, pasted: false, about: None, device: None },
+                Command::Say { squad: "acme".into(), session: 1, text: "T-1 수락".into(), via: Via::Dictated, all: false, later: false, pasted: false, about: Some(None), device: None },
+                Command::Say { squad: "acme".into(), session: 2, text: "ㄱㄱ".into(), via: Via::Dictated, all: false, later: true, pasted: false, about: None, device: None },
             ],
-            "no card raised here: the daemon does, from the words"
+            "no card raised here: the daemon does, from the words; all by words is the daemon's to know"
         );
         let pasted = commands(vec![Command::Submit { session: 1, text: "merge T-1".into(), about: None }], "acme", true, Said { pasted: true, ..Said::default() });
-        assert!(matches!(&pasted[..], [Command::Say { pasted: true, via: Via::Typed, all: false, .. }]));
+        assert!(matches!(&pasted[..], [Command::Say { pasted: true, via: Via::Typed, .. }]));
     }
 
     #[test]
@@ -294,6 +316,7 @@ mod tests {
         assert_eq!(hint(&live(1, Stage::Undo), 6_100), "4초 안에 ‘되돌려’라고 하거나 되돌리기를 누르면 멈춰요");
         assert_eq!(hint(&live(1, Stage::ReadBack), 0), "다음 메시지가 답이에요: 진행하려면 ‘네’, 카드로 남기려면 ‘아니’");
         assert_eq!(button(&live(1, Stage::Countdown)), "취소");
+        assert_eq!(hint(&Live { asked_again: 1, ..live(1, Stage::ReadBack) }, 0), "다시 물었어요 · 1번 — 진행하려면 ‘네’, 카드로 남기려면 ‘아니’");
         assert_eq!(heading(&live(1, Stage::ReadBack)), "말로 결정 · 확인해 주세요");
     }
 
@@ -309,6 +332,7 @@ mod tests {
             said: "merge T-1".into(),
             read_back: "Merge T-1 into main, on this Mac".into(),
             items: vec![],
+            quotes: vec![Quote { by: "pm".into(), text: "급해요".into() }],
             answers: vec![Heard { words: "음".into(), read: Reply::Unclear, at: 2_000, via: Via::Voice }, Heard { words: "ㄱㄱ".into(), read: Reply::Yes, at: 9_000, via: Via::Voice }],
             tickets: vec![1],
             said_at: 1_000,
@@ -321,14 +345,19 @@ mod tests {
             device: None,
             flags,
         };
-        let sheet = log_sheet(&[entry(2, Outcome::Done, vec![]), entry(1, Outcome::Done, vec![Flag::AskedAgain, Flag::RevertedLater])]);
+        let sheet = log_sheet(&[entry(2, Outcome::Done, vec![]), entry(1, Outcome::Done, vec![Flag::AskedAgain, Flag::RevertedLater])], "acme");
         assert_eq!(sheet.title, "말이 어긋난 곳");
         assert!(sheet.rows[0].heading && sheet.rows[1].head.starts_with("⚑ ") && sheet.rows[1].head.ends_with("목소리"));
         assert_eq!(
             sheet.rows[1].text,
-            "말한 것 “merge T-1” → 읽어 준 것: Merge T-1 into main, on this Mac → “음” (알아듣지 못함) → “ㄱㄱ” (네) → 했어요 · 확인이 필요해요 · 8초 걸림 → 다시 물음, 나중에 되돌림"
+            "말한 것 “merge T-1” → 읽어 준 것: Merge T-1 into main, on this Mac → pm이 쓴 말: “급해요” → “음” (알아듣지 못함) → “ㄱㄱ” (네) → 했어요 · 확인이 필요해요 · 8초 걸림 → 다시 물음, 나중에 되돌림"
         );
         assert!(sheet.rows[2].heading && !sheet.rows[3].head.starts_with('⚑'));
-        assert_eq!(log_sheet(&[]).rows[0].text, "아직 말로 정한 게 없어요.");
+        assert_eq!(log_sheet(&[], "acme").rows[0].text, "아직 말로 정한 게 없어요.");
+        assert!(log_sheet(&[], "acme").buttons.is_empty(), "nothing to delete");
+        let Button::Ask(label, ask) = &sheet.buttons[0] else { panic!("{:?}", sheet.buttons) };
+        assert_eq!(label, "이 기록 지우기");
+        assert_eq!(ask.then, Then::Send(vec![Command::ClearWordsLog { squad: "acme".into() }]));
+        assert!(ask.destructive(), "red: it can't be taken back");
     }
 }

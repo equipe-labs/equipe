@@ -1142,7 +1142,7 @@ impl Shell {
                     }
                     // The log of decisions in words, asked for in settings: its sheet.
                     if let Some(entries) = this.model.words.take_log() {
-                        this.sheet = Some(words::log_sheet(&entries));
+                        this.sheet = Some(words::log_sheet(&entries, &this.model.squad));
                         changed = true;
                     }
                     this.tick_words(cx);

@@ -913,7 +913,7 @@ impl Model {
             Update::Event(event) => {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 // What waits in words is drawn over the composer: always a redraw.
-                let words = matches!(event, Event::WordsLive { .. } | Event::WordsClosed { .. } | Event::WordsLog { .. });
+                let words = matches!(event, Event::WordsLive { .. } | Event::WordsClosed { .. } | Event::WordsLog { .. } | Event::WordsAllChanged { .. });
                 self.on_event(event, now);
                 let mut changed = words || before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 // The footer's "last event" moves when the minute does.
@@ -995,7 +995,7 @@ impl Model {
         self.team.load(snapshot.team_changes.clone());
         self.routine_asks.load(snapshot.routine_proposals.clone());
         self.accepts.load(snapshot.accepts.clone());
-        self.words.load(snapshot.words.clone());
+        self.words.load(snapshot.words.clone(), snapshot.words_all);
         // An older daemon: the banner over the conversation says so, with its button.
         self.daemon_version = version;
         self.member_modes = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.mode?))).collect();
@@ -1238,7 +1238,14 @@ impl Model {
             }
             Event::AcceptClosed { squad, id, .. } if squad == self.squad => self.accepts.close(id),
             Event::WordsLive { squad, live } if squad == self.squad => self.words.live(live),
-            Event::WordsClosed { squad, id, .. } if squad == self.squad => self.words.close(id),
+            // Its card goes; its line shows under the composer — never inside a member's reply.
+            Event::WordsClosed { squad, id, text, .. } if squad == self.squad => {
+                self.words.close(id);
+                if !text.is_empty() {
+                    self.flash = Some(text);
+                }
+            }
+            Event::WordsAllChanged { squad, on } if squad == self.squad => self.words.all = on,
             Event::WordsLog { squad, entries } if squad == self.squad => self.words.got_log(entries),
             Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
                 None => self.mode = mode.unwrap_or_default(),

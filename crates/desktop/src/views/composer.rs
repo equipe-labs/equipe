@@ -682,7 +682,7 @@ impl Shell {
             self.composer.context.clear();
         }
         // The person's own message: to a daemon that reads words, `say`, with how it came in.
-        let said = crate::words::Said { dictated: self.composer.dictated, pasted: self.composer.pasted, all: self.remembered.all_by_words };
+        let said = crate::words::Said { dictated: self.composer.dictated, pasted: self.composer.pasted };
         if !plan.commands.is_empty() {
             self.composer.dictated = false;
             self.composer.pasted = false;

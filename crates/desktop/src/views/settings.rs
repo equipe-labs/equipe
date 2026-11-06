@@ -863,10 +863,11 @@ fn permissions(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
 /// what changes — and the log of where words went wrong.
 fn words_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
     let p = shell.palette;
-    let on = shell.remembered.all_by_words;
+    let on = shell.model.words.all;
+    let can = matches!(shell.model.conn, Conn::Connected { .. }) && shell.model.words.read;
     let all = Line::new(t!("settings.words_all"), if on { t!("settings.words_all_on") } else { t!("settings.words_all_desc") })
         .words("words voice dictation approve yes all by words risk")
-        .switch(shell, "all-by-words", on || shell.settings.words_consent, true, |this, on, _, cx| {
+        .switch(shell, "all-by-words", on || shell.settings.words_consent, can, |this, on, _, cx| {
             if on {
                 this.settings.words_consent = true;
                 cx.notify();
@@ -886,11 +887,10 @@ fn words_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
             .into_any_element();
         rows.push(Line::new(t!("settings.words_ask"), t!("settings.words_ask_desc")).words("words all by words risk read back cancel").control(buttons));
     }
-    let connected = matches!(shell.model.conn, Conn::Connected { .. }) && shell.model.words.read;
     rows.push(
         Line::new(t!("settings.words_log"), t!("settings.words_log_desc"))
             .words("words log flags undone cancelled")
-            .control(ui::button(p, "words-log", Kind::Secondary, t!("settings.words_log_open")).disabled(!connected).on_click(cx.listener(|this, _, _, cx| this.open_words_log(cx)))),
+            .control(ui::button(p, "words-log", Kind::Secondary, t!("settings.words_log_open")).disabled(!can).on_click(cx.listener(|this, _, _, cx| this.open_words_log(cx)))),
     );
     rows
 }

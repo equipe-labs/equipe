@@ -210,8 +210,9 @@ impl Kind {
     pub fn reach(self) -> Reach {
         match self {
             // A secret said in a conversation is in its transcript; a phone
-            // paired by words would let anyone's phone decide from then on.
-            Kind::GiveSecret | Kind::PairDevice => Reach::Card,
+            // paired by words would let anyone's phone decide from then on;
+            // a rule or a setting that widens what members do alone lasts.
+            Kind::GiveSecret | Kind::PairDevice | Kind::AllowAlways | Kind::WidenSetting => Reach::Card,
             Kind::Blocked => Reach::Never,
             _ => Reach::Words,
         }
@@ -285,6 +286,10 @@ pub struct Live {
     /// person names one by its number.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<String>,
+    /// What a member wrote about it — why, what it asks to do in the person's
+    /// name — shown as the member's, apart from equipe's own lines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<Quote>,
     /// Until when (unix milliseconds) the undo or cancel window is open, or
     /// the read-back waits.
     pub until: u64,
@@ -301,6 +306,27 @@ pub struct Live {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
+}
+
+/// The most of a member's words a read-back quotes.
+pub const QUOTE_CHARS: usize = 240;
+
+/// A member's own words beside a read-back: never equipe's voice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quote {
+    /// The member who wrote it.
+    pub by: String,
+    pub text: String,
+}
+
+impl Quote {
+    /// `text` as quoted: its line breaks and runs of space made one space,
+    /// clipped to [`QUOTE_CHARS`].
+    pub fn of(by: &str, text: &str) -> Self {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = if flat.chars().count() > QUOTE_CHARS { format!("{}…", flat.chars().take(QUOTE_CHARS).collect::<String>()) } else { flat };
+        Self { by: by.to_owned(), text }
+    }
 }
 
 /// How a words request ended.
@@ -321,6 +347,8 @@ pub enum Outcome {
     Moot,
     /// Not done: high in a mode that takes cards for it — its card is up.
     NeedsCard,
+    /// Still waiting when the daemon stopped: nothing happened, its card is up.
+    Dropped,
 }
 
 impl Outcome {
@@ -333,6 +361,7 @@ impl Outcome {
             Outcome::Lapsed => "lapsed",
             Outcome::Moot => "moot",
             Outcome::NeedsCard => "needs_card",
+            Outcome::Dropped => "dropped",
         }
     }
 }
@@ -343,7 +372,7 @@ impl Outcome {
 pub enum Reply {
     Yes,
     No,
-    /// Neither, plainly: asked again.
+    /// A yes with more said, or not plainly enough: asked again.
     Unclear,
     Cancel,
     Undo,
@@ -377,6 +406,8 @@ pub enum Flag {
     Ambiguous,
     Held,
     Lapsed,
+    /// Still waiting when the daemon stopped.
+    Dropped,
 }
 
 /// The learning log's line: one words decision, everything about it.
@@ -397,6 +428,8 @@ pub struct Entry {
     pub read_back: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<Quote>,
     /// Every answer after, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<Heard>,
@@ -433,6 +466,7 @@ impl Entry {
             Outcome::Cancelled => flags.push(Flag::Cancelled),
             Outcome::Held => flags.push(Flag::Held),
             Outcome::Lapsed => flags.push(Flag::Lapsed),
+            Outcome::Dropped => flags.push(Flag::Dropped),
             _ => {}
         }
         if self.asked_again > 0 {
@@ -499,9 +533,52 @@ fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x1100..=0x11FF | 0x3040..=0x30FF | 0x3130..=0x318F | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
 }
 
-/// Whether any of `key`'s words, in any language, is in `text` (lower case).
-pub fn any(text: &str, key: &str) -> bool {
-    crate::words::every(key).iter().any(|w| holds(text, w))
+/// The languages the person's words are read in: theirs — the screen's,
+/// and the one they write in when it is known — and English, always. Never
+/// every language at once: one language's no is another's yes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tongues(Vec<&'static str>);
+
+impl Tongues {
+    /// From language codes (`ko`, `zh-Hant`); ones not known are left out.
+    pub fn of(codes: &[&str]) -> Self {
+        let mut out = vec!["en"];
+        for code in codes {
+            if let Some(known) = crate::words::CODES.iter().find(|c| **c == *code)
+                && !out.contains(known)
+            {
+                out.push(known);
+            }
+        }
+        Self(out)
+    }
+
+    pub fn codes(&self) -> &[&'static str] {
+        &self.0
+    }
+
+    /// `key`'s words in these languages.
+    pub fn words(&self, key: &str) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        for code in &self.0 {
+            for word in crate::words::of(code, key) {
+                if !out.contains(word) {
+                    out.push(word);
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether any of `key`'s words is in `text` (lower case), each as [`holds`] finds it.
+    pub fn any(&self, text: &str, key: &str) -> bool {
+        self.words(key).iter().any(|w| holds(text, w))
+    }
+
+    /// Whether any of `key`'s words is written anywhere in `text`, even inside a word.
+    pub fn written(&self, text: &str, key: &str) -> bool {
+        self.words(key).iter().any(|w| text.contains(w))
+    }
 }
 
 /// The words of an answer, lower case, the punctuation and emoji between
@@ -516,57 +593,66 @@ pub fn tokens(text: &str) -> Vec<String> {
 }
 
 /// Whether the words say no, or hold off: any negation, anywhere, outside
-/// what is a yes word on its own ("没问题" is a yes, though it holds "没").
-pub fn says_no(text: &str) -> bool {
-    let yes = crate::words::every("match.yes");
-    let with = crate::words::every("match.yes_with");
-    let rest: Vec<String> = tokens(text).into_iter().filter(|t| !yes.contains(&t.as_str()) && !with.contains(&t.as_str())).collect();
-    let rest = rest.join(" ");
-    any(&rest, "match.no")
+/// what is a yes word on its own (a yes word may hold a negation's letters).
+pub fn says_no(t: &Tongues, text: &str) -> bool {
+    let yes = t.words("match.yes");
+    let with = t.words("match.yes_with");
+    let rest: Vec<String> = tokens(text).into_iter().filter(|w| !yes.contains(&w.as_str()) && !with.contains(&w.as_str())).collect();
+    t.any(&rest.join(" "), "match.no")
 }
 
-/// How a read-back's answer reads: a clear yes — only yes words, and the
-/// few that go with one ("yes please", "ok go") — a no (any
-/// negation), or neither. A question is never a yes.
-pub fn reply(text: &str) -> Reply {
+/// The most words a yes said aloud or dictated may have, for what is high
+/// risk: a short reply on its own, nothing more said with it.
+pub const SPOKEN_YES_WORDS: usize = 3;
+
+/// How a read-back's answer reads.
+///
+/// - [`Reply::Yes`]: a clear yes — only yes words and the few that go with
+///   one ("yes please", "ok go"). `strict` (said aloud or dictated, about
+///   something high risk): also short, on one line, and no negation's letters
+///   anywhere, even inside a yes word.
+/// - [`Reply::No`]: any negation.
+/// - [`Reply::Unclear`]: a yes word with more said, or a question: asked again.
+/// - [`Reply::Other`]: no yes in it at all — something else, for the member.
+pub fn reply(t: &Tongues, text: &str, strict: bool) -> Reply {
     let words = own_words(text);
     if words.is_empty() {
-        return Reply::Unclear;
+        return Reply::Other;
     }
-    if says_no(&words) {
+    if says_no(t, &words) {
         return Reply::No;
     }
-    if words.contains(['?', '？']) {
-        return Reply::Unclear;
-    }
-    let yes = crate::words::every("match.yes");
-    let with = crate::words::every("match.yes_with");
+    let yes = t.words("match.yes");
+    let with = t.words("match.yes_with");
     let tokens = tokens(&words);
-    let plain = tokens.iter().all(|t| yes.contains(&t.as_str()) || with.contains(&t.as_str()));
-    if plain && tokens.iter().any(|t| yes.contains(&t.as_str())) {
-        Reply::Yes
-    } else {
-        Reply::Unclear
+    let any_yes = tokens.iter().any(|w| yes.contains(&w.as_str()));
+    if !any_yes {
+        return Reply::Other;
     }
+    let plain = tokens.iter().all(|w| yes.contains(&w.as_str()) || with.contains(&w.as_str()));
+    let asked = words.contains(['?', '？']);
+    let short = tokens.len() <= SPOKEN_YES_WORDS && !words.contains('\n') && !t.any(&words.to_lowercase(), "match.no");
+    if plain && !asked && (!strict || short) { Reply::Yes } else { Reply::Unclear }
 }
 
 /// Whether the words stop what waits to run: a cancel, an undo, or any no.
-pub fn stops(text: &str) -> bool {
+pub fn stops(t: &Tongues, text: &str) -> bool {
     let words = own_words(text).to_lowercase();
-    !words.is_empty() && (says_no(&words) || any(&words, "match.cancel") || any(&words, "match.undo"))
+    !words.is_empty() && (says_no(t, &words) || t.any(&words, "match.cancel") || t.any(&words, "match.undo"))
 }
 
-/// The number the person picked, choosing among `count`: `2`, `#2`, or the number with a counter word,
-/// `2番`, `2号` — alone, or with a yes word.
-pub fn picked(text: &str, count: usize) -> Option<usize> {
+/// The number the person picked, choosing among `count`: `2`, `#2`, or the
+/// number with a counter word after it — alone, or with a yes word.
+pub fn picked(t: &Tongues, text: &str, count: usize) -> Option<usize> {
     let words = own_words(text);
-    let yes = crate::words::every("match.yes");
-    let with = crate::words::every("match.yes_with");
+    let yes = t.words("match.yes");
+    let with = t.words("match.yes_with");
+    let counters = t.words("match.number");
     let mut found = None;
     for token in tokens(&words) {
         let digits: String = token.trim_start_matches('#').chars().take_while(char::is_ascii_digit).collect();
         let rest = &token.trim_start_matches('#')[digits.len()..];
-        if !digits.is_empty() && (rest.is_empty() || crate::words::every("match.number").contains(&rest)) {
+        if !digits.is_empty() && (rest.is_empty() || counters.contains(&rest)) {
             if found.is_some() {
                 return None;
             }
@@ -599,9 +685,10 @@ mod tests {
         assert_eq!(Kind::Merge.tier(), Tier::High);
         assert_eq!(Kind::AcceptCode.tier(), Tier::High);
         assert_eq!(Kind::AllowOnce.tier(), Tier::High);
-        // Only a secret and a new phone stay cards everywhere; what equipe refuses, everywhere.
+        // A secret, a new phone, and what lasts — an "always", a wider setting — stay cards everywhere;
+        // what equipe refuses, refused everywhere.
         let cards: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.reach() == Reach::Card).collect();
-        assert_eq!(cards, [Kind::GiveSecret, Kind::PairDevice]);
+        assert_eq!(cards, [Kind::AllowAlways, Kind::WidenSetting, Kind::GiveSecret, Kind::PairDevice]);
         assert_eq!(Kind::Blocked.reach(), Reach::Never);
         assert!(Kind::ALL.iter().filter(|k| k.in_conversation()).all(|k| k.tier() == Tier::Low));
         let mut labels: Vec<&str> = Kind::ALL.iter().map(|k| k.label()).collect();
@@ -622,69 +709,123 @@ mod tests {
         assert_eq!(own_words("look:\n~~~\ngit push\n~~~"), "look:");
     }
 
+    fn yes(code: &str, text: &str) -> Reply {
+        reply(&Tongues::of(&[code]), text, false)
+    }
+
     #[test]
-    fn a_yes_is_only_a_yes_in_every_language() {
-        for yes in [
-            "yes", "Yes!", "ok", "OK.", "okay", "go", "go ahead", "yes please", "sure", "do it", "ok go", "yep",
-            "응", "네", "넹", "예", "어", "그래", "좋아", "ㅇㅇ", "ㅇㅋ", "ㄱㄱ", "고고", "가자", "응 해", "해 줘", "진행해", "네 진행해 주세요", "승인", "오케이", "콜",
-            "はい", "うん", "お願いします", "いいよ", "オッケー", "了解", "進めて",
-            "是", "好的", "可以", "行", "确认", "没问题", "好的，没问题", "確認", "沒問題",
-            "ja", "jawohl", "mach", "los", "passt", "ok, los",
-            "oui", "vas-y", "d'accord", "allez", "ok vas-y",
-            "sí", "si", "vale", "dale", "adelante", "claro",
-        ] {
-            assert_eq!(reply(yes), Reply::Yes, "{yes}");
+    fn a_yes_is_only_a_yes_in_each_language() {
+        let cases: [(&str, &[&str], &[&str]); 8] = [
+            ("en", &["yes", "Yes!", "ok", "OK.", "okay", "go", "go ahead", "yes please", "sure", "do it", "ok go", "yep"], &["no", "No.", "not yet", "don't", "dont", "don't do it", "wait", "hold on", "stop", "cancel", "nope", "yes, but not now", "ok wait", "never"]),
+            ("ko", &["응", "네", "넹", "예", "어", "그래", "좋아", "ㅇㅇ", "ㅇㅋ", "ㄱㄱ", "고고", "가자", "응 해", "해 줘", "진행해", "네 진행해 주세요", "승인", "오케이", "콜", "ok"], &["아니", "아니요", "아냐", "아직", "하지 마", "하지마", "응 하지 마", "안 돼", "잠깐", "ㄴㄴ", "취소", "멈춰", "보류", "그만", "no"]),
+            ("ja", &["はい", "うん", "お願いします", "いいよ", "オッケー", "了解", "進めて"], &["いいえ", "だめ", "まだ", "やめて", "待って", "しないで"]),
+            ("zh-Hans", &["是", "好的", "可以", "行", "确认", "没问题", "好的，没问题"], &["不", "不要", "别", "等等", "取消", "先别", "不行", "不用"]),
+            ("zh-Hant", &["是", "好的", "確認", "沒問題"], &["別", "不行", "等一下"]),
+            ("de", &["ja", "jawohl", "mach", "los", "passt", "ok, los"], &["nein", "nicht jetzt", "noch nicht", "warte", "stopp", "abbrechen"]),
+            ("fr", &["oui", "vas-y", "d'accord", "allez", "ok vas-y"], &["non", "pas encore", "attends", "annule", "arrête"]),
+            ("es", &["sí", "si", "vale", "dale", "adelante", "claro"], &["no lo hagas", "todavía no", "espera", "cancela", "para"]),
+        ];
+        for (code, yeses, nos) in cases {
+            for text in yeses {
+                assert_eq!(yes(code, text), Reply::Yes, "{code}: {text}");
+            }
+            for text in nos {
+                assert_eq!(yes(code, text), Reply::No, "{code}: {text}");
+            }
         }
-        for no in [
-            "no", "No.", "not yet", "don't", "dont", "don't do it", "wait", "hold on", "stop", "cancel", "nope", "yes, but not now", "ok wait", "never",
-            "아니", "아니요", "아냐", "아직", "하지 마", "하지마", "응 하지 마", "안 돼", "잠깐", "ㄴㄴ", "취소", "멈춰", "보류", "그만",
-            "いいえ", "だめ", "まだ", "やめて", "待って", "しないで",
-            "不", "不要", "别", "等等", "取消", "先别", "不行", "別", "不用",
-            "nein", "nicht jetzt", "noch nicht", "warte", "stopp", "abbrechen",
-            "non", "pas encore", "attends", "annule", "arrête",
-            "no lo hagas", "todavía no", "espera", "cancela", "para",
-        ] {
-            assert_eq!(reply(no), Reply::No, "{no}");
+        // A yes with more said, or asked: asked again. No yes at all: something else, for the member.
+        for unclear in ["ok?", "yes?", "yes merge it", "yes and fix the header", "what does it do"] {
+            assert_eq!(yes("en", unclear), Reply::Unclear, "{unclear}");
         }
-        for unclear in ["ok?", "yes?", "merge it?", "hmm", "maybe", "what does it do", "the other one", "fix the header", "글쎄", "음", "어떻게 되는데", "そうかな", "也许", "vielleicht", "peut-être", "quizás", "", "> yes"] {
-            assert_eq!(reply(unclear), Reply::Unclear, "{unclear}");
+        assert_eq!(yes("ko", "응 그리고 헤더도 고쳐"), Reply::Unclear);
+        for other in ["hmm", "maybe", "the other one", "fix the header", "merge it?", "", "> yes"] {
+            assert_eq!(yes("en", other), Reply::Other, "{other}");
         }
+        for other in ["글쎄", "음", "어떻게 되는데"] {
+            assert_eq!(yes("ko", other), Reply::Other, "{other}");
+        }
+        assert_eq!(yes("ja", "そうかな"), Reply::Other);
+        assert_eq!(yes("de", "vielleicht"), Reply::Other);
         // Quoted words are not the person's: a quoted yes, their own no.
-        assert_eq!(reply("> yes, merge it\nno"), Reply::No);
-        assert_eq!(reply("<!-- reply 1 -->\n> go ahead and merge\n<!-- reply -->\nok"), Reply::Yes);
+        assert_eq!(yes("en", "> yes, merge it\nno"), Reply::No);
+        assert_eq!(yes("en", "<!-- reply 1 -->\n> go ahead and merge\n<!-- reply -->\nok"), Reply::Yes);
+    }
+
+    #[test]
+    fn words_are_read_in_the_persons_languages_and_english_never_in_all_at_once() {
+        let ko = Tongues::of(&["ko"]);
+        assert_eq!(ko.codes(), ["en", "ko"]);
+        assert_eq!(Tongues::of(&["ko", "ko", "xx", "ja"]).codes(), ["en", "ko", "ja"]);
+        // Spanish "para" (stop) and French "ne" are no in their own language only.
+        assert_eq!(reply(&ko, "para", false), Reply::Other);
+        assert_eq!(reply(&Tongues::of(&["es"]), "para", false), Reply::No);
+        assert!(!says_no(&ko, "ne"));
+        assert!(says_no(&Tongues::of(&["fr"]), "ne"));
+        // Spanish "si" is a yes in Spanish, and nothing in Korean or English.
+        assert_eq!(reply(&ko, "si", false), Reply::Other);
+        assert_eq!(reply(&Tongues::of(&["es"]), "si", false), Reply::Yes);
+        // English is always read.
+        assert_eq!(reply(&Tongues::of(&["ja"]), "ok", false), Reply::Yes);
+        assert_eq!(reply(&Tongues::of(&["ja"]), "cancel", false), Reply::No);
+    }
+
+    #[test]
+    fn a_spoken_yes_to_something_high_is_short_and_on_its_own() {
+        let ko = Tongues::of(&["ko"]);
+        let zh = Tongues::of(&["zh-Hans"]);
+        assert_eq!(reply(&ko, "응", true), Reply::Yes);
+        assert_eq!(reply(&ko, "네 진행해 주세요", true), Reply::Yes, "three words");
+        assert_eq!(reply(&Tongues::of(&["en"]), "yes go ahead please now", true), Reply::Unclear, "too long: asked again");
+        assert_eq!(reply(&Tongues::of(&["en"]), "yes go ahead please now", false), Reply::Yes, "typed, it reads as plain");
+        // A yes word holding a negation's letters is a yes typed, asked again said aloud.
+        assert_eq!(reply(&zh, "没问题", false), Reply::Yes);
+        assert_eq!(reply(&zh, "没问题", true), Reply::Unclear);
+        assert_eq!(reply(&ko, "응\n해", true), Reply::Unclear, "on one line");
+        assert_eq!(reply(&ko, "아니", true), Reply::No);
     }
 
     #[test]
     fn a_no_is_a_whole_word_and_never_inside_another() {
+        let en = Tongues::of(&["en"]);
         assert!(holds("no", "no") && holds("no way", "no") && !holds("now", "no") && !holds("know", "no") && !holds("nothing", "no"));
         assert!(holds("don't", "don't") && holds("ok, stop!", "stop"));
         assert!(holds("하지 마세요", "하지 마"));
-        assert!(!says_no("now") && !says_no("ok now"));
+        assert!(!says_no(&en, "now") && !says_no(&en, "ok now"));
     }
 
     #[test]
     fn a_cancel_an_undo_or_any_no_stops_what_waits_to_run() {
-        for stop in ["cancel", "stop", "undo", "no", "wait", "취소", "멈춰", "되돌려", "그만", "キャンセル", "取り消して", "取消", "撤销", "abbrechen", "rückgängig", "annule", "cancela", "deshacer"] {
-            assert!(stops(stop), "{stop}");
+        for (code, stop) in [("en", "cancel"), ("en", "stop"), ("en", "undo"), ("en", "no"), ("en", "wait"), ("ko", "취소"), ("ko", "멈춰"), ("ko", "되돌려"), ("ko", "그만"), ("ja", "キャンセル"), ("ja", "取り消して"), ("zh-Hans", "取消"), ("zh-Hans", "撤销"), ("de", "abbrechen"), ("de", "rückgängig"), ("fr", "annule"), ("es", "cancela"), ("es", "deshacer")] {
+            assert!(stops(&Tongues::of(&[code]), stop), "{code}: {stop}");
         }
         for go_on in ["ok", "and then fix the header", "", "> cancel"] {
-            assert!(!stops(go_on), "{go_on}");
+            assert!(!stops(&Tongues::of(&["en"]), go_on), "{go_on}");
         }
     }
 
     #[test]
     fn a_pick_is_one_number_in_range() {
-        assert_eq!(picked("2", 3), Some(2));
-        assert_eq!(picked("#1", 3), Some(1));
-        assert_eq!(picked("2번", 3), Some(2));
-        assert_eq!(picked("2番", 3), Some(2));
-        assert_eq!(picked("2号", 3), Some(2));
-        assert_eq!(picked("ok 3", 3), Some(3));
-        assert_eq!(picked("4", 3), None, "out of range");
-        assert_eq!(picked("1 and 2", 3), None);
-        assert_eq!(picked("1 2", 3), None);
-        assert_eq!(picked("the second", 3), None);
-        assert_eq!(picked("> 1", 3), None);
+        let (en, ko, ja, zh) = (Tongues::of(&["en"]), Tongues::of(&["ko"]), Tongues::of(&["ja"]), Tongues::of(&["zh-Hans"]));
+        assert_eq!(picked(&en, "2", 3), Some(2));
+        assert_eq!(picked(&en, "#1", 3), Some(1));
+        assert_eq!(picked(&ko, "2번", 3), Some(2));
+        assert_eq!(picked(&ja, "2番", 3), Some(2));
+        assert_eq!(picked(&zh, "2号", 3), Some(2));
+        assert_eq!(picked(&en, "ok 3", 3), Some(3));
+        assert_eq!(picked(&en, "4", 3), None, "out of range");
+        assert_eq!(picked(&en, "1 and 2", 3), None);
+        assert_eq!(picked(&en, "1 2", 3), None);
+        assert_eq!(picked(&en, "the second", 3), None);
+        assert_eq!(picked(&en, "> 1", 3), None);
+    }
+
+    #[test]
+    fn a_members_words_are_quoted_as_theirs_flat_and_clipped() {
+        let q = Quote::of("pm", "Pay $49.00\n\n  a month   to Vercel");
+        assert_eq!(q, Quote { by: "pm".into(), text: "Pay $49.00 a month to Vercel".into() });
+        let long = Quote::of("pm", &"x".repeat(QUOTE_CHARS + 10));
+        assert_eq!(long.text.chars().count(), QUOTE_CHARS + 1);
+        assert!(long.text.ends_with('…'));
     }
 
     #[test]
@@ -701,6 +842,7 @@ mod tests {
             said: "merge T-12".into(),
             read_back: "Merge T-12".into(),
             items: vec![],
+            quotes: vec![],
             answers: vec![Heard { words: "hmm".into(), read: Reply::Unclear, at: 5, via: Via::Typed }, Heard { words: "yes".into(), read: Reply::Yes, at: 9, via: Via::Typed }],
             tickets: vec![12],
             said_at: 1,

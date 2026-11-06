@@ -38,10 +38,11 @@ impl Shell {
         cx.notify();
     }
 
-    /// "All by words" on this Mac, kept with what else it remembers.
+    /// "All by words" for the squad: the daemon keeps it, and takes it only
+    /// from the Mac's own screens.
     pub fn set_all_by_words(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.remembered.all_by_words = on;
-        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.send_command(Command::SetWordsAll { squad: self.model.squad.clone(), on });
+        self.model.words.all = on;
         self.settings.words_consent = false;
         cx.notify();
     }
@@ -121,6 +122,23 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         })
         .collect();
     let list = (!items.is_empty()).then(|| v_flex().w_full().p_2().gap_0p5().rounded(px(R_MD)).bg(p.wash).border_1().border_color(p.hair).children(items));
+    // What members wrote: theirs, set apart — never in equipe's voice.
+    let quotes: Vec<AnyElement> = live
+        .quotes
+        .iter()
+        .map(|q| {
+            v_flex()
+                .w_full()
+                .pl_3()
+                .py_1()
+                .gap_0p5()
+                .border_l_2()
+                .border_color(p.hair)
+                .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("words.quote_by", member = q.by.clone())))
+                .child(div().text_size(px(13.)).line_height(px(19.)).italic().text_color(p.text2).child(format!("“{}”", q.text)))
+                .into_any_element()
+        })
+        .collect();
     let hint = h_flex()
         .gap_1p5()
         .items_start()
@@ -150,7 +168,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .flex_wrap()
         .child(div().flex_1().min_w(px(crate::ui::WORDS_AT_LEAST)).text_size(px(SMALL)).text_color(p.muted).child(said))
         .child(h_flex().flex_none().ml_auto().gap_2().child(stop));
-    let inner = v_flex().w_full().gap_2p5().child(head).child(title).children(list).child(hint).child(foot);
+    let inner = v_flex().w_full().gap_2p5().child(head).child(title).children(list).children(quotes).child(hint).child(foot);
     let card = div()
         .id(("words-card", id))
         .w_full()
@@ -167,7 +185,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 /// The composer's badge while "All by words" is on: its name, and Settings ▸
 /// Permissions a click away.
 pub fn badge(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
-    if !shell.remembered.all_by_words {
+    if !shell.model.words.all {
         return None;
     }
     let p = shell.palette;
@@ -196,5 +214,5 @@ pub fn badge(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 
 /// How wide the badge is, for the composer's bar to make room.
 pub fn badge_width(shell: &Shell) -> Option<f32> {
-    shell.remembered.all_by_words.then(|| 8. + 11. + 4. + super::composer::text_width(t!("words.badge")) + 8.)
+    shell.model.words.all.then(|| 8. + 11. + 4. + super::composer::text_width(t!("words.badge")) + 8.)
 }

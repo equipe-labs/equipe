@@ -227,7 +227,8 @@ pub fn lands(card: &AcceptProposal, kept: &[TicketId], tickets: &[Ticket], proje
 /// reading is the daemon's (`equipe_core::by_words::read`), never a member's.
 pub fn raise(squad: &str, session: SessionId, text: &str, tickets: &[Ticket]) -> Option<Command> {
     let waiting = equipe_core::by_words::Waiting { tickets, ..Default::default() };
-    let (verdict, tickets) = equipe_core::by_words::card_for(&equipe_core::by_words::read(text, &waiting))?;
+    let tongues = equipe_core::protocol::by_words::Tongues::of(&[crate::i18n::lang().code()]);
+    let (verdict, tickets) = equipe_core::by_words::card_for(&equipe_core::by_words::read(text, &waiting, &tongues))?;
     Some(Command::ProposeAccept { squad: squad.to_owned(), session, verdict, tickets, note: String::new() })
 }
 

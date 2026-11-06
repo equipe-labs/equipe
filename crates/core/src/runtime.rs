@@ -572,6 +572,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         design_busy: std::collections::HashSet::new(),
     };
     let mut memos = Vec::new();
+    // What waited on the person in words when the daemon stopped: logged as dropped.
+    runtime.words_dropped_everywhere();
     if runtime.config.persist {
         runtime.restore();
         runtime.prune();
@@ -1958,6 +1960,8 @@ impl Runtime {
             Command::Say { squad, session, text, via, all, later, pasted, about, device } => self.say(squad, session, text, via, all, later, pasted, about, device).await,
             Command::UndoWords { squad, id } => self.undo_words(&squad, id),
             Command::WordsLog { squad } => self.words_log(squad),
+            Command::ClearWordsLog { squad } => self.clear_words_log(squad),
+            Command::SetWordsAll { squad, on } => self.set_words_all(squad, on),
             Command::Disallow { squad, rule } => {
                 let taken = self.journals.get(&squad).and_then(|j| j.disallow(&rule).ok()).unwrap_or(false);
                 if taken {
@@ -7075,6 +7079,7 @@ it back there once they have done it.{again} End your turn now with a short line
             browsers_shown,
             disk: self.disk_for_snapshot(),
             words: Some(self.words_live(squad)),
+            words_all: self.journals.get(squad).is_some_and(Journal::words_all),
         }
     }
 

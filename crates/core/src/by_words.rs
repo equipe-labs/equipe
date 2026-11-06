@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use equipe_protocol::accept::{AcceptProposal, Confirmed, Land, Verdict};
-use equipe_protocol::by_words::{self, Entry, Flag, Kind, Outcome, Reply, Said, Stage, Tier, own_words};
+use equipe_protocol::by_words::{self, Entry, Flag, Kind, Outcome, Quote, Reply, Said, Stage, Tier, Tongues, own_words};
 use equipe_protocol::engines;
 use equipe_protocol::routines::{Routine, RoutineProposal, Schedule};
 use equipe_protocol::team::{Change as TeamMove, TeamChange};
@@ -52,8 +52,8 @@ pub enum Verb {
 pub enum Ask {
     Tickets { verb: Verb, tickets: Vec<TicketId> },
     RunRoutine(u32),
-    /// A member's request for permission; `always`, as a rule from now on.
-    Approval { id: u64, always: bool },
+    /// A member's request for permission, once. "Always" is its card's alone.
+    Approval(u64),
     /// The PM's card to accept, merge or send back.
     Card(u64),
     ApproveRoutine(u64),
@@ -90,12 +90,6 @@ pub fn approval_kind(a: &Approval) -> Kind {
     Kind::AllowOnce
 }
 
-/// Whether "always" can be said to it: a rule can be made of it, and it is
-/// no question of the member's own (which is asked every time).
-pub fn can_always(a: &Approval) -> bool {
-    matches!(approval_kind(a), Kind::AllowOnce | Kind::AllowOutward) && permissions::rule_for(&a.tool, &a.action).is_some()
-}
-
 fn ticket<'a>(w: &Waiting<'a>, id: TicketId) -> Option<&'a Ticket> {
     w.tickets.iter().find(|t| t.id == id)
 }
@@ -117,8 +111,7 @@ pub fn kind(ask: &Ask, w: &Waiting) -> Kind {
             Verb::TakeOn => Kind::TakeOn,
         },
         Ask::RunRoutine(_) => Kind::RunRoutine,
-        Ask::Approval { always: true, .. } => Kind::AllowAlways,
-        Ask::Approval { id, .. } => w.approvals.iter().find(|a| a.id == *id).map_or(Kind::Blocked, approval_kind),
+        Ask::Approval(id) => w.approvals.iter().find(|a| a.id == *id).map_or(Kind::Blocked, approval_kind),
         Ask::Card(id) => match w.accepts.iter().find(|c| c.id == *id) {
             Some(card) => match card.verdict {
                 Verdict::Changes => Kind::SendBack,
@@ -144,7 +137,7 @@ pub fn still_waits(ask: &Ask, w: &Waiting) -> bool {
     match ask {
         Ask::Tickets { verb, tickets } => !tickets.is_empty() && tickets.iter().all(|id| ticket(w, *id).is_some_and(|t| fits(t, *verb))),
         Ask::RunRoutine(id) => w.routines.iter().any(|r| r.id == *id),
-        Ask::Approval { id, .. } => w.approvals.iter().any(|a| a.id == *id),
+        Ask::Approval(id) => w.approvals.iter().any(|a| a.id == *id),
         Ask::Card(id) => w.accepts.iter().any(|c| c.id == *id),
         Ask::ApproveRoutine(id) => w.routine_proposals.iter().any(|p| p.id == *id),
         Ask::Team(id) => w.team_changes.iter().any(|c| c.id == *id),
@@ -168,7 +161,7 @@ pub fn tickets_of(ask: &Ask, w: &Waiting) -> Vec<TicketId> {
     match ask {
         Ask::Tickets { tickets, .. } => tickets.clone(),
         Ask::Card(id) => w.accepts.iter().find(|c| c.id == *id).map(|c| c.tickets.clone()).unwrap_or_default(),
-        Ask::Approval { id, .. } => w.approvals.iter().find(|a| a.id == *id).and_then(|a| a.ticket).into_iter().collect(),
+        Ask::Approval(id) => w.approvals.iter().find(|a| a.id == *id).and_then(|a| a.ticket).into_iter().collect(),
         _ => Vec::new(),
     }
 }
@@ -197,29 +190,26 @@ pub fn named_tickets(lower: &str) -> Vec<TicketId> {
     out
 }
 
-/// Whether any of `key`'s words is written in `text` — as they were matched
-/// before words decided anything: anywhere, even inside a word.
-fn written(text: &str, key: &str) -> bool {
-    equipe_protocol::words::every(key).iter().any(|w| text.contains(w))
-}
-
 /// The person's words, read as plainly asking for something that waits:
-/// every request they fit — none, one, or several to choose from. A
-/// question, a no, an "if", a "later" — anything less plain — is left to
-/// the member they said it to, and so are words naming nothing that waits.
-pub fn read(text: &str, w: &Waiting) -> Vec<Ask> {
+/// every request they fit — none, one, or several to choose from — read in
+/// the person's languages (`t`). A question, a no, an "if", a "later" —
+/// anything less plain — is left to the member they said it to, and so are
+/// words naming nothing that waits. An approval word alone ("approve",
+/// "allow") starts something only when the message is little more than it,
+/// or names what it approves: its member, its ticket, a word of its command.
+pub fn read(text: &str, w: &Waiting, t: &Tongues) -> Vec<Ask> {
     let words = own_words(text);
     let lower = words.trim().to_lowercase();
     if lower.is_empty() || lower.chars().count() > by_words::MOST_CHARS || lower.starts_with('/') || lower.starts_with('@') {
         return Vec::new();
     }
-    if lower.contains(['?', '？']) || written(&lower, "match.unsure") || by_words::says_no(&lower) {
+    if lower.contains(['?', '？']) || t.written(&lower, "match.unsure") || by_words::says_no(t, &lower) {
         return Vec::new();
     }
-    let has = |key: &str| by_words::any(&lower, key);
+    let has = |key: &str| t.any(&lower, key);
     let named = named_tickets(&lower);
     // Tickets: what the words do to them.
-    let verb = if written(&lower, "match.merge") || has("match.push") {
+    let verb = if t.written(&lower, "match.merge") || has("match.push") {
         Some(if has("match.push") { Verb::Push } else { Verb::Merge })
     } else if has("match.branch") {
         Some(Verb::KeepOnBranch)
@@ -227,7 +217,7 @@ pub fn read(text: &str, w: &Waiting) -> Vec<Ask> {
         Some(Verb::Idea)
     } else if !named.is_empty() && has("match.take_on") {
         Some(Verb::TakeOn)
-    } else if written(&lower, "match.accept") {
+    } else if t.written(&lower, "match.accept") {
         Some(Verb::Accept)
     } else {
         None
@@ -235,7 +225,7 @@ pub fn read(text: &str, w: &Waiting) -> Vec<Ask> {
     if let Some(verb) = verb {
         let ids = if named.is_empty() {
             match verb {
-                Verb::Accept | Verb::Merge | Verb::Push if says_all(&lower) => all_of(w.tickets, if verb == Verb::Accept { Verdict::Accept } else { Verdict::Merge }),
+                Verb::Accept | Verb::Merge | Verb::Push if says_all(&lower, t) => all_of(w.tickets, if verb == Verb::Accept { Verdict::Accept } else { Verdict::Merge }),
                 _ => Vec::new(),
             }
         } else {
@@ -246,52 +236,65 @@ pub fn read(text: &str, w: &Waiting) -> Vec<Ask> {
             return vec![Ask::Tickets { verb, tickets: fit }];
         }
     }
-    if !named.is_empty() {
-        return Vec::new();
-    }
     // A routine, by its title: run once, or the PM's turned on.
     let titled = |title: &str| {
         let title = title.trim().to_lowercase();
         title.chars().count() >= 2 && lower.contains(&title)
     };
-    if has("match.run") {
+    if named.is_empty() && has("match.run") {
         let runs: Vec<Ask> = w.routines.iter().filter(|r| titled(&r.title)).map(|r| Ask::RunRoutine(r.id)).collect();
         if !runs.is_empty() {
             return runs;
         }
     }
-    let allow = has("match.allow");
-    let always = has("match.always");
-    if !(allow || always) {
+    // "Always": a lasting rule is its card's alone.
+    if !has("match.allow") || has("match.always") {
         return Vec::new();
     }
     let titled_routines: Vec<Ask> = w.routine_proposals.iter().filter(|p| titled(&p.routine.title)).map(|p| Ask::ApproveRoutine(p.id)).collect();
-    if !titled_routines.is_empty() {
+    if named.is_empty() && !titled_routines.is_empty() {
         return titled_routines;
     }
-    // "Allow it", "approve": whatever waits — narrowed to a member, when the words name one.
-    let mut all: Vec<(Option<&str>, Ask)> = Vec::new();
-    for a in w.approvals {
-        if approval_kind(a).reach() != by_words::Reach::Words || (always && !can_always(a)) {
-            continue;
-        }
-        all.push((Some(a.member.as_str()), Ask::Approval { id: a.id, always }));
+    // What waits, each with what names it: a member, tickets, the words of its command.
+    struct Waits<'a> {
+        who: Option<&'a str>,
+        tickets: Vec<TicketId>,
+        action: Option<&'a str>,
+        ask: Ask,
     }
-    if !always {
-        all.extend(w.accepts.iter().filter(|c| !c.from_words()).map(|c| (Some(c.by.as_str()), Ask::Card(c.id))));
-        all.extend(w.routine_proposals.iter().map(|p| (Some(p.by.as_str()), Ask::ApproveRoutine(p.id))));
-        all.extend(w.team_changes.iter().map(|c| (Some(c.by.as_str()), Ask::Team(c.id))));
-        all.extend(w.engine_proposals.iter().filter(|p| !p.applied).map(|p| (None, Ask::Engine(p.id))));
+    let mut all: Vec<Waits> = Vec::new();
+    for a in w.approvals.iter().filter(|a| approval_kind(a).reach() == by_words::Reach::Words) {
+        all.push(Waits { who: Some(&a.member), tickets: a.ticket.into_iter().collect(), action: Some(&a.action), ask: Ask::Approval(a.id) });
     }
-    let to: Vec<Ask> = all.iter().filter(|(who, _)| who.is_some_and(|m| holds_name(&lower, m))).map(|(_, a)| a.clone()).collect();
-    if to.is_empty() { all.into_iter().map(|(_, a)| a).collect() } else { to }
+    all.extend(w.accepts.iter().filter(|c| !c.from_words()).map(|c| Waits { who: Some(&c.by), tickets: c.tickets.clone(), action: None, ask: Ask::Card(c.id) }));
+    all.extend(w.routine_proposals.iter().map(|p| Waits { who: Some(&p.by), tickets: Vec::new(), action: None, ask: Ask::ApproveRoutine(p.id) }));
+    all.extend(w.team_changes.iter().map(|c| Waits { who: Some(&c.by), tickets: c.unblocks.clone(), action: None, ask: Ask::Team(c.id) }));
+    all.extend(w.engine_proposals.iter().filter(|p| !p.applied).map(|p| Waits { who: None, tickets: Vec::new(), action: None, ask: Ask::Engine(p.id) }));
+    let plain = |w: &str| t.written(w, "match.allow") || t.words("match.yes").contains(&w) || t.words("match.yes_with").contains(&w);
+    let tokens = by_words::tokens(&lower);
+    let named_words: Vec<&String> = tokens.iter().filter(|w| w.chars().count() >= 4 && !plain(w)).collect();
+    let names = |x: &Waits| {
+        x.who.is_some_and(|m| holds_name(&lower, m))
+            || named.iter().any(|t| x.tickets.contains(t))
+            || x.action.is_some_and(|a| {
+                let a = a.to_lowercase();
+                named_words.iter().any(|w| a.contains(w.as_str()))
+            })
+    };
+    let to: Vec<Ask> = all.iter().filter(|x| names(x)).map(|x| x.ask.clone()).collect();
+    if !to.is_empty() {
+        return to;
+    }
+    // Nothing named: only the approval word itself, on its own, is asking.
+    let bare = named.is_empty() && !lower.contains('\n') && tokens.len() <= by_words::SPOKEN_YES_WORDS && tokens.iter().all(|w| plain(w));
+    if bare { all.into_iter().map(|x| x.ask).collect() } else { Vec::new() }
 }
 
-/// "all", "everything" and their kin, in every language (Korean writes "accept all" as one word too).
-fn says_all(lower: &str) -> bool {
+/// "all", "everything" and their kin, in the person's languages (Korean writes "accept all" as one word too).
+fn says_all(lower: &str, t: &Tongues) -> bool {
     let words: Vec<&str> = lower.split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | '!' | '~')).filter(|w| !w.is_empty()).collect();
-    let starts = equipe_protocol::words::every("match.all_starts");
-    let whole = equipe_protocol::words::every("match.all_words");
+    let starts = t.words("match.all_starts");
+    let whole = t.words("match.all_words");
     words.iter().any(|w| starts.iter().any(|s| w.starts_with(s)) || *w == "all" || whole.contains(w))
 }
 
@@ -343,7 +346,7 @@ pub fn commands(squad: &str, ask: &Ask, w: &Waiting, said: &Said) -> Vec<Command
             })
             .collect(),
         Ask::RunRoutine(id) => vec![Command::RunRoutine { squad, id: *id }],
-        Ask::Approval { id, always } => vec![Command::Decide { squad, approval: *id, decision: if *always { Decision::Always } else { Decision::Allow }, words: None, said }],
+        Ask::Approval(id) => vec![Command::Decide { squad, approval: *id, decision: Decision::Allow, words: None, said }],
         Ask::Card(id) => {
             let Some(card) = w.accepts.iter().find(|c| c.id == *id) else { return Vec::new() };
             let land = |t: TicketId| (card.verdict == Verdict::Merge && ticket(w, t).is_some_and(is_code)).then_some(Land::Merge);
@@ -366,9 +369,18 @@ fn project_of(t: &Ticket) -> String {
     t.project.as_deref().map(crate::board::project_name).unwrap_or_default()
 }
 
+/// The most of a title a read-back names.
+const TITLE_CHARS: usize = 80;
+
+/// A title a member gave, as a read-back names it: on one line, clipped.
+pub fn title(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > TITLE_CHARS { format!("{}…", flat.chars().take(TITLE_CHARS).collect::<String>()) } else { flat }
+}
+
 fn ticket_line(lang: Lang, t: &Ticket, verb: Option<Verb>) -> String {
     let words = core(lang);
-    let base = words.fill("words.item.ticket", &[("id", t.id.to_string()), ("title", t.title.clone())]);
+    let base = words.fill("words.item.ticket", &[("id", t.id.to_string()), ("title", title(&t.title))]);
     match (verb, &t.branch) {
         (Some(Verb::Merge | Verb::Push), Some(branch)) => words.fill("words.item.branch", &[("ticket", base), ("branch", branch.clone()), ("project", project_of(t))]),
         _ if t.kind == TicketKind::Task => words.fill("words.item.task", &[("ticket", base)]),
@@ -386,12 +398,23 @@ fn schedule(lang: Lang, when: Schedule) -> String {
     }
 }
 
-/// One line on what `ask` does — equipe's words, the action and its target
-/// (ticket, branch, member, recipient, amount as the request has them) —
-/// and, for several things, each in order. Nothing a member summarised:
-/// a request's own words are quoted as they came.
-pub fn read_back(lang: Lang, ask: &Ask, w: &Waiting) -> (String, Vec<String>) {
+/// What equipe reads back: its own line on what will happen (the action
+/// and its target — ticket, branch, command, recipient — from the request's
+/// fields), each thing it does, and, apart, what members wrote about it,
+/// quoted as theirs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReadBack {
+    pub head: String,
+    pub items: Vec<String>,
+    pub quotes: Vec<Quote>,
+}
+
+/// What equipe reads back for `ask`. Never a member's words in equipe's
+/// voice: a reason, a note, what a member asks to do in the person's name —
+/// amounts and recipients as it wrote them — are [`Quote`]s.
+pub fn read_back(lang: Lang, ask: &Ask, w: &Waiting) -> ReadBack {
     let words = core(lang);
+    let quote = |by: &str, text: &str| (!text.trim().is_empty()).then(|| Quote::of(by, text));
     match ask {
         Ask::Tickets { verb, tickets } => {
             let found: Vec<&Ticket> = tickets.iter().filter_map(|id| ticket(w, *id)).collect();
@@ -404,34 +427,37 @@ pub fn read_back(lang: Lang, ask: &Ask, w: &Waiting) -> (String, Vec<String>) {
                 Verb::Idea => "words.do.idea",
                 Verb::TakeOn => "words.do.take_on",
             };
-            let head = words.fill(key, &[("tickets", list(tickets))]);
-            (head, found.iter().map(|t| ticket_line(lang, t, Some(*verb))).collect())
+            ReadBack { head: words.fill(key, &[("tickets", list(tickets))]), items: found.iter().map(|t| ticket_line(lang, t, Some(*verb))).collect(), quotes: Vec::new() }
         }
         Ask::RunRoutine(id) => {
-            let title = w.routines.iter().find(|r| r.id == *id).map(|r| r.title.clone()).unwrap_or_default();
-            (words.fill("words.do.run_routine", &[("title", title)]), Vec::new())
+            let name = w.routines.iter().find(|r| r.id == *id).map(|r| title(&r.title)).unwrap_or_default();
+            ReadBack { head: words.fill("words.do.run_routine", &[("title", name)]), ..ReadBack::default() }
         }
         Ask::ApproveRoutine(id) => match w.routine_proposals.iter().find(|p| p.id == *id) {
-            Some(p) => (words.fill("words.do.approve_routine", &[("title", p.routine.title.clone()), ("when", schedule(lang, p.routine.when))]), vec![words.fill("words.item.by", &[("member", p.by.clone()), ("why", p.reason.clone())])]),
-            None => (String::new(), Vec::new()),
+            Some(p) => ReadBack {
+                head: words.fill("words.do.approve_routine", &[("title", title(&p.routine.title)), ("when", schedule(lang, p.routine.when))]),
+                items: vec![words.fill("words.item.proposed", &[("member", p.by.clone())])],
+                quotes: quote(&p.by, &p.reason).into_iter().collect(),
+            },
+            None => ReadBack::default(),
         },
         Ask::Team(id) => match w.team_changes.iter().find(|c| c.id == *id) {
             Some(c) => {
                 let head = match c.change {
-                    TeamMove::Add => words.fill("words.do.team_add", &[("count", c.count.to_string()), ("role", c.role.clone())]),
+                    TeamMove::Add => words.fill("words.do.team_add", &[("n", c.count.to_string()), ("role", c.role.clone())]),
                     TeamMove::Remove => words.fill("words.do.team_remove", &[("member", c.member.clone().unwrap_or_else(|| c.role.clone()))]),
                 };
-                (head, vec![words.fill("words.item.by", &[("member", c.by.clone()), ("why", c.reason.clone())])])
+                ReadBack { head, items: vec![words.fill("words.item.proposed", &[("member", c.by.clone())])], quotes: quote(&c.by, &c.reason).into_iter().collect() }
             }
-            None => (String::new(), Vec::new()),
+            None => ReadBack::default(),
         },
         Ask::Engine(id) => match w.engine_proposals.iter().find(|p| p.id == *id) {
             Some(p) => {
                 let members: Vec<String> = p.moves.iter().filter(|m| !m.in_place()).map(|m| m.member.clone()).collect();
                 let to = p.to().map(|e| e.label().to_owned()).unwrap_or_default();
-                (words.fill("words.do.engine", &[("members", members.join(", ")), ("engine", to)]), Vec::new())
+                ReadBack { head: words.fill("words.do.engine", &[("members", members.join(", ")), ("engine", to)]), ..ReadBack::default() }
             }
-            None => (String::new(), Vec::new()),
+            None => ReadBack::default(),
         },
         Ask::Card(id) => match w.accepts.iter().find(|c| c.id == *id) {
             Some(card) => {
@@ -439,40 +465,40 @@ pub fn read_back(lang: Lang, ask: &Ask, w: &Waiting) -> (String, Vec<String>) {
                     Verdict::Accept => Verb::Accept,
                     Verdict::Merge => Verb::Merge,
                     Verdict::Changes => {
-                        let head = words.fill("words.do.send_back", &[("tickets", list(&card.tickets)), ("note", card.note.clone())]);
-                        return (head, vec![words.fill("words.item.proposed", &[("member", card.by.clone())])]);
+                        return ReadBack {
+                            head: words.fill("words.do.send_back", &[("tickets", list(&card.tickets))]),
+                            items: vec![words.fill("words.item.proposed", &[("member", card.by.clone())])],
+                            quotes: quote(&card.by, &card.note).into_iter().collect(),
+                        };
                     }
                 };
-                let (head, mut items) = read_back(lang, &Ask::Tickets { verb, tickets: card.tickets.clone() }, w);
-                items.push(words.fill("words.item.proposed", &[("member", card.by.clone())]));
-                (head, items)
+                let mut back = read_back(lang, &Ask::Tickets { verb, tickets: card.tickets.clone() }, w);
+                back.items.push(words.fill("words.item.proposed", &[("member", card.by.clone())]));
+                back
             }
-            None => (String::new(), Vec::new()),
+            None => ReadBack::default(),
         },
-        Ask::Approval { id, always } => {
-            let Some(a) = w.approvals.iter().find(|a| a.id == *id) else { return (String::new(), Vec::new()) };
-            if *always {
-                let rule = permissions::rule_for(&a.tool, &a.action).unwrap_or_else(|| a.action.clone());
-                return (words.fill("words.do.always", &[("rule", rule)]), vec![words.fill("words.item.asked", &[("member", a.member.clone()), ("action", a.action.clone())])]);
-            }
-            let key = match approval_kind(a) {
-                Kind::ActInName => "words.do.act_in_name",
-                Kind::SendAsPerson => "words.do.send",
-                Kind::SignInWithLogin => "words.do.sign_in",
-                Kind::WidenSetting => "words.do.setting",
-                Kind::TouchSecrets => "words.do.secrets",
-                Kind::AllowOutward => "words.do.outward",
-                _ => "words.do.allow",
+        Ask::Approval(id) => {
+            let Some(a) = w.approvals.iter().find(|a| a.id == *id) else { return ReadBack::default() };
+            let kind = approval_kind(a);
+            let (head, mut quotes) = match kind {
+                // What it asks to do in the person's name is the member's own sentence: quoted.
+                Kind::ActInName => (words.fill("words.do.act_in_name", &[("member", a.member.clone())]), quote(&a.member, &a.action).into_iter().collect::<Vec<_>>()),
+                _ => {
+                    let key = match kind {
+                        Kind::SendAsPerson => "words.do.send",
+                        Kind::SignInWithLogin => "words.do.sign_in",
+                        Kind::WidenSetting => "words.do.setting",
+                        Kind::TouchSecrets => "words.do.secrets",
+                        Kind::AllowOutward => "words.do.outward",
+                        _ => "words.do.allow",
+                    };
+                    (words.fill(key, &[("member", a.member.clone()), ("action", a.action.clone())]), Vec::new())
+                }
             };
-            let head = words.fill(key, &[("member", a.member.clone()), ("action", a.action.clone())]);
-            let mut items = Vec::new();
-            if let Some(t) = a.ticket {
-                items.push(words.fill("words.item.on", &[("ticket", format!("T-{t}"))]));
-            }
-            if let Some(why) = a.reason.as_deref().filter(|r| !r.trim().is_empty()) {
-                items.push(words.fill("words.item.why", &[("member", a.member.clone()), ("why", why.to_owned())]));
-            }
-            (head, items)
+            let items = a.ticket.map(|t| words.fill("words.item.on", &[("ticket", format!("T-{t}"))])).into_iter().collect();
+            quotes.extend(a.reason.as_deref().and_then(|why| quote(&a.member, why)));
+            ReadBack { head, items, quotes }
         }
     }
 }
@@ -488,7 +514,7 @@ pub fn ask_line(lang: Lang, tier: Tier) -> String {
 
 /// The choice put when the words fit several things: one line each.
 pub fn which_items(lang: Lang, asks: &[Ask], w: &Waiting) -> Vec<String> {
-    asks.iter().map(|a| read_back(lang, a, w).0).collect()
+    asks.iter().map(|a| read_back(lang, a, w).head).collect()
 }
 
 // ── answering what waits ──
@@ -511,15 +537,22 @@ pub enum Step {
 }
 
 /// How the person's message answers a request at `stage`, of `tier`,
-/// choosing among `count`, asked again `asked_again` times — and how it was
-/// read, for the log. Deterministic: the word lists, never a model.
-pub fn answer(stage: Stage, tier: Tier, text: &str, count: usize, asked_again: u32) -> (Step, Reply) {
+/// choosing among `count`, asked again `asked_again` times — read in the
+/// person's languages (`t`), and `strict`ly when said aloud or dictated
+/// about something high-risk — and how it was read, for the log.
+/// Deterministic: the word lists, never a model.
+///
+/// Read back or choosing: a clear yes (or a number) does it, any no holds
+/// it on its card, a yes with more said is asked again — and anything else
+/// goes on to the member as it is, the request still waiting until it lapses
+/// to its card. Never swallowed.
+pub fn answer(t: &Tongues, stage: Stage, tier: Tier, strict: bool, text: &str, count: usize, asked_again: u32) -> (Step, Reply) {
     let words = own_words(text);
     let long = words.chars().count() > by_words::MOST_CHARS || words.lines().count() > 2;
     let again = |read: Reply| if asked_again + 1 > by_words::ASK_AGAIN { (Step::Close { outcome: Outcome::Held, pass: false }, read) } else { (Step::Again, read) };
     match stage {
         Stage::Undo | Stage::Countdown => {
-            if by_words::stops(text) {
+            if by_words::stops(t, text) {
                 let outcome = if stage == Stage::Undo { Outcome::Undone } else { Outcome::Cancelled };
                 (Step::Close { outcome, pass: false }, if stage == Stage::Undo { Reply::Undo } else { Reply::Cancel })
             } else {
@@ -528,21 +561,23 @@ pub fn answer(stage: Stage, tier: Tier, text: &str, count: usize, asked_again: u
         }
         Stage::ReadBack | Stage::Which => {
             if long {
-                return (Step::Close { outcome: Outcome::Held, pass: true }, Reply::Other);
+                return (Step::Pass, Reply::Other);
             }
-            let read = by_words::reply(text);
+            let read = by_words::reply(t, text, strict && tier != Tier::Low);
             if read == Reply::No {
                 return (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No);
             }
             if stage == Stage::Which {
-                return match by_words::picked(text, count) {
-                    Some(n) => (Step::Choose(n), Reply::Pick),
-                    None => again(Reply::Unclear),
+                return match (by_words::picked(t, text, count), read) {
+                    (Some(n), _) => (Step::Choose(n), Reply::Pick),
+                    (None, Reply::Other) => (Step::Pass, Reply::Other),
+                    (None, _) => again(Reply::Unclear),
                 };
             }
             match read {
                 Reply::Yes if tier == Tier::Outward => (Step::Countdown, Reply::Yes),
                 Reply::Yes => (Step::Run, Reply::Yes),
+                Reply::Other => (Step::Pass, Reply::Other),
                 _ => again(Reply::Unclear),
             }
         }
@@ -569,6 +604,12 @@ pub fn flagged(mut entries: Vec<Entry>, events: &[(TicketId, TicketEntry)]) -> V
     entries
 }
 
+/// The entries kept: those closed within `days` of `now_ms` — the journal's own keeping.
+pub fn prune(entries: Vec<Entry>, now_ms: u64, days: u64) -> Vec<Entry> {
+    let since = now_ms.saturating_sub(days * 24 * 60 * 60 * 1000);
+    entries.into_iter().filter(|e| e.closed_at.max(e.said_at) >= since).collect()
+}
+
 /// The log's lines kept in a file, oldest first, one JSON each — any line
 /// that doesn't read is skipped.
 pub fn parse_log(text: &str) -> Vec<Entry> {
@@ -578,6 +619,12 @@ pub fn parse_log(text: &str) -> Vec<Entry> {
 /// Where the log is kept: beside the squad's journal, out of every member's reach.
 pub fn log_path(home: &Path, squad: &str) -> std::path::PathBuf {
     crate::journal::squad_dir(home, squad).join("words.jsonl")
+}
+
+/// Where what waits in words is kept while it waits: what a daemon that
+/// stopped left waiting is logged as dropped when it starts again.
+pub fn live_path(home: &Path, squad: &str) -> std::path::PathBuf {
+    crate::journal::squad_dir(home, squad).join("words-live.jsonl")
 }
 
 /// The week's line for the retro's facts, when anything was decided in
@@ -591,7 +638,7 @@ pub fn week_line(entries: &[Entry], from_ms: u64) -> Option<String> {
     let count = |f: Flag| week.iter().filter(|e| e.flags.contains(&f)).count();
     let done = week.iter().filter(|e| e.outcome == Outcome::Done).count();
     Some(format!(
-        "Decided in the person's words: {} ({} done) · undone {} · cancelled {} · asked again {} · ambiguous {} · held {} · taken back later {}",
+        "Decided in the person's words: {} ({} done) · undone {} · cancelled {} · asked again {} · ambiguous {} · held {} · taken back later {} · dropped by a restart {}",
         week.len(),
         done,
         count(Flag::Undone),
@@ -599,7 +646,8 @@ pub fn week_line(entries: &[Entry], from_ms: u64) -> Option<String> {
         count(Flag::AskedAgain),
         count(Flag::Ambiguous),
         count(Flag::Held),
-        count(Flag::RevertedLater)
+        count(Flag::RevertedLater),
+        count(Flag::Dropped)
     ))
 }
 
@@ -632,6 +680,10 @@ mod tests {
 
     fn said() -> Said {
         Said { via: Via::Typed, utterance: "yes".into() }
+    }
+
+    fn tongue(code: &str) -> Tongues {
+        Tongues::of(&[code])
     }
 
     struct Fixture {
@@ -677,11 +729,9 @@ mod tests {
         assert_eq!(kind("Bash", "sudo rm -rf /"), Kind::Blocked);
         assert_eq!(kind("Bash", "git push --force origin main"), Kind::Blocked);
         assert_eq!(Kind::Blocked.reach(), Reach::Never);
-        // Only plain commands and sites can become a rule; a member's own question never does.
-        assert!(can_always(&approval(1, "b", "Bash", "npm test")));
-        assert!(!can_always(&approval(1, "b", "Bash", "npm test && rm x")));
-        assert!(!can_always(&approval(1, "b", crate::runtime::CONFIRM, "Sign up")));
-        assert!(!can_always(&approval(1, "b", crate::desktop_gate::SEND, "Mail")));
+        // A lasting widening is its card's in every mode.
+        assert_eq!(Kind::AllowAlways.reach(), Reach::Card);
+        assert_eq!(Kind::WidenSetting.reach(), Reach::Card);
     }
 
     #[test]
@@ -702,42 +752,43 @@ mod tests {
         assert_eq!(t(Ask::ApproveRoutine(1)), Tier::High);
         assert_eq!(t(Ask::Engine(1)), Tier::High);
         assert_eq!(t(Ask::Team(1)), Tier::Outward);
-        assert_eq!(t(Ask::Approval { id: 10, always: false }), Tier::High);
-        assert_eq!(t(Ask::Approval { id: 10, always: true }), Tier::Outward, "widening permissions");
-        assert_eq!(t(Ask::Approval { id: 11, always: false }), Tier::Outward);
-        assert_eq!(t(Ask::Approval { id: 12, always: false }), Tier::Outward, "paying");
+        assert_eq!(t(Ask::Approval(10)), Tier::High);
+        assert_eq!(t(Ask::Approval(11)), Tier::Outward);
+        assert_eq!(t(Ask::Approval(12)), Tier::Outward, "paying");
         assert_eq!(t(Ask::Card(20)), Tier::High);
-        assert_eq!(t(Ask::Approval { id: 99, always: false }), Tier::Outward, "gone: as refused");
+        assert_eq!(t(Ask::Approval(99)), Tier::Outward, "gone: as refused");
     }
 
     #[test]
     fn plain_words_name_what_waits_and_anything_less_plain_is_left_to_the_member() {
         let f = Fixture::new();
         let w = f.waiting();
-        let read = |text: &str| read(text, &w);
+        let (ko, en) = (tongue("ko"), tongue("en"));
+        let read_ko = |text: &str| read(text, &w, &ko);
+        let read_en = |text: &str| read(text, &w, &en);
         // Accepting, the way a card was raised before.
-        assert_eq!(read("T-2 수락"), tickets(Verb::Accept, &[2]));
-        assert_eq!(read("accept T-2 and T-7"), tickets(Verb::Accept, &[2, 7]));
-        assert_eq!(read("전부다 수락할게."), tickets(Verb::Accept, &[1, 2, 7]));
-        assert_eq!(read("다수락해줘"), tickets(Verb::Accept, &[1, 2, 7]));
-        assert_eq!(read("Accept them all!"), tickets(Verb::Accept, &[1, 2, 7]));
-        assert_eq!(read("T-1 머지"), tickets(Verb::Merge, &[1]));
-        assert_eq!(read("merge T-4"), tickets(Verb::Merge, &[4]));
-        assert_eq!(read("merge T-1 and push"), tickets(Verb::Push, &[1]));
-        assert_eq!(read("T-1 푸시까지"), tickets(Verb::Push, &[1]));
-        assert_eq!(read("전부 머지까지 해줘"), tickets(Verb::Merge, &[1, 4]), "to merge, accepted code off main too; research has nothing to merge");
-        assert_eq!(read("leave T-4 on its branch"), tickets(Verb::KeepOnBranch, &[4]));
-        assert_eq!(read("T-5 아이디어로 남겨"), tickets(Verb::Idea, &[5]));
-        assert_eq!(read("keep T-5 as an idea"), tickets(Verb::Idea, &[5]));
-        assert_eq!(read("take on T-6"), tickets(Verb::TakeOn, &[6]));
-        assert_eq!(read("T-5 진행"), tickets(Verb::TakeOn, &[5]));
-        assert_eq!(read("run the weekly report"), vec![Ask::RunRoutine(1)]);
-        assert_eq!(read("주간 리포트 한 번 돌려 줘"), vec![Ask::RunRoutine(2)]);
+        assert_eq!(read_ko("T-2 수락"), tickets(Verb::Accept, &[2]));
+        assert_eq!(read_en("accept T-2 and T-7"), tickets(Verb::Accept, &[2, 7]));
+        assert_eq!(read_ko("전부다 수락할게."), tickets(Verb::Accept, &[1, 2, 7]));
+        assert_eq!(read_ko("다수락해줘"), tickets(Verb::Accept, &[1, 2, 7]));
+        assert_eq!(read_en("Accept them all!"), tickets(Verb::Accept, &[1, 2, 7]));
+        assert_eq!(read_ko("T-1 머지"), tickets(Verb::Merge, &[1]));
+        assert_eq!(read_en("merge T-4"), tickets(Verb::Merge, &[4]));
+        assert_eq!(read_en("merge T-1 and push"), tickets(Verb::Push, &[1]));
+        assert_eq!(read_ko("T-1 푸시까지"), tickets(Verb::Push, &[1]));
+        assert_eq!(read_ko("전부 머지까지 해줘"), tickets(Verb::Merge, &[1, 4]), "to merge, accepted code off main too; research has nothing to merge");
+        assert_eq!(read_en("leave T-4 on its branch"), tickets(Verb::KeepOnBranch, &[4]));
+        assert_eq!(read_ko("T-5 아이디어로 남겨"), tickets(Verb::Idea, &[5]));
+        assert_eq!(read_en("keep T-5 as an idea"), tickets(Verb::Idea, &[5]));
+        assert_eq!(read_en("take on T-6"), tickets(Verb::TakeOn, &[6]));
+        assert_eq!(read_ko("T-5 진행"), tickets(Verb::TakeOn, &[5]));
+        assert_eq!(read_en("run the weekly report"), vec![Ask::RunRoutine(1)]);
+        assert_eq!(read_ko("주간 리포트 한 번 돌려 줘"), vec![Ask::RunRoutine(2)]);
         // Named but not fit, or nothing named: nothing.
-        assert_eq!(read("T-3 수락"), vec![], "being done");
-        assert_eq!(read("T-1, T-3, T-99 수락"), tickets(Verb::Accept, &[1]));
-        assert_eq!(read("수락할게"), vec![]);
-        assert_eq!(read("run it"), vec![], "no routine named");
+        assert_eq!(read_ko("T-3 수락"), vec![], "being done");
+        assert_eq!(read_ko("T-1, T-3, T-99 수락"), tickets(Verb::Accept, &[1]));
+        assert_eq!(read_ko("수락할게"), vec![]);
+        assert_eq!(read_en("run it"), vec![], "no routine named");
         for unsure in [
             "전부 수락할까?",
             "T-1 수락하지 마",
@@ -747,83 +798,87 @@ mod tests {
             "T-1 수락 버튼이 안 눌려요",
             "이건 반려",
             "T-1 어때",
-            "don't accept T-1",
-            "accept all after the tests",
-            "don't merge T-1",
-            "not yet, merge T-1 later",
             "/accept T-1",
             "@pm accept T-1",
             "다 했어요",
             "오늘 한 일 정리해서 내일 아침에 다시 보여줘. 그리고 T-1은 리뷰가 끝나면 수락할 생각이에요, 문제 없으면요",
-            "まだ承認しないで",
-            "不要接受 T-1",
-            "先别合并",
-            "no aceptes T-1",
-            "n'accepte pas T-1",
-            "T-1 nicht akzeptieren",
-            "wenn die Tests laufen, alles akzeptieren",
         ] {
-            assert_eq!(read(unsure), vec![], "{unsure}");
+            assert_eq!(read_ko(unsure), vec![], "{unsure}");
+        }
+        for unsure in ["don't accept T-1", "accept all after the tests", "don't merge T-1", "not yet, merge T-1 later"] {
+            assert_eq!(read_en(unsure), vec![], "{unsure}");
         }
         // Quoted or fenced words are never the person's.
-        assert_eq!(read("> merge T-1\nok, thanks"), vec![]);
-        assert_eq!(read("<!-- reply 1 -->\n> accept T-2\n<!-- reply -->\nlooks fine"), vec![]);
-        assert_eq!(read("```\nmerge T-1\n```"), vec![]);
+        assert_eq!(read_en("> merge T-1\nok, thanks"), vec![]);
+        assert_eq!(read_en("<!-- reply 1 -->\n> accept T-2\n<!-- reply -->\nlooks fine"), vec![]);
+        assert_eq!(read_en("```\nmerge T-1\n```"), vec![]);
     }
 
     #[test]
-    fn plain_words_are_read_in_every_language() {
+    fn plain_words_are_read_in_each_language() {
         let f = Fixture::new();
         let w = f.waiting();
-        for (text, verb, ids) in [
-            ("T-2 accept", Verb::Accept, vec![2]),
-            ("T-2 承認して", Verb::Accept, vec![2]),
-            ("全部承認", Verb::Accept, vec![1, 2, 7]),
-            ("T-1 マージして", Verb::Merge, vec![1]),
-            ("接受 T-2", Verb::Accept, vec![2]),
-            ("全部接受", Verb::Accept, vec![1, 2, 7]),
-            ("T-1 合并", Verb::Merge, vec![1]),
-            ("T-1 合併", Verb::Merge, vec![1]),
-            ("aprueba T-2", Verb::Accept, vec![2]),
-            ("acepta todo", Verb::Accept, vec![1, 2, 7]),
-            ("fusiona T-1", Verb::Merge, vec![1]),
-            ("T-2 validé", Verb::Accept, vec![2]),
-            ("accepte tout", Verb::Accept, vec![1, 2, 7]),
-            ("fusionne T-1", Verb::Merge, vec![1]),
-            ("T-2 genehmigen", Verb::Accept, vec![2]),
-            ("alles akzeptieren", Verb::Accept, vec![1, 2, 7]),
-            ("T-1 zusammenführen", Verb::Merge, vec![1]),
+        for (code, text, verb, ids) in [
+            ("en", "T-2 accept", Verb::Accept, vec![2]),
+            ("ja", "T-2 承認して", Verb::Accept, vec![2]),
+            ("ja", "全部承認", Verb::Accept, vec![1, 2, 7]),
+            ("ja", "T-1 マージして", Verb::Merge, vec![1]),
+            ("zh-Hans", "接受 T-2", Verb::Accept, vec![2]),
+            ("zh-Hans", "全部接受", Verb::Accept, vec![1, 2, 7]),
+            ("zh-Hans", "T-1 合并", Verb::Merge, vec![1]),
+            ("zh-Hant", "T-1 合併", Verb::Merge, vec![1]),
+            ("es", "aprueba T-2", Verb::Accept, vec![2]),
+            ("es", "acepta todo", Verb::Accept, vec![1, 2, 7]),
+            ("es", "fusiona T-1", Verb::Merge, vec![1]),
+            ("fr", "T-2 validé", Verb::Accept, vec![2]),
+            ("fr", "accepte tout", Verb::Accept, vec![1, 2, 7]),
+            ("fr", "fusionne T-1", Verb::Merge, vec![1]),
+            ("de", "T-2 genehmigen", Verb::Accept, vec![2]),
+            ("de", "alles akzeptieren", Verb::Accept, vec![1, 2, 7]),
+            ("de", "T-1 zusammenführen", Verb::Merge, vec![1]),
         ] {
-            assert_eq!(read(text, &w), tickets(verb, &ids), "{text}");
+            assert_eq!(read(text, &w, &tongue(code)), tickets(verb, &ids), "{code}: {text}");
         }
+        for (code, unsure) in [("ja", "まだ承認しないで"), ("zh-Hans", "不要接受 T-1"), ("zh-Hans", "先别合并"), ("es", "no aceptes T-1"), ("fr", "n'accepte pas T-1"), ("de", "T-1 nicht akzeptieren"), ("de", "wenn die Tests laufen, alles akzeptieren")] {
+            assert_eq!(read(unsure, &w, &tongue(code)), vec![], "{code}: {unsure}");
+        }
+        // Another language's words are not read: Japanese accepting, read as Korean and English only.
+        assert_eq!(read("T-2 承認して", &w, &tongue("ko")), vec![]);
     }
 
     #[test]
-    fn allowing_in_words_names_what_waits_and_several_are_a_choice() {
+    fn an_approval_word_starts_something_only_alone_or_naming_what_it_approves() {
         let mut f = Fixture::new();
         f.approvals = vec![approval(10, "backend", "Bash", "npm test"), approval(11, "frontend", "Bash", "git push origin main"), approval(12, "pm", crate::runtime::CONFIRM, "Pay $49")];
+        f.approvals[1].ticket = Some(4);
         f.accepts = vec![
             AcceptProposal { id: 20, verdict: Verdict::Accept, tickets: vec![1], note: String::new(), summary: String::new(), by: "pm".into(), session: 1, proposed_at: 0 },
             AcceptProposal { id: 21, verdict: Verdict::Accept, tickets: vec![2], note: String::new(), summary: String::new(), by: FROM_WORDS.into(), session: 1, proposed_at: 0 },
         ];
         f.proposals = vec![RoutineProposal { id: 30, routine: routine(0, "Dependency check"), reason: "weekly".into(), by: "pm".into(), session: 1, proposed_at: 0 }];
         let w = f.waiting();
-        assert_eq!(read("allow backend", &w), vec![Ask::Approval { id: 10, always: false }]);
-        assert_eq!(read("frontend 허용", &w), vec![Ask::Approval { id: 11, always: false }]);
-        assert_eq!(read("approve the dependency check", &w), vec![Ask::ApproveRoutine(30)]);
-        // Everything waiting, with no name: the person chooses. A card raised from their own words is theirs to click.
-        assert_eq!(
-            read("승인", &w),
-            vec![Ask::Approval { id: 10, always: false }, Ask::Approval { id: 11, always: false }, Ask::Approval { id: 12, always: false }, Ask::Card(20), Ask::ApproveRoutine(30)]
-        );
-        // "Always": only what can become a rule.
-        assert_eq!(read("always allow backend", &w), vec![Ask::Approval { id: 10, always: true }]);
-        assert_eq!(read("앞으로 항상 허용", &w), vec![Ask::Approval { id: 10, always: true }, Ask::Approval { id: 11, always: true }]);
-        assert_eq!(read("don't allow backend", &w), vec![]);
-        assert_eq!(read("allow backend?", &w), vec![]);
-        // Nothing waits: nothing to read.
+        let (ko, en) = (tongue("ko"), tongue("en"));
+        // Named: by its member, its ticket, a word of its command, its title.
+        assert_eq!(read("allow backend", &w, &en), vec![Ask::Approval(10)]);
+        assert_eq!(read("frontend 허용", &w, &ko), vec![Ask::Approval(11)]);
+        assert_eq!(read("allow the push", &w, &en), vec![Ask::Approval(11)]);
+        assert_eq!(read("T-4 승인", &w, &ko), vec![Ask::Approval(11)], "T-4 isn't for accepting: its request is");
+        assert_eq!(read("approve the dependency check", &w, &en), vec![Ask::ApproveRoutine(30)]);
+        // Alone, everything waiting is put to the person to choose. A card raised from their own words is theirs to click.
+        let every = vec![Ask::Approval(10), Ask::Approval(11), Ask::Approval(12), Ask::Card(20), Ask::ApproveRoutine(30)];
+        assert_eq!(read("승인", &w, &ko), every);
+        assert_eq!(read("승인해 줘", &w, &ko), every);
+        assert_eq!(read("allow it", &w, &en), every);
+        // An approval word in a sentence about something else starts nothing.
+        assert_eq!(read("그 계획 승인", &w, &ko), vec![]);
+        assert_eq!(read("approve the plan and write the tickets", &w, &en), vec![]);
+        // "Always" is a card's, in every mode.
+        assert_eq!(read("always allow backend", &w, &en), vec![]);
+        assert_eq!(read("앞으로 항상 허용", &w, &ko), vec![]);
+        assert_eq!(read("don't allow backend", &w, &en), vec![]);
+        assert_eq!(read("allow backend?", &w, &en), vec![]);
         let empty = Fixture { approvals: vec![], accepts: vec![], proposals: vec![], ..Fixture::new() };
-        assert_eq!(read("allow it", &empty.waiting()), vec![]);
+        assert_eq!(read("allow it", &empty.waiting(), &en), vec![]);
     }
 
     #[test]
@@ -841,8 +896,7 @@ mod tests {
         assert_eq!(run(Ask::Tickets { verb: Verb::Idea, tickets: vec![5] }), [Command::MoveTicket { squad: s(), ticket: 5, status: Some(TicketStatus::Idea), before: None }]);
         assert_eq!(run(Ask::Tickets { verb: Verb::TakeOn, tickets: vec![6] }), [Command::MoveTicket { squad: s(), ticket: 6, status: Some(TicketStatus::Todo), before: None }]);
         assert_eq!(run(Ask::RunRoutine(2)), [Command::RunRoutine { squad: s(), id: 2 }]);
-        assert_eq!(run(Ask::Approval { id: 10, always: false }), [Command::Decide { squad: s(), approval: 10, decision: Decision::Allow, words: None, said: Some(said()) }]);
-        assert_eq!(run(Ask::Approval { id: 10, always: true }), [Command::Decide { squad: s(), approval: 10, decision: Decision::Always, words: None, said: Some(said()) }]);
+        assert_eq!(run(Ask::Approval(10)), [Command::Decide { squad: s(), approval: 10, decision: Decision::Allow, words: None, said: Some(said()) }], "once — never always");
         assert_eq!(
             run(Ask::Card(20)),
             [Command::ConfirmAccept { squad: s(), id: 20, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Merge) }, Confirmed::only(2)], said: Some(said()) }],
@@ -851,10 +905,9 @@ mod tests {
         assert_eq!(run(Ask::ApproveRoutine(30)), [Command::ApproveRoutine { squad: s(), id: 30 }]);
         assert_eq!(run(Ask::Team(40)), [Command::ApproveTeamChange { squad: s(), id: 40 }]);
         assert_eq!(run(Ask::Engine(50)), [Command::ApplyEngineProposal { squad: s(), id: 50 }]);
-        // Never any other command: nothing that pairs, saves a secret, widens a mode or turns words on.
-        for ask in [Ask::Tickets { verb: Verb::Push, tickets: vec![1, 2, 4] }, Ask::Card(20), Ask::Approval { id: 10, always: true }] {
+        for ask in [Ask::Tickets { verb: Verb::Push, tickets: vec![1, 2, 4] }, Ask::Card(20), Ask::Approval(10)] {
             for c in run(ask) {
-                assert!(matches!(c, Command::Accept { .. } | Command::Merge { .. } | Command::ConfirmAccept { .. } | Command::Decide { .. }), "{c:?}");
+                assert!(matches!(c, Command::Accept { .. } | Command::Merge { .. } | Command::ConfirmAccept { .. } | Command::Decide { decision: Decision::Allow, .. }), "{c:?}");
             }
         }
     }
@@ -866,68 +919,84 @@ mod tests {
         assert!(still_waits(&ask, &f.waiting()));
         f.tickets[1].status = TicketStatus::Done;
         assert!(!still_waits(&ask, &f.waiting()), "accepted on the board meanwhile");
-        assert!(!still_waits(&Ask::Approval { id: 10, always: false }, &f.waiting()));
+        assert!(!still_waits(&Ask::Approval(10), &f.waiting()));
         assert!(still_waits(&Ask::RunRoutine(1), &f.waiting()));
     }
 
     #[test]
-    fn the_read_back_says_the_action_and_its_target_in_equipes_own_words() {
+    fn the_read_back_says_the_action_and_its_target_and_quotes_what_members_wrote_apart() {
         let mut f = Fixture::new();
-        f.approvals = vec![approval(11, "frontend", "Bash", "git push origin main"), approval(12, "pm", crate::runtime::CONFIRM, "Pay $49.00 a month to Vercel")];
+        f.approvals = vec![approval(11, "frontend", "Bash", "git push origin main"), approval(12, "pm", crate::runtime::CONFIRM, "Pay $49.00\n a month to Vercel")];
+        f.tickets[0].title = "A title\nthat a member wrote long and on two lines, going on and on past where a name should stop".into();
         let w = f.waiting();
-        let (head, items) = read_back(Lang::En, &Ask::Tickets { verb: Verb::Push, tickets: vec![1] }, &w);
-        assert_eq!(head, "Merge T-1 into main and push main to origin");
-        assert_eq!(items, ["T-1 “work 1” — equipe/t-1 → main of web"]);
-        let (head, items) = read_back(Lang::Ko, &Ask::Tickets { verb: Verb::Merge, tickets: vec![1] }, &w);
-        assert_eq!(head, "T-1를 이 Mac에서 main에 머지");
-        assert_eq!(items, ["T-1 “work 1” — equipe/t-1 → web의 main"]);
-        let (head, items) = read_back(Lang::En, &Ask::Tickets { verb: Verb::Accept, tickets: vec![2] }, &w);
-        assert_eq!((head.as_str(), items[0].as_str()), ("Accept T-2", "T-2 “work 2” — into the squad's folder"));
-        let (head, items) = read_back(Lang::En, &Ask::Approval { id: 11, always: false }, &w);
-        assert_eq!(head, "Let frontend reach outside the squad, once: git push origin main");
-        assert_eq!(items, ["On T-3", "frontend says: “to see the tests”"]);
-        // The amount as the member asked it, word for word.
-        let (head, _) = read_back(Lang::En, &Ask::Approval { id: 12, always: false }, &w);
-        assert_eq!(head, "Let pm act in your name: “Pay $49.00 a month to Vercel”");
-        let (head, _) = read_back(Lang::Ko, &Ask::Approval { id: 12, always: false }, &w);
-        assert_eq!(head, "pm가 내 이름으로 해요: “Pay $49.00 a month to Vercel”");
-        assert_eq!(read_back(Lang::En, &Ask::RunRoutine(1), &w).0, "Run the routine “Weekly report” once, now");
+        let back = read_back(Lang::En, &Ask::Tickets { verb: Verb::Push, tickets: vec![1] }, &w);
+        assert_eq!(back.head, "Merge T-1 into main and push main to origin");
+        assert_eq!(back.items, ["T-1 “A title that a member wrote long and on two lines, going on and on past where a …” — equipe/t-1 → main of web"]);
+        assert!(back.quotes.is_empty());
+        let back = read_back(Lang::Ko, &Ask::Tickets { verb: Verb::Merge, tickets: vec![2] }, &w);
+        assert_eq!(back.head, "T-2를 이 Mac에서 main에 머지");
+        let back = read_back(Lang::En, &Ask::Approval(11), &w);
+        assert_eq!(back.head, "Let frontend reach outside the squad, once: git push origin main");
+        assert_eq!(back.items, ["On T-3"]);
+        assert_eq!(back.quotes, [Quote { by: "frontend".into(), text: "to see the tests".into() }], "the member's reason, as theirs");
+        // What a member asks to do in the person's name is never in equipe's voice: quoted, flat.
+        let back = read_back(Lang::En, &Ask::Approval(12), &w);
+        assert_eq!(back.head, "Let pm act in your name — what it asks, in its words, below");
+        assert!(!back.head.contains("49"));
+        assert_eq!(back.quotes[0], Quote { by: "pm".into(), text: "Pay $49.00 a month to Vercel".into() });
+        assert_eq!(read_back(Lang::En, &Ask::RunRoutine(1), &w).head, "Run the routine “Weekly report” once, now");
         assert_eq!(ask_line(Lang::En, Tier::Outward), "Say yes and it goes in 10 s — say cancel to stop it then.");
         assert_eq!(ask_line(Lang::En, Tier::High), "Say yes to go ahead, or no to leave it on its card.");
     }
 
     #[test]
-    fn a_read_back_runs_only_on_a_clear_yes_and_asks_again_when_unclear() {
-        let rb = |text: &str, tier: Tier| answer(Stage::ReadBack, tier, text, 0, 0);
-        assert_eq!(rb("yes", Tier::High), (Step::Run, Reply::Yes));
-        assert_eq!(rb("ㄱㄱ", Tier::High), (Step::Run, Reply::Yes));
-        assert_eq!(rb("고고", Tier::High), (Step::Run, Reply::Yes));
-        assert_eq!(rb("ok", Tier::Outward), (Step::Countdown, Reply::Yes), "outward: counts down first");
-        assert_eq!(rb("no", Tier::High), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No));
-        assert_eq!(rb("아니 하지 마", Tier::High), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No));
-        assert_eq!(rb("not yet", Tier::Outward), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No));
-        assert_eq!(rb("hmm", Tier::High), (Step::Again, Reply::Unclear));
-        assert_eq!(rb("yes?", Tier::High), (Step::Again, Reply::Unclear));
-        assert_eq!(rb("> yes", Tier::High), (Step::Again, Reply::Unclear), "a quoted yes is not theirs");
-        // Unclear too often: held, nothing done.
-        assert_eq!(answer(Stage::ReadBack, Tier::High, "hmm", 0, by_words::ASK_AGAIN), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::Unclear));
-        // Moved on to something else entirely: held, and the words go on to the member.
-        let long = "actually, first fix the header on the pricing page and then look at the footer links again";
-        assert_eq!(rb(long, Tier::High), (Step::Close { outcome: Outcome::Held, pass: true }, Reply::Other));
-        // Choosing: a number, else asked again; a no holds.
-        assert_eq!(answer(Stage::Which, Tier::High, "2", 3, 0), (Step::Choose(2), Reply::Pick));
-        assert_eq!(answer(Stage::Which, Tier::High, "yes", 3, 0), (Step::Again, Reply::Unclear), "a yes chooses nothing");
-        assert_eq!(answer(Stage::Which, Tier::High, "none of them, no", 3, 0), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No));
+    fn a_read_back_runs_only_on_a_clear_yes_and_anything_else_goes_on_to_the_member() {
+        let (en, ko) = (tongue("en"), tongue("ko"));
+        let rb = |t: &Tongues, text: &str, tier: Tier| answer(t, Stage::ReadBack, tier, false, text, 0, 0);
+        assert_eq!(rb(&en, "yes", Tier::High), (Step::Run, Reply::Yes));
+        assert_eq!(rb(&ko, "ㄱㄱ", Tier::High), (Step::Run, Reply::Yes));
+        assert_eq!(rb(&ko, "고고", Tier::High), (Step::Run, Reply::Yes));
+        assert_eq!(rb(&en, "ok", Tier::Outward), (Step::Countdown, Reply::Yes), "outward: counts down first");
+        assert_eq!(rb(&en, "no", Tier::High), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No));
+        assert_eq!(rb(&ko, "아니 하지 마", Tier::High), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No));
+        assert_eq!(rb(&en, "not yet", Tier::Outward), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No));
+        // A yes with more said: asked again — too often, held.
+        assert_eq!(rb(&en, "yes?", Tier::High), (Step::Again, Reply::Unclear));
+        assert_eq!(rb(&en, "yes and fix the header", Tier::High), (Step::Again, Reply::Unclear));
+        assert_eq!(answer(&en, Stage::ReadBack, Tier::High, false, "yes?", 0, by_words::ASK_AGAIN), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::Unclear));
+        // Anything else is the member's, the read-back still waiting: never swallowed.
+        assert_eq!(rb(&ko, "음", Tier::High), (Step::Pass, Reply::Other));
+        assert_eq!(rb(&en, "fix the header first", Tier::High), (Step::Pass, Reply::Other));
+        assert_eq!(rb(&en, "> yes", Tier::High), (Step::Pass, Reply::Other), "a quoted yes is not theirs");
+        let long = "yes, and first fix the header on the pricing page and then look at the footer links again please";
+        assert_eq!(rb(&en, long, Tier::High), (Step::Pass, Reply::Other));
+        // Choosing: a number; a yes picks nothing; a no holds; the rest goes on.
+        assert_eq!(answer(&en, Stage::Which, Tier::High, false, "2", 3, 0), (Step::Choose(2), Reply::Pick));
+        assert_eq!(answer(&en, Stage::Which, Tier::High, false, "yes", 3, 0), (Step::Again, Reply::Unclear));
+        assert_eq!(answer(&en, Stage::Which, Tier::High, false, "none of them, no", 3, 0), (Step::Close { outcome: Outcome::Held, pass: false }, Reply::No));
+        assert_eq!(answer(&en, Stage::Which, Tier::High, false, "fix the header", 3, 0), (Step::Pass, Reply::Other));
+    }
+
+    #[test]
+    fn a_spoken_or_dictated_yes_to_something_high_must_be_short_and_on_its_own() {
+        let (en, zh) = (tongue("en"), tongue("zh-Hans"));
+        let spoken = |t: &Tongues, text: &str, tier: Tier| answer(t, Stage::ReadBack, tier, true, text, 0, 0).0;
+        assert_eq!(spoken(&en, "yes", Tier::High), Step::Run);
+        assert_eq!(spoken(&en, "yes go ahead please now", Tier::High), Step::Again, "too long");
+        assert_eq!(answer(&en, Stage::ReadBack, Tier::High, false, "yes go ahead please now", 0, 0).0, Step::Run, "typed, plain enough");
+        assert_eq!(spoken(&zh, "没问题", Tier::Outward), Step::Again, "a negation's letters, said aloud");
+        assert_eq!(spoken(&en, "ok", Tier::Outward), Step::Countdown);
     }
 
     #[test]
     fn undo_and_cancel_windows_stop_on_any_no_and_let_the_rest_through() {
-        assert_eq!(answer(Stage::Undo, Tier::Low, "undo", 0, 0), (Step::Close { outcome: Outcome::Undone, pass: false }, Reply::Undo));
-        assert_eq!(answer(Stage::Undo, Tier::Low, "되돌려", 0, 0).0, Step::Close { outcome: Outcome::Undone, pass: false });
-        assert_eq!(answer(Stage::Undo, Tier::Low, "and fix the header", 0, 0), (Step::Pass, Reply::Other));
-        assert_eq!(answer(Stage::Countdown, Tier::Outward, "cancel", 0, 0), (Step::Close { outcome: Outcome::Cancelled, pass: false }, Reply::Cancel));
-        assert_eq!(answer(Stage::Countdown, Tier::Outward, "잠깐", 0, 0).0, Step::Close { outcome: Outcome::Cancelled, pass: false });
-        assert_eq!(answer(Stage::Countdown, Tier::Outward, "ok", 0, 0), (Step::Pass, Reply::Other));
+        let (en, ko) = (tongue("en"), tongue("ko"));
+        assert_eq!(answer(&en, Stage::Undo, Tier::Low, false, "undo", 0, 0), (Step::Close { outcome: Outcome::Undone, pass: false }, Reply::Undo));
+        assert_eq!(answer(&ko, Stage::Undo, Tier::Low, false, "되돌려", 0, 0).0, Step::Close { outcome: Outcome::Undone, pass: false });
+        assert_eq!(answer(&en, Stage::Undo, Tier::Low, false, "and fix the header", 0, 0), (Step::Pass, Reply::Other));
+        assert_eq!(answer(&en, Stage::Countdown, Tier::Outward, false, "cancel", 0, 0), (Step::Close { outcome: Outcome::Cancelled, pass: false }, Reply::Cancel));
+        assert_eq!(answer(&ko, Stage::Countdown, Tier::Outward, false, "잠깐", 0, 0).0, Step::Close { outcome: Outcome::Cancelled, pass: false });
+        assert_eq!(answer(&en, Stage::Countdown, Tier::Outward, false, "ok", 0, 0), (Step::Pass, Reply::Other));
     }
 
     fn entry(id: u64, outcome: Outcome, tickets: Vec<TicketId>, closed_at: u64) -> Entry {
@@ -941,6 +1010,7 @@ mod tests {
             said: "T-2 수락".into(),
             read_back: String::new(),
             items: vec![],
+            quotes: vec![],
             answers: vec![],
             tickets,
             said_at: closed_at - 5_000,
@@ -956,12 +1026,12 @@ mod tests {
     }
 
     #[test]
-    fn the_log_flags_what_was_undone_cancelled_unclear_or_taken_back_later() {
+    fn the_log_flags_what_was_undone_cancelled_unclear_dropped_or_taken_back_later() {
         let back = |ticket: TicketId, at: u64, kind: &str| (ticket, TicketEntry { at, by: "you".into(), kind: kind.into(), text: String::new() });
         let mut unclear = entry(4, Outcome::Done, vec![], 10_000);
-        unclear.answers = vec![Heard { words: "hm".into(), read: Reply::Unclear, at: 9_000, via: Via::Typed }];
+        unclear.answers = vec![Heard { words: "yes?".into(), read: Reply::Unclear, at: 9_000, via: Via::Typed }];
         unclear.asked_again = 1;
-        let entries = vec![entry(1, Outcome::Done, vec![2], 100_000), entry(2, Outcome::Undone, vec![7], 100_000), entry(3, Outcome::Done, vec![7], 100_000), unclear, entry(5, Outcome::Cancelled, vec![], 10_000)];
+        let entries = vec![entry(1, Outcome::Done, vec![2], 100_000), entry(2, Outcome::Undone, vec![7], 100_000), entry(3, Outcome::Done, vec![7], 100_000), unclear, entry(5, Outcome::Cancelled, vec![], 10_000), entry(6, Outcome::Dropped, vec![], 10_000)];
         let events = [back(2, 200, "reopened"), back(7, 50, "reopened"), back(7, 300, "comment")];
         let flagged = flagged(entries, &events);
         assert_eq!(flagged[0].flags, [Flag::RevertedLater], "reopened after it was accepted in words");
@@ -969,11 +1039,20 @@ mod tests {
         assert_eq!(flagged[2].flags, Vec::<Flag>::new(), "reopened before, and only commented after");
         assert_eq!(flagged[3].flags, [Flag::AskedAgain, Flag::Ambiguous]);
         assert_eq!(flagged[4].flags, [Flag::Cancelled]);
+        assert_eq!(flagged[5].flags, [Flag::Dropped]);
         let line = week_line(&flagged, 0).unwrap();
-        assert_eq!(line, "Decided in the person's words: 5 (3 done) · undone 1 · cancelled 1 · asked again 1 · ambiguous 1 · held 0 · taken back later 1");
+        assert_eq!(line, "Decided in the person's words: 6 (3 done) · undone 1 · cancelled 1 · asked again 1 · ambiguous 1 · held 0 · taken back later 1 · dropped by a restart 1");
         assert_eq!(week_line(&flagged, 1_000_000), None, "nothing this week: the retro as before");
         let text = flagged.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>().join("\n") + "\nnot json\n";
-        assert_eq!(parse_log(&text).len(), 5);
+        assert_eq!(parse_log(&text).len(), 6);
+    }
+
+    #[test]
+    fn the_log_keeps_what_the_journal_keeps() {
+        let day = 24 * 60 * 60 * 1000;
+        let now = 200 * day;
+        let kept = prune(vec![entry(1, Outcome::Done, vec![], now - 91 * day), entry(2, Outcome::Done, vec![], now - 89 * day), entry(3, Outcome::Held, vec![], now)], now, 90);
+        assert_eq!(kept.iter().map(|e| e.id).collect::<Vec<_>>(), [2, 3]);
     }
 
     #[test]

@@ -1354,6 +1354,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             reviews: reviews(),
                             put_away: put_away().lock().unwrap().clone(),
                             words: Some(waiting_words),
+                            words_all: words::all(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1465,8 +1466,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         eprintln!("command: {command:?}");
                         // The person's own message: read for a decision in words first, as the daemon does.
                         let command = match command {
-                            Command::Say { text, all, later, pasted, session, about, .. } => {
-                                if !words::on_say(&text, all, pasted, &events) {
+                            Command::Say { text, later, pasted, session, about, .. } => {
+                                if !words::on_say(&text, pasted, &events) {
                                     continue;
                                 }
                                 if later { Command::SubmitLater { session, text, about } } else { Command::Submit { session, text, about } }
@@ -1477,6 +1478,14 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::WordsLog { squad } => {
                                 let _ = events.send(Event::WordsLog { squad, entries: words::log() });
+                                continue;
+                            }
+                            Command::ClearWordsLog { squad } => {
+                                let _ = events.send(Event::WordsLog { squad, entries: Vec::new() });
+                                continue;
+                            }
+                            Command::SetWordsAll { on, .. } => {
+                                words::set_all(on, &events);
                                 continue;
                             }
                             other => other,

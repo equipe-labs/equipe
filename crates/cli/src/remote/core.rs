@@ -244,6 +244,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::Say { squad, .. }
         | Command::UndoWords { squad, .. }
         | Command::WordsLog { squad }
+        | Command::ClearWordsLog { squad }
+        | Command::SetWordsAll { squad, .. }
         | Command::ProjectDocs { squad } => Some(squad),
         _ => None,
     }
@@ -1169,9 +1171,11 @@ pub(crate) mod tests {
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), undo, now), now)[..], [Action::Command { command: Command::UndoWords { id: 4, .. }, .. }]));
         let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "say", "squad": "zeta", "session": 1, "text": "yes" } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
-        // The log of decisions in words stays at the Mac.
-        let log = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "words_log", "squad": "acme" } });
-        assert!(core.on_relay(&phone.send(&c, Some("acme"), log, now), now).is_empty());
+        // The log of decisions in words, its deleting, and all by words stay at the Mac.
+        for asked in [json!({ "type": "words_log", "squad": "acme" }), json!({ "type": "clear_words_log", "squad": "acme" }), json!({ "type": "set_words_all", "squad": "acme", "on": true })] {
+            let sent = json!({ "jsonrpc": "2.0", "method": "command", "params": asked });
+            assert!(core.on_relay(&phone.send(&c, Some("acme"), sent, now), now).is_empty(), "{asked}");
+        }
         // A call mode's own decide, by voice: on as it came, for the log.
         let voiced = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decide", "squad": "acme", "approval": 3, "decision": "allow", "via": "voice", "utterance": "응 해" } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), voiced, now), now);
