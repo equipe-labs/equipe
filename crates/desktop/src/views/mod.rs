@@ -46,6 +46,7 @@ pub mod routines;
 pub mod sheet;
 pub mod sidebar;
 pub mod signin;
+pub mod side_chat;
 pub mod subagent;
 pub mod team;
 pub mod telemetry;
