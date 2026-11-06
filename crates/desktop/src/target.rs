@@ -194,7 +194,7 @@ pub struct Remembered {
     pub progress_seen: Option<u64>,
     /// The team shown row by row in the sidebar, not as one row of faces.
     pub team_open: bool,
-    /// The plans' meters folded to their heading (the tightest window alone);
+    /// The plans' meters folded to their heading (the window used most alone);
     /// they start open.
     pub usage_folded: bool,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):

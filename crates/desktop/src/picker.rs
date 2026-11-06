@@ -1,6 +1,6 @@
 //! The model picker's rules, with no UI types, so they are tested without a
 //! window (`views/model_picker.rs` draws it). One picker, engine first:
-//! Claude | Codex at the top, each with what is left of its plan; that
+//! Claude | Codex at the top, each with how much of its plan is used; that
 //! engine's models below — Claude's by family, the latest first and the
 //! pinned versions behind a disclosure; Codex's as its own live list says,
 //! or why there is no list yet — then the effort the member's model takes,
@@ -80,6 +80,8 @@ pub struct World<'a> {
     pub codex_waited: Option<Duration>,
     pub providers: &'a [ProviderStatus],
     pub meters: &'a [Meter],
+    /// The time the meters were read at (Unix seconds): a reset is said from it.
+    pub now: i64,
     pub moving: Option<Moving>,
     /// The model a new member of its role starts with, on each engine.
     pub role_start: [Option<String>; 2],
@@ -152,7 +154,7 @@ pub struct Tab {
     pub engine: Engine,
     /// The member works on it now.
     pub here: bool,
-    /// What is left of its plan, as the tightest window says it; `None`: never read.
+    /// How much of its plan is used, as the window used most says it; `None`: never read.
     pub plan: Option<(String, Tone)>,
 }
 
@@ -280,17 +282,15 @@ impl View {
     }
 }
 
-/// The tightest window of `engine`'s plan, in words: "week 39% left".
-pub fn plan_words(meters: &[Meter], engine: Engine) -> Option<(String, Tone)> {
+/// The window of `engine`'s plan used most, in words: "week 61% used";
+/// out, "week · Limit reached · resets in 3d".
+pub fn plan_words(meters: &[Meter], engine: Engine, now: i64) -> Option<(String, Tone)> {
     let meter = meters.iter().find(|m| m.engine == engine && m.read_at.is_some())?;
-    let g = meter.gauges.iter().min_by_key(|g| (g.left(), g.resets_at))?;
-    let window = match g.window {
-        equipe_core::protocol::engines::Window::FiveHour => t!("usage.five_hour"),
-        equipe_core::protocol::engines::Window::Weekly => t!("usage.week"),
-    };
-    let words = match g.left() {
-        0 => t!("models.plan_out", window = window),
-        left => t!("models.plan_left", window = window, left = left),
+    let g = meter.gauges.iter().min_by_key(|g| (std::cmp::Reverse(g.percent), g.resets_at))?;
+    let window = crate::switching::window_name(g.window);
+    let words = match g.tone {
+        Tone::Out => t!("usage.window_out", window = window, span = crate::switching::span(g.resets_at, now)),
+        _ => t!("usage.window_used", window = window, used = g.percent),
     };
     Some((words, if meter.stale { Tone::Calm } else { g.tone }))
 }
@@ -439,7 +439,7 @@ pub fn build(member: &Member, world: &World, ui: &Ui) -> View {
     let tab = ui.tab;
     let here = tab == member.on();
     let listed = world.listed(tab);
-    let tabs = ENGINES.iter().map(|&engine| Tab { engine, here: engine == member.on(), plan: plan_words(world.meters, engine) }).collect();
+    let tabs = ENGINES.iter().map(|&engine| Tab { engine, here: engine == member.on(), plan: plan_words(world.meters, engine, world.now) }).collect();
     let current = member.asked.or(member.ran).map(catalog::bare);
     // A pick on the member's own engine sets its model; on the other, moves it there on that model.
     let pick = |id: &str| if here { Act::Model(id.to_owned()) } else { Act::Move { engine: tab, model: Some(id.to_owned()) } };
@@ -883,16 +883,21 @@ mod tests {
     }
 
     #[test]
-    fn each_tab_says_what_is_left_of_its_plan() {
+    fn each_tab_says_how_much_of_its_plan_is_used() {
         let gauge = |window, percent: u8| Gauge { window, percent, resets_at: NOW + 3600, tone: tone(percent) };
         let meters = [
             Meter { engine: Engine::Claude, gauges: vec![gauge(Window::FiveHour, 20), gauge(Window::Weekly, 61)], read_at: Some(NOW), stale: false },
             Meter { engine: Engine::Codex, gauges: vec![], read_at: None, stale: false },
         ];
-        assert_eq!(plan_words(&meters, Engine::Claude), Some((t!("models.plan_left", window = t!("usage.week"), left = 39), Tone::Calm)));
-        assert_eq!(plan_words(&meters, Engine::Codex), None, "never read");
+        // The window used most, its number labelled: never a bare percent, never what is left.
+        assert_eq!(plan_words(&meters, Engine::Claude, NOW), Some(("주간 61% 사용".to_owned(), Tone::Calm)));
+        assert_eq!(plan_words(&meters, Engine::Codex, NOW), None, "never read");
+        let near = [Meter { engine: Engine::Claude, gauges: vec![gauge(Window::FiveHour, 80), gauge(Window::Weekly, 61)], read_at: Some(NOW), stale: false }];
+        assert_eq!(plan_words(&near, Engine::Claude, NOW), Some(("5시간 80% 사용".to_owned(), Tone::Near)));
         let out = [Meter { engine: Engine::Codex, gauges: vec![gauge(Window::FiveHour, 100)], read_at: Some(NOW), stale: false }];
-        assert_eq!(plan_words(&out, Engine::Codex), Some((t!("models.plan_out", window = t!("usage.five_hour")), Tone::Out)));
+        assert_eq!(plan_words(&out, Engine::Codex, NOW), Some(("5시간 한도 도달 · 1시간 뒤 초기화".to_owned(), Tone::Out)));
+        let stale = [Meter { stale: true, ..near[0].clone() }];
+        assert_eq!(plan_words(&stale, Engine::Claude, NOW).map(|(_, tone)| tone), Some(Tone::Calm), "an old reading isn't coloured");
         let world = World { meters: &meters, ..Default::default() };
         let view = build(&pm(), &world, &ui(Engine::Codex));
         assert_eq!(view.tabs.iter().map(|t| (t.engine, t.here)).collect::<Vec<_>>(), [(Engine::Claude, true), (Engine::Codex, false)]);

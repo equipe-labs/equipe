@@ -15,23 +15,6 @@ use equipe_core::protocol::{Command, Engine, Event, TicketId};
 use crate::state::{Model, Presence};
 use equipe_core::t;
 
-/// How full a plan's window is, as its bar is coloured: room, getting full,
-/// nearly out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fill {
-    Room,
-    Full,
-    Out,
-}
-
-pub fn fill(percent: u8) -> Fill {
-    match percent {
-        0..=69 => Fill::Room,
-        70..=89 => Fill::Full,
-        _ => Fill::Out,
-    }
-}
-
 /// How long until `resets_at`, from `now`, as a person says it: "3h 20m",
 /// "2d 4h", "12m".
 pub fn time_left(resets_at: i64, now: i64) -> String {
@@ -457,8 +440,7 @@ mod tests {
 
 
     #[test]
-    fn a_plan_is_coloured_by_how_full_it_is_and_says_how_long_until_it_starts_over() {
-        assert_eq!([fill(0), fill(53), fill(70), fill(89), fill(90), fill(100)], [Fill::Room, Fill::Room, Fill::Full, Fill::Full, Fill::Out, Fill::Out]);
+    fn a_plan_says_how_long_until_it_starts_over() {
         assert_eq!(time_left(1_000 + 3 * 3_600 + 20 * 60, 1_000), "3시간 20분");
         assert_eq!(time_left(1_000 + 2 * 86_400 + 4 * 3_600, 1_000), "2일 4시간");
         assert_eq!(time_left(1_030, 1_000), "1분", "never \"0\"");

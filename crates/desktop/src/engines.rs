@@ -520,11 +520,14 @@ pub fn members_line(status: &EngineStatus, squad: &str) -> Option<String> {
     (!names.is_empty()).then(|| names.join(", "))
 }
 
-/// The plan's windows, as the usage row says them: "5-hour 42% · resets in 1h 10m".
-pub fn plan_usage(plan: &PlanUsage, now_unix: i64) -> Vec<(String, u8)> {
-    [(t!("engines.window_5h"), plan.five_hour), (t!("engines.window_week"), plan.seven_day)]
+/// The plan's windows, as the usage row says them — "5-hour: 42% used ·
+/// resets in 1h 10m", at 100% "Limit reached" — with how much is used and,
+/// for the week, its even-pace mark (`switching::even_pace`).
+pub fn plan_usage(plan: &PlanUsage, now_unix: i64) -> Vec<(String, u8, Option<f32>)> {
+    use equipe_core::protocol::engines::Window;
+    [(t!("engines.window_5h"), Window::FiveHour, plan.five_hour), (t!("engines.window_week"), Window::Weekly, plan.seven_day)]
         .into_iter()
-        .filter_map(|(name, window)| {
+        .filter_map(|(name, kind, window)| {
             let w = window?;
             let mins = ((w.resets_at - now_unix).max(0) + 59) / 60;
             let when = match mins {
@@ -532,7 +535,13 @@ pub fn plan_usage(plan: &PlanUsage, now_unix: i64) -> Vec<(String, u8)> {
                 m if m >= 60 => t!("engines.resets_in_hm", h = m / 60, m = m % 60),
                 m => t!("engines.resets_in_m", m = m),
             };
-            Some((t!("engines.usage_window", window = name, percent = w.used_percent, when = when), w.used_percent.min(100)))
+            let used = w.used_percent.min(100);
+            let words = match crate::switching::tone(used) {
+                crate::switching::Tone::Out => t!("engines.usage_window_out", window = name, when = when),
+                _ => t!("engines.usage_window", window = name, percent = used, when = when),
+            };
+            let pace = (kind == Window::Weekly).then(|| crate::switching::even_pace(kind, w.resets_at, now_unix)).flatten();
+            Some((words, used, pace))
         })
         .collect()
 }
@@ -725,8 +734,12 @@ mod tests {
         let plan = PlanUsage { five_hour: Some(PlanWindow { used_percent: 42, resets_at: 1000 + 70 * 60 }), seven_day: Some(PlanWindow { used_percent: 120, resets_at: 1000 + 3 * 86_400 }) };
         let rows = plan_usage(&plan, 1000);
         assert_eq!(rows.len(), 2);
-        assert!(rows[0].0.contains("42%") && rows[0].0.contains("1시간 10분"), "{rows:?}");
+        assert!(rows[0].0.contains("42% 사용") && rows[0].0.contains("1시간 10분"), "{rows:?}");
+        assert_eq!(rows[0].2, None, "the five hours wear no even-pace mark");
         assert_eq!(rows[1].1, 100, "a bar never runs past full");
+        assert!(rows[1].0.contains("한도 도달") && !rows[1].0.contains('%'), "{rows:?}");
+        let mark = rows[1].2.expect("the week's even-pace mark");
+        assert!((mark - 4. / 7.).abs() < 1e-4, "four days of seven gone: {mark}");
     }
 
     #[test]
