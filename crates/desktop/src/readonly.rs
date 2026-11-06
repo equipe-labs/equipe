@@ -90,6 +90,10 @@ pub fn reads(command: &Command) -> bool {
         | C::SubmitLater { .. }
         | C::OnPhone { .. }
         | C::UndoHomeChange { .. }
+        // A side chat runs an engine on the person's account.
+        | C::StartSideChat { .. }
+        | C::SideChatSubmit { .. }
+        | C::CloseSideChat { .. }
         | C::Say { .. }
         | C::UndoWords { .. }
         | C::ClearWordsLog { .. }
@@ -473,6 +477,9 @@ mod tests {
             Command::SubmitLater { session: 1, text: "x".into(), about: None },
             Command::Interrupt { session: 1 },
             Command::Close { session: 1 },
+            Command::StartSideChat { session: 1, side: 2, passage: "x".into() },
+            Command::SideChatSubmit { session: 1, side: 2, passage: "x".into(), text: "x".into() },
+            Command::CloseSideChat { side: 2 },
             Command::Accept { squad: s(), ticket: 1 },
             Command::Merge { squad: s(), ticket: 1, push: false },
             Command::KeepOnBranch { squad: s(), ticket: 1 },
@@ -620,7 +627,7 @@ mod tests {
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
         assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "words_log", "engines", "providers", "models", "design", "project_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
-        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider"] {
+        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");
         }
         // Outside the real view, everything goes, as ever.

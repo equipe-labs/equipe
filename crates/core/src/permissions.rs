@@ -116,6 +116,10 @@ pub fn person_only(command: &Command) -> bool {
         // Pairing a phone: a member must not pair its own device in, nor unpair
         // the person's. (Handled on the pairing path in the gateway too.)
         C::PairStart | C::PairAnswer { .. } | C::PairCancel | C::Devices | C::Unpair { .. } => true,
+        // A side chat: a conversation on the person's account, beside a
+        // member's, that reads its files and the web. The person's to open,
+        // write in and close — a member must not start one of its own.
+        C::StartSideChat { .. } | C::SideChatSubmit { .. } | C::CloseSideChat { .. } => true,
 
         // Not the person's alone. Session plumbing and the person's own
         // messages; screen, conversation and panel state; reads and lists;
@@ -506,6 +510,11 @@ mod tests {
             Command::Unpair { device: "phone".into() },
             Command::UndoHomeChange { squad: "a".into(), session: 1, change: "abc".into() },
             Command::OnPhone { command: Box::new(Command::Accept { squad: "a".into(), ticket: 1 }) },
+            // A side chat reads the member's files and the web on the
+            // person's account: theirs to open, never a member's.
+            Command::StartSideChat { session: 1, side: 2, passage: "a".into() },
+            Command::SideChatSubmit { session: 1, side: 2, passage: "a".into(), text: "why?".into() },
+            Command::CloseSideChat { side: 2 },
         ];
         for command in &person_only {
             assert!(person_only_fn(command), "person-only: {command:?}");

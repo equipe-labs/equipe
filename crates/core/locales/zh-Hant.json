@@ -531,5 +531,6 @@
   "notice.provider_limits": "在 {provider} 上，這個成員可以使用檔案、指令和看板，但暫時沒有子代理和網頁搜尋，也看不了圖片。請選擇能呼叫工具的模型。",
   "notice.provider_move": "從下一張工單起改用 {provider} 的 {model}，在 Codex CLI 的代理上執行。",
   "error.provider_needs_codex": "{provider} 上的成員在 Codex CLI 的代理上執行（免費、開源，無需登入 ChatGPT）。請先安裝 codex CLI。",
+  "error.side_chat_busy": "側邊聊天還在回答。請稍候，或將其關閉。",
   "security.member_refused": "某個成員自己的程序試圖透過 equipe 的 socket 以你的身分操作——核准、接受、合併或變更設定。equipe 已拒絕：只有你能決定。"
 }

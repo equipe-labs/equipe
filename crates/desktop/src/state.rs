@@ -381,6 +381,8 @@ pub struct Model {
     /// Bumped whenever the selected conversation shows something new, so a
     /// screen can tell it must draw again.
     pub revision: u64,
+    /// The side chats opened from this window, by their id (`crate::side_chat`).
+    pub side_chats: HashMap<equipe_core::protocol::SideChatId, crate::side_chat::SideConvo>,
     /// Now, in unix seconds: set by the shell before each update (never read here).
     pub unix: u64,
     /// When each ticket came to the state it is in, as seen from here.
@@ -515,6 +517,7 @@ impl Model {
             focus: None,
             opened: None,
             revision: 0,
+            side_chats: HashMap::new(),
             unix: 0,
             since: HashMap::new(),
             acted: HashMap::new(),
@@ -914,6 +917,8 @@ impl Model {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 // What waits in words is drawn over the composer: always a redraw.
                 let words = matches!(event, Event::WordsLive { .. } | Event::WordsClosed { .. } | Event::WordsLog { .. } | Event::WordsAllChanged { .. });
+                // So is a side chat, beside the conversation.
+                let words = words || matches!(event, Event::SideChatOpened { .. } | Event::SideChat { .. } | Event::SideChatClosed { .. });
                 self.on_event(event, now);
                 let mut changed = words || before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 // The footer's "last event" moves when the minute does.
@@ -1128,6 +1133,31 @@ impl Model {
                 }
                 self.projects = projects.clone();
                 self.order_projects();
+            }
+            // A side chat's: its own words, and what it used counted as its member's.
+            Event::SideChatOpened { squad, side, search, .. } if squad.as_ref().is_none_or(|s| *s == self.squad) => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.search = Some(*search);
+                    chat.gone = false;
+                }
+            }
+            Event::SideChat { side, session, event: inner, .. } => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.on_event(inner);
+                }
+                if let Event::TurnEnded { usage: Some(u), .. } = &**inner {
+                    let member = self.lanes.iter().find(|l| l.session == *session).map_or(*session, |l| l.of);
+                    let spent = self.spent.entry(member).or_default();
+                    spent.tokens += u.total();
+                    spent.seen.0 += u.total();
+                    spent.seen.1 += u.cache_tokens.unwrap_or(0);
+                }
+            }
+            Event::SideChatClosed { side, .. } => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.gone = true;
+                    chat.working = false;
+                }
             }
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
                 let spent = self.spent.entry(*session).or_default();
@@ -2042,6 +2072,24 @@ mod tests {
         model.apply(Update::Event(failed), T0);
         assert_eq!(model.take_problem().as_deref(), Some("No engine is ready."), "no conversation to show it in: the squad's problem");
         assert_eq!(model.squad_errors, 1);
+    }
+
+    #[test]
+    fn a_side_chats_words_stay_in_it_and_what_it_used_counts_as_its_members() {
+        let mut model = Model::new("acme");
+        model.side_chats.insert(9, crate::side_chat::SideConvo::new(2, "the header"));
+        let inside = |event: Event| Update::Event(Event::SideChat { squad: Some("acme".into()), session: 2, side: 9, event: Box::new(event) });
+        assert!(model.apply(Update::Event(Event::SideChatOpened { squad: Some("acme".into()), session: 2, side: 9, search: false }), T0), "drawn again");
+        assert_eq!(model.side_chats[&9].search, Some(false));
+        model.apply(inside(Event::UserMessage { session: 9, text: "why?".into() }), T0);
+        model.apply(inside(Event::TextDelta { session: 9, text: "Because.".into() }), T0);
+        let usage = equipe_core::protocol::Usage { input_tokens: Some(10), output_tokens: Some(5), cache_tokens: Some(100), context_tokens: None, context_window: None };
+        model.apply(inside(Event::TurnEnded { session: 9, outcome: TurnOutcome::Completed, usage: Some(usage) }), T0);
+        assert_eq!(model.side_chats[&9].last_answer().as_deref(), Some("Because."));
+        assert!(model.convos.get(&2).is_none_or(|c| c.transcript.is_empty()), "nothing of it in the member's conversation");
+        assert_eq!(model.spent.get(&2).map(|s| (s.tokens, s.seen.1)), Some((115, 100)), "its usage counts as the member's");
+        model.apply(Update::Event(Event::SideChatClosed { squad: Some("acme".into()), side: 9 }), T0);
+        assert!(model.side_chats[&9].gone, "let go, its words kept");
     }
 
     #[test]

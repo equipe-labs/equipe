@@ -535,5 +535,6 @@
   "notice.provider_limits": "On {provider} this member works with files, commands and the board, but has no subagents or web search yet, and can't look at images. Pick a model that can call tools.",
   "notice.provider_move": "Moves to {model} on {provider} at its next ticket, on the Codex CLI's agent.",
   "error.provider_needs_codex": "Members on {provider} run on the Codex CLI's agent (free, open source; no ChatGPT sign-in needed). Install the codex CLI first.",
+  "error.side_chat_busy": "The side chat is still answering. Wait for it, or close it.",
   "security.member_refused": "A member's own process tried to act as you — approve, accept, merge or change settings — over equipe's socket. equipe refused it: only you decide that."
 }

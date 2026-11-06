@@ -531,5 +531,6 @@
   "notice.provider_limits": "{provider} ではこのメンバーはファイル、コマンド、ボードで作業しますが、まだサブエージェントとウェブ検索がなく、画像を見ることもできません。ツールを呼び出せるモデルを選んでください。",
   "notice.provider_move": "次のチケットから {provider} の {model} に移り、Codex CLI のエージェントで動きます。",
   "error.provider_needs_codex": "{provider} のメンバーは Codex CLI のエージェントで動きます (無料・オープンソース、ChatGPT のサインイン不要)。先に codex CLI をインストールしてください。",
+  "error.side_chat_busy": "サイドチャットはまだ答えています。待つか、閉じてください。",
   "security.member_refused": "メンバー自身のプロセスが equipe のソケット経由であなたの代わりに操作しようとしました（承認・受け入れ・マージ・設定変更）。equipe はこれを拒否しました。決めるのはあなただけです。"
 }

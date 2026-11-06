@@ -4959,3 +4959,103 @@ async fn a_plan_is_kept_in_the_squads_folder_reviewed_at_once_and_cut_into_ticke
     assert_eq!(git(&repo, &["rev-parse", "main"]), head);
     assert_eq!(git(&repo, &["ls-tree", "-r", "--name-only", "main"]), "README.md");
 }
+
+// ── side chats ──
+
+/// A turn answering `text` under Claude Code's session for the call: a fork
+/// gets a session of its own (`fork-1`), and carries on in it.
+fn forking(text: &str) -> String {
+    format!(
+        r#"case "$*" in *--fork-session*|*"--resume fork-1"*) S=fork-1;; *) S=sess-1;; esac
+cat <<EOF
+{{"type":"system","subtype":"init","model":"claude-test","session_id":"$S"}}
+{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"{text}"}}}}}}
+{{"type":"result","subtype":"success","is_error":false,"result":"{text}","usage":{{"input_tokens":30,"output_tokens":10}}}}
+EOF"#
+    )
+}
+
+/// The events inside side chat `side`, as it published them.
+fn inside(events: &[Event], side: u64) -> Vec<Event> {
+    events.iter().filter_map(|e| if let Event::SideChat { side: s, event, .. } = e { (*s == side).then(|| (**event).clone()) } else { None }).collect()
+}
+
+fn side_turn_ended(e: &Event) -> bool {
+    matches!(e, Event::SideChat { event, .. } if matches!(**event, Event::TurnEnded { .. }))
+}
+
+#[tokio::test]
+async fn a_side_chat_forks_the_members_conversation_read_only_and_never_adds_to_it() {
+    let cwd = scratch("cwd");
+    let (claude, recorded) = recording_claude(&forking("ok"));
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(Config { equipe_binary: Some("/opt/equipe".into()), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 2, member(&cwd, "frontend")).await;
+    handle.send(Command::Submit { session: 2, text: "fix the header".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let before = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 2).unwrap();
+
+    handle.send(Command::StartSideChat { session: 2, side: 77, passage: "the header is fixed".into() });
+    let opened = until(&mut events, |e| matches!(e, Event::SideChatOpened { .. })).await;
+    assert!(matches!(opened.last(), Some(Event::SideChatOpened { session: 2, side: 77, search: true, squad: Some(s) }) if s == "acme"), "{opened:?}");
+    handle.send(Command::SideChatSubmit { session: 2, side: 77, passage: "the header is fixed".into(), text: "why?".into() });
+    let seen = until(&mut events, side_turn_ended).await;
+    // Its words travel inside it, never as the member's.
+    assert!(!seen.iter().any(|e| e.session() == Some(2)), "nothing of it in the member's conversation: {seen:#?}");
+    let said = inside(&seen, 77);
+    assert!(matches!(&said[0], Event::UserMessage { session: 77, text } if text == "why?"), "{said:?}");
+    assert!(said.iter().any(|e| matches!(e, Event::TextDelta { session: 77, text } if text == "ok")));
+    assert!(matches!(said.last(), Some(Event::TurnEnded { session: 77, outcome: TurnOutcome::Completed, usage: Some(_) })));
+
+    // On the member's engine, from its own session forked, with reading and the web only.
+    let call = latest_call(&recorded, |p| p.contains("[equipe: side chat]")).await;
+    assert_eq!(arg(&call, "--resume"), Some("sess-1"));
+    assert!(call.iter().any(|a| a == "--fork-session"), "the member's session itself never goes on: {call:?}");
+    assert_eq!(arg(&call, "--tools"), Some("Read,Grep,Glob,WebSearch,WebFetch"));
+    assert_eq!(arg(&call, "--permission-mode"), Some("dontAsk"));
+    assert_eq!(arg(&call, "--mcp-config"), Some(r#"{"mcpServers":{}}"#), "no board");
+    assert!(call.iter().any(|a| a == "--strict-mcp-config"));
+    assert!(!call.iter().any(|a| a.contains("mcp__equipe") || a == "--append-system-prompt" || a == "--plugin-dir" || a == "--permission-prompt-tool"), "{call:?}");
+    assert!(arg(&call, "--settings").is_some_and(|s| s.contains("/opt/equipe hook --side-chat")), "equipe's guard on every call");
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("> the header is fixed") && prompt.ends_with("why?"), "{prompt}");
+
+    // Its next message goes on in the fork, as only what the person said.
+    handle.send(Command::SideChatSubmit { session: 2, side: 77, passage: "the header is fixed".into(), text: "and then?".into() });
+    until(&mut events, side_turn_ended).await;
+    let call = latest_call(&recorded, |p| p == "and then?").await;
+    assert_eq!(arg(&call, "--resume"), Some("fork-1"));
+    assert!(!call.iter().any(|a| a == "--fork-session"));
+
+    // The member's conversation is as it was, and its next turn its own session's.
+    let after = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 2).unwrap();
+    assert_eq!(after.recent, before.recent, "the side chat added nothing to it");
+    assert_eq!(after.tokens, before.tokens + 2 * 40, "what it used counts toward the member's");
+    handle.send(Command::Submit { session: 2, text: "next".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let call = latest_call(&recorded, |p| p.contains("next")).await;
+    assert_eq!(arg(&call, "--resume"), Some("sess-1"), "never the fork");
+
+    // Closed, it is let go.
+    handle.send(Command::CloseSideChat { side: 77 });
+    until(&mut events, |e| matches!(e, Event::SideChatClosed { side: 77, .. })).await;
+}
+
+#[tokio::test]
+async fn one_side_chat_a_conversation_and_the_conversation_closing_takes_it() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, &forking("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 2, member(&cwd, "frontend")).await;
+    handle.send(Command::StartSideChat { session: 2, side: 1, passage: "a".into() });
+    until(&mut events, |e| matches!(e, Event::SideChatOpened { side: 1, .. })).await;
+    handle.send(Command::StartSideChat { session: 2, side: 2, passage: "b".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::SideChatOpened { side: 2, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SideChatClosed { side: 1, .. })), "another about it lets the first go");
+    // A member with no conversation yet: a fresh one, told the conversation in short.
+    handle.send(Command::SideChatSubmit { session: 2, side: 2, passage: "b".into(), text: "why?".into() });
+    let said = inside(&until(&mut events, side_turn_ended).await, 2);
+    assert!(said.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "ok")), "{said:?}");
+    handle.send(Command::Close { session: 2 });
+    until(&mut events, |e| matches!(e, Event::SideChatClosed { side: 2, .. })).await;
+}
