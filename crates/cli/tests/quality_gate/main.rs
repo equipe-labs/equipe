@@ -233,9 +233,15 @@ fn record(task: &Task, variant: &Variant, attempt: u32, checks: &[Check], out: &
             mine.add(t.tokens);
         }
     }
-    // No transcripts (Codex): the turns' own usage, as the daemon told it.
-    if out.transcripts.is_empty() {
-        for (session, usage) in &out.state.usage {
+    // Sessions with no transcript (Codex): the turns' own usage, as the
+    // daemon told it — beside the transcripts of any Claude Code run of the
+    // same squad (a critic on the other engine, say).
+    let codex: Vec<SessionId> = out.state.events.iter().filter_map(|(_, e)| match e {
+        Event::SessionStarted { session, engine: Engine::Codex, .. } => Some(*session),
+        _ => None,
+    }).collect();
+    {
+        for (session, usage) in out.state.usage.iter().filter(|(s, _)| out.transcripts.is_empty() || codex.contains(s)) {
             let t = usage.iter().fold(Tokens::default(), |mut t, u| {
                 t.add(Tokens { input: u.input_tokens.unwrap_or(0), cache_read: u.cache_tokens.unwrap_or(0), output: u.output_tokens.unwrap_or(0), cache_write: 0 });
                 t
@@ -837,6 +843,27 @@ fn on_codex_the_reviewer_gets_the_pictures_attached_and_its_tokens_from_its_even
     }
     let events = "{\"type\":\"thread.started\"}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":800,\"output_tokens\":150}}\nnot json\n";
     assert_eq!(design_grade::codex_tokens(events), 1350, "input (its cached part included) and output");
+}
+
+#[test]
+fn a_codex_members_tokens_count_beside_a_claude_critics_transcript() {
+    use equipe_core::protocol::{Ticket, Usage};
+    let ticket: Ticket = serde_json::from_value(json!({
+        "id": 1, "title": "x", "body": "", "status": "review", "kind": "task", "owner": null, "assignee": "designer",
+        "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": null,
+    }))
+    .unwrap();
+    let mut out = outcome_with(&scratch("codex-tokens"), ticket);
+    out.state.sessions.insert("designer".into(), 7);
+    let started: Event = serde_json::from_value(json!({ "type": "session_started", "session": 7, "engine": "codex", "project": "/p", "model": null, "workspace": null })).unwrap();
+    assert!(matches!(started, Event::SessionStarted { engine: Engine::Codex, .. }), "a Codex session's start: {started:?}");
+    out.state.events.push((0.0, started));
+    out.state.usage.insert(7, vec![Usage { input_tokens: Some(400), cache_tokens: Some(1000), output_tokens: Some(100), ..Default::default() }]);
+    let critic = quality::Transcript { tokens: Tokens { input: 10, cache_write: 0, cache_read: 20, output: 5 }, ..Default::default() };
+    out.transcripts.push(critic);
+    let rec = record(&task("designer-empty-state"), &Variant { name: "B".into(), binary: PathBuf::new() }, 1, &[], &out, None);
+    assert_eq!(rec.tokens_all.total, 1500 + 35, "the member on Codex and the critic on Claude");
+    assert_eq!(rec.tokens.total, 1500);
 }
 
 #[test]
