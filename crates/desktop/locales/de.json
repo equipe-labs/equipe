@@ -1894,7 +1894,7 @@
   "settings.mode_ask": "Mich fragen",
   "settings.mode_ask_desc": "Fragt dich vor jeder Änderung und jedem Befehl",
   "settings.mode_auto": "Automatisch",
-  "settings.mode_auto_desc": "Ändert, installiert und testet allein in seinem Worktree; fragt vor Netzwerk, Pushes oder deinen Konten",
+  "settings.mode_auto_desc": "Bearbeitet, installiert, baut und testet selbst, in der Sandbox seines Worktrees; fragt vor allem darüber hinaus (Netzwerk, Pushes, deine Konten)",
   "settings.mode_follows": "Wie der Squad",
   "settings.mode_foot": "⌘⇧M ändert ihn auch im Eingabefeld.",
   "settings.mode_full": "Vollzugriff",

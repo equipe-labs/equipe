@@ -1840,7 +1840,7 @@
   "settings.mode_ask": "매번 묻기",
   "settings.mode_ask_desc": "모든 수정과 명령을 하기 전에 당신에게 물어요",
   "settings.mode_auto": "자동",
-  "settings.mode_auto_desc": "작업 공간 안에서 혼자 고치고 설치하고 테스트해요. 네트워크, 푸시, 당신의 계정은 물어요",
+  "settings.mode_auto_desc": "자기 워크트리 샌드박스 안에서 편집·설치·빌드·테스트를 스스로 하고, 그 밖의 일(네트워크, 푸시, 내 계정)은 먼저 물어봐요",
   "settings.mode_follows": "스쿼드 따름",
   "settings.mode_foot": "⌘⇧M으로 입력창에서도 바꿀 수 있어요.",
   "settings.mode_full": "전체 권한",

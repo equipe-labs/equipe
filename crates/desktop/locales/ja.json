@@ -1840,7 +1840,7 @@
   "settings.mode_ask": "毎回確認",
   "settings.mode_ask_desc": "すべての編集とコマンドの前にあなたに確認します",
   "settings.mode_auto": "自動",
-  "settings.mode_auto_desc": "作業ツリー内で単独で編集・インストール・テストします。ネットワーク、プッシュ、あなたのアカウントは確認します",
+  "settings.mode_auto_desc": "自分のワークツリーのサンドボックス内で編集・インストール・ビルド・テストを自分で行い、それ以外（ネットワーク、プッシュ、あなたのアカウント）は先に確認する",
   "settings.mode_follows": "スクワッドに従う",
   "settings.mode_foot": "⌘⇧M で入力欄からも変更できます。",
   "settings.mode_full": "フルアクセス",

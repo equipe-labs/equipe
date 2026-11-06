@@ -1894,7 +1894,7 @@
   "settings.mode_ask": "Ask me",
   "settings.mode_ask_desc": "Asks you before every edit and every command",
   "settings.mode_auto": "Auto",
-  "settings.mode_auto_desc": "Edits, installs and tests on its own inside its worktree; asks before network, pushes or your accounts",
+  "settings.mode_auto_desc": "Edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond (network, pushes, your accounts)",
   "settings.mode_follows": "Squad's",
   "settings.mode_foot": "⌘⇧M changes it from the composer too.",
   "settings.mode_full": "Full access",

@@ -1894,7 +1894,7 @@
   "settings.mode_ask": "Me demander",
   "settings.mode_ask_desc": "Vous demande avant chaque modification et chaque commande",
   "settings.mode_auto": "Auto",
-  "settings.mode_auto_desc": "Modifie, installe et teste seul dans son worktree ; demande avant le réseau, les push ou vos comptes",
+  "settings.mode_auto_desc": "Modifie, installe, compile et teste seul, dans le bac à sable de son worktree ; demande avant tout le reste (réseau, push, vos comptes)",
   "settings.mode_follows": "Celui de l'équipe",
   "settings.mode_foot": "⌘⇧M le change aussi depuis la zone de saisie.",
   "settings.mode_full": "Accès complet",

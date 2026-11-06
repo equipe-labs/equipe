@@ -1840,7 +1840,7 @@
   "settings.mode_ask": "每次詢問",
   "settings.mode_ask_desc": "每次編輯和每條指令前都會問你",
   "settings.mode_auto": "自動",
-  "settings.mode_auto_desc": "在自己的工作區內自行編輯、安裝和測試；涉及網路、推送或你的帳號時會先問",
+  "settings.mode_auto_desc": "在自己工作樹的沙盒裡自行編輯、安裝、建置和測試；超出範圍的事（網路、推送、你的帳號）先詢問",
   "settings.mode_follows": "跟隨小隊",
   "settings.mode_foot": "也可以在輸入框中用 ⌘⇧M 切換。",
   "settings.mode_full": "完全權限",
