@@ -295,7 +295,7 @@ async fn a_widening_setting_by_words_is_read_back_counted_down_and_a_phones_voic
     let handle2 = handle.clone();
     let asking = tokio::spawn(async move { tool(&handle2, "pm", "change_setting", json!({ "setting": "mode", "member": "frontend", "value": "full", "why": "go faster" })).await });
     until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
-    // Off: "승인" is only words for the PM; the request waits on its card.
+    // Off: "승인" (Korean for "approve") is only words for the PM; the request waits on its card.
     handle.send(say("승인", false));
     let after = within(&mut events, 1_000).await;
     assert!(!after.iter().any(|e| matches!(e, Event::WordsLive { .. } | Event::ModeChanged { .. })), "{after:#?}");

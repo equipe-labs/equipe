@@ -526,7 +526,7 @@ pub fn says_no(text: &str) -> bool {
 }
 
 /// How a read-back's answer reads: a clear yes — only yes words, and the
-/// few that go with one ("yes please", "응 해", "ok go") — a no (any
+/// few that go with one ("yes please", "ok go") — a no (any
 /// negation), or neither. A question is never a yes.
 pub fn reply(text: &str) -> Reply {
     let words = own_words(text);
@@ -556,7 +556,7 @@ pub fn stops(text: &str) -> bool {
     !words.is_empty() && (says_no(&words) || any(&words, "match.cancel") || any(&words, "match.undo"))
 }
 
-/// The number the person picked, choosing among `count`: `2`, `#2`, `2번`,
+/// The number the person picked, choosing among `count`: `2`, `#2`, or the number with a counter word,
 /// `2番`, `2号` — alone, or with a yes word.
 pub fn picked(text: &str, count: usize) -> Option<usize> {
     let words = own_words(text);
