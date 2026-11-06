@@ -7,8 +7,8 @@
 //!   around it.
 //! - Emphasis written against Korean, Chinese or Japanese closes as written.
 //!   CommonMark won't close `**` that follows punctuation and is followed by
-//!   a letter, so Korean `**T-114(…)**를` showed its asterisks; the same holds for
-//!   Korean `은**(…)` opening. Where the asterisks (or tildes) stayed literal for that
+//!   a letter, so a Korean or Japanese particle after `**T-114(…)**` (`**T-114(…)**の`)
+//!   showed its asterisks; the same holds for an opening `**(` after a letter. Where the asterisks (or tildes) stayed literal for that
 //!   reason alone, the pair is written as `<strong>`/`<em>`/`<del>`, which the
 //!   text view draws the same. Elsewhere — English, code — CommonMark's rule
 //!   stands.
@@ -220,8 +220,8 @@ const MARK: char = '\u{200B}';
 const MARK_LEN: usize = MARK.len_utf8();
 
 /// Emphasis, strikethrough and bold that CommonMark leaves open next to
-/// Korean, Chinese or Japanese, closed. A closing `)**를` (or opening
-/// Korean `은**(`) is retried with a zero-width space between the delimiter and the
+/// Korean, Chinese or Japanese, closed. A closing `)**` with a letter after it (or an
+/// opening `**(` after one) is retried with a zero-width space between the delimiter and the
 /// punctuation, which lets it close (open); a pair that forms only so is
 /// written as HTML tags, and the spaces go again. Repeated, for emphasis
 /// inside emphasis.

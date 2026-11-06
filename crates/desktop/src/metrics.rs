@@ -112,7 +112,7 @@ pub fn month_day(day: &str) -> Option<(u32, u32)> {
     ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((month, day))
 }
 
-/// A day in words, in the person's language order (`Nov 2`, Korean `11월 2일`).
+/// A day in words, in the person's language order (`Nov 2`, Japanese `11月2日`).
 pub fn day_words(day: &str) -> String {
     match month_day(day) {
         Some((month, day)) => equipe_core::t!("metrics.date", month = month, day = day),

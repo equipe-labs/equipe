@@ -42,7 +42,7 @@ pub fn on_device(locale: &str) -> bool {
     }
 }
 
-/// What was said in the recording at `path`, in `locale` ("ko-KR"). Blocks
+/// What was said in the recording at `path`, in `locale` ("fr-FR"). Blocks
 /// until the recognizer is through: call it off the main thread.
 /// With `servers`, Apple's servers may recognize it too (the person agreed).
 pub fn transcribe(path: &Path, locale: &str, length: Option<f64>, servers: bool) -> Result<String, Failure> {

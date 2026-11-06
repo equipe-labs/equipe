@@ -2281,7 +2281,7 @@ impl BrowserPanel {
     }
 
 
-    /// Compose each of `steps` in turn (Korean IME: `ㅎ`, `하`, `한`), then commit the last.
+    /// Compose each of `steps` in turn (an IME building a character in steps), then commit the last.
     pub fn compose(&mut self, steps: &[&str], window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         for step in steps {

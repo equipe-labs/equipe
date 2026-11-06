@@ -156,7 +156,7 @@ pub struct Remember<'a> {
 }
 
 /// A fact's file name: its name, lowercased, with anything that isn't a letter
-/// or a digit made a dash. Korean names stay Korean.
+/// or a digit made a dash. A name in any script stays in it.
 pub fn slug(name: &str) -> String {
     let dashed: String = name.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
     let slug = dashed.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");

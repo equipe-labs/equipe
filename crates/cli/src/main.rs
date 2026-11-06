@@ -268,7 +268,7 @@ enum Command {
     /// Update equipe to the latest release
     Update,
     /// Show the language equipe speaks to you, or pick one for every screen:
-    /// ko, en, ja, zh-Hans, zh-Hant, es, fr, de — or auto, the system's
+    /// en, de, es, fr, ja, ko, zh-Hans, zh-Hant — or auto, the system's
     Lang {
         /// A language's code, or `auto`
         lang: Option<String>,

@@ -508,7 +508,7 @@ pub fn invented_claim(text: &str) -> Option<String> {
     None
 }
 
-/// A figure a claim is made of — `10,000+`, `2m`, `99.9%`, `4.9/5`, Korean `1,000명` —
+/// A figure a claim is made of — `10,000+`, `2m`, `99.9%`, `4.9/5`, a counter word written onto it (`1,000人`) —
 /// and whether it is rounded (`+`, `k`, `m`, `b`).
 fn figure(w: &str) -> Option<bool> {
     let w = w.trim_matches(|c: char| matches!(c, '(' | ')' | ',' | '.' | '!' | '“' | '"' | '”'));

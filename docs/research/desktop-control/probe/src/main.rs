@@ -565,7 +565,7 @@ fn run(dir: &Path) {
         return;
     }
 
-    let typed = "hello from equipe probe 안녕하세요";
+    let typed = "hello from equipe probe こんにちは";
     type_text(typed);
     println!("type           {typed:?}");
     std::thread::sleep(Duration::from_millis(500));
