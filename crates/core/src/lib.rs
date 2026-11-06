@@ -40,6 +40,7 @@ pub mod looks;
 pub mod mcp;
 pub mod metrics;
 pub mod permissions;
+pub mod phone;
 pub mod plan;
 pub mod quality;
 pub mod mock;
