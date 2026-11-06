@@ -1109,6 +1109,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             work: None,
             mode: None,

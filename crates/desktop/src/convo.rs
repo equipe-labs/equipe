@@ -43,6 +43,11 @@ pub struct Sub {
     pub entries: Vec<Entry>,
     /// How it ended, once it has.
     pub ended: Option<SubEnd>,
+    /// It looks stuck: unheard from since then, as the daemon watches it
+    /// ([`Event::SubagentStuck`]).
+    pub stuck: Option<Instant>,
+    /// The person asked to stop it; it hasn't ended yet.
+    pub stopping: bool,
 }
 
 /// How a subagent ended.
@@ -60,7 +65,7 @@ pub struct SubEnd {
 
 impl Sub {
     pub fn new(id: String, what: String, brief: String, since: Instant) -> Self {
-        Self { id, what, step: None, since, brief, entries: Vec::new(), ended: None }
+        Self { id, what, step: None, since, brief, entries: Vec::new(), ended: None, stuck: None, stopping: false }
     }
 
     /// One more step done, or words: the oldest go past [`SUB_KEPT`].
@@ -185,7 +190,7 @@ impl Convo {
         let work_base = info.work.as_ref().map(|w| w.workspace.as_ref().map_or_else(|| w.project.clone(), |ws| ws.path.clone()));
         let mut convo = Self::new(work_base.unwrap_or_else(|| info.project.clone()), info.member.as_ref().is_some_and(|m| m.role == "pm"));
         convo.desk = info.project.clone();
-        convo.transcript = Transcript::from_entries(info.recent.clone());
+        convo.transcript = Transcript::with_times(info.recent.clone(), info.recent_at.clone());
         convo.queue = crate::queue::Queue::from_info(info);
         convo.subagents = info
             .subagents
@@ -193,6 +198,7 @@ impl Convo {
             .map(|s| Sub {
                 step: s.step.clone(),
                 entries: s.entries.clone(),
+                stuck: s.stuck_secs.map(|quiet| now.checked_sub(Duration::from_secs(quiet)).unwrap_or(now)),
                 ..Sub::new(s.id.clone(), s.what.clone(), s.brief.clone(), now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now))
             })
             .collect();
@@ -288,6 +294,11 @@ impl Convo {
                     sub.keep(entry.clone());
                 }
             }
+            Event::SubagentStuck { id, quiet_secs, .. } => {
+                if let Some(sub) = self.subagents.iter_mut().find(|s| s.id == *id) {
+                    sub.stuck = quiet_secs.map(|quiet| now.checked_sub(Duration::from_secs(quiet)).unwrap_or(now));
+                }
+            }
             Event::SubagentEnded { id, result, failed, .. } => {
                 if let Some(at) = self.subagents.iter().position(|s| s.id == *id) {
                     let mut sub = self.subagents.remove(at);
@@ -347,6 +358,11 @@ impl Convo {
         self.subagents.iter().chain(&self.finished).find(|s| s.id == id)
     }
 
+    /// A subagent of this conversation's at work, by id, to change.
+    pub fn subagent_mut(&mut self, id: &str) -> Option<&mut Sub> {
+        self.subagents.iter_mut().find(|s| s.id == id)
+    }
+
     /// The reasoning in progress, finished: a line saying how long it took,
     /// which opens to what it was.
     fn end_thinking(&mut self, now: Instant) {
@@ -403,15 +419,16 @@ impl Convo {
     pub fn take_back(&mut self, project: Option<String>, lane: &Convo) {
         let back = self.current_thread().map(str::to_owned);
         self.transcript.push_local(Entry::Thread { project });
-        for entry in lane.transcript.entries() {
-            self.transcript.push_local(entry.clone());
+        for (entry, at) in lane.transcript.entries().iter().zip(lane.transcript.times()) {
+            self.transcript.push_local_at(entry.clone(), *at);
         }
         self.transcript.push_local(Entry::Thread { project: back });
     }
 
     /// Start a lane's conversation with what the member said about its project.
     pub fn open_lane(&mut self, main: &Convo) {
-        self.transcript = Transcript::from_entries(main.shown().into_iter().map(Cow::into_owned).collect());
+        let (lines, times) = main.shown_rows().into_iter().map(|(entry, _, at)| (entry.into_owned(), at)).unzip();
+        self.transcript = Transcript::with_times(lines, times);
         self.lane = true;
     }
 
@@ -435,12 +452,17 @@ impl Convo {
     /// The same, each line with the project it is about (`None`: the whole
     /// squad; see `transcript::scope`).
     pub fn shown_about(&self) -> Vec<(Cow<'_, Entry>, Option<String>)> {
+        self.shown_rows().into_iter().map(|(entry, about, _)| (entry, about)).collect()
+    }
+
+    /// The same, each line with when it was said too, if known.
+    fn shown_rows(&self) -> Vec<(Cow<'_, Entry>, Option<String>, Option<u64>)> {
         let entries = self.transcript.entries();
         let mut about = scope::of(entries).into_iter();
         let mut out = Vec::new();
         // The ticket whose work the lines are, while they are.
         let mut on: Option<TicketId> = None;
-        for entry in entries {
+        for (ix, entry) in entries.iter().enumerate() {
             let here = about.next().flatten();
             match entry {
                 Entry::Thread { .. } => {
@@ -457,7 +479,7 @@ impl Convo {
                 None => on.is_none() || !self.is_pm,
             };
             if keep {
-                out.push((Cow::Borrowed(entry), here));
+                out.push((Cow::Borrowed(entry), here, self.transcript.at(ix)));
             }
         }
         out
@@ -466,10 +488,21 @@ impl Convo {
     /// The blocks the conversation is drawn as: one per message, reply, run of
     /// steps, note — then what waits for it, as the person said it.
     pub fn blocks(&self) -> Vec<Block> {
-        let mut blocks = build_blocks(&self.shown(), &self.base);
+        self.blocks_at().0
+    }
+
+    /// The same, with when each block was said, one per block (`None`: not
+    /// known, or not something said).
+    pub fn blocks_at(&self) -> (Vec<Block>, Vec<Option<u64>>) {
+        let (lines, times): (Vec<_>, Vec<_>) = self.shown_rows().into_iter().map(|(entry, _, at)| (entry, at)).unzip();
+        let (mut blocks, mut at) = build_blocks_at(&lines, &times, &self.base);
         self.finish(&mut blocks, true);
-        blocks.extend(self.queue.items().iter().map(Block::pending));
-        blocks
+        at.resize(blocks.len(), None);
+        for item in self.queue.items() {
+            blocks.push(Block::pending(item));
+            at.push((item.at > 0).then_some(item.at));
+        }
+        (blocks, at)
     }
 
     /// The thoughts' words in place; while it works, the reply streaming and
@@ -539,10 +572,10 @@ impl Convo {
     /// block with the project it is about. Any other conversation shows whole.
     pub fn sliced(&self, slice: Option<&str>) -> Sliced {
         if !self.sliceable() {
-            let blocks = self.blocks();
-            return Sliced { about: vec![None; blocks.len()], blocks };
+            let (blocks, at) = self.blocks_at();
+            return Sliced { about: vec![None; blocks.len()], blocks, at };
         }
-        let lines = self.shown_about();
+        let lines = self.shown_rows();
         let here = |about: &Option<String>| slice.is_none_or(|project| about.as_deref().is_none_or(|a| a == project));
         let mut out = Sliced::default();
         // A block per run of lines about one project, so each says which.
@@ -551,10 +584,12 @@ impl Convo {
             let about = lines[at].1.clone();
             let end = (at..lines.len()).find(|&i| lines[i].1 != about).unwrap_or(lines.len());
             if here(&about) {
-                let run: Vec<Cow<'_, Entry>> = lines[at..end].iter().map(|(e, _)| Cow::Borrowed(e.as_ref())).collect();
-                let blocks = build_blocks(&run, &self.base);
+                let run: Vec<Cow<'_, Entry>> = lines[at..end].iter().map(|(e, ..)| Cow::Borrowed(e.as_ref())).collect();
+                let times: Vec<Option<u64>> = lines[at..end].iter().map(|(.., said)| *said).collect();
+                let (blocks, said) = build_blocks_at(&run, &times, &self.base);
                 out.about.extend(std::iter::repeat_n(about, blocks.len()));
                 out.blocks.extend(blocks);
+                out.at.extend(said);
             }
             at = end;
         }
@@ -566,14 +601,16 @@ impl Convo {
                 named = true;
             }
         }
-        let end_shown = lines.last().is_none_or(|(_, about)| here(about));
+        let end_shown = lines.last().is_none_or(|(_, about, _)| here(about));
         let before = out.blocks.len();
         self.finish(&mut out.blocks, end_shown);
         out.about.extend(std::iter::repeat_n(slice.map(str::to_owned), out.blocks.len() - before));
+        out.at.resize(out.blocks.len(), None);
         // What waits shows below the conversation it goes into, as sent messages do.
         for item in self.queue.items().iter().filter(|item| here(&item.project)) {
             out.blocks.push(Block::pending(item));
             out.about.push(item.project.clone());
+            out.at.push((item.at > 0).then_some(item.at));
         }
         out
     }
@@ -594,6 +631,9 @@ pub struct Sliced {
     pub blocks: Vec<Block>,
     /// What each block is about (`None`: the whole squad, or not said).
     pub about: Vec<Option<String>>,
+    /// When each block was said, in unix seconds (`None`: not known, or not
+    /// something said).
+    pub at: Vec<Option<u64>>,
 }
 
 /// `1m 05s`, `42s`, `1h 02m` — how long something has been going.
@@ -810,10 +850,23 @@ fn worked_of(text: &str) -> Option<Worked> {
 /// lines, a failed call on its own), news into runs, a turn's end onto the
 /// reply that ended it; everything else one to one.
 pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
+    build_blocks_at(entries, &[], base).0
+}
+
+/// The same, with when each block was said: the time of the line that made
+/// it (`times`, one per entry; one missing is not known).
+pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: &Path) -> (Vec<Block>, Vec<Option<u64>>) {
     let mut blocks: Vec<Block> = Vec::new();
+    let mut at: Vec<Option<u64>> = Vec::new();
+    // When the line before was said: what its blocks were said at.
+    let mut said: Option<u64> = None;
     let mut run: Vec<ToolLine> = Vec::new();
+    // When the run of steps began.
+    let mut run_at: Option<u64> = None;
     let mut replied = false;
-    for entry in entries {
+    for (ix, entry) in entries.iter().enumerate() {
+        at.resize(blocks.len(), said);
+        said = times.get(ix).copied().flatten();
         let entry = entry.as_ref();
         // A design check or a second look that ran to its end: its own card.
         if let Entry::Tool { tool, target: Some(target), outcome: Some(o), .. } = entry
@@ -821,6 +874,7 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
         {
             if !run.is_empty() {
                 blocks.extend(crate::activity::groups(std::mem::take(&mut run)).into_iter().map(Block::Steps));
+                at.resize(blocks.len(), run_at);
             }
             blocks.push(match ran {
                 crate::checks::Ran::Check(summary) => Block::DesignCheck(summary),
@@ -877,6 +931,9 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                         if line.path.is_none() && !shown.is_empty() {
                             line.full = Some(shown);
                         }
+                        if run.is_empty() {
+                            run_at = said;
+                        }
                         run.push(line);
                     }
                 }
@@ -886,6 +943,7 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
         }
         if !run.is_empty() {
             blocks.extend(crate::activity::groups(std::mem::take(&mut run)).into_iter().map(Block::Steps));
+            at.resize(blocks.len(), run_at);
         }
         match entry {
             // What equipe once told a member as if the person had said it (its
@@ -938,10 +996,12 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
             Entry::Tool { .. } | Entry::Thread { .. } => {}
         }
     }
+    at.resize(blocks.len(), said);
     if !run.is_empty() {
         blocks.extend(crate::activity::groups(run).into_iter().map(Block::Steps));
     }
-    blocks
+    at.resize(blocks.len(), run_at);
+    (blocks, at)
 }
 
 /// The conversation's hand-over rows brought up to date: each member's
@@ -1715,6 +1775,28 @@ mod tests {
     }
 
     #[test]
+    fn a_subagent_looks_stuck_as_the_daemon_says_and_moves_again() {
+        let mut c = convo(false);
+        let start = Instant::now();
+        c.on_event(&Event::SubagentStarted { session: 1, id: "h1".into(), what: "look".into(), brief: String::new() }, start, T);
+        let later = start + Duration::from_secs(400);
+        c.on_event(&Event::SubagentStuck { session: 1, id: "h1".into(), quiet_secs: Some(330) }, later, T);
+        assert_eq!(c.subagents[0].stuck, Some(later - Duration::from_secs(330)), "quiet since then");
+        c.subagent_mut("h1").unwrap().stopping = true;
+        c.on_event(&Event::SubagentStuck { session: 1, id: "h1".into(), quiet_secs: None }, later, T);
+        assert_eq!(c.subagents[0].stuck, None);
+        // Attached mid-way: it still looks stuck.
+        let info: SessionInfo = serde_json::from_value(serde_json::json!({
+            "session": 2, "project": "/p", "member": {"role": "backend", "name": "backend"}, "engine": "codex", "model": null,
+            "access": "read_only", "workspace": null, "state": "working", "title": null, "tokens": 0, "recent": [],
+            "subagents": [{"id": "h2", "what": "Read the logs", "secs": 400, "stuck_secs": 320}]
+        }))
+        .unwrap();
+        let now = Instant::now();
+        assert_eq!(Convo::from_info(&info, now).subagents[0].stuck, Some(now - Duration::from_secs(320)));
+    }
+
+    #[test]
     fn attaching_mid_turn_lists_the_subagents_at_work_with_their_clocks() {
         let info: SessionInfo = serde_json::from_value(serde_json::json!({
             "session": 2, "project": "/p", "member": {"role": "frontend", "name": "frontend"}, "engine": "claude", "model": null,
@@ -1880,6 +1962,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],
@@ -1897,6 +1980,128 @@ mod tests {
         let c = Convo::from_info(&info, Instant::now());
         assert!(c.compacting_for().unwrap() >= Duration::from_secs(30));
         assert!(matches!(c.compact, Some(Compact::Running { manual: false, .. })));
+    }
+
+    mod said_at {
+        use super::*;
+
+        fn info(recent: Vec<Entry>, recent_at: Vec<Option<u64>>, pm: bool) -> SessionInfo {
+            SessionInfo {
+                session: 1,
+                project: "/work/site".into(),
+                member: Some(equipe_core::protocol::Member { role: if pm { "pm" } else { "frontend" }.into(), name: "pm".into() }),
+                engine: equipe_core::protocol::Engine::Claude,
+                model: None,
+                asked_model: None,
+                access: equipe_core::protocol::Access::EditFiles,
+                workspace: None,
+                state: SessionState::Ready,
+                title: None,
+                tokens: 0,
+                context: None,
+                recent,
+                recent_at,
+                queued: vec![],
+                queued_project: None,
+                queued_in: vec![],
+                steering: vec![],
+                steering_in: vec![],
+                lane: None,
+                estimate: None,
+                work: None,
+                mode: None,
+                effort: None,
+                subagents: vec![],
+                compacting: None,
+                visuals: Vec::new(),
+            }
+        }
+
+        /// Each block of what shows, with when it was said.
+        fn said(c: &Convo, slice: Option<&str>) -> Vec<(String, Option<u64>)> {
+            let shown = c.sliced(slice);
+            assert_eq!(shown.at.len(), shown.blocks.len(), "a time for every block");
+            shown
+                .blocks
+                .iter()
+                .zip(&shown.at)
+                .map(|(b, at)| {
+                    let what = match b {
+                        Block::User(t) => format!("user: {t}"),
+                        Block::Reply { text, .. } => format!("reply: {text}"),
+                        Block::Steps(_) => "steps".into(),
+                        Block::Pending { text, .. } => format!("waiting: {text}"),
+                        other => format!("{other:?}"),
+                    };
+                    (what, *at)
+                })
+                .collect()
+        }
+
+        #[test]
+        fn attached_each_message_and_reply_shows_when_it_was_said() {
+            let recent = vec![
+                Entry::Thread { project: Some("app".into()) },
+                Entry::User { text: "fix the header".into() },
+                tool_entry(),
+                Entry::Reply { text: "Fixed.".into() },
+                Entry::Thread { project: Some("web".into()) },
+                Entry::User { text: "and the footer".into() },
+                Entry::Reply { text: "On it.".into() },
+            ];
+            let times = vec![None, Some(100), Some(110), Some(130), None, Some(200), Some(260)];
+            for pm in [false, true] {
+                let c = Convo::from_info(&info(recent.clone(), times.clone(), pm), Instant::now());
+                let all = [("user: fix the header".to_owned(), Some(100)), ("steps".into(), Some(110)), ("reply: Fixed.".into(), Some(130)), ("user: and the footer".into(), Some(200)), ("reply: On it.".into(), Some(260))];
+                assert_eq!(said(&c, None), all, "pm: {pm}");
+            }
+            // A project's slice: its own lines, with theirs.
+            let pm = Convo::from_info(&info(recent, times, true), Instant::now());
+            assert_eq!(said(&pm, Some("web")), [("user: and the footer".to_owned(), Some(200)), ("reply: On it.".into(), Some(260))]);
+        }
+
+        #[test]
+        fn an_older_daemon_sends_no_times_and_none_show() {
+            let c = Convo::from_info(&info(vec![Entry::User { text: "hi".into() }, Entry::Reply { text: "hello".into() }], Vec::new(), false), Instant::now());
+            assert_eq!(said(&c, None), [("user: hi".to_owned(), None), ("reply: hello".into(), None)]);
+        }
+
+        #[test]
+        fn watched_live_a_message_is_said_when_it_came_and_a_reply_when_it_was_done() {
+            let mut c = convo(false);
+            let before = crate::state::now_unix();
+            feed(&mut c, &[Event::UserMessage { session: 1, text: "hi".into() }, Event::TextDelta { session: 1, text: "Hel".into() }]);
+            let streaming = said(&c, None);
+            assert!(streaming[0].1.is_some_and(|at| at >= before), "{streaming:?}");
+            assert_eq!(streaming[1], ("reply: Hel".to_owned(), None), "still streaming: no time yet");
+            feed(&mut c, &[Event::TextDelta { session: 1, text: "lo".into() }, Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
+            let done = said(&c, None);
+            assert_eq!(done[1].0, "reply: Hello");
+            assert!(done[1].1.is_some_and(|at| at >= before && at <= crate::state::now_unix()), "{done:?}");
+        }
+
+        #[test]
+        fn what_waits_shows_when_it_was_said() {
+            let mut c = convo(false);
+            c.queue.memo("later", None, 4_242);
+            assert_eq!(said(&c, None).last(), Some(&("waiting: later".to_owned(), Some(4_242))));
+        }
+
+        #[test]
+        fn a_lane_keeps_the_times_of_what_it_was_started_from_and_gives_them_back() {
+            let recent = vec![Entry::User { text: "a".into() }, Entry::Reply { text: "b".into() }];
+            let main = Convo::from_info(&info(recent, vec![Some(5), Some(9)], false), Instant::now());
+            let mut lane = convo(false);
+            lane.open_lane(&main);
+            assert_eq!(lane.transcript.times(), &[Some(5), Some(9)]);
+            let mut back = convo(false);
+            back.take_back(Some("app".into()), &lane);
+            assert_eq!(said(&back, None), [("user: a".to_owned(), Some(5)), ("reply: b".into(), Some(9))]);
+        }
+
+        fn tool_entry() -> Entry {
+            Entry::Tool { tool: "Read".into(), target: Some("/work/site/a.rs".into()), outcome: None, label: None, background: false }
+        }
     }
 
     #[test]

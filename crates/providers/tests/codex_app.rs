@@ -183,6 +183,37 @@ async fn an_interrupt_stops_the_turn_through_codex() {
 }
 
 #[tokio::test]
+async fn a_subagent_is_stopped_alone_through_its_own_turn_and_the_members_goes_on() {
+    let cwd = scratch("cwd");
+    let log = scratch("log").join("sent.jsonl");
+    let env = [("FAKE_CODEX_LOG".to_owned(), log.to_string_lossy().into_owned())];
+    let request = TurnRequest { prompt: "hand it to a subagent", access: Access::EditFiles, env: &env, ..Default::default() };
+    let (stop_tx, stop_rx) = mpsc::unbounded_channel::<String>();
+    let controls = codex_app::Controls { stop_subagent: Some(stop_rx), ..Default::default() };
+    let mut activities = Vec::new();
+    let turn = tokio::time::timeout(
+        Duration::from_secs(20),
+        codex_app::run_turn_with(&fake(), &cwd, request, controls, |a| {
+            // Heard from: the person stops it.
+            if let Activity::SubagentHeard { id } = &a {
+                let _ = stop_tx.send(id.clone());
+            }
+            activities.push(a);
+        }),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+    assert_eq!((turn.result.status.as_str(), turn.result.text.as_str()), ("completed", "The subagent was interrupted. DONE"), "the member's turn went on");
+    assert!(activities.contains(&Activity::SubagentHeard { id: "thr-sub".into() }), "{activities:?}");
+    assert!(activities.contains(&Activity::SubagentEnded { id: "thr-sub".into(), result: None, failed: false }), "{activities:?}");
+    let log = sent(&log);
+    let interrupts: Vec<&Value> = log.iter().filter(|m| m["method"] == "turn/interrupt").collect();
+    assert_eq!(interrupts.len(), 1, "only the subagent's turn: {interrupts:?}");
+    assert_eq!((interrupts[0]["params"]["threadId"].as_str(), interrupts[0]["params"]["turnId"].as_str()), (Some("thr-sub"), Some("turn-sub")));
+}
+
+#[tokio::test]
 async fn what_the_person_says_mid_turn_steers_it() {
     let (tx, rx) = mpsc::unbounded_channel();
     tx.send("not the footer".to_owned()).unwrap();

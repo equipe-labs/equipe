@@ -30,19 +30,46 @@ const TOOL_LOOKBACK: usize = 64;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Transcript {
     entries: Vec<Entry>,
+    /// When each line was said, in unix seconds, where known — one per entry:
+    /// a message when it came, a reply when it was done (as the journal keeps
+    /// them). `None`: a reply still streaming, or a line from before times
+    /// were kept.
+    times: Vec<Option<u64>>,
     /// The last entry is a reply still streaming.
     open_reply: bool,
 }
 
+/// Now, in unix seconds.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 impl Transcript {
+    /// Lines whose times aren't known (an older daemon's).
     pub fn from_entries(entries: Vec<Entry>) -> Self {
-        let mut t = Self { entries, open_reply: false };
+        Self::with_times(entries, Vec::new())
+    }
+
+    /// Lines with when each was said; a time missing is not known.
+    pub fn with_times(entries: Vec<Entry>, mut times: Vec<Option<u64>>) -> Self {
+        times.resize(entries.len(), None);
+        let mut t = Self { entries, times, open_reply: false };
         t.cap();
         t
     }
 
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// When each line was said, one per entry ([`Transcript::entries`]).
+    pub fn times(&self) -> &[Option<u64>] {
+        &self.times
+    }
+
+    /// When line `ix` was said, if known.
+    pub fn at(&self, ix: usize) -> Option<u64> {
+        self.times.get(ix).copied().flatten()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -52,20 +79,34 @@ impl Transcript {
     /// Add a line only this copy shows — a screen's own help text, say. It is
     /// not an event, so no journal or other screen ever sees it.
     pub fn push_local(&mut self, entry: Entry) {
+        self.push_local_at(entry, None);
+    }
+
+    /// The same, said at `at` (a line moved from another conversation).
+    pub fn push_local_at(&mut self, entry: Entry, at: Option<u64>) {
         self.open_reply = false;
         self.entries.push(entry);
+        self.times.push(at);
         self.cap();
     }
 
-    /// Apply one event. Returns the lines it made final — what a journal stores.
-    /// Streaming text joins the open reply and is final only once a line comes
-    /// after it (a tool use, a message, news, an error) or the turn ends.
+    /// Apply one event, as it comes now. Returns the lines it made final —
+    /// what a journal stores. Streaming text joins the open reply and is final
+    /// only once a line comes after it (a tool use, a message, news, an error)
+    /// or the turn ends.
     pub fn apply(&mut self, event: &Event) -> Vec<Entry> {
+        self.apply_at(event, now_secs())
+    }
+
+    /// The same, the event coming at `now` (unix seconds): the time a line it
+    /// makes final was said.
+    pub fn apply_at(&mut self, event: &Event, now: u64) -> Vec<Entry> {
         if let Event::TextDelta { text, .. } = event {
             match (self.open_reply, self.entries.last_mut()) {
                 (true, Some(Entry::Reply { text: reply })) => reply.push_str(text),
                 _ => {
                     self.entries.push(Entry::Reply { text: text.clone() });
+                    self.times.push(None);
                     self.open_reply = true;
                 }
             }
@@ -124,10 +165,14 @@ impl Transcript {
             self.open_reply = false;
             if let Some(reply) = self.entries.last() {
                 done.push(reply.clone());
+                if let Some(at) = self.times.last_mut() {
+                    *at = Some(now);
+                }
             }
         }
         if let Some(entry) = new {
             self.entries.push(entry.clone());
+            self.times.push(Some(now));
             done.push(entry);
         }
         self.cap();
@@ -138,6 +183,7 @@ impl Transcript {
         if self.entries.len() > IN_MEMORY_LINES {
             let extra = self.entries.len() - IN_MEMORY_LINES;
             self.entries.drain(..extra);
+            self.times.drain(..extra.min(self.times.len()));
         }
     }
 }
@@ -205,14 +251,23 @@ pub mod scope {
     /// where they start: the marker in force there goes first, so a screen
     /// that gets only the latest lines reads them as the daemon does.
     pub fn from(entries: &[Entry], from: usize) -> Vec<Entry> {
+        from_at(entries, &[], from).0
+    }
+
+    /// The same lines, with when each was said (`times`, one per entry; one
+    /// missing is not known) — the marker put first has none.
+    pub fn from_at(entries: &[Entry], times: &[Option<u64>], from: usize) -> (Vec<Entry>, Vec<Option<u64>>) {
         let from = from.min(entries.len());
         let mut out = Vec::with_capacity(entries.len() - from + 1);
+        let mut at = Vec::with_capacity(entries.len() - from + 1);
         let opens_with_marker = entries.get(from).is_some_and(|e| matches!(e, Entry::Thread { .. }));
         if !opens_with_marker && let Some(about) = current(&entries[..from]) {
             out.push(Entry::Thread { project: about });
+            at.push(None);
         }
         out.extend_from_slice(&entries[from..]);
-        out
+        at.extend((from..entries.len()).map(|ix| times.get(ix).copied().flatten()));
+        (out, at)
     }
 
     /// A stretch of the conversation as one project's slice shows it.
@@ -672,5 +727,65 @@ mod tests {
         }
         assert_eq!(t.entries().len(), IN_MEMORY_LINES);
         assert_eq!(t.entries().last(), Some(&Entry::User { text: (IN_MEMORY_LINES + 19).to_string() }));
+        assert_eq!(t.times().len(), IN_MEMORY_LINES, "their times go with them");
+    }
+
+    mod times {
+        use super::*;
+
+        #[test]
+        fn a_message_is_said_when_it_comes_and_a_reply_when_it_ends() {
+            let mut t = Transcript::default();
+            t.apply_at(&Event::UserMessage { session: 1, text: "fix the header".into() }, 1_000);
+            t.apply_at(&delta("On "), 1_005);
+            assert_eq!(t.times(), &[Some(1_000), None], "a reply streaming has no time yet");
+            t.apply_at(&delta("it."), 1_030);
+            t.apply_at(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, 1_042);
+            assert_eq!(t.entries(), &[Entry::User { text: "fix the header".into() }, Entry::Reply { text: "On it.".into() }]);
+            assert_eq!(t.times(), &[Some(1_000), Some(1_042)], "the reply's time is when it was done, as the journal keeps it");
+            assert_eq!(t.at(1), Some(1_042));
+            assert_eq!(t.at(9), None);
+        }
+
+        #[test]
+        fn a_reply_ended_by_a_step_is_done_then() {
+            let mut t = Transcript::default();
+            t.apply_at(&delta("Looking."), 10);
+            t.apply_at(&Event::ToolUse { session: 1, tool: "Read".into(), target: None, label: None, background: false }, 12);
+            assert_eq!(t.times(), &[Some(12), Some(12)]);
+        }
+
+        #[test]
+        fn kept_lines_keep_their_times_and_lines_without_one_have_none() {
+            let entries = vec![Entry::User { text: "a".into() }, Entry::Reply { text: "b".into() }, Entry::User { text: "c".into() }];
+            let t = Transcript::with_times(entries.clone(), vec![Some(5), None]);
+            assert_eq!(t.entries(), &entries[..]);
+            assert_eq!(t.times(), &[Some(5), None, None], "a short list of times: the rest unknown");
+            let old = Transcript::from_entries(entries.clone());
+            assert_eq!(old.times(), &[None, None, None], "an older daemon's lines: no times");
+            let long = Transcript::with_times(entries, vec![Some(1), Some(2), Some(3), Some(4)]);
+            assert_eq!(long.times().len(), 3);
+        }
+
+        #[test]
+        fn a_screens_own_line_can_carry_the_time_it_was_said() {
+            let mut t = Transcript::default();
+            t.push_local(Entry::Note { text: "help".into() });
+            t.push_local_at(Entry::User { text: "taken back".into() }, Some(77));
+            assert_eq!(t.times(), &[None, Some(77)]);
+        }
+
+        #[test]
+        fn the_latest_lines_carry_their_times_and_the_marker_none() {
+            let lines = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "a".into() }, Entry::Reply { text: "b".into() }];
+            let times = vec![Some(1), Some(2), Some(3)];
+            let (recent, at) = scope::from_at(&lines, &times, 2);
+            assert_eq!(recent, scope::from(&lines, 2));
+            assert_eq!(at, vec![None, Some(3)]);
+            let (all, at) = scope::from_at(&lines, &times, 0);
+            assert_eq!((all, at), (lines.clone(), times.clone()));
+            let (_, at) = scope::from_at(&lines, &[], 1);
+            assert_eq!(at, vec![None, None, None], "times not known: none");
+        }
     }
 }

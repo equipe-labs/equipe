@@ -453,6 +453,176 @@ pub fn ago(secs: u64) -> String {
     }
 }
 
+/// When a message was said, as the conversation shows it under it: how long
+/// ago within the hour (`Just now`, `5 minutes ago`), then the hours today,
+/// `Yesterday`, its weekday within the week, then its date — on the person's
+/// clock, in their words.
+pub fn said_when(at: u64, now: u64) -> String {
+    said_label(crate::i18n::catalog(), &SystemZone, at, now)
+}
+
+/// The same moment in full, for its tooltip: `Nov 4, 2026, 12:12 PM`.
+pub fn said_on(at: u64) -> String {
+    let words = crate::i18n::catalog();
+    said_full(words, &SystemZone, Hours::of(words.lang, crate::state::system_hours()), at)
+}
+
+/// When [`said_when`] next reads differently, in unix seconds.
+pub fn said_when_changes(at: u64, now: u64) -> u64 {
+    said_changes(&SystemZone, at, now)
+}
+
+/// A moment as the person's clock reads it where they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Local {
+    pub year: i64,
+    /// 1 to 12.
+    pub month: u32,
+    pub day: u32,
+    /// 0 is Sunday.
+    pub weekday: u32,
+    pub hour: u32,
+    pub minute: u32,
+}
+
+impl Local {
+    /// The date and time `secs` after the epoch reads on a clock at UTC.
+    #[cfg(test)]
+    pub fn of_utc(secs: i64) -> Self {
+        let days = secs.div_euclid(86_400);
+        let of_day = secs.rem_euclid(86_400);
+        // Howard Hinnant's civil_from_days.
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        Self { year, month, day, weekday: (days + 4).rem_euclid(7) as u32, hour: (of_day / 3600) as u32, minute: (of_day % 3600 / 60) as u32 }
+    }
+
+    /// Days from the epoch to its date, whatever its time of day.
+    fn day_number(&self) -> i64 {
+        let y = self.year - i64::from(self.month <= 2);
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let m = i64::from(self.month);
+        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(self.day) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe - 719_468
+    }
+}
+
+/// Where the person is: what a moment reads on their clock, and when their
+/// next day begins.
+pub trait Zone {
+    fn local(&self, unix: u64) -> Local;
+    /// The first second of the day after the one `unix` falls in.
+    fn next_day(&self, unix: u64) -> u64;
+}
+
+/// This Mac's time zone, daylight saving and all.
+pub struct SystemZone;
+
+impl Zone for SystemZone {
+    fn local(&self, unix: u64) -> Local {
+        crate::state::local_time(unix)
+    }
+
+    fn next_day(&self, unix: u64) -> u64 {
+        // A day is 23 to 25 hours long: 25 past its start is in the next.
+        crate::state::local_midnight(crate::state::local_midnight(unix) + 25 * 3600)
+    }
+}
+
+/// How the person's clock tells the hour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hours {
+    /// `12:12 PM`.
+    Twelve,
+    /// `12:12`.
+    TwentyFour,
+}
+
+impl Hours {
+    /// The Mac's clock (`mac`, when it says), else the language's own.
+    pub fn of(lang: Lang, mac: Option<Hours>) -> Self {
+        mac.unwrap_or(match lang {
+            Lang::En | Lang::Ko | Lang::ZhHant => Hours::Twelve,
+            Lang::Ja | Lang::ZhHans | Lang::De | Lang::Fr | Lang::Es => Hours::TwentyFour,
+        })
+    }
+}
+
+/// `text` with its first letter a capital: a label begins as a sentence does.
+fn capitalized(text: String) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) if first.is_lowercase() => first.to_uppercase().chain(chars).collect(),
+        _ => text,
+    }
+}
+
+/// The `n`th of a `|`-separated list of words (months, weekdays).
+fn nth(list: &str, n: u32) -> String {
+    list.split('|').nth(n as usize).unwrap_or_default().to_owned()
+}
+
+/// [`said_when`] in `words`, on `zone`'s clock.
+pub fn said_label(words: &equipe_core::i18n::Catalog, zone: &dyn Zone, at: u64, now: u64) -> String {
+    let age = now.saturating_sub(at);
+    if age < 3600 {
+        let said = if age < 60 { words.get("chat.ago_now").to_owned() } else { words.fill("chat.ago_mins", &[("count", (age / 60).to_string())]) };
+        return capitalized(said);
+    }
+    let (then, today) = (zone.local(at), zone.local(now));
+    match today.day_number() - then.day_number() {
+        ..=0 => capitalized(words.fill("chat.ago_hours", &[("count", (age / 3600).to_string())])),
+        1 => words.get("time.yesterday").to_owned(),
+        2..=6 => nth(words.get("time.weekdays"), then.weekday),
+        _ => date(words, &then, then.year != today.year),
+    }
+}
+
+/// The date of `then`: `Nov 4`, with its year `Nov 4, 2025`.
+fn date(words: &equipe_core::i18n::Catalog, then: &Local, with_year: bool) -> String {
+    let parts = [("month", nth(words.get("time.months"), then.month - 1)), ("day", then.day.to_string()), ("year", then.year.to_string())];
+    equipe_core::i18n::fill(words.get(if with_year { "time.date_year" } else { "time.date" }), &parts)
+}
+
+/// [`said_on`] in `words`, on `zone`'s clock telling the hour as `hours` does.
+pub fn said_full(words: &equipe_core::i18n::Catalog, zone: &dyn Zone, hours: Hours, at: u64) -> String {
+    let then = zone.local(at);
+    let mm = format!("{:02}", then.minute);
+    let time = match hours {
+        Hours::Twelve => {
+            let ampm = words.get(if then.hour < 12 { "time.am" } else { "time.pm" }).to_owned();
+            let h = match then.hour % 12 {
+                0 => 12,
+                h => h,
+            };
+            equipe_core::i18n::fill(words.get("time.clock_12"), &[("h", h.to_string()), ("mm", mm), ("ampm", ampm)])
+        }
+        Hours::TwentyFour => equipe_core::i18n::fill(words.get("time.clock_24"), &[("hh", format!("{:02}", then.hour)), ("mm", mm)]),
+    };
+    equipe_core::i18n::fill(words.get("time.full"), &[("date", date(words, &then, true)), ("time", time)])
+}
+
+/// When [`said_label`] next reads differently: at the next minute within the
+/// hour, the next hour today, else the next midnight (a weekday or a date
+/// may read the same after it — asked again then, once a day).
+pub fn said_changes(zone: &dyn Zone, at: u64, now: u64) -> u64 {
+    let age = now.saturating_sub(at);
+    if age < 3600 {
+        return at + (age / 60 + 1) * 60;
+    }
+    let next_day = zone.next_day(now);
+    if zone.local(at).day_number() == zone.local(now).day_number() { (at + (age / 3600 + 1) * 3600).min(next_day) } else { next_day }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +759,149 @@ mod tests {
         assert_eq!(ago(15 * 60), "15분 전");
         assert_eq!(ago(3 * 3600 + 5), "3시간 전");
         assert_eq!(ago(2 * 86_400), "2일 전");
+    }
+
+    mod said {
+        use super::super::*;
+
+        /// A place `hours` from UTC, all year round.
+        struct Offset(i64);
+
+        impl Zone for Offset {
+            fn local(&self, unix: u64) -> Local {
+                Local::of_utc(unix as i64 + self.0 * 3600)
+            }
+
+            fn next_day(&self, unix: u64) -> u64 {
+                let local = unix as i64 + self.0 * 3600;
+                ((local.div_euclid(86_400) + 1) * 86_400 - self.0 * 3600) as u64
+            }
+        }
+
+        const UTC: Offset = Offset(0);
+        /// Fri 2026-11-06 15:00 UTC.
+        const NOW: u64 = 1_793_977_200;
+        /// Wed 2026-11-04 12:12 UTC.
+        const WED: u64 = 1_793_794_320;
+        /// Thu 2026-11-05 23:59 UTC, and the next day's first second.
+        const LATE: u64 = 1_793_923_140;
+        const MIDNIGHT: u64 = 1_793_923_200;
+
+        fn label(lang: Lang, zone: &dyn Zone, at: u64, now: u64) -> String {
+            said_label(crate::i18n::of(lang), zone, at, now)
+        }
+
+        fn full(lang: Lang, zone: &dyn Zone, hours: Hours, at: u64) -> String {
+            said_full(crate::i18n::of(lang), zone, hours, at)
+        }
+
+        #[test]
+        fn a_message_reads_how_long_ago_today_then_yesterday_then_its_weekday_then_its_date() {
+            let en = |at| label(Lang::En, &UTC, at, NOW);
+            assert_eq!(en(NOW), "Just now");
+            assert_eq!(en(NOW - 59), "Just now");
+            assert_eq!(en(NOW + 30), "Just now", "a clock a little ahead: not in the future");
+            assert_eq!(en(NOW - 60), "1 minute ago");
+            assert_eq!(en(NOW - 5 * 60 - 30), "5 minutes ago");
+            assert_eq!(en(NOW - 3 * 3600), "3 hours ago");
+            assert_eq!(en(MIDNIGHT), "15 hours ago", "today's first second is still today");
+            assert_eq!(en(LATE), "Yesterday", "a minute before midnight is yesterday");
+            assert_eq!(en(WED), "Wednesday");
+            assert_eq!(en(1_793_520_000), "Sunday", "five days back: its weekday");
+            assert_eq!(en(1_793_347_200), "Oct 30", "a week back: its date");
+            assert_eq!(en(1_767_171_900), "Dec 31, 2025", "another year: with it");
+
+            let ko = |at| label(Lang::Ko, &UTC, at, NOW);
+            assert_eq!(ko(NOW - 10), "방금");
+            assert_eq!(ko(NOW - 15 * 60), "15분 전");
+            assert_eq!(ko(NOW - 3 * 3600), "3시간 전");
+            assert_eq!(ko(LATE), "어제");
+            assert_eq!(ko(WED), "수요일");
+            assert_eq!(ko(1_793_347_200), "10월 30일");
+            assert_eq!(ko(1_767_171_900), "2025년 12월 31일");
+        }
+
+        #[test]
+        fn midnight_is_where_the_person_is() {
+            // 23:59 on Thursday in UTC is already Friday morning in Seoul and
+            // still Thursday afternoon in New York.
+            let seoul = Offset(9);
+            let new_york = Offset(-5);
+            let next_morning = MIDNIGHT + 10 * 3600;
+            assert_eq!(label(Lang::En, &UTC, LATE, next_morning), "Yesterday");
+            assert_eq!(label(Lang::En, &seoul, LATE, next_morning), "10 hours ago", "Fri 08:59 and Fri 19:00 in Seoul");
+            assert_eq!(label(Lang::En, &new_york, LATE, next_morning), "Yesterday", "Thu 18:59 and Fri 05:00 there");
+            assert_eq!(label(Lang::En, &new_york, LATE, MIDNIGHT + 4 * 3600), "4 hours ago", "Thu 18:59 and Thu 23:00 there");
+            assert_eq!(full(Lang::En, &seoul, Hours::Twelve, LATE), "Nov 6, 2026, 8:59 AM");
+            assert_eq!(full(Lang::En, &new_york, Hours::Twelve, LATE), "Nov 5, 2026, 6:59 PM");
+        }
+
+        #[test]
+        fn the_label_reads_differently_at_the_next_minute_hour_or_midnight() {
+            assert_eq!(said_changes(&UTC, NOW - 10, NOW), NOW + 50, "just now, for its first minute");
+            assert_eq!(said_changes(&UTC, NOW - 90, NOW), NOW + 30, "1 minute ago until it has been 2");
+            assert_eq!(said_changes(&UTC, NOW - 3 * 3600 - 10, NOW), NOW + 3600 - 10, "3 hours ago until 4");
+            assert_eq!(said_changes(&UTC, NOW - 14 * 3600, NOW), NOW + 3600, "14 hours ago until 15");
+            assert_eq!(said_changes(&UTC, MIDNIGHT + 60, MIDNIGHT + 86_400 - 1_800), MIDNIGHT + 86_400, "23 hours ago becomes yesterday at midnight, not at 24");
+            assert_eq!(said_changes(&UTC, LATE, NOW), MIDNIGHT + 86_400, "yesterday becomes its weekday at midnight");
+            assert_eq!(said_changes(&UTC, 1_767_171_900, NOW), MIDNIGHT + 86_400);
+            // Past each moment it names, it says something else.
+            for at in [NOW - 10, NOW - 90, NOW - 3 * 3600 - 10, NOW - 14 * 3600, LATE] {
+                let next = said_changes(&UTC, at, NOW);
+                assert_eq!(label(Lang::En, &UTC, at, next - 1), label(Lang::En, &UTC, at, NOW), "{at}: the same until then");
+                assert_ne!(label(Lang::En, &UTC, at, next), label(Lang::En, &UTC, at, NOW), "{at}: different from then");
+            }
+        }
+
+        #[test]
+        fn the_full_time_is_in_the_persons_words_and_clock() {
+            let at = WED;
+            let cases = [
+                (Lang::En, Hours::Twelve, "Nov 4, 2026, 12:12 PM"),
+                (Lang::En, Hours::TwentyFour, "Nov 4, 2026, 12:12"),
+                (Lang::Ko, Hours::Twelve, "2026년 11월 4일 오후 12:12"),
+                (Lang::Ko, Hours::TwentyFour, "2026년 11월 4일 12:12"),
+                (Lang::Ja, Hours::TwentyFour, "2026年11月4日 12:12"),
+                (Lang::Ja, Hours::Twelve, "2026年11月4日 午後12:12"),
+                (Lang::ZhHans, Hours::TwentyFour, "2026年11月4日 12:12"),
+                (Lang::ZhHant, Hours::Twelve, "2026年11月4日 下午12:12"),
+                (Lang::De, Hours::TwentyFour, "4. Nov. 2026, 12:12"),
+                (Lang::Fr, Hours::TwentyFour, "4 nov. 2026 à 12:12"),
+                (Lang::Es, Hours::TwentyFour, "4 nov 2026, 12:12"),
+                (Lang::Es, Hours::Twelve, "4 nov 2026, 12:12 p. m."),
+            ];
+            for (lang, hours, want) in cases {
+                assert_eq!(full(lang, &UTC, hours, at), want, "{lang:?} {hours:?}");
+            }
+            // Midnight and noon on a 12-hour clock, and an hour with one digit on a 24-hour one.
+            assert_eq!(full(Lang::En, &UTC, Hours::Twelve, MIDNIGHT), "Nov 6, 2026, 12:00 AM");
+            assert_eq!(full(Lang::Ko, &UTC, Hours::Twelve, MIDNIGHT + 9 * 3600 + 5 * 60), "2026년 11월 6일 오전 9:05");
+            assert_eq!(full(Lang::De, &UTC, Hours::TwentyFour, MIDNIGHT + 9 * 3600 + 5 * 60), "6. Nov. 2026, 09:05");
+        }
+
+        #[test]
+        fn each_language_has_its_own_clock_unless_the_mac_says_otherwise() {
+            for (lang, hours) in [(Lang::En, Hours::Twelve), (Lang::Ko, Hours::Twelve), (Lang::ZhHant, Hours::Twelve), (Lang::Ja, Hours::TwentyFour), (Lang::ZhHans, Hours::TwentyFour), (Lang::De, Hours::TwentyFour), (Lang::Fr, Hours::TwentyFour), (Lang::Es, Hours::TwentyFour)] {
+                assert_eq!(Hours::of(lang, None), hours, "{lang:?}");
+                assert_eq!(Hours::of(lang, Some(Hours::TwentyFour)), Hours::TwentyFour, "the Mac set to 24-hour: {lang:?}");
+                assert_eq!(Hours::of(lang, Some(Hours::Twelve)), Hours::Twelve);
+            }
+        }
+
+        #[test]
+        fn every_language_says_every_part_of_a_date() {
+            for lang in Lang::ALL {
+                let words = crate::i18n::of(lang);
+                assert_eq!(words.get("time.months").split('|').count(), 12, "{lang:?}");
+                assert_eq!(words.get("time.weekdays").split('|').count(), 7, "{lang:?}");
+                for at in [NOW, NOW - 5 * 60, NOW - 3 * 3600, LATE, WED, 1_793_347_200, 1_767_171_900] {
+                    let said = label(lang, &UTC, at, NOW);
+                    assert!(!said.is_empty() && !said.contains('{') && !said.starts_with("time."), "{lang:?}: {said}");
+                    assert_eq!(said.chars().next().map(char::is_lowercase), Some(false), "{lang:?}: a label starts as a sentence does: {said}");
+                }
+                assert!(!full(lang, &UTC, Hours::Twelve, WED).contains('{'), "{lang:?}");
+            }
+        }
     }
 
     #[test]

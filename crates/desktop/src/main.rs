@@ -1001,7 +1001,7 @@ impl Shell {
                             continue;
                         }
                         // The engines: settings' AI platforms, never the model's.
-                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. })) = &update {
+                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::Providers { .. } | Event::ProviderTested { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. })) = &update {
                             let effect = this.engines.on_event(event);
                             changed |= effect.changed;
                             // The first engine ready: a squad that had none starts its team now.
@@ -1043,6 +1043,8 @@ impl Shell {
                             this.disk.attached(hello.snapshot.disk.clone());
                             // The models Codex offers there, listed off the daemon's loop, for the menus.
                             this.send_command(Command::Models { engine: equipe_core::protocol::Engine::Codex });
+                            // The model providers connected there, and their models, for the same menus.
+                            this.send_command(Command::Providers);
                         }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad

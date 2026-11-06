@@ -903,6 +903,11 @@ pub enum Command {
     /// hears the command failed and goes on with its turn, reading at its
     /// next step what the person said meanwhile. Nothing when no command runs.
     StopCommand { session: SessionId },
+    /// Stop one of the member's subagents — one the daemon watches: an
+    /// equipe helper, or a subagent of Codex's own — and only it. The member
+    /// hears it stopped (a helper hands in what it had) and goes on with its
+    /// turn. Nothing when it isn't at work, or its engine can't stop it alone.
+    StopSubagent { session: SessionId, id: String },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -1001,6 +1006,29 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
     },
+    /// The model providers connected on the daemon's machine, each with the
+    /// models it lists: answered, to every screen, by [`Event::Providers`].
+    /// Each provider not looked at yet is asked for its models then.
+    Providers,
+    /// Connect a model provider on the daemon's machine: one of equipe's
+    /// presets (`openrouter`, `groq`, `ollama`…) or `other`, an
+    /// OpenAI-compatible server at `base_url`. Its key, when it needs one, is
+    /// kept in a file there only the person can read — never sent back,
+    /// never logged. Answered by [`Event::Providers`], then by
+    /// [`Event::ProviderTested`] once its models are listed.
+    AddProvider {
+        preset: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<secrets::SecretValue>,
+    },
+    /// List a connected provider's models again (`GET /models`): answered
+    /// by [`Event::ProviderTested`].
+    TestProvider { id: String },
+    /// Forget a provider and its saved key. Members set to one of its
+    /// models say so at their next turn.
+    RemoveProvider { id: String },
     /// Sign `engine` out with its own tool (`codex logout`). Claude Code's
     /// login is the person's own: equipe never touches it. Answered by
     /// [`Event::Engines`].
@@ -1101,6 +1129,105 @@ pub struct NebiusStatus {
     /// The provider's name: `Nebius Token Factory`, or another server's host.
     #[serde(default)]
     pub provider: String,
+}
+
+/// Where a model provider's key comes from ([`ProviderStatus`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKey {
+    /// None: it can't be used yet.
+    #[default]
+    None,
+    /// Its variable in the daemon's environment, which wins over a saved key.
+    Environment,
+    /// Saved on the daemon's machine from a screen (or `equipe login nebius`).
+    Saved,
+    /// A server on the daemon's machine (Ollama, LM Studio): it needs none.
+    NotNeeded,
+}
+
+/// What listing a provider's models found ([`Command::TestProvider`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProviderTest {
+    /// Not looked at yet.
+    #[default]
+    Untested,
+    /// Being listed now.
+    Testing,
+    /// It answered with `count` models members can be set to.
+    Ok { count: usize },
+    /// It couldn't be listed (or added): why, as a screen words it in its
+    /// own language (`problem`), and in the daemon's (`why`) for a screen
+    /// that doesn't know the problem.
+    Failed {
+        why: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<ProviderProblem>,
+    },
+}
+
+/// Why a provider couldn't be listed or added, for a screen to say in its
+/// own language ([`ProviderTest::Failed`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderProblem {
+    /// No key for it.
+    MissingKey,
+    /// It refused the key (401, 403).
+    Unauthorized,
+    /// Its rate limit, still there after trying again.
+    RateLimited,
+    /// No answer in time.
+    Timeout,
+    /// It lists no model a member can work with.
+    NoModels,
+    /// No model list at its address (404).
+    NotFound,
+    /// Another error, by its status.
+    Http { status: u16 },
+    /// Something answered, but not with a list of models.
+    BadOutput,
+    /// It couldn't be reached.
+    Network,
+    /// Not a provider equipe knows.
+    Unknown,
+    /// Not an address: `https://…/v1`.
+    BadUrl,
+    /// `http://` to another machine: the key would go unencrypted.
+    Insecure,
+    /// It needs a key and none was given.
+    NoKey,
+    /// What was pasted isn't a key.
+    BadKey,
+    /// Its key couldn't be saved: the system's words.
+    NotSaved { why: String },
+    /// One a newer daemon knows: the screen says `why`.
+    #[serde(other)]
+    Other,
+}
+
+/// A model provider connected on the daemon's machine ([`Event::Providers`]):
+/// never its key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderStatus {
+    /// Its id on that machine: a preset's (`openrouter`), or `other-<host>`.
+    /// A member's model on it reads `@<id>/<model>`.
+    pub id: String,
+    /// The preset it comes from (`openrouter`, `other`; `custom` for the
+    /// environment's `EQUIPE_MODEL_BASE_URL`).
+    pub preset: String,
+    pub name: String,
+    pub base_url: String,
+    pub key: ProviderKey,
+    /// Whether a screen can remove it: not one the environment sets.
+    #[serde(default)]
+    pub removable: bool,
+    /// The models members can be set to, by their `@<id>/<model>` ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelChoice>,
+    #[serde(default)]
+    pub test: ProviderTest,
 }
 
 /// A model an engine offers ([`Event::Models`]): its id, the name its tool
@@ -1583,6 +1710,9 @@ pub enum Event {
         title: Option<String>,
         #[serde(default)]
         lines: Vec<Entry>,
+        /// When each of `lines` was said, as [`SessionInfo::recent_at`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines_at: Vec<Option<u64>>,
     },
     /// The conversations put away, the latest first ([`Snapshot::put_away`]).
     PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
@@ -1799,6 +1929,15 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,
     },
+    /// A subagent the daemon watches hasn't been heard from for `quiet_secs`
+    /// and looks stuck; `None`: it has been heard from since. Only the
+    /// person stops it ([`Command::StopSubagent`]). See [`SubagentInfo::stuck_secs`].
+    SubagentStuck {
+        session: SessionId,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quiet_secs: Option<u64>,
+    },
     /// What follows in the conversation is about `project` (`None`: the whole
     /// squad) — a message of the person's sent looking at it, news of its
     /// ticket, or a ticket's work. See [`transcript::scope`].
@@ -1956,6 +2095,15 @@ pub enum Event {
     /// Nebius Token Factory on the daemon's machine: sent with
     /// [`Event::Engines`], and when its key is saved or forgotten.
     Nebius { status: NebiusStatus },
+    /// The model providers connected on the daemon's machine
+    /// ([`Command::Providers`]), and whether the Codex CLI their members run on is there.
+    Providers {
+        providers: Vec<ProviderStatus>,
+        #[serde(default)]
+        codex: bool,
+    },
+    /// A provider's models were listed — or couldn't be ([`Command::TestProvider`]).
+    ProviderTested { id: String, test: ProviderTest },
     /// Moves between engines equipe proposes — or made on its own and tells
     /// of (`applied`), for the person to keep or undo.
     EngineProposed { squad: SquadName, proposal: engines::Proposal },
@@ -2112,6 +2260,7 @@ impl Event {
             | Event::SubagentStep { session, .. }
             | Event::SubagentEntry { session, .. }
             | Event::SubagentEnded { session, .. }
+            | Event::SubagentStuck { session, .. }
             | Event::TurnEnded { session, .. }
             | Event::VisualsRendered { session, .. }
             | Event::BranchLanded { session, .. }
@@ -2174,6 +2323,8 @@ impl Event {
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
             | Event::Nebius { .. }
+            | Event::Providers { .. }
+            | Event::ProviderTested { .. }
             | Event::SignIn { .. }
             | Event::EngineAuth { .. }
             | Event::EngineInstall { .. }
@@ -2192,6 +2343,8 @@ impl Event {
                 | Event::DiskCleaned { .. }
                 | Event::Engines { .. }
                 | Event::Nebius { .. }
+                | Event::Providers { .. }
+                | Event::ProviderTested { .. }
                 | Event::SignIn { .. }
                 | Event::EngineAuth { .. }
                 | Event::EngineInstall { .. }
@@ -2333,6 +2486,12 @@ pub struct SessionInfo {
     /// The latest part of the conversation, oldest first. A reply still
     /// streaming is its last `Reply`.
     pub recent: Vec<Entry>,
+    /// When each line of `recent` was said, in unix seconds, one per line in
+    /// the same order: a message when it came, a reply when it was done.
+    /// `None` where not known (kept before times were, or still streaming);
+    /// empty from a daemon that predates it — then no line has a time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_at: Vec<Option<u64>>,
     /// Memos waiting for the turn in progress to end.
     #[serde(default)]
     pub queued: Vec<String>,
@@ -2420,6 +2579,10 @@ pub struct SubagentInfo {
     /// Its latest steps and words ([`Event::SubagentEntry`]), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<Entry>,
+    /// It looks stuck: unheard from for this many seconds when the snapshot
+    /// was taken ([`Event::SubagentStuck`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stuck_secs: Option<u64>,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -2887,6 +3050,7 @@ mod tests {
                 tokens: 12,
                 context: None,
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+                recent_at: vec![Some(1_762_300_000), None],
                 queued: vec!["and the tests".into()],
                 queued_project: None,
                 queued_in: vec![None],
@@ -2907,6 +3071,37 @@ mod tests {
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn when_lines_were_said_travels_beside_them_and_older_peers_go_without() {
+        let info = |recent_at: Option<serde_json::Value>| {
+            let mut v = json!({
+                "session": 2, "project": "/repo", "engine": "claude", "model": null, "access": "read_only", "workspace": null,
+                "state": "ready", "title": null, "tokens": 0, "recent": [{ "kind": "user", "text": "hi" }, { "kind": "reply", "text": "hello" }],
+            });
+            if let Some(at) = recent_at {
+                v["recent_at"] = at;
+            }
+            v
+        };
+        // An older daemon's snapshot: no times, and none shown.
+        let old: SessionInfo = serde_json::from_value(info(None)).unwrap();
+        assert!(old.recent_at.is_empty());
+        // A newer one's: one per line, `null` where not known.
+        let new: SessionInfo = serde_json::from_value(info(Some(json!([1_762_300_000, null])))).unwrap();
+        assert_eq!(new.recent_at, vec![Some(1_762_300_000), None]);
+        let sent = serde_json::to_value(&new).unwrap();
+        assert_eq!(sent["recent_at"], json!([1_762_300_000, null]));
+        assert_eq!(sent["recent"], info(None)["recent"], "the lines themselves as before, for an older screen");
+        assert!(serde_json::to_value(&old).unwrap().get("recent_at").is_none(), "none known: not sent");
+
+        let back = json!({ "type": "conversation_back", "session": 5, "lines": [{ "kind": "user", "text": "hi" }] });
+        let Event::ConversationBack { lines_at, .. } = serde_json::from_value(back).unwrap() else { panic!("conversation back") };
+        assert!(lines_at.is_empty());
+        let back = Event::ConversationBack { session: 5, title: None, lines: vec![Entry::User { text: "hi".into() }], lines_at: vec![Some(9)] };
+        assert_eq!(serde_json::to_value(&back).unwrap()["lines_at"], json!([9]));
+        assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&back).unwrap()).unwrap(), back);
     }
 
     #[test]
@@ -3231,5 +3426,50 @@ mod tests {
         assert_eq!(engines.iter().map(|e| (e.engine, e.state)).collect::<Vec<_>>(), [(Engine::Codex, EngineState::Unknown), (Engine::Claude, EngineState::SignedIn)]);
         let failed: SignInStep = serde_json::from_value(json!({ "kind": "failed", "why": "region_blocked" })).unwrap();
         assert_eq!(failed, SignInStep::Failed { why: SignInFailure::Failed, detail: String::new() });
+    }
+
+    #[test]
+    fn a_stuck_subagent_and_its_stop_travel_as_json_and_back() {
+        let stuck = Event::SubagentStuck { session: 3, id: "h1".into(), quiet_secs: Some(320) };
+        let text = serde_json::to_string(&stuck).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), stuck);
+        assert_eq!(stuck.session(), Some(3));
+        let moving = serde_json::to_string(&Event::SubagentStuck { session: 3, id: "h1".into(), quiet_secs: None }).unwrap();
+        assert!(!moving.contains("quiet_secs"), "{moving}");
+        let stop = Command::StopSubagent { session: 3, id: "thr-sub".into() };
+        assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&stop).unwrap()).unwrap(), stop);
+        let info: SubagentInfo = serde_json::from_value(json!({ "id": "h1", "what": "look" })).unwrap();
+        assert_eq!(info.stuck_secs, None, "an older daemon's says nothing of it");
+    }
+
+    #[test]
+    fn a_providers_key_goes_on_the_wire_but_never_in_a_log_and_its_status_never_carries_one() {
+        let add = Command::AddProvider { preset: "openrouter".into(), base_url: None, key: Some(secrets::SecretValue("sk-or-hunter2".into())) };
+        let wire = serde_json::to_value(&add).unwrap();
+        assert_eq!(wire, json!({ "type": "add_provider", "preset": "openrouter", "key": "sk-or-hunter2" }));
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), add);
+        assert!(!format!("{add:?}").contains("hunter2"));
+        let local: Command = serde_json::from_value(json!({ "type": "add_provider", "preset": "other", "base_url": "http://localhost:8000/v1" })).unwrap();
+        assert_eq!(local, Command::AddProvider { preset: "other".into(), base_url: Some("http://localhost:8000/v1".into()), key: None });
+        let status = ProviderStatus { id: "groq".into(), preset: "groq".into(), name: "Groq".into(), base_url: "https://api.groq.com/openai/v1".into(), key: ProviderKey::Saved, removable: true, models: vec![ModelChoice { id: "@groq/qwen/qwen3-32b".into(), ..Default::default() }], test: ProviderTest::Ok { count: 1 } };
+        let event = Event::Providers { providers: vec![status.clone()], codex: true };
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(text.contains(r#""state":"ok""#) && text.contains(r#""key":"saved""#), "{text}");
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), event);
+        // An older screen's minimum: what a newer daemon adds is optional.
+        let bare: ProviderStatus = serde_json::from_value(json!({ "id": "x", "preset": "other", "name": "x", "base_url": "http://localhost:1/v1", "key": "not_needed" })).unwrap();
+        assert_eq!((bare.test, bare.removable, bare.models.len()), (ProviderTest::Untested, false, 0));
+        assert!(event.for_everyone() && event.squad().is_none());
+        assert_eq!(serde_json::to_value(Command::Providers).unwrap(), json!({ "type": "providers" }));
+        // Why it failed goes as a problem a screen words in its own language.
+        let failed = ProviderTest::Failed { why: "Groq didn't accept the key.".into(), problem: Some(ProviderProblem::Http { status: 502 }) };
+        let wire = serde_json::to_value(&failed).unwrap();
+        assert_eq!(wire, json!({ "state": "failed", "why": "Groq didn't accept the key.", "problem": { "kind": "http", "status": 502 } }));
+        assert_eq!(serde_json::from_value::<ProviderTest>(wire).unwrap(), failed);
+        // A problem a newer daemon knows: the screen says its words as they came.
+        let newer: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w", "problem": { "kind": "quota_gone" } })).unwrap();
+        assert_eq!(newer, ProviderTest::Failed { why: "w".into(), problem: Some(ProviderProblem::Other) });
+        let older: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w" })).unwrap();
+        assert_eq!(older, ProviderTest::Failed { why: "w".into(), problem: None });
     }
 }
