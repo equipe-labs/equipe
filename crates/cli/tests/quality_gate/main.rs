@@ -186,10 +186,10 @@ pub fn compliance(task: &Task, out: &Outcome) -> (BTreeMap<String, Option<bool>>
     let transcripts = out.transcripts_of(task.role);
     let mut rules = Rules::default();
     let mut skills = Vec::new();
-    if transcripts.is_empty() {
-        if let Some(session) = out.state.session(task.role) {
-            rules = quality::rules(&steps_from_events(&out.state.events, session));
-        }
+    if transcripts.is_empty()
+        && let Some(session) = out.state.session(task.role)
+    {
+        rules = quality::rules(&steps_from_events(&out.state.events, session));
     }
     for t in &transcripts {
         rules.add(&quality::rules(&t.steps));
@@ -633,8 +633,8 @@ fn task(name: &str) -> Task {
 }
 
 #[test]
-fn there_are_eleven_tasks_across_the_roles_with_names_of_their_own() {
-    assert_eq!(TASKS.len(), 11);
+fn there_are_thirteen_tasks_across_the_roles_with_names_of_their_own() {
+    assert_eq!(TASKS.len(), 13);
     let mut names: Vec<&str> = TASKS.iter().map(|t| t.name).collect();
     names.sort();
     names.dedup();
@@ -783,7 +783,7 @@ fn without_a_transcript_a_members_steps_come_from_the_daemons_events() {
 fn ticket_work_is_timed_from_its_start_to_its_end() {
     let start = |at: f64| (at, Event::WorkStarted { session: 7, ticket: 1, title: "x".into(), project: PathBuf::from("/p"), workspace: None });
     let end = |at: f64| (at, Event::WorkEnded { session: 7, ticket: 1 });
-    let notice = |at: f64| (at, Event::Notice { session: 8, text: "x".into() });
+    let notice = |at: f64| (at, Event::Notice { undo: None, session: 8, text: "x".into() });
     assert_eq!(work_seconds(&[start(10.0), end(70.0), start(100.0), end(130.0)], 7), 90.0);
     assert_eq!(work_seconds(&[start(10.0), notice(250.0)], 7), 240.0, "still at it when the run ended");
     assert_eq!(work_seconds(&[start(10.0), end(70.0)], 8), 0.0);
@@ -942,4 +942,18 @@ fn members_find_their_own_variants_equipe_first_on_path() {
     assert_eq!(std::fs::read_link(dir.join("bin/equipe")).unwrap(), binary.canonicalize().unwrap());
     harness::variant_path(&binary, &dir.join("bin"), None);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bytecode_python_leaves_is_not_counted_as_changed() {
+    // Running the tests writes `__pycache__/` beside the code wherever Python
+    // isn't told to keep it elsewhere (CI's runners do): the grader's trace,
+    // not the member's work.
+    let dir = scratch("pyc");
+    let base = harness::repo(&dir, &[("stats.py", "x = 1\n")]);
+    std::fs::write(dir.join("stats.py"), "x = 2\n").unwrap();
+    std::fs::create_dir_all(dir.join("__pycache__")).unwrap();
+    std::fs::write(dir.join("__pycache__/stats.cpython-312.pyc"), "bytecode").unwrap();
+    std::fs::write(dir.join("loose.pyc"), "bytecode").unwrap();
+    assert_eq!(harness::changed_files(&dir, &base), ["stats.py"]);
 }

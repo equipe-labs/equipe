@@ -4,7 +4,7 @@
 //! (never the member's words), done by the daemon on the person's yes.
 
 use super::*;
-use crate::controls::{self, Change};
+use crate::controls::{self, Change, ModelFit, Mover, engine_name};
 
 impl Runtime {
     /// `settings`: what the person's screen shows of the squad's settings.
@@ -60,16 +60,26 @@ impl Runtime {
             return;
         }
         let squad = call.squad.clone();
-        let made = Change::parse(&call.arguments).and_then(|change| Ok((self.command_for(&squad, &change)?, change)));
-        let (command, change) = match made {
-            Ok(made) => made,
+        let change = match Change::parse(&call.arguments) {
+            Ok(change) => change,
+            Err(why) => {
+                let _ = reply.send(ToolResult::error(why));
+                return;
+            }
+        };
+        let made = match self.vet(&squad, &change).await {
+            Ok(()) => self.command_for(&squad, &change),
+            Err(why) => Err(why),
+        };
+        let command = match made {
+            Ok(command) => command,
             Err(why) => {
                 let _ = reply.send(ToolResult::error(why));
                 return;
             }
         };
         let now = self.mode_now(&squad, &change);
-        let action = self.describe_change(&change);
+        let action = self.describe_change(&squad, &change);
         if !change.needs_yes(now) {
             crate::daemon_log!("equipe: {squad}'s PM changed a setting the person asked for: {action}");
             Box::pin(self.handle(command)).await;
@@ -80,7 +90,8 @@ impl Runtime {
         let why = board::arg_str(&call.arguments, "why").map(str::to_owned);
         let approval_id = self.next_approval;
         self.next_approval += 1;
-        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket: None, tool: controls::SETTING_TOOL.to_owned(), action, reason: why, preview: None };
+        let tool = if matches!(change, Change::Engine { .. }) { controls::ENGINE_TOOL } else { controls::SETTING_TOOL };
+        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket: None, tool: tool.to_owned(), action, reason: why, preview: None };
         let input = serde_json::to_value(&command).unwrap_or_default();
         self.pending.insert(approval_id, Pending { squad: squad.clone(), approval: approval.clone(), input, reply });
         self.publish(Event::ApprovalRequested { squad, approval });
@@ -104,7 +115,14 @@ impl Runtime {
         };
         self.audit(&squad, None, "you", "allowed", &approval.action);
         let _ = self.internal.send(Internal::Apply(Box::new(command)));
-        let _ = reply.send(ToolResult::ok(format!("The person said yes: {} — done. Tell them in one line.", approval.action)));
+        // The card's first line says what it does; the rest, when each member moves.
+        let what = approval.action.lines().next().unwrap_or_default();
+        let text = if approval.tool == controls::ENGINE_TOOL {
+            format!("The person said yes: {what}. Each one moves as the card said, and you are told as it does. Tell them in one line.")
+        } else {
+            format!("The person said yes: {what} — done. Tell them in one line.")
+        };
+        let _ = reply.send(ToolResult::ok(text));
     }
 
     /// The command the person's screen would send for `change`.
@@ -128,6 +146,12 @@ impl Runtime {
             Change::PmAccepts(on) => Command::SetPmAccepts { squad: squad_name, on },
             Change::IdleWake(hours) => Command::SetIdleWake { squad: squad_name, hours },
             Change::Model { member, model } => Command::SetModel { session: session(&member)?, model },
+            Change::Engine { members, engine, model, effort } => {
+                for name in &members {
+                    session(name)?;
+                }
+                Command::MoveEngine { squad: squad_name, members, engine, model, effort }
+            }
             Change::Effort { member, effort } => Command::SetEffort { session: session(&member)?, effort },
             Change::EngineSwitching(mode) => Command::SetEngineSwitching { squad: squad_name, mode },
             Change::RemoveProject(name) => Command::RemoveProject { squad: squad_name, path: project(&name)? },
@@ -160,8 +184,132 @@ impl Runtime {
         }
     }
 
+    /// A model, an effort or a move checked against what the engine takes —
+    /// the member's own, or the one it moves to — before anything is done or
+    /// asked: another engine's model in a member's would break it.
+    async fn vet(&mut self, squad: &str, change: &Change) -> Result<(), String> {
+        match change {
+            Change::Model { member, model } => {
+                let engine = self.engine_of(squad, member)?;
+                let codex = if engine == Engine::Codex || controls::model_fit(engine, model, None) != ModelFit::Fits { Some(self.codex_catalog().await) } else { None };
+                match controls::model_fit(engine, model, listed(codex.as_ref())) {
+                    ModelFit::Fits => Ok(()),
+                    ModelFit::Other(there) => Err(format!(
+                        "{model} is a {there_name} model and {member} runs on {here}: `model` only changes a model within the member's engine, and this would break {member}. Nothing changed. To move {member} to {there_name}, use setting `engine` (member {member}, value {code}, model {model}) — the person is asked first.",
+                        there_name = engine_name(there),
+                        here = engine_name(engine),
+                        code = engine_code(there),
+                    )),
+                    ModelFit::Unknown => Err(format!("{member} runs on {}, which has no model {model:?}. {} Nothing changed.", engine_name(engine), models_line(engine, codex.as_ref()))),
+                }
+            }
+            Change::Effort { member, effort: Some(effort) } => {
+                let engine = self.engine_of(squad, member)?;
+                let model = self.member_id(squad, member).and_then(|id| self.sessions.get(&id)).and_then(|s| s.model.clone());
+                let takes = self.efforts_on(engine, model.as_deref()).await;
+                if takes.iter().any(|e| e == effort) {
+                    return Ok(());
+                }
+                Err(match takes.as_slice() {
+                    [] => format!("{member}'s model takes no effort setting; nothing changed."),
+                    takes => format!("{member}'s model on {} takes effort {}, or default — not {effort:?}. Nothing changed.", engine_name(engine), takes.join(" | ")),
+                })
+            }
+            Change::Engine { members, engine, model, effort } => {
+                let mut already = Vec::new();
+                for name in members {
+                    if self.engine_of(squad, name)? == *engine {
+                        already.push(name.as_str());
+                    }
+                }
+                if !already.is_empty() {
+                    return Err(format!(
+                        "{} already on {}: leave them out of `members` (within an engine, a model is `model` and an effort `effort`). Nothing was asked.",
+                        already.join(", "),
+                        engine_name(*engine)
+                    ));
+                }
+                if let Some(model) = model {
+                    let codex = if *engine == Engine::Codex { Some(self.codex_catalog().await) } else { None };
+                    match controls::model_fit(*engine, model, listed(codex.as_ref())) {
+                        ModelFit::Fits => {}
+                        ModelFit::Other(there) => {
+                            return Err(format!(
+                                "{model} is a {} model, not {}'s. {} Or leave `model` out for what {} recommends for each one's role. Nothing was asked.",
+                                engine_name(there),
+                                engine_name(*engine),
+                                models_line(*engine, codex.as_ref()),
+                                engine_name(*engine)
+                            ));
+                        }
+                        ModelFit::Unknown => return Err(format!("{} has no model {model:?}. {} Nothing was asked.", engine_name(*engine), models_line(*engine, codex.as_ref()))),
+                    }
+                }
+                if let Some(effort) = effort {
+                    let takes = self.efforts_on(*engine, model.as_deref()).await;
+                    if !takes.iter().any(|e| e == effort) {
+                        let takes = if takes.is_empty() { "none".to_owned() } else { takes.join(" | ") };
+                        return Err(format!("On {} that model takes effort {takes} — not {effort:?}; or leave `effort` out for its default. Nothing was asked.", engine_name(*engine)));
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The engine member `name` of `squad` runs on.
+    fn engine_of(&self, squad: &str, name: &str) -> Result<Engine, String> {
+        self.member_id(squad, name).and_then(|id| self.sessions.get(&id)).map(|s| s.engine).ok_or_else(|| format!("No member called {name} on the squad."))
+    }
+
+    /// The efforts `model` takes on `engine` (`None`: the engine's default
+    /// model): Claude Code's by the catalog, Codex's as its own list says.
+    async fn efforts_on(&mut self, engine: Engine, model: Option<&str>) -> Vec<String> {
+        let ours = || crate::models::efforts(engine, model).iter().map(|e| (*e).to_owned()).collect();
+        if engine == Engine::Claude {
+            return ours();
+        }
+        let _ = self.codex_catalog().await;
+        let listed = self.codex_models.as_ref().map(|(_, l)| l.as_slice()).unwrap_or_default();
+        let info = match model {
+            Some(model) => listed.iter().find(|m| m.id == model),
+            None => listed.iter().find(|m| m.default).or(listed.first()),
+        };
+        info.map(|m| m.efforts.clone()).filter(|e| !e.is_empty()).unwrap_or_else(ours)
+    }
+
+    /// A model as people name it: Claude's family and version, Codex's own
+    /// name for it, a provider's model without the provider.
+    fn model_label(&self, model: &str) -> String {
+        if crate::model_providers::split_ref(model).is_some() {
+            return crate::model_providers::display(model).to_owned();
+        }
+        if crate::models::is_alias(model)
+            && let Some(family) = crate::models::family(model)
+        {
+            return family.name.to_owned();
+        }
+        if let Some(name) = crate::models::name(model) {
+            return name;
+        }
+        let listed = self.codex_models.as_ref().and_then(|(_, l)| l.iter().find(|m| m.id == model));
+        listed.and_then(|m| m.name.clone()).unwrap_or_else(|| model.to_owned())
+    }
+
+    /// The members an engine move takes, as they stand now: for when each one moves.
+    fn movers(&self, squad: &str, members: &[String]) -> Vec<Mover> {
+        members
+            .iter()
+            .filter_map(|name| {
+                let s = self.member_id(squad, name).and_then(|id| self.sessions.get(&id))?;
+                Some(Mover { name: name.clone(), from: s.engine, working: s.is_working(), on_ticket: s.work.is_some() })
+            })
+            .collect()
+    }
+
     /// What a change does, in the person's language: the words on its card.
-    fn describe_change(&self, change: &Change) -> String {
+    fn describe_change(&self, squad: &str, change: &Change) -> String {
         let lang = self.config.lang;
         let mode = |m: Mode| crate::i18n::label::mode(lang, m).to_owned();
         match change {
@@ -173,6 +321,10 @@ impl Runtime {
             Change::IdleWake(0) => say!(self, "control.idle_wake_off"),
             Change::IdleWake(hours) => say!(self, "control.idle_wake", hours = hours),
             Change::Model { member, model } => say!(self, "control.model", member = member, model = model),
+            Change::Engine { members, engine, model, effort } => {
+                let model = model.as_deref().map(|m| self.model_label(m));
+                controls::move_words(lang, &self.movers(squad, members), *engine, model.as_deref(), effort.as_deref())
+            }
             Change::Effort { member, effort } => say!(self, "control.effort", member = member, effort = effort.as_deref().unwrap_or("default")),
             Change::EngineSwitching(m) => say!(self, "control.engine_switching", mode = format!("{m:?}").to_lowercase()),
             Change::RemoveProject(name) => say!(self, "control.remove_project", project = name),
@@ -197,5 +349,35 @@ fn mode_word(mode: Mode) -> &'static str {
         Mode::Ask => "ask",
         Mode::Auto => "auto",
         Mode::Full => "full",
+    }
+}
+
+/// An engine as `change_setting` takes it.
+fn engine_code(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Claude => "claude",
+        Engine::Codex => "codex",
+    }
+}
+
+/// Codex's list of models, when it was read.
+fn listed(codex: Option<&Result<Vec<String>, String>>) -> Option<&[String]> {
+    codex.and_then(|c| c.as_ref().ok()).map(Vec::as_slice)
+}
+
+/// The models `engine` takes, as one line for the PM: Claude Code's aliases
+/// and ids, Codex's own list — or why that list couldn't be read.
+fn models_line(engine: Engine, codex: Option<&Result<Vec<String>, String>>) -> String {
+    match engine {
+        Engine::Claude => {
+            let aliases = crate::models::CLAUDE_FAMILIES.iter().map(|f| f.alias);
+            let ids = crate::models::CLAUDE_MODELS.iter().map(|p| p.id);
+            format!("Claude's models: {}.", aliases.chain(ids).collect::<Vec<_>>().join(", "))
+        }
+        Engine::Codex => match codex {
+            Some(Ok(list)) if !list.is_empty() => format!("Codex's models: {}.", list.join(", ")),
+            Some(Err(why)) => format!("Codex's list of models couldn't be read just now ({why}), so it can't be checked; try again in a moment."),
+            _ => "Codex lists no models just now; try again in a moment.".to_owned(),
+        },
     }
 }

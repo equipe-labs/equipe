@@ -152,6 +152,8 @@ pub fn noun(tool: &str) -> &'static str {
         equipe_core::desktop_gate::SEND => t!("approvals.noun_send"),
         equipe_core::permissions::BROWSER_CODE => t!("approvals.noun_browser_code"),
         SIGN_IN => t!("approvals.noun_sign_in"),
+        equipe_core::phone::INSTALL => t!("approvals.noun_install"),
+        equipe_core::controls::ENGINE_TOOL => t!("approvals.noun_engine"),
         _ => t!("approvals.noun_other"),
     }
 }
@@ -198,7 +200,8 @@ pub fn files_written(script: &str) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Card {
     pub noun: &'static str,
-    /// The start of the action: 12 lines of browser code, 8 of a message, 3 otherwise.
+    /// The start of the action: 12 lines of browser code, 8 of a message or
+    /// an engine move (who moves, then when each one does), 3 otherwise.
     pub lines: Vec<String>,
     pub more: usize,
     pub writes: Vec<String>,
@@ -211,7 +214,7 @@ impl Card {
     pub fn of(approval: &Approval) -> Self {
         let shown = match approval.tool.as_str() {
             equipe_core::permissions::BROWSER_CODE => 12,
-            equipe_core::desktop_gate::SEND => 8,
+            equipe_core::desktop_gate::SEND | equipe_core::controls::ENGINE_TOOL => 8,
             _ => 3,
         };
         let all: Vec<&str> = approval.action.lines().collect();
@@ -524,6 +527,31 @@ mod tests {
         q.resolve(1);
         q.forget_answers();
         assert_eq!(q.ids(), vec![2]);
+    }
+
+    #[test]
+    fn installing_a_tool_is_named_and_never_allowed_always() {
+        let install = approval(1, 2, equipe_core::phone::INSTALL, "Install AXe 1.8.0 …");
+        let card = Card::of(&install);
+        assert_eq!(card.noun, equipe_core::t!("approvals.noun_install"));
+        assert_eq!(card.always, None, "asked each time it comes up, which is once");
+    }
+
+    #[test]
+    fn an_engine_move_the_pm_asked_for_shows_who_moves_and_when_each_one_does_and_is_never_always() {
+        use equipe_core::controls::{Mover, move_words};
+        use equipe_core::protocol::Engine;
+        let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket };
+        let action = move_words(equipe_core::i18n::Lang::En, &[mover("designer", false, true), mover("mobile", true, false), mover("mobile-2", false, false)], Engine::Codex, Some("GPT-6.1 Sol"), Some("high"));
+        let card = Card::of(&approval(1, 2, equipe_core::controls::ENGINE_TOOL, &action));
+        assert_eq!(card.noun, equipe_core::t!("approvals.noun_engine"));
+        assert_eq!((card.lines.len(), card.more), (6, 0), "every line on the card: {:?}", card.lines);
+        assert_eq!(card.lines[0], "Move designer, mobile, mobile-2 to Codex");
+        assert!(card.lines[3].starts_with("designer keeps Claude for the ticket in progress"));
+        assert_eq!(card.always, None, "a move is asked each time");
+        let mut q = queue(vec![approval(1, 2, equipe_core::controls::ENGINE_TOOL, &action)]);
+        assert_eq!(q.answer("acme", Decision::Always), None, "no rule to keep");
+        assert!(q.answer("acme", Decision::Allow).is_some());
     }
 
     #[test]

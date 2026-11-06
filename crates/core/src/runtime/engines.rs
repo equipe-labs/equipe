@@ -486,14 +486,17 @@ impl Runtime {
     }
 
     /// The person's own move: `members` (none: all) to `engine`, each at its
-    /// next boundary, told on a card that offers to undo it.
-    pub(super) async fn move_engine(&mut self, squad: &str, members: Vec<String>, engine: Engine) {
+    /// next boundary, told on a card that offers to undo it — on `model`
+    /// when the person picked one, else the engine's recommendation.
+    pub(super) async fn move_engine(&mut self, squad: &str, members: Vec<String>, engine: Engine, model: Option<String>, effort: Option<String>) {
+        let model = model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+        let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
         let moves: Vec<Move> = self
             .mates(squad)
             .into_iter()
             .filter(|m| members.is_empty() || members.iter().any(|n| n == &m.name))
             .filter(|m| m.engine != engine)
-            .map(|m| Move { member: m.name, role: m.role, from: m.engine, to: engine, model: None, effort: None, was_model: m.model, done: false })
+            .map(|m| Move { member: m.name, role: m.role, from: m.engine, to: engine, model: model.clone(), effort: effort.clone(), was_model: m.model, done: false })
             .collect();
         if moves.is_empty() {
             let text = say!(self, "engines.move_none", engine = engine_word(engine));
@@ -523,7 +526,7 @@ impl Runtime {
         self.publish(Event::EngineProposed { squad: squad.to_owned(), proposal });
         let (shown, provider) = self.on_provider(&model).unwrap_or_default();
         let text = say!(self, "notice.provider_move", model = shown, provider = provider);
-        self.publish(Event::Notice { session, text });
+        self.publish(Event::Notice { undo: None, session, text });
         self.apply_engine_moves(squad).await;
     }
 
@@ -691,7 +694,7 @@ impl Runtime {
                 Box::pin(self.handle(Command::SetEffort { session: now_id, effort: mv.effort.clone() })).await;
             }
             let text = say!(self, "engines.notice_moved", from = engine_name(mv.from), to = engine_name(mv.to));
-            self.publish(Event::Notice { session: now_id, text });
+            self.publish(Event::Notice { undo: None, session: now_id, text });
             self.log_engines(squad, format!("{name}: {} → {} ({:?})", engine_name(mv.from), engine_name(mv.to), due.why));
         }
         if mode.is_some() {
@@ -772,12 +775,12 @@ fn brief_talk(entries: &[Entry]) -> String {
     let mut size = 0;
     for entry in entries.iter().rev() {
         let line = match entry {
-            Entry::User { text } => match equipe_protocol::harness::words(text) {
-                Some(text) => format!("Person: {}", clip(&text, 1_200)),
+            Entry::User { text, kept } => match equipe_protocol::harness::words(text) {
+                Some(text) => format!("Person: {}", clip(&equipe_protocol::tags::read_back(&text, kept), 1_200)),
                 None => continue,
             },
             Entry::Reply { text } => format!("You: {}", clip(text, 1_800)),
-            Entry::Note { text } => format!("(equipe: {})", clip(text, 300)),
+            Entry::Note { text, .. } => format!("(equipe: {})", clip(text, 300)),
             _ => continue,
         };
         if size + line.len() > BRIEF_TALK && !lines.is_empty() {
@@ -867,7 +870,7 @@ mod tests {
             images: Default::default(),
         };
         let part = brief_ticket(&ticket, " src/login.rs | 12 ++++++");
-        let talk = brief_talk(&[Entry::User { text: "Use Redis".into() }, Entry::Reply { text: "Counting in Redis now; tests next.".into() }]);
+        let talk = brief_talk(&[Entry::User { text: "Use Redis".into(), kept: Vec::new() }, Entry::Reply { text: "Counting in Redis now; tests next.".into() }]);
         let text = brief("backend", &backend_move(), Why::Shift, Some(&part), &talk);
         for wanted in ["You are backend", "on Codex", "on Claude", "Claude's plan is running low", "T-42 Rate limit the login", "Five tries", "Which store for counters?", "equipe/backend-t42", "src/login.rs", "Person: Use Redis", "You: Counting in Redis", "## Next", "AGENTS.md"] {
             assert!(text.contains(wanted), "{wanted} in:\n{text}");

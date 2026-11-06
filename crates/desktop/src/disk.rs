@@ -46,6 +46,8 @@ pub enum FixKind {
     Builds,
     /// Logs past their size.
     Logs,
+    /// Attachments the person sent long ago: theirs to remove, on its own.
+    Attachments,
     /// One of the person's caches or build folders: a command, or Finder.
     Yourself,
 }
@@ -152,9 +154,10 @@ impl DiskUi {
         }
     }
 
-    /// Every item equipe may remove, to the sheet.
+    /// Every item equipe may remove, to the sheet — not what the person
+    /// removes only on its own (their old attachments).
     pub fn ask_all(&mut self) {
-        let ids: Vec<String> = self.report.iter().flat_map(|r| r.items.iter().filter(|i| i.safe).map(|i| i.id.clone())).collect();
+        let ids: Vec<String> = self.report.iter().flat_map(|r| r.items.iter().filter(|i| i.safe && !i.why.picked_alone()).map(|i| i.id.clone())).collect();
         self.ask(&ids);
     }
 
@@ -225,6 +228,7 @@ pub fn fixes(report: &DiskReport) -> Vec<Fix> {
     add(FixKind::Worktrees, safe(DiskGroup::Worktrees).collect());
     add(FixKind::Builds, safe(DiskGroup::Builds).collect());
     add(FixKind::Logs, safe(DiskGroup::Equipe).filter(|i| i.kind == DiskKind::Log).collect());
+    add(FixKind::Attachments, safe(DiskGroup::Equipe).filter(|i| i.kind == DiskKind::Attachments).collect());
     fixes.sort_by_key(|f| std::cmp::Reverse(f.bytes));
     // The person's own, biggest few: after equipe's, which are one click and safe.
     let mut theirs: Vec<&DiskItem> = report.items.iter().filter(|i| i.why == DiskWhy::NotEquipes && i.bytes >= 1_000_000_000).collect();
@@ -339,6 +343,23 @@ mod tests {
         ui.on_event(&Event::DiskCleaned { cleaned: cleaned.clone() });
         assert_eq!(ui.stage, Stage::Done(cleaned));
         assert_eq!(ui.status.as_ref().map(|s| s.level), Some(DiskLevel::Low));
+    }
+
+    #[test]
+    fn old_attachments_are_a_fix_of_their_own_never_part_of_everything() {
+        let mut r = report();
+        r.items.push(item("sent", DiskGroup::Equipe, DiskKind::Attachments, 30_000_000, false, DiskWhy::Sent));
+        r.items.push(item("sent-old", DiskGroup::Equipe, DiskKind::Attachments, 50_000_000, true, DiskWhy::SentLongAgo));
+        let fix = fixes(&r).into_iter().find(|f| f.kind == FixKind::Attachments).expect("a fix for the old ones");
+        assert_eq!((fix.ids, fix.bytes), (vec!["sent-old".to_owned()], 50_000_000), "only the old ones, never the recent");
+        assert_eq!(r.reclaimable(), report().reclaimable(), "not in what equipe may give back");
+        let mut ui = DiskUi::default();
+        ui.on_event(&Event::DiskReport { report: r });
+        ui.ask_all();
+        assert!(!ui.picked.contains("sent-old"), "clean everything leaves the person's attachments");
+        ui.back();
+        ui.ask(&["sent-old".into()]);
+        assert_eq!(ui.confirm(), vec![Command::DiskClean { ids: vec!["sent-old".into()] }], "picked on its own, removed on the yes");
     }
 
     #[test]

@@ -335,7 +335,7 @@ pub fn history() -> Vec<Entry> {
 ### Section·elevation\nThe gallery opens up two storeys high, with skylights bringing in the light.\n\n![Section·elevation]({THERE}/section·elevation.png)\n\n\
 The aerial view and the material board are in the same folder: {THERE}/"
     );
-    vec![Entry::User { text: "Are the designer's T-2 drafts in? Show me".into() }, Entry::Reply { text: reply }]
+    vec![Entry::User { text: "Are the designer's T-2 drafts in? Show me".into(), kept: Vec::new() }, Entry::Reply { text: reply }]
 }
 
 /// T-4 as the user saw it, and T-6 whose pictures are all gone.

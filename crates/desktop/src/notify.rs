@@ -343,7 +343,7 @@ pub fn reply_line(entries: &[Entry]) -> Option<String> {
                 }
             }
             // A background task ending is the engine's word, not the person's.
-            Entry::User { text } if !equipe_core::protocol::harness::only_harness(text) => return None,
+            Entry::User { text, .. } if !equipe_core::protocol::harness::only_harness(text) => return None,
             _ => {}
         }
     }
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn a_decision_says_who_asks_and_how_many_and_opens_their_conversation() {
         let t = toasts(&[Alert::Decision { session: 3, member: "backend".into(), count: 2 }], "acme", true);
-        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend이(가) 2가지 결정을 기다려요", "acme", Go::Member(3)));
+        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend가 2가지 결정을 기다려요", "acme", Go::Member(3)));
     }
 
     #[test]
@@ -652,11 +652,11 @@ mod tests {
         let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
         let handed = |check| Alert::Browser { page: 7, session: Some(1), member: "pm".into(), site: "idmsa.apple.com".into(), check, why: Some(why.into()) };
         let t = toasts(&[handed(Some(HumanCheck::SignIn))], "acme", true);
-        assert_eq!(t[0].title, "pm이(가) 브라우저에서 로그인을 기다려요");
+        assert_eq!(t[0].title, "pm이 브라우저에서 로그인을 기다려요");
         assert_eq!(t[0].body, "idmsa.apple.com · 눌러서 앱의 브라우저 패널에서 해 주세요 · acme");
         assert_eq!(t[0].go, Go::Browser(7), "a click opens the panel on that tab");
         let t = toasts(&[handed(None)], "acme", true);
-        assert_eq!(t[0].title, "pm이(가) 브라우저에서 기다려요");
+        assert_eq!(t[0].title, "pm이 브라우저에서 기다려요");
         assert!(!t[0].body.contains("Umbriles"));
     }
 
@@ -742,20 +742,20 @@ mod tests {
 
     #[test]
     fn a_reply_is_its_first_line_of_prose_cut_short() {
-        let said = |text: &str| vec![Entry::User { text: "고쳐 줘".into() }, Entry::Reply { text: text.into() }];
+        let said = |text: &str| vec![Entry::User { text: "고쳐 줘".into(), kept: Vec::new() }, Entry::Reply { text: text.into() }];
         assert_eq!(reply_line(&said("## **끝났어요.** 테스트도 통과\n자세히는…")), Some("끝났어요. 테스트도 통과".into()));
         assert_eq!(reply_line(&said("```sh\nrm -rf /tmp/x\n```\n\n- `main`에 올렸어요")), Some("main에 올렸어요".into()), "never a code block");
         let long = "가".repeat(300);
         let line = reply_line(&said(&long)).unwrap();
         assert_eq!(line.chars().count(), LINE_MAX);
         assert!(line.ends_with('…'));
-        assert_eq!(reply_line(&[Entry::Reply { text: "old".into() }, Entry::User { text: "new".into() }]), None, "the person spoke last");
-        let ended = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into() };
+        assert_eq!(reply_line(&[Entry::Reply { text: "old".into() }, Entry::User { text: "new".into(), kept: Vec::new() }]), None, "the person spoke last");
+        let ended = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into(), kept: Vec::new() };
         assert_eq!(reply_line(&[Entry::Reply { text: "Built it.".into() }, ended]), Some("Built it.".into()), "the engine's word, not the person's");
         // A turn's last answer is the one told; an empty one falls back.
-        let turn = vec![Entry::User { text: "q".into() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "다 됐어요".into() }];
+        let turn = vec![Entry::User { text: "q".into(), kept: Vec::new() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "다 됐어요".into() }];
         assert_eq!(reply_line(&turn), Some("다 됐어요".into()));
-        let turn = vec![Entry::User { text: "q".into() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "```\nx\n```".into() }];
+        let turn = vec![Entry::User { text: "q".into(), kept: Vec::new() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "```\nx\n```".into() }];
         assert_eq!(reply_line(&turn), Some("살펴볼게요".into()));
     }
 

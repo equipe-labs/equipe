@@ -1,10 +1,14 @@
 //! Briefs and plans (`equipe_core::briefs`): written into the fake squad's
 //! folder the way the PM's `write_brief` writes them — never into the fake
-//! projects' repositories — and sent when a project page asks. web has two briefs and a plan,
-//! api a draft, app none (its page offers office hours). `FAKE_DOCS=none`:
-//! no project has any. `FAKE_DECIDE=office`: the PM's office-hours card waits.
+//! projects' repositories — and sent when a project page or the docs screen asks. web has
+//! two briefs and two plans, api a draft, app one plan — the same magic-link plan as web's,
+//! saved under both and since edited in one (a pair of copies that differ) — and the squad
+//! its own launch-week plan. web's repository still holds an older copy of its checkout
+//! plan (told only). A search finds them by their words; keeping one copy removes the other
+//! from the fake folder, and taking that back writes them all again. `FAKE_DOCS=none`: no
+//! project has any. `FAKE_DECIDE=office`: the PM's office-hours card waits.
 
-use equipe_core::briefs::{self, Kind, Target};
+use equipe_core::briefs::{self, InRepo, Kind, ProjectDoc, Target};
 use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
 use equipe_core::protocol::{Command, Event};
 use tokio::sync::broadcast;
@@ -20,8 +24,16 @@ pub fn seed() {
     if none() {
         return;
     }
+    // The folder itself, as the daemon makes it for a squad: a save makes only what is under it.
+    let _ = std::fs::create_dir_all(folder());
     let write = |project: &str, kind: Kind, slug: &str, date: &str, fields: &[(&str, String)], body: &str| {
-        let Ok(target) = Target::project(&folder(), project) else { return };
+        let target = if project.is_empty() {
+            Target::squad(&folder())
+        } else if let Ok(target) = Target::project(&folder(), project) {
+            target
+        } else {
+            return;
+        };
         if let Err(why) = briefs::save(&target, kind, slug, &briefs::render(fields, body), date, "pm") {
             eprintln!("fake daemon: {project}'s {slug} wasn't written: {why}");
         }
@@ -60,6 +72,20 @@ pub fn seed() {
         &f(&[("title", "Rate limits"), ("date", "2026-11-04"), ("status", "draft"), ("mode", "builder")]),
         "## Goal\n\nOne partner sending a burst never slows the others down.\n\n## Not known yet\n\n- Where each partner's limit is set\n",
     );
+    // The same plan saved under web and app, edited since under app.
+    let magic = f(&[("title", "Magic-link sign-in — plan"), ("date", "2026-11-05"), ("status", "settled"), ("tickets", "[70]")]);
+    let steps = "## Steps\n\n1. Send the link by email (T-70)\n2. A used or expired link says so\n";
+    write("web", Kind::Plan, "magic-link-sign-in", "2026-11-05", &magic, steps);
+    write("app", Kind::Plan, "magic-link-sign-in", "2026-11-05", &magic, &format!("{steps}3. Open the link in the app when it is installed\n"));
+    // The squad's own work, outside the projects.
+    write(
+        "",
+        Kind::Plan,
+        "launch-week",
+        "2026-11-06",
+        &f(&[("title", "Launch week checklist"), ("date", "2026-11-06"), ("status", "draft"), ("tickets", "[117]")]),
+        "## Before the day\n\n- App Store submission (T-117)\n- The press note\n",
+    );
 }
 
 /// The fake squad's folder, where its briefs and plans are kept.
@@ -67,19 +93,54 @@ pub fn folder() -> std::path::PathBuf {
     super::root().join("home")
 }
 
-/// Every project's briefs and plans, as the daemon reads them.
-fn docs() -> Vec<equipe_core::protocol::briefs::ProjectDoc> {
-    PROJECTS.iter().filter_map(|p| Target::project(&folder(), p).ok()).flat_map(|t| briefs::list(&t)).collect()
+/// Every project's briefs and plans, then the squad's own, as the daemon reads them.
+fn docs() -> Vec<ProjectDoc> {
+    let mut out: Vec<ProjectDoc> = PROJECTS.iter().filter_map(|p| Target::project(&folder(), p).ok()).flat_map(|t| briefs::list(&t)).collect();
+    out.extend(briefs::list(&Target::squad(&folder())));
+    out
 }
 
-/// `ProjectDocs`: answered at once.
+/// What the daemon sends of them: the docs, their copies, and the older copy
+/// web's repository still holds (made up: the fake repository has none).
+fn catalog() -> Event {
+    let docs = docs();
+    let copies = briefs::copies(&folder(), &docs);
+    let checkout = folder().join("docs/web/plans/2026-11-03-one-tap-checkout.md");
+    let in_repos = if none() {
+        Vec::new()
+    } else {
+        vec![InRepo { project: "web".into(), kind: Kind::Plan, path: "docs/plans/2026-11-03-one-tap-checkout.md".into(), kept: checkout.is_file().then(|| checkout.to_string_lossy().into_owned()) }]
+    };
+    Event::ProjectDocs { squad: "demo".into(), docs, copies, in_repos }
+}
+
+/// `ProjectDocs`, `SearchDocs`, `KeepDocCopy` — and taking a kept copy back
+/// (`UndoHomeChange` with [`UNDO`]): answered at once.
 pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool {
-    if !matches!(command, Command::ProjectDocs { .. }) {
-        return false;
+    match command {
+        Command::ProjectDocs { .. } => {}
+        Command::SearchDocs { query, .. } => {
+            let paths = briefs::search(&folder(), &docs(), query);
+            let _ = events.send(Event::DocsFound { squad: "demo".into(), query: query.clone(), paths });
+            return true;
+        }
+        Command::KeepDocCopy { keep, .. } => match briefs::keep_copy(&folder(), &docs(), keep) {
+            Ok(kept) => {
+                let undo = Some(kept.change.map_or_else(|| UNDO.to_owned(), |c| c.id));
+                let _ = events.send(Event::DocCopyKept { squad: "demo".into(), kept: kept.kept, removed: kept.removed, undo });
+            }
+            Err(why) => eprintln!("fake daemon: no copy kept: {why}"),
+        },
+        Command::UndoHomeChange { change, .. } if change == UNDO => seed(),
+        _ => return false,
     }
-    let _ = events.send(Event::ProjectDocs { squad: "demo".into(), docs: docs() });
+    let _ = events.send(catalog());
     true
 }
+
+/// The change a kept copy is taken back by: the fake folder keeps no history,
+/// so taking it back writes every doc again.
+const UNDO: &str = "fake-docs-kept";
 
 /// Whether the PM's office-hours card waits (`FAKE_DECIDE=office`).
 pub fn office() -> bool {

@@ -284,13 +284,89 @@ impl Catalog {
     }
 }
 
-/// `text` with each `{name}` replaced by its value.
+/// `text` with each `{name}` replaced by its value. A paired particle right
+/// after a `{name}` (Korean's "X(Y)" forms) becomes the one the value takes.
 pub fn fill(text: &str, args: &[(&str, String)]) -> String {
     let mut out = text.to_owned();
     for (name, value) in args {
-        out = out.replace(&format!("{{{name}}}"), value);
+        let slot = format!("{{{name}}}");
+        for (paired, closed, open) in PARTICLES {
+            let after = format!("{slot}{paired}");
+            if out.contains(&after)
+                && let Some(word) = particle(value, closed, open)
+            {
+                out = out.replace(&after, &format!("{slot}{word}"));
+            }
+        }
+        out = out.replace(&slot, value);
     }
     out
+}
+
+/// `template` as [`fill`] may have written it: each paired particle after a
+/// `{name}` as it is, and as either of its forms — for reading a filled line
+/// back against its template. Without one, just `template`.
+pub fn particle_forms(template: &str) -> Vec<String> {
+    let mut forms = vec![template.to_owned()];
+    for (paired, closed, open) in PARTICLES {
+        let after = format!("}}{paired}");
+        if !template.contains(&after) {
+            continue;
+        }
+        forms = forms
+            .into_iter()
+            .flat_map(|form| [form.clone(), form.replace(&after, &format!("}}{closed}")), form.replace(&after, &format!("}}{open}"))])
+            .collect();
+    }
+    forms
+}
+
+/// Korean's paired particles as a locale writes them, then the form after a
+/// final consonant and the form after a vowel (`ro` the exception: after
+/// a final rieul, the vowel's form).
+const PARTICLES: [(&str, &str, &str); 6] = [
+    ("\u{C774}(\u{AC00})", "\u{C774}", "\u{AC00}"),
+    ("\u{C744}(\u{B97C})", "\u{C744}", "\u{B97C}"),
+    ("\u{C740}(\u{B294})", "\u{C740}", "\u{B294}"),
+    ("\u{ACFC}(\u{C640})", "\u{ACFC}", "\u{C640}"),
+    ("\u{C640}(\u{ACFC})", "\u{ACFC}", "\u{C640}"),
+    ("(\u{C73C})\u{B85C}", "\u{C73C}\u{B85C}", "\u{B85C}"),
+];
+
+/// Which of `closed` and `open` follows `value`, read aloud in Korean: by its
+/// last syllable's final consonant, a digit's Korean name, or a Latin word's
+/// usual reading. `None` where that can't be told — the paired form stays.
+fn particle<'a>(value: &str, closed: &'a str, open: &'a str) -> Option<&'a str> {
+    let ro = closed.ends_with('\u{B85C}');
+    let last = value.trim_end().chars().last()?;
+    // 0: none, 1: rieul, 2: another.
+    let fin = match last {
+        '\u{AC00}'..='\u{D7A3}' => match (last as u32 - 0xAC00) % 28 {
+            0 => 0,
+            8 => 1,
+            _ => 2,
+        },
+        // yeong, il, i, sam, sa, o, yuk, chil, pal, gu
+        '0' | '3' | '6' => 2,
+        '1' | '7' | '8' => 1,
+        '2' | '4' | '5' | '9' => 0,
+        c if c.is_ascii_alphabetic() => {
+            let word = value.trim_end().to_ascii_lowercase();
+            if word.ends_with("le") || word.ends_with('l') {
+                1
+            } else if word.ends_with('m') || word.ends_with('n') || word.ends_with("ng") {
+                2
+            } else {
+                0
+            }
+        }
+        _ => return None,
+    };
+    Some(match fin {
+        0 => open,
+        1 if ro => open,
+        _ => closed,
+    })
 }
 
 /// The `{name}`s a text takes, sorted — what every translation of it must take too.
@@ -631,6 +707,8 @@ pub mod label {
             K::Pnpm => "disk.kind.pnpm",
             K::Yarn => "disk.kind.yarn",
             K::Docker => "disk.kind.docker",
+            K::Recordings => "disk.kind.recordings",
+            K::Attachments => "disk.kind.attachments",
         })
     }
 
@@ -650,6 +728,8 @@ pub mod label {
             W::OldLog => "disk.why.old_log",
             W::Needed => "disk.why.needed",
             W::NotEquipes => "disk.why.not_equipes",
+            W::Sent => "disk.why.sent",
+            W::SentLongAgo => "disk.why.sent_long_ago",
         })
     }
 }
@@ -664,10 +744,12 @@ pub fn waiting_ticket(text: &str) -> Option<crate::protocol::TicketId> {
     Lang::ALL
         .into_iter()
         .any(|lang| {
-            let template = core(lang).get("news.waiting");
-            let Some(tail) = template.strip_prefix("T-{id}") else { return false };
-            let literal = tail.split('{').next().unwrap_or_default();
-            !literal.trim().is_empty() && after.starts_with(literal)
+            // The particle after the id as it took it, or as kept from before.
+            particle_forms(core(lang).get("news.waiting")).iter().any(|template| {
+                let Some(tail) = template.strip_prefix("T-{id}") else { return false };
+                let literal = tail.split('{').next().unwrap_or_default();
+                !literal.trim().is_empty() && after.starts_with(literal)
+            })
         })
         .then_some(id)
 }
@@ -762,6 +844,29 @@ macro_rules! t {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paired_particle_after_a_name_becomes_the_one_it_takes() {
+        let said = |text: &str, name: &str| fill(text, &[("name", name.to_owned())]);
+        assert_eq!(said("✎ {name}이(가) 저장했어요", "pm"), "✎ pm이 저장했어요");
+        assert_eq!(said("{name}이(가)", "backend"), "backend가");
+        assert_eq!(said("{name}이(가)", "mobile"), "mobile이");
+        assert_eq!(said("{name}이(가)", "marketing"), "marketing이");
+        assert_eq!(said("{name}이(가)", "mobile-2"), "mobile-2가");
+        assert_eq!(said("{name}이(가)", "디자이너"), "디자이너가");
+        assert_eq!(said("{name}을(를)", "T-13"), "T-13을");
+        assert_eq!(said("{name}은(는)", "T-12"), "T-12는");
+        assert_eq!(said("{name}(으)로", "서울"), "서울로");
+        assert_eq!(said("{name}(으)로", "부산"), "부산으로");
+        assert_eq!(said("{name}와(과)", "팀"), "팀과");
+        // What can't be read aloud keeps both; elsewhere nothing changes.
+        assert_eq!(said("{name}이(가)", "`x`"), "`x`이(가)");
+        assert_eq!(said("{name} saved it", "pm"), "pm saved it");
+        assert_eq!(said("이(가) {name}", "pm"), "이(가) pm");
+        // Read back: the paired form, and each the value may have taken.
+        assert_eq!(particle_forms("{name}이(가) 왔어요"), ["{name}이(가) 왔어요", "{name}이 왔어요", "{name}가 왔어요"]);
+        assert_eq!(particle_forms("plain {name}"), ["plain {name}"]);
+    }
 
     #[test]
     fn a_locale_tag_names_its_language_whatever_its_shape() {
@@ -974,6 +1079,7 @@ mod tests {
             let line = core(lang).fill("news.waiting", &[("id", "117".into()), ("name", "ios".into()), ("title", "앱스토어 제출".into())]);
             assert_eq!(waiting_ticket(&line), Some(117), "{lang:?}: {line}");
         }
+        assert_eq!(waiting_ticket("T-117이(가) 나를 기다려요 — ios에게 나만 할 수 있는 일이 필요해요 · x."), Some(117), "as kept from before");
         assert_eq!(waiting_ticket("T-4 · Research"), None);
         assert_eq!(waiting_ticket("You accepted T-58 · 헤더."), None);
     }
@@ -984,7 +1090,7 @@ mod tests {
         let who = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
         let state = DesktopState { holder: Some(who("acme", "qa")), queue: vec![who("beta", "pm")], stopped: false };
         assert_eq!(label::desktop(Lang::En, &state, Some("acme")), state.summary(Some("acme")));
-        assert_eq!(label::desktop(Lang::Ko, &state, Some("acme")).as_deref(), Some("qa이(가) 화면 사용 중 · 1명 대기"));
+        assert_eq!(label::desktop(Lang::Ko, &state, Some("acme")).as_deref(), Some("qa가 화면 사용 중 · 1명 대기"));
         let two = DesktopState { queue: vec![who("a", "x"), who("b", "y")], ..DesktopState::default() };
         assert_eq!(label::desktop(Lang::De, &two, None).as_deref(), Some("2 warten"));
         assert_eq!(label::desktop(Lang::En, &DesktopState::default(), None), None);

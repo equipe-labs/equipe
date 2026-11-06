@@ -16,14 +16,20 @@
 //! its absolute path: their worktree doesn't have it. Reads stay inside the
 //! folder (no links out) and are size-limited, as `design/folder.rs` reads.
 //! What equipe once committed into the repositories is copied over, once
-//! ([`keep_from_repos`]), and left where it was.
+//! ([`keep_from_repos`]), and left where it was; a screen is told which older
+//! copies still sit there ([`in_repo`]), and nothing more is done to them.
+//!
+//! A screen sees them all together ([`catalog`]): every project's and the
+//! squad's own, the ones saved under more than one project told apart
+//! ([`copies`]) — the person keeps one and the rest go from the squad's folder
+//! as a change of theirs ([`keep_copy`]) — and found by their words ([`search`]).
 //!
 //! A second opinion on a brief comes from the other engine
 //! (`equipe brief critique`), the way `design::critique` gets one on pictures.
 
 use std::path::{Path, PathBuf};
 
-pub use equipe_protocol::briefs::{DocKind as Kind, ProjectDoc};
+pub use equipe_protocol::briefs::{DocCopies, DocKind as Kind, InRepo, ProjectDoc};
 use equipe_protocol::{Engine, TicketId};
 
 use serde_json::{Value, json};
@@ -177,6 +183,18 @@ pub fn ticket_of(value: &str) -> Option<TicketId> {
     v.parse().ok()
 }
 
+/// The tickets a front matter's list names: `[3, 4]`, `T-3`.
+pub fn tickets_of(value: &str) -> Vec<TicketId> {
+    let inner = value.trim().trim_start_matches('[').trim_end_matches(']');
+    let mut out: Vec<TicketId> = Vec::new();
+    for id in inner.split(',').filter_map(ticket_of) {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
 /// What a brief or plan is, from its file's name and text.
 pub fn doc_of(kind: Kind, project: Option<&str>, path: &Path, text: &str) -> ProjectDoc {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -193,6 +211,7 @@ pub fn doc_of(kind: Kind, project: Option<&str>, path: &Path, text: &str) -> Pro
         status: field(&fields, "status").unwrap_or("draft").to_ascii_lowercase(),
         ticket: field(&fields, "ticket").and_then(ticket_of),
         mode: field(&fields, "mode").map(str::to_ascii_lowercase),
+        tickets: field(&fields, "tickets").map(tickets_of).unwrap_or_default(),
     }
 }
 
@@ -320,24 +339,182 @@ pub fn list(target: &Target) -> Vec<ProjectDoc> {
     out
 }
 
+/// The squad's projects, as its journal keeps them.
+fn projects_of(home: &Path, squad: &str) -> Vec<PathBuf> {
+    let db = crate::journal::squad_dir(home, squad).join("squad.db");
+    if !crate::squads::valid_name(squad) || !db.exists() {
+        return Vec::new();
+    }
+    crate::journal::Journal::open(&db).ok().and_then(|journal| journal.projects().ok()).unwrap_or_default()
+}
+
+/// Every brief and plan in the squad's folder `folder`: each of `projects`',
+/// then its own work's. Nothing is read from a project's repository.
+pub fn docs_in(folder: &Path, projects: &[PathBuf]) -> Vec<ProjectDoc> {
+    let mut out = Vec::new();
+    for project in projects {
+        if let Ok(target) = Target::project(folder, &crate::board::project_name(project)) {
+            out.extend(list(&target));
+        }
+    }
+    out.extend(list(&Target::squad(folder)));
+    out
+}
+
 /// Every brief and plan of `squad`, all in its own folder: each project's,
 /// then its own work's. Nothing is read from a project's repository.
-pub fn catalog(home: &Path, squad: &str) -> Vec<ProjectDoc> {
-    let mut out = Vec::new();
+pub fn docs(home: &Path, squad: &str) -> Vec<ProjectDoc> {
+    if !crate::squads::valid_name(squad) {
+        return Vec::new();
+    }
+    docs_in(&crate::squad_home::path(home, squad), &projects_of(home, squad))
+}
+
+/// What a screen is shown of a squad's briefs and plans.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalog {
+    pub docs: Vec<ProjectDoc>,
+    /// The ones saved under more than one project ([`copies`]).
+    pub copies: Vec<DocCopies>,
+    /// Older copies still in the projects' repositories ([`in_repo`]).
+    pub in_repos: Vec<InRepo>,
+}
+
+/// Every brief and plan of `squad` ([`docs`]), which are saved under more
+/// than one project, and which older copies still sit in the projects'
+/// repositories — those only read, on their main branch.
+pub fn catalog(home: &Path, squad: &str) -> Catalog {
+    if !crate::squads::valid_name(squad) {
+        return Catalog::default();
+    }
     let folder = crate::squad_home::path(home, squad);
-    let db = crate::journal::squad_dir(home, squad).join("squad.db");
-    if crate::squads::valid_name(squad)
-        && db.exists()
-        && let Ok(journal) = crate::journal::Journal::open(&db)
-    {
-        for project in journal.projects().unwrap_or_default() {
-            if let Ok(target) = Target::project(&folder, &crate::board::project_name(&project)) {
-                out.extend(list(&target));
+    let projects = projects_of(home, squad);
+    let docs = docs_in(&folder, &projects);
+    let copies = copies(&folder, &docs);
+    let in_repos = projects.iter().filter_map(|repo| Target::project(&folder, &crate::board::project_name(repo)).ok().map(|t| in_repo(repo, &t))).flatten().collect();
+    Catalog { docs, copies, in_repos }
+}
+
+/// What the brief or plan at `path` (a [`ProjectDoc::path`]) says, when it is
+/// one of the squad's folder `folder` — read there and nowhere else, never
+/// through a link out, no further than [`MAX`].
+pub fn text_of(folder: &Path, path: &str) -> Option<Vec<u8>> {
+    let path = Path::new(path);
+    Target::of_path(folder, path)?;
+    let rel = path.strip_prefix(folder).ok()?.to_string_lossy().into_owned();
+    let mut bytes = inside(folder, &rel, MAX)?;
+    bytes.truncate(MAX as usize);
+    Some(bytes)
+}
+
+/// The briefs and plans of `docs` whose title or words hold `query`, in any
+/// case: their paths, in `docs`' order. Nothing for an empty query, or one
+/// longer than a line.
+pub fn search(folder: &Path, docs: &[ProjectDoc], query: &str) -> Vec<String> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() || query.chars().count() > 200 {
+        return Vec::new();
+    }
+    docs.iter()
+        .filter(|d| d.title.to_lowercase().contains(&query) || text_of(folder, &d.path).is_some_and(|bytes| String::from_utf8_lossy(&bytes).to_lowercase().contains(&query)))
+        .map(|d| d.path.clone())
+        .collect()
+}
+
+/// A doc's slug: what its name holds after the date, else its name.
+fn slug_of(doc: &ProjectDoc) -> &str {
+    let name = doc.file_name();
+    parse_name(name).map_or(name.trim_end_matches(".md"), |(_, slug)| slug)
+}
+
+/// The set `i` is in: the first doc of it.
+fn set_of(set: &mut [usize], mut i: usize) -> usize {
+    while set[i] != i {
+        set[i] = set[set[i]];
+        i = set[i];
+    }
+    i
+}
+
+/// The briefs and plans of `docs` saved under more than one project of the
+/// squad's folder `folder` (the squad's own work being one more): of a kind,
+/// with the same slug (the same file name, or another day's) and title, or
+/// the same words (a copy [`keep_from_repos`] made under another name). Each
+/// set once, its newest first, the sets newest first; `differ` when their
+/// words aren't all the same. The same name with another title is another
+/// project's own.
+pub fn copies(folder: &Path, docs: &[ProjectDoc]) -> Vec<DocCopies> {
+    let texts: Vec<Option<Vec<u8>>> = docs.iter().map(|d| text_of(folder, &d.path)).collect();
+    let same = |a: usize, b: usize| {
+        let (x, y) = (&docs[a], &docs[b]);
+        x.kind == y.kind
+            && x.project != y.project
+            && (slug_of(x) == slug_of(y) && x.title.trim().eq_ignore_ascii_case(y.title.trim()) || texts[a].as_ref().is_some_and(|t| !t.is_empty() && Some(t) == texts[b].as_ref()))
+    };
+    // Sets joined as they are found: each doc points towards its set's first.
+    let mut set: Vec<usize> = (0..docs.len()).collect();
+    for a in 0..docs.len() {
+        for b in a + 1..docs.len() {
+            if same(a, b) {
+                let (ra, rb) = (set_of(&mut set, a), set_of(&mut set, b));
+                set[ra.max(rb)] = ra.min(rb);
             }
         }
     }
-    out.extend(list(&Target::squad(&folder)));
-    out
+    let mut out: Vec<(String, DocCopies)> = Vec::new();
+    for root in 0..docs.len() {
+        let mut members: Vec<usize> = (0..docs.len()).filter(|&i| set_of(&mut set, i) == root).collect();
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_by(|&a, &b| docs[b].date.cmp(&docs[a].date).then_with(|| docs[a].path.cmp(&docs[b].path)));
+        let differ = members.iter().any(|&i| texts[i].is_none() || texts[i] != texts[members[0]]);
+        let newest = &docs[members[0]];
+        out.push((newest.date.clone(), DocCopies { kind: newest.kind, title: newest.title.clone(), paths: members.iter().map(|&i| docs[i].path.clone()).collect(), differ }));
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.paths.cmp(&b.1.paths)));
+    out.into_iter().map(|(_, c)| c).collect()
+}
+
+/// One copy kept ([`keep_copy`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    pub kind: Kind,
+    pub title: String,
+    pub kept: String,
+    /// The other copies, gone from the squad's folder.
+    pub removed: Vec<String>,
+    /// The person's change that removed them, to take back; `None` when the
+    /// folder isn't a git repository.
+    pub change: Option<crate::squad_home::Change>,
+}
+
+/// Keep the copy at `keep` of a brief or plan `docs` has under more than one
+/// project ([`copies`]) and remove the others from the squad's folder
+/// `folder` — files of their own inside it, never a link out, never anything
+/// in a repository — saved as one change of the person's, which can be taken
+/// back as every change there is. What the person changed in them themselves
+/// is saved as theirs first.
+pub fn keep_copy(folder: &Path, docs: &[ProjectDoc], keep: &str) -> Result<Kept, String> {
+    let set = copies(folder, docs).into_iter().find(|c| c.paths.iter().any(|p| p == keep)).ok_or("That isn't one of several copies of a brief or plan any more.")?;
+    let mut rels = Vec::new();
+    let mut removed = Vec::new();
+    for path in set.paths.iter().filter(|p| *p != keep) {
+        let at = Path::new(path);
+        let own_file = Target::of_path(folder, at).is_some() && std::fs::symlink_metadata(at).is_ok_and(|m| m.is_file()) && text_of(folder, path).is_some();
+        let Some(rel) = at.strip_prefix(folder).ok().filter(|_| own_file) else {
+            return Err(format!("{path} isn't a file of the squad's folder; nothing was removed."));
+        };
+        rels.push(rel.to_string_lossy().into_owned());
+        removed.push(path.clone());
+    }
+    let rels: Vec<&str> = rels.iter().map(String::as_str).collect();
+    let _ = crate::squad_home::save_in(folder, crate::squad_home::PERSON, "changed in the squad's folder", &rels);
+    for path in &removed {
+        std::fs::remove_file(path).map_err(|e| format!("{path}: {e}"))?;
+    }
+    let change = crate::squad_home::save_in(folder, crate::squad_home::PERSON, &format!("kept one copy of the {} {}", set.kind.word(), set.title), &rels)?;
+    Ok(Kept { kind: set.kind, title: set.title, kept: keep.to_owned(), removed, change })
 }
 
 /// The name of `kind`'s file with `slug`, when there is one — the earliest
@@ -434,9 +611,9 @@ pub struct LeftInRepo {
 }
 
 /// The briefs and plans equipe wrote into `repo` (on its main branch, else
-/// in its folder) that `target` doesn't have yet. Only read: the repository
-/// is left as it is.
-pub fn left_in_repo(repo: &Path, target: &Target) -> Vec<LeftInRepo> {
+/// in its folder), each with its kind, its name and what it says — but those
+/// `skip` names. Only read: the repository is left as it is.
+fn written_into(repo: &Path, skip: impl Fn(Kind, &str) -> bool) -> Vec<(Kind, String, Vec<u8>)> {
     let main = worktree::main_branch(repo).ok();
     let mut out = Vec::new();
     for kind in Kind::ALL {
@@ -444,8 +621,7 @@ pub fn left_in_repo(repo: &Path, target: &Target) -> Vec<LeftInRepo> {
             Some(_) => worktree::names_on_main(repo, kind.dir()).unwrap_or_default(),
             None => names_in(&repo.join(kind.dir())),
         };
-        let have = target.names(kind);
-        for name in names.into_iter().filter(|n| n.ends_with(".md") && !have.contains(n)) {
+        for name in names.into_iter().filter(|n| n.ends_with(".md") && !skip(kind, n)) {
             let from = format!("{}/{name}", kind.dir());
             let bytes = match &main {
                 Some(main) => worktree::read_blob(repo, main, Path::new(&from), MAX).ok(),
@@ -453,11 +629,35 @@ pub fn left_in_repo(repo: &Path, target: &Target) -> Vec<LeftInRepo> {
             };
             let Some(bytes) = bytes.filter(|b| b.len() as u64 <= MAX) else { continue };
             if written_by_equipe(kind, &name, &String::from_utf8_lossy(&bytes)) {
-                out.push(LeftInRepo { kind, from, to: target.path(kind, &name), bytes });
+                out.push((kind, name, bytes));
             }
         }
     }
     out
+}
+
+/// The briefs and plans equipe wrote into `repo` (on its main branch, else
+/// in its folder) that `target` doesn't have yet. Only read: the repository
+/// is left as it is.
+pub fn left_in_repo(repo: &Path, target: &Target) -> Vec<LeftInRepo> {
+    let have: Vec<(Kind, Vec<String>)> = Kind::ALL.into_iter().map(|k| (k, target.names(k))).collect();
+    let had = |kind: Kind, name: &str| have.iter().any(|(k, names)| *k == kind && names.iter().any(|n| n == name));
+    written_into(repo, had).into_iter().map(|(kind, name, bytes)| LeftInRepo { kind, from: format!("{}/{name}", kind.dir()), to: target.path(kind, &name), bytes }).collect()
+}
+
+/// Every brief and plan equipe once committed into `repo` that still sits
+/// there, with the squad folder's copy of each where `target` has one — for
+/// the person to know of. Only read: nothing is done to the repository.
+pub fn in_repo(repo: &Path, target: &Target) -> Vec<InRepo> {
+    let project = target.project_name().unwrap_or_default().to_owned();
+    written_into(repo, |_, _| false)
+        .into_iter()
+        .map(|(kind, name, _)| {
+            let copy = target.path(kind, &name);
+            let kept = std::fs::symlink_metadata(&copy).is_ok_and(|m| m.is_file()).then(|| copy.to_string_lossy().into_owned());
+            InRepo { project: project.clone(), kind, path: format!("{}/{name}", kind.dir()), kept }
+        })
+        .collect()
 }
 
 /// Copy what equipe once wrote into the squad's `projects` into the squad's
@@ -846,6 +1046,171 @@ mod tests {
         assert!(git(&dir, &["status", "--porcelain"]).is_empty());
         assert!(dir.join("docs/briefs/2026-11-04-checkout.md").is_file());
         assert!(keep_from_repos(&folder, std::slice::from_ref(&dir)).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(folder.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    /// A plan, as the PM's `write_plan` leaves it.
+    fn plan(title: &str, date: &str, tickets: &str, body: &str) -> String {
+        format!("---\ntitle: {title}\ndate: {date}\nstatus: in_review\ntickets: {tickets}\n---\n\n{body}\n")
+    }
+
+    #[test]
+    fn a_plans_tickets_and_a_briefs_ticket_are_read_from_their_front_matter() {
+        let doc = doc_of(Kind::Plan, Some("web"), Path::new("/h/docs/web/plans/2026-11-04-checkout.md"), &plan("Checkout plan", "2026-11-04", "[42, 51, 42]", "Steps."));
+        assert_eq!((doc.ticket, doc.tickets.clone()), (None, vec![42, 51]), "each once");
+        assert_eq!(doc.ticket_ids(), [42, 51]);
+        assert_eq!(doc.file_name(), "2026-11-04-checkout.md");
+        let listed = doc_of(Kind::Plan, None, Path::new("/h/docs/plans/a.md"), "---\ntitle: A\ntickets:\n  - T-3\n  - 4\n---\n");
+        assert_eq!(listed.tickets, [3, 4], "a list under its key, T- and all");
+        let brief = doc_of(Kind::Brief, Some("web"), Path::new("/h/docs/web/briefs/2026-11-04-checkout.md"), BRIEF);
+        assert_eq!((brief.ticket_ids(), brief.tickets.is_empty()), (vec![12], true));
+        assert_eq!(tickets_of("[soon, 7]"), [7]);
+    }
+
+    /// Writes `text` at `rel` in `folder`, its folders made.
+    fn put(folder: &Path, rel: &str, text: &str) {
+        let at = folder.join(rel);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, text).unwrap();
+    }
+
+    #[test]
+    fn every_project_and_the_squads_own_are_listed_and_found_by_title_or_words() {
+        let folder = scratch("all");
+        put(&folder, "docs/web/briefs/2026-11-02-checkout.md", BRIEF);
+        put(&folder, "docs/web/plans/2026-11-03-checkout.md", &plan("Checkout plan", "2026-11-03", "[42]", "Pin the summary to the bottom."));
+        put(&folder, "docs/api/briefs/2026-11-04-rate-limits.md", "---\ntitle: Rate limits\ndate: 2026-11-04\nstatus: draft\n---\n\nOne partner's burst never slows the others.\n");
+        put(&folder, "docs/plans/2026-11-05-offsite.md", "---\ntitle: Team offsite\ndate: 2026-11-05\nstatus: draft\n---\n\nA SUMMARY of the trip.\n");
+        let outside = scratch("all-outside");
+        put(&outside, "secret.md", "---\ntitle: summary outside\n---\nsummary\n");
+        std::os::unix::fs::symlink(outside.join("secret.md"), folder.join("docs/web/plans/2026-11-06-link.md")).unwrap();
+        let projects = [PathBuf::from("/code/web"), PathBuf::from("/code/api")];
+        let docs = docs_in(&folder, &projects);
+        let listed: Vec<(Option<&str>, &str)> = docs.iter().map(|d| (d.project.as_deref(), d.title.as_str())).collect();
+        assert_eq!(listed, [(Some("web"), "Checkout: one tap"), (Some("web"), "Checkout plan"), (Some("api"), "Rate limits"), (None, "Team offsite")], "the squad's own too; a link out is no doc");
+        // Its words, any case; its title; never what is outside the folder.
+        let found = |q: &str| search(&folder, &docs, q).into_iter().map(|p| p.rsplit('/').next().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(found("summary"), ["2026-11-03-checkout.md", "2026-11-05-offsite.md"]);
+        assert_eq!(found("RATE"), ["2026-11-04-rate-limits.md"]);
+        assert_eq!(found("one tap"), ["2026-11-02-checkout.md"], "the title");
+        assert!(found("  ").is_empty() && found(&"x".repeat(201)).is_empty());
+        assert!(text_of(&folder, &outside.join("secret.md").to_string_lossy()).is_none(), "nothing outside the squad's folder is read");
+        assert!(text_of(&folder, &folder.join("docs/web/plans/2026-11-06-link.md").to_string_lossy()).is_none());
+        let _ = std::fs::remove_dir_all(&folder);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn the_same_doc_under_two_projects_is_one_set_told_apart_when_their_words_differ() {
+        let folder = scratch("copies");
+        // The same plan saved under both projects — edited since in one.
+        put(&folder, "docs/sf/plans/2026-11-04-your-block.md", &plan("Your block, unfiltered", "2026-11-04", "[4]", "Steps."));
+        put(&folder, "docs/block/plans/2026-11-04-your-block.md", &plan("Your block, unfiltered", "2026-11-04", "[4]", "Steps, and one more."));
+        // A brief copied word for word under another name, and one under the squad's own.
+        put(&folder, "docs/sf/briefs/2026-11-01-map.md", BRIEF);
+        put(&folder, "docs/block/briefs/2026-11-02-map-copy.md", BRIEF);
+        // The same slug and title on another day: the same doc.
+        put(&folder, "docs/plans/2026-10-30-your-block.md", &plan("Your block, unfiltered", "2026-10-30", "[]", "Steps."));
+        // A later one under the slug and title in sf: one more of them, through block's.
+        put(&folder, "docs/sf/plans/2026-11-05-your-block.md", &plan("Your block, unfiltered", "2026-11-05", "[5]", "Other."));
+        // Not copies: the same name with another title (another project's own
+        // launch), and another kind.
+        put(&folder, "docs/sf/briefs/2026-11-03-launch.md", "---\ntitle: Launch\n---\n");
+        put(&folder, "docs/block/briefs/2026-11-03-launch.md", "---\ntitle: Launch week\n---\n");
+        put(&folder, "docs/block/plans/2026-11-03-launch.md", "---\ntitle: Launch\n---\n");
+        let docs = docs_in(&folder, &[PathBuf::from("/code/sf"), PathBuf::from("/code/block")]);
+        let sets = copies(&folder, &docs);
+        let rel = |p: &str| p.strip_prefix(&format!("{}/", folder.display())).unwrap().to_owned();
+        let seen: Vec<(Kind, Vec<String>, bool)> = sets.iter().map(|c| (c.kind, c.paths.iter().map(|p| rel(p)).collect(), c.differ)).collect();
+        assert_eq!(
+            seen,
+            [
+                (Kind::Plan, vec!["docs/sf/plans/2026-11-05-your-block.md".to_owned(), "docs/block/plans/2026-11-04-your-block.md".into(), "docs/sf/plans/2026-11-04-your-block.md".into(), "docs/plans/2026-10-30-your-block.md".into()], true),
+                (Kind::Brief, vec!["docs/block/briefs/2026-11-02-map-copy.md".to_owned(), "docs/sf/briefs/2026-11-01-map.md".into()], false),
+            ],
+            "the same slug and title, or the same words; newest first"
+        );
+        assert_eq!(sets[0].title, "Your block, unfiltered");
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn keeping_one_copy_removes_the_others_from_the_squads_folder_only_and_can_be_taken_back() {
+        let dir = repo("keep-repo");
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join("docs/plans/2026-11-04-your-block.md"), plan("Your block, unfiltered", "2026-11-04", "[4]", "Steps.")).unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "plan"]);
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+        let folder = squad_folder("keep-home");
+        let (sf, block) = (Target::project(&folder, "sf").unwrap(), Target::project(&folder, "block").unwrap());
+        let kept = save(&sf, Kind::Plan, "your-block", &plan("Your block, unfiltered", "2026-11-04", "[4]", "Steps."), "2026-11-04", "pm").unwrap();
+        let other = save(&block, Kind::Plan, "your-block", &plan("Your block, unfiltered", "2026-11-04", "[4]", "Steps, and one more."), "2026-11-04", "pm").unwrap();
+        // The person changed the other one themselves: saved as theirs first.
+        std::fs::write(&other, plan("Your block, unfiltered", "2026-11-04", "[4]", "My own words.")).unwrap();
+        let docs = docs_in(&folder, &[PathBuf::from("/code/sf"), PathBuf::from("/code/block")]);
+        assert!(keep_copy(&folder, &docs, "/elsewhere/docs/sf/plans/x.md").is_err(), "only one of a set");
+        let done = keep_copy(&folder, &docs, &kept.to_string_lossy()).unwrap();
+        assert_eq!((done.kind, done.title.as_str(), done.removed.clone()), (Kind::Plan, "Your block, unfiltered", vec![other.to_string_lossy().into_owned()]));
+        assert!(kept.is_file() && !other.exists());
+        let change = done.change.clone().unwrap();
+        assert_eq!((change.by.as_str(), change.why.as_str()), (crate::squad_home::PERSON, "kept one copy of the plan Your block, unfiltered"));
+        assert_eq!(change.files, [("removed", "docs/block/plans/2026-11-04-your-block.md".to_owned())]);
+        assert_eq!(crate::squad_home::changes(&folder, 2).unwrap()[1].why, "changed in the squad's folder", "their own words kept first");
+        assert!(copies(&folder, &docs_in(&folder, &[PathBuf::from("/code/sf"), PathBuf::from("/code/block")])).is_empty());
+        // Taken back as every change to the folder is: their own words again.
+        crate::squad_home::undo_change(&folder, &change.id).unwrap();
+        assert!(std::fs::read_to_string(&other).unwrap().contains("My own words."));
+        // The repository: never touched.
+        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+        assert!(git(&dir, &["status", "--porcelain", "--untracked-files=all"]).is_empty());
+        assert!(dir.join("docs/plans/2026-11-04-your-block.md").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(folder.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_copy_that_is_a_link_out_is_never_removed_and_nothing_else_is_either() {
+        let folder = scratch("keep-link");
+        let outside = scratch("keep-link-outside");
+        put(&folder, "docs/sf/plans/2026-11-04-x.md", &plan("X", "2026-11-04", "[1]", "a"));
+        put(&folder, "docs/block/plans/2026-11-04-x.md", &plan("X", "2026-11-04", "[1]", "b"));
+        let docs = docs_in(&folder, &[PathBuf::from("/code/sf"), PathBuf::from("/code/block"), PathBuf::from("/code/web")]);
+        // After the list was read, one copy became a link to a file outside.
+        put(&outside, "x.md", &plan("X", "2026-11-04", "[1]", "b"));
+        std::fs::remove_file(folder.join("docs/block/plans/2026-11-04-x.md")).unwrap();
+        std::os::unix::fs::symlink(outside.join("x.md"), folder.join("docs/block/plans/2026-11-04-x.md")).unwrap();
+        assert!(keep_copy(&folder, &docs, &folder.join("docs/sf/plans/2026-11-04-x.md").to_string_lossy()).is_err());
+        assert!(outside.join("x.md").is_file() && folder.join("docs/block/plans/2026-11-04-x.md").exists());
+        let _ = std::fs::remove_dir_all(&folder);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn an_older_copy_left_in_a_repository_is_told_with_its_copy_and_left_there() {
+        let dir = repo("in-repo");
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/briefs")).unwrap();
+        std::fs::write(dir.join("docs/plans/2026-11-05-checkout.md"), plan("Plan", "2026-11-05", "[3]", "x")).unwrap();
+        std::fs::write(dir.join("docs/briefs/2026-11-04-checkout.md"), BRIEF).unwrap();
+        std::fs::write(dir.join("docs/briefs/2026-11-01-press.md"), "# Press brief\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "docs"]);
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+        let folder = squad_folder("in-repo-home");
+        let target = Target::project(&folder, &crate::board::project_name(&dir)).unwrap();
+        keep_from_repos(&folder, std::slice::from_ref(&dir)).unwrap();
+        let told = in_repo(&dir, &target);
+        let seen: Vec<(Kind, &str, bool)> = told.iter().map(|r| (r.kind, r.path.as_str(), r.kept.is_some())).collect();
+        assert_eq!(seen, [(Kind::Brief, "docs/briefs/2026-11-04-checkout.md", true), (Kind::Plan, "docs/plans/2026-11-05-checkout.md", true)], "equipe's only, each with its copy");
+        assert_eq!(told[1].kept.as_deref(), Some(target.path(Kind::Plan, "2026-11-05-checkout.md").to_string_lossy().as_ref()));
+        assert!(told.iter().all(|r| r.project == crate::board::project_name(&dir)));
+        // Its copy gone from the squad's folder: still told, with none.
+        std::fs::remove_file(target.path(Kind::Plan, "2026-11-05-checkout.md")).unwrap();
+        assert_eq!(in_repo(&dir, &target)[1].kept, None);
+        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+        assert!(git(&dir, &["status", "--porcelain", "--untracked-files=all"]).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(folder.parent().unwrap().parent().unwrap().parent().unwrap());
     }

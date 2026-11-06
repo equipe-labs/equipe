@@ -198,7 +198,11 @@ through SSH instead of the socket file.
   checks every request as it does for a local screen.
 - `upload` writes only images (`png jpg jpeg gif webp`, ≤ 40 MB) under
   `~/.equipe/uploads`, 0600 in 0700, under a name equipe chooses — the screen
-  can't pick where. Uploads older than 7 days are swept when the next one arrives.
+  can't pick where. An upload no sent message names (a draft given up) is swept
+  7 days on, when the next one arrives; what a sent message attached stays until
+  the person removes it (the Disk panel), and a text file's words (a voice memo
+  written down, a long paste) are kept with the message itself — see
+  `crates/core/src/kept.rs`.
 
 ### What the app does on this Mac, and over SSH
 

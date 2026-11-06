@@ -1,7 +1,8 @@
-//! Both engines, drawn: two small meters at the sidebar's foot, once either
-//! plan was read — what is left of each engine's five hours and week, the
-//! reset on the pointer, a click opens `/usage`, foldable to the tightest
-//! window — and that window in the title bar while the sidebar is away; the
+//! Both engines, drawn: small meters at the sidebar's foot, once either plan
+//! was read — how much of each engine's five hours and week is used, a bar
+//! that fills as it is, the weekly one with its even-pace mark, the reset on
+//! the pointer, a click opens `/usage`, foldable to the window used most —
+//! and that window in the title bar while the sidebar is away; the
 //! card above the composer — "Engine switch" with [Move] [Not this time],
 //! what equipe did in `auto` with [Undo], the recommended
 //! setup once with [Apply] [Later], each with who moves from what to what; and
@@ -27,14 +28,40 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// A window's colour by how low it runs: quiet, then amber, orange, red.
-fn tone_color(p: Palette, tone: Tone) -> Rgba {
+/// A window's colour by how used it is: `calm`, then amber from 80%, red
+/// from 95% — the same everywhere a plan's use shows.
+pub fn tone_color(p: Palette, tone: Tone, calm: Rgba) -> Rgba {
     match tone {
-        Tone::Calm => p.text2,
-        Tone::Watch => p.amber,
-        Tone::Low => p.orange,
-        Tone::Out => p.red,
+        Tone::Calm => calm,
+        Tone::Near => p.amber,
+        Tone::Critical | Tone::Out => p.red,
     }
+}
+
+/// A meter, not a progress bar: a track that fills as the window is used,
+/// in its tone's colour, and on a weekly window the even-pace mark — where
+/// its use would be by now if spread evenly (`rules::even_pace`). The mark
+/// stands out of the track, so it reads over the fill and the track alike.
+pub fn meter_bar(p: Palette, used: u8, color: Rgba, pace: Option<f32>, height: f32) -> Div {
+    let fill = (f32::from(used.min(100)) / 100.).clamp(0., 1.);
+    let round = px(height / 2.);
+    div()
+        .relative()
+        .h(px(height))
+        .rounded(round)
+        .bg(p.hair)
+        .child(div().h_full().w(relative(fill)).rounded(round).bg(color))
+        .children(pace.map(|at| {
+            div()
+                .absolute()
+                .top(px(-2.))
+                .bottom(px(-2.))
+                .left(relative(at.clamp(0., 1.)))
+                .ml(px(-1.))
+                .w(px(2.))
+                .rounded(px(1.))
+                .bg(p.text)
+        }))
 }
 
 impl Shell {
@@ -66,9 +93,9 @@ impl Shell {
 // ── the sidebar's meters ──
 
 /// Both engines' plans, pinned above the team, as soon as either was read:
-/// a row each — what is left of each window, the reset on the pointer, how
-/// old a reading is once it isn't sure — a click opens `/usage`. The heading
-/// folds them (kept per Mac) to the tightest window alone.
+/// each engine's windows a row apiece — how much is used, the reset on the
+/// pointer, how old a reading is once it isn't sure — a click opens
+/// `/usage`. The heading folds them (kept per Mac) to the window used most.
 pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
@@ -82,10 +109,10 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         return None;
     }
     let folded = shell.remembered.usage_folded;
-    // Folded, the heading keeps the one window that runs lowest in sight.
+    // Folded, the heading keeps the window used most in sight.
     let glance = rules::tightest(&meters).filter(|_| folded).map(|(engine, g)| {
         let stale = meters.iter().any(|m| m.engine == engine && m.stale);
-        let color = if stale || g.tone == Tone::Calm { p.muted } else { tone_color(p, g.tone) };
+        let color = if stale { p.muted } else { tone_color(p, g.tone, p.muted) };
         div().font_weight(FontWeight::NORMAL).text_size(px(11.)).text_color(color).child(rules::glance(engine, &g))
     });
     let head = h_flex()
@@ -99,7 +126,7 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .cursor_pointer()
         .hover(move |s| s.bg(p.side_hover))
         .aria_expanded(!folded)
-        .aria_label(t!("engines.usage_left"))
+        .aria_label(t!("engines.usage_title"))
         .on_click(cx.listener(|this, _, _, cx| {
             this.remembered.usage_folded = !this.remembered.usage_folded;
             this.remembered.save(&equipe_providers::credentials::equipe_home());
@@ -117,53 +144,53 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .justify_center()
                 .child(crate::views::sidebar::icon(if folded { IconName::ChevronRight } else { IconName::ChevronDown }, 12., p.muted)),
         )
-        .child(div().min_w_0().truncate().child(t!("engines.usage_left")))
+        .child(div().min_w_0().truncate().child(t!("engines.usage_title")))
         .child(div().flex_1())
         .children(glance)
         .when(!folded, |h| h.child(div().flex_none().font_weight(FontWeight::NORMAL).text_size(px(11.)).child(rules::mode_word(model.engines.mode))))
         .children(waiting.then(|| div().flex_none().size(px(6.)).rounded_full().bg(p.accent)));
-    // The windows any plan has, in order: a slot no plan fills would only
-    // push the others aside (both plans weekly-only: one column, not two).
-    let windows: Vec<Window> = [Window::FiveHour, Window::Weekly].into_iter().filter(|w| meters.iter().any(|m| m.gauges.iter().any(|g| g.window == *w))).collect();
-    let rows: Vec<AnyElement> = if folded { Vec::new() } else { meters.iter().map(|m| meter_row(shell, m, &windows, now, cx)).collect() };
+    let rows: Vec<AnyElement> = if folded { Vec::new() } else { meters.iter().map(|m| meter_rows(shell, m, now, cx)).collect() };
     // Its hairline above is the sidebar's, to drag (`sidebar::split_area`).
     Some(v_flex().flex_none().pt(px(6.)).pb_1().child(head).children(rows).into_any_element())
 }
 
-/// One engine: its name, then each window — a short label, a thin bar of
-/// what is left, the percent left — and under it, once a reading is old, how
-/// old. Never read: "not read yet" and how it gets read.
-fn meter_row(shell: &Shell, m: &Meter, windows: &[Window], now: i64, cx: &mut Context<Shell>) -> AnyElement {
+/// One engine: its name, then a row per window — a short label, a bar that
+/// fills as it is used, "42% used" — and under them, once a reading is old,
+/// how old. Never read: "not read yet" and how it gets read.
+fn meter_rows(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let name = rules::engine_name(m.engine);
-    let mut row = h_flex()
-        .h(px(24.))
-        .gap(px(8.))
-        .items_center()
-        .child(
-            div()
-                .id(SharedString::from(format!("meter-name-{name}")))
-                .w(px(NAME_W))
-                .flex_none()
-                .text_size(px(12.))
-                .text_color(if m.read_at.is_some() { p.text2 } else { p.muted })
-                .tip_at(p, rules::read_words(m, now), None, gpui_kit::base::Placement::Right)
-                .child(name),
-        );
+    let name_cell = |first: bool| {
+        div()
+            .id(SharedString::from(format!("meter-name-{name}-{first}")))
+            .w(px(NAME_W))
+            .flex_none()
+            .text_size(px(12.))
+            .text_color(if m.read_at.is_some() { p.text2 } else { p.muted })
+            .when(first, |d| d.tip_at(p, rules::read_words(m, now), None, gpui_kit::base::Placement::Right).child(name))
+    };
+    let row = || h_flex().h(px(ROW_H)).gap(px(8.)).items_center();
+    let mut lines: Vec<AnyElement> = Vec::new();
     if m.read_at.is_none() {
         let (words, how) = rules::unread_words(m.engine);
-        row = row.child(
-            div()
-                .id(SharedString::from(format!("meter-unread-{name}")))
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_size(px(11.5))
-                .text_color(p.muted)
-                .tip_at(p, how, None, gpui_kit::base::Placement::Right)
-                .child(words),
+        lines.push(
+            row()
+                .h(px(24.))
+                .child(name_cell(true))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("meter-unread-{name}")))
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(11.5))
+                        .text_color(p.muted)
+                        .tip_at(p, how, None, gpui_kit::base::Placement::Right)
+                        .child(words),
+                )
+                .into_any_element(),
         );
     } else if m.gauges.is_empty() {
         // Read, but a plan with no five-hour or weekly window (a free one): its kind.
@@ -171,100 +198,96 @@ fn meter_row(shell: &Shell, m: &Meter, windows: &[Window], now: i64, cx: &mut Co
             Some(kind) => t!("engines.plan_no_windows", plan = crate::engines::title_case(&kind)),
             None => t!("engines.not_yet").to_owned(),
         };
-        row = row.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(p.muted).child(words));
+        lines.push(
+            row()
+                .h(px(24.))
+                .child(name_cell(true))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(p.muted).child(words))
+                .into_any_element(),
+        );
     } else {
-        // One slot per window, the same on every row: a plan with only a weekly
-        // window keeps its bar under the others' weekly bar, not across both.
-        // A narrow sidebar has no room for the bars: the label and percent alone.
-        let bars = shell.board.sidebar_width >= bars_from(windows.len());
-        for &window in windows {
-            row = row.child(match m.gauges.iter().find(|g| g.window == window) {
-                Some(g) => gauge(p, m, g, now, bars),
-                None => div().flex_1().min_w(px(if bars { GAUGE_MIN } else { 0. })).into_any_element(),
-            });
+        for (i, g) in m.gauges.iter().enumerate() {
+            lines.push(row().child(name_cell(i == 0)).child(gauge(p, m, g, now)).into_any_element());
         }
     }
-    // An old reading says how old, under the windows it is about.
     // An old reading says how old, a caption under the engine's name.
-    let age = rules::age_words(m, now).map(|words| div().h(px(14.)).mt(px(-4.)).mb(px(2.)).text_size(px(10.5)).text_color(p.muted).truncate().child(words));
+    let age = rules::age_words(m, now).map(|words| div().h(px(14.)).mb(px(2.)).text_size(px(10.5)).text_color(p.muted).truncate().child(words));
     v_flex()
         .id(SharedString::from(format!("meter-{name}")))
         .mx_2()
         .px_2()
+        .py(px(2.))
         .rounded(px(6.))
         .cursor_pointer()
         .hover(move |s| s.bg(p.side_hover))
         .on_click(cx.listener(|this, _, window, cx| this.apply_effect(crate::compose::Effect::Usage, window, cx)))
-        .child(row)
+        .children(lines)
         .children(age)
         .into_any_element()
 }
 
 /// The engine's name's column.
 const NAME_W: f32 = 42.;
-/// A gauge's least width with its bar: label, gaps, a sliver of bar, percent.
-const GAUGE_MIN: f32 = LABEL_W + 4. + 8. + 4. + PERCENT_W;
+/// A window's row, under the engine's name.
+const ROW_H: f32 = 20.;
 const LABEL_W: f32 = 16.;
-const PERCENT_W: f32 = 30.;
-/// The sidebar width a row's bars fit in, for `slots` windows: its margins
-/// and padding, the engine's name, each gauge at its least and the gaps.
-fn bars_from(slots: usize) -> f32 {
-    16. + 16. + NAME_W + 8. + slots.max(1) as f32 * (GAUGE_MIN + 8.)
-}
+/// The least the words beside a bar get: "100% used" in English.
+const USED_W: f32 = 52.;
+/// The least a bar is drawn at: narrower, the words alone.
+const BAR_MIN: f32 = 18.;
 
-/// A window: what is left of it, as a bar that empties and its percent —
-/// quiet while calm, coloured once watched, low or out; grey when the
-/// reading is old.
-fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64, bars: bool) -> AnyElement {
-    let color = if m.stale { p.muted } else { tone_color(p, g.tone) };
-    let words = rules::left_words(g, now, crate::usage::local_time);
-    let fill = (f32::from(g.left()) / 100.).clamp(0., 1.);
+/// A window: its label, a bar that fills as it is used — the weekly one
+/// with its even-pace mark — and "42% used"; out, "Limit reached · resets
+/// in 2h" in the bar's place. Quiet while calm, amber from 80%, red from
+/// 95%; grey when the reading is old. A meter to a screen reader, its words
+/// and the mark's on the pointer.
+fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
+    let color = if m.stale { p.muted } else { tone_color(p, g.tone, p.text2) };
+    let out = g.tone == Tone::Out;
+    let words_color = if g.tone >= Tone::Near && !m.stale { color } else { p.muted };
     h_flex()
         .id(SharedString::from(format!("gauge-{}-{:?}", rules::engine_name(m.engine), g.window)))
         .flex_1()
-        // Its label, a sliver of bar and its percent never run into the next.
-        .min_w(px(if bars { GAUGE_MIN } else { 0. }))
+        .min_w_0()
         .overflow_hidden()
         .whitespace_nowrap()
         .gap(px(4.))
         .items_center()
-        .when(!bars, |g| g.justify_end())
-        .tip_at(p, words, None, gpui_kit::base::Placement::Right)
+        .role(Role::Meter)
+        .aria_numeric_value(f64::from(g.percent))
+        .aria_min_numeric_value(0.)
+        .aria_max_numeric_value(100.)
+        .tip_at(p, rules::used_words(m.engine, g, now, crate::usage::local_time), None, gpui_kit::base::Placement::Right)
+        // After the tip: its first line would name it without the engine.
+        .aria_label(rules::gauge_aria(m.engine, g))
         .child(div().flex_none().w(px(LABEL_W)).text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
-        .when(bars, |gauge| gauge.child(
-            div()
-                .flex_1()
-                .min_w(px(6.))
-                .h(px(4.))
-                .rounded(px(2.))
-                .bg(p.hair)
-                .overflow_hidden()
-                .child(div().h_full().w(relative(fill)).rounded(px(2.)).bg(color)),
-        ))
+        .when(!out, |row| row.child(meter_bar(p, g.percent, color, g.pace(now), 4.).flex_1().min_w(px(BAR_MIN))))
         .child(
             div()
-                .flex_none()
-                .w(px(PERCENT_W))
-                .text_right()
+                .when(out, |d| d.flex_1())
+                .when(!out, |d| d.flex_none().min_w(px(USED_W)).text_right())
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
                 .text_size(px(10.5))
-                .text_color(if g.tone >= Tone::Low && !m.stale { color } else { p.muted })
-                .when(g.tone >= Tone::Low, |d| d.font_weight(FontWeight::SEMIBOLD))
-                .child(format!("{}%", g.left())),
+                .text_color(words_color)
+                .when(g.tone >= Tone::Critical && !m.stale, |d| d.font_weight(FontWeight::SEMIBOLD))
+                .child(rules::used_short(g, now)),
         )
         .into_any_element()
 }
 
-/// The title bar's glance, while the sidebar is away: the tightest window's
-/// engine and what is left ("Claude 42% left"), its words on the pointer, a
-/// click opens `/usage`.
+/// The title bar's glance, while the sidebar is away: the engine of the
+/// window used most and how much ("Claude 58% used"), its words on the
+/// pointer, a click opens `/usage`.
 pub fn glance(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let now = now();
     let meters = shell.model.engines.meters(now);
     let (engine, g) = rules::header_glance(&meters, shell.board.sidebar_hidden)?;
     let stale = meters.iter().any(|m| m.engine == engine && m.stale);
-    let color = if stale || g.tone == Tone::Calm { p.muted } else { tone_color(p, g.tone) };
-    let words = rules::left_words(&g, now, crate::usage::local_time);
+    let color = if stale { p.muted } else { tone_color(p, g.tone, p.muted) };
+    let words = rules::used_words(engine, &g, now, crate::usage::local_time);
     Some(
         div()
             .id("header-usage")
@@ -278,8 +301,9 @@ pub fn glance(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .hover(move |s| s.bg(p.wash))
             .text_size(px(SMALL))
             .text_color(color)
-            .when(g.tone >= Tone::Low && !stale, |d| d.font_weight(FontWeight::SEMIBOLD))
+            .when(g.tone >= Tone::Critical && !stale, |d| d.font_weight(FontWeight::SEMIBOLD))
             .tip(p, words, None)
+            .aria_label(rules::gauge_aria(engine, &g))
             .on_click(cx.listener(|this, _, window, cx| this.apply_effect(crate::compose::Effect::Usage, window, cx)))
             .child(rules::glance(engine, &g))
             .into_any_element(),
@@ -353,20 +377,22 @@ fn card_element(shell: &Shell, card: &Proposal, cx: &mut Context<Shell>) -> AnyE
     let title = div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(rules::headline(card, now));
     let why = div().text_size(px(13.)).line_height(px(19.)).text_color(p.text2).child(rules::subline(card));
 
-    // The limit that set it off, as a bar: how used, when it starts over.
+    // The limit that set it off, as a meter: how used, when it starts over.
     let limit = (!setup && card.why != Why::Return).then(|| {
         let tone = rules::tone(card.used_percent);
-        let color = tone_color(p, tone);
+        let color = tone_color(p, tone, p.text2);
         let engine = card.engine.map(rules::engine_name).unwrap_or_default();
-        let fill = (f32::from(card.used_percent.min(100)) / 100.).clamp(0., 1.);
+        let window = card.window.unwrap_or(Window::FiveHour);
+        let pace = (window == Window::Weekly).then(|| rules::even_pace(window, card.resets_at, now)).flatten();
+        let used = if tone == Tone::Out { t!("usage.limit_reached").to_owned() } else { t!("engines.used_short", used = card.used_percent) };
         h_flex()
             .w_full()
             .gap_3()
             .items_center()
             .text_size(px(12.))
             .child(div().flex_none().text_color(p.text2).child(format!("{engine} · {}", rules::window_word(card.window))))
-            .child(div().flex_1().h(px(5.)).rounded(px(3.)).bg(p.hair).overflow_hidden().child(div().h_full().w(relative(fill)).rounded(px(3.)).bg(color)))
-            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(color).child(format!("{}%", card.used_percent)))
+            .child(meter_bar(p, card.used_percent, color, pace, 5.).flex_1())
+            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(color).child(used))
             .child(div().flex_none().text_color(p.muted).child(t!("engines.resets_in", span = rules::span(card.resets_at, now))))
     });
 

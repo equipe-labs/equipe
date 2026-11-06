@@ -221,8 +221,8 @@ fn chip(ctx: &Ctx, n: u64, tag: &Tag, cx: &mut App) -> AnyElement {
         _ => None,
     };
     let loading = matches!(shown, Some(Shown::Loading));
-    let text = if gone { t!("sent.gone").to_owned() } else { detail(tag, size) };
-    let opens = (!ctx.remote && !gone).then(|| PathBuf::from(&tag.path));
+    let face_of = chip_face(tag, gone, size, ctx.sent.borrow().kept(&tag.path).is_some(), ctx.remote);
+    let ChipFace { text, gone, ref click, tip: says } = face_of;
     let badge = div()
         .size(px(32.))
         .flex_none()
@@ -257,8 +257,68 @@ fn chip(ctx: &Ctx, n: u64, tag: &Tag, cx: &mut App) -> AnyElement {
                 .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.5)).line_height(px(17.)).text_color(if gone { p.muted } else { p.text }).when(gone, |d| d.line_through()).child(tag.name().to_owned()))
                 .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).line_height(px(15.)).text_color(p.muted).child(if loading && text.is_empty() { "…".to_owned() } else { text })),
         )
-        .when_some(opens, |d, path| d.cursor_pointer().hover(move |s| s.bg(p.wash)).on_click(move |_, _, cx| cx.open_with_system(&path)));
-    if gone { tip(face, p, t!("sent.gone_tip"), None).into_any_element() } else { face.into_any_element() }
+        .map(|d| match click.clone() {
+            Click::System(path) => d.cursor_pointer().hover(move |s| s.bg(p.wash)).on_click(move |_, _, cx| cx.open_with_system(&path)),
+            Click::Kept(path) => {
+                let handle = ctx.handle.clone();
+                d.cursor_pointer().hover(move |s| s.bg(p.wash)).on_click(move |_, _, cx| {
+                    handle.update(cx, |shell, cx| shell.open_kept(&path, cx)).ok();
+                })
+            }
+            Click::Nothing => d,
+        });
+    match says {
+        Some(says) => tip(face, p, says, None).into_any_element(),
+        None => face.into_any_element(),
+    }
+}
+
+/// What a click on a file's chip does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Click {
+    /// Opens the file in its app (on this Mac).
+    System(PathBuf),
+    /// Shows the words its message kept of it, by its path.
+    Kept(String),
+    Nothing,
+}
+
+/// How a file's chip reads: under its name, whether it is shown as gone, what
+/// a click does, what a hover says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChipFace {
+    text: String,
+    gone: bool,
+    click: Click,
+    tip: Option<String>,
+}
+
+/// A file's chip, from what is known of the file (`gone`, its `size`),
+/// whether its message kept its words (`kept`), and whether the daemon is
+/// on another machine (`remote`): a text file's kept words are read here
+/// once the file is gone, or where its file doesn't open here.
+fn chip_face(tag: &Tag, gone: bool, size: Option<u64>, kept: bool, remote: bool) -> ChipFace {
+    let reads = kept && (gone || remote);
+    let text = match (gone, reads) {
+        (true, true) => t!("sent.kept").to_owned(),
+        (true, false) => t!("sent.gone").to_owned(),
+        _ => detail(tag, size),
+    };
+    let click = if reads {
+        Click::Kept(tag.path.clone())
+    } else if !remote && !gone {
+        Click::System(PathBuf::from(&tag.path))
+    } else {
+        Click::Nothing
+    };
+    let tip = if gone && reads {
+        Some(t!("sent.kept_tip").to_owned())
+    } else if gone {
+        Some(t!("sent.gone_tip").to_owned())
+    } else {
+        None
+    };
+    ChipFace { text, gone: gone && !reads, click, tip }
 }
 
 // ── the lightbox ──
@@ -452,7 +512,8 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, Tag, detail, kind_of};
+    use super::{ChipFace, Click, Kind, Tag, chip_face, detail, kind_of};
+    use equipe_core::t;
     use equipe_core::protocol::tags::find;
 
     fn tag(text: &str) -> Tag {
@@ -474,5 +535,24 @@ mod tests {
         assert_eq!(kind_of(&doc), Kind::Doc);
         assert_eq!(kind_of(&text), Kind::Text);
         assert_eq!(kind_of(&pdf), Kind::Pdf);
+    }
+
+    #[test]
+    fn a_text_file_gone_opens_the_words_its_message_kept() {
+        let memo = tag("[file: /u/.equipe/uploads/1792073093607-memo-transcript.txt · 1 line]");
+        let path = "/u/.equipe/uploads/1792073093607-memo-transcript.txt";
+        // There, on this Mac: its size, and it opens in its app.
+        let here = chip_face(&memo, false, Some(100), true, false);
+        assert_eq!(here.click, Click::System(path.into()));
+        assert!(!here.gone && here.tip.is_none());
+        // Gone, its words kept: not shown as gone, and a click reads the words.
+        let kept = chip_face(&memo, true, None, true, false);
+        assert_eq!(kept, ChipFace { text: t!("sent.kept").to_owned(), gone: false, click: Click::Kept(path.into()), tip: Some(t!("sent.kept_tip").to_owned()) });
+        // Gone with nothing kept (a picture, a file from before): gone, nothing to open.
+        let lost = chip_face(&memo, true, None, false, false);
+        assert_eq!(lost, ChipFace { text: t!("sent.gone").to_owned(), gone: true, click: Click::Nothing, tip: Some(t!("sent.gone_tip").to_owned()) });
+        // On another machine its file doesn't open here; its kept words do.
+        assert_eq!(chip_face(&memo, false, Some(100), true, true).click, Click::Kept(path.into()));
+        assert_eq!(chip_face(&memo, false, Some(100), false, true).click, Click::Nothing);
     }
 }

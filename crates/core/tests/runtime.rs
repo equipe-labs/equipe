@@ -156,6 +156,18 @@ async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool)
     seen
 }
 
+/// Every event in the next `ms` milliseconds.
+async fn within(rx: &mut UnboundedReceiver<Event>, ms: u64) -> Vec<Event> {
+    let mut seen = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_millis(ms), async {
+        while let Some(event) = rx.recv().await {
+            seen.push(event);
+        }
+    })
+    .await;
+    seen
+}
+
 fn spec(cwd: &Path, access: Access) -> SessionSpec {
     SessionSpec { engine: None, model: None, access, cwd: cwd.to_owned(), role: None, squad: None }
 }
@@ -636,7 +648,7 @@ async fn several_steers_faster_than_its_steps_are_each_read_in_order_with_their_
     // In the conversation, each where it was said about; the turn stays the site's.
     let recent = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap().recent;
     let about: Vec<(String, Option<String>)> = recent.iter().zip(scope::of(&recent)).filter_map(|(e, about)| match e {
-        Entry::User { text } => Some((text.clone(), about)),
+        Entry::User { text, .. } => Some((text.clone(), about)),
         Entry::Reply { text } => Some((format!("reply: {text}"), about)),
         _ => None,
     }).collect();
@@ -1045,6 +1057,34 @@ async fn at_its_desk_a_member_reads_every_project_and_gets_only_equipes_tools() 
 }
 
 #[tokio::test]
+async fn what_the_person_sends_from_their_phone_says_so_and_only_that() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let cwd = scratch("cwd");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+
+    // From the phone: the member is told it is read there…
+    let from_phone = Command::Submit { session: 1, text: "how is the site?".into(), about: None };
+    handle.send(Command::OnPhone { command: Box::new(from_phone) });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    // …the person sees only their words,
+    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "how is the site?")), "{seen:#?}");
+    let prompt = arg(&calls(&recorded)[0], "-p").unwrap().to_owned();
+    assert!(prompt.starts_with(equipe_core::roles::PHONE_MARK), "{prompt}");
+    assert!(prompt.ends_with("how is the site?"), "{prompt}");
+
+    // …and from the computer again, no mark: the screen that last spoke wins.
+    handle.send(Command::Submit { session: 1, text: "and the app?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let prompt = arg(&calls(&recorded)[1], "-p").unwrap().to_owned();
+    assert!(!prompt.contains(equipe_core::roles::PHONE_MARK), "{prompt}");
+    // The charter says what the mark asks of every member.
+    let first = &calls(&recorded)[0];
+    let charter = arg(first, "--append-system-prompt").unwrap();
+    assert!(charter.contains("When a message comes marked as sent from the person's phone"), "{charter}");
+}
+
+#[tokio::test]
 async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     let (claude, recorded) = recording_claude(&answering("Switching to Postgres."));
     let cwd = scratch("cwd");
@@ -1057,7 +1097,7 @@ async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     // …and every screen on the PM sees it happen,
     assert!(
-        seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text == "↪ You → backend: use Postgres")),
+        seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text == "↪ You → backend: use Postgres")),
         "{seen:#?}"
     );
     // without the PM spending a turn on it.
@@ -1704,7 +1744,7 @@ fn text_entries(entries: &[Entry]) -> Vec<String> {
     entries
         .iter()
         .map(|e| match e {
-            Entry::User { text } => format!("user: {text}"),
+            Entry::User { text, .. } => format!("user: {text}"),
             Entry::Reply { text } => format!("reply: {text}"),
             other => format!("{other:?}"),
         })
@@ -1777,7 +1817,7 @@ async fn a_restarted_runtime_resumes_a_member_on_its_ticket() {
     assert_eq!(snapshot.tickets[0].status, TicketStatus::InProgress);
     // It picks the ticket up again by itself: the squad keeps working through a restart.
     assert_eq!(frontend.state, SessionState::Working);
-    assert!(frontend.recent.iter().any(|e| matches!(e, Entry::Note { text } if text.contains("picking T-1 up again"))), "{:?}", frontend.recent);
+    assert!(frontend.recent.iter().any(|e| matches!(e, Entry::Note { text, .. } if text.contains("picking T-1 up again"))), "{:?}", frontend.recent);
 }
 
 #[tokio::test]
@@ -2150,6 +2190,77 @@ async fn the_pm_changes_what_the_person_asks_and_only_their_tap_widens_what_the_
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
     assert!(asking.await.unwrap().text.starts_with("The person said no"));
+}
+
+#[tokio::test]
+async fn the_pm_moves_members_to_another_engine_only_on_the_persons_tap_and_never_through_their_model() {
+    use equipe_core::protocol::Engine;
+    use equipe_core::protocol::engines::Why;
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "designer")).await;
+    add(&handle, &mut events, 3, member(&repo, "mobile")).await;
+    add(&handle, &mut events, 4, member(&repo, "mobile")).await;
+    let change = |args: serde_json::Value| {
+        let handle = handle.clone();
+        tokio::spawn(async move { tool(&handle, "pm", "change_setting", args).await })
+    };
+
+    // What went wrong: a Codex model put in a Claude member's model. Refused, pointing at `engine`; nothing changes.
+    let refused = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "model", "member": "designer", "value": "gpt-6.1-sol" })).await;
+    assert!(refused.is_error && refused.text.contains("setting `engine`") && refused.text.contains("Nothing changed"), "{}", refused.text);
+    let unknown = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "model", "member": "designer", "value": "llama-4" })).await;
+    assert!(unknown.is_error && unknown.text.contains("claude-opus-5-5"), "Claude's models listed: {}", unknown.text);
+    let effort = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "effort", "member": "designer", "value": "minimal" })).await;
+    assert!(effort.is_error && effort.text.contains("low | medium | high | xhigh | max"), "{}", effort.text);
+    assert!(!within(&mut events, 300).await.iter().any(|e| matches!(e, Event::ModelKnown { .. } | Event::ApprovalRequested { .. })));
+    // Within its own engine: at once, as before.
+    let own = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "model", "member": "designer", "value": "sonnet" })).await;
+    assert!(!own.is_error && own.text.starts_with("Done:"), "{}", own.text);
+
+    // A move names a model of the engine it goes to, and only members not there yet.
+    let wrong = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "engine", "members": ["designer"], "value": "codex", "model": "opus" })).await;
+    assert!(wrong.is_error && wrong.text.contains("Claude model") && wrong.text.contains("Nothing was asked"), "{}", wrong.text);
+    let there = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "engine", "members": ["designer"], "value": "claude" })).await;
+    assert!(there.is_error && there.text.contains("already on Claude"), "{}", there.text);
+    let nobody = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "engine", "members": ["designer", "android"], "value": "codex" })).await;
+    assert!(nobody.is_error && nobody.text.contains("No member called android"), "{}", nobody.text);
+    // A member moves nobody.
+    let member = tool(&handle, "designer", "change_setting", serde_json::json!({ "setting": "engine", "members": ["designer"], "value": "codex" })).await;
+    assert!(member.is_error && member.text.contains("Only the PM"), "{}", member.text);
+
+    // Three members, one card the daemon writes: who moves where, and when each one does. Said no: nothing moves.
+    let args = serde_json::json!({ "setting": "engine", "members": ["designer", "mobile", "mobile-2"], "value": "codex", "why": "they said to go with Codex" });
+    let asking = change(args.clone());
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.tool, "Move engine");
+    let lines: Vec<&str> = approval.action.lines().collect();
+    assert_eq!(lines[0], "Move designer, mobile, mobile-2 to Codex");
+    for name in ["designer", "mobile", "mobile-2"] {
+        assert!(lines.contains(&format!("{name} switches to Codex as soon as it's free, its conversation handed over.").as_str()), "{lines:#?}");
+    }
+    assert_eq!(approval.reason.as_deref(), Some("they said to go with Codex"));
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
+    assert!(asking.await.unwrap().text.starts_with("The person said no"));
+    assert!(!within(&mut events, 300).await.iter().any(|e| matches!(e, Event::EngineProposed { .. })), "nothing moves on a no");
+
+    // Said yes: the person's own move, as their model picker makes it.
+    let asking = change(args);
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    assert!(!asked.iter().any(|e| matches!(e, Event::EngineProposed { .. })), "not before the tap");
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
+    let moved = until(&mut events, |e| matches!(e, Event::EngineProposed { .. })).await;
+    let Some(Event::EngineProposed { proposal, .. }) = moved.last() else { unreachable!() };
+    assert_eq!((proposal.why, proposal.applied), (Why::Person, true));
+    let names: Vec<(&str, Engine, Engine)> = proposal.moves.iter().map(|m| (m.member.as_str(), m.from, m.to)).collect();
+    assert_eq!(names, [("designer", Engine::Claude, Engine::Codex), ("mobile", Engine::Claude, Engine::Codex), ("mobile-2", Engine::Claude, Engine::Codex)]);
+    let said = asking.await.unwrap();
+    assert!(said.text.starts_with("The person said yes: Move designer, mobile, mobile-2 to Codex."), "{}", said.text);
 }
 
 #[tokio::test]
@@ -2535,7 +2646,7 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     assert_eq!(verdict["behavior"], "allow");
     assert_eq!(verdict["updatedInput"]["command"], "npm install react");
     let seen = until(&mut events, |e| matches!(e, Event::ApprovalResolved { .. })).await;
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 2, text } if text.starts_with("✓ You always allow Bash(npm install:*)"))));
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 2, text } if text.starts_with("✓ You always allow Bash(npm install:*)"))));
     assert_eq!(Journal::for_squad(&home, "acme").unwrap().allowed().unwrap(), ["Bash(npm install:*)"]);
 
     // The same kind of thing doesn't ask again; something else does.
@@ -2673,11 +2784,11 @@ async fn at_its_desk_a_member_writes_the_squads_home_each_change_saved_and_taken
     std::fs::write(folder.join("notes/mine.md"), "mine\n").unwrap();
     handle.send(Command::Submit { session: 1, text: "세금 마감일 메모해줘".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("✎"))).await;
-    assert!(
-        seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text }
-            if text == "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back")),
-        "{seen:#?}"
-    );
+    let undo = seen.iter().find_map(|e| match e {
+        Event::Notice { undo, session: 1, text } if text == "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back" => undo.clone(),
+        _ => None,
+    });
+    let Some(undo) = undo else { panic!("the line names the change it tells of: {seen:#?}") };
 
     let call = &calls(&recorded)[0];
     assert_eq!(arg(call, "--permission-mode"), Some("acceptEdits"), "in auto it writes its home on its own");
@@ -2691,9 +2802,25 @@ async fn at_its_desk_a_member_writes_the_squads_home_each_change_saved_and_taken
         ]
     );
 
-    // The person takes it back; their own note stays.
-    squad_home::undo(&folder, 1).unwrap();
+    assert_eq!(undo, changes[0].id);
+
+    // The person takes it back from the line — a phone's button; their own note stays.
+    handle.send(Command::UndoHomeChange { squad: "acme".into(), session: 1, change: undo.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("Taken back"))).await;
+    let Some(Event::Notice { undo: Some(again), text, .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(text, "Taken back: saved notes/tax-deadline.md · you can take this back too");
     assert!(!folder.join("notes/tax-deadline.md").exists() && folder.join("notes/mine.md").exists());
+    // The taking back is the person's own change, and can be taken back too.
+    assert_eq!(&squad_home::changes(&folder, 1).unwrap()[0].id, again);
+    handle.send(Command::UndoHomeChange { squad: "acme".into(), session: 1, change: again.clone() });
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("Taken back"))).await;
+    assert!(folder.join("notes/tax-deadline.md").exists());
+    // Never a revision equipe didn't tell of, nor another squad's.
+    handle.send(Command::UndoHomeChange { squad: "acme".into(), session: 1, change: "HEAD~1".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Error { message, .. }) if message.starts_with("The change couldn't be taken back")), "{seen:#?}");
+    handle.send(Command::UndoHomeChange { squad: "beta".into(), session: 1, change: undo });
+    assert!(folder.join("notes/tax-deadline.md").exists());
 }
 
 fn squads_home(home: &Path) -> PathBuf {
@@ -3028,7 +3155,7 @@ async fn what_one_member_learns_the_next_one_knows_and_the_person_has_the_last_w
     assert!(!saved.is_error, "{}", saved.text);
     let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("✎"))).await;
     assert!(
-        seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text }
+        seen.iter().any(|e| matches!(e, Event::Notice { undo: Some(_), session: 1, text }
             if text == "✎ pm remembered for the squad: 사람은 매년 5월에 종합소득세를 직접 신고한다 · /memory shows what the squad knows")),
         "{seen:#?}"
     );
@@ -3377,7 +3504,7 @@ async fn each_message_its_reply_and_its_steps_are_about_the_project_in_focus_whe
         .iter()
         .zip(scope::of(&recent))
         .filter_map(|(e, about)| match e {
-            Entry::User { text } => Some((format!("user: {text}"), about)),
+            Entry::User { text, .. } => Some((format!("user: {text}"), about)),
             Entry::Reply { text } => Some((format!("reply: {text}"), about)),
             _ => None,
         })
@@ -3397,7 +3524,7 @@ async fn each_message_its_reply_and_its_steps_are_about_the_project_in_focus_whe
         ]
     );
     // The PM is told as before: the whole conversation, the prefix in its prompt only.
-    assert!(!recent.iter().any(|e| matches!(e, Entry::User { text } if text.starts_with('['))));
+    assert!(!recent.iter().any(|e| matches!(e, Entry::User { text, .. } if text.starts_with('['))));
     assert!(scope::LOOKING_AT.starts_with("[equipe: the person is looking at the project") && scope::WHOLE_SQUAD.starts_with("[equipe: the person is looking at the whole squad"));
 }
 
@@ -3423,7 +3550,7 @@ async fn news_in_the_pms_conversation_is_about_its_tickets_project() {
     let scopes = scope::of(&recent);
     let at = recent.iter().rposition(|e| matches!(e, Entry::Note { .. })).unwrap();
     assert_eq!(scopes[at].as_deref(), Some("app"), "{recent:#?}");
-    let hi = recent.iter().position(|e| matches!(e, Entry::User { text } if text == "hi")).unwrap();
+    let hi = recent.iter().position(|e| matches!(e, Entry::User { text, .. } if text == "hi")).unwrap();
     assert_eq!(scopes[hi].as_deref(), Some("site"));
 }
 
@@ -3725,7 +3852,7 @@ async fn a_claude_member_set_to_a_providers_model_moves_to_codexs_agent_on_it_at
     handle.send(Command::SetModel { session: 1, model: model.clone() });
     let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { engine: Engine::Codex, .. } | Event::Error { .. })).await;
     // Told where it goes, on a card the person can undo.
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("qwen3-coder:30b") && text.contains("Ollama") && text.contains("next ticket"))), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("qwen3-coder:30b") && text.contains("Ollama") && text.contains("next ticket"))), "{seen:#?}");
     assert!(seen.iter().any(|e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.moves.iter().any(|m| m.member == "frontend" && m.to == Engine::Codex && m.model.as_deref() == Some(model.as_str())))), "{seen:#?}");
     let Some(Event::SessionStarted { session, engine: Engine::Codex, model: Some(on), member, .. }) = seen.last() else { panic!("{seen:#?}") };
     assert_ne!(*session, 1, "started again on the other engine");
@@ -3934,7 +4061,7 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
         seen.iter().any(|e| matches!(e, Event::BrowserControl { lane, by: Some(by), why: Some(w), .. } if lane == "acme/pm" && by == "person" && w == why)),
         "every screen is told: in the person's hands, and what for: {seen:?}"
     );
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains(why) && text.contains("browser panel"))), "{seen:?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains(why) && text.contains("browser panel"))), "{seen:?}");
     // Nothing comes up on the daemon's own screen.
     assert!(!Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
     let sent = || std::fs::read_to_string(&ops).unwrap_or_default();
@@ -3954,7 +4081,7 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert!(!seen.iter().any(|e| matches!(e, Event::UserMessage { .. })), "never the person's words: {seen:?}");
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("gave the browser back"))), "{seen:?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("gave the browser back"))), "{seen:?}");
     let all = calls(&recorded);
     assert_eq!(all.len(), before + 1, "one turn, without the person typing a word");
     let prompt = arg(all.last().unwrap(), "-p").unwrap();
@@ -3962,7 +4089,7 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
 
     // The person closes a tab of pm's: pm's conversation says so.
     handle.send(Command::BrowserCloseTab { page: 9_000_001 });
-    until(&mut events, |e| matches!(e, Event::Notice { session: 1, text } if text.contains("closed this browser tab") && text.contains("appstoreconnect"))).await;
+    until(&mut events, |e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("closed this browser tab") && text.contains("appstoreconnect"))).await;
 
     // That screen gone and none other attached: the window on this Mac, as before.
     handle.browser_hub().await.unwrap().screen(false);
@@ -4026,7 +4153,7 @@ fn notice_to(events: &[Event], session: u64) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::Notice { session: s, text } if *s == session => Some(text.clone()),
+            Event::Notice { undo: None, session: s, text } if *s == session => Some(text.clone()),
             _ => None,
         })
         .collect()
@@ -4108,7 +4235,7 @@ async fn the_persons_edits_are_checked_then_told_to_the_pm_and_the_members_conce
 
     // Several at once: each changed, the PM told once for all.
     handle.send(Command::EditTickets { squad: "acme".into(), tickets: vec![1, 2], changes: TicketEdit { priority: Some(Priority::Low), ..Default::default() } });
-    let batch = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text } if text.starts_with("You changed 2"))).await;
+    let batch = until(&mut events, |e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.starts_with("You changed 2"))).await;
     assert_eq!(notice_to(&batch, 1), ["You changed 2 tickets: priority 2"], "one line, not one a ticket: {batch:#?}");
     assert_eq!(ticket_changed(&batch).iter().filter(|t| t.priority == Priority::Low).count(), 2);
 
@@ -4218,6 +4345,48 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
     let helper = handle.desktop(desktop("frontend")).await;
     assert!(helper.is_error && helper.text.contains("equipe desktop setup"), "{}", helper.text);
     assert!(handle.desktop(desktop("nobody")).await.text.contains("off for nobody"));
+}
+
+#[tokio::test]
+async fn only_qa_and_mobile_get_the_phone_and_only_in_a_squad_with_a_mobile_app() {
+    let servers = |call: &[String]| -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(arg(call, "--mcp-config").unwrap()).unwrap()["mcpServers"].clone()
+    };
+    let phone = |member: &str| ToolCall { squad: "acme".into(), member: member.into(), name: "look".into(), arguments: serde_json::json!({}) };
+    for mobile in [false, true] {
+        let (claude, recorded) = recording_claude(&answering("ok"));
+        let cwd = scratch("cwd");
+        if mobile {
+            std::fs::create_dir_all(cwd.join("android/app")).unwrap();
+            std::fs::write(cwd.join("android/app/build.gradle"), "apply plugin: 'com.android.application'\n").unwrap();
+        }
+        let home = squad_home(&[&cwd]);
+        let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+        add(&handle, &mut events, 1, member(&cwd, "qa")).await;
+        add(&handle, &mut events, 2, member(&cwd, "frontend")).await;
+        for session in [1, 2] {
+            handle.send(Command::Submit { session, text: "go".into(), about: None });
+            until(&mut events, |e| matches!(e, Event::TurnEnded { session: s, .. } if *s == session)).await;
+        }
+        let turns = calls(&recorded);
+        let (qa, frontend) = (&turns[turns.len() - 2], &turns[turns.len() - 1]);
+        assert!(servers(frontend).get("phone").is_none(), "a frontend member never gets the phone");
+        assert!(!frontend.iter().any(|a| a == "mcp__phone"));
+        if mobile {
+            let args: Vec<String> = servers(qa)["phone"]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_owned()).collect();
+            assert_eq!(&args[..3], ["mcp", "--server", "phone"]);
+            assert!(qa.iter().any(|a| a == "mcp__phone"), "the ticket's own device: used without asking");
+            // At the desk, with no ticket: a device is a ticket's, so nothing is started.
+            let desk = handle.phone(phone("qa")).await;
+            assert!(desk.is_error && desk.text.contains("ticket"), "{}", desk.text);
+        } else {
+            assert!(servers(qa).get("phone").is_none(), "no mobile app: QA is told and given exactly what it was");
+            assert!(!qa.iter().any(|a| a == "mcp__phone"));
+        }
+        let refused = handle.phone(phone("frontend")).await;
+        assert!(refused.is_error && refused.text.contains("QA and mobile"), "{}", refused.text);
+        handle.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -4833,7 +5002,7 @@ async fn a_review_that_cant_run_says_why_and_never_the_key() {
     let (base, _) = mock_token_factory(401, r#"{"error":"invalid key sk-mock-not-a-real-key"}"#.into()).await;
     let (handle, mut events, _home) = hand_in_reviewed_at(&base).await;
     let said = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("Nemotron"))).await;
-    let Some(Event::Notice { session, text }) = said.last() else { panic!() };
+    let Some(Event::Notice { undo: None, session, text }) = said.last() else { panic!() };
     assert_eq!(*session, 2, "in the conversation of the member who handed it in");
     assert_eq!(text, "Nemotron couldn't review T-1: Nebius Token Factory didn't accept the API key");
     assert!(!said.iter().any(|e| format!("{e:?}").contains("sk-mock")));
@@ -4879,6 +5048,69 @@ async fn a_brief_is_kept_in_the_squads_folder_and_never_written_or_committed_int
     let Some(Event::ProjectDocs { docs, .. }) = got.last() else { panic!() };
     assert_eq!(docs.len(), 1);
     assert_eq!((docs[0].project.as_deref(), docs[0].path.as_str()), (Some(project.as_str()), kept.join(&name).to_str().unwrap()));
+}
+
+/// A git repository called `name`, with one commit.
+fn named_repo(name: &str) -> PathBuf {
+    let dir = named(name);
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["config", "user.name", "Test"]);
+    git(&dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("README.md"), "hello\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "init"]);
+    dir
+}
+
+#[tokio::test]
+async fn every_brief_and_plan_is_listed_found_and_one_of_two_copies_kept_in_the_squads_folder_only() {
+    use equipe_core::briefs::{self, Kind, Target};
+    let (sf, block) = (named_repo("sf"), named_repo("block"));
+    let heads = [git(&sf, &["rev-parse", "HEAD"]), git(&block, &["rev-parse", "HEAD"])];
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&sf, &block]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&sf, "pm")).await;
+    let folder = squad_home::path(&home, "acme");
+    let plan = |words: &str| format!("---\ntitle: Your block, unfiltered\ndate: 2026-11-04\nstatus: in_review\ntickets: [4]\n---\n\n{words}\n");
+    let kept = briefs::save(&Target::project(&folder, "sf").unwrap(), Kind::Plan, "your-block", &plan("Steps."), "2026-11-04", "pm").unwrap();
+    let other = briefs::save(&Target::project(&folder, "block").unwrap(), Kind::Plan, "your-block", &plan("Steps, and one more."), "2026-11-04", "pm").unwrap();
+    briefs::save(&Target::squad(&folder), Kind::Brief, "offsite", "---\ntitle: Offsite\ndate: 2026-11-02\nstatus: draft\nticket: 9\n---\n\nWhere we go.\n", "2026-11-02", "pm").unwrap();
+    let (kept, other) = (kept.to_string_lossy().into_owned(), other.to_string_lossy().into_owned());
+    // All of them, the squad's own too, and the two copies told apart.
+    handle.send(Command::ProjectDocs { squad: "acme".into() });
+    let got = until(&mut events, |e| matches!(e, Event::ProjectDocs { docs, .. } if docs.len() == 3)).await;
+    let Some(Event::ProjectDocs { docs, copies, in_repos, .. }) = got.last() else { panic!() };
+    assert_eq!(docs.iter().map(|d| (d.project.as_deref(), d.ticket_ids())).collect::<Vec<_>>(), [(Some("sf"), vec![4]), (Some("block"), vec![4]), (None, vec![9])]);
+    assert_eq!(copies.len(), 1);
+    assert!(copies[0].differ && copies[0].paths.contains(&kept) && copies[0].paths.contains(&other));
+    assert!(in_repos.is_empty(), "equipe wrote nothing into the repositories");
+    // Found by their words, in the squad's folder.
+    handle.send(Command::SearchDocs { squad: "acme".into(), query: "ONE MORE".into() });
+    let got = until(&mut events, |e| matches!(e, Event::DocsFound { .. })).await;
+    let Some(Event::DocsFound { query, paths, .. }) = got.last() else { panic!() };
+    assert_eq!((query.as_str(), paths.clone()), ("ONE MORE", vec![other.clone()]));
+    // One kept: the other gone from the squad's folder, as the person's change.
+    handle.send(Command::KeepDocCopy { squad: "acme".into(), session: 1, keep: kept.clone() });
+    let got = until(&mut events, |e| matches!(e, Event::ProjectDocs { copies, docs, .. } if copies.is_empty() && docs.len() == 2)).await;
+    let undo = got.iter().find_map(|e| match e {
+        Event::DocCopyKept { kept: k, removed, undo, .. } if *k == kept && *removed == [other.clone()] => undo.clone(),
+        _ => None,
+    });
+    let undo = undo.expect("told, with its change");
+    assert!(got.iter().any(|e| matches!(e, Event::Notice { session: 1, undo: Some(u), .. } if *u == undo)), "{got:#?}");
+    assert!(Path::new(&kept).is_file() && !Path::new(&other).exists());
+    assert_eq!(squad_home::changes(&folder, 1).unwrap()[0].by, squad_home::PERSON);
+    for (repo, head) in [(&sf, &heads[0]), (&block, &heads[1])] {
+        untouched(repo, head);
+    }
+    // Taken back as any change to the folder: both again, and the lists follow.
+    handle.send(Command::UndoHomeChange { squad: "acme".into(), session: 1, change: undo });
+    until(&mut events, |e| matches!(e, Event::ProjectDocs { copies, .. } if copies.len() == 1)).await;
+    assert!(std::fs::read_to_string(&other).unwrap().contains("one more"));
+    for (repo, head) in [(&sf, &heads[0]), (&block, &heads[1])] {
+        untouched(repo, head);
+    }
 }
 
 #[tokio::test]
@@ -4945,4 +5177,104 @@ async fn a_plan_is_kept_in_the_squads_folder_reviewed_at_once_and_cut_into_ticke
     // The code ticket's own branch may be cut by now; main never had the plan.
     assert_eq!(git(&repo, &["rev-parse", "main"]), head);
     assert_eq!(git(&repo, &["ls-tree", "-r", "--name-only", "main"]), "README.md");
+}
+
+// ── side chats ──
+
+/// A turn answering `text` under Claude Code's session for the call: a fork
+/// gets a session of its own (`fork-1`), and carries on in it.
+fn forking(text: &str) -> String {
+    format!(
+        r#"case "$*" in *--fork-session*|*"--resume fork-1"*) S=fork-1;; *) S=sess-1;; esac
+cat <<EOF
+{{"type":"system","subtype":"init","model":"claude-test","session_id":"$S"}}
+{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"{text}"}}}}}}
+{{"type":"result","subtype":"success","is_error":false,"result":"{text}","usage":{{"input_tokens":30,"output_tokens":10}}}}
+EOF"#
+    )
+}
+
+/// The events inside side chat `side`, as it published them.
+fn inside(events: &[Event], side: u64) -> Vec<Event> {
+    events.iter().filter_map(|e| if let Event::SideChat { side: s, event, .. } = e { (*s == side).then(|| (**event).clone()) } else { None }).collect()
+}
+
+fn side_turn_ended(e: &Event) -> bool {
+    matches!(e, Event::SideChat { event, .. } if matches!(**event, Event::TurnEnded { .. }))
+}
+
+#[tokio::test]
+async fn a_side_chat_forks_the_members_conversation_read_only_and_never_adds_to_it() {
+    let cwd = scratch("cwd");
+    let (claude, recorded) = recording_claude(&forking("ok"));
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(Config { equipe_binary: Some("/opt/equipe".into()), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 2, member(&cwd, "frontend")).await;
+    handle.send(Command::Submit { session: 2, text: "fix the header".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let before = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 2).unwrap();
+
+    handle.send(Command::StartSideChat { session: 2, side: 77, passage: "the header is fixed".into() });
+    let opened = until(&mut events, |e| matches!(e, Event::SideChatOpened { .. })).await;
+    assert!(matches!(opened.last(), Some(Event::SideChatOpened { session: 2, side: 77, search: true, squad: Some(s) }) if s == "acme"), "{opened:?}");
+    handle.send(Command::SideChatSubmit { session: 2, side: 77, passage: "the header is fixed".into(), text: "why?".into() });
+    let seen = until(&mut events, side_turn_ended).await;
+    // Its words travel inside it, never as the member's.
+    assert!(!seen.iter().any(|e| e.session() == Some(2)), "nothing of it in the member's conversation: {seen:#?}");
+    let said = inside(&seen, 77);
+    assert!(matches!(&said[0], Event::UserMessage { session: 77, text, .. } if text == "why?"), "{said:?}");
+    assert!(said.iter().any(|e| matches!(e, Event::TextDelta { session: 77, text } if text == "ok")));
+    assert!(matches!(said.last(), Some(Event::TurnEnded { session: 77, outcome: TurnOutcome::Completed, usage: Some(_) })));
+
+    // On the member's engine, from its own session forked, with reading and the web only.
+    let call = latest_call(&recorded, |p| p.contains("[equipe: side chat]")).await;
+    assert_eq!(arg(&call, "--resume"), Some("sess-1"));
+    assert!(call.iter().any(|a| a == "--fork-session"), "the member's session itself never goes on: {call:?}");
+    assert_eq!(arg(&call, "--tools"), Some("Read,Grep,Glob,WebSearch,WebFetch"));
+    assert_eq!(arg(&call, "--permission-mode"), Some("dontAsk"));
+    assert_eq!(arg(&call, "--mcp-config"), Some(r#"{"mcpServers":{}}"#), "no board");
+    assert!(call.iter().any(|a| a == "--strict-mcp-config"));
+    assert!(!call.iter().any(|a| a.contains("mcp__equipe") || a == "--append-system-prompt" || a == "--plugin-dir" || a == "--permission-prompt-tool"), "{call:?}");
+    assert!(arg(&call, "--settings").is_some_and(|s| s.contains("/opt/equipe hook --side-chat")), "equipe's guard on every call");
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("> the header is fixed") && prompt.ends_with("why?"), "{prompt}");
+
+    // Its next message goes on in the fork, as only what the person said.
+    handle.send(Command::SideChatSubmit { session: 2, side: 77, passage: "the header is fixed".into(), text: "and then?".into() });
+    until(&mut events, side_turn_ended).await;
+    let call = latest_call(&recorded, |p| p == "and then?").await;
+    assert_eq!(arg(&call, "--resume"), Some("fork-1"));
+    assert!(!call.iter().any(|a| a == "--fork-session"));
+
+    // The member's conversation is as it was, and its next turn its own session's.
+    let after = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 2).unwrap();
+    assert_eq!(after.recent, before.recent, "the side chat added nothing to it");
+    assert_eq!(after.tokens, before.tokens + 2 * 40, "what it used counts toward the member's");
+    handle.send(Command::Submit { session: 2, text: "next".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let call = latest_call(&recorded, |p| p.contains("next")).await;
+    assert_eq!(arg(&call, "--resume"), Some("sess-1"), "never the fork");
+
+    // Closed, it is let go.
+    handle.send(Command::CloseSideChat { side: 77 });
+    until(&mut events, |e| matches!(e, Event::SideChatClosed { side: 77, .. })).await;
+}
+
+#[tokio::test]
+async fn one_side_chat_a_conversation_and_the_conversation_closing_takes_it() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, &forking("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 2, member(&cwd, "frontend")).await;
+    handle.send(Command::StartSideChat { session: 2, side: 1, passage: "a".into() });
+    until(&mut events, |e| matches!(e, Event::SideChatOpened { side: 1, .. })).await;
+    handle.send(Command::StartSideChat { session: 2, side: 2, passage: "b".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::SideChatOpened { side: 2, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SideChatClosed { side: 1, .. })), "another about it lets the first go");
+    // A member with no conversation yet: a fresh one, told the conversation in short.
+    handle.send(Command::SideChatSubmit { session: 2, side: 2, passage: "b".into(), text: "why?".into() });
+    let said = inside(&until(&mut events, side_turn_ended).await, 2);
+    assert!(said.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "ok")), "{said:?}");
+    handle.send(Command::Close { session: 2 });
+    until(&mut events, |e| matches!(e, Event::SideChatClosed { side: 2, .. })).await;
 }

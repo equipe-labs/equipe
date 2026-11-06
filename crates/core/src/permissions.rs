@@ -45,6 +45,15 @@ pub fn person_only(command: &Command) -> bool {
         // clearing what was decided in words. The person's own, by definition —
         // a member must never speak as the person or widen how decisions are made.
         C::Say { .. } | C::SetWordsAll { .. } | C::UndoWords { .. } | C::ClearWordsLog { .. } => true,
+        // Taking back a change to the squad's folder: the person's, as the
+        // notice that offers it is theirs.
+        C::UndoHomeChange { .. } => true,
+        // Keeping one copy of a brief or plan removes the others from the
+        // squad's folder: the person's pick, on their screen.
+        C::KeepDocCopy { .. } => true,
+        // What the person sent from their phone, wrapped by the gateway after
+        // this floor; one arriving already wrapped is judged by what it wraps.
+        C::OnPhone { command } => person_only(command),
         // Answering a member's request for permission or its questions, and
         // approving the PM's, the routines' and the engine moves' proposals:
         // the very decisions this review is about.
@@ -110,6 +119,10 @@ pub fn person_only(command: &Command) -> bool {
         // Pairing a phone: a member must not pair its own device in, nor unpair
         // the person's. (Handled on the pairing path in the gateway too.)
         C::PairStart | C::PairAnswer { .. } | C::PairCancel | C::Devices | C::Unpair { .. } => true,
+        // A side chat: a conversation on the person's account, beside a
+        // member's, that reads its files and the web. The person's to open,
+        // write in and close — a member must not start one of its own.
+        C::StartSideChat { .. } | C::SideChatSubmit { .. } | C::CloseSideChat { .. } => true,
 
         // Not the person's alone. Session plumbing and the person's own
         // messages; screen, conversation and panel state; reads and lists;
@@ -154,10 +167,12 @@ pub fn person_only(command: &Command) -> bool {
         | C::CheckEngine { .. }
         | C::ShowEngineSetup { .. }
         | C::DiskScan
+        | C::PlanUse { .. }
         | C::DiskClean { .. }
         | C::DiskRun { .. }
         | C::Design { .. }
         | C::ProjectDocs { .. }
+        | C::SearchDocs { .. }
         | C::DesignVersions { .. }
         | C::Taste { .. } => false,
     }
@@ -490,6 +505,11 @@ mod tests {
             Command::ApproveTeamChange { squad: "a".into(), id: 1 },
             Command::ApproveRoutine { squad: "a".into(), id: 1 },
             Command::ApplyEngineProposal { squad: "a".into(), id: 1 },
+            // Moving members to another engine, on a model and effort there: the
+            // PM asks for it on a card; its process never sends it.
+            Command::MoveEngine { squad: "a".into(), members: vec!["designer".into()], engine: crate::protocol::Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) },
+            Command::OnPhone { command: Box::new(Command::MoveEngine { squad: "a".into(), members: vec![], engine: crate::protocol::Engine::Codex, model: None, effort: None }) },
+            Command::SetModel { session: 1, model: "gpt-6.1-sol".into() },
             Command::SetMode { squad: "a".into(), member: None, mode: None },
             Command::SetPmAccepts { squad: "a".into(), on: true },
             Command::Disallow { squad: "a".into(), rule: "Bash(rm:*)".into() },
@@ -498,6 +518,14 @@ mod tests {
             Command::Desktop { open: true },
             Command::PairStart,
             Command::Unpair { device: "phone".into() },
+            Command::UndoHomeChange { squad: "a".into(), session: 1, change: "abc".into() },
+            Command::KeepDocCopy { squad: "a".into(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() },
+            Command::OnPhone { command: Box::new(Command::Accept { squad: "a".into(), ticket: 1 }) },
+            // A side chat reads the member's files and the web on the
+            // person's account: theirs to open, never a member's.
+            Command::StartSideChat { session: 1, side: 2, passage: "a".into() },
+            Command::SideChatSubmit { session: 1, side: 2, passage: "a".into(), text: "why?".into() },
+            Command::CloseSideChat { side: 2 },
         ];
         for command in &person_only {
             assert!(person_only_fn(command), "person-only: {command:?}");
@@ -516,8 +544,11 @@ mod tests {
             Command::WatchBrowser { squad: "a".into(), session: None },
             Command::Models { engine: crate::protocol::Engine::Claude },
             Command::DiskScan,
+            Command::PlanUse { engine: crate::protocol::Engine::Claude, span: crate::protocol::plan_use::Span::Week },
             Command::Language { lang: "ko".into() },
             Command::Logins,
+            Command::SearchDocs { squad: "a".into(), query: "checkout".into() },
+            Command::OnPhone { command: Box::new(Command::Submit { session: 1, text: "hi".into(), about: None }) },
         ];
         for command in &shared {
             assert!(!person_only_fn(command), "shared, not person-only: {command:?}");

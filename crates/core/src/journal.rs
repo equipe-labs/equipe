@@ -190,6 +190,38 @@ pub struct TicketWork {
     pub engine_session: Option<String>,
 }
 
+/// What a member's turn used: its engine and model, the engine's session it
+/// ran in, and its tokens by kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnUse {
+    pub engine: Engine,
+    pub model: Option<String>,
+    pub session: Option<String>,
+    pub tokens: crate::protocol::plan_use::Tokens,
+    /// Of `tokens.cache_write`, written to be kept an hour.
+    pub cache_write_long: u64,
+    pub calls: u64,
+}
+
+impl TurnUse {
+    /// From a turn's usage, as its engine reported it.
+    pub fn of(engine: Engine, model: Option<String>, session: Option<String>, u: &crate::protocol::Usage) -> Self {
+        // An engine that said only the sum: read from the cache, as most of it is.
+        let (write, read) = match (u.cache_write_tokens, u.cache_read_tokens) {
+            (None, None) => (0, u.cache_tokens.unwrap_or(0)),
+            (write, read) => (write.unwrap_or(0), read.unwrap_or(0)),
+        };
+        TurnUse {
+            engine,
+            model,
+            session,
+            tokens: crate::protocol::plan_use::Tokens { input: u.input_tokens.unwrap_or(0), output: u.output_tokens.unwrap_or(0), cache_write: write, cache_read: read },
+            cache_write_long: u.cache_write_long_tokens.unwrap_or(0).min(write),
+            calls: u.calls.unwrap_or(1),
+        }
+    }
+}
+
 /// How long turns and waits are kept for the retros: a quarter.
 const KEPT_FOR_RETROS: i64 = 92 * 24 * 60 * 60;
 
@@ -401,6 +433,21 @@ impl Journal {
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT", []);
+        // What a member's turn used, by kind, on which engine and model, in
+        // which of the engine's sessions (`crate::plan_use`).
+        for column in [
+            "engine TEXT",
+            "model TEXT",
+            "session TEXT",
+            "input INTEGER",
+            "output INTEGER",
+            "cache_write INTEGER",
+            "cache_write_long INTEGER",
+            "cache_read INTEGER",
+            "calls INTEGER",
+        ] {
+            let _ = conn.execute(&format!("ALTER TABLE turns ADD COLUMN {column}"), []);
+        }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN off_main TEXT", []);
         // The person's say on how soon and in which order: normal and by number
         // for tickets from before.
@@ -1074,9 +1121,33 @@ impl Journal {
     /// Keep a member's turn — who, on what, how long, how it ended, what it
     /// used — for the weekly retro. A quarter's worth is kept.
     pub fn record_turn(&self, t: &crate::retro::Turn) -> Result<()> {
+        self.record_turn_use(t, None)
+    }
+
+    /// Keep a member's turn with what it used, by kind ([`TurnUse`]).
+    pub fn record_turn_use(&self, t: &crate::retro::Turn, used: Option<&TurnUse>) -> Result<()> {
+        let n = |f: fn(&TurnUse) -> u64| used.map(|u| f(u) as i64);
         self.conn.execute(
-            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![t.member, t.role, t.ticket, t.began as i64, t.ended as i64, t.outcome, t.tokens as i64],
+            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens, engine, model, session, input, output, cache_write, cache_write_long, cache_read, calls)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                t.member,
+                t.role,
+                t.ticket,
+                t.began as i64,
+                t.ended as i64,
+                t.outcome,
+                t.tokens as i64,
+                used.map(|u| engine_str(u.engine)),
+                used.and_then(|u| u.model.clone()),
+                used.and_then(|u| u.session.clone()),
+                n(|u| u.tokens.input),
+                n(|u| u.tokens.output),
+                n(|u| u.tokens.cache_write),
+                n(|u| u.cache_write_long),
+                n(|u| u.tokens.cache_read),
+                n(|u| u.calls)
+            ],
         )?;
         self.conn.execute("DELETE FROM turns WHERE ended < ?1", [now() - KEPT_FOR_RETROS])?;
         Ok(())
@@ -1314,6 +1385,44 @@ impl Journal {
         Ok(())
     }
 
+    /// The person's messages whose kept line holds `needle`, each with where
+    /// it is kept (session, line): for a look through what was sent
+    /// (`crate::kept::rescue`).
+    pub fn messages_holding(&self, needle: &str) -> Result<Vec<(SessionId, i64, Entry)>> {
+        let mut stmt = self.conn.prepare("SELECT session, seq, body FROM entries WHERE instr(body, ?1) > 0 ORDER BY session, seq")?;
+        let rows = stmt.query_map([needle], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?;
+        Ok(rows
+            .filter_map(|row| row.ok())
+            .filter_map(|(session, seq, body)| Some((session as SessionId, seq, serde_json::from_str::<Entry>(&body).ok()?)))
+            .filter(|(.., entry)| matches!(entry, Entry::User { .. }))
+            .collect())
+    }
+
+    /// Line `seq` of `session`'s conversation, as `entry` now has it — when it
+    /// was said stays.
+    pub fn rewrite(&self, session: SessionId, seq: i64, entry: &Entry) -> Result<()> {
+        let body = serde_json::to_string(entry).map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute("UPDATE entries SET body = ?1 WHERE session = ?2 AND seq = ?3", params![body, session as i64, seq])?;
+        Ok(())
+    }
+
+    /// Everything waiting for members' next turns, of every kind.
+    pub fn all_waiting(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT text FROM waiting ORDER BY session, kind, seq")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    /// Whether this journal's sent attachments were looked through once
+    /// already ([`crate::kept::rescue`]).
+    pub fn kept_rescued(&self) -> bool {
+        self.meta("kept_rescued").is_some()
+    }
+
+    pub fn set_kept_rescued(&self) -> Result<()> {
+        self.set_meta("kept_rescued", "1")
+    }
+
     fn entries(&self, id: SessionId, limit: Option<u64>) -> Result<Vec<Entry>> {
         Ok(self.timed_entries(id, limit)?.0)
     }
@@ -1456,7 +1565,7 @@ mod tests {
         j.record_session(&record(1)).unwrap();
         let pages: i64 = j.conn.query_row("PRAGMA max_page_count = 1", [], |r| r.get(0)).unwrap();
         assert!(pages >= 1);
-        let err = j.append(1, &Entry::User { text: "x".repeat(200_000) }).unwrap_err();
+        let err = j.append(1, &Entry::User { text: "x".repeat(200_000), kept: Vec::new() }).unwrap_err();
         assert!(is_full(&err), "{err:?}");
         assert!(!is_full(&Error::QueryReturnedNoRows));
         // What it holds is still there to read; a lock left behind would fail this.
@@ -1524,7 +1633,7 @@ mod tests {
         j.record_conversation(51, None, Path::new("/squad/pm")).unwrap();
         j.record_conversation(52, Some("app"), Path::new("/squad/pm")).unwrap();
         j.set_title_if_empty(50, "the pricing page").unwrap();
-        j.append(50, &Entry::User { text: "the pricing page".into() }).unwrap();
+        j.append(50, &Entry::User { text: "the pricing page".into(), kept: Vec::new() }).unwrap();
         j.close_conversation(50).unwrap();
         j.close_conversation(52).unwrap();
         j.conn.execute("UPDATE conversations SET updated_at = 100 WHERE id = 50", []).unwrap();
@@ -1537,7 +1646,7 @@ mod tests {
         assert_eq!(j.put_away(1).unwrap().len(), 1);
         let back = j.reopen_conversation(50).unwrap().expect("taken up");
         assert_eq!((back.id, back.project.as_deref(), back.title.as_deref()), (50, Some("web"), Some("the pricing page")));
-        assert_eq!(j.conversation(50).unwrap(), [Entry::User { text: "the pricing page".into() }], "its lines, as they were");
+        assert_eq!(j.conversation(50).unwrap(), [Entry::User { text: "the pricing page".into(), kept: Vec::new() }], "its lines, as they were");
         assert_eq!(j.put_away(10).unwrap().iter().map(|c| c.session).collect::<Vec<_>>(), [52]);
         assert!(j.reopen_conversation(50).unwrap().is_none(), "open already");
         assert!(j.reopen_conversation(99).unwrap().is_none(), "no such one");
@@ -1553,7 +1662,7 @@ mod tests {
             j.set_title_if_empty(7, "not this one").unwrap();
             j.set_engine_session(7, "sess-1").unwrap();
             j.add_tokens(7, 40).unwrap();
-            j.append(7, &Entry::User { text: "add a docstring".into() }).unwrap();
+            j.append(7, &Entry::User { text: "add a docstring".into(), kept: Vec::new() }).unwrap();
             j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
         }
         let j = Journal::for_squad(&home, "acme").unwrap();
@@ -1564,7 +1673,7 @@ mod tests {
         assert_eq!(open[0].tokens, 40);
         assert_eq!(
             j.conversation(7).unwrap(),
-            vec![Entry::User { text: "add a docstring".into() }, Entry::Reply { text: "done".into() }]
+            vec![Entry::User { text: "add a docstring".into(), kept: Vec::new() }, Entry::Reply { text: "done".into() }]
         );
         assert_eq!(j.squad().as_deref(), Some("acme"));
     }
@@ -1574,7 +1683,7 @@ mod tests {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(7)).unwrap();
         let before = now() as u64;
-        j.append(7, &Entry::User { text: "add a docstring".into() }).unwrap();
+        j.append(7, &Entry::User { text: "add a docstring".into(), kept: Vec::new() }).unwrap();
         j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
         let (lines, times) = j.conversation_at(7).unwrap();
         assert_eq!(lines, j.conversation(7).unwrap());
@@ -1624,14 +1733,14 @@ mod tests {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
         for i in 0..10 {
-            j.append(1, &Entry::Note { text: i.to_string() }).unwrap();
+            j.append(1, &Entry::Note { undo: None, text: i.to_string() }).unwrap();
         }
         let texts: Vec<_> = j
             .recent(1, 3)
             .unwrap()
             .into_iter()
             .map(|e| match e {
-                Entry::Note { text } => text,
+                Entry::Note { text, .. } => text,
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -1679,11 +1788,11 @@ mod tests {
     fn recent_lines_survive_pruning() {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
-        j.append(1, &Entry::Note { text: "old".into() }).unwrap();
+        j.append(1, &Entry::Note { undo: None, text: "old".into() }).unwrap();
         j.backdate_entries(1, 1_000);
-        j.append(1, &Entry::Note { text: "new".into() }).unwrap();
+        j.append(1, &Entry::Note { undo: None, text: "new".into() }).unwrap();
         j.prune(now() - 86_400).unwrap();
-        assert_eq!(j.conversation(1).unwrap(), vec![Entry::Note { text: "new".into() }]);
+        assert_eq!(j.conversation(1).unwrap(), vec![Entry::Note { undo: None, text: "new".into() }]);
     }
 
     #[test]
@@ -1804,6 +1913,36 @@ mod tests {
         t.plan = None;
         j.save_ticket(&t).unwrap();
         assert_eq!(j.ticket(1).unwrap().unwrap().plan, None);
+    }
+
+    #[test]
+    fn a_turn_keeps_what_it_used_by_kind_and_a_journal_from_before_gains_the_columns() {
+        let home = temp_home();
+        let path = squad_dir(&home, "acme").join("squad.db");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            // The turns table as it first was.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch("CREATE TABLE turns (member TEXT NOT NULL, role TEXT NOT NULL, ticket INTEGER, began INTEGER NOT NULL, ended INTEGER NOT NULL, outcome TEXT NOT NULL, tokens INTEGER NOT NULL DEFAULT 0);
+                INSERT INTO turns VALUES ('pm', 'pm', NULL, 1, 2, 'completed', 50);").unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let usage = crate::protocol::Usage { input_tokens: Some(10), output_tokens: Some(200), cache_tokens: Some(1300), cache_read_tokens: Some(1000), cache_write_tokens: Some(300), cache_write_long_tokens: Some(300), calls: Some(4), ..Default::default() };
+        let used = TurnUse::of(Engine::Claude, Some("claude-opus-5-5".into()), Some("s-1".into()), &usage);
+        assert_eq!((used.tokens.cache_read, used.tokens.cache_write, used.cache_write_long, used.calls), (1000, 300, 300, 4));
+        let now = now() as u64;
+        let turn = crate::retro::Turn { member: "frontend".into(), role: "frontend".into(), ticket: Some(7), began: now - 60, ended: now, outcome: "completed".into(), tokens: 1510 };
+        j.record_turn_use(&turn, Some(&used)).unwrap();
+        let kept: (String, String, String, i64, i64, i64, i64) = j
+            .conn
+            .query_row("SELECT engine, model, session, output, cache_read, cache_write_long, calls FROM turns WHERE member = 'frontend'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
+            .unwrap();
+        assert_eq!(kept, ("claude".into(), "claude-opus-5-5".into(), "s-1".into(), 200, 1000, 300, 4));
+        // The retro reads them as before.
+        assert_eq!(j.turns_since(now - 100).unwrap(), [turn]);
+        // A sum alone: read from the cache.
+        let summed = TurnUse::of(Engine::Codex, None, None, &crate::protocol::Usage { cache_tokens: Some(900), ..Default::default() });
+        assert_eq!((summed.tokens.cache_read, summed.tokens.cache_write, summed.calls), (900, 0, 1));
     }
 
     #[test]

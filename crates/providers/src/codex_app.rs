@@ -290,6 +290,13 @@ pub struct TurnRequest<'a> {
     pub access: Access,
     /// The thread an earlier turn ran in, to continue it.
     pub resume: Option<&'a str>,
+    /// Continue a copy of `resume` (`thread/fork`), never `resume` itself.
+    pub fork: bool,
+    /// What to say instead of `prompt` when no earlier thread could be
+    /// continued (or forked) and a fresh one starts; `None`: `prompt`.
+    pub fresh_prompt: Option<&'a str>,
+    /// Codex's own web search, live (`web_search = "live"`); not on another provider.
+    pub web_search: bool,
     /// Who the agent is on the team: Codex's developer instructions, beside
     /// its own and the project's `AGENTS.md`.
     pub instructions: Option<&'a str>,
@@ -327,11 +334,27 @@ pub fn start_params(request: &TurnRequest<'_>, cwd: &Path, others: Option<&Value
     } else if let Some(at_once) = request.subagents {
         params["config"]["agents"]["max_concurrent_threads_per_session"] = json!(at_once);
     }
+    // Searching the web as it goes: Codex's own tool, OpenAI's only.
+    if request.web_search && request.provider.is_none() {
+        params["config"]["web_search"] = json!("live");
+    }
     if let Some(model) = request.model {
         params["model"] = json!(model);
     }
     if let Some(instructions) = request.instructions {
         params["developerInstructions"] = json!(instructions);
+    }
+    params
+}
+
+/// `thread/fork`'s: a copy of thread `id` with the turn's settings — its
+/// sandbox, its servers — the original left as it was.
+pub fn fork_params(request: &TurnRequest<'_>, cwd: &Path, id: &str, others: Option<&Value>) -> Value {
+    let mut params = start_params(request, cwd, others);
+    if let Some(map) = params.as_object_mut() {
+        map.remove("serviceName");
+        map.insert("threadId".into(), json!(id));
+        map.insert("excludeTurns".into(), json!(true));
     }
     params
 }
@@ -538,6 +561,10 @@ pub struct TurnCollector {
     input: u64,
     cached: u64,
     output: u64,
+    /// Of `input`, what was written to the cache, where Codex says.
+    cache_written: u64,
+    /// The requests counted.
+    calls: u64,
     /// The context as of the latest request, and the window.
     context: Option<u64>,
     window: Option<u64>,
@@ -659,8 +686,10 @@ impl TurnCollector {
                 self.input += n("inputTokens").saturating_sub(cached);
                 self.cached += cached;
                 self.output += n("outputTokens");
+                self.cache_written += n("cacheWriteInputTokens");
                 if last.is_some() {
                     self.context = Some(n("totalTokens"));
+                    self.calls += 1;
                 }
                 if let Some(window) = usage.and_then(|u| u.get("modelContextWindow")).and_then(Value::as_u64) {
                     self.window = Some(window);
@@ -882,9 +911,13 @@ impl TurnCollector {
 
     fn usage(&self) -> Option<TurnUsage> {
         (self.input + self.cached + self.output > 0).then_some(TurnUsage {
-            input_tokens: Some(self.input),
+            input_tokens: Some(self.input.saturating_sub(self.cache_written)),
             output_tokens: Some(self.output),
-            cache_tokens: (self.cached > 0).then_some(self.cached),
+            cache_tokens: (self.cached + self.cache_written > 0).then_some(self.cached + self.cache_written),
+            cache_read_tokens: (self.cached > 0).then_some(self.cached),
+            cache_write_tokens: (self.cache_written > 0).then_some(self.cache_written),
+            cache_write_long_tokens: None,
+            calls: (self.calls > 0).then_some(self.calls),
             context_tokens: self.context,
             context_window: self.window,
         })
@@ -1051,14 +1084,17 @@ pub fn parse_limits(snapshot: &Value) -> Option<Limits> {
     })
 }
 
-/// A model `model/list` offers: its id, the name Codex gives it, and the
-/// reasoning efforts it takes (empty: not said).
+/// A model `model/list` offers: its id, the name Codex gives it, the
+/// reasoning efforts it takes (empty: not said), what Codex says it is for,
+/// and whether it is the account's default.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelInfo {
     pub id: String,
     pub name: Option<String>,
     pub efforts: Vec<String>,
     pub default_effort: Option<String>,
+    pub description: Option<String>,
+    pub default: bool,
 }
 
 /// Usable models from `model/list`, the account's default first; hidden ones left out.
@@ -1081,7 +1117,8 @@ pub fn model_infos(listing: &Value) -> Vec<ModelInfo> {
             .flatten()
             .filter_map(|e| e.as_str().or_else(|| e.get("reasoningEffort").and_then(Value::as_str)).map(str::to_owned))
             .collect();
-        Some(ModelInfo { name: text("displayName").filter(|n| *n != id), id, efforts, default_effort: text("defaultReasoningEffort") })
+        let default = m.get("isDefault").and_then(Value::as_bool) == Some(true);
+        Some(ModelInfo { name: text("displayName").filter(|n| *n != id), id, efforts, default_effort: text("defaultReasoningEffort"), description: text("description"), default })
     };
     let is_default = |m: &&&Value| m.get("isDefault").and_then(Value::as_bool) == Some(true);
     let default = models.iter().filter(is_default).filter_map(info);
@@ -1378,14 +1415,19 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
             .map(|listing| others_off(&listing, ours)),
         None => None,
     };
-    // The member's thread, continued; a fresh one when there is none, or it is gone.
-    let resumed = match request.resume {
-        Some(id) => server.call("thread/resume", resume_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
-        None => None,
+    // The member's thread, continued — or a copy of it, forked; a fresh one
+    // when there is none, it is gone, or this Codex can't fork.
+    let resumed = match (request.resume, request.fork) {
+        (Some(id), false) => server.call("thread/resume", resume_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
+        (Some(id), true) => server.call("thread/fork", fork_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
+        (None, _) => None,
     };
-    let opened = match resumed {
-        Some(opened) => opened,
-        None => server.call("thread/start", start_params(&request, cwd, others.as_ref()), THREAD_WAIT).await?,
+    let (opened, request) = match resumed {
+        Some(opened) => (opened, request),
+        None => {
+            let opened = server.call("thread/start", start_params(&request, cwd, others.as_ref()), THREAD_WAIT).await?;
+            (opened, TurnRequest { prompt: request.fresh_prompt.unwrap_or(request.prompt), ..request })
+        }
     };
     let Some(thread) = opened.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned) else {
         return Err(Error::Protocol("codex app-server started no thread".into()));
@@ -1654,6 +1696,7 @@ mod tests {
         let usage = result.usage.unwrap();
         assert_eq!((usage.input_tokens, usage.cache_tokens, usage.output_tokens), (Some(400), Some(1000), Some(100)));
         assert_eq!((usage.context_tokens, usage.context_window), (Some(1500), Some(258400)));
+        assert_eq!((usage.cache_read_tokens, usage.cache_write_tokens, usage.calls), (Some(1000), None, Some(1)), "cached input is read from the cache; one request");
     }
 
     #[test]
@@ -1745,13 +1788,24 @@ mod tests {
     #[test]
     fn each_model_in_the_catalog_brings_its_name_and_the_efforts_it_takes() {
         let listing = json!({ "data": [
-            { "id": "gpt-6.1-sol", "displayName": "GPT-6.1 Sol", "isDefault": true, "defaultReasoningEffort": "medium",
+            { "id": "gpt-6.1-sol", "displayName": "GPT-6.1 Sol", "isDefault": true, "defaultReasoningEffort": "medium", "description": "Frontier agentic coding.",
               "supportedReasoningEfforts": [{ "reasoningEffort": "low", "description": "fast" }, { "reasoningEffort": "medium" }, { "reasoningEffort": "xhigh" }] },
             { "id": "gpt-6-luna", "displayName": "gpt-6-luna", "supportedReasoningEfforts": ["minimal", "low"] },
             { "id": "gpt-6-astra" },
         ] });
         let infos = model_infos(&listing);
-        assert_eq!(infos[0], ModelInfo { id: "gpt-6.1-sol".into(), name: Some("GPT-6.1 Sol".into()), efforts: vec!["low".into(), "medium".into(), "xhigh".into()], default_effort: Some("medium".into()) });
+        assert_eq!(
+            infos[0],
+            ModelInfo {
+                id: "gpt-6.1-sol".into(),
+                name: Some("GPT-6.1 Sol".into()),
+                efforts: vec!["low".into(), "medium".into(), "xhigh".into()],
+                default_effort: Some("medium".into()),
+                description: Some("Frontier agentic coding.".into()),
+                default: true,
+            }
+        );
+        assert!(!infos[1].default && infos[1].description.is_none(), "only the account's default says so; no description: none");
         assert_eq!((infos[1].name.as_deref(), infos[1].efforts.as_slice()), (None, &["minimal".to_owned(), "low".to_owned()][..]), "a name that is only the id says nothing");
         assert!(infos[2].efforts.is_empty() && infos[2].default_effort.is_none());
     }

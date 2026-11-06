@@ -1,5 +1,9 @@
 //! Both engines' plans and members moving between them, as the window shows
-//! them — the meters at the sidebar's foot, `/usage`, the card above the
+//! them — how much of each plan is used, in one direction everywhere (the
+//! meters at the sidebar's foot, the model picker's tabs, `/usage`, the title
+//! bar's glance; Codex's own `/status` alone counts what is left, which its
+//! tooltip says), each number labelled "used", warned from 80% and 95%, the
+//! week with its even-pace mark — the card above the
 //! composer (a proposal in `suggest`, what was done in `auto` with an undo,
 //! the recommended setup once), the badge by each member — and the squad's
 //! choice in settings. No UI types here, so the rules are tested without a
@@ -157,20 +161,22 @@ pub struct Gauge {
     pub tone: Tone,
 }
 
-/// How a window's use reads: calm, watched (70%), low (85%), out (100%) — the switching rules' marks.
+/// How a window's use reads, warned early: calm, near its limit (80%),
+/// nearly out (95%), out (100%: "Limit reached"). Every place a plan's use
+/// shows reads it so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tone {
     Calm,
-    Watch,
-    Low,
+    Near,
+    Critical,
     Out,
 }
 
 pub fn tone(percent: u8) -> Tone {
     match percent {
         100.. => Tone::Out,
-        85.. => Tone::Low,
-        70.. => Tone::Watch,
+        95.. => Tone::Critical,
+        80.. => Tone::Near,
         _ => Tone::Calm,
     }
 }
@@ -180,17 +186,48 @@ fn gauge(window: Window, w: PlanWindow, now: i64) -> Gauge {
     Gauge { window, percent, resets_at: w.resets_at, tone: tone(percent) }
 }
 
-impl Gauge {
-    /// What is left of it, 0–100.
-    pub fn left(&self) -> u8 {
-        100 - self.percent.min(100)
+/// How long a window runs, in seconds.
+pub fn window_secs(window: Window) -> i64 {
+    match window {
+        Window::FiveHour => 5 * 3_600,
+        Window::Weekly => 7 * 86_400,
     }
 }
 
-/// The window that runs lowest of the plans read, with its engine — the one
-/// back sooner when two have as little left.
+/// Where the window's use would be by now if it were spread evenly over it,
+/// 0–1: the share of the window gone by. `None` when its reset isn't known,
+/// or is past — the window started over, and when the new one ends isn't
+/// known yet. A reset further off than the window is long reads as just started.
+pub fn even_pace(window: Window, resets_at: i64, now: i64) -> Option<f32> {
+    if resets_at <= 0 || resets_at <= now {
+        return None;
+    }
+    let length = window_secs(window);
+    let left = (resets_at - now).min(length);
+    Some((length - left) as f32 / length as f32)
+}
+
+impl Gauge {
+    /// What is left of it, 0–100: what Codex's own `/status` says.
+    pub fn left(&self) -> u8 {
+        100 - self.percent.min(100)
+    }
+
+    /// The even-pace mark a weekly bar wears (see [`even_pace`]); none on the five hours.
+    pub fn pace(&self, now: i64) -> Option<f32> {
+        (self.window == Window::Weekly).then(|| even_pace(self.window, self.resets_at, now)).flatten()
+    }
+
+    /// Used past the even-pace mark: going faster than even.
+    pub fn ahead(&self, now: i64) -> bool {
+        self.pace(now).is_some_and(|pace| f32::from(self.percent) > pace * 100.)
+    }
+}
+
+/// The window used most of the plans read, with its engine — the one back
+/// sooner when two are as used.
 pub fn tightest(meters: &[Meter]) -> Option<(Engine, Gauge)> {
-    meters.iter().flat_map(|m| m.gauges.iter().map(move |g| (m.engine, *g))).min_by_key(|(_, g)| (g.left(), g.resets_at))
+    meters.iter().flat_map(|m| m.gauges.iter().map(move |g| (m.engine, *g))).min_by_key(|(_, g)| (std::cmp::Reverse(g.percent), g.resets_at))
 }
 
 /// The title bar's glance at it, only while the sidebar — the meters with
@@ -199,25 +236,61 @@ pub fn header_glance(meters: &[Meter], sidebar_hidden: bool) -> Option<(Engine, 
     tightest(meters).filter(|_| sidebar_hidden)
 }
 
-/// "Claude 42% left".
+/// "Claude 58% used"; out, "Claude · Limit reached".
 pub fn glance(engine: Engine, g: &Gauge) -> String {
-    t!("engines.glance", engine = engine_name(engine), left = g.left())
+    match g.tone {
+        Tone::Out => t!("engines.glance_out", engine = engine_name(engine)),
+        _ => t!("engines.glance", engine = engine_name(engine), used = g.percent),
+    }
 }
 
-/// A window on the pointer: "5-hour 58% left · resets in 2h 10m (17:40)";
-/// used up, "used up"; past its reset, refilled (the next reset isn't known yet).
-pub fn left_words(g: &Gauge, now: i64, when: impl Fn(i64) -> String) -> String {
-    let window = match g.window {
+/// A window's name in words: "5-hour", "week".
+pub fn window_name(window: Window) -> &'static str {
+    match window {
         Window::FiveHour => t!("usage.five_hour"),
         Window::Weekly => t!("usage.week"),
-    };
-    if g.resets_at <= now {
-        return t!("engines.left_tip_fresh", window = window, left = g.left());
     }
-    let (span, at) = (until(g.resets_at, now), when(g.resets_at));
-    match g.left() {
-        0 => t!("engines.left_tip_out", window = window, span = span, at = at),
-        left => t!("engines.left_tip", window = window, left = left, span = span, at = at),
+}
+
+/// What a meter says beside its bar: "42% used"; out, "Limit reached ·
+/// resets in 2h" — the reset in sight, not only on the pointer.
+pub fn used_short(g: &Gauge, now: i64) -> String {
+    match g.tone {
+        Tone::Out => t!("engines.out_resets", span = span(g.resets_at, now)),
+        _ => t!("engines.used_short", used = g.percent),
+    }
+}
+
+/// A window on the pointer: "5-hour 42% used · resets in 2h 10m (17:40)";
+/// out, "Limit reached"; past its reset, refilled (the next reset isn't
+/// known yet). A weekly one says what its even-pace mark is, and Codex's
+/// that its own `/status` counts what is left instead.
+pub fn used_words(engine: Engine, g: &Gauge, now: i64, when: impl Fn(i64) -> String) -> String {
+    let window = window_name(g.window);
+    let mut lines = vec![if g.resets_at <= now {
+        t!("engines.used_tip_fresh", window = window, used = g.percent)
+    } else {
+        let (span, at) = (until(g.resets_at, now), when(g.resets_at));
+        match g.tone {
+            Tone::Out => t!("engines.used_tip_out", window = window, span = span, at = at),
+            _ => t!("engines.used_tip", window = window, used = g.percent, span = span, at = at),
+        }
+    }];
+    if let Some(pace) = g.pace(now) {
+        let pace = (pace * 100.).round() as u8;
+        lines.push(if g.ahead(now) { t!("engines.pace_ahead", pace = pace) } else { t!("engines.pace_within", pace = pace) });
+    }
+    if engine == Engine::Codex {
+        lines.push(t!("engines.codex_status_tip", left = g.left()));
+    }
+    lines.join("\n")
+}
+
+/// A meter's name to a screen reader: "Claude week: 42% used".
+pub fn gauge_aria(engine: Engine, g: &Gauge) -> String {
+    match g.tone {
+        Tone::Out => t!("engines.gauge_aria_out", engine = engine_name(engine), window = window_name(g.window)),
+        _ => t!("engines.gauge_aria", engine = engine_name(engine), window = window_name(g.window), used = g.percent),
     }
 }
 
@@ -442,28 +515,86 @@ mod tests {
     }
 
     #[test]
-    fn a_window_says_what_is_left_and_when_it_starts_over() {
+    fn a_window_says_how_much_is_used_and_when_it_starts_over() {
         let g = |window, percent, resets_at| Gauge { window, percent, resets_at, tone: tone(percent) };
         let five = g(Window::FiveHour, 42, NOW + 2 * 3600 + 10 * 60);
-        assert_eq!(five.left(), 58);
-        assert_eq!(left_words(&five, NOW, |_| "17:40".into()), "5시간 58% 남음 · 2시간 10분 뒤 초기화 (17:40)");
-        let out = g(Window::Weekly, 100, NOW + 3 * 86_400 + 5 * 3600);
-        assert_eq!(out.left(), 0);
-        assert_eq!(left_words(&out, NOW, |_| "11/07 09:00".into()), "주간 다 씀 · 3일 5시간 뒤 초기화 (11/07 09:00)");
+        assert_eq!(used_short(&five, NOW), "42% 사용", "always labelled: never a bare 42%");
+        assert_eq!(used_words(Engine::Claude, &five, NOW, |_| "17:40".into()), "5시간 42% 사용 · 2시간 10분 뒤 초기화 (17:40)");
+        assert_eq!(gauge_aria(Engine::Claude, &five), "Claude 5시간: 42% 사용");
+        // At 100%: the limit, with when it comes back — in sight, not only on the pointer.
+        let out = g(Window::FiveHour, 100, NOW + 3 * 3600);
+        assert_eq!(used_short(&out, NOW), "한도 도달 · 3시간 뒤 초기화");
+        assert_eq!(used_words(Engine::Claude, &out, NOW, |_| "20:00".into()), "5시간 한도 도달 · 3시간 뒤 초기화 (20:00)");
+        assert_eq!(gauge_aria(Engine::Claude, &out), "Claude 5시간: 한도 도달");
         // As short as it says it: no "0m", no "0h".
         assert_eq!([until(NOW + 35 * 60, NOW), until(NOW + 2 * 3600, NOW), until(NOW + 3 * 86_400, NOW), until(NOW + 20, NOW)], ["35분", "2시간", "3일", "1분"]);
         let fresh = g(Window::FiveHour, 0, NOW - 60);
-        assert_eq!(left_words(&fresh, NOW, |_| unreachable!("no reset known past it")), "5시간 100% 남음 · 다시 채워졌어요");
+        assert_eq!(used_words(Engine::Claude, &fresh, NOW, |_| unreachable!("no reset known past it")), "5시간 0% 사용 · 다시 채워졌어요");
     }
 
     #[test]
-    fn the_tightest_window_is_the_one_with_least_left() {
+    fn colours_warn_early_amber_from_80_red_from_95_and_out_at_100() {
+        assert_eq!([tone(0), tone(79), tone(80), tone(94), tone(95), tone(99), tone(100)], [Tone::Calm, Tone::Calm, Tone::Near, Tone::Near, Tone::Critical, Tone::Critical, Tone::Out]);
+        // Worst first, for a meter's colour and the folded heading.
+        assert!(Tone::Calm < Tone::Near && Tone::Near < Tone::Critical && Tone::Critical < Tone::Out);
+        let m = meter(Engine::Claude, &[(Window::FiveHour, 81, NOW + 3600), (Window::Weekly, 96, NOW + 86_400)], Some(NOW));
+        assert_eq!(m.tone(), Tone::Critical);
+    }
+
+    #[test]
+    fn the_weekly_bar_marks_where_an_even_pace_would_be_by_now() {
+        const DAY: i64 = 86_400;
+        let week = |percent, resets_at| Gauge { window: Window::Weekly, percent, resets_at, tone: tone(percent) };
+        // Four of seven days gone: the mark at 4/7.
+        let mid = week(70, NOW + 3 * DAY);
+        let at = mid.pace(NOW).unwrap();
+        assert!((at - 4. / 7.).abs() < 1e-6, "{at}");
+        assert!(mid.ahead(NOW), "70% used against 57%: faster than even");
+        assert!(!week(50, NOW + 3 * DAY).ahead(NOW), "50% against 57%: within it");
+        // Just started: the mark at the start, so anything used is ahead of it.
+        assert_eq!(week(0, NOW + 7 * DAY).pace(NOW), Some(0.));
+        assert!(week(1, NOW + 7 * DAY).ahead(NOW));
+        // A reset further off than a week (a clock off): read as just started, never past the start.
+        assert_eq!(week(0, NOW + 9 * DAY).pace(NOW), Some(0.));
+        // About to start over: the mark nearly at the end.
+        assert!(week(10, NOW + 60).pace(NOW).unwrap() > 0.99);
+        // Past its reset: started over, its new end not known yet — no mark.
+        assert_eq!(week(0, NOW - 60).pace(NOW), None);
+        assert_eq!(week(0, NOW).pace(NOW), None);
+        // No reset time known: no mark.
+        assert_eq!(week(30, 0).pace(NOW), None);
+        assert_eq!(even_pace(Window::Weekly, -5, NOW), None);
+        assert!(!week(30, 0).ahead(NOW), "no mark, never ahead of it");
+        // The five hours wear none, though their pace is known.
+        assert_eq!(Gauge { window: Window::FiveHour, ..mid }.pace(NOW), None);
+        assert!((even_pace(Window::FiveHour, NOW + 3600, NOW).unwrap() - 0.8).abs() < 1e-6);
+        // On the pointer: the mark explained.
+        assert_eq!(
+            used_words(Engine::Claude, &mid, NOW, |_| "11/10 09:00".into()),
+            "주간 70% 사용 · 3일 뒤 초기화 (11/10 09:00)\n눈금은 고르게 쓸 때의 지금 위치: 57%. 넘었으니 이번 주는 고른 속도보다 빨라요"
+        );
+    }
+
+    #[test]
+    fn codex_says_its_own_status_counts_what_is_left() {
+        let week = Gauge { window: Window::Weekly, percent: 61, resets_at: NOW + 2 * 86_400, tone: tone(61) };
+        let words = used_words(Engine::Codex, &week, NOW, |_| "11/09 12:00".into());
+        assert_eq!(words.lines().next(), Some("주간 61% 사용 · 2일 뒤 초기화 (11/09 12:00)"), "used first, as everywhere");
+        assert_eq!(words.lines().last(), Some("Codex 자체 /status는 남은 양으로 보여요: 39% 남음"));
+        assert_eq!(words.lines().nth(1), Some("눈금은 고르게 쓸 때의 지금 위치: 71%. 그 안이라 이번 주는 고른 속도 이내예요"));
+        assert!(!used_words(Engine::Claude, &week, NOW, |_| String::new()).contains("/status"), "Claude's own counts used too");
+    }
+
+    #[test]
+    fn the_glance_is_the_window_used_most() {
         let claude = meter(Engine::Claude, &[(Window::FiveHour, 42, NOW + 7200), (Window::Weekly, 76, NOW + 86_400)], Some(NOW));
         let codex = meter(Engine::Codex, &[(Window::FiveHour, 76, NOW + 3600), (Window::Weekly, 9, NOW + 86_400)], Some(NOW));
         let (engine, g) = tightest(&[claude.clone(), codex.clone()]).unwrap();
-        assert_eq!((engine, g.window, g.left()), (Engine::Codex, Window::FiveHour, 24), "as low as Claude's week, and back sooner");
-        assert_eq!(glance(engine, &g), "Codex 24% 남음");
-        assert_eq!(tightest(&[claude.clone(), meter(Engine::Codex, &[], None)]).map(|(e, g)| (e, g.left())), Some((Engine::Claude, 24)));
+        assert_eq!((engine, g.window, g.percent), (Engine::Codex, Window::FiveHour, 76), "as used as Claude's week, and back sooner");
+        assert_eq!(glance(engine, &g), "Codex 76% 사용");
+        let out = meter(Engine::Claude, &[(Window::Weekly, 100, NOW + 86_400)], Some(NOW));
+        assert_eq!(tightest(&[codex.clone(), out.clone()]).map(|(e, g)| glance(e, &g)).as_deref(), Some("Claude · 한도 도달"));
+        assert_eq!(tightest(&[claude.clone(), meter(Engine::Codex, &[], None)]).map(|(e, g)| (e, g.percent)), Some((Engine::Claude, 76)));
         assert_eq!(tightest(&[meter(Engine::Claude, &[], None)]), None, "nothing read, nothing to glance at");
         // The title bar glances at it only while the sidebar, with the meters, is away.
         assert_eq!(header_glance(std::slice::from_ref(&claude), false), None);
@@ -551,25 +682,24 @@ mod tests {
     }
 
     #[test]
-    fn the_meters_show_both_engines_by_how_low_they_run_and_how_sure() {
+    fn the_meters_show_both_engines_by_how_used_they_are_and_how_sure() {
         let mut e = Engines::default();
         let w = |used, left| Some(PlanWindow { used_percent: used, resets_at: NOW + left });
         e.read(Engine::Claude, PlanUsage { five_hour: w(86, 7200), seven_day: w(41, 86400) }, NOW);
         let meters = e.meters(NOW);
         assert_eq!(meters.iter().map(|m| m.engine).collect::<Vec<_>>(), [Engine::Claude, Engine::Codex]);
-        assert_eq!(meters[0].gauges.iter().map(|g| (g.percent, g.tone)).collect::<Vec<_>>(), [(86, Tone::Low), (41, Tone::Calm)]);
-        assert_eq!(meters[0].tone(), Tone::Low);
+        assert_eq!(meters[0].gauges.iter().map(|g| (g.percent, g.tone)).collect::<Vec<_>>(), [(86, Tone::Near), (41, Tone::Calm)]);
+        assert_eq!(meters[0].tone(), Tone::Near);
         assert!(meters[1].gauges.is_empty() && meters[1].read_at.is_none());
         assert_eq!(read_words(&meters[1], NOW), "Codex 사용량은 아직 읽지 못했어요");
         // A window past its reset starts over; an old reading says so.
         e.read(Engine::Codex, PlanUsage { five_hour: w(99, -60), seven_day: w(72, 86400) }, NOW - 3600);
         let codex = &e.meters(NOW)[1];
-        assert_eq!(codex.gauges.iter().map(|g| (g.percent, g.tone)).collect::<Vec<_>>(), [(0, Tone::Calm), (72, Tone::Watch)]);
+        assert_eq!(codex.gauges.iter().map(|g| (g.percent, g.tone)).collect::<Vec<_>>(), [(0, Tone::Calm), (72, Tone::Calm)]);
         assert!(codex.stale);
         assert_eq!(read_words(codex, NOW), "1시간 전에 읽음");
-        assert_eq!([tone(69), tone(70), tone(85), tone(100)], [Tone::Calm, Tone::Watch, Tone::Low, Tone::Out]);
         let g = e.meters(NOW)[0].gauges[0];
-        assert_eq!(left_words(&g, NOW, |_| "17:40".into()), "5시간 14% 남음 · 2시간 뒤 초기화 (17:40)");
+        assert_eq!(used_words(Engine::Claude, &g, NOW, |_| "17:40".into()), "5시간 86% 사용 · 2시간 뒤 초기화 (17:40)");
     }
 
     #[test]

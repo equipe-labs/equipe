@@ -344,6 +344,26 @@ daemon ──~/.equipe/desktop/helper.sock + token──▶ equipe Desktop Helpe
   desktop status` checks without changing anything; members without the
   permissions are told to ask the person for `equipe desktop setup`.
 
+### Phone tools (mobile QA)
+
+QA and mobile members of a squad whose projects include an iOS or Android app test it on the
+ticket's own simulator or emulator — start, look, act, record, frames, report, stop — through
+`mcp__phone__…`. Details, setup and what gets installed: [mobile-qa.md](./mobile-qa.md).
+
+```
+member's engine ──stdio──▶ equipe mcp --server phone ──socket: phone──▶ daemon
+   (is this a QA or mobile member, on a ticket, of a squad with a mobile app?)
+daemon, off its loop ──▶ xcrun simctl + AXe (iOS) · adb + emulator (Android)
+```
+
+- The runtime only says yes or no and where files go (`runtime/phone.rs`); the device work runs
+  off its loop (`crate::phone`), as a desktop call does. Devices and running recordings are held
+  per member in the daemon (`phone::PHONES`).
+- Installing AXe is the person's call, on an approval card (`phone::INSTALL`); a report reaches
+  the ticket's record and the member's conversation as a note the desktop draws as a card.
+- Offered nowhere else: a squad without a mobile app, and every other role, get exactly what they
+  got before (`tests/members_without_phone.rs` pins it).
+
 ### Plans are notes; tickets are commitments
 
 Engines report their own step-by-step plan (ACP `agent-plan`). It is **not** a
@@ -1047,6 +1067,38 @@ should know, so there are two layers:
 
 Members are told they run inside equipe without a screen, so they never ask the
 person to press keys or change Claude Code's permission mode — equipe sets it.
+
+### Where the plans went
+
+A person's Claude and Codex plans are shared by everything signed in to them: equipe's
+members, and the person's own Claude Code and Codex sessions. `equipe_core::plan_use` shows
+where each went.
+
+- **What is read.** Every Claude Code transcript (`$CLAUDE_CONFIG_DIR/projects` or
+  `~/.claude/projects`, `**/*.jsonl`: each request's `usage`, once per message id, its output
+  as last written) and Codex rollout (`$CODEX_HOME/sessions` or `~/.codex/sessions`,
+  `rollout-*.jsonl`: each `token_usage_record` by response id, else the growth of
+  `token_count` totals). Only lines that can hold usage are parsed, into the few fields
+  needed; the conversation is skipped as it is parsed and never kept. Nothing else in those
+  folders is opened — never `auth.json` — and nothing leaves the machine.
+- **Incrementally.** Each file is read on from where it was left (a byte offset per file
+  in `<home>/plan-use.db`); a line still being written waits. The ledger keeps ten days of
+  hours: tokens by kind and requests, by engine, model, the engine's session and folder. A
+  pass runs every minute off the loop; a first pass reads only files written in those ten
+  days. Only the person's own equipe home reads transcripts (`EQUIPE_PLAN_USE=on|off`
+  overrides).
+- **Members' turns.** Each turn's tokens by kind, model, engine and the engine's session
+  are kept with it in the squad's `turns` table: they place a session's hours with its
+  member and ticket, and stand in for an engine that leaves no transcript here.
+- **Whose.** A session a squad's journal knows is its member's (and ticket's); a folder
+  under `<home>/worktrees/<project>/t<N>-…` is ticket N's; anything else under equipe's
+  home is equipe's; the rest is the person's own, by folder.
+- **Load, not tokens.** Raw totals are mostly cheap cache reads. Each kind of token is
+  weighed by the model family's published API prices (`plan_use::weights`, one table kept
+  by hand, never fetched): a share is of that load, and of the plan's week — its share of
+  the week's load times the week's used percent.
+- **Telling.** One ticket, or the use outside equipe, taking 5% of a week in three hours is
+  told to every screen once (`plan_burn`). The Usage screen asks with `plan_use`.
 
 ## Desktop
 

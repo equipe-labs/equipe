@@ -19,12 +19,14 @@ pub mod by_words;
 pub mod decide;
 pub mod disk;
 pub mod metrics;
+pub mod plan_use;
 pub mod engines;
 pub mod harness;
 pub mod design;
 pub mod look;
 pub mod routines;
 pub mod secrets;
+pub mod side_chat;
 pub mod signals;
 
 /// How many subagents Claude Code runs at once on its own
@@ -71,6 +73,7 @@ pub mod watch;
 pub mod words;
 
 pub use briefs::ProjectDoc;
+pub use side_chat::SideChatId;
 pub use transcript::Transcript;
 
 /// One conversation with one agent. Chosen by the screen that opens it — at
@@ -558,10 +561,10 @@ impl Mode {
     /// What it means, in full.
     pub fn summary(self) -> &'static str {
         match self {
-            Mode::ReadOnly => "reads and plans — changes nothing, runs nothing but looking around",
+            Mode::ReadOnly => "reads and plans; changes nothing, runs nothing but looking around",
             Mode::Ask => "asks you before every edit and every command",
-            Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond — network, pushes, your accounts",
-            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name. In full access a member runs anything your account can, so equipe can't fully stop a determined one from acting as you through a process it doesn't see — auto is the safer default.",
+            Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond (network, pushes, your accounts)",
+            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name. In full access a member runs anything your account can, so equipe can't fully stop a determined one from acting as you through a process it doesn't see (auto is the safer default).",
         }
     }
 
@@ -663,6 +666,12 @@ pub enum Command {
         #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
         about: Option<Option<String>>,
     },
+    /// `command`, sent from the person's phone: what they say there is read
+    /// there, so the member hears so with it. The daemon wraps what a phone
+    /// sends (a screen that said hello with `phone`) — `Submit`,
+    /// `SubmitLater`, `SendNow` and `AnswerQuestions`; anything else inside
+    /// runs as it would on its own.
+    OnPhone { command: Box<Command> },
     /// A message for after the turn running now (a memo): it doesn't steer
     /// the work under way. With no turn running, the same as `Submit`.
     SubmitLater {
@@ -962,6 +971,19 @@ pub enum Command {
     /// hears it stopped (a helper hands in what it had) and goes on with its
     /// turn. Nothing when it isn't at work, or its engine can't stop it alone.
     StopSubagent { session: SessionId, id: String },
+    /// A side chat about `passage`, a stretch of `session`'s conversation the
+    /// person selected ([`side_chat`]): it knows the conversation so far and
+    /// the passage, reads the member's files and (where its engine can) the
+    /// web, changes nothing, and nothing said in it reaches the conversation.
+    /// `side` is the screen's own id for it. Answered by
+    /// [`Event::SideChatOpened`]; nothing runs until its first message.
+    StartSideChat { session: SessionId, side: SideChatId, passage: String },
+    /// The person's message in side chat `side`: its next turn. The
+    /// conversation and passage come again, so a side chat the daemon let go
+    /// (idle, or the daemon restarted) starts over from them.
+    SideChatSubmit { session: SessionId, side: SideChatId, passage: String, text: String },
+    /// The side chat is closed: its turn under way stops, and it is let go.
+    CloseSideChat { side: SideChatId },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -1010,6 +1032,9 @@ pub enum Command {
     Unpair { device: String },
     /// Look at what uses the disk ([`disk`]): answered by [`Event::DiskReport`].
     DiskScan,
+    /// Where an engine's plan went over `span` ([`plan_use`]): answered, to
+    /// every screen, by [`Event::PlanUse`]. Only reads.
+    PlanUse { engine: Engine, span: plan_use::Span },
     /// Give back the space of these items of the daemon's last look (their
     /// `id`s): only the ones it may remove, looked at again first. Answered by
     /// [`Event::DiskCleaned`], then a fresh [`Event::DiskReport`].
@@ -1108,16 +1133,29 @@ pub enum Command {
     /// The person takes back moves equipe made on its own: each member goes
     /// back to the engine and model it ran on, at its next ticket boundary.
     UndoEngineProposal { squad: SquadName, id: u64 },
+    /// The person takes back `change` to the squad's folder or memory — the
+    /// one an [`Event::Notice`]'s `undo` named — as `/home undo` does: as a
+    /// change of their own, so it can be taken back too. Told in `session`'s
+    /// conversation: a notice of what was taken back (its `undo` the new
+    /// change), or an error when later changes built on it.
+    UndoHomeChange { squad: SquadName, session: SessionId, change: String },
     /// Propose the squad's recommended setup for both engines again.
     ShowEngineSetup { squad: SquadName },
     /// The person moves `members` (none named: every member) to `engine`,
     /// each at its next ticket boundary, its work handed over. Only ever the
-    /// person's; where they belong from then on.
+    /// person's; where they belong from then on. `model`: the one they run
+    /// there, as the person picked it (`None`: what the engine recommends for
+    /// each one's role); a daemon that predates it moves them all the same.
+    /// `effort`: the one they think at there (`None`: the engine's default).
     MoveEngine {
         squad: SquadName,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         members: Vec<String>,
         engine: Engine,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
     /// Show the squad's design systems (`design::DesignSystem`): answered by
     /// [`Event::Design`], and again whenever one of them changes while a
@@ -1127,6 +1165,17 @@ pub enum Command {
     /// project's and its own folder's: answered by [`Event::ProjectDocs`],
     /// and sent again whenever the PM writes one.
     ProjectDocs { squad: SquadName },
+    /// Find the squad's briefs and plans whose title or words hold `query`
+    /// (any case), read from the squad's folder as [`Command::ProjectDocs`]
+    /// lists them: answered by [`Event::DocsFound`]. Only reads.
+    SearchDocs { squad: SquadName, query: String },
+    /// The person keeps the copy at `keep` of a brief or plan saved under more
+    /// than one project ([`briefs::DocCopies`]): the other copies are removed
+    /// from the squad's folder — never from a repository — as one change of
+    /// theirs, which [`Command::UndoHomeChange`] takes back. Told in
+    /// `session`'s conversation (a notice whose `undo` is that change) and by
+    /// [`Event::DocCopyKept`]; the docs are sent again.
+    KeepDocCopy { squad: SquadName, session: SessionId, keep: String },
     /// The accepted versions of a design system's folder — the squad's own
     /// (`project: None`) or a project's — newest first, the last 30: answered
     /// by [`Event::DesignVersions`]. Read from git when asked, not with
@@ -1296,6 +1345,12 @@ pub struct ModelChoice {
     pub efforts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_effort: Option<String>,
+    /// What its tool says it is for, in the tool's own words; `None`: not said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Its tool's default for the account.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
 }
 
 /// What a new member of `role` starts with on `engine`, as the person set it
@@ -1628,6 +1683,18 @@ pub struct Usage {
     /// Input read from or written to the prompt cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_tokens: Option<u64>,
+    /// Of `cache_tokens`, what was read from the cache …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// … and what was written to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// Of `cache_write_tokens`, what was written to be kept an hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_long_tokens: Option<u64>,
+    /// How many requests the turn made of the model, subagents' included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<u64>,
     /// How full the conversation's context was at the end of the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
@@ -1866,7 +1933,14 @@ pub enum Event {
     /// Output a member's turn has produced so far, in tokens.
     Output { session: SessionId, tokens: u64 },
     /// What the person asked — sent to every screen, not only the one it was typed in.
-    UserMessage { session: SessionId, text: String },
+    UserMessage {
+        session: SessionId,
+        text: String,
+        /// The words of the text files it attached, kept with it
+        /// ([`tags::Kept`]); an older daemon's has none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
     /// A message left while the agent works. It becomes a [`Event::UserMessage`]
     /// when the turn ends; memos left in the meantime arrive together.
     MessageQueued {
@@ -1885,7 +1959,16 @@ pub enum Event {
     QueueSent { session: SessionId, texts: Vec<String> },
     /// A line from equipe for this session's conversation — e.g. the PM being
     /// told that the person spoke to a member directly.
-    Notice { session: SessionId, text: String },
+    ///
+    /// `undo`: the change to the squad's folder (or memory) this line tells
+    /// of, which [`Command::UndoHomeChange`] takes back — a screen may put a
+    /// button on the line. Absent for every other line.
+    Notice {
+        session: SessionId,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
     /// A fragment of the agent's answer.
     TextDelta { session: SessionId, text: String },
     /// The agent is using a tool, e.g. `Edit` on a file.
@@ -1999,6 +2082,35 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,
     },
+    /// A side chat ([`Command::StartSideChat`]) is open, on `session`'s
+    /// engine and model; `search`: it searches the web (not on another
+    /// provider through Codex, which has no search of its own).
+    SideChatOpened {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        session: SessionId,
+        side: SideChatId,
+        search: bool,
+    },
+    /// What happened in side chat `side`, as a conversation's own events say
+    /// it — the person's message, the answer's words, a tool's use and
+    /// result, the turn's end with its usage, an error — each with
+    /// `session` = `side`. Never part of `session`'s conversation.
+    SideChat {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        /// The conversation it is about.
+        session: SessionId,
+        side: SideChatId,
+        event: Box<Event>,
+    },
+    /// Side chat `side` was let go: closed, its conversation closed, or idle
+    /// too long ([`side_chat::IDLE_SECS`]).
+    SideChatClosed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        side: SideChatId,
+    },
     /// A subagent the daemon watches hasn't been heard from for `quiet_secs`
     /// and looks stuck; `None`: it has been heard from since. Only the
     /// person stops it ([`Command::StopSubagent`]). See [`SubagentInfo::stuck_secs`].
@@ -2026,7 +2138,13 @@ pub enum Event {
         project: Option<String>,
     },
     /// The member read a steering message, at this point of its turn.
-    Steered { session: SessionId, text: String },
+    Steered {
+        session: SessionId,
+        text: String,
+        /// As [`Event::UserMessage`]'s.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
     /// What runs under the member's engine for its command under way, as the
     /// daemon looked at it a moment ago — every few seconds while it runs —
     /// or `None` once it no longer does. A screen that doesn't know this
@@ -2133,6 +2251,12 @@ pub enum Event {
     DiskLevel { status: disk::DiskStatus },
     /// What uses the disk, as [`Command::DiskScan`] asked.
     DiskReport { report: disk::DiskReport },
+    /// Where an engine's plan went, as [`Command::PlanUse`] asked.
+    PlanUse { report: Box<plan_use::Report> },
+    /// One ticket, or the use outside equipe, burned a large share of an
+    /// engine's week in a short time: told once each, and again to a screen
+    /// that attaches while it is recent.
+    PlanBurn { burn: plan_use::Burn },
     /// What a [`Command::DiskClean`] gave back.
     DiskCleaned { cleaned: disk::DiskCleaned },
     /// Where each engine stands on the daemon's machine ([`Command::Engines`]),
@@ -2247,6 +2371,32 @@ pub enum Event {
         squad: SquadName,
         #[serde(default)]
         docs: Vec<briefs::ProjectDoc>,
+        /// The ones saved under more than one project, each set once.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copies: Vec<briefs::DocCopies>,
+        /// Older copies equipe once committed into the projects' repositories,
+        /// still there — for the person to know of; nothing is done to them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        in_repos: Vec<briefs::InRepo>,
+    },
+    /// The briefs and plans [`Command::SearchDocs`] found for `query`: their
+    /// paths ([`briefs::ProjectDoc::path`]), in the order the docs are listed.
+    DocsFound {
+        squad: SquadName,
+        query: String,
+        #[serde(default)]
+        paths: Vec<String>,
+    },
+    /// One copy kept ([`Command::KeepDocCopy`]): `removed` went from the
+    /// squad's folder as the change `undo`, which [`Command::UndoHomeChange`]
+    /// takes back; `None` when nothing needed saving.
+    DocCopyKept {
+        squad: SquadName,
+        kept: String,
+        #[serde(default)]
+        removed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
     },
     /// A design system's accepted versions ([`Command::DesignVersions`]),
     /// newest first; none when its folder has no history yet.
@@ -2297,8 +2447,11 @@ impl Event {
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
             | Event::ProjectDocs { squad, .. }
+            | Event::DocsFound { squad, .. }
+            | Event::DocCopyKept { squad, .. }
             | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
+            Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
             _ => None,
         }
     }
@@ -2380,6 +2533,8 @@ impl Event {
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::ProjectDocs { .. }
+            | Event::DocsFound { .. }
+            | Event::DocCopyKept { .. }
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -2397,7 +2552,13 @@ impl Event {
             | Event::Devices { .. }
             | Event::DiskLevel { .. }
             | Event::DiskReport { .. }
-            | Event::DiskCleaned { .. } => None,
+            | Event::DiskCleaned { .. }
+            | Event::PlanUse { .. }
+            | Event::PlanBurn { .. } => None,
+            // A side chat's own: never part of the conversation it is about.
+            Event::SideChatOpened { .. }
+            | Event::SideChat { .. }
+            | Event::SideChatClosed { .. } => None,
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
             | Event::Nebius { .. }
@@ -2419,6 +2580,8 @@ impl Event {
                 | Event::DiskLevel { .. }
                 | Event::DiskReport { .. }
                 | Event::DiskCleaned { .. }
+                | Event::PlanUse { .. }
+                | Event::PlanBurn { .. }
                 | Event::Engines { .. }
                 | Event::Nebius { .. }
                 | Event::Providers { .. }
@@ -2506,7 +2669,13 @@ impl ToolOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entry {
-    User { text: String },
+    User {
+        text: String,
+        /// The words of the text files the message attached, kept with it:
+        /// they outlast the files ([`tags::Kept`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
     Reply { text: String },
     Tool {
         tool: String,
@@ -2521,8 +2690,12 @@ pub enum Entry {
         #[serde(default, skip_serializing_if = "is_false")]
         background: bool,
     },
-    /// A quiet line from equipe itself.
-    Note { text: String },
+    /// A quiet line from equipe itself; `undo` as its [`Event::Notice`] had it.
+    Note {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
     /// What follows is about `project` — or, with `None`, about the whole
@@ -2998,7 +3171,7 @@ mod tests {
             Event::TicketChanged { squad: "acme".into(), ticket: ticket(3) },
             Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None },
             Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
-            Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
+            Event::Notice { undo: None, session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
             Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()), label: None, background: false },
             Event::TurnEnded {
@@ -3137,7 +3310,7 @@ mod tests {
                 title: Some("fix it".into()),
                 tokens: 12,
                 context: None,
-                recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+                recent: vec![Entry::User { text: "fix it".into(), kept: Vec::new() }, Entry::Reply { text: "on it".into() }],
                 recent_at: vec![Some(1_762_300_000), None],
                 queued: vec!["and the tests".into()],
                 queued_project: None,
@@ -3187,7 +3360,7 @@ mod tests {
         let back = json!({ "type": "conversation_back", "session": 5, "lines": [{ "kind": "user", "text": "hi" }] });
         let Event::ConversationBack { lines_at, .. } = serde_json::from_value(back).unwrap() else { panic!("conversation back") };
         assert!(lines_at.is_empty());
-        let back = Event::ConversationBack { session: 5, title: None, lines: vec![Entry::User { text: "hi".into() }], lines_at: vec![Some(9)] };
+        let back = Event::ConversationBack { session: 5, title: None, lines: vec![Entry::User { text: "hi".into(), kept: Vec::new() }], lines_at: vec![Some(9)] };
         assert_eq!(serde_json::to_value(&back).unwrap()["lines_at"], json!([9]));
         assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&back).unwrap()).unwrap(), back);
     }
@@ -3595,5 +3768,19 @@ mod tests {
         assert_eq!(newer, ProviderTest::Failed { why: "w".into(), problem: Some(ProviderProblem::Other) });
         let older: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w" })).unwrap();
         assert_eq!(older, ProviderTest::Failed { why: "w".into(), problem: None });
+    }
+
+    #[test]
+    fn a_move_carries_the_model_picked_and_a_listed_model_what_its_tool_says_of_it() {
+        let plain = Command::MoveEngine { squad: "acme".into(), members: vec!["pm".into()], engine: Engine::Codex, model: None, effort: None };
+        assert_eq!(serde_json::to_value(&plain).unwrap(), json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex" }), "as an older daemon reads it");
+        let picked: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "model": "gpt-6.1-sol" })).unwrap();
+        assert!(matches!(picked, Command::MoveEngine { model: Some(ref m), .. } if m == "gpt-6.1-sol"));
+        let thought: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "effort": "high" })).unwrap();
+        assert!(matches!(thought, Command::MoveEngine { effort: Some(ref e), model: None, .. } if e == "high"));
+        let older: ModelChoice = serde_json::from_value(json!({ "id": "gpt-6-luna" })).unwrap();
+        assert_eq!((older.description, older.default), (None, false), "from a daemon that predates them");
+        let said = ModelChoice { id: "gpt-6.1-sol".into(), description: Some("Frontier.".into()), default: true, ..Default::default() };
+        assert_eq!(serde_json::to_value(&said).unwrap(), json!({ "id": "gpt-6.1-sol", "description": "Frontier.", "default": true }));
     }
 }

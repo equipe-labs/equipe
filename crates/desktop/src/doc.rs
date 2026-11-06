@@ -55,11 +55,19 @@ pub struct Doc {
     /// Opened afresh rather than read again: a deck starts as a presentation
     /// once its words come.
     pub fresh: bool,
+    /// Not read from the file: the words a sent message kept of it, the file
+    /// being gone (`crate::sent::Sent::kept`). There is nothing to read again.
+    pub kept: bool,
 }
 
 impl Doc {
     pub fn new(path: PathBuf, read: u64) -> Self {
-        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false, presenting: None, fresh: true }
+        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false, presenting: None, fresh: true, kept: false }
+    }
+
+    /// The words a sent message kept of `path`, shown as the file was.
+    pub fn of_kept(path: PathBuf, words: &str, read: u64) -> Self {
+        Self { text: Some(Ok(words.to_owned())), fresh: false, kept: true, ..Self::new(path, read) }
     }
 
     /// Its slides, when it is a deck (`deck.rs`).
@@ -74,6 +82,10 @@ impl Doc {
     }
 
     pub fn name(&self) -> String {
+        if self.kept {
+            // An upload's name, as the person knows it: without its stamp.
+            return equipe_core::protocol::tags::display_name(&self.path.to_string_lossy()).to_owned();
+        }
         self.path.file_name().map_or_else(|| self.path.display().to_string(), |n| n.to_string_lossy().into_owned())
     }
 
@@ -297,6 +309,14 @@ mod tests {
         let (text, cut) = words("가".repeat(MOST).into_bytes());
         assert!(cut && text.len() <= MOST && text.chars().all(|c| c == '가'));
         assert_eq!(words(b"# hi\n".to_vec()), ("# hi\n".into(), false));
+    }
+
+    #[test]
+    fn words_a_message_kept_show_as_the_file_did_under_its_own_name() {
+        let doc = Doc::of_kept("/u/.equipe/uploads/1792073093607-memo-transcript.txt".into(), "Ship the *pricing* page.", 3);
+        assert!(doc.kept && !doc.fresh);
+        assert_eq!(doc.name(), "memo-transcript.txt");
+        assert_eq!(doc.markdown().as_deref(), Some("```text\nShip the *pricing* page.\n```"), "plain text, as written");
     }
 
     #[test]

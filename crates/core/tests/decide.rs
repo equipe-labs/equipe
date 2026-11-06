@@ -177,7 +177,7 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { id, answers, .. } = e { Some((*id, answers.clone())) } else { None });
     assert_eq!(closed, Some((set.id, Some(vec![Answer { picked: vec![0], ..Answer::default() }, Answer { picked: vec![0, 1], other: Some("SSO later".into()), ..Answer::default() }]))));
     let expected = "Answers to your questions:\n1) Which database should the API use? → Postgres\n2) Which features ship first? → Auth, Payments (+ note: SSO later)";
-    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { session: 2, text } if text == expected)), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { session: 2, text, .. } if text == expected)), "{seen:#?}");
     let prompt = calls(&recorded).last().map(|c| arg(c, "-p").unwrap_or_default().to_owned()).unwrap_or_default();
     assert!(prompt.ends_with(expected), "the member reads them as its next message: {prompt}");
     assert!(handle.snapshot("acme").await.questions.is_empty(), "no longer waiting");
@@ -248,7 +248,7 @@ async fn a_design_choice_reacted_to_in_one_click_goes_to_the_designer_and_into_t
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { answers, .. } = e { answers.clone() } else { None });
     assert_eq!(closed, Some(answers));
-    let message = seen.iter().find_map(|e| if let Event::UserMessage { session: 2, text } = e { Some(text.clone()) } else { None }).unwrap();
+    let message = seen.iter().find_map(|e| if let Event::UserMessage { session: 2, text, .. } = e { Some(text.clone()) } else { None }).unwrap();
     assert!(message.contains("1) Which direction? → mix — «Calm» with the type of «Warm»"), "{message}");
     assert!(message.contains("2) Which home screen? → another round — none of these (+ note: all too busy)"), "{message}");
     assert!(message.contains("For a mix: make it") && message.contains("For another round:"), "{message}");
@@ -319,7 +319,7 @@ async fn skipped_questions_say_so_and_a_closed_set_tells_the_member_to_go_on() {
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let text = seen.iter().find_map(|e| if let Event::UserMessage { text, .. } = e { Some(text.clone()) } else { None }).unwrap();
     assert_eq!(text, "Answers to your questions:\n1) Which database should the API use? → skipped — your call\n2) Which features ship first? → skipped — your call");
-    assert!(!seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("asks you to decide"))), "the PM isn't told of its own");
+    assert!(!seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("asks you to decide"))), "the PM isn't told of its own");
 
     // Asked again, and closed unanswered: the PM goes on without it.
     tool(&handle, "pm", "ask_decision", json!({ "questions": [{ "question": "Ship today?", "options": ["Yes (Recommended)", "No"] }] })).await;

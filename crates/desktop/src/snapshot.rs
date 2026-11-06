@@ -12,6 +12,7 @@
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>[,<n>]` (its first — or nth, from 0 — subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `words:<on|off|ask>` ("All by words" for the squad, or asked about) · `wlog` (the log of where words went wrong) · `wundo` (Undo, Cancel or Leave on what waits in words) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>` (a lost sign-in's card in the conversation) · `ssearch:<words>` (its search) · `spop:<language|squad|subagents|provider>` (a pop-up) · `padd:<preset>` · `purl:<url>` · `pconnect` (a model provider's form: opened, its address, Connect) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|reply|copy|type:<words>|write:<words>|add|cancel|edit:<n>|remove:<n>|peek:<n>|card:<quote>|<words>|send|close|jump>` (asking about — replying to — the words selected; a card's "Reply", ✕, the pointer on it; a card made at once) ·
+//! `sidechat:<start|on:<words>|type:<words>|send|close|bring|jump|reopen>` (a side chat: about the words selected, or about `words` of the conversation as if selected; typed in, sent, closed, its last answer brought to the composer, its passage clicked, opened again from its mark) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in Needs you, peeking) · `dview:<n>` (option n's picture of the card on show, big) · `dtake:<n>` / `dmix:<n>[,<k>]` / `dagain` (a design choice's one click: option n's "This one", its mix menu opened or its kth line, "Again") · `tview:<ticket>,<n>` (a hand-in's nth picture, big; then `press:right`, `press:enter`) · `rview:<n>` (the nth picture the latest reply showing pictures embeds, big) · `tpick:<id>` (a change to the team in Needs you, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) · `rpick:<id>` (a routine the PM proposed in Needs you, peeking) · `ryes` / `rno` (turn on or decline the oldest) · `cpick:<id>` (a card to confirm in Needs you, peeking; `cpick` alone: the oldest) · `ctick:<ticket>` (tick or untick a ticket on the oldest card) · `cyes` / `cno` (confirm or decline the oldest card) · `eyes` / `eno` / `eundo` (the engine card: its yes, its no, undo) · `engines:<off|suggest|auto>` (the squad's engine switching) ·
@@ -20,7 +21,7 @@
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines|taste>]` (Design system, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dwork` (the work under way on it, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
 //! `dtab:<map|system>` (UI map or Design system) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fdata:<real|example>` (Real data or Example data) · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` ("Talk" on the open state) · `dsay:<token>` / `dsay:asset:<n>` ("Talk" on a colour or type style by name, or asset n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
 //! `dcompare[:off]` (Compare and review, begun or ended) · `dside:<now|after>` · `dstep[:prev]` (the next or previous changed screen) · `daccept` · `dredo[:<words>]` ("Ask again"'s box, with words) · `dredosend` · `dversions` (Version history, opened or closed) · `drestore:<n>` (row n asked back: its confirmation) · `dtaste:<add|edit:<n>|type:<words>|save|cancel|remove:<n>|confirm:<n>|evidence:<n>>` (a taste note: write a new one, rewrite note n, type in its box, keep it, put the box away, remove note n, say "That's right" to note n, open or close its evidence) ·
-//! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log, with the process's CPU time and memory) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: "Take over", "Give back") · `breveal:<page>` (a page waiting for the person, as Needs you opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:<step>|<step>|…` (an IME's steps composed, then the last committed: `bime:k|か`) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` ("Connect a phone"'s sheet) · `pair:allow|deny|retry|close` (its buttons) · `newsquad[:type:<name>|create|tab[:back]|close|failed|far|farout]` ("New squad…"'s sheet: a name, its Create, Tab, closed, a refusal shown; the window as if on another machine, attached or not) · `disk` (the Disk panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `newwindow[:<squad>]` (New Window, ⌘⇧N; a squad's "open in a new window") · `win:<n|first|last>` (the steps after it act on that window) · `titles[:<file>]` (every window's title, as the Window menu lists them) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `cfocus` (the summary band's retry, focused by keyboard) · `mark:<label>` (a line in the log, with the process's CPU time and memory) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `docs` (briefs and plans, all in one place) · `docsfind:<words>` · `docsfilter:<project:<name>|squad|kind:<brief|plan>|status:<word>|clear>` · `docsopen:<n>` (its nth row, beside) · `docskeep:<set>,<n>` (keep copy n of a set saved under more than one project) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: "Take over", "Give back") · `breveal:<page>` (a page waiting for the person, as Needs you opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:<step>|<step>|…` (an IME's steps composed, then the last committed: `bime:k|か`) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` ("Connect a phone"'s sheet) · `pair:allow|deny|retry|close` (its buttons) · `newsquad[:type:<name>|create|tab[:back]|close|failed|far|farout]` ("New squad…"'s sheet: a name, its Create, Tab, closed, a refusal shown; the window as if on another machine, attached or not) · `usage[:day|week|claude|codex|outside|cut:<tickets|members|projects>|hour[:<n>]|dismiss]` (the Usage screen: its stretch, its engine, outside equipe opened, a cut, an hour picked — the busiest, or the nth — and the fast burn's notice closed) · `disk` (the Disk panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `newwindow[:<squad>]` (New Window, ⌘⇧N; a squad's "open in a new window") · `win:<n|first|last>` (the steps after it act on that window) · `titles[:<file>]` (every window's title, as the Window menu lists them) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
 //! `shot:` names its file with `{mode}` and `{width}` put in as the window is
@@ -846,8 +847,42 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 }),
                 "browser" => shell.update(cx, |shell, cx| shell.toggle_browser(window, cx)),
                 "doc" => shell.update(cx, |shell, cx| shell.open_doc(std::path::PathBuf::from(&arg), cx)),
+                // Briefs and plans, all in one place: `docs`, then `docsfind:<words>`,
+                // `docsfilter:<project:<name>|squad|kind:<brief|plan>|status:<draft|in_review|settled|dropped>|clear>`,
+                // `docsopen:<n>` (the nth row, beside) and `docskeep:<set>,<n>` (keep copy n of set n).
+                "docs" => shell.update(cx, |shell, cx| shell.open_docs(cx)),
+                "docsfind" => shell.update(cx, |shell, cx| {
+                    shell.docs_search.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    shell.docs_typed(cx);
+                }),
+                "docsfilter" => shell.update(cx, |shell, cx| {
+                    use crate::docs::{Filter, Whose};
+                    let (what, value) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+                    let filter = &mut shell.shelf.filter;
+                    match what {
+                        "project" => filter.whose = Whose::Project(value.to_owned()),
+                        "squad" => filter.whose = Whose::Squad,
+                        "kind" => filter.kind = [equipe_core::protocol::briefs::DocKind::Brief, equipe_core::protocol::briefs::DocKind::Plan].into_iter().find(|k| k.word() == value),
+                        "status" => filter.status = Some(crate::board::doc_status(value).1),
+                        _ => *filter = Filter::default(),
+                    }
+                    cx.notify();
+                }),
+                "docsopen" => shell.update(cx, |shell, cx| {
+                    let query = shell.docs_query(cx);
+                    let path = crate::docs::listed(&shell.docs, &shell.shelf.filter, &query, shell.shelf.found_for(&query)).get(arg.parse().unwrap_or(0)).map(|d| std::path::PathBuf::from(&d.path));
+                    if let Some(path) = path {
+                        shell.open_doc(path, cx);
+                    }
+                }),
+                "docskeep" => shell.update(cx, |shell, cx| {
+                    let (set, n) = arg.split_once(',').map(|(a, b)| (a.trim().parse().unwrap_or(0), b.trim().parse().unwrap_or(0))).unwrap_or((0usize, 0usize));
+                    if let Some(path) = shell.shelf.copies.get(set).and_then(|c| c.paths.get(n)).cloned() {
+                        shell.keep_doc_copy(&path, cx);
+                    }
+                }),
                 "slide" => shell.update(cx, |shell, cx| shell.present(arg.parse().unwrap_or(0), cx)),
-                "usage" => shell.update(cx, |shell, cx| shell.open_usage(cx)),
+                "usage" => shell.update(cx, |shell, cx| shell.snapshot_usage(&arg, cx)),
                 // The header's member list, open.
                 "members" => shell.update(cx, |shell, cx| shell.toggle_popover(crate::views::board::Popover::Members, cx)),
                 "rail" => shell.update(cx, |shell, cx| {
@@ -1139,6 +1174,25 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                             cx.notify();
                         }
                         "jump" => shell.quote_jump_latest(cx),
+                        _ => {}
+                    }
+                }),
+                // A side chat about words selected (`views/side_chat.rs`).
+                "sidechat" => shell.update(cx, |shell, cx| {
+                    let (what, words) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+                    match what {
+                        "start" => shell.side_chat_start(window, cx),
+                        "on" => shell.side_chat_open_on(&words.replace("\\n", "\n"), window, cx),
+                        "type" => shell.side_chat_type(&words.replace("\\n", "\n"), window, cx),
+                        "send" => shell.side_chat_send(window, cx),
+                        "close" => shell.side_chat_close(window, cx),
+                        "bring" => shell.side_chat_bring(window, cx),
+                        "jump" => shell.side_chat_jump(cx),
+                        "reopen" => {
+                            if let Some(viewed) = shell.model.viewed() {
+                                shell.side_chat_show(viewed, window, cx);
+                            }
+                        }
                         _ => {}
                     }
                 }),

@@ -722,7 +722,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             };
             let who = if members.is_empty() { t!("compose.engine_everyone").to_owned() } else { members.join("·") };
             Plan {
-                commands: vec![Command::MoveEngine { squad, members, engine }],
+                commands: vec![Command::MoveEngine { squad, members, engine, model: None, effort: None }],
                 flash: Some(t!("compose.engine_moving", names = who, engine = crate::switching::engine_name(engine))),
                 ..Plan::default()
             }
@@ -1548,7 +1548,7 @@ mod tests {
         assert!(matches!(&then.1, After::Squads { open: Some(name), .. } if name == "shop"));
         // Remove: asked, and only a project the squad works on.
         let remove = plan(&model, "/squad remove site");
-        assert_eq!(asked(&remove).then, Then::Job(Job::Squad { squad: "acme".into(), words: vec!["remove".into(), "site".into()], dry_run: false }, After::Squads { open: None, say: "acme은(는) 이제 site을(를) 작업하지 않아요 — 티켓과 브랜치는 남아요".into() }));
+        assert_eq!(asked(&remove).then, Then::Job(Job::Squad { squad: "acme".into(), words: vec!["remove".into(), "site".into()], dry_run: false }, After::Squads { open: None, say: "acme는 이제 site를 작업하지 않아요 — 티켓과 브랜치는 남아요".into() }));
         assert!(plan(&model, "/squad remove ghost").effect.is_none());
     }
 

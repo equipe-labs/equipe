@@ -436,7 +436,7 @@ impl Runtime {
         self.publish(Event::WordsClosed { squad: talk.squad.clone(), id, outcome, text: text.clone() });
         let session = talk.live.session;
         if !self.sessions.get(&session).is_some_and(Session::is_working) {
-            self.publish(Event::Notice { session, text });
+            self.publish(Event::Notice { undo: None, session, text });
         }
         talk.entry.outcome = outcome;
         talk.entry.closed_at = now_ms();

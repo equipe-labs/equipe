@@ -27,6 +27,7 @@ mod deck;
 mod daemon;
 mod disk;
 mod doc;
+mod docs;
 mod compare;
 mod design;
 mod design_talk;
@@ -47,6 +48,7 @@ mod readonly;
 mod screen_look;
 mod setup;
 mod sheet;
+mod side_chat;
 mod side_split;
 mod sidecar;
 mod squad_form;
@@ -74,6 +76,7 @@ mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
 mod models;
+mod picker;
 mod roadmap;
 mod sent;
 mod releases;
@@ -201,6 +204,10 @@ pub enum Screen {
     Project,
     /// Progress: what needs a look, what is under way, what finished (`views/progress.rs`).
     Progress,
+    /// Usage: where the plans went (`views/usage.rs`).
+    Usage,
+    /// Briefs and plans: every project's and the squad's own, in one place (`views/docs.rs`).
+    Docs,
 }
 
 pub struct Shell {
@@ -239,6 +246,8 @@ pub struct Shell {
     pub asklist: views::asklist::AskListUi,
     /// Words selected in the conversation, asked about (`views/quote.rs`).
     pub quote: views::quote::QuoteUi,
+    /// A side chat about words selected, beside the conversation (`views/side_chat.rs`).
+    pub side_chat: views::side_chat::SideChatUi,
     pub settings: views::settings::SettingsUi,
     /// Design system's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
@@ -250,6 +259,10 @@ pub struct Shell {
     pub releases: Vec<(std::path::PathBuf, releases::Release)>,
     /// The squad's briefs and plans, as the daemon last sent them.
     pub docs: Vec<equipe_core::protocol::briefs::ProjectDoc>,
+    /// The rest of what it said of them, and the docs screen's filters, search and choices.
+    pub shelf: docs::Shelf,
+    /// The docs screen's search box.
+    pub docs_search: Entity<InputState>,
     pub releases_asked: Option<std::time::Instant>,
     /// Metrics' state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
@@ -311,8 +324,8 @@ pub struct Shell {
     pub forgetting: Option<String>,
     /// "Disk": the banner while it runs short, and the panel (`disk.rs`).
     pub disk: disk::DiskUi,
-    /// `/usage`, over the window (`views/usage.rs`).
-    pub usage_open: bool,
+    /// Usage: where the plans went, and the notice of a fast burn (`usage.rs`).
+    pub plan_use: usage::PlanUseUi,
     /// The window's size, shown for a moment after it changes (`zoom.rs`).
     pub zoom_hud: Option<zoom::Hud>,
     _pair_tick: Option<Task<()>>,
@@ -430,12 +443,15 @@ impl Shell {
             viewer_zoom: Default::default(),
             asklist: Default::default(),
             quote: Default::default(),
+            side_chat: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
             design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
             docs: Vec::new(),
+            shelf: docs::Shelf::default(),
+            docs_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("docs.search_placeholder"))),
             releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
@@ -469,7 +485,7 @@ impl Shell {
             setup: setup::Setup::default(),
             forgetting: None,
             disk: Default::default(),
-            usage_open: false,
+            plan_use: Default::default(),
             zoom_hud: None,
             _pair_tick: None,
             notices,
@@ -599,6 +615,13 @@ impl Shell {
             InputEvent::PressEnter { .. } => this.design_redo_send(window, cx),
             InputEvent::Change => cx.notify(),
             _ => {}
+        }));
+        // The docs screen's search: titles at once, the words a moment after typing rests.
+        let docs_search = shell.docs_search.clone();
+        shell._subscriptions.push(cx.subscribe_in(&docs_search, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.docs_typed(cx);
+            }
         }));
         let settings_search = shell.settings.search.clone();
         shell._subscriptions.push(cx.subscribe_in(&settings_search, window, |_, _, event: &InputEvent, _, cx| {
@@ -962,8 +985,16 @@ impl Shell {
                                 continue;
                             }
                             // Briefs and plans: the project pages'.
-                            daemon::Update::Event(Event::ProjectDocs { squad, docs }) => {
-                                changed |= this.docs_arrived(squad, docs);
+                            daemon::Update::Event(Event::ProjectDocs { squad, docs, copies, in_repos }) => {
+                                changed |= this.docs_arrived(squad, docs, copies, in_repos);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DocsFound { squad, query, paths }) => {
+                                changed |= this.docs_found(squad, query, paths);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DocCopyKept { squad, kept, removed, undo }) => {
+                                changed |= this.doc_copy_kept(squad, kept, removed, undo);
                                 continue;
                             }
                             other => other,
@@ -993,6 +1024,11 @@ impl Shell {
                                 Event::PairAsked { .. } if this.pairing.open => window.activate_window(),
                                 _ => {}
                             }
+                            continue;
+                        }
+                        // Where the plans went: the Usage screen's and its notice's, never the model's.
+                        if let daemon::Update::Event(event @ (Event::PlanUse { .. } | Event::PlanBurn { .. })) = &update {
+                            changed |= this.plan_use.on_event(event);
                             continue;
                         }
                         // The disk: the banner's and the panel's, never the model's.
@@ -1047,8 +1083,11 @@ impl Shell {
                             this.disk.attached(hello.snapshot.disk.clone());
                             // The models Codex offers there, listed off the daemon's loop, for the menus.
                             this.send_command(Command::Models { engine: equipe_core::protocol::Engine::Codex });
+                            this.composer.codex_asked = Some(std::time::Instant::now());
                             // The model providers connected there, and their models, for the same menus.
                             this.send_command(Command::Providers);
+                            // The squad's briefs and plans: the tickets they name show them.
+                            this.send_command(Command::ProjectDocs { squad: hello.snapshot.squad.clone() });
                         }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
@@ -1286,7 +1325,7 @@ impl Shell {
     // ── questions from ssh ──
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.usage_open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
+        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1298,8 +1337,6 @@ impl Shell {
             self.close_pairing(window, cx);
         } else if self.disk.open {
             self.close_disk(window, cx);
-        } else if self.usage_open {
-            self.close_usage(window, cx);
         } else if self.bell.sheet {
             self.notify_later(window, cx);
         } else if self.connect.open {
@@ -1397,6 +1434,15 @@ impl Shell {
             .collect()
     }
 
+    /// The words a sent message kept of the file at `path` (gone, or on a
+    /// machine whose files don't open here), in the document panel.
+    pub fn open_kept(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(words) = self.chat.sent.borrow().kept(path).map(str::to_owned) else { return };
+        self.doc_reads += 1;
+        self.doc = Some(doc::Doc::of_kept(path.into(), &words, self.doc_reads));
+        cx.notify();
+    }
+
     pub fn open_doc(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         self.doc_reads += 1;
         let read = self.doc_reads;
@@ -1417,7 +1463,11 @@ impl Shell {
                 let Some(doc) = this.doc.as_mut().filter(|d| d.read == read) else { return };
                 match got {
                     Ok((text, cut)) => (doc.text, doc.cut) = (Some(Ok(text)), cut),
-                    Err(why) => doc.text = Some(Err(why)),
+                    // A file a message sent and kept the words of, gone since: its words.
+                    Err(why) => match this.chat.sent.borrow().kept(&doc.path.to_string_lossy()) {
+                        Some(words) => (doc.text, doc.kept) = (Some(Ok(words.to_owned())), true),
+                        None => doc.text = Some(Err(why)),
+                    },
                 }
                 // A deck opened afresh is shown as it was made to be: slide by slide.
                 if std::mem::take(&mut doc.fresh) && doc.slides().is_some_and(|s| !s.is_empty()) {
@@ -1526,7 +1576,7 @@ impl Shell {
     }
 
     pub fn reload_doc(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
+        if let Some(path) = self.doc.as_ref().filter(|d| !d.kept).map(|d| d.path.clone()) {
             self.open_doc(path, cx);
         }
     }
@@ -1648,8 +1698,10 @@ impl Shell {
                     Screen::Metrics => views::metrics::render(self, cx),
                     Screen::Project => views::project::render(self, cx),
                     Screen::Progress => views::progress::render(self, cx),
+                    Screen::Usage => views::usage::render(self, cx),
+                    Screen::Docs => views::docs::render(self, cx),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
         }
     }
@@ -1938,6 +1990,7 @@ impl Shell {
         self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
         self.design_redo.update(cx, |s, cx| s.set_placeholder(t!("design.compare_redo_placeholder"), window, cx));
+        self.docs_search.update(cx, |s, cx| s.set_placeholder(t!("docs.search_placeholder"), window, cx));
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
 }
@@ -2109,7 +2162,6 @@ impl Render for Shell {
                 .children(views::new_squad::sheet(self, cx))
                 .children(views::pair::sheet(self, cx))
                 .children(views::disk::sheet(self, cx))
-                .children(views::usage::panel(self, cx))
                 .children(views::bell::sheet(self, cx))
                 .children(views::connect::question(self, cx))
                 .children(self.zoom_chip(window, cx))
@@ -2121,7 +2173,7 @@ impl Render for Shell {
         let sidebar = if away { None } else { self.sidebar(window, cx) };
         // A document open takes the right side; closed, the browser is back.
         // A project's page opens its briefs and plans there too.
-        let doc = matches!(self.screen, Screen::Chat | Screen::Project).then(|| views::doc::panel(self, window, cx)).flatten();
+        let doc = matches!(self.screen, Screen::Chat | Screen::Project | Screen::Docs).then(|| views::doc::panel(self, window, cx)).flatten();
         // Then the terminal, sized to the panel as the window is now.
         views::terminal::fit(self, window, cx);
         let terminal = (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten();
@@ -2153,7 +2205,6 @@ impl Render for Shell {
             .children(views::new_squad::sheet(self, cx))
             .children(views::pair::sheet(self, cx))
             .children(views::disk::sheet(self, cx))
-                .children(views::usage::panel(self, cx))
             .children(views::bell::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(self.zoom_chip(window, cx))

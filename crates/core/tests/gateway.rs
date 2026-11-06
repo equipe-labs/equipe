@@ -146,7 +146,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     let session = &hello.snapshot.sessions[0];
     assert_eq!(session.session, 11);
     assert_eq!(session.state, SessionState::Working);
-    assert_eq!(session.recent, vec![Entry::User { text: "keep going without me".into() }]);
+    assert_eq!(session.recent, vec![Entry::User { text: "keep going without me".into(), kept: Vec::new() }]);
     let rest = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(rest.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "fresh")));
     drop(b);
@@ -162,7 +162,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     assert_eq!(session.state, SessionState::Ready);
     assert_eq!(
         session.recent,
-        vec![Entry::User { text: "keep going without me".into() }, Entry::Reply { text: "fresh".into() }]
+        vec![Entry::User { text: "keep going without me".into(), kept: Vec::new() }, Entry::Reply { text: "fresh".into() }]
     );
     c.send(Command::Submit { session: 11, text: "and now?".into(), about: None });
     let turn = until(&mut c, |e| matches!(e, Event::TurnEnded { .. })).await;
@@ -269,7 +269,7 @@ async fn while_the_app_is_attached_a_handed_over_browser_goes_to_its_panel_not_t
     // The app attaches, saying it has a panel (closed for now).
     let app = tokio::net::UnixStream::connect(&socket).await.unwrap();
     let (reader, mut writer) = app.into_split();
-    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true };
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true, phone: false };
     writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await.unwrap() {
@@ -568,6 +568,44 @@ async fn the_daemon_says_who_is_mid_turn() {
     assert!(gateway::busy(&socket).await.unwrap().unwrap().idle(), "between turns: safe to restart");
     gateway::shutdown(&socket).await.unwrap();
     assert_eq!(gateway::busy(&socket).await.unwrap(), None, "no daemon, no answer");
+}
+
+#[tokio::test]
+async fn a_phone_screens_words_reach_the_member_as_read_on_a_phone_and_it_takes_back_a_change() {
+    let (home, project) = squad();
+    let prompts = scratch("prompts");
+    // The person's message comes in on stdin, its first line.
+    let claude = fake_claude(&format!("IFS= read -r line\nprintf '%s' \"$line\" > '{}/turn-'$(ls '{}' | wc -l | tr -d ' ')\n{}", prompts.display(), prompts.display(), slow_answer("0")));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let (mut phone, _) = Client::connect_phone(&socket, "test", "acme").await.unwrap();
+    let (mut mac, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    mac.send(Command::Start { session: 4, spec: spec(&project) });
+    until(&mut mac, |e| matches!(e, Event::SessionStarted { .. })).await;
+    // The turn that brought `said`, as the engine read it.
+    let turn = |said: &str| {
+        let read: Vec<String> = std::fs::read_dir(&prompts).unwrap().flatten().map(|f| std::fs::read_to_string(f.path()).unwrap()).collect();
+        read.into_iter().find(|t| t.contains(said)).unwrap_or_else(|| panic!("no turn with {said}"))
+    };
+
+    // From the phone: the member reads it as sent from a phone; the screens, only the words.
+    phone.send(Command::Submit { session: 4, text: "how is it going?".into(), about: None });
+    let seen = until(&mut phone, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "how is it going?")), "{seen:#?}");
+    assert!(turn("how is it going?").contains(equipe_core::roles::PHONE_MARK), "{}", turn("how is it going?"));
+    // From the Mac: no mark.
+    mac.send(Command::Submit { session: 4, text: "and now?".into(), about: None });
+    until(&mut mac, |e| matches!(e, Event::UserMessage { text, .. } if text == "and now?")).await;
+    until(&mut mac, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(!turn("and now?").contains(equipe_core::roles::PHONE_MARK), "{}", turn("and now?"));
+
+    // A member's change to the squad's folder, taken back from the phone.
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    std::fs::write(folder.join("notes/e2e.md"), "x\n").unwrap();
+    let change = equipe_core::squad_home::save(&folder, "designer", "a note").unwrap().unwrap();
+    phone.send(Command::UndoHomeChange { squad: "acme".into(), session: 4, change: change.id });
+    let seen = until(&mut phone, |e| matches!(e, Event::Notice { undo: Some(_), .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Notice { session: 4, text, .. }) if text == "Taken back: saved notes/e2e.md · you can take this back too"), "{seen:#?}");
+    assert!(!folder.join("notes/e2e.md").exists());
 }
 
 #[tokio::test]

@@ -80,14 +80,24 @@ pub fn reads(command: &Command) -> bool {
         | C::Models { .. }
         | C::Design { .. }
         | C::ProjectDocs { .. }
+        | C::SearchDocs { .. }
         | C::DesignVersions { .. }
         | C::DiskScan
+        // Where the plans went: a look.
+        | C::PlanUse { .. }
         | C::WordsLog { .. }
         // A picture of a member's page now and then: following, as a screen does.
         | C::WatchBrowser { .. } => true,
         C::Start { .. }
         | C::Submit { .. }
         | C::SubmitLater { .. }
+        | C::OnPhone { .. }
+        | C::UndoHomeChange { .. }
+        | C::KeepDocCopy { .. }
+        // A side chat runs an engine on the person's account.
+        | C::StartSideChat { .. }
+        | C::SideChatSubmit { .. }
+        | C::CloseSideChat { .. }
         | C::Say { .. }
         | C::UndoWords { .. }
         | C::ClearWordsLog { .. }
@@ -471,6 +481,9 @@ mod tests {
             Command::SubmitLater { session: 1, text: "x".into(), about: None },
             Command::Interrupt { session: 1 },
             Command::Close { session: 1 },
+            Command::StartSideChat { session: 1, side: 2, passage: "x".into() },
+            Command::SideChatSubmit { session: 1, side: 2, passage: "x".into(), text: "x".into() },
+            Command::CloseSideChat { side: 2 },
             Command::Accept { squad: s(), ticket: 1 },
             Command::Merge { squad: s(), ticket: 1, push: false },
             Command::KeepOnBranch { squad: s(), ticket: 1 },
@@ -542,6 +555,7 @@ mod tests {
             Command::Devices,
             Command::Unpair { device: "d".into() },
             Command::DiskScan,
+            Command::PlanUse { engine: Engine::Claude, span: equipe_core::protocol::plan_use::Span::Week },
             Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None },
             Command::UndoWords { squad: s(), id: 1 },
             Command::WordsLog { squad: s() },
@@ -570,10 +584,14 @@ mod tests {
             Command::ApplyEngineProposal { squad: s(), id: 1 },
             Command::DismissEngineProposal { squad: s(), id: 1 },
             Command::UndoEngineProposal { squad: s(), id: 1 },
+            Command::UndoHomeChange { squad: s(), session: 1, change: "abc".into() },
+            Command::OnPhone { command: Box::new(Command::Interrupt { session: 1 }) },
             Command::ShowEngineSetup { squad: s() },
-            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude },
+            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude, model: None, effort: None },
             Command::Design { squad: s() },
             Command::ProjectDocs { squad: s() },
+            Command::SearchDocs { squad: s(), query: "checkout".into() },
+            Command::KeepDocCopy { squad: s(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() },
             Command::DesignVersions { squad: s(), project: None },
             Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
             Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
@@ -614,9 +632,9 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "words_log", "engines", "providers", "models", "design", "project_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
-        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider"] {
+        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");
         }
         // Outside the real view, everything goes, as ever.

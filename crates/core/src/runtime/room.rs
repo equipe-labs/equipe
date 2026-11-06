@@ -269,7 +269,7 @@ impl Runtime {
         }
         let Some(name) = self.sessions.get(&id).and_then(|s| s.name().map(str::to_owned)) else { return };
         let text = say!(self, "news.disk_build_failed", name = name);
-        self.publish(Event::Notice { session: id, text });
+        self.publish(Event::Notice { undo: None, session: id, text });
         if let Some(session) = self.sessions.get_mut(&id) {
             session.briefing.push(
                 "Your last build failed because the disk is full (No space left on device). Don't retry it: tell the person, who frees space in equipe's Disk panel (/disk), then carry on."
@@ -398,6 +398,7 @@ impl Runtime {
     /// (one whose removal failed, or kept) goes now, off the loop — rebuilt
     /// when wanted; the worktree and its branch stay. Logged.
     pub(super) fn clear_finished_builds(&mut self, squad: &str, ticket: &Ticket) {
+        self.clear_finished_phones(squad, ticket.id);
         let folder = if ticket.kind.in_home() {
             format!("{squad}.home")
         } else {

@@ -594,8 +594,52 @@ impl Scan<'_> {
                 continue;
             }
             let (bytes, whole) = measure(&path, &mut self.budget);
-            if bytes >= MB {
-                self.push(DiskGroup::Equipe, kind, format!("{folder}/"), &path, bytes, whole, false, DiskWhy::Needed);
+            // What sent messages attached is told apart: kept, and the person's to remove.
+            let kept = if kind == DiskKind::Uploads { crate::kept::usage(&home, std::time::SystemTime::now()) } else { crate::kept::Usage::default() };
+            let rest = bytes.saturating_sub(kept.bytes);
+            if rest >= MB {
+                self.push(DiskGroup::Equipe, kind, format!("{folder}/"), &path, rest, whole, false, DiskWhy::Needed);
+            }
+            let recent = (kept.files - kept.old_files, kept.bytes - kept.old_bytes);
+            if recent.0 > 0 {
+                let at = self.push(DiskGroup::Equipe, DiskKind::Attachments, format!("{folder}/ ({})", recent.0), &path, recent.1, true, false, DiskWhy::Sent);
+                self.items[at].id = format!("{}:sent", id(DiskKind::Attachments, &path));
+            }
+            if kept.old_files > 0 {
+                let at = self.push(DiskGroup::Equipe, DiskKind::Attachments, format!("{folder}/ ({})", kept.old_files), &path, kept.old_bytes, true, true, DiskWhy::SentLongAgo);
+                self.items[at].id = format!("{}:old", id(DiskKind::Attachments, &path));
+            }
+        }
+        self.recordings();
+    }
+
+    /// Each ticket's phone recordings, in its squad's folder: given back once
+    /// the ticket is done with.
+    fn recordings(&mut self) {
+        let home = self.known.home.clone();
+        let squads: Vec<String> = std::fs::read_dir(home.join("squads")).into_iter().flatten().flatten().map(|d| d.file_name().to_string_lossy().into_owned()).collect();
+        for squad in squads {
+            let root = crate::squad_home::path(&home, &squad).join(crate::phone::RECORDINGS);
+            let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root).into_iter().flatten().flatten().map(|d| d.path()).collect();
+            dirs.sort();
+            for dir in dirs {
+                let is_dir = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir());
+                let Some(id) = dir.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("T-")).and_then(|n| n.parse::<TicketId>().ok()) else { continue };
+                if !is_dir || !self.budget.left() {
+                    continue;
+                }
+                let (bytes, whole) = measure(&dir, &mut self.budget);
+                let ticket = self.known.tickets.iter().find(|t| t.squad == squad && t.id == id);
+                let why = match ticket {
+                    Some(t) if !t.status.is_closed() => DiskWhy::OpenTicket,
+                    Some(t) if t.status == TicketStatus::Cancelled => DiskWhy::Cancelled,
+                    Some(_) => DiskWhy::Merged,
+                    None => DiskWhy::NoTicket,
+                };
+                let safe = why != DiskWhy::OpenTicket;
+                let at = self.push(DiskGroup::Equipe, DiskKind::Recordings, format!("{squad} · T-{id} · {}/", crate::phone::RECORDINGS), &dir, bytes, whole, safe, why);
+                self.items[at].squad = Some(squad.clone());
+                self.items[at].ticket = Some(id);
             }
         }
     }
@@ -719,6 +763,16 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
                 remove_worktree(&item.path)
             }
             DiskKind::Log if removable(&item.path, &roots) => trim_log(&item.path).is_ok(),
+            DiskKind::Recordings if removable(&item.path, &roots) => std::fs::remove_dir_all(&item.path).is_ok(),
+            // Kept attachments sent long ago: the files go, their names with them.
+            DiskKind::Attachments if item.why == DiskWhy::SentLongAgo => {
+                let (files, bytes) = crate::kept::remove_old(&known.home, std::time::SystemTime::now());
+                if files > 0 {
+                    done.freed += bytes;
+                    done.removed.push(id.clone());
+                }
+                continue;
+            }
             _ => false,
         };
         if gone {
@@ -948,6 +1002,67 @@ pub fn clear_builds(home: &Path, worktree: &Path) -> Vec<String> {
     done
 }
 
+/// The phone recordings of a squad's tickets that are done with, deleted:
+/// `tickets` is every ticket of the squad, with whether it is still open and
+/// its words — a recording an open ticket names (a bug filed with its clip)
+/// stays until that ticket is done too. What went, for the log.
+pub fn sweep_recordings(squad_home: &Path, tickets: &[(TicketId, bool, String)]) -> Vec<String> {
+    off_the_loop("disk::sweep_recordings");
+    let root = squad_home.join(crate::phone::RECORDINGS);
+    let mut done = Vec::new();
+    for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        let dir = entry.path();
+        let Some(id) = entry.file_name().to_str().and_then(|n| n.strip_prefix("T-")).and_then(|n| n.parse::<TicketId>().ok()) else { continue };
+        if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let open = tickets.iter().any(|(t, open, _)| *t == id && *open);
+        let named = tickets.iter().any(|(_, open, words)| *open && words.contains(&*dir.to_string_lossy()));
+        let known = tickets.iter().any(|(t, ..)| *t == id);
+        if known && !open && !named && std::fs::remove_dir_all(&dir).is_ok() {
+            done.push(format!("deleted T-{id}'s phone recordings"));
+        }
+    }
+    done
+}
+
+/// Whether an AVD named `name` is ticket `id`'s: `acme_T126_qa` (`squad`'s),
+/// or a bare `T126_…` / `t126_…` when no other squad has that number open.
+fn ticket_avd(name: &str, id: TicketId, squad: &str, shared: bool) -> bool {
+    let own = crate::phone::android::avd_name(squad);
+    let rest = match name.strip_prefix(&own).and_then(|r| r.strip_prefix('_')) {
+        Some(rest) => rest,
+        None if !shared => name,
+        None => return false,
+    };
+    [format!("T{id}"), format!("t{id}")].iter().any(|tag| rest == tag || rest.strip_prefix(tag.as_str()).is_some_and(|r| r.starts_with(['_', '-', '.'])))
+}
+
+/// The Android emulators made for ticket `id`, stopped and deleted with it.
+pub fn clear_avds(id: TicketId, squad: &str, shared: bool) -> Vec<String> {
+    use crate::phone::{android, exec::Real};
+    off_the_loop("disk::clear_avds");
+    let dir = android::avd_home();
+    let mut done = Vec::new();
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        let Some(name) = file.strip_suffix(".ini") else { continue };
+        if !ticket_avd(name, id, squad, shared) {
+            continue;
+        }
+        if let Some(adb) = android::adb_path()
+            && let Some(serial) = android::serial_of(&Real, &adb, name)
+        {
+            android::shutdown(&Real, &adb, &serial);
+        }
+        let _ = std::fs::remove_dir_all(dir.join(format!("{name}.avd")));
+        if std::fs::remove_file(entry.path()).is_ok() {
+            done.push(format!("deleted emulator {name}"));
+        }
+    }
+    done
+}
+
 /// Whether a simulator named `name` is ticket `id`'s: `T126 iPhone 17 Pro`,
 /// `T-126 …`, `acme T126 …` (`squad` given) — not `T1260 …`.
 fn ticket_simulator(name: &str, id: TicketId, squad: Option<&str>) -> bool {
@@ -1002,6 +1117,36 @@ mod tests {
         assert!(!ticket_simulator("T1260 iPhone", 126, None));
         assert!(!ticket_simulator("iPhone 17 Pro", 126, None));
         assert!(!ticket_simulator("Test T126", 126, None));
+        assert!(ticket_simulator("acme T126 qa iPhone 17 Pro", 126, Some("acme")), "the phone tools' own name");
+    }
+
+    #[test]
+    fn an_emulator_is_a_tickets_by_its_name() {
+        assert!(ticket_avd("acme_T126_qa", 126, "acme", true), "the squad's own, even when the number is shared");
+        assert!(ticket_avd("t126_api35", 126, "acme", false), "one made by hand, the number not shared");
+        assert!(!ticket_avd("t126_api35", 126, "acme", true));
+        assert!(!ticket_avd("acme_T1260_qa", 126, "acme", false));
+        assert!(!ticket_avd("other_T126_qa", 126, "acme", true));
+        assert!(!ticket_avd("Pixel_9", 126, "acme", false));
+    }
+
+    #[test]
+    fn recordings_go_with_their_ticket_unless_an_open_ticket_names_them() {
+        let home = std::env::temp_dir().join(format!("equipe-disk-rec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let root = home.join(crate::phone::RECORDINGS);
+        for id in [5, 6, 7, 8] {
+            std::fs::create_dir_all(root.join(format!("T-{id}"))).unwrap();
+            std::fs::write(root.join(format!("T-{id}/flow.mp4")), b"v").unwrap();
+        }
+        let clip = root.join("T-7/flow.mp4").to_string_lossy().into_owned();
+        let tickets = [(5, false, String::new()), (6, true, String::new()), (7, false, String::new()), (9, true, format!("Pay fails: see {clip}"))];
+        let gone = sweep_recordings(&home, &tickets);
+        assert_eq!(gone, vec!["deleted T-5's phone recordings".to_owned()]);
+        assert!(root.join("T-6").is_dir(), "its ticket is open");
+        assert!(root.join("T-7").is_dir(), "an open bug names its clip");
+        assert!(root.join("T-8").is_dir(), "no ticket known of that number: left alone");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     const G: u64 = GB;
@@ -1269,6 +1414,45 @@ mod tests {
         let none = clean(&known, &[format!("worktree:{}", tree.outside.display()), format!("build_cache:{}", tree.repo.display())]);
         assert_eq!(none.removed.len(), 0);
         assert!(tree.outside.join("blob").exists() && tree.repo.join(".gitignore").exists());
+    }
+
+    #[test]
+    fn attachments_the_person_sent_are_told_apart_and_go_only_when_they_pick_the_old_ones() {
+        use std::io::Write as _;
+        let tree = Tree::new();
+        let home = &tree.home;
+        let put = |name: &str, bytes: usize, days: u64| {
+            let (mut file, path) = crate::gateway::create_upload(home, name, Some(equipe_protocol::rpc::UploadKind::File)).unwrap();
+            file.write_all(&vec![1u8; bytes]).unwrap();
+            file.set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 24 * 3600)).unwrap();
+            path
+        };
+        let draft = put("draft.txt", 2 * MB as usize, 0);
+        let recent = put("recent.txt", 2 * MB as usize, 2);
+        let old = put("old.txt", 3 * MB as usize, 31);
+        crate::kept::keep(home, &format!("[file: {}] [file: {}]", recent.display(), old.display()));
+        let known = Known { home: home.clone(), ..Known::default() };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        let uploads = crate::gateway::uploads_dir(home);
+        let of = |why: DiskWhy| items.iter().find(|i| i.path == uploads && i.why == why).unwrap_or_else(|| panic!("no {why:?}: {items:#?}"));
+        // The room each takes on disk: its bytes, and a block or so more.
+        let about = |bytes: u64, n: u64| (n * MB..n * MB + 64 * 1024).contains(&bytes);
+        let rest = of(DiskWhy::Needed);
+        assert!(rest.kind == DiskKind::Uploads && about(rest.bytes, 2), "the draft, apart: {rest:?}");
+        let sent = of(DiskWhy::Sent);
+        assert!(sent.kind == DiskKind::Attachments && about(sent.bytes, 2) && !sent.safe, "{sent:?}");
+        let long_ago = of(DiskWhy::SentLongAgo).clone();
+        assert!(long_ago.kind == DiskKind::Attachments && about(long_ago.bytes, 3) && long_ago.safe, "{long_ago:?}");
+        assert!(!certain(&long_ago), "never given back on equipe's own");
+        assert_eq!(clean_certain(&known).freed, 0);
+        assert!(old.exists());
+        let report = DiskReport { items: items.clone(), ..DiskReport::default() };
+        assert_eq!(report.reclaimable(), 0, "not part of everything equipe may give back");
+        // The person picks them: only the old ones go, and are kept no more.
+        let done = clean(&known, &[long_ago.id.clone(), sent.id.clone()]);
+        assert_eq!((done.freed, done.removed.clone()), (long_ago.bytes, vec![long_ago.id.clone()]), "{done:?}");
+        assert!(!old.exists() && recent.exists() && draft.exists());
+        assert!(!crate::kept::names(home).contains(old.file_name().unwrap().to_str().unwrap()));
     }
 
     #[test]

@@ -324,6 +324,58 @@ pub fn handed_of(text: &str) -> Option<(String, String)> {
     None
 }
 
+/// A member's report of a flow it tested on a phone (equipe core's
+/// `notice.qa_report`, then a line a step, then the key frames as pictures).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QaReport {
+    pub name: String,
+    pub flow: String,
+    pub ticket: u32,
+    pub passed: usize,
+    pub total: usize,
+    /// The recording, by its path on the Mac that runs the squad.
+    pub video: String,
+    /// Each step: its verdict, number, what was done and what was seen.
+    pub steps: Vec<(equipe_core::phone::report::Verdict, usize, String, String)>,
+    /// The key frames, by path.
+    pub frames: Vec<String>,
+}
+
+impl QaReport {
+    pub fn verdict(&self) -> equipe_core::phone::report::Verdict {
+        use equipe_core::phone::report::Verdict;
+        if self.steps.iter().any(|s| s.0 == Verdict::Fail) {
+            Verdict::Fail
+        } else if self.steps.iter().any(|s| s.0 == Verdict::Blocked) || self.passed < self.total {
+            Verdict::Blocked
+        } else {
+            Verdict::Pass
+        }
+    }
+}
+
+/// A transcript line that is a phone test's report, in any language.
+pub fn qa_report_of(text: &str) -> Option<QaReport> {
+    let mut lines = text.trim().lines();
+    let head = lines.next()?.trim();
+    let args = Lang::ALL.into_iter().map(|lang| core(lang).get("notice.qa_report")).find_map(|wording| match_template(wording, head))?;
+    let arg = |name: &str| args.iter().find(|(k, _)| k == name).map(|(_, v)| v.trim().to_owned());
+    let mut report = QaReport {
+        name: arg("name")?,
+        flow: arg("flow")?,
+        ticket: arg("ticket")?.parse().ok()?,
+        passed: arg("passed")?.parse().ok()?,
+        total: arg("steps")?.parse().ok()?,
+        video: arg("video")?,
+        steps: Vec::new(),
+        frames: Vec::new(),
+    };
+    let rest: Vec<&str> = lines.collect();
+    report.steps = rest.iter().filter_map(|l| equipe_core::phone::report::step_line(l)).collect();
+    report.frames = equipe_core::visuals::markdown::local_images(&rest.join("\n")).into_iter().map(|i| i.path).filter(|p| p.starts_with('/')).collect();
+    Some(report)
+}
+
 /// A message equipe sent a member as the person's (before 0.48): its browser
 /// handed back to it.
 pub fn handed_back_line(text: &str) -> bool {
@@ -341,6 +393,11 @@ fn unmark(text: &str) -> &str {
 
 /// `{name}`s of `template` as they are in `text`, when the rest is the same.
 fn match_template(template: &str, text: &str) -> Option<Vec<(String, String)>> {
+    // A Korean particle after a placeholder reads as the one its value took.
+    equipe_core::i18n::particle_forms(template).iter().find_map(|form| match_form(form, text))
+}
+
+fn match_form(template: &str, text: &str) -> Option<Vec<(String, String)>> {
     // The template cut at its placeholders: literal, name, literal, name, …
     let mut literals: Vec<&str> = Vec::new();
     let mut names: Vec<String> = Vec::new();
@@ -627,6 +684,32 @@ pub fn said_changes(zone: &dyn Zone, at: u64, now: u64) -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_phone_report_reads_back_as_a_card_in_any_language() {
+        use equipe_core::phone::report::{Report, Step, Verdict, head_args, note};
+        let report = Report {
+            flow: "상품 두 개 결제".into(),
+            ticket: 12,
+            member: "qa".into(),
+            recording: "/h/recordings/T-12/checkout.mp4".into(),
+            seconds: Some(6.),
+            steps: vec![
+                Step { step: "Add item 두 번 탭".into(), expected: "Items: 2".into(), seen: "Items: 2".into(), verdict: Verdict::Pass, frame: Some("/h/recordings/T-12/checkout/02.jpg".into()) },
+                Step { step: "Checkout 탭".into(), expected: "Total: $10".into(), seen: "Total: $5".into(), verdict: Verdict::Fail, frame: Some("/h/recordings/T-12/checkout/05.jpg".into()) },
+            ],
+        };
+        for lang in [Lang::Ko, Lang::En, Lang::Ja, Lang::De] {
+            let head = core(lang).fill("notice.qa_report", &head_args(&report));
+            let card = qa_report_of(&note(&head, &report)).unwrap_or_else(|| panic!("{lang:?}: {head}"));
+            assert_eq!((card.name.as_str(), card.flow.as_str(), card.ticket, card.passed, card.total), ("qa", "상품 두 개 결제", 12, 1, 2), "{lang:?}");
+            assert_eq!(card.video, "/h/recordings/T-12/checkout.mp4");
+            assert_eq!(card.steps[1], (Verdict::Fail, 2, "Checkout 탭".to_owned(), "Total: $5".to_owned()));
+            assert_eq!(card.frames, ["/h/recordings/T-12/checkout/02.jpg", "/h/recordings/T-12/checkout/05.jpg"]);
+            assert_eq!(card.verdict(), Verdict::Fail);
+        }
+        assert!(qa_report_of("frontend handed in T-4").is_none());
+    }
+
     fn line(verb: &str, targets: &[&str], status: Status) -> ToolLine {
         let mut l = ToolLine::new(verb, targets.iter().map(|t| (*t).to_owned()).collect(), matches!(verb, "edit" | "write"));
         l.status = status;
@@ -704,9 +787,14 @@ mod tests {
     #[test]
     fn news_is_known_in_any_language_and_reads_in_the_one_in_use() {
         let old = news_of("backend handed in T-118 for your review · 주문 API.").unwrap();
-        assert_eq!(old, News { kind: NewsKind::HandedIn, text: "backend이(가) T-118을(를) 검토해 달라고 넘겼어요 · 주문 API.".into() });
+        assert_eq!(old, News { kind: NewsKind::HandedIn, text: "backend가 T-118을 검토해 달라고 넘겼어요 · 주문 API.".into() });
         assert_eq!(news_of("You accepted T-58 · 헤더.").unwrap().kind, NewsKind::Accepted);
         assert_eq!(news_of("pm이(가) T-9을(를) 제안했습니다: 로그인").unwrap().kind, NewsKind::Proposed);
+        // Its particles as the names took them, or as kept from before they did.
+        let handed = news_of("backend가 T-118을 검토해 달라고 넘겼어요 · 주문 API.").unwrap();
+        assert_eq!((handed.kind, handed.text.as_str()), (NewsKind::HandedIn, "backend가 T-118을 검토해 달라고 넘겼어요 · 주문 API."));
+        assert_eq!(news_of("backend이(가) T-118을(를) 검토해 달라고 넘겼어요 · 주문 API.").unwrap().kind, NewsKind::HandedIn);
+        assert_eq!(news_of("mobile이 T-7을 검토해 달라고 넘겼어요 · 앱.").unwrap().kind, NewsKind::HandedIn);
         let failed = news_of("✗ T-4 couldn't start for designer: no workspace").unwrap();
         assert_eq!(failed.kind, NewsKind::CannotStart);
         assert!(!failed.text.starts_with('✗'), "the icon says it: {}", failed.text);
@@ -743,8 +831,8 @@ mod tests {
 
     #[test]
     fn send_now_never_says_the_work_was_stopped() {
-        assert_eq!(read_now("pm", true, true, true, 1), "명령을 멈추는 중 — pm이(가) 바로 읽고 어떻게 할지 정해요");
-        assert_eq!(read_now("pm", true, true, false, 2), "pm이(가) 곧 다음 단계에서 읽어요 — 하던 일은 계속돼요");
+        assert_eq!(read_now("pm", true, true, true, 1), "명령을 멈추는 중 — pm이 바로 읽고 어떻게 할지 정해요");
+        assert_eq!(read_now("pm", true, true, false, 2), "pm이 곧 다음 단계에서 읽어요 — 하던 일은 계속돼요");
         assert!(read_now("pm", true, false, false, 1).contains("이번 차례가 끝나면"), "an engine that can't read mid-work: at the turn's end");
         assert_eq!(read_now("pm", false, true, false, 1), "지금 보냈어요");
         assert_eq!(read_now("pm", false, true, false, 3), "기다리던 3개를 한 메시지로 지금 보냈어요");

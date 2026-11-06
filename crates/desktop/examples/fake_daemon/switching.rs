@@ -6,7 +6,9 @@
 //!   with a card proposing backend and frontend move to Codex;
 //! - `claude_out`: Claude's week used up (resets in 3 days) — a card proposing
 //!   the work be handed over;
-//! - `both_low`: Claude 5h 91%, Codex week 88% — a card proposing lighter settings.
+//! - `both_low`: Claude 5h 91%, Codex week 88% — a card proposing lighter settings;
+//! - `week61`: Claude 5h 48% · week 61% (refills in 2 days 10 hours), Codex week 23% — and
+//!   T-42 burning it fast (`fake_daemon/plan_use.rs`).
 //!
 //! `FAKE_SWITCHING=auto` makes it the card that tells what equipe did, with
 //! Undo (backend moved already, frontend at its next ticket); `off`, no
@@ -15,6 +17,11 @@
 //! `FAKE_MODELS=1` has the PM set to `opus` while an older Claude Code runs
 //! it as Opus 4.8, backend on Codex, Codex's list of models with their
 //! efforts, and the designer's new members started on Fable at `max`.
+//! `FAKE_CODEX_MODELS`: Codex's list on its own — `1`, listed at once;
+//! `slow`, two seconds after it is asked; `silent`, never (the model
+//! picker's "didn't say"). A move to the other engine from the picker
+//! (`MoveEngine`) shows as the person's own, waiting for the member's next
+//! ticket, with its undo.
 
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
 use equipe_core::protocol::{Command, Engine, EnginePlan, Event, ModelChoice, PlanUsage, PlanWindow, RoleModel, SessionInfo};
@@ -54,6 +61,7 @@ pub fn plans() -> Vec<EnginePlan> {
         None => vec![],
         Some("claude86") => vec![plan(Engine::Claude, 86, 2 * H, 41, 3 * D, 60), plan(Engine::Codex, 12, 4 * H, 18, 5 * D, 300)],
         Some("claude_out") => vec![plan(Engine::Claude, 64, 3 * H, 100, 3 * D, 120), plan(Engine::Codex, 9, 4 * H, 14, 5 * D, 240)],
+        Some("week61") => vec![plan(Engine::Claude, 48, 3 * H, 61, 2 * D + 10 * H, 60), plan(Engine::Codex, 12, 4 * H, 23, 5 * D, 300)],
         Some("both_low") => vec![plan(Engine::Claude, 91, 3 * H, 58, 3 * D, 60), plan(Engine::Codex, 47, 2 * H, 88, 2 * D, 600)],
         // Plans with a weekly window only, Claude's read half an hour ago.
         Some("weekly") => [plan(Engine::Claude, 0, 0, 15, 3 * D, 31 * 60), plan(Engine::Codex, 0, 0, 4, 5 * D, 60)]
@@ -166,14 +174,34 @@ pub fn role_models() -> Vec<RoleModel> {
     vec![RoleModel { role: "designer".into(), engine: Engine::Claude, model: Some("fable".into()), effort: Some("max".into()) }]
 }
 
-/// Codex's models as its own list gives them, with their efforts.
+/// Codex's models as its own list gives them: their efforts, what Codex says
+/// of each (in its own words, English), its default first.
 fn codex_models() -> Vec<ModelChoice> {
     let efforts = |e: &[&str]| e.iter().map(|e| (*e).to_owned()).collect();
+    let about = |s: &str| Some(s.to_owned());
     vec![
-        ModelChoice { id: "gpt-6.1-sol".into(), name: Some("GPT-6.1 Sol".into()), efforts: efforts(&["low", "medium", "high", "xhigh"]), default_effort: Some("medium".into()) },
-        ModelChoice { id: "gpt-6-astra".into(), name: Some("GPT-6 Astra".into()), efforts: efforts(&["low", "medium", "high"]), default_effort: Some("high".into()) },
-        ModelChoice { id: "gpt-6-luna".into(), name: Some("GPT-6 Luna".into()), efforts: efforts(&["minimal", "low", "medium"]), default_effort: Some("low".into()) },
+        ModelChoice { id: "gpt-6.1-sol".into(), name: Some("GPT-6.1 Sol".into()), efforts: efforts(&["low", "medium", "high", "xhigh"]), default_effort: Some("medium".into()), description: about("Frontier agentic coding model."), default: true },
+        ModelChoice { id: "gpt-6-astra".into(), name: Some("GPT-6 Astra".into()), efforts: efforts(&["low", "medium", "high"]), default_effort: Some("high".into()), description: about("Deep reasoning for the hardest problems."), default: false },
+        ModelChoice { id: "gpt-6-luna".into(), name: Some("GPT-6 Luna".into()), efforts: efforts(&["minimal", "low", "medium"]), default_effort: Some("low".into()), description: about("Fast and light, for small edits."), default: false },
     ]
+}
+
+/// How Codex answers for its list: at once, a while later, or not at all.
+fn codex_answer() -> Option<std::time::Duration> {
+    match env("FAKE_CODEX_MODELS").as_deref() {
+        Some("silent") => None,
+        Some("slow") => Some(std::time::Duration::from_secs(2)),
+        Some(_) => Some(std::time::Duration::ZERO),
+        None if env("FAKE_MODELS").is_some() || env("FAKE_ENGINES_MIXED").is_some() => Some(std::time::Duration::ZERO),
+        None => None,
+    }
+}
+
+/// The person's own move from the picker, waiting for each member's next ticket.
+fn person_move(members: &[String], engine: Engine, model: Option<String>) -> Proposal {
+    let from = if engine == Engine::Codex { Engine::Claude } else { Engine::Codex };
+    let moves = members.iter().map(|m| Move { member: m.clone(), role: m.clone(), from, to: engine, model: model.clone(), effort: None, was_model: None, done: false }).collect();
+    Proposal { id: CARD + 2, why: Why::Person, engine: None, window: None, used_percent: 0, resets_at: 0, moves, applied: true, proposed_at: now() as u64 }
 }
 
 /// The person's answers, as the daemon would take them. Whether it was one.
@@ -185,7 +213,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         }
         Command::ApplyEngineProposal { id, .. } => {
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: true });
-            let _ = events.send(Event::Notice { session: 1, text: "Moving them — backend and frontend each switch from their next ticket".into() });
+            let _ = events.send(Event::Notice { undo: None, session: 1, text: "Moving them — backend and frontend each switch from their next ticket".into() });
         }
         Command::DismissEngineProposal { id, .. } | Command::UndoEngineProposal { id, .. } => {
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: false });
@@ -193,8 +221,17 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         Command::ShowEngineSetup { .. } => {
             let _ = events.send(Event::EngineProposed { squad: squad(), proposal: setup() });
         }
-        Command::Models { engine: Engine::Codex } if env("FAKE_MODELS").is_some() || env("FAKE_ENGINES_MIXED").is_some() => {
-            let _ = events.send(Event::Models { engine: Engine::Codex, models: codex_models() });
+        Command::Models { engine: Engine::Codex } => {
+            if let Some(wait) = codex_answer() {
+                let events = events.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(wait).await;
+                    let _ = events.send(Event::Models { engine: Engine::Codex, models: codex_models() });
+                });
+            }
+        }
+        Command::MoveEngine { members, engine, model, .. } => {
+            let _ = events.send(Event::EngineProposed { squad: squad(), proposal: person_move(members, *engine, model.clone()) });
         }
         Command::SetRoleModel { default, .. } => {
             let mut defaults: Vec<RoleModel> = role_models().into_iter().filter(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine)).collect();

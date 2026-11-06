@@ -135,6 +135,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         self.decision_settled(squad, &set, Some(&answers));
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers) });
         if let Some(to) = self.asker(squad, &set) {
+            self.note_screen(to);
             Box::pin(self.submit(to, message)).await;
         }
     }

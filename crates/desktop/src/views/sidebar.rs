@@ -435,11 +435,11 @@ enum Glyph {
 /// person sees where they are.
 fn on_more(shell: &Shell) -> bool {
     let menu = shell.board.view.menu;
-    matches!(shell.screen, Screen::Roadmap | Screen::Metrics | Screen::Design)
+    matches!(shell.screen, Screen::Roadmap | Screen::Metrics | Screen::Design | Screen::Docs)
         || (shell.screen == Screen::Board && matches!(menu, Menu::All | Menu::View(_)))
 }
 
-/// The squad's other screens — every ticket, Status, Roadmap, Metrics, Design, what
+/// The squad's other screens — every ticket, Status, Roadmap, Metrics, briefs and plans, Design, what
 /// was finished, the ideas kept — named, one row each, behind "More".
 fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
@@ -499,6 +499,15 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Metrics, this.board.view.menu)), window, cx) {
                     this.open_metrics(cx);
+                }
+            }))
+            .into_any_element(),
+    );
+    rows.push(
+        tool("nav-docs", Glyph::Own(crate::icons::Icon::FileText), t!("docs.title").into(), shell.screen == Screen::Docs)
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Docs, this.board.view.menu)), window, cx) {
+                    this.open_docs(cx);
                 }
             }))
             .into_any_element(),
@@ -2264,6 +2273,8 @@ impl Shell {
             Screen::Roadmap => self.open_roadmap(cx),
             Screen::Metrics => self.open_metrics(cx),
             Screen::Progress => self.open_progress(cx),
+            Screen::Usage => self.open_usage(cx),
+            Screen::Docs => self.open_docs(cx),
             Screen::Project => match self.board.project_page.clone() {
                 Some(name) => self.open_project_page(name, window, cx),
                 None => self.open_side(Side::Pm, window, cx),
@@ -2332,7 +2343,7 @@ mod tests {
         at_work.project = Some("/code/site".into());
         model.tickets = vec![at_work, ticket(4, "todo", "backend")];
         let ask = remove_ask(&model, "site", "/code/site".into());
-        assert_eq!(ask.title, "site을(를) 스쿼드에서 뺄까요?");
+        assert_eq!(ask.title, "site를 스쿼드에서 뺄까요?");
         assert_eq!(ask.body.len(), 2, "what stays, and the one ticket at work: {:?}", ask.body);
         assert!(ask.destructive(), "its yes is red, and Enter doesn't say it");
         assert!(matches!(&ask.then, crate::sheet::Then::Send(c) if matches!(c[..], [equipe_core::protocol::Command::RemoveProject { .. }])));

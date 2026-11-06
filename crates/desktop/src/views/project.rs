@@ -5,7 +5,7 @@
 //! hours with the PM, where nothing has been thought through yet. Nothing
 //! here filters the rest of the window: the page is the project's.
 
-use equipe_core::protocol::briefs::ProjectDoc;
+use equipe_core::protocol::briefs::{DocCopies, InRepo, ProjectDoc};
 use equipe_core::protocol::{Command, PutAway, TicketId};
 use equipe_core::t;
 use gpui_kit::component::*;
@@ -328,6 +328,7 @@ fn docs_list(shell: &Shell, project: &str, docs: &[&ProjectDoc], cx: &mut Contex
             .child(div().max_w(px(420.)).text_center().text_size(px(13.)).line_height(px(20.)).text_color(p.muted).child(t!("project.docs_empty")))
             .child(div().pt_3().child(start("project-office-hours", ui::Kind::Primary, cx)))
             .child(div().pt_2().max_w(px(420.)).text_center().text_size(px(12.)).text_color(p.muted).child(t!("project.docs_private")))
+            .children(in_repo_note(shell, project))
             .into_any_element();
     }
     let rows: Vec<AnyElement> = docs.iter().enumerate().map(|(i, d)| doc_row(shell, i, d, cx)).collect();
@@ -339,6 +340,7 @@ fn docs_list(shell: &Shell, project: &str, docs: &[&ProjectDoc], cx: &mut Contex
         .children(rows)
         .child(h_flex().pt_4().child(start("project-office-hours-more", ui::Kind::Secondary, cx)))
         .child(div().pt_2().text_size(px(12.)).text_color(p.muted).child(t!("project.docs_private")))
+        .children(in_repo_note(shell, project))
         .into_any_element()
 }
 
@@ -346,14 +348,8 @@ fn docs_list(shell: &Shell, project: &str, docs: &[&ProjectDoc], cx: &mut Contex
 fn doc_row(shell: &Shell, i: usize, d: &ProjectDoc, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let path = std::path::PathBuf::from(&d.path);
-    let (status, tone) = doc_status(&d.status);
-    let (fill, ink) = match tone {
-        DocTone::Settled => (p.accent_bg, p.accent),
-        DocTone::Review => (Rgba { a: 0.18, ..p.amber }, p.text),
-        DocTone::Draft => (p.wash, p.text2),
-        DocTone::Dropped => (gpui_kit::transparent_black().into(), p.muted),
-    };
-    let dropped = tone == DocTone::Dropped;
+    let dropped = doc_status(&d.status).1 == DocTone::Dropped;
+    let copies = crate::docs::copies_of(&shell.shelf.copies, &d.path).map(|c| c.paths.len());
     h_flex()
         .id(("project-doc", i))
         .w_full()
@@ -370,38 +366,86 @@ fn doc_row(shell: &Shell, i: usize, d: &ProjectDoc, cx: &mut Context<Shell>) -> 
         .on_click(cx.listener(move |this, _, _, cx| this.open_doc(path.clone(), cx)))
         .child(div().w(px(44.)).flex_none().truncate().text_size(px(12.)).text_color(p.muted).child(doc_kind(d.kind)))
         .child(div().flex_auto().min_w(px(64.)).truncate().text_size(px(14.)).text_color(if dropped { p.text2 } else { p.text }).child(d.title.clone()))
+        // Saved under another project too: the person keeps one on the docs screen.
+        .children(copies.map(|n| copies_badge(shell, n)))
         // Narrow, the date gives way to the title — whole, or not at all: past
         // an empty first item it wraps onto a second line, out of sight.
-        .children((!d.date.is_empty()).then(|| {
-            h_flex()
-                .min_w_0()
-                // It shrinks long before the title does.
-                .flex_shrink(1000.)
-                .h(px(20.))
-                .flex_wrap()
-                .overflow_hidden()
-                .items_center()
-                .child(div().w(px(0.)).h(px(20.)))
-                .child(div().flex_none().whitespace_nowrap().font_family(MONO).text_size(px(12.)).line_height(px(20.)).text_color(p.muted).child(d.date.clone()))
-        }))
+        .children((!d.date.is_empty()).then(|| date_cell(shell, &d.date)))
         // In a column of its own, so the dates line up whatever the word.
-        .child(h_flex().flex_none().min_w(px(76.)).justify_end().child(
-            div()
-                .flex_none()
-                .h(px(20.))
-                .px(px(7.))
-                .flex()
-                .items_center()
-                .rounded(px(10.))
-                .border_1()
-                .border_color(if dropped { p.hair } else { gpui_kit::transparent_black().into() })
-                .bg(fill)
-                .text_size(px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(ink)
-                .child(status),
-        ))
+        .child(h_flex().flex_none().min_w(px(76.)).justify_end().child(status_chip(shell, &d.status)))
         .into_any_element()
+}
+
+/// A doc's date, giving way to its title when narrow.
+pub fn date_cell(shell: &Shell, date: &str) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    h_flex()
+        .min_w_0()
+        // It shrinks long before the title does.
+        .flex_shrink(1000.)
+        .h(px(20.))
+        .flex_wrap()
+        .overflow_hidden()
+        .items_center()
+        .child(div().w(px(0.)).h(px(20.)))
+        .child(div().flex_none().whitespace_nowrap().font_family(MONO).text_size(px(12.)).line_height(px(20.)).text_color(p.muted).child(date.to_owned()))
+}
+
+/// "2 copies": the doc is saved under more than one project.
+pub fn copies_badge(shell: &Shell, n: usize) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().rounded(px(10.)).bg(Rgba { a: 0.18, ..p.amber }).text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(t!("docs.copies_badge", n = n))
+}
+
+/// How a brief or plan stands, as a chip.
+pub fn status_chip(shell: &Shell, status: &str) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    let (words, tone) = doc_status(status);
+    let (fill, ink) = match tone {
+        DocTone::Settled => (p.accent_bg, p.accent),
+        DocTone::Review => (Rgba { a: 0.18, ..p.amber }, p.text),
+        DocTone::Draft => (p.wash, p.text2),
+        DocTone::Dropped => (gpui_kit::transparent_black().into(), p.muted),
+    };
+    let dropped = tone == DocTone::Dropped;
+    div()
+        .flex_none()
+        .h(px(20.))
+        .px(px(7.))
+        .flex()
+        .items_center()
+        .rounded(px(10.))
+        .border_1()
+        .border_color(if dropped { p.hair } else { gpui_kit::transparent_black().into() })
+        .bg(fill)
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(ink)
+        .child(words)
+}
+
+/// What still sits in a project's repository from before: told, nothing done
+/// to it — each older copy's path there.
+pub fn in_repo_note(shell: &Shell, project: &str) -> Option<AnyElement> {
+    let p = shell.palette;
+    let left = crate::docs::in_repo_of(&shell.shelf.in_repos, project);
+    if left.is_empty() {
+        return None;
+    }
+    Some(
+        v_flex()
+            .w_full()
+            .mt_4()
+            .p_3()
+            .gap_1()
+            .rounded(px(R_MD))
+            .border_1()
+            .border_color(p.hair)
+            .child(h_flex().gap_2().items_center().child(crate::icons::icon(Icon::Info, 14., p.muted)).child(div().text_size(px(13.)).text_color(p.text2).child(t!("docs.in_repo", project = project.to_owned(), n = left.len()))))
+            .children(left.iter().map(|r| div().pl(px(22.)).truncate().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(r.path.clone())))
+            .child(div().pl(px(22.)).text_size(px(12.)).text_color(p.muted).child(t!("docs.in_repo_untouched")))
+            .into_any_element(),
+    )
 }
 
 /// How long the releases found stay fresh before a page asks again.
@@ -438,12 +482,13 @@ impl Shell {
         self.chat.follow_tail(cx);
     }
 
-    /// The briefs and plans the daemon read: kept for the project pages.
-    pub fn docs_arrived(&mut self, squad: String, docs: Vec<ProjectDoc>) -> bool {
-        if squad != self.model.squad || self.docs == docs {
+    /// The briefs and plans the daemon read: kept for the project pages, the
+    /// docs screen and the tickets they name.
+    pub fn docs_arrived(&mut self, squad: String, docs: Vec<ProjectDoc>, copies: Vec<DocCopies>, in_repos: Vec<InRepo>) -> bool {
+        if squad != self.model.squad || (self.docs == docs && self.shelf.copies == copies && self.shelf.in_repos == in_repos) {
             return false;
         }
-        self.docs = docs;
+        (self.docs, self.shelf.copies, self.shelf.in_repos) = (docs, copies, in_repos);
         true
     }
 

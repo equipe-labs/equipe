@@ -40,7 +40,12 @@ Asked for (`disk_scan`, `equipe disk`), within a 20-second budget — never the 
   `DerivedData/`, `.turbo/` up to three levels down, only what git ignores there).
 - **Members' build folders** (`~/.equipe/cache/build/<squad>/<member>`, their
   `CARGO_TARGET_DIR`).
-- **equipe's own**: logs, the members' browser, journals, uploads.
+- **equipe's own**: logs, the members' browser, journals, uploads — the attachments of sent
+  messages apart (kept until the person removes them; those sent over 30 days ago are offered
+  as a fix of their own, never part of "clean everything", never given back on equipe's own),
+  and each ticket's phone
+  recordings (`<squad home>/recordings/T-<n>/`, given back once the ticket is done or
+  cancelled; see [mobile-qa.md](./mobile-qa.md)).
 - **Build output in the squads' projects**, other tools' worktrees there included
   (`.claude/worktrees/*`, `.codex/worktrees/*`): the person's, so reported with a command.
 - **The Mac's caches**, reported only, with the command that clears each: Xcode DerivedData,
@@ -59,7 +64,9 @@ and acts only on what that fresh look still says is safe:
   that no ticket keeps;
 - such a worktree itself (`git worktree remove`; **its branch stays**);
 - a member's build folder while that member isn't mid-turn;
-- a log past 20 MB, trimmed to its last 1 MB.
+- a log past 20 MB, trimmed to its last 1 MB;
+- attachments of messages sent over 30 days ago, only when the person picks that fix — the
+  words of their text files stay in the conversation.
 
 Never: an open ticket's worktree (in progress, waiting, in review, or done but not in main),
 a worktree with anything not committed, anything outside `~/.equipe`, anything reached

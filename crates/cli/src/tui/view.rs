@@ -404,7 +404,7 @@ impl Layouts {
 fn layout_key(agent: &Agent, width: usize, turns: u64) -> LayoutKey {
     let entries = agent.drawn();
     let last = entries.last().map_or(0, |entry| match entry.as_ref() {
-        Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
+        Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. } => text.len(),
         Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
@@ -1939,13 +1939,13 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
         match entry {
             Entry::Thread { .. } => {}
             // The person's answers to a member's questions: one line.
-            Entry::User { text } if decide::decided_line(text, theme, width).is_some() => {
+            Entry::User { text, .. } if decide::decided_line(text, theme, width).is_some() => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.extend(decide::decided_line(text, theme, width));
                 lines.push(Line::raw(""));
             }
-            Entry::User { text } => {
+            Entry::User { text, .. } => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.extend(user_message(&attachments_named(text), theme, width));
@@ -1970,14 +1970,14 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                 }
             }
             // Other projects' talk, folded: one quiet line saying how much.
-            Entry::Note { text } if text.starts_with(super::app::FOLDED) => {
+            Entry::Note { text, .. } if text.starts_with(super::app::FOLDED) => {
                 let said: usize = text[super::app::FOLDED.len_utf8()..].parse().unwrap_or(0);
                 begin(Block::Note, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.push(Line::from(Span::styled(format!("── {} ──", t!("view.elsewhere", count = said)), theme.dim())));
             }
             // A ticket still waiting for the person: its asks one under another.
-            Entry::Note { text } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
+            Entry::Note { text, .. } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
                 let id = equipe_core::i18n::waiting_ticket(text).unwrap_or_default();
                 if let Some((_, title, asks)) = turns.iter().find(|(t, ..)| *t == id) {
                     begin(Block::Note, &mut lines, &mut last);
@@ -1985,7 +1985,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                     lines.extend(your_turn_lines(id, title, asks, theme, width));
                 }
             }
-            Entry::Note { text } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
+            Entry::Note { text, .. } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
                 Some(news) => {
                     begin(Block::News, &mut lines, &mut last);
                     lines.extend(news);
@@ -3120,7 +3120,7 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             squad: Some("acme".into()),
         });
-        app.on_event(Event::UserMessage { session: id, text: "fix the bug".into() });
+        app.on_event(Event::UserMessage { session: id, text: "fix the bug".into(), kept: Vec::new() });
         app.on_event(Event::TextDelta { session: id, text: "Looking **now**.".into() });
         app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/auth.rs".into()), label: None, background: false });
         (app, id)
@@ -3223,6 +3223,7 @@ mod tests {
                 cache_tokens: Some(98_766),
                 context_tokens: Some(130_000),
                 context_window: Some(200_000),
+                ..Default::default()
             }),
         });
         let plan = equipe_core::protocol::PlanWindow { used_percent: 84, resets_at: 0 };
@@ -3289,14 +3290,14 @@ mod tests {
         let (mut app, id) = working();
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
         let said = "pair 가 잘 안되는데 [image: /Users/abel/.equipe/uploads/1792073093606-paste.png] [pdf: /Users/abel/.equipe/uploads/1792073093607-spec.pdf · 2 pages]";
-        app.on_event(Event::UserMessage { session: id, text: said.into() });
+        app.on_event(Event::UserMessage { session: id, text: said.into(), kept: Vec::new() });
         let shot = screen(&app, 100, 24);
         assert!(shot.contains("pair 가 잘 안되는데 [Image] paste.png [PDF]") && shot.contains("spec.pdf · 2 pages"), "{shot}");
         assert!(!shot.contains("uploads"), "{shot}");
         assert_eq!(app.agents[0].last_said().as_deref(), Some("pair 가 잘 안되는데 [Image] paste.png [PDF] spec.pdf · 2 pages"));
         assert_eq!(attachments_named("[video: /u/1792073093606-a.mov · 0:20 · frames: /u/f.jpg@0:05]"), "[Video] a.mov · 0:20");
         // What reaches the member is the tag as it was typed.
-        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == said)));
+        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text, .. } if text == said)));
     }
 
     #[test]
@@ -3372,7 +3373,7 @@ mod tests {
         assert!(shot.contains("(when done)"), "{shot}");
         assert!(!shot.contains("and the app icon"), "{shot}");
         // The turn ends: app's memo goes, into app's conversation; site's waits for the next.
-        app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into(), kept: Vec::new() });
         assert_eq!(app.agents[0].queued, ["and the site footer"]);
         assert_eq!(app.agents[0].queued_in, [Some("site".to_owned())]);
     }
@@ -3399,14 +3400,14 @@ mod tests {
         });
         app.on_event(Event::LaneOpened { session: 77, of: pm, project: None, kept: false });
         assert_eq!(app.agents.len(), 1);
-        app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into() });
+        app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into(), kept: Vec::new() });
         app.on_event(Event::TextDelta { session: 77, text: "The app is fine.".into() });
         assert_eq!(app.viewed().map(|a| a.id), Some(77));
         let shot = screen(&app, 110, 24);
         assert!(shot.contains("The app is fine.") && shot.contains("2 at once"), "{shot}");
         // Scrolling moves the conversation shown.
         for i in 0..60 {
-            app.on_event(Event::Notice { session: 77, text: format!("line {i}") });
+            app.on_event(Event::Notice { undo: None, session: 77, text: format!("line {i}") });
         }
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 24), &Layouts::default());
         app.set_extent(laid.page, laid.conversation_max, laid.board_max);
@@ -3507,10 +3508,10 @@ mod tests {
         assert!(shot.contains("› skip the footer") && shot.contains("(next step)"), "{shot}");
         assert!(shot.contains("1 unread"), "{shot}");
         // Read: it moves into the conversation, where it was read.
-        app.on_event(Event::Steered { session: pm, text: "skip the footer".into() });
+        app.on_event(Event::Steered { session: pm, text: "skip the footer".into(), kept: Vec::new() });
         let shot = screen(&app, 110, 24);
         assert!(!shot.contains("(next step)"), "{shot}");
-        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == "skip the footer")));
+        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text, .. } if text == "skip the footer")));
         // Tab: for after this turn.
         for c in "then the pricing page".chars() {
             app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
@@ -3766,8 +3767,8 @@ mod tests {
         });
         app.on_event(Event::TextDelta { session: id, text: "T-8 is ready for you.".into() });
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
-        app.on_event(Event::Notice { session: id, text: "designer handed in T-8 for your review · Translations.".into() });
-        app.on_event(Event::Notice { session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "designer handed in T-8 for your review · Translations.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
         let shot = screen(&app, 140, 30);
         let lines: Vec<&str> = shot.lines().collect();
         let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("no {text:?} in:\n{shot}"));
@@ -3889,7 +3890,7 @@ mod tests {
             "Check the shots in `outputs/T-117/shots/` and listing.json; if they're fine, just say OK.".into(),
         ];
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t.clone() });
-        app.on_event(Event::Notice { session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
         app.flash = None;
         let shot = screen(&app, 140, 40);
         let lines: Vec<&str> = shot.lines().collect();
@@ -4298,7 +4299,7 @@ mod tests {
         app.agents[0].compacted = Some(Compacted::Failed);
         assert!(screen(&app, 140, 30).contains(fail), "it doesn't go by itself");
         assert!(!app.ticking(), "nothing to count: no redraws for it");
-        app.on_event(Event::UserMessage { session: pm, text: "go on".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "go on".into(), kept: Vec::new() });
         assert!(!screen(&app, 140, 30).contains("Couldn't summarize"), "the person's next message takes it");
     }
 
@@ -4490,7 +4491,7 @@ mod bench {
         let id = *id;
         app.on_event(Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) });
         for i in 0..200 {
-            app.on_event(Event::UserMessage { session: id, text: format!("question {i}") });
+            app.on_event(Event::UserMessage { session: id, text: format!("question {i}"), kept: Vec::new() });
             app.on_event(Event::TextDelta { session: id, text: "## Plan\n\n1. **designer**: 랜딩 페이지 카피와 디자인을 맡아요. equipe가 뭔지 담아요.\n2. **frontend**: 정적 사이트 프로젝트를 세팅해요 (Astro 제안).\n\n| 티켓 | 담당 | 내용 |\n|---|---|---|\n| T-1 | designer | 카피·디자인 |\n| T-2 | frontend | Astro 셋업 |\n\nSome `code` and more prose that goes on for a while to wrap across lines in the pane.".into() });
             app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some("src/a.rs".into()), label: None, background: false });
             app.on_event(Event::TurnEnded { session: id, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None });

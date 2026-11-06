@@ -87,13 +87,13 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> Optio
             }
             let _ = events.send(Event::AcceptClosed { squad: squad(), id, confirmed: true, tickets: acted.clone() });
             for ticket in acted {
-                let _ = events.send(Event::Notice { session: PM, text: format!("Accepted T-{ticket}.") });
+                let _ = events.send(Event::Notice { undo: None, session: PM, text: format!("Accepted T-{ticket}.") });
             }
         }
         None => {
             let _ = events.send(Event::AcceptClosed { squad: squad(), id, confirmed: false, tickets: Vec::new() });
             let list = card.tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
-            let _ = events.send(Event::Notice { session: PM, text: format!("Didn't accept {list} — left waiting for review") });
+            let _ = events.send(Event::Notice { undo: None, session: PM, text: format!("Didn't accept {list} — left waiting for review") });
         }
     }
     Some(out)

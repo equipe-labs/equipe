@@ -35,7 +35,7 @@ pub fn history() -> Vec<Entry> {
         Engine::Claude => ("Failed to authenticate: OAuth session expired and could not be refreshed", equipe_core::engine_auth::CLAUDE_HINT),
         Engine::Codex => ("Codex CLI isn't signed in. Sign in with `codex login`.", equipe_core::engine_auth::CODEX_HINT),
     };
-    vec![Entry::User { text: "Make the header a little calmer".into() }, Entry::Error { message: message.into(), next: Some(next.into()) }]
+    vec![Entry::User { text: "Make the header a little calmer".into(), kept: Vec::new() }, Entry::Error { message: message.into(), next: Some(next.into()) }]
 }
 
 static CHECKS: AtomicU32 = AtomicU32::new(0);
@@ -62,7 +62,7 @@ fn tell(events: &broadcast::Sender<Event>, state: AuthState) {
 /// Signed in again: the stopped turn carries on, the conversation told.
 fn back(events: &broadcast::Sender<Event>) {
     let name = if engine() == Engine::Claude { "Claude Code" } else { "Codex" };
-    let _ = events.send(Event::Notice { session: 1, text: format!("Signed in to {name} again — carrying on with the work that stopped.") });
+    let _ = events.send(Event::Notice { undo: None, session: 1, text: format!("Signed in to {name} again — carrying on with the work that stopped.") });
     tell(events, AuthState::SignedIn { resumed: 1 });
 }
 

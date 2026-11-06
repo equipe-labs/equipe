@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.103.51"
+version = "0.103.60"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2229,9 +2229,10 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.103.51"
+version = "0.103.60"
 dependencies = [
  "base64 0.23.1",
+ "block2 0.6.2",
  "equipe-desktop-control",
  "equipe-protocol",
  "equipe-providers",
@@ -2239,6 +2240,12 @@ dependencies = [
  "image",
  "libc",
  "mermaid-rs-renderer",
+ "objc2 0.6.5",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-foundation 0.3.2",
  "reqwest",
  "resvg 0.46.0",
  "ring",
@@ -2253,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.103.51"
+version = "0.103.60"
 dependencies = [
  "alacritty_terminal",
  "base64 0.23.1",
@@ -2285,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop-control"
-version = "0.103.51"
+version = "0.103.60"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2301,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.103.51"
+version = "0.103.60"
 dependencies = [
  "serde",
  "serde_json",
@@ -2309,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.103.51"
+version = "0.103.60"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",

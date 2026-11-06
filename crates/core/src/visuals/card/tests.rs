@@ -7,13 +7,36 @@ const TEMPLATES: [(&str, &str); 3] =
     [("board", include_str!("examples/board.html")), ("compare", include_str!("examples/compare.html")), ("figure", include_str!("examples/figure.html"))];
 
 /// The Chrome that draws, or `None` (with a word) where there is none: the
-/// tests that need one have nothing to try then.
+/// tests that need one have nothing to try then. Started once first ([`warm`]).
 fn chrome_here() -> Option<PathBuf> {
     let found = chrome();
-    if found.is_none() {
-        eprintln!("no Chrome here: skipped");
+    match &found {
+        Some(chrome) => warm(chrome),
+        None => eprintln!("no Chrome here: skipped"),
     }
     found
+}
+
+/// The longest Chrome's first start in a test run may take.
+const WARMING: Duration = Duration::from_secs(120);
+
+/// Chrome started and drawing once, before any test times a drawing. The
+/// first Chrome on a machine whose disk has never read it — a CI runner just
+/// booted — reads its few hundred megabytes cold, and every Chrome started
+/// meanwhile waits on the same reads: on GitHub's Ubuntu runners the first
+/// Chromes of a run all went past [`Limits::time`], while those started a few
+/// seconds later drew in about one. What the tests time is a drawing, not
+/// that. The other tests wait here until it is done.
+fn warm(chrome: &Path) {
+    static WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    WARM.get_or_init(|| {
+        let started = Instant::now();
+        let limits = Limits { time: WARMING, ..Limits::default() };
+        match render(chrome, &page("<p>warm</p>", Some(false)), false, &limits) {
+            Ok(_) => eprintln!("Chrome's first drawing took {:?}", started.elapsed()),
+            Err(e) => eprintln!("Chrome's first drawing failed after {:?}: {e}", started.elapsed()),
+        }
+    });
 }
 
 fn png_size(png: &[u8]) -> (u32, u32) {
@@ -369,6 +392,36 @@ fn a_reply_draws_its_first_cards_in_its_time_and_the_rest_show_their_source() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// Until a Chrome has drawn once since the daemon started, a drawing gets
+/// Chrome's cold first start's time and a reply room for it; after, the
+/// usual ten seconds and thirty.
+#[test]
+fn chromes_first_start_gets_its_allowance_and_every_drawing_after_the_usual_time() {
+    let usual = Limits::default().time;
+    assert_eq!(usual, Duration::from_secs(10));
+    assert_eq!(allowance(false, usual), FIRST_START, "the first start, cold");
+    assert_eq!(allowance(true, usual), usual, "warm: ten seconds, as ever");
+    assert_eq!(allowance(true, Duration::from_millis(50)), Duration::from_millis(50), "a shorter limit holds once warm");
+    assert_eq!(allowance(false, Duration::from_secs(300)), Duration::from_secs(300), "never less than asked");
+    assert_eq!(reply_time(true), REPLY_TIME);
+    assert_eq!(reply_time(false), REPLY_TIME + FIRST_START, "the first start doesn't eat the reply's other cards");
+    assert!(allowance(false, usual) < reply_time(false));
+}
+
+/// A drawing that ends well leaves Chrome warm; with cards off there is
+/// nothing to warm, and no Chrome is started.
+#[test]
+fn a_drawing_warms_chrome_and_cards_off_start_none() {
+    let home = temp_home("warm");
+    assert!(warm_up(&home).is_none(), "cards are off");
+    let chrome = fake_chrome(&home, 0.0);
+    render(&chrome, &page("<p>warm</p>", Some(false)), false, &Limits::default()).expect("drawn");
+    assert!(is_warm());
+    std::fs::write(home.join("visuals.json"), r#"{"html_cards": true}"#).unwrap();
+    assert!(warm_up(&home).is_none(), "warm already: nothing to do");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Many sessions' replies, each full of cards never drawn before, ending at
 /// once: never more than [`CHROMES`] Chromes, no reply past its time, and the
 /// squad's `visuals/` within its quota, what is shown kept.
@@ -380,22 +433,32 @@ fn many_replies_of_new_cards_at_once_stay_within_chromes_time_and_cache() {
     let chrome = fake_chrome(&home, 0.15);
     let (sessions, replies, time) = (6, 3, Duration::from_millis(1500));
     let quota = cache::Quota { keys: 10, bytes: u64::MAX };
+    // What each session shows, as the daemon prunes with what all of the
+    // squad's open conversations show — not one session's alone, or another
+    // session's prune takes away what this one shows ("<key> went"). A
+    // reply's keys are known before its cards are drawn; read and pruned with
+    // under one lock, so none of a reply shown meanwhile is drawn mid-prune.
+    let showing = std::sync::Arc::new(Mutex::new(std::collections::HashMap::<usize, HashSet<String>>::new()));
     let started = Instant::now();
     let threads: Vec<_> = (0..sessions)
         .map(|s| {
-            let (home, chrome) = (home.clone(), chrome.clone());
+            let (home, chrome, showing) = (home.clone(), chrome.clone(), showing.clone());
             std::thread::spawn(move || {
                 let mut last = HashSet::new();
                 for r in 0..replies {
+                    let text = cards(&format!("s{s} r{r}"), 6);
+                    showing.lock().unwrap().insert(s, blocks(&text).iter().map(|b| diagram::key(b)).collect());
                     let at = Instant::now();
                     let budget = Budget { until: at + time, ..Budget::reply() };
-                    let drawn = draw_within(&home, "acme", &cards(&format!("s{s} r{r}"), 6), &chrome, budget);
+                    let drawn = draw_within(&home, "acme", &text, &chrome, budget);
                     let took = at.elapsed();
                     assert!(drawn.len() <= PER_REPLY, "{} drawn", drawn.len());
                     assert!(took < time + Duration::from_millis(700), "a reply took {took:?}");
                     last = drawn.iter().map(|d| d.key.clone()).collect();
-                    let held = cache::prune(&diagram::dir(&home, "acme"), &last, quota);
-                    assert!(held.keys <= quota.keys + last.len(), "{held:?}");
+                    let showing = showing.lock().unwrap();
+                    let all: HashSet<String> = showing.values().flatten().cloned().collect();
+                    let held = cache::prune(&diagram::dir(&home, "acme"), &all, quota);
+                    assert!(held.keys <= quota.keys + all.len(), "{held:?}");
                 }
                 last
             })

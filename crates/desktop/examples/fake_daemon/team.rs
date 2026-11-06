@@ -116,5 +116,5 @@ fn decide(id: u64, approve: bool, events: &broadcast::Sender<Event>) {
         (false, Change::Remove) => format!("Declined the team change · remove {}", change.member.clone().unwrap_or_default()),
     };
     let _ = events.send(Event::TeamChangeClosed { squad: squad(), id, approved: approve, members });
-    let _ = events.send(Event::Notice { session: PM, text });
+    let _ = events.send(Event::Notice { undo: None, session: PM, text });
 }

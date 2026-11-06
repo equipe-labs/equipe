@@ -8,6 +8,14 @@ pub struct TurnUsage {
     /// Input read from the prompt cache or written to it: most of what a
     /// long conversation sends.
     pub cache_tokens: Option<u64>,
+    /// Of `cache_tokens`, what was read from the cache (cheap) …
+    pub cache_read_tokens: Option<u64>,
+    /// … and what was written to it (dearer than plain input).
+    pub cache_write_tokens: Option<u64>,
+    /// Of `cache_write_tokens`, what was written to be kept an hour (dearer still).
+    pub cache_write_long_tokens: Option<u64>,
+    /// How many requests the turn made of the model, subagents' included.
+    pub calls: Option<u64>,
     /// How full the conversation's context was at the turn's last request.
     pub context_tokens: Option<u64>,
     /// The model's context window.

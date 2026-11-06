@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn codex_offers_what_its_list_says_by_its_names() {
         let listed = [
-            ModelChoice { id: "gpt-6.1-sol".into(), name: Some("GPT-6.1 Sol".into()), efforts: vec!["low".into(), "medium".into(), "xhigh".into()], default_effort: Some("medium".into()) },
+            ModelChoice { id: "gpt-6.1-sol".into(), name: Some("GPT-6.1 Sol".into()), efforts: vec!["low".into(), "medium".into(), "xhigh".into()], default_effort: Some("medium".into()), ..Default::default() },
             ModelChoice { id: "gpt-6-luna".into(), ..Default::default() },
         ];
         let offered = choices(Some(Engine::Codex), Some("gpt-6-luna"), None, &listed);

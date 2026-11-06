@@ -122,7 +122,7 @@ pub fn history(n: usize) -> Vec<Entry> {
                 said.push_str(&format!(" [image: {}]", picture((turn + k) % pictures)));
             }
         }
-        out.push(Entry::User { text: said });
+        out.push(Entry::User { text: said, kept: Vec::new() });
         for k in 0..rng.below(9) {
             let file = format!("{SITE}/src/{}.rs", ["orders", "gallery", "search", "onboarding", "limit"][((turn + k) % 5) as usize]);
             let entry = match rng.below(4) {
@@ -149,7 +149,7 @@ pub fn history(n: usize) -> Vec<Entry> {
         if rng.below(3) == 0 {
             for k in 0..1 + rng.below(3) {
                 let t = 40 + (turn + k) % 90;
-                out.push(Entry::Note { text: format!("frontend handed in T-{t} for your review · Product detail page image gallery.") });
+                out.push(Entry::Note { undo: None, text: format!("frontend handed in T-{t} for your review · Product detail page image gallery.") });
             }
         }
         turn += 1;

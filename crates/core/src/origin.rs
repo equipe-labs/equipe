@@ -85,19 +85,24 @@ pub fn classify(peer: Option<u32>, daemon: u32, parent_of: impl Fn(u32) -> Paren
 /// The parent of `pid` on this machine.
 #[cfg(target_os = "macos")]
 pub fn parent_of(pid: u32) -> Parent {
-    // proc_pidinfo(pid, PROC_PIDTBSDINFO) → proc_bsdinfo, whose pbi_ppid is the
-    // parent (libproc, part of libSystem). No process spawned, no ps parsed.
+    // proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO) → proc_bsdshortinfo, whose
+    // pbsi_ppid is the parent (libproc, part of libSystem). No process spawned,
+    // no ps parsed. The short record, not PROC_PIDTBSDINFO: the full one is
+    // refused for a process another user owns, and the person's own chain can
+    // pass through one — over SSH, `sshd-session [priv]` runs as root — which
+    // would read as unknown and turn the person away as if they were a member.
+    // The short record is readable for any process, as `ps` reads it.
     use std::mem;
-    let mut info: libc::proc_bsdinfo = unsafe { mem::zeroed() };
-    let size = mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let mut info: libc::proc_bsdshortinfo = unsafe { mem::zeroed() };
+    let size = mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
     let got = unsafe {
-        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, &mut info as *mut _ as *mut libc::c_void, size)
+        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDT_SHORTBSDINFO, 0, &mut info as *mut _ as *mut libc::c_void, size)
     };
     if got != size {
-        // Short read or error: no such process any more, or refused.
+        // Short read or error: no such process any more.
         return Parent::Unknown;
     }
-    let ppid = info.pbi_ppid;
+    let ppid = info.pbsi_ppid;
     if ppid <= 1 { Parent::Top } else { Parent::Pid(ppid) }
 }
 
@@ -206,6 +211,18 @@ mod tests {
         // reaches the top as a Person — the walk terminates on this machine.
         let other = if me == 1 { 2 } else { 1 };
         assert!(matches!(of_with(Some(me), other), Origin::Person | Origin::Member | Origin::Unknown));
+    }
+
+    #[test]
+    fn a_process_another_user_owns_still_tells_its_parent() {
+        // launchd (pid 1) belongs to root. Over SSH the person's chain passes
+        // through root's `sshd-session [priv]`; were its parent unreadable the
+        // person's own messages would be refused as a member's.
+        assert_eq!(parent_of(1), Parent::Top);
+        // A real chain from here reaches the top: never unknown on the way.
+        let me = std::process::id();
+        let other = u32::MAX - 1;
+        assert_eq!(of_with(Some(me), other), Origin::Person);
     }
 
     fn of_with(peer: Option<u32>, daemon: u32) -> Origin {

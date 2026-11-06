@@ -280,7 +280,7 @@ impl Bridge {
                 state!().members.remove(session);
                 state!().working.remove(session);
             }
-            Event::UserMessage { session, text } => {
+            Event::UserMessage { session, text, .. } => {
                 state!().working.insert(*session);
                 if let Some((_, hearing)) = self.hearing.get_mut(session)
                     && matches!(hearing, Hearing::Waiting(sent) if text.contains(sent.as_str()))
@@ -1104,7 +1104,7 @@ mod tests {
         assert_eq!(said, vec![Out::Seen { message: 10 }]);
         // What the PM was saying before the person's message isn't the answer.
         b.on_event("acme", &Event::TextDelta { session: 1, text: "earlier work".into() });
-        b.on_event("acme", &Event::UserMessage { session: 1, text: "Ship the site today?".into() });
+        b.on_event("acme", &Event::UserMessage { session: 1, text: "Ship the site today?".into(), kept: Vec::new() });
         b.on_event("acme", &Event::TextDelta { session: 1, text: "Checking the board.".into() });
         b.on_event("acme", &Event::ToolUse { session: 1, tool: "board".into(), target: None, label: None, background: false });
         b.on_event("acme", &Event::TextDelta { session: 1, text: "Yes — after T-3.".into() });

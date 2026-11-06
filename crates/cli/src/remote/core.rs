@@ -155,7 +155,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// is allowed once, never always; a member's questions are the person's to
 /// answer or close from anywhere, and so is a change to the team the PM
 /// proposed to approve or decline, and moves between engines to make, leave
-/// or undo; so is handed-in work put to them on a card to confirm or decline
+/// or undo; so is taking back a change to the squad's folder or memory a
+/// member made, which equipe told of; so is handed-in work put to them on a card to confirm or decline
 /// — confirmed from a phone it is accepted, never merged; starting, closing,
 /// merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
@@ -191,11 +192,16 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::ApplyEngineProposal { .. }
         | Command::DismissEngineProposal { .. }
         | Command::UndoEngineProposal { .. }
+        | Command::UndoHomeChange { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }
         | Command::Engines
+        // Where the plans went: a look, which changes nothing.
+        | Command::PlanUse { .. }
         | Command::Design { .. }
-        | Command::ProjectDocs { .. }) => Some(c),
+        | Command::ProjectDocs { .. }
+        // Finding a brief or plan by its words: a look. Keeping one copy stays at the console.
+        | Command::SearchDocs { .. }) => Some(c),
         _ => None,
     }
 }
@@ -236,6 +242,7 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::ApplyEngineProposal { squad, .. }
         | Command::DismissEngineProposal { squad, .. }
         | Command::UndoEngineProposal { squad, .. }
+        | Command::UndoHomeChange { squad, .. }
         | Command::ShowEngineSetup { squad }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
@@ -246,7 +253,9 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::WordsLog { squad }
         | Command::ClearWordsLog { squad }
         | Command::SetWordsAll { squad, .. }
-        | Command::ProjectDocs { squad } => Some(squad),
+        | Command::ProjectDocs { squad }
+        | Command::SearchDocs { squad, .. }
+        | Command::KeepDocCopy { squad, .. } => Some(squad),
         _ => None,
     }
 }
@@ -753,6 +762,7 @@ impl Core {
                     "Write" | "Edit" | "MultiEdit" => t!("remote.push_asks_edit", member = member),
                     "WebFetch" => t!("remote.push_asks_fetch", member = member),
                     "Confirm" => t!("remote.push_asks_confirm", member = member),
+                    equipe_core::controls::ENGINE_TOOL => t!("remote.push_asks_engine", member = member),
                     _ => t!("remote.push_asks_permission", member = member),
                 };
                 let mut short = approval.clone();
@@ -1193,7 +1203,7 @@ pub(crate) mod tests {
         let other = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "zeta", "ticket": 1 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), other, now), now).is_empty());
         // Events go on to it, sealed, counted.
-        let out = core.on_event(&phone.id, "acme", &Event::Notice { session: 1, text: "hi".into() });
+        let out = core.on_event(&phone.id, "acme", &Event::Notice { undo: None, session: 1, text: "hi".into() });
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["squad"].as_str(), opened["rpc"]["method"].as_str()), (Some("acme"), Some("event")));
         assert!(opened["seq"].as_u64().unwrap() >= 3);
@@ -1326,6 +1336,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_engine_move_the_pm_asked_for_reaches_a_phone_whole_and_its_yes_is_once() {
+        use equipe_core::controls::{ENGINE_TOOL, Mover, move_words};
+        use equipe_core::protocol::Engine;
+        let (mut core, phone, now) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let movers: Vec<Mover> = ["designer", "mobile", "mobile-2"].iter().map(|n| Mover { name: (*n).into(), from: Engine::Claude, working: false, on_ticket: true }).collect();
+        let action = move_words(equipe_core::i18n::Lang::En, &movers, Engine::Codex, None, None);
+        let approval = Approval { id: 12, session: 1, member: "pm".into(), ticket: None, tool: ENGINE_TOOL.into(), action: action.clone(), reason: None, preview: None };
+        core.on_relay(&json!({ "type": "presence", "device": phone.id, "online": false }), now);
+        let out = core.on_squad_event("acme", &Event::ApprovalRequested { squad: "acme".into(), approval });
+        let Action::Relay(push) = &out[0] else { panic!() };
+        assert_eq!((push["title"].as_str(), push["category"].as_str()), (Some("pm asks to move members to another engine"), Some("approval")));
+        assert!(!push.to_string().contains("mobile-2"), "who moves travels sealed only");
+        let opened = phone.open(&c, &out[0]);
+        assert_eq!(opened["rpc"]["params"]["approval"]["action"].as_str(), Some(action.as_str()), "the whole card, every member's line");
+        // The phone's yes is the card's own; an "always" from it is a yes once.
+        let yes = Command::Decide { squad: "acme".into(), approval: 12, decision: Decision::Allow, words: None, said: None };
+        assert_eq!(allowed(yes.clone()), Some(yes));
+        let always = Command::Decide { squad: "acme".into(), approval: 12, decision: Decision::Always, words: None, said: None };
+        assert!(matches!(allowed(always), Some(Command::Decide { decision: Decision::Allow, .. })));
+        // A phone never moves members itself.
+        assert_eq!(allowed(Command::MoveEngine { squad: "acme".into(), members: vec!["mobile".into()], engine: Engine::Codex, model: None, effort: None }), None);
+    }
+
+    #[test]
     fn a_device_away_gets_a_push_that_names_who_not_what() {
         let (mut core, phone, now) = core_with_phone();
         let c = core.config.clone().unwrap();
@@ -1437,9 +1472,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_phone_takes_back_a_change_but_never_says_itself_a_phone() {
+        let undo = Command::UndoHomeChange { squad: "acme".into(), session: 1, change: "abc".into() };
+        assert_eq!(allowed(undo.clone()), Some(undo));
+        // The mark is the daemon's to put on what the relay link brings, not the phone's to send.
+        let submit = Command::Submit { session: 1, text: "hi".into(), about: None };
+        assert_eq!(allowed(Command::OnPhone { command: Box::new(submit) }), None);
+    }
+
+    #[test]
+    fn a_phone_reads_and_searches_the_briefs_and_plans_but_keeps_no_copy() {
+        for look in [Command::ProjectDocs { squad: "acme".into() }, Command::SearchDocs { squad: "acme".into(), query: "checkout".into() }] {
+            assert_eq!(allowed(look.clone()), Some(look));
+        }
+        let keep = Command::KeepDocCopy { squad: "acme".into(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() };
+        assert_eq!(allowed(keep), None, "removing a copy stays at the person's screens");
+    }
+
+    #[test]
     fn a_phone_sees_where_the_engines_stand_but_signs_none_in_or_out() {
         use equipe_core::protocol::Engine;
         assert_eq!(allowed(Command::Engines), Some(Command::Engines));
+        let look = Command::PlanUse { engine: equipe_core::protocol::Engine::Claude, span: equipe_core::protocol::plan_use::Span::Day };
+        assert_eq!(allowed(look.clone()), Some(look), "where the plans went: read from a phone too");
         for command in [
             Command::SignIn { engine: Engine::Codex, device: true },
             Command::SignInCancel { engine: Engine::Codex },

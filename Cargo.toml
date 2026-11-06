@@ -7,7 +7,7 @@ exclude = ["vendor"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.103.51"
+version = "0.103.60"
 
 [profile.release]
 lto = "thin"
@@ -30,6 +30,9 @@ debug = false
 # `equipe:` in the source; take them again on a gpui-kit upgrade):
 # - gpui-pre: Korean wraps at spaces, as CSS `word-break: keep-all` — it broke
 #   words between any two syllables (`LineWrapper::is_word_char`).
+# - gpui-pre: Japanese and Chinese keep an opening bracket with the word after it
+#   and closing punctuation with the word before it — kinsoku
+#   (`LineWrapper::may_break_between`, used by `LineLayout::compute_wrap_boundaries`).
 # - gpui-pre: the content zoom (⌘+ / ⌘-) — `Window::set_content_zoom` scales
 #   the drawing and maps the viewport, input and IME positions (`zoom.rs`).
 # - gpui-pre: `EQUIPE_PERF=1|2|3` logs frame times (wall and main-thread CPU)

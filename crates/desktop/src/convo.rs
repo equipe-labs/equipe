@@ -311,7 +311,7 @@ impl Convo {
             }
             Event::Compacted { .. } => {
                 self.compact = Some(Compact::Done { at: now });
-                self.transcript.push_local(Entry::Note { text: COMPACTED.to_string() });
+                self.transcript.push_local(Entry::Note { undo: None, text: COMPACTED.to_string() });
             }
             Event::CompactFailed { .. } => self.compact = Some(Compact::Failed),
             Event::TurnEnded { outcome, .. } => {
@@ -369,7 +369,7 @@ impl Convo {
         let Some((since, text)) = self.thinking.take() else { return };
         let secs = now.saturating_duration_since(since).as_secs().max(1);
         self.thoughts.push(text);
-        self.transcript.push_local(Entry::Note { text: format!("{THOUGHT}{}:{secs}", self.thoughts.len() - 1) });
+        self.transcript.push_local(Entry::Note { undo: None, text: format!("{THOUGHT}{}:{secs}", self.thoughts.len() - 1) });
     }
 
     /// Since when the latest call has run, while it does.
@@ -403,13 +403,13 @@ impl Convo {
     /// Whether its conversation holds work on `ticket`, to show.
     pub fn has_work_on(&self, ticket: TicketId) -> bool {
         let header = format!("── T-{ticket} ");
-        self.transcript.entries().iter().any(|e| matches!(e, Entry::Note { text } if text.starts_with(&header)))
+        self.transcript.entries().iter().any(|e| matches!(e, Entry::Note { text, .. } if text.starts_with(&header)))
     }
 
     /// What the person said last in it, its first line.
     pub fn last_said(&self) -> Option<String> {
         self.transcript.entries().iter().rev().find_map(|e| match e {
-            Entry::User { text } => harness::words(text).map(|words| crate::sent::summary(&words).lines().next().unwrap_or_default().trim().to_owned()),
+            Entry::User { text, .. } => harness::words(text).map(|words| crate::sent::summary(&words).lines().next().unwrap_or_default().trim().to_owned()),
             _ => None,
         })
     }
@@ -437,7 +437,7 @@ impl Convo {
         if let Some(since) = self.working_since.take() {
             let took = now.saturating_duration_since(since);
             if took >= Duration::from_secs(1) {
-                self.transcript.push_local(Entry::Note { text: format!("{WORKED}{}:{}@{}", took.as_secs(), at.hm(), crate::state::now_unix()) });
+                self.transcript.push_local(Entry::Note { undo: None, text: format!("{WORKED}{}:{}@{}", took.as_secs(), at.hm(), crate::state::now_unix()) });
             }
         }
     }
@@ -469,7 +469,7 @@ impl Convo {
                     on = None;
                     continue;
                 }
-                Entry::Note { text } if text.starts_with("── T-") => {
+                Entry::Note { text, .. } if text.starts_with("── T-") => {
                     on = text["── T-".len()..].split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok());
                 }
                 _ => {}
@@ -557,6 +557,14 @@ impl Convo {
                 lines[line].status = Status::Running;
             }
         }
+    }
+
+    /// The words of text files its messages kept with them (`Entry::User::kept`).
+    pub fn kept(&self) -> impl Iterator<Item = &equipe_core::protocol::tags::Kept> {
+        self.transcript.entries().iter().flat_map(|e| match e {
+            Entry::User { kept, .. } => kept.as_slice(),
+            _ => &[],
+        })
     }
 
     /// Whether the conversation can be shown a project at a time: the PM's
@@ -785,6 +793,9 @@ pub enum Block {
     /// A second look's verdict (`equipe design second-look`): the screen
     /// and what fresh eyes said of it.
     SecondLook { screen: String, verdict: Box<equipe_core::design::lint::record::Verdict> },
+    /// A flow a member tested on the ticket's phone: its steps, verdicts,
+    /// key frames and the recording to play (`crate::activity::qa_report_of`).
+    QaReport(Box<crate::activity::QaReport>),
 }
 
 impl Block {
@@ -803,6 +814,7 @@ impl Block {
             Block::HandOver { name, why, .. } => Some(format!("{name}\n{why}")),
             Block::DesignCheck(s) => Some(format!("{}\n{}\n{}", t!("check.title"), s.screen.clone().unwrap_or_default(), crate::checks::details(s).iter().map(|d| format!("{} {}", d.rule, d.said)).collect::<Vec<_>>().join("\n"))),
             Block::SecondLook { screen, verdict } => Some(format!("{}\n{screen}\n{}\n{}", t!("look.name"), verdict.summary, verdict.fixes.iter().map(crate::checks::fix).collect::<Vec<_>>().join("\n"))),
+            Block::QaReport(r) => Some(format!("{}\n{}\n{}", r.flow, r.name, r.steps.iter().map(|(_, n, step, seen)| format!("{n}. {step} — {seen}")).collect::<Vec<_>>().join("\n"))),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
@@ -948,12 +960,12 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
         match entry {
             // What equipe once told a member as if the person had said it (its
             // browser handed back): a line of equipe's, never their bubble.
-            Entry::User { text } if crate::activity::handed_back_line(text) => blocks.push(Block::Note(t!("chat.browser_given_back").to_owned())),
+            Entry::User { text, .. } if crate::activity::handed_back_line(text) => blocks.push(Block::Note(t!("chat.browser_given_back").to_owned())),
             // The engine's harness speaking in the person's place (a command
             // left in the background ended, a reminder for the model): a quiet
             // line of the member's, or nothing — and the person's own words, if
             // any came with it, theirs.
-            Entry::User { text } => {
+            Entry::User { text, .. } => {
                 let said = harness::read(text);
                 for task in &said.tasks {
                     blocks.push(Block::Background { summary: task.summary.clone().unwrap_or_default(), failed: task.failed(), file: task.output_file.clone() });
@@ -966,13 +978,16 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
                 blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });
                 replied = true;
             }
-            Entry::Note { text } if text.starts_with(COMPACTED) => blocks.push(Block::Summarized),
-            Entry::Note { text } => match (thought_of(text), worked_of(text)) {
+            Entry::Note { text, .. } if text.starts_with(COMPACTED) => blocks.push(Block::Summarized),
+            Entry::Note { text, .. } => match (thought_of(text), worked_of(text)) {
                 (Some((n, secs)), _) => blocks.push(Block::Thought { n, secs, text: String::new() }),
                 (None, Some(worked)) => match blocks.last_mut() {
                     Some(Block::Reply { worked: slot, .. }) => *slot = Some(worked),
                     _ => blocks.push(Block::Worked(worked)),
                 },
+                (None, None) if crate::activity::qa_report_of(text).is_some() => {
+                    blocks.push(Block::QaReport(Box::new(crate::activity::qa_report_of(text).expect("just read"))));
+                }
                 (None, None) if crate::activity::handed_of(text).is_some() => {
                     let (name, why) = crate::activity::handed_of(text).unwrap_or_default();
                     blocks.push(Block::HandOver { name, why, live: false });
@@ -1185,7 +1200,7 @@ mod tests {
         // its own, and "지" ended one row, "금 보드를" began the next.
         let mut c = convo(true);
         let delta = |text: &str| Event::TextDelta { session: 1, text: text.into() };
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "보드 확인해 줘".into() }, delta("네, 확인했습니다. 지")]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "보드 확인해 줘".into(), kept: Vec::new() }, delta("네, 확인했습니다. 지")]);
         feed(&mut c, &[Event::SteerQueued { session: 1, text: "그리고 하나 더".into(), project: None }, Event::SubagentStep { session: 1, id: "a".into(), step: "Read a.rs".into() }]);
         feed(&mut c, &[delta("금 보드를 살펴보겠습니다.")]);
         let replies: Vec<String> = c.blocks().into_iter().filter_map(|b| if let Block::Reply { text, .. } = b { Some(text) } else { None }).collect();
@@ -1195,7 +1210,7 @@ mod tests {
     #[test]
     fn streaming_joins_one_reply_and_a_tool_use_closes_it() {
         let mut c = convo(true);
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "hi".into() }, Event::TextDelta { session: 1, text: "Hel".into() }, Event::TextDelta { session: 1, text: "lo".into() }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "hi".into(), kept: Vec::new() }, Event::TextDelta { session: 1, text: "Hel".into() }, Event::TextDelta { session: 1, text: "lo".into() }]);
         assert_eq!(c.blocks(), vec![Block::User("hi".into()), Block::Reply { text: "Hello".into(), first: true, live: true, worked: None }]);
         feed(&mut c, &[tool("Read", "/work/site/a.rs"), Event::TextDelta { session: 1, text: "Done.".into() }]);
         let blocks = c.blocks();
@@ -1227,7 +1242,7 @@ mod tests {
             outcome: ToolOutcome { ok: false, output: output.into(), ..Default::default() },
         };
         feed(&mut c, &[
-            Event::UserMessage { session: 1, text: "go".into() },
+            Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() },
             tool("Bash", "cp /a/logo.png img/"),
             refused("cp /a/logo.png img/", "cp to '/Users/abel/Abel/equipe-site/public/logo.png' was blocked by a deny rule."),
             tool("Bash", "cp x y"),
@@ -1252,7 +1267,7 @@ mod tests {
         assert!(!refused_by_rule("Blocked"));
         let mut c = convo(false);
         let refused = Event::ToolResult { session: 1, tool: "Bash".into(), target: Some("sleep 240 && cargo test".into()), outcome: ToolOutcome { ok: false, output: blocked.into(), ..Default::default() } };
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, tool("Bash", "sleep 240 && cargo test"), refused]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, tool("Bash", "sleep 240 && cargo test"), refused]);
         let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
         assert_eq!(lines[0].status, Status::Declined, "grey: a rule said no, nothing broke");
     }
@@ -1267,13 +1282,13 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "go".into() },
+                Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() },
                 Event::ToolUse { session: 1, tool: "Bash".into(), target: Some("cargo build".into()), label: None, background: true },
-                Event::Steered { session: 1, text: TASK_DONE.into() },
+                Event::Steered { session: 1, text: TASK_DONE.into(), kept: Vec::new() },
                 Event::TextDelta { session: 1, text: "Built.".into() },
-                Event::Steered { session: 1, text: TASK_FAILED.into() },
-                Event::Steered { session: 1, text: "<system-reminder>\nThe todo list is empty.\n</system-reminder>".into() },
-                Event::Steered { session: 1, text: "skip the footer please\n\n<system-reminder>x</system-reminder>".into() },
+                Event::Steered { session: 1, text: TASK_FAILED.into(), kept: Vec::new() },
+                Event::Steered { session: 1, text: "<system-reminder>\nThe todo list is empty.\n</system-reminder>".into(), kept: Vec::new() },
+                Event::Steered { session: 1, text: "skip the footer please\n\n<system-reminder>x</system-reminder>".into(), kept: Vec::new() },
             ],
         );
         let blocks = c.blocks();
@@ -1298,7 +1313,7 @@ mod tests {
         assert_eq!(titles, ["go", "skip the footer please"]);
         assert_eq!(c.last_said().as_deref(), Some("skip the footer please"));
         let mut only = convo(false);
-        feed(&mut only, &[Event::Steered { session: 1, text: TASK_DONE.into() }]);
+        feed(&mut only, &[Event::Steered { session: 1, text: TASK_DONE.into(), kept: Vec::new() }]);
         assert_eq!(only.last_said(), None);
         assert!(crate::chapters::of(&only.blocks()).is_empty());
     }
@@ -1307,7 +1322,7 @@ mod tests {
     fn a_task_ended_line_says_how_it_ended_and_opens_on_its_output() {
         let done = Block::Background { summary: "built".into(), failed: false, file: Some("/tmp/b.output".into()) };
         assert_eq!(done.searchable().as_deref(), Some("built"));
-        let entries = [Cow::Owned(Entry::User { text: "<task-notification><status>killed</status></task-notification>".into() })];
+        let entries = [Cow::Owned(Entry::User { text: "<task-notification><status>killed</status></task-notification>".into(), kept: Vec::new() })];
         assert_eq!(build_blocks(&entries, Path::new("/w")), vec![Block::Background { summary: String::new(), failed: true, file: None }]);
     }
 
@@ -1320,7 +1335,7 @@ mod tests {
             target: Some("T-191".into()),
             outcome: ToolOutcome { ok: false, output: "T-191 is review — from here it's the person's to change.".into(), ..Default::default() },
         };
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, tool("mcp__equipe__update_ticket", "T-191"), said_no]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, tool("mcp__equipe__update_ticket", "T-191"), said_no]);
         let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
         assert_eq!(lines[0].status, Status::Declined, "not red: the member is told and takes another way");
         assert_eq!(crate::activity::status(lines), Status::Declined);
@@ -1336,7 +1351,7 @@ mod tests {
             target: Some(target.into()),
             outcome: ToolOutcome { ok, exit: (!ok).then_some(2), ms: Some(1500), output: output.into(), skipped: 0, diff: diff.map(Into::into) },
         };
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, tool("Bash", "cargo test"), tool("Read", "/work/site/a.rs")]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, tool("Bash", "cargo test"), tool("Read", "/work/site/a.rs")]);
         let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
         assert!(lines.iter().all(|l| l.status == Status::Running), "unanswered while it works");
         assert_eq!(crate::activity::status(lines), Status::Running);
@@ -1375,10 +1390,10 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::Notice { session: 1, text: "backend handed in T-118 for your review · 주문 API.".into() },
-                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
-                Event::Notice { session: 1, text: "plain".into() },
-                Event::Notice { session: 1, text: "pm이(가) T-9을(를) 제안했습니다: 로그인".into() },
+                Event::Notice { undo: None, session: 1, text: "backend handed in T-118 for your review · 주문 API.".into() },
+                Event::Notice { undo: None, session: 1, text: "You accepted T-58 · 헤더.".into() },
+                Event::Notice { undo: None, session: 1, text: "plain".into() },
+                Event::Notice { undo: None, session: 1, text: "pm이(가) T-9을(를) 제안했습니다: 로그인".into() },
             ],
         );
         let blocks = c.blocks();
@@ -1396,10 +1411,10 @@ mod tests {
             &mut c,
             &[
                 // From a daemon that spoke English, popping the window on its own Mac.
-                Event::Notice { session: 1, text: format!("🖥 pm's browser comes up on this Mac's screen: {why}") },
-                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
+                Event::Notice { undo: None, session: 1, text: format!("🖥 pm's browser comes up on this Mac's screen: {why}") },
+                Event::Notice { undo: None, session: 1, text: "You accepted T-58 · 헤더.".into() },
                 // Into the panel, worded in Korean.
-                Event::Notice { session: 1, text: "🖥 pm의 브라우저가 브라우저 패널에 열립니다: 2단계 인증 코드를 입력해 주세요".into() },
+                Event::Notice { undo: None, session: 1, text: "🖥 pm의 브라우저가 브라우저 패널에 열립니다: 2단계 인증 코드를 입력해 주세요".into() },
             ],
         );
         let mut blocks = c.blocks();
@@ -1416,9 +1431,9 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "The person finished in the browser.".into() },
-                Event::UserMessage { session: 1, text: "The person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.".into() },
-                Event::UserMessage { session: 1, text: "The person finished the report".into() },
+                Event::UserMessage { session: 1, text: "The person finished in the browser.".into(), kept: Vec::new() },
+                Event::UserMessage { session: 1, text: "The person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.".into(), kept: Vec::new() },
+                Event::UserMessage { session: 1, text: "The person finished the report".into(), kept: Vec::new() },
             ],
         );
         let blocks = c.blocks();
@@ -1433,9 +1448,9 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
-                Event::Notice { session: 1, text: "T-117 waits for you — ios needs something only you can do · 앱스토어 제출.".into() },
-                Event::Notice { session: 1, text: "You accepted T-59 · 푸터.".into() },
+                Event::Notice { undo: None, session: 1, text: "You accepted T-58 · 헤더.".into() },
+                Event::Notice { undo: None, session: 1, text: "T-117 waits for you — ios needs something only you can do · 앱스토어 제출.".into() },
+                Event::Notice { undo: None, session: 1, text: "You accepted T-59 · 푸터.".into() },
             ],
         );
         let blocks = c.blocks();
@@ -1450,7 +1465,7 @@ mod tests {
     fn reasoning_shows_while_it_goes_and_stays_as_a_line() {
         let mut c = convo(false);
         let t0 = Instant::now();
-        c.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
+        c.on_event(&Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, t0, T);
         c.on_event(&Event::Thinking { session: 1, text: "First, the header.\nThen the ".into() }, t0, T);
         assert_eq!(c.blocks().last(), Some(&Block::Thinking("Then the ".into())));
         c.on_event(&Event::Thinking { session: 1, text: "footer.".into() }, t0, T);
@@ -1472,13 +1487,13 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "whole squad".into() },
+                Event::UserMessage { session: 1, text: "whole squad".into(), kept: Vec::new() },
                 Event::Thread { session: 1, project: Some("site".into()) },
-                Event::UserMessage { session: 1, text: "about the site".into() },
-                Event::Notice { session: 1, text: "── T-4 · Research".into() },
-                Event::UserMessage { session: 1, text: "ticket work".into() },
+                Event::UserMessage { session: 1, text: "about the site".into(), kept: Vec::new() },
+                Event::Notice { undo: None, session: 1, text: "── T-4 · Research".into() },
+                Event::UserMessage { session: 1, text: "ticket work".into(), kept: Vec::new() },
                 Event::Thread { session: 1, project: None },
-                Event::UserMessage { session: 1, text: "after".into() },
+                Event::UserMessage { session: 1, text: "after".into(), kept: Vec::new() },
             ],
         );
         let texts = |c: &Convo| c.blocks().iter().filter_map(|b| if let Block::User(t) = b { Some(t.clone()) } else { None }).collect::<Vec<_>>();
@@ -1492,7 +1507,7 @@ mod tests {
     /// and one about the whole squad.
     fn two_projects() -> Convo {
         let mut c = convo(true);
-        let say = |text: &str| Event::UserMessage { session: 1, text: text.into() };
+        let say = |text: &str| Event::UserMessage { session: 1, text: text.into(), kept: Vec::new() };
         let reply = |text: &str| Event::TextDelta { session: 1, text: text.into() };
         let end = Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None };
         let about = |p: Option<&str>| Event::Thread { session: 1, project: p.map(str::to_owned) };
@@ -1501,7 +1516,7 @@ mod tests {
             &[
                 about(Some("app")), say("app one"), tool("Read", "/work/site/a.rs"), reply("app answer"), end.clone(),
                 about(Some("site")), say("site one"), reply("site answer"), end.clone(),
-                Event::Notice { session: 1, text: "frontend이(가) T-4을(를) 검토해 달라고 넘겼습니다 · 히어로.".into() },
+                Event::Notice { undo: None, session: 1, text: "frontend이(가) T-4을(를) 검토해 달라고 넘겼습니다 · 히어로.".into() },
                 about(None), say("everyone"), reply("squad answer"), end.clone(),
                 about(Some("app")), say("app two"), reply("app again"), end,
             ],
@@ -1545,7 +1560,7 @@ mod tests {
     #[test]
     fn another_projects_reply_streaming_stays_in_its_project() {
         let mut c = two_projects();
-        feed(&mut c, &[Event::Thread { session: 1, project: Some("site".into()) }, Event::UserMessage { session: 1, text: "site two".into() }, Event::TextDelta { session: 1, text: "stream".into() }]);
+        feed(&mut c, &[Event::Thread { session: 1, project: Some("site".into()) }, Event::UserMessage { session: 1, text: "site two".into(), kept: Vec::new() }, Event::TextDelta { session: 1, text: "stream".into() }]);
         let app = c.sliced(Some("app"));
         assert!(!app.blocks.iter().any(|b| matches!(b, Block::Reply { text, .. } if text == "stream")), "{:?}", app.blocks);
         assert!(!users(&app.blocks).contains(&"site two".to_owned()));
@@ -1556,7 +1571,7 @@ mod tests {
     #[test]
     fn a_squad_wide_reply_streaming_shows_in_the_project_in_focus() {
         let mut c = two_projects();
-        feed(&mut c, &[Event::Thread { session: 1, project: None }, Event::UserMessage { session: 1, text: "all of you".into() }, Event::TextDelta { session: 1, text: "stream".into() }]);
+        feed(&mut c, &[Event::Thread { session: 1, project: None }, Event::UserMessage { session: 1, text: "all of you".into(), kept: Vec::new() }, Event::TextDelta { session: 1, text: "stream".into() }]);
         let app = c.sliced(Some("app"));
         assert!(matches!(app.blocks.last(), Some(Block::Reply { text, live: true, .. }) if text == "stream"), "{:?}", app.blocks);
         assert!(users(&app.blocks).contains(&"all of you".to_owned()));
@@ -1568,7 +1583,7 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "work".into() },
+                Event::UserMessage { session: 1, text: "work".into(), kept: Vec::new() },
                 Event::MessageQueued { session: 1, text: "for site".into(), project: Some("site".into()) },
                 Event::MessageQueued { session: 1, text: "for app".into(), project: Some("app".into()) },
             ],
@@ -1589,7 +1604,7 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "work".into() },
+                Event::UserMessage { session: 1, text: "work".into(), kept: Vec::new() },
                 Event::SteerQueued { session: 1, text: "mobile한 명 더 추가하는거 승인할게.".into(), project: None },
                 Event::SteerQueued { session: 1, text: "우리 웹사이트는 어떻게 되어가는중?".into(), project: Some("site".into()) },
                 Event::MessageQueued { session: 1, text: "app memo".into(), project: Some("app".into()) },
@@ -1623,7 +1638,7 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "배포 지켜봐 줘".into() },
+                Event::UserMessage { session: 1, text: "배포 지켜봐 줘".into(), kept: Vec::new() },
                 Event::ToolUse { session: 1, tool: "Bash".into(), target: Some(watch.into()), label: Some("새 커밋·배포 감시".into()), background: true },
                 Event::TextDelta { session: 1, text: "지켜보고 있어요.".into() },
             ],
@@ -1644,7 +1659,7 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "x".into() },
+                Event::UserMessage { session: 1, text: "x".into(), kept: Vec::new() },
                 Event::ToolUse { session: 1, tool: "Bash".into(), target: Some(watch.into()), label: None, background: true },
                 Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None },
             ],
@@ -1660,10 +1675,10 @@ mod tests {
             &mut c,
             &[
                 Event::Thread { session: 1, project: Some("site".into()) },
-                Event::Notice { session: 1, text: "── T-1 · Hero".into() },
+                Event::Notice { undo: None, session: 1, text: "── T-1 · Hero".into() },
                 Event::Thread { session: 1, project: Some("app".into()) },
-                Event::Notice { session: 1, text: "── T-2 · Login".into() },
-                Event::Notice { session: 1, text: "plain".into() },
+                Event::Notice { undo: None, session: 1, text: "── T-2 · Login".into() },
+                Event::Notice { undo: None, session: 1, text: "plain".into() },
             ],
         );
         let notes: Vec<String> = c.blocks().into_iter().filter_map(|b| if let Block::Note(t) = b { Some(t) } else { None }).collect();
@@ -1677,7 +1692,7 @@ mod tests {
     fn a_turn_leaves_how_long_it_took() {
         let mut c = convo(true);
         let t0 = Instant::now();
-        c.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
+        c.on_event(&Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, t0, T);
         c.on_event(&Event::TextDelta { session: 1, text: "ok".into() }, t0, T);
         c.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, t0 + Duration::from_secs(65), T);
         let Some(Block::Reply { worked: Some(worked), .. }) = c.blocks().last().cloned() else { panic!("{:?}", c.blocks()) };
@@ -1685,7 +1700,7 @@ mod tests {
         assert!(worked.unix.is_some());
         // A turn ending on a step: a line of its own.
         let mut steps = convo(true);
-        steps.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
+        steps.on_event(&Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, t0, T);
         steps.on_event(&tool("Bash", "ls"), t0, T);
         steps.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, t0 + Duration::from_secs(5), T);
         assert!(matches!(steps.blocks().last(), Some(Block::Worked(w)) if w.secs == 5));
@@ -1693,7 +1708,7 @@ mod tests {
         assert_eq!(worked_of("\u{E001}65:14:02"), Some(Worked { secs: 65, at: "14:02".into(), unix: None }));
         // A turn under a second says nothing.
         let mut quick = convo(true);
-        quick.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
+        quick.on_event(&Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, t0, T);
         quick.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, t0, T);
         assert_eq!(quick.blocks().len(), 1);
     }
@@ -1701,10 +1716,10 @@ mod tests {
     #[test]
     fn a_memo_waits_below_the_conversation_until_the_turn_delivers_it() {
         let mut c = convo(false);
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into() }, Event::MessageQueued { session: 1, text: "also this".into(), project: None }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into(), kept: Vec::new() }, Event::MessageQueued { session: 1, text: "also this".into(), project: None }]);
         assert_eq!(waiting(&c.blocks()), [("also this".to_owned(), false)]);
         assert!(matches!(c.blocks().last(), Some(Block::Pending { .. })));
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "also this".into() }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "also this".into(), kept: Vec::new() }]);
         assert!(c.queue.is_empty());
         assert!(waiting(&c.blocks()).is_empty());
     }
@@ -1715,7 +1730,7 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "work".into() },
+                Event::UserMessage { session: 1, text: "work".into(), kept: Vec::new() },
                 Event::MessageQueued { session: 1, text: "for site".into(), project: Some("site".into()) },
                 Event::MessageQueued { session: 1, text: "for app".into(), project: Some("app".into()) },
             ],
@@ -1723,17 +1738,17 @@ mod tests {
         let memos = |c: &Convo| waiting(&c.blocks()).into_iter().map(|(t, _)| t).collect::<Vec<_>>();
         assert_eq!(memos(&c), ["for site", "for app"]);
         // The next turn takes the first project's; the other waits.
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "for site".into() }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "for site".into(), kept: Vec::new() }]);
         assert_eq!(c.queue.texts(), ["for app"]);
     }
 
     #[test]
     fn steering_shows_as_read_next_step_until_read_or_the_turn_ends() {
         let mut c = convo(false);
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into() }, Event::SteerQueued { session: 1, text: "skip the footer".into(), project: None }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into(), kept: Vec::new() }, Event::SteerQueued { session: 1, text: "skip the footer".into(), project: None }]);
         assert_eq!(waiting(&c.blocks()), [("skip the footer".to_owned(), true)]);
         // Read: it is the conversation's, where it was read.
-        feed(&mut c, &[Event::Steered { session: 1, text: "skip the footer".into() }]);
+        feed(&mut c, &[Event::Steered { session: 1, text: "skip the footer".into(), kept: Vec::new() }]);
         assert!(c.queue.is_empty());
         assert!(matches!(c.blocks().last(), Some(Block::User(t)) if t == "skip the footer"));
         // Unread at the turn's end: a memo in its place, delivered with the next turn.
@@ -1741,18 +1756,18 @@ mod tests {
         assert_eq!(waiting(&c.blocks()), [("and the nav".to_owned(), false)]);
         feed(&mut c, &[Event::MessageQueued { session: 1, text: "and the nav".into(), project: None }]);
         assert_eq!(waiting(&c.blocks()).len(), 1, "once");
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "and the nav".into() }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "and the nav".into(), kept: Vec::new() }]);
         assert!(c.queue.is_empty());
     }
 
     #[test]
     fn a_suggestion_waits_for_rest_and_goes_when_work_or_a_memo_comes() {
         let mut c = convo(false);
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into() }, Event::Suggestion { session: 1, text: "too early".into() }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into(), kept: Vec::new() }, Event::Suggestion { session: 1, text: "too early".into() }]);
         assert_eq!(c.suggestion, None, "still at work");
         feed(&mut c, &[Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, Event::Suggestion { session: 1, text: "다른 페이지도".into() }]);
         assert_eq!(c.suggestion.as_deref(), Some("다른 페이지도"));
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "다른 페이지도".into() }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "다른 페이지도".into(), kept: Vec::new() }]);
         assert_eq!(c.suggestion, None);
         feed(&mut c, &[Event::MessageQueued { session: 1, text: "m".into(), project: None }, Event::Suggestion { session: 1, text: "late".into() }]);
         assert_eq!(c.suggestion, None, "a memo is on its way");
@@ -1818,7 +1833,7 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::UserMessage { session: 1, text: "go".into() },
+                Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() },
                 tool("Agent", "Read the logs"),
                 Event::SubagentStarted { session: 1, id: "t1".into(), what: "Read the logs".into(), brief: String::new() },
                 // Sent to the background: answered at once, at work still.
@@ -1917,7 +1932,7 @@ mod tests {
     #[test]
     fn a_summary_runs_from_when_the_engine_began_it_and_ends_in_a_divider() {
         let mut c = convo(false);
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, compacting(12_000, CompactTrigger::Auto)]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, compacting(12_000, CompactTrigger::Auto)]);
         let Some(Compact::Running { manual: false, .. }) = c.compact else { panic!("{:?}", c.compact) };
         let ran = c.compacting_for().unwrap();
         assert!(ran >= Duration::from_secs(12) && ran < Duration::from_secs(14), "counts from started_at: {ran:?}");
@@ -2042,11 +2057,11 @@ mod tests {
         fn attached_each_message_and_reply_shows_when_it_was_said() {
             let recent = vec![
                 Entry::Thread { project: Some("app".into()) },
-                Entry::User { text: "fix the header".into() },
+                Entry::User { text: "fix the header".into(), kept: Vec::new() },
                 tool_entry(),
                 Entry::Reply { text: "Fixed.".into() },
                 Entry::Thread { project: Some("web".into()) },
-                Entry::User { text: "and the footer".into() },
+                Entry::User { text: "and the footer".into(), kept: Vec::new() },
                 Entry::Reply { text: "On it.".into() },
             ];
             let times = vec![None, Some(100), Some(110), Some(130), None, Some(200), Some(260)];
@@ -2062,7 +2077,7 @@ mod tests {
 
         #[test]
         fn an_older_daemon_sends_no_times_and_none_show() {
-            let c = Convo::from_info(&info(vec![Entry::User { text: "hi".into() }, Entry::Reply { text: "hello".into() }], Vec::new(), false), Instant::now());
+            let c = Convo::from_info(&info(vec![Entry::User { text: "hi".into(), kept: Vec::new() }, Entry::Reply { text: "hello".into() }], Vec::new(), false), Instant::now());
             assert_eq!(said(&c, None), [("user: hi".to_owned(), None), ("reply: hello".into(), None)]);
         }
 
@@ -2070,7 +2085,7 @@ mod tests {
         fn watched_live_a_message_is_said_when_it_came_and_a_reply_when_it_was_done() {
             let mut c = convo(false);
             let before = crate::state::now_unix();
-            feed(&mut c, &[Event::UserMessage { session: 1, text: "hi".into() }, Event::TextDelta { session: 1, text: "Hel".into() }]);
+            feed(&mut c, &[Event::UserMessage { session: 1, text: "hi".into(), kept: Vec::new() }, Event::TextDelta { session: 1, text: "Hel".into() }]);
             let streaming = said(&c, None);
             assert!(streaming[0].1.is_some_and(|at| at >= before), "{streaming:?}");
             assert_eq!(streaming[1], ("reply: Hel".to_owned(), None), "still streaming: no time yet");
@@ -2089,7 +2104,7 @@ mod tests {
 
         #[test]
         fn a_lane_keeps_the_times_of_what_it_was_started_from_and_gives_them_back() {
-            let recent = vec![Entry::User { text: "a".into() }, Entry::Reply { text: "b".into() }];
+            let recent = vec![Entry::User { text: "a".into(), kept: Vec::new() }, Entry::Reply { text: "b".into() }];
             let main = Convo::from_info(&info(recent, vec![Some(5), Some(9)], false), Instant::now());
             let mut lane = convo(false);
             lane.open_lane(&main);
@@ -2107,7 +2122,7 @@ mod tests {
     #[test]
     fn the_message_said_meanwhile_waits_behind_the_summary() {
         let mut c = convo(false);
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, compacting(0, CompactTrigger::Auto), Event::SteerQueued { session: 1, text: "also".into(), project: None }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, compacting(0, CompactTrigger::Auto), Event::SteerQueued { session: 1, text: "also".into(), project: None }]);
         assert_eq!(c.queue.items().len(), 1);
         assert!(matches!(c.compact, Some(Compact::Running { .. })), "the box is not shut: it keeps what is said");
     }
