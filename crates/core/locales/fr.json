@@ -207,7 +207,7 @@
   "mode.auto.summary": "modifie, installe, compile et teste seul, dans le bac à sable de son worktree ; demande avant tout le reste : réseau, push, vos comptes",
   "mode.full": "accès complet",
   "mode.full.short": "ne demande rien, sauf pour agir en votre nom",
-  "mode.full.summary": "fait sans demander tout ce que votre compte permet, sauf ce qu'equipe bloque toujours ; demande encore avant d'agir en votre nom",
+  "mode.full.summary": "fait sans demander tout ce que votre compte permet, sauf ce qu'equipe bloque toujours ; demande encore avant d'agir en votre nom En accès total, un membre exécute tout ce que ton compte peut faire ; equipe ne peut donc pas empêcher complètement un membre déterminé d'agir en ton nom via un processus qu'il ne voit pas — auto est le réglage par défaut le plus sûr.",
   "mode.read_only": "lecture seule",
   "mode.read_only.short": "lit et planifie ; ne change rien",
   "mode.read_only.summary": "lit et planifie : ne change rien, n'exécute rien d'autre que pour regarder",
@@ -487,5 +487,6 @@
   "error.provider_model_codex": "Les modèles de {provider} tournent avec l'agent de la CLI Codex, sur lequel cette conversation n'est pas. Réglez-le pour un membre d'une squad, ou démarrez-en un avec.",
   "notice.provider_limits": "Sur {provider}, ce membre travaille avec les fichiers, les commandes et le tableau, mais n'a pas encore de sous-agents ni de recherche web, et ne peut pas regarder d'images. Choisissez un modèle qui sait appeler des outils.",
   "notice.provider_move": "Passe à {model} sur {provider} au prochain ticket, avec l'agent de la CLI Codex.",
-  "error.provider_needs_codex": "Les membres sur {provider} tournent avec l'agent de la CLI Codex (gratuite, open source ; aucune connexion ChatGPT nécessaire). Installez d'abord la CLI codex."
+  "error.provider_needs_codex": "Les membres sur {provider} tournent avec l'agent de la CLI Codex (gratuite, open source ; aucune connexion ChatGPT nécessaire). Installez d'abord la CLI codex.",
+  "security.member_refused": "Le processus d'un membre a tenté d'agir en ton nom — approuver, accepter, fusionner ou changer des réglages — via le socket d'equipe. equipe l'a refusé : toi seul en décides."
 }

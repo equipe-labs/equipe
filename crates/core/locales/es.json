@@ -207,7 +207,7 @@
   "mode.auto.summary": "edita, instala, compila y prueba por su cuenta, en el sandbox de su worktree; pregunta antes de todo lo demás: red, pushes, tus cuentas",
   "mode.full": "acceso total",
   "mode.full.short": "no pregunta nada, salvo para actuar en tu nombre",
-  "mode.full.summary": "hace sin preguntar todo lo que tu cuenta puede, salvo lo que equipe siempre bloquea; sigue preguntando antes de actuar en tu nombre",
+  "mode.full.summary": "hace sin preguntar todo lo que tu cuenta puede, salvo lo que equipe siempre bloquea; sigue preguntando antes de actuar en tu nombre Con acceso total un miembro ejecuta todo lo que puede tu cuenta, así que equipe no puede impedir del todo que uno decidido actúe en tu nombre mediante un proceso que no ve — auto es la opción más segura por defecto.",
   "mode.read_only": "solo lectura",
   "mode.read_only.short": "lee y planifica; no cambia nada",
   "mode.read_only.summary": "lee y planifica: no cambia nada y solo ejecuta lo que sirve para mirar",
@@ -487,5 +487,6 @@
   "error.provider_model_codex": "Los modelos de {provider} funcionan con el agente de la CLI de Codex, y esta conversación no está en él. Ponlo para un miembro de un squad o empieza uno con él.",
   "notice.provider_limits": "En {provider} este miembro trabaja con archivos, comandos y el tablero, pero aún no tiene subagentes ni búsqueda web, y no puede ver imágenes. Elige un modelo que pueda llamar herramientas.",
   "notice.provider_move": "Pasa a {model} en {provider} en su próximo ticket, con el agente de la CLI de Codex.",
-  "error.provider_needs_codex": "Los miembros en {provider} funcionan con el agente de la CLI de Codex (gratis, de código abierto; no hace falta iniciar sesión en ChatGPT). Instala primero la CLI codex."
+  "error.provider_needs_codex": "Los miembros en {provider} funcionan con el agente de la CLI de Codex (gratis, de código abierto; no hace falta iniciar sesión en ChatGPT). Instala primero la CLI codex.",
+  "security.member_refused": "El propio proceso de un miembro intentó actuar en tu nombre — aprobar, aceptar, fusionar o cambiar ajustes — por el socket de equipe. equipe lo rechazó: eso solo lo decides tú."
 }

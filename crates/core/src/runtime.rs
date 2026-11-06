@@ -228,6 +228,10 @@ enum DesktopRequest {
 
 enum Request {
     Command(Command),
+    /// A person-only command came from a member's own process and was refused
+    /// at the door ([`crate::gateway`], [`crate::origin`]); the person is told.
+    /// `squad` is the command's, when it named one.
+    MemberRefused(Option<String>),
     Snapshot(String, oneshot::Sender<Snapshot>),
     Subscribe(String, oneshot::Sender<Subscription>),
     Tool(ToolCall, oneshot::Sender<ToolResult>),
@@ -259,6 +263,13 @@ pub struct Handle {
 impl Handle {
     pub fn send(&self, command: Command) {
         let _ = self.requests.send(Request::Command(command));
+    }
+
+    /// A person-only command reached the socket from a member's own process and
+    /// was refused ([`crate::gateway`]); the person is told, in their language.
+    /// `squad` is the command's, when it named one.
+    pub fn refused_person_only(&self, squad: Option<String>) {
+        let _ = self.requests.send(Request::MemberRefused(squad));
     }
 
     /// Everything `squad` has going, for a screen that attaches now.
@@ -1098,6 +1109,7 @@ impl Wake {
                 let name = serde_json::to_value(command).ok().and_then(|v| v["type"].as_str().map(str::to_owned));
                 Owned(format!("command {}", name.unwrap_or_else(|| "?".into())))
             }
+            Wake::Request(Some(Request::MemberRefused(_))) => Borrowed("a member's refused command"),
             Wake::Request(Some(Request::Tool(call, _))) => Owned(format!("tool {} for {}/{}", call.name, call.squad, call.member)),
             Wake::Request(Some(Request::Snapshot(..))) => Borrowed("snapshot"),
             Wake::Request(Some(Request::Subscribe(..))) => Borrowed("hello (a screen's snapshot)"),
@@ -1211,6 +1223,7 @@ impl Runtime {
         match wake {
             Wake::Request(request) => match request {
                 Some(Request::Command(command)) => self.handle(command).await,
+                Some(Request::MemberRefused(squad)) => self.member_refused(squad.as_deref()),
                 Some(Request::Snapshot(squad, reply)) => {
                     let _ = reply.send(self.snapshot(&squad));
                 }
@@ -1764,6 +1777,18 @@ impl Runtime {
     /// An error for the screens of `squad`, about something with no session of its own.
     fn squad_error(&mut self, squad: &str, message: impl Into<String>) {
         self.publish_in(Some(squad), Event::Error { session: None, message: message.into(), next: None });
+    }
+
+    /// A person-only command came from a member's own process and was refused at
+    /// the door: logged as a security event, and told to the person — to the
+    /// squad it named, or to every screen when it named none.
+    fn member_refused(&mut self, squad: Option<&str>) {
+        crate::daemon_log!("equipe: refused a person-only command from a member's own process (not the person's screen)");
+        let text = say!(self, "security.member_refused");
+        match squad {
+            Some(squad) => self.squad_error(squad, text),
+            None => self.publish(Event::Error { session: None, message: text, next: None }),
+        }
     }
 
     async fn handle(&mut self, command: Command) {

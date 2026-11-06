@@ -560,7 +560,7 @@ impl Mode {
             Mode::ReadOnly => "reads and plans — changes nothing, runs nothing but looking around",
             Mode::Ask => "asks you before every edit and every command",
             Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond — network, pushes, your accounts",
-            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name",
+            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name. In full access a member runs anything your account can, so equipe can't fully stop a determined one from acting as you through a process it doesn't see — auto is the safer default.",
         }
     }
 

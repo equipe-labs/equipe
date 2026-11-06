@@ -204,7 +204,7 @@
   "mode.auto.summary": "자기 워크트리 샌드박스 안에서 편집·설치·빌드·테스트를 스스로 하고, 그 밖의 일 — 네트워크, 푸시, 내 계정 — 은 먼저 물어봐요",
   "mode.full": "전체 권한",
   "mode.full.short": "묻지 않음 · 나 대신 행동할 때만 물어봄",
-  "mode.full.summary": "equipe가 늘 막는 일 말고는 내 계정으로 할 수 있는 일을 묻지 않고 해요. 나 대신 행동할 때는 여전히 먼저 물어봐요",
+  "mode.full.summary": "equipe가 늘 막는 일 말고는 내 계정으로 할 수 있는 일을 묻지 않고 해요. 나 대신 행동할 때는 여전히 먼저 물어봐요 전체 권한에서는 멤버가 내 계정으로 할 수 있는 건 무엇이든 실행하므로, 작정한 멤버가 equipe가 못 보는 프로세스로 나처럼 행동하는 걸 완전히 막을 수는 없어요. auto가 더 안전한 기본값이에요.",
   "mode.read_only": "읽기 전용",
   "mode.read_only.short": "읽고 계획만 · 아무것도 바꾸지 않음",
   "mode.read_only.summary": "읽고 계획만 해요 — 아무것도 바꾸지 않고, 둘러보는 것 말고는 실행하지 않아요",
@@ -483,5 +483,6 @@
   "error.provider_model_codex": "{provider}의 모델은 Codex CLI 에이전트에서 실행되는데, 이 대화는 그 위에 있지 않아요. 스쿼드 멤버에게 설정하거나 그 모델로 새 멤버를 시작해 주세요.",
   "notice.provider_limits": "{provider}에서 이 멤버는 파일, 명령, 보드로 일하지만 아직 서브에이전트와 웹 검색이 없고 이미지를 볼 수 없어요. 도구를 호출할 수 있는 모델을 골라 주세요.",
   "notice.provider_move": "다음 티켓부터 {provider}의 {model}로 옮겨 Codex CLI 에이전트에서 일해요.",
-  "error.provider_needs_codex": "{provider}의 멤버는 Codex CLI 에이전트에서 일해요 (무료 오픈소스, ChatGPT 로그인 불필요). 먼저 codex CLI를 설치해 주세요."
+  "error.provider_needs_codex": "{provider}의 멤버는 Codex CLI 에이전트에서 일해요 (무료 오픈소스, ChatGPT 로그인 불필요). 먼저 codex CLI를 설치해 주세요.",
+  "security.member_refused": "멤버 자신의 프로세스가 equipe 소켓을 통해 나 대신 승인·수락·병합·설정 변경을 하려 했어요. equipe가 막았어요. 그건 나만 결정해요."
 }

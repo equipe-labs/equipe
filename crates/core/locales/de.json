@@ -207,7 +207,7 @@
   "mode.auto.summary": "bearbeitet, installiert, baut und testet selbst, in der Sandbox seines Worktrees; fragt vor allem darüber hinaus – Netzwerk, Pushes, deine Konten",
   "mode.full": "voller Zugriff",
   "mode.full.short": "fragt nichts, außer um in deinem Namen zu handeln",
-  "mode.full.summary": "tut ohne zu fragen alles, was dein Konto kann, außer was equipe immer sperrt; fragt weiterhin, bevor es in deinem Namen handelt",
+  "mode.full.summary": "tut ohne zu fragen alles, was dein Konto kann, außer was equipe immer sperrt; fragt weiterhin, bevor es in deinem Namen handelt Bei vollem Zugriff führt ein Mitglied alles aus, was dein Konto kann; equipe kann ein entschlossenes Mitglied daher nicht ganz davon abhalten, über einen unsichtbaren Prozess in deinem Namen zu handeln — auto ist die sicherere Voreinstellung.",
   "mode.read_only": "nur lesen",
   "mode.read_only.short": "liest und plant; ändert nichts",
   "mode.read_only.summary": "liest und plant – ändert nichts, führt nichts aus außer zum Umsehen",
@@ -487,5 +487,6 @@
   "error.provider_model_codex": "Modelle von {provider} laufen mit dem Agenten der Codex-CLI, und auf dem läuft dieses Gespräch nicht. Stell es für ein Mitglied einer Squad ein oder starte eines damit.",
   "notice.provider_limits": "Auf {provider} arbeitet dieses Mitglied mit Dateien, Befehlen und dem Board, hat aber noch keine Subagenten und keine Websuche und kann keine Bilder ansehen. Wähle ein Modell, das Tools aufrufen kann.",
   "notice.provider_move": "Wechselt beim nächsten Ticket zu {model} auf {provider}, mit dem Agenten der Codex-CLI.",
-  "error.provider_needs_codex": "Mitglieder auf {provider} laufen mit dem Agenten der Codex-CLI (kostenlos, Open Source; keine ChatGPT-Anmeldung nötig). Installiere zuerst die codex-CLI."
+  "error.provider_needs_codex": "Mitglieder auf {provider} laufen mit dem Agenten der Codex-CLI (kostenlos, Open Source; keine ChatGPT-Anmeldung nötig). Installiere zuerst die codex-CLI.",
+  "security.member_refused": "Der eigene Prozess eines Mitglieds hat versucht, über equipes Socket in deinem Namen zu handeln — freigeben, annehmen, mergen oder Einstellungen ändern. equipe hat es abgelehnt: das entscheidest nur du."
 }

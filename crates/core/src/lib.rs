@@ -44,6 +44,7 @@ pub mod mock;
 pub mod models;
 pub mod model_providers;
 pub mod nemotron;
+pub mod origin;
 pub mod pairing;
 pub mod retro;
 pub mod roles;
