@@ -43,6 +43,11 @@ pub struct Sub {
     pub entries: Vec<Entry>,
     /// How it ended, once it has.
     pub ended: Option<SubEnd>,
+    /// It looks stuck: unheard from since then, as the daemon watches it
+    /// ([`Event::SubagentStuck`]).
+    pub stuck: Option<Instant>,
+    /// The person asked to stop it; it hasn't ended yet.
+    pub stopping: bool,
 }
 
 /// How a subagent ended.
@@ -60,7 +65,7 @@ pub struct SubEnd {
 
 impl Sub {
     pub fn new(id: String, what: String, brief: String, since: Instant) -> Self {
-        Self { id, what, step: None, since, brief, entries: Vec::new(), ended: None }
+        Self { id, what, step: None, since, brief, entries: Vec::new(), ended: None, stuck: None, stopping: false }
     }
 
     /// One more step done, or words: the oldest go past [`SUB_KEPT`].
@@ -193,6 +198,7 @@ impl Convo {
             .map(|s| Sub {
                 step: s.step.clone(),
                 entries: s.entries.clone(),
+                stuck: s.stuck_secs.map(|quiet| now.checked_sub(Duration::from_secs(quiet)).unwrap_or(now)),
                 ..Sub::new(s.id.clone(), s.what.clone(), s.brief.clone(), now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now))
             })
             .collect();
@@ -288,6 +294,11 @@ impl Convo {
                     sub.keep(entry.clone());
                 }
             }
+            Event::SubagentStuck { id, quiet_secs, .. } => {
+                if let Some(sub) = self.subagents.iter_mut().find(|s| s.id == *id) {
+                    sub.stuck = quiet_secs.map(|quiet| now.checked_sub(Duration::from_secs(quiet)).unwrap_or(now));
+                }
+            }
             Event::SubagentEnded { id, result, failed, .. } => {
                 if let Some(at) = self.subagents.iter().position(|s| s.id == *id) {
                     let mut sub = self.subagents.remove(at);
@@ -345,6 +356,11 @@ impl Convo {
     /// A subagent of this conversation's, at work or handed back, by id.
     pub fn subagent(&self, id: &str) -> Option<&Sub> {
         self.subagents.iter().chain(&self.finished).find(|s| s.id == id)
+    }
+
+    /// A subagent of this conversation's at work, by id, to change.
+    pub fn subagent_mut(&mut self, id: &str) -> Option<&mut Sub> {
+        self.subagents.iter_mut().find(|s| s.id == id)
     }
 
     /// The reasoning in progress, finished: a line saying how long it took,
@@ -1712,6 +1728,28 @@ mod tests {
         assert_eq!(c.subagents.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b"], "a step after its end brings nothing back");
         feed(&mut c, &[Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
         assert!(c.subagents.is_empty(), "the turn's end takes the rest with it");
+    }
+
+    #[test]
+    fn a_subagent_looks_stuck_as_the_daemon_says_and_moves_again() {
+        let mut c = convo(false);
+        let start = Instant::now();
+        c.on_event(&Event::SubagentStarted { session: 1, id: "h1".into(), what: "look".into(), brief: String::new() }, start, T);
+        let later = start + Duration::from_secs(400);
+        c.on_event(&Event::SubagentStuck { session: 1, id: "h1".into(), quiet_secs: Some(330) }, later, T);
+        assert_eq!(c.subagents[0].stuck, Some(later - Duration::from_secs(330)), "quiet since then");
+        c.subagent_mut("h1").unwrap().stopping = true;
+        c.on_event(&Event::SubagentStuck { session: 1, id: "h1".into(), quiet_secs: None }, later, T);
+        assert_eq!(c.subagents[0].stuck, None);
+        // Attached mid-way: it still looks stuck.
+        let info: SessionInfo = serde_json::from_value(serde_json::json!({
+            "session": 2, "project": "/p", "member": {"role": "backend", "name": "backend"}, "engine": "codex", "model": null,
+            "access": "read_only", "workspace": null, "state": "working", "title": null, "tokens": 0, "recent": [],
+            "subagents": [{"id": "h2", "what": "Read the logs", "secs": 400, "stuck_secs": 320}]
+        }))
+        .unwrap();
+        let now = Instant::now();
+        assert_eq!(Convo::from_info(&info, now).subagents[0].stuck, Some(now - Duration::from_secs(320)));
     }
 
     #[test]

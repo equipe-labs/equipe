@@ -139,6 +139,7 @@ pub fn reads(command: &Command) -> bool {
         | C::Unqueue { .. }
         | C::SendNow { .. }
         | C::StopCommand { .. }
+        | C::StopSubagent { .. }
         | C::SetEffort { .. }
         | C::BrowserNav { .. }
         | C::BrowserNewTab { .. }
@@ -514,6 +515,7 @@ mod tests {
             Command::Unqueue { session: 1, text: "x".into() },
             Command::SendNow { session: 1, texts: vec![] },
             Command::StopCommand { session: 1 },
+            Command::StopSubagent { session: 1, id: "h1".into() },
             Command::SetEffort { session: 1, effort: None },
             Command::BrowserNav { page: 1, action: BrowserNavAction::Reload, url: None },
             Command::BrowserNewTab { url: None, profile: None },

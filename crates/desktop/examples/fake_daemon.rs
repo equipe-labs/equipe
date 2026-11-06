@@ -12,6 +12,8 @@
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
+//! `FAKE_HELPERS=1` puts backend on Nemotron with equipe's helpers at work, one looking
+//! stuck (`fake_daemon/helpers.rs`; `codex`: a quiet subagent of Codex's own instead);
 //! `FAKE_WORKING=<n>` has only the first n of frontend and backend at work (`0`: nobody).
 //! `FAKE_COMMAND=working|busy|nothing|asks|stuck|stuck_nothing`: a turn sits on a
 //! command, the daemon's look at it shown (`fake_daemon/command.rs`).
@@ -987,6 +989,8 @@ mod engines;
 mod disk;
 #[path = "fake_daemon/command.rs"]
 mod command;
+#[path = "fake_daemon/helpers.rs"]
+mod helpers;
 
 #[path = "fake_daemon/switching.rs"]
 mod switching;
@@ -1217,6 +1221,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         let mut backend = backend;
                         backend.effort = Some("high".into());
+                        if let Some(mode) = helpers::mode() {
+                            helpers::dress(&mut backend, mode == "codex");
+                            static HELPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                            if mode != "codex" && !HELPING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                tokio::spawn(helpers::play(events.clone()));
+                            }
+                        }
                         let mut frontend = frontend;
                         frontend.recent.extend(disk::failed_build());
                         if subagents_on() {
@@ -1563,6 +1574,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     task.abort();
                                 }
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
+                            }
+                            // Only that subagent: a helper hands back what it had.
+                            Command::StopSubagent { session, id } => {
+                                tokio::spawn(helpers::stopped(session, id, events.clone()));
                             }
                             // Only the command: its step fails, and the turn goes on to its end.
                             Command::StopCommand { session } => {
