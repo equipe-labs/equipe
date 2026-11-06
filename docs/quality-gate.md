@@ -77,7 +77,9 @@ For each run it:
 4. puts the task to them as the person would: a ticket on the board, or a message;
 5. plays the person: allows what members ask permission for, answers their
    questions with the option they recommend, declines team changes, secrets
-   and routines;
+   and routines, and answers a ticket put down for them (`block_on_person`)
+   that it has nothing more than the ticket and the project — twice for a
+   ticket, then it leaves it waiting;
 6. waits until nobody is at work, then grades what is left — the board, each
    ticket's record, the worktree, members' words — and reads each member's
    Claude Code transcript for the rules.
@@ -153,8 +155,9 @@ is in play: no foreground `sleep` attempted, no `equipe browser`, no guard
 refusal, `estimate` called on ticket work of more than three minutes, the
 hand-in through `submit_for_review`, `ask_decision` options with one marked
 `recommended`, no use of the engine's own question tool, no reply ending on a
-numbered list of questions, and every skill the situation called for opened in
-time (the trigger rules are `equipe_core::quality::skill_checks`).
+numbered list of questions, every skill the situation called for opened in
+time (the trigger rules are `equipe_core::quality::skill_checks`), and no
+ticket put down for the person — no task needs more from them than its ticket.
 
 ### Running it
 

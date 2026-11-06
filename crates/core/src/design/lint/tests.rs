@@ -227,7 +227,46 @@ fn the_edit_time_check_hands_back_the_floor_failures_in_what_was_just_written() 
 }
 
 fn verdict(pass: bool, at: u64, first: bool) -> record::Verdict {
-    record::Verdict { pass, fixes: if pass { vec![] } else { vec![record::Fix { place: "hero".into(), what: "the headline wraps badly at 360".into(), why: String::new() }] }, summary: "x".into(), at, by: "claude".into(), widths: vec![360, 1280], first }
+    record::Verdict { pass, fixes: if pass { vec![] } else { vec![record::Fix { place: "hero".into(), what: "the headline wraps badly at 360".into(), why: String::new() }] }, summary: "x".into(), at, by: "claude".into(), widths: vec![360, 1280], first, ..Default::default() }
+}
+
+#[test]
+fn directions_explored_are_left_to_the_direction_log_and_only_shipping_files_wait_for_a_check() {
+    let root = project(&[("design/directions/ledger/index.html", CLEAN_HTML), ("design/directions/ledger/styles.css", "a {}"), ("index.html", CLEAN_HTML)]);
+    let design = std::fs::canonicalize(root.join("design")).unwrap();
+    for f in ["design/directions/ledger/index.html", "design/directions/ledger/styles.css"] {
+        record::note_edit(&design, &root.join(f), true).unwrap();
+    }
+    assert!(record::hand_in(&design).is_empty(), "an explored direction isn't what ships: {:?}", record::hand_in(&design));
+    record::note_edit(&design, &root.join("index.html"), true).unwrap();
+    let said = record::hand_in(&design);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("index.html") && said[0].contains("`equipe design lint index.html --render --screen index`") && said[0].contains("`equipe design second-look index`"), "the file, the rule and the exact commands: {said:?}");
+}
+
+#[test]
+fn a_check_kept_by_another_design_folder_still_clears_the_edit_where_the_hand_in_looks() {
+    let root = project(&[("site/index.html", CLEAN_HTML), ("design/directions/a/tokens.json", TOKENS)]);
+    let design = std::fs::canonicalize(root.join("design")).unwrap();
+    let file = std::fs::canonicalize(root.join("site/index.html")).unwrap();
+    record::note_edit(&design, &file, true).unwrap();
+    // Checked against another system (`--design design/directions/a`): the
+    // check is kept where the hand-in looks all the same.
+    let other = design.join("directions/a");
+    assert_eq!(record::ledger_home(&other, std::slice::from_ref(&file)), design);
+    assert_eq!(record::ledger_home(&other, &[]), design, "a design folder inside another keeps its checks in the outer one");
+    let lone = project(&[]);
+    let lone = std::fs::canonicalize(lone.join("design")).unwrap();
+    assert_eq!(record::ledger_home(&lone, &[]), lone);
+    // A check an older equipe kept in the other folder is named in the refusal.
+    let mut report = Report { widths: vec![360], ..Report::default() };
+    report.checked.push("contrast".into());
+    let rec = record::of(&other, "landing/home", &report, std::slice::from_ref(&file), None, true);
+    record::write(&other, &rec).unwrap();
+    let said = record::hand_in(&design);
+    assert!(said.len() == 1 && said[0].contains("design/directions/a/checks/") && said[0].contains("--screen landing/home"), "{said:?}");
+    assert_eq!(record::record_home(&other, "landing/home"), other, "a second look finds the record where it is");
+    assert_eq!(record::record_home(&other, "nowhere"), design);
 }
 
 #[test]

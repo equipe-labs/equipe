@@ -208,11 +208,13 @@ pub async fn lint(args: LintArgs) -> Result<(), String> {
         (pages.len() == 1).then(|| pages[0].to_string_lossy().into_owned())
     });
     let screen = screen_name(args.screen.as_deref(), target.as_deref().unwrap_or_else(|| args.paths.first().map_or("page", String::as_str)));
+    // Checked against `design`'s system; kept where the hand-in looks.
+    let ledger = record::ledger_home(&design, &files);
     if args.render {
         let Some(target) = &target else {
             return Err("--render draws one page: give one HTML file, or the running page with --url http://localhost:…".into());
         };
-        let mut measured = draw(target, &widths(&args.widths)?, &record::pictures_dir(&design, &screen)).await?;
+        let mut measured = draw(target, &widths(&args.widths)?, &record::pictures_dir(&ledger, &screen)).await?;
         // Findings name the page as it was given, not as Chrome opened it.
         measured.url = target.clone();
         render::judge(&measured, &mut report);
@@ -224,11 +226,11 @@ pub async fn lint(args: LintArgs) -> Result<(), String> {
     let mut summary = report.summary();
     summary.screen = Some(screen.clone());
     if args.render {
-        let new = record::note_check(&design, &screen, &files).unwrap_or(false);
-        let before = record::read(&design, &screen);
+        let new = record::note_check(&ledger, &screen, &files).unwrap_or(false);
+        let before = record::read(&ledger, &screen);
         let was_new = new || before.as_ref().is_some_and(|b| b.new);
-        let kept = record::of(&design, &screen, &report, &files, before, was_new);
-        let file = record::write(&design, &kept).map_err(|e| format!("{}: {e}", design.display()))?;
+        let kept = record::of(&ledger, &screen, &report, &files, before, was_new);
+        let file = record::write(&ledger, &kept).map_err(|e| format!("{}: {e}", ledger.display()))?;
         summary.record = Some(file.to_string_lossy().into_owned());
     }
     if args.json {
@@ -290,7 +292,9 @@ fn hook(ledger: bool) -> Result<(), String> {
 pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
     let design = args.design.clone().unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR));
     let screen = record::safe(&args.screen);
-    let mut rec = record::read(&design, &screen).ok_or_else(|| format!("{screen} has no check: `equipe design lint <file> --render --screen {screen}` first"))?;
+    // The record where lint kept it: the hand-in's folder, whatever system it was checked against.
+    let ledger = record::record_home(&design, &screen);
+    let mut rec = record::read(&ledger, &screen).ok_or_else(|| format!("{screen} has no check: `equipe design lint <file> --render --screen {screen}` first"))?;
     if !rec.rendered {
         return Err(format!("{screen} was only read: check it with --render so there are pictures to look at"));
     }
@@ -343,7 +347,7 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
     } else {
         rec.verdict = Some(verdict.clone());
     }
-    record::write(&design, &rec).map_err(|e| format!("{}: {e}", design.display()))?;
+    record::write(&ledger, &rec).map_err(|e| format!("{}: {e}", ledger.display()))?;
     print!("{}", second_look::text(&verdict));
     if !verdict.pass {
         println!("Fix these, check again with `equipe design lint … --render --screen {screen}`, and ask for another look.");

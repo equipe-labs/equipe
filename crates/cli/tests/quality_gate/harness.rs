@@ -71,6 +71,38 @@ pub struct Person {
     pub team_changes: usize,
     pub secrets: usize,
     pub routines: usize,
+    /// Each time a member put a ticket down for the person (`block_on_person`): the ticket and what it asked.
+    pub blocks: Vec<(TicketId, String)>,
+    /// Tickets put down more often than the person answers ([`ANSWERS_PER_TICKET`]): left waiting.
+    pub left_waiting: Vec<TicketId>,
+}
+
+/// How often the automatic person answers one ticket's `block_on_person`
+/// before it leaves the ticket waiting, as a person who has nothing more to give would.
+pub const ANSWERS_PER_TICKET: usize = 2;
+
+/// What the automatic person says to a ticket put down for them: it has
+/// nothing more than the task gave, so the member goes on with what it has.
+pub const NOTHING_MORE: &str = "I have nothing more to give you than the ticket and the project: use your judgement, go on, and say in your hand-in what you assumed.";
+
+impl Person {
+    /// What to do about `ticket` as it now is: `Some(note)` to resume it with,
+    /// once for each time it is put down, up to [`ANSWERS_PER_TICKET`].
+    pub fn on_ticket(&mut self, ticket: &Ticket) -> Option<&'static str> {
+        if ticket.status != equipe_core::protocol::TicketStatus::Waiting || ticket.assignee.is_none() {
+            return None;
+        }
+        let asked = ticket.note.clone().unwrap_or_default();
+        if self.blocks.iter().any(|(id, a)| *id == ticket.id && *a == asked) || self.left_waiting.contains(&ticket.id) {
+            return None;
+        }
+        if self.blocks.iter().filter(|(id, _)| *id == ticket.id).count() >= ANSWERS_PER_TICKET {
+            self.left_waiting.push(ticket.id);
+            return None;
+        }
+        self.blocks.push((ticket.id, asked));
+        Some(NOTHING_MORE)
+    }
 }
 
 /// What a run's members did, as the daemon told it.
@@ -99,6 +131,13 @@ impl State {
     /// The tickets `role` worked or owns.
     pub fn tickets_of<'a>(&'a self, role: &'a str) -> impl Iterator<Item = &'a Ticket> + 'a {
         self.tickets.values().filter(move |t| t.assignee.as_deref().is_some_and(|a| a == role || a.starts_with(&format!("{role}-"))) || t.owner.as_deref() == Some(role))
+    }
+
+    /// Whether `role`'s work is over for the grader: handed in, done or
+    /// cancelled, or waiting on the person after they had nothing more to give.
+    pub fn settled(&self, role: &str) -> bool {
+        use equipe_core::protocol::TicketStatus as S;
+        self.tickets_of(role).any(|t| matches!(t.status, S::Review | S::Done | S::Cancelled) || (t.status == S::Waiting && self.person.left_waiting.contains(&t.id)))
     }
 
     /// The replies `role` finished, oldest first.
@@ -338,6 +377,9 @@ impl Run {
             }
             Event::TicketChanged { ticket, .. } => {
                 s.tickets.insert(ticket.id, ticket.clone());
+                if let Some(note) = s.person.on_ticket(ticket) {
+                    self.commands.send(Command::Resume { squad: SQUAD.into(), ticket: ticket.id, note: note.into() });
+                }
             }
             Event::TextDelta { session, text } => s.current.entry(*session).or_default().push_str(text),
             Event::TurnEnded { session, usage, .. } => {

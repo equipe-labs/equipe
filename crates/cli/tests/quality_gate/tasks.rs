@@ -145,7 +145,7 @@ pub async fn play(task: &Task, run: &mut Run, fx: &Fixture) {
     }
     let repo = fx.repo.as_deref();
     let role = task.role;
-    let settled = move |s: &crate::harness::State| s.tickets_of(role).any(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Done | TicketStatus::Waiting | TicketStatus::Cancelled));
+    let settled = move |s: &crate::harness::State| s.settled(role);
     match task.name {
         "backend-fix-failing-test" => {
             run.ticket("backend", repo, TicketKind::Code, "Fix the failing mean test", "`python3 -m unittest` fails: `test_mean` expects `mean([1, 2])` to be 1.5. Fix the bug in `stats.py` — the test is right.\n\nAcceptance criteria:\n- `python3 -m unittest` passes\n- only `stats.py` changes");

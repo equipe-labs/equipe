@@ -2858,6 +2858,37 @@ async fn a_designer_hands_a_screen_in_only_once_it_was_checked_and_seen_fresh() 
     handle.shutdown().await;
 }
 
+#[tokio::test]
+async fn the_same_refusal_twice_hands_the_work_in_with_the_gap_marked_and_the_pm_told() {
+    let site = named("site");
+    let pending = r#"{"edited":[{"path":"design/mockups/home.html","at":1,"created":true}],"checked":[]}"#;
+    let (claude, _recorded) = recording_claude(&writing_turn("design/checks/pending.json", pending));
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Home", "body": "A first screen.", "owner": "designer", "kind": "task" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    let ledger = ws.path.join("design/checks/pending.json");
+    for _ in 0..100 {
+        if ledger.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let first = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(first.is_error && first.text.contains("design/mockups/home.html was edited and not checked") && first.text.contains("again the same way"), "it says what a second time does: {first:?}");
+    // Nothing changed: the second refusal would be the first's again. It
+    // goes in, with what wasn't cleared marked for the person, and the PM hears.
+    let second = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(!second.is_error && second.text.contains("Handed in T-1") && second.text.contains("marked"), "{second:?}");
+    let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("T-1") && text.contains("not cleared"))).await;
+    assert!(!told.is_empty());
+    handle.shutdown().await;
+}
+
 /// A ticket's turn that writes `file` (relative to its worktree) with `text`.
 fn writing_turn(file: &str, text: &str) -> String {
     format!(

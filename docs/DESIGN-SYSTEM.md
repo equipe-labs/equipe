@@ -226,7 +226,19 @@ On Claude Code, a designer's and a frontend engineer's skills plugin has a
 just written and handed back in the same turn. A designer's edits are also
 written to `design/checks/pending.json`, and its hand-in is refused until each
 was drawn and checked, passed the floor, and had a passing second look after
-the check (a new screen's first screenful looked at first).
+the check (a new screen's first screenful looked at first). The directions it
+explored (`design/directions/`) are left to the directions' log: only what
+ships waits for a check. A check is kept where the hand-in looks — the design
+folder nearest the files checked — whichever system `--design` checked them
+against; a refusal names each file, the rule and the exact commands, and says
+when a check was kept in another folder. Refused the same way a second time,
+the work goes in with what wasn't cleared marked in its hand-in for the person,
+and the PM is told: a check that can't be cleared is theirs to see, not a loop.
+
+The second look asks only for facts the brief, the project's files or the
+design system give. A fact none of them has is an open question with neutral
+wording to use meanwhile, never a fix: it doesn't hold a pass, and the designer
+uses the wording or asks with `ask_decision` while it carries on.
 
 ## Remixing references — the `design` tools (equipe-design)
 

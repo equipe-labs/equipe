@@ -48,6 +48,21 @@ pub struct Verdict {
     pub widths: Vec<u32>,
     /// It saw the first screenful alone (a new screen's, before the rest is built).
     pub first: bool,
+    /// Facts the screen needs that neither the brief, the project's files nor
+    /// the design system give: asked, never a fix — each with neutral wording
+    /// the screen can use until someone answers.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<Question>,
+}
+
+/// A fact the second look found missing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Question {
+    /// What is missing: the save control's name, the launch date.
+    pub what: String,
+    /// What the screen can say meanwhile, without the fact.
+    pub wording: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,9 +200,29 @@ pub fn ledger_name(design: &Path, file: &Path) -> String {
     real.strip_prefix(&root).map_or_else(|_| real.to_string_lossy().into_owned(), |p| p.to_string_lossy().into_owned())
 }
 
-/// Not the design's own bookkeeping, nor its generated sheets.
+/// Where checks are kept and the hand-in looks for them: the design folder
+/// the edit-time check writes edits down in — the one nearest the files
+/// checked (or, with none, the one `design` sits in) — whichever design
+/// system they were checked against (`--design`). Only a folder with no
+/// design folder above it is its own.
+pub fn ledger_home(design: &Path, files: &[PathBuf]) -> PathBuf {
+    files.iter().find_map(|f| super::design_dir_of(f)).or_else(|| design.parent().and_then(super::design_dir_of).filter(|home| home != design && design.starts_with(home))).unwrap_or_else(|| design.to_path_buf())
+}
+
+/// Where `screen`'s check record is: in `design` when it is there, else
+/// where the hand-in looks ([`ledger_home`]).
+pub fn record_home(design: &Path, screen: &str) -> PathBuf {
+    if path(design, screen).is_file() {
+        return design.to_path_buf();
+    }
+    ledger_home(design, &[])
+}
+
+/// Not the design's own bookkeeping, nor its generated sheets, nor the
+/// directions explored before one was chosen (`design/directions/`): those
+/// are kept by the directions' log, and what ships is checked on its own.
 fn tracked(name: &str) -> bool {
-    let skip = ["design/checks/", "design/audit/", "design/critiques/", "design/qa/", "design/build/", "design/references/", "node_modules/"];
+    let skip = ["design/checks/", "design/audit/", "design/critiques/", "design/qa/", "design/build/", "design/references/", "design/directions/", "node_modules/"];
     !skip.iter().any(|s| name.starts_with(s) || name.contains(&format!("/{s}"))) && !name.contains("specimen") && !super::is_token_file(Path::new(name))
 }
 
@@ -229,8 +264,23 @@ pub fn note_check(design: &Path, screen: &str, files: &[PathBuf]) -> std::io::Re
 pub fn hand_in(design: &Path) -> Vec<String> {
     let pending = read_pending(design);
     let mut out = Vec::new();
+    let root = design.parent().unwrap_or(design);
     for e in &pending.edited {
-        out.push(format!("{} was edited and not checked: `equipe design lint {} --render --screen <flow/screen>`, then `equipe design second-look <flow/screen>`.", e.path, e.path));
+        let file = root.join(&e.path);
+        let elsewhere = checked_elsewhere(design, &file);
+        let screen = elsewhere.as_ref().map(|(_, s)| s.clone()).or_else(|| screen_of(design, &file)).unwrap_or_else(|| {
+            let stem = Path::new(&e.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            safe(if stem.is_empty() { "page" } else { &stem })
+        });
+        let mut line = format!(
+            "{} was edited and not checked since (every UI file a hand-in ships is drawn and checked first): run `equipe design lint {} --render --screen {screen}`, then `equipe design second-look {screen}`.",
+            e.path, e.path
+        );
+        if let Some((other, _)) = elsewhere {
+            let shown = |d: &Path| d.strip_prefix(root).map_or_else(|_| d.display().to_string(), |p| p.display().to_string());
+            line.push_str(&format!(" A check of it was kept in `{}/{DIR}/`, not in `{}/{DIR}/` where the hand-in looks: run it again without `--design`.", shown(&other), shown(design)));
+        }
+        out.push(line);
     }
     for screen in &pending.checked {
         let Some(record) = read(design, screen) else {
@@ -263,6 +313,66 @@ pub fn hand_in(design: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// The records under `design/checks/`, each with its screen.
+fn records_in(design: &Path) -> Vec<Record> {
+    let mut out = Vec::new();
+    let mut stack = vec![design.join(DIR)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "json") && p.file_name().is_some_and(|n| n != PENDING) {
+                if let Some(r) = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Record>(&t).ok()).filter(|r| !r.screen.is_empty()) {
+                    out.push(r);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `record` (kept by `design`) checked `file`, by its real path.
+fn covers(design: &Path, record: &Record, file: &Path) -> bool {
+    let root = design.parent().unwrap_or(design);
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let file = real(file);
+    record.files.iter().any(|s| real(&root.join(&s.path)) == file)
+}
+
+/// The screen a check in `design` last drew `file` as.
+fn screen_of(design: &Path, file: &Path) -> Option<String> {
+    records_in(design).into_iter().filter(|r| covers(design, r, file)).max_by_key(|r| r.at).map(|r| r.screen)
+}
+
+/// A check of `file` kept by another design folder in the same work — one
+/// `--design` pointed at — and its screen.
+fn checked_elsewhere(design: &Path, file: &Path) -> Option<(PathBuf, String)> {
+    let root = design.parent().unwrap_or(design);
+    let mut found = None;
+    let mut stack = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = e.file_name();
+            if !p.is_dir() || name == ".git" || name == "node_modules" || depth > 6 {
+                continue;
+            }
+            if name == DIR && p.parent() != Some(design) {
+                let other = p.parent().unwrap_or(root).to_path_buf();
+                if let Some(r) = records_in(&other).into_iter().filter(|r| covers(&other, r, file)).max_by_key(|r| r.at) {
+                    found = Some((other, r.screen));
+                }
+                continue;
+            }
+            stack.push((p, depth + 1));
+        }
+    }
+    found
 }
 
 /// After a hand-in: the next ticket starts with nothing pending.

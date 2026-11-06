@@ -133,6 +133,7 @@ pub const METRICS: &[&str] = &[
     "no engine question tool",
     "no numbered questions in prose",
     "skills opened in time",
+    "no block on the person",
 ];
 
 /// A member's steps from the daemon's events, when there is no transcript
@@ -216,6 +217,9 @@ pub fn compliance(task: &Task, out: &Outcome) -> (BTreeMap<String, Option<bool>>
     put("no engine question tool", acted.then_some(rules.engine_questions == 0));
     put("no numbered questions in prose", acted.then_some(rules.prose_questions == 0));
     put("skills opened in time", (!skills.is_empty()).then(|| skills.iter().all(|c| c.opened.in_time())));
+    // No task needs the person beyond its ticket: each put-down is counted.
+    let blocked = out.state.person.blocks.iter().filter(|(id, _)| out.state.tickets_of(task.role).any(|t| t.id == *id)).count();
+    put("no block on the person", worked_ticket.then_some(blocked == 0));
     (m, skills, rules)
 }
 
@@ -883,6 +887,37 @@ fn the_reviewer_sees_the_tickets_own_mockups_not_check_renders_or_another_ticket
     let seen = tasks::mockups(&out, Some(&ticket), png);
     assert_eq!(seen, [worktree.join("outputs/T-1 Empty/mockup/empty.png"), worktree.join("outputs/T-1 Empty/options/a.png")], "mockups first; no check renders, nothing of T-2");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_automatic_person_answers_a_ticket_put_down_for_them_twice_then_leaves_it_waiting() {
+    use equipe_core::protocol::{Ticket, TicketStatus};
+    let waiting = |note: &str| -> Ticket {
+        serde_json::from_value(json!({
+            "id": 1, "title": "Empty", "body": "", "status": "waiting", "kind": "task", "owner": null, "assignee": "designer",
+            "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": note,
+        }))
+        .unwrap()
+    };
+    let mut state = State::default();
+    let first = waiting("Waiting on you:\n- [ ] the save control's name");
+    assert_eq!(state.person.on_ticket(&first), Some(harness::NOTHING_MORE));
+    assert_eq!(state.person.on_ticket(&first), None, "the same put-down is answered once");
+    state.tickets.insert(1, first.clone());
+    assert!(!state.settled("designer"), "answered: the member goes on");
+    assert!(state.person.on_ticket(&waiting("Waiting on you:\n- [ ] say \"not designed yet\"")).is_some());
+    assert_eq!(state.person.on_ticket(&waiting("Waiting on you:\n- [ ] a third thing")), None, "after two answers it waits, as a person with nothing more would");
+    assert!(state.settled("designer"), "and the run can end on it");
+    assert_eq!(state.person.blocks.len(), 2);
+    let working = Ticket { status: TicketStatus::InProgress, ..waiting("x") };
+    assert_eq!(State::default().person.on_ticket(&working), None);
+    // The rule metric counts each put-down of the member's own tickets.
+    let t = task("designer-empty-state");
+    let mut out = outcome_with(&scratch("blocks"), Ticket { status: TicketStatus::Review, ..first });
+    out.state.person.blocks.push((1, "x".into()));
+    assert_eq!(compliance(&t, &out).0.get("no block on the person"), Some(&Some(false)));
+    out.state.person.blocks.clear();
+    assert_eq!(compliance(&t, &out).0.get("no block on the person"), Some(&Some(true)));
 }
 
 #[test]
