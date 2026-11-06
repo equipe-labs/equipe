@@ -140,8 +140,15 @@ to {} minutes, then saying which still work. Each answer comes word for word, wi
 }
 
 /// What a member whose engine has no subagents is told about helpers, in
-/// place of the words about its engine's own subagents.
-pub fn charter_paragraph() -> String {
+/// place of the words for no subagents ([`crate::roles`]): reading and
+/// checking to helpers, big changes to teammates through tickets — the PM
+/// putting them on the board (`pm`), any other proposing them.
+pub fn charter_paragraph(pm: bool) -> String {
+    let tickets = if pm {
+        "put each on a ticket of its own with `create_ticket`, for teammates who work at once"
+    } else {
+        "propose each as a ticket of its own with `create_ticket`, for the PM to hand to teammates who work at once"
+    };
     format!(
         "Your engine has no subagents of its own; equipe gives you helpers instead (`{SPAWN_HELPER}`, `{HELPER_RESULT}`). \
 A helper is a short-lived agent on your own model, in your working folder, that only reads: it searches, reads files and \
@@ -152,7 +159,10 @@ checking a change against the tests or the spec — several at once when the par
 you ruled out, what to hand back. Keep every edit yourself: helpers never change files, and you put their answers together \
 and check them before you rely on them. While they work, go on with what doesn't need their answers, then collect every \
 answer with `{HELPER_RESULT}` before you end your turn — helpers stop when it ends. Look yourself at what is quicker to read \
-than to describe. The person sees each helper at work under your name, so give each a few plain words (`what`)."
+than to describe. The person sees each helper at work under your name, so give each a few plain words (`what`). \
+Working in parallel is the squad's strength: anything that would take you alone more than about 20 minutes and changes \
+many files — a big ticket, a broad change — you split into parts that don't depend on each other and {tickets}, each told \
+exactly its part; you work through your own part in order."
     )
 }
 

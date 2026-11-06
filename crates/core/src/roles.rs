@@ -505,7 +505,7 @@ describe each in a few plain words. {cap}",
             cap = sub.cap(),
         ),
         // No subagents of its own, and equipe's helpers in their place.
-        None if ctx.helpers => crate::helpers::charter_paragraph(),
+        None if ctx.helpers => crate::helpers::charter_paragraph(role.id == PM),
         None => {
             let tickets = match (ctx.board_tools, role.id == PM) {
                 (true, true) => "put each on a ticket of its own with `create_ticket`, for teammates who work at once",
@@ -1925,10 +1925,12 @@ invent one."), "{id}: true numbers");
                 "several at once when the parts don't depend on each other (up to 3 run at once; more wait their turn)",
                 "Keep every edit yourself: helpers never change files",
                 "collect every answer with `helper_result` before you end your turn",
+                "more than about 20 minutes and changes many files",
+                if r.id == PM { "put each on a ticket of its own with `create_ticket`" } else { "propose each as a ticket of its own with `create_ticket`, for the PM to hand to teammates who work at once" },
             ] {
                 assert!(helped.contains(part), "{}: {part}", r.id);
             }
-            for gone in ["your Agent tool", "`spawn_agent`", "subagents at once", "Your engine has no subagents:", "you work through your own part in order"] {
+            for gone in ["your Agent tool", "`spawn_agent`", "subagents at once", "Your engine has no subagents:", "one piece after another"] {
                 assert!(!helped.contains(gone), "{}: helpers in place of the words for no subagents: {gone}", r.id);
             }
             // With no helpers either (no board tools), the words for no subagents, as main has them.

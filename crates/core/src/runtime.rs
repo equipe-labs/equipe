@@ -84,6 +84,7 @@ mod review;
 mod retro;
 mod watch;
 mod helping;
+mod providers;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -544,6 +545,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_reading: false,
         codex_models: None,
         codex_listing: false,
+        providers: HashMap::new(),
         questions: HashMap::new(),
         team_changes: HashMap::new(),
         routine_proposals: HashMap::new(),
@@ -870,6 +872,8 @@ enum Internal {
     /// The Codex CLI's models, as just listed off the loop for the screens;
     /// `None`: they couldn't be.
     CodexModels(Option<Vec<codex_app::ModelInfo>>),
+    /// A model provider's models, as just listed off the loop, or why not.
+    ProviderListed { id: String, result: Result<Vec<String>, crate::nemotron::ReviewError> },
     /// Whether Claude is signed in, as just looked at off the loop.
     ClaudeReady(bool),
     /// A squad's design systems looked at off the loop: their stamp, and —
@@ -1004,6 +1008,8 @@ struct Runtime {
     codex_models: Option<(std::time::Instant, Vec<codex_app::ModelInfo>)>,
     /// A listing for the screens is under way.
     codex_listing: bool,
+    /// What each model provider connected here listed, by its id.
+    providers: HashMap<String, providers::Listed>,
     /// The Mac's screen, one member at a time, across squads.
     desktop: desktop::Desktop,
     /// Members' questions waiting for the person, by squad (`decide`).
@@ -1132,6 +1138,7 @@ impl Wake {
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::CodexModels(_)) => Borrowed("the Codex models listed"),
+            Wake::Internal(Internal::ProviderListed { .. }) => Borrowed("a provider's models listed"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
@@ -1341,9 +1348,11 @@ impl Runtime {
                         self.publish(Event::Models { engine: Engine::Codex, models: choices });
                     }
                 }
+                Internal::ProviderListed { id, result } => self.provider_listed(id, result),
                 Internal::InstallEnded(engine) => {
                     self.installs.remove(&engine);
                     self.publish_nebius();
+                    self.publish_providers();
                 }
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
@@ -1865,6 +1874,19 @@ impl Runtime {
             }
             Command::SetModel { session, model } => {
                 let model = model.trim().to_owned();
+                // A provider's model runs on Codex's agent: a member on Claude Code moves there.
+                if crate::model_providers::split_ref(&model).is_some()
+                    && let Some(s) = self.sessions.get(&session).filter(|s| s.engine != Engine::Codex)
+                {
+                    match (s.squad.clone(), s.name().map(str::to_owned)) {
+                        (Some(squad), Some(name)) => self.move_to_model(&squad, name, session, model).await,
+                        _ => {
+                            let provider = self.on_provider(&model).map(|(_, p)| p).unwrap_or_default();
+                            self.error(Some(session), say!(self, "error.provider_model_codex", provider = provider), None);
+                        }
+                    }
+                    return;
+                }
                 if let Some(s) = self.sessions.get_mut(&session).filter(|_| !model.is_empty()) {
                     s.model = Some(model.clone());
                     // Its engine names what this runs as at its next turn.
@@ -2000,6 +2022,10 @@ impl Runtime {
                 self.publish_nebius();
             }
             Command::SetNebiusKey { key } => self.set_nebius_key(key),
+            Command::Providers => self.providers_asked(),
+            Command::AddProvider { preset, base_url, key } => self.add_provider(preset, base_url, key.map(|k| k.0)),
+            Command::TestProvider { id } => self.test_provider(id),
+            Command::RemoveProvider { id } => self.remove_provider(id),
             Command::SignIn { engine, device } => self.sign_in(engine, device),
             Command::SignInCancel { engine } => {
                 if let Some((_, task)) = self.sign_ins.remove(&engine) {
@@ -2083,13 +2109,16 @@ impl Runtime {
         let done = match key {
             Some(key) if !crate::nemotron::key_is_plausible(&key) => Err(say!(self, "error.nebius_key_invalid")),
             Some(key) => crate::nemotron::save_key(&home, &key).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
-            None => crate::nemotron::forget_key(&home).map(|_| ()).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
+            // Off the providers' list too, where it is Nebius's entry.
+            None => crate::model_providers::remove(&home, crate::model_providers::NEBIUS).map(|_| ()).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
         };
         if let Err(why) = done {
             self.error(None, why, None);
         }
+        self.providers.remove(crate::model_providers::NEBIUS);
         self.config.nemotron = crate::nemotron::Config::from_env_or_saved(&home).ok();
         self.publish_nebius();
+        self.publish_providers();
     }
 
     /// The engines as just looked at, with who is on each and the sign-ins
@@ -2814,8 +2843,16 @@ runbooks and reports live there, and work across the projects or on running them
             (None, None) => {}
         }
 
-        // NVIDIA's models on Nebius Token Factory run on Codex's agent (`nemotron`).
-        let mut on_nebius = spec.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+        // The role set to a provider's model (`@openrouter/…`): on it, whichever
+        // engine the screen set it for — it runs on Codex's agent either way.
+        let role_open = match (&squad, role, &spec.model, spec.engine) {
+            (Some(squad), Some(role), None, None) => self
+                .journal(squad)
+                .and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.model.as_deref().and_then(crate::model_providers::split_ref).is_some())),
+            _ => None,
+        };
+        // NVIDIA's models on Nebius Token Factory, and every provider's, run on Codex's agent (`nemotron`).
+        let mut on_nebius = spec.model.as_deref().or(role_open.as_ref().and_then(|d| d.model.as_deref())).is_some_and(crate::nemotron::is_agent_model);
         let engine = match spec.engine {
             // Named, but nothing at all is signed in: Nemotron, rather than failing.
             Some(_) if !on_nebius && self.nebius_ready() && self.nothing_signed_in().await => {
@@ -2852,7 +2889,11 @@ runbooks and reports live there, and work across the projects or on running them
         let codex_cli = engine == Engine::Codex && codex_app::find(&self.config.codex_binary).is_some();
         on_nebius &= engine == Engine::Codex;
         if on_nebius && !codex_cli {
-            return fail(self, say!(self, "error.nebius_needs_codex"), Some(crate::engines::installer(Engine::Codex)));
+            let message = match spec.model.as_deref().or(role_open.as_ref().and_then(|d| d.model.as_deref())).and_then(|m| self.on_provider(m)) {
+                Some((_, provider)) => say!(self, "error.provider_needs_codex", provider = provider),
+                None => say!(self, "error.nebius_needs_codex"),
+            };
+            return fail(self, message, Some(crate::engines::installer(Engine::Codex)));
         }
         if spec.access == Access::EditFiles && engine == Engine::Codex && !codex_cli {
             return fail(self, say!(self, "error.codex_edits"), Some("codex login"));
@@ -2860,6 +2901,7 @@ runbooks and reports live there, and work across the projects or on running them
 
         // What the person set for the role on this engine, if anything.
         let role_default = match (&squad, role) {
+            _ if role_open.is_some() && engine == Engine::Codex => role_open,
             (Some(squad), Some(role)) => self.journal(squad).and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.engine == engine)),
             _ => None,
         };
@@ -2878,8 +2920,10 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                 }
                 if on_nebius {
-                    let Some(cfg) = self.config.nemotron.clone() else {
-                        return fail(self, say!(self, "error.nebius_no_key"), Some("equipe login nebius"));
+                    let cfg = match self.open_config(model.as_deref()) {
+                        Ok(Some(cfg)) => cfg,
+                        Ok(None) => return fail(self, say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                        Err(message) => return fail(self, message, None),
                     };
                     if !model.as_deref().is_some_and(crate::nemotron::is_agent_model) {
                         let picked = match tokio::time::timeout(SERVER_WAIT, crate::nemotron::agent_model(&cfg)).await {
@@ -3078,12 +3122,23 @@ runbooks and reports live there, and work across the projects or on running them
         self.publish(Event::SessionStarted { session: id, project, engine, model: model.clone(), workspace, member, squad: squad.clone() });
         if on_nebius {
             let model = model.unwrap_or_default();
+            let named = self.on_provider(&model);
             let text = match &self.config.nemotron {
+                // A provider the person connected, by name.
+                _ if named.is_some() => {
+                    let (shown, provider) = named.clone().unwrap_or_default();
+                    let nemotron = crate::model_providers::split_ref(&model).is_some_and(|(p, m)| p == crate::model_providers::NEBIUS && m.to_ascii_lowercase().starts_with("nvidia/"));
+                    if nemotron { say!(self, "notice.on_nebius", model = shown) } else { say!(self, "notice.on_open_model", model = shown, provider = provider) }
+                }
                 // Token Factory and one of NVIDIA's: Nemotron, said as such.
                 Some(cfg) if cfg.provider == crate::nemotron::CODEX_PROVIDER && model.to_ascii_lowercase().starts_with("nvidia/") => say!(self, "notice.on_nebius", model = model),
                 Some(cfg) => say!(self, "notice.on_open_model", model = model, provider = cfg.provider_name.clone()),
                 None => say!(self, "notice.on_nebius", model = model),
             };
+            self.publish(Event::Notice { session: id, text });
+            // What it can't do there yet, so the person isn't surprised.
+            let provider = named.map(|(_, p)| p).or_else(|| self.config.nemotron.as_ref().map(|c| c.provider_name.clone())).unwrap_or_else(|| crate::nemotron::PROVIDER_NAME.to_owned());
+            let text = say!(self, "notice.provider_limits", provider = provider);
             self.publish(Event::Notice { session: id, text });
         }
         // A new member may be just who a waiting ticket needs.
@@ -3973,19 +4028,24 @@ for one project goes to it as tickets for its owners, with that project — and 
             Engine::Codex if session.codex.is_none() => {
                 let binary = self.config.codex_binary.clone();
                 let lang = self.config.lang;
-                let model = session.model.clone();
                 let mut effort = effort_of(session);
-                // NVIDIA's models: Codex's agent with Token Factory as its provider.
-                let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
-                let provider = match (&self.config.nemotron, nebius) {
-                    (Some(cfg), true) => {
+                // NVIDIA's models, and every provider's: Codex's agent with
+                // Token Factory — or the provider the model names — as its provider.
+                let nebius = session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+                let open = if nebius { self.open_config(session.model.as_deref()) } else { Ok(None) };
+                // The provider is asked for the model by its own id.
+                let model = session.model.as_deref().map(|m| crate::model_providers::bare_model(m).to_owned());
+                let provider = match (open, nebius) {
+                    (Ok(Some(cfg)), true) => {
                         env.push(cfg.codex_env());
                         effort = crate::nemotron::agent_effort(effort.as_deref()).map(str::to_owned);
                         Some(cfg.codex_provider())
                     }
-                    (None, true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                    (Ok(None), true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                    (Err(message), true) => return self.error(Some(id), message, None),
                     (_, false) => None,
                 };
+                let provider_name = provider.as_ref().filter(|p| p.id != crate::nemotron::CODEX_PROVIDER).map(|p| p.name.clone());
                 // equipe's servers only, as Claude Code gets them: the board's tools
                 // never ask; the browser's and the desktop's ask unless the mode lets them.
                 let servers = match (&squad, &session.member, &self.config.equipe_binary) {
@@ -4103,7 +4163,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         return;
                     }
                     let thread = outcome.as_ref().ok().and_then(|turn| turn.thread_id.clone());
-                    let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, lang) } else { codex_cli_failure(err, lang) });
+                    let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, provider_name.as_deref(), lang) } else { codex_cli_failure(err, lang) });
                     let lost = !nebius && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Codex));
                     let reply = finish_turn(&emit, id, result, streamed);
                     if lost {
@@ -8262,14 +8322,17 @@ fn nebius_log(model: &str, turn: &codex_app::Turn) -> String {
     )
 }
 
-/// A turn on Token Factory that failed: a refused key is Token Factory's, not Codex's sign-in.
-fn nebius_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
+/// A turn on Token Factory — or another provider, by its name — that failed:
+/// a refused key is the provider's, not Codex's sign-in.
+fn nebius_failure(err: equipe_providers::Error, provider: Option<&str>, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
     let words = crate::i18n::core(lang);
     let message = err.to_string();
     let lower = message.to_ascii_lowercase();
     let refused = matches!(err, equipe_providers::Error::CodexSignedOut) || lower.contains("401") || lower.contains("403") || lower.contains("unauthorized");
-    if refused {
-        return (words.get("error.nebius_unauthorized").to_owned(), Some("https://tokenfactory.nebius.com"));
+    match provider {
+        Some(provider) if refused => return (words.fill("error.provider_unauthorized", &[("provider", provider.to_owned())]), None),
+        None if refused => return (words.get("error.nebius_unauthorized").to_owned(), Some("https://tokenfactory.nebius.com")),
+        _ => {}
     }
     codex_cli_failure(err, lang)
 }
@@ -8506,13 +8569,17 @@ mod tests {
     fn a_turn_on_token_factory_with_its_key_refused_says_whose_key() {
         let lang = crate::i18n::Lang::En;
         // As codex 0.154 reports a 401 from the provider (mock-verified).
-        let refused = equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
-        let (said, next) = nebius_failure(refused, lang);
+        let refused = || equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
+        let (said, next) = nebius_failure(refused(), None, lang);
         assert!(said.contains("Nebius Token Factory refused the key"), "{said}");
         assert_eq!(next, Some("https://tokenfactory.nebius.com"));
-        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, lang).0.contains("NEBIUS_API_KEY"));
-        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), lang);
+        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, None, lang).0.contains("NEBIUS_API_KEY"));
+        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), None, lang);
         assert_eq!(other, ("stream ended".to_owned(), None));
+        // Another provider's key: its own name, and where to replace it.
+        let (said, next) = nebius_failure(refused(), Some("OpenRouter"), lang);
+        assert!(said.contains("OpenRouter refused the key") && said.contains("Settings") && !said.contains("NEBIUS"), "{said}");
+        assert_eq!(next, None);
     }
 
     #[cfg(debug_assertions)]

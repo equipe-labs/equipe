@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>[,<n>]` (its first — or nth, from 0 — subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>` (a lost sign-in's card in the conversation) · `ssearch:<words>` (its search) · `spop:<language|squad|subagents>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>[,<n>]` (its first — or nth, from 0 — subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>` (a lost sign-in's card in the conversation) · `ssearch:<words>` (its search) · `spop:<language|squad|subagents|provider>` (a pop-up) · `padd:<preset>` · `purl:<url>` · `pconnect` (a model provider's form: opened, its address, Connect) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|reply|copy|type:<words>|write:<words>|add|cancel|edit:<n>|remove:<n>|peek:<n>|card:<quote>|<words>|send|close|jump>` (asking about — replying to — the words selected; a card's "Reply", ✕, the pointer on it; a card made at once) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
@@ -686,6 +686,18 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                         input.update(cx, |s, cx| s.set_value(key.trim().to_owned(), window, cx));
                     }
                 }),
+                // `padd:<preset>`: "Add a provider"'s form for it, as its row in the menu opens it;
+                // `purl:<url>` types its address; `pconnect` is its Connect (the key's box is `nebiuskey:`).
+                "padd" => shell.update(cx, |shell, cx| {
+                    if let Some(preset) = equipe_core::model_providers::preset(&arg) {
+                        shell.open_provider_form(preset.id, window, cx);
+                    }
+                }),
+                "purl" => shell.update(cx, |shell, cx| {
+                    let input = shell.settings.provider_url.clone();
+                    input.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                }),
+                "pconnect" => shell.update(cx, |shell, cx| shell.connect_provider(window, cx)),
                 // `keys:words` presses each key as the keyboard would, into what has the keyboard.
                 "keys" => {
                     for ch in arg.chars() {
@@ -1025,6 +1037,7 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                     shell.settings.pop = match arg.as_str() {
                         "squad" => Some(crate::views::settings::Pop::Squad),
                         "subagents" => Some(crate::views::settings::Pop::Subagents),
+                        "provider" => Some(crate::views::settings::Pop::AddProvider),
                         "none" => None,
                         _ => Some(crate::views::settings::Pop::Language),
                     };

@@ -510,6 +510,23 @@ impl Runtime {
         self.apply_engine_moves(squad).await;
     }
 
+    /// The person sets member `name` (on Claude Code) to a provider's
+    /// `model`: it moves to Codex's agent on it at its next boundary, as the
+    /// person's own move does, told on a card that offers to undo it.
+    pub(super) async fn move_to_model(&mut self, squad: &str, name: String, session: SessionId, model: String) {
+        let Some(mate) = self.mates(squad).into_iter().find(|m| m.name == name) else { return };
+        let mv = Move { member: mate.name, role: mate.role, from: mate.engine, to: Engine::Codex, model: Some(model.clone()), effort: None, was_model: mate.model, done: false };
+        let proposal = Proposal { id: equipe_protocol::new_session_id(), why: Why::Person, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![mv], applied: true, proposed_at: now_secs() };
+        self.log_engines(squad, format!("the person set {name} to {model}"));
+        self.engines_of(squad).proposals.push(proposal.clone());
+        self.schedule(squad, &proposal);
+        self.publish(Event::EngineProposed { squad: squad.to_owned(), proposal });
+        let (shown, provider) = self.on_provider(&model).unwrap_or_default();
+        let text = say!(self, "notice.provider_move", model = shown, provider = provider);
+        self.publish(Event::Notice { session, text });
+        self.apply_engine_moves(squad).await;
+    }
+
     pub(super) fn show_engine_setup(&mut self, squad: &str) {
         let mates = self.mates(squad);
         let reach = self.reach();
@@ -634,6 +651,8 @@ impl Runtime {
             return true;
         }
         let model = match (mv.to, mv.model.clone()) {
+            // An open model (a provider's, Nebius's) is its own: not one of the account's.
+            (Engine::Codex, Some(model)) if crate::nemotron::is_agent_model(&model) => Some(model),
             (Engine::Codex, Some(hint)) => self.codex_model(&hint).await,
             (_, model) => model,
         };

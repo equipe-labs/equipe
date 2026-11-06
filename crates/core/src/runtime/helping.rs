@@ -97,9 +97,17 @@ impl Runtime {
             let _ = reply.send(refused("Helpers work during your turn: start them as you work."));
             return;
         }
-        if self.config.nemotron.is_none() {
-            let _ = reply.send(refused("Your model's provider isn't set up on this machine: helpers can't start."));
-            return;
+        // The member's own provider, as its turn finds it: no helper where the turn has none.
+        match self.open_config(session.model.as_deref()) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let _ = reply.send(refused("Your model's provider has no key on this machine: helpers can't start."));
+                return;
+            }
+            Err(why) => {
+                let _ = reply.send(refused(format!("Helpers can't start: {why}")));
+                return;
+            }
         }
         let Some(brief) = board::arg_str(&call.arguments, "brief").map(str::trim).filter(|b| !b.is_empty()).map(str::to_owned) else {
             let _ = reply.send(refused("Say what the helper should find out (brief)."));
@@ -123,9 +131,14 @@ impl Runtime {
         let limits = helpers::limits();
         let name = session.name().unwrap_or("the member").to_owned();
         let cwd = session.work.as_ref().map_or_else(|| session.cwd.clone(), |w| w.cwd.clone());
-        let model = session.ran.clone().or_else(|| session.model.clone());
+        // The member's provider, model and effort, found as its own turn finds them.
+        let model = session.model.as_deref().map(|m| crate::model_providers::bare_model(m).to_owned());
         let effort = crate::nemotron::agent_effort(effort_of(session).as_deref()).map(str::to_owned);
-        let Some(cfg) = self.config.nemotron.as_ref() else { return };
+        let cfg = match self.open_config(session.model.as_deref()) {
+            Ok(Some(cfg)) => cfg,
+            Ok(None) => return self.helper_failed_to_start(id, helper, what, "its provider has no key on this machine".to_owned()),
+            Err(why) => return self.helper_failed_to_start(id, helper, what, why),
+        };
         let provider = cfg.codex_provider();
         let mut env = vec![cfg.codex_env()];
         env.push((guard::MEMBER_ENV.to_owned(), name.clone()));
@@ -157,6 +170,17 @@ impl Runtime {
         let run = Run { what: what.clone(), began: std::time::Instant::now(), shown: Shown::default(), stop: Some(stop_tx), why: None, task: task.abort_handle() };
         self.helping.entry(id).or_default().runs.insert(helper.to_owned(), run);
         self.publish(Event::SubagentStarted { session: id, id: helper.to_owned(), what, brief: asked });
+    }
+
+    /// A helper that couldn't start (its provider gone since it was asked
+    /// for): shown, and handed in as failed, as any helper's end is.
+    fn helper_failed_to_start(&mut self, id: SessionId, helper: &str, what: String, why: String) {
+        let (stop, _) = oneshot::channel::<()>();
+        let task = tokio::spawn(async {}).abort_handle();
+        let run = Run { what: what.clone(), began: std::time::Instant::now(), shown: Shown::default(), stop: Some(stop), why: None, task };
+        self.helping.entry(id).or_default().runs.insert(helper.to_owned(), run);
+        self.publish(Event::SubagentStarted { session: id, id: helper.to_owned(), what, brief: String::new() });
+        self.helper_ended(id, helper, Err(why));
     }
 
     /// A helper's step, word or spending: shown as its member's subagent's,

@@ -3639,6 +3639,54 @@ async fn a_new_member_starts_with_the_model_and_effort_the_person_set_for_its_ro
 }
 
 #[tokio::test]
+async fn a_role_set_to_a_providers_model_starts_its_new_members_on_it_on_codexs_agent() {
+    let cwd = scratch("role-provider");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    // A server on this machine: no key needed.
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    // Set where the screen shows the role, on Claude Code: the member runs on Codex's agent all the same.
+    let default = RoleModel { role: "frontend".into(), engine: Engine::Claude, model: Some(model.clone()), effort: None };
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.len() == 1)).await;
+    let started = |id: u64| move |e: &Event| matches!(e, Event::SessionStarted { session, .. } | Event::Error { session: Some(session), .. } if *session == id);
+    handle.send(Command::Start { session: 1, spec: member(&cwd, "frontend") });
+    let seen = until(&mut events, started(1)).await;
+    let Some(Event::SessionStarted { engine: Engine::Codex, model: Some(on), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(on, &model);
+    // Another role keeps Claude Code.
+    handle.send(Command::Start { session: 2, spec: member(&cwd, "backend") });
+    let seen = until(&mut events, started(2)).await;
+    assert!(matches!(seen.last(), Some(Event::SessionStarted { engine: Engine::Claude, .. })), "{seen:#?}");
+}
+
+#[tokio::test]
+async fn a_claude_member_set_to_a_providers_model_moves_to_codexs_agent_on_it_at_its_next_ticket() {
+    let cwd = scratch("move-provider");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    // Between tickets: the boundary is now.
+    handle.send(Command::SetModel { session: 1, model: model.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { engine: Engine::Codex, .. } | Event::Error { .. })).await;
+    // Told where it goes, on a card the person can undo.
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("qwen3-coder:30b") && text.contains("Ollama") && text.contains("next ticket"))), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.moves.iter().any(|m| m.member == "frontend" && m.to == Engine::Codex && m.model.as_deref() == Some(model.as_str())))), "{seen:#?}");
+    let Some(Event::SessionStarted { session, engine: Engine::Codex, model: Some(on), member, .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_ne!(*session, 1, "started again on the other engine");
+    assert_eq!((on.as_str(), member.as_ref().map(|m| m.name.as_str())), (model.as_str(), Some("frontend")), "under the same name, on the provider's model");
+    // Its old conversation is closed, and it isn't on Claude Code any more.
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "{seen:#?}");
+}
+
+#[tokio::test]
 async fn a_folder_inside_a_repository_is_a_project_of_its_own_worked_in_its_folder() {
     let repo = repo();
     let desktop = repo.join("crates").join("desktop");
