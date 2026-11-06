@@ -61,7 +61,7 @@ I won't change anything until you pick.",
         at("case-now.png")
     );
     vec![
-        Entry::User { text: equipe_core::routines::message(&routine) },
+        Entry::User { text: equipe_core::routines::message(&routine), kept: Vec::new() },
         ran("equipe design flows check"),
         ran("equipe design critique design/review/sign-in-a.png --reference design/references/linear/login.png"),
         Entry::Reply { text: review },

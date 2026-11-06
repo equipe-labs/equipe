@@ -455,7 +455,8 @@ The answer:
 | `-32000` (why) | the daemon couldn't write it | |
 
 **What the file becomes.** It is kept like a screen's upload: `~/.equipe/uploads/`, 0600 in a
-0700 folder, named by the daemon (`<ms>-<tidied name>.<ext>`), swept after 7 days. Pieces wait
+0700 folder, named by the daemon (`<ms>-<tidied name>.<ext>`). Once a sent message names it, it
+stays until the person removes it; one no message names is swept after 7 days. Pieces wait
 in `uploads/.partial/`, which nothing reads back. Then, by kind:
 
 | kind | kept | `tag` |
@@ -478,6 +479,14 @@ typed — the desktop's `attach::message`: `"<typed> <tag> <tag>"`, or the tags 
 that as `submit`'s `text`. Tags are text: the member reads the files by their paths as it reads
 a screen's (`crates/protocol/src/tags.rs` is the grammar). Uploading gives a phone no other
 command, and doesn't send anything: a file nobody's message points at is only swept.
+
+**Kept words.** When the message is sent, the daemon reads each text file its tags name in its
+uploads (UTF-8, at most 256 KiB each and 256 KiB for the message) and keeps the words with the
+message: `user_message` and `steered` carry `"kept": [{ "path", "text" }]` — `path` as the tag
+names it — and so does the conversation's `user` line. It is absent when there is none (and
+from an older daemon). The member's prompt is the message as sent; `kept` is for what reads the
+conversation later, once the file may be gone: a screen shows a `[file: …]` attachment whose
+file is gone by its kept `text`, and finds its words when searching.
 
 ### A member's conversation
 
@@ -560,7 +569,7 @@ screen that watched saw:
   `suggestion`, `browser_frame`, `visuals_rendered` — leave it open: a steer sent while the member writes
   doesn't cut its answer; where it is read (`steered`) the reply so far ends and the steer
   follows it.
-- Lines: `user_message` and `steered` → `user`; `notice` → `note` (with its `undo`); `thread` → `thread`;
+- Lines: `user_message` and `steered` → `user` (with their `kept`); `notice` → `note` (with its `undo`); `thread` → `thread`;
   `tool_use` → `tool` (its `tool_result` sets `outcome` on the latest open call of the same
   `tool` and `target`); `error` → `error`; `branch_landed` → `landed`; `nothing_changed` → note
   `No files changed, so no branch was kept.`; `turn_ended` `interrupted` → note `Stopped.`,

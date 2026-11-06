@@ -648,7 +648,7 @@ async fn several_steers_faster_than_its_steps_are_each_read_in_order_with_their_
     // In the conversation, each where it was said about; the turn stays the site's.
     let recent = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap().recent;
     let about: Vec<(String, Option<String>)> = recent.iter().zip(scope::of(&recent)).filter_map(|(e, about)| match e {
-        Entry::User { text } => Some((text.clone(), about)),
+        Entry::User { text, .. } => Some((text.clone(), about)),
         Entry::Reply { text } => Some((format!("reply: {text}"), about)),
         _ => None,
     }).collect();
@@ -1744,7 +1744,7 @@ fn text_entries(entries: &[Entry]) -> Vec<String> {
     entries
         .iter()
         .map(|e| match e {
-            Entry::User { text } => format!("user: {text}"),
+            Entry::User { text, .. } => format!("user: {text}"),
             Entry::Reply { text } => format!("reply: {text}"),
             other => format!("{other:?}"),
         })
@@ -3473,7 +3473,7 @@ async fn each_message_its_reply_and_its_steps_are_about_the_project_in_focus_whe
         .iter()
         .zip(scope::of(&recent))
         .filter_map(|(e, about)| match e {
-            Entry::User { text } => Some((format!("user: {text}"), about)),
+            Entry::User { text, .. } => Some((format!("user: {text}"), about)),
             Entry::Reply { text } => Some((format!("reply: {text}"), about)),
             _ => None,
         })
@@ -3493,7 +3493,7 @@ async fn each_message_its_reply_and_its_steps_are_about_the_project_in_focus_whe
         ]
     );
     // The PM is told as before: the whole conversation, the prefix in its prompt only.
-    assert!(!recent.iter().any(|e| matches!(e, Entry::User { text } if text.starts_with('['))));
+    assert!(!recent.iter().any(|e| matches!(e, Entry::User { text, .. } if text.starts_with('['))));
     assert!(scope::LOOKING_AT.starts_with("[equipe: the person is looking at the project") && scope::WHOLE_SQUAD.starts_with("[equipe: the person is looking at the whole squad"));
 }
 
@@ -3519,7 +3519,7 @@ async fn news_in_the_pms_conversation_is_about_its_tickets_project() {
     let scopes = scope::of(&recent);
     let at = recent.iter().rposition(|e| matches!(e, Entry::Note { .. })).unwrap();
     assert_eq!(scopes[at].as_deref(), Some("app"), "{recent:#?}");
-    let hi = recent.iter().position(|e| matches!(e, Entry::User { text } if text == "hi")).unwrap();
+    let hi = recent.iter().position(|e| matches!(e, Entry::User { text, .. } if text == "hi")).unwrap();
     assert_eq!(scopes[hi].as_deref(), Some("site"));
 }
 
@@ -5128,7 +5128,7 @@ async fn a_side_chat_forks_the_members_conversation_read_only_and_never_adds_to_
     // Its words travel inside it, never as the member's.
     assert!(!seen.iter().any(|e| e.session() == Some(2)), "nothing of it in the member's conversation: {seen:#?}");
     let said = inside(&seen, 77);
-    assert!(matches!(&said[0], Event::UserMessage { session: 77, text } if text == "why?"), "{said:?}");
+    assert!(matches!(&said[0], Event::UserMessage { session: 77, text, .. } if text == "why?"), "{said:?}");
     assert!(said.iter().any(|e| matches!(e, Event::TextDelta { session: 77, text } if text == "ok")));
     assert!(matches!(said.last(), Some(Event::TurnEnded { session: 77, outcome: TurnOutcome::Completed, usage: Some(_) })));
 

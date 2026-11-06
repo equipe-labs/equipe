@@ -43,7 +43,7 @@ pub fn past(entries: &[Entry]) -> Vec<Past> {
     let mut open: Option<usize> = None;
     for entry in entries {
         match entry {
-            Entry::User { text } => match equipe_core::retro::week_of(text) {
+            Entry::User { text, .. } => match equipe_core::retro::week_of(text) {
                 Some((_, to)) => {
                     let line = equipe_core::retro::counts(text).map(|(shipped, stuck)| t!("progress.retro_counts", shipped = shipped, stuck = stuck)).unwrap_or_default();
                     out.push(Past { to: to.to_owned(), line });
@@ -109,11 +109,11 @@ mod tests {
     #[test]
     fn past_retros_are_listed_newest_first_each_a_line_of_what_it_said() {
         let entries = vec![
-            Entry::User { text: run("2026-10-30", 3, 1) },
+            Entry::User { text: run("2026-10-30", 3, 1), kept: Vec::new() },
             Entry::Reply { text: "## 주간 회고\n\n---\n**이번 주 3건이 메인에 들어갔고**, 막힌 건 하나예요.\n\n### 1. 출시".into() },
-            Entry::User { text: "고마워요".into() },
+            Entry::User { text: "고마워요".into(), kept: Vec::new() },
             Entry::Reply { text: "네".into() },
-            Entry::User { text: run("2026-11-06", 2, 4) },
+            Entry::User { text: run("2026-11-06", 2, 4), kept: Vec::new() },
         ];
         let listed = past(&entries);
         assert_eq!(
@@ -124,9 +124,9 @@ mod tests {
             ],
             "not answered yet: what the facts count"
         );
-        let many: Vec<Entry> = (1..=7).map(|d| Entry::User { text: run(&format!("2026-11-0{d}"), 0, 0) }).collect();
+        let many: Vec<Entry> = (1..=7).map(|d| Entry::User { text: run(&format!("2026-11-0{d}"), 0, 0), kept: Vec::new() }).collect();
         assert_eq!(past(&many).iter().map(|p| p.to.as_str()).collect::<Vec<_>>(), ["2026-11-07", "2026-11-06", "2026-11-05", "2026-11-04", "2026-11-03"]);
-        assert!(past(&[Entry::User { text: "[Routine · 주간 리포트]\n\n정리".into() }]).is_empty());
+        assert!(past(&[Entry::User { text: "[Routine · 주간 리포트]\n\n정리".into(), kept: Vec::new() }]).is_empty());
     }
 
     #[test]

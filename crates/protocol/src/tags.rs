@@ -4,8 +4,50 @@
 //! 1920×1080 · sheet: s · frames: f@0:03, …]`. The engines read the text as it
 //! is; a screen finds the tags here to show the attachments themselves and
 //! the words without them.
+//!
+//! The files are kept on the daemon's machine for as long as the person keeps
+//! them; the words of an attached text file (a voice memo written down, a long
+//! paste) also travel with the message itself ([`Kept`]), so the conversation
+//! still holds them once the file is gone.
 
 use std::ops::Range;
+
+use serde::{Deserialize, Serialize};
+
+/// An attached text file's words, kept with the message that sent it: the
+/// file may be gone later, its words stay in the conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kept {
+    /// The file's path, as the message's tag names it.
+    pub path: String,
+    pub text: String,
+}
+
+/// The most of one text file kept with a message, in bytes; a bigger one
+/// stays a file only.
+pub const KEPT_FILE_MAX: u64 = 256 << 10;
+/// The most kept with one message, all its files together: it travels in
+/// every screen's copy of the conversation, a phone's too.
+pub const KEPT_MESSAGE_MAX: usize = 256 << 10;
+
+/// What `path` keeps among `kept`.
+pub fn kept_of<'a>(kept: &'a [Kept], path: &str) -> Option<&'a str> {
+    kept.iter().find(|k| k.path == path).map(|k| k.text.as_str())
+}
+
+/// A message as it is read back later, when its files may be gone: its text,
+/// then each kept file's words under the file's name. Without any, the text
+/// as it is.
+pub fn read_back<'a>(text: &'a str, kept: &[Kept]) -> std::borrow::Cow<'a, str> {
+    if kept.is_empty() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = text.to_owned();
+    for k in kept {
+        out.push_str(&format!("\n\n--- {} ---\n{}", display_name(&k.path), k.text.trim_end()));
+    }
+    std::borrow::Cow::Owned(out)
+}
 
 /// What a tag says it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +99,11 @@ impl Tag {
     /// `paste.png`).
     pub fn name(&self) -> &str {
         display_name(&self.path)
+    }
+
+    /// Every file it points at: the file, and a video's sheet and frames.
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.path.as_str()).chain(self.sheet.as_deref()).chain(self.frames.iter().map(|(p, _)| p.as_str()))
     }
 
     /// The picture that stands for it: the image itself, a video's first
@@ -269,6 +316,23 @@ mod tests {
         let shown = compact("봐 줘 [image: /u/1792073093606-paste.png] [pdf: /u/1-spec.pdf · 2 pages]", |t| format!("[{}]", t.name()));
         assert_eq!(shown, "봐 줘 [paste.png] [1-spec.pdf]");
         assert_eq!(compact("no tags [here]", |_| "x".into()), "no tags [here]");
+    }
+
+    #[test]
+    fn a_tag_names_every_file_it_points_at() {
+        let video = &split("[video: /u/a.mov · 0:20 · sheet: /u/s.jpg · frames: /u/f1.jpg@0:05, /u/f2.jpg@0:15]").tags[0];
+        assert_eq!(video.files().collect::<Vec<_>>(), ["/u/a.mov", "/u/s.jpg", "/u/f1.jpg", "/u/f2.jpg"]);
+        assert_eq!(split("[image: /u/a.png]").tags[0].files().collect::<Vec<_>>(), ["/u/a.png"]);
+    }
+
+    #[test]
+    fn a_message_read_back_carries_the_words_kept_with_it() {
+        let text = "what I said [audio: /u/1792073093606-memo.m4a · 0:31] [file: /u/1792073093607-memo-transcript.txt · 2 lines]";
+        assert_eq!(read_back(text, &[]), text, "nothing kept: the text as it is");
+        let kept = [Kept { path: "/u/1792073093607-memo-transcript.txt".into(), text: "Ship the pricing page.\n".into() }];
+        assert_eq!(read_back(text, &kept), format!("{text}\n\n--- memo-transcript.txt ---\nShip the pricing page."));
+        assert_eq!(kept_of(&kept, "/u/1792073093607-memo-transcript.txt"), Some("Ship the pricing page.\n"));
+        assert_eq!(kept_of(&kept, "/u/other.txt"), None);
     }
 
     #[test]

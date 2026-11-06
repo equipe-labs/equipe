@@ -1922,7 +1922,14 @@ pub enum Event {
     /// Output a member's turn has produced so far, in tokens.
     Output { session: SessionId, tokens: u64 },
     /// What the person asked — sent to every screen, not only the one it was typed in.
-    UserMessage { session: SessionId, text: String },
+    UserMessage {
+        session: SessionId,
+        text: String,
+        /// The words of the text files it attached, kept with it
+        /// ([`tags::Kept`]); an older daemon's has none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
     /// A message left while the agent works. It becomes a [`Event::UserMessage`]
     /// when the turn ends; memos left in the meantime arrive together.
     MessageQueued {
@@ -2120,7 +2127,13 @@ pub enum Event {
         project: Option<String>,
     },
     /// The member read a steering message, at this point of its turn.
-    Steered { session: SessionId, text: String },
+    Steered {
+        session: SessionId,
+        text: String,
+        /// As [`Event::UserMessage`]'s.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
     /// What runs under the member's engine for its command under way, as the
     /// daemon looked at it a moment ago — every few seconds while it runs —
     /// or `None` once it no longer does. A screen that doesn't know this
@@ -2615,7 +2628,13 @@ impl ToolOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entry {
-    User { text: String },
+    User {
+        text: String,
+        /// The words of the text files the message attached, kept with it:
+        /// they outlast the files ([`tags::Kept`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
     Reply { text: String },
     Tool {
         tool: String,
@@ -3250,7 +3269,7 @@ mod tests {
                 title: Some("fix it".into()),
                 tokens: 12,
                 context: None,
-                recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+                recent: vec![Entry::User { text: "fix it".into(), kept: Vec::new() }, Entry::Reply { text: "on it".into() }],
                 recent_at: vec![Some(1_762_300_000), None],
                 queued: vec!["and the tests".into()],
                 queued_project: None,
@@ -3300,7 +3319,7 @@ mod tests {
         let back = json!({ "type": "conversation_back", "session": 5, "lines": [{ "kind": "user", "text": "hi" }] });
         let Event::ConversationBack { lines_at, .. } = serde_json::from_value(back).unwrap() else { panic!("conversation back") };
         assert!(lines_at.is_empty());
-        let back = Event::ConversationBack { session: 5, title: None, lines: vec![Entry::User { text: "hi".into() }], lines_at: vec![Some(9)] };
+        let back = Event::ConversationBack { session: 5, title: None, lines: vec![Entry::User { text: "hi".into(), kept: Vec::new() }], lines_at: vec![Some(9)] };
         assert_eq!(serde_json::to_value(&back).unwrap()["lines_at"], json!([9]));
         assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&back).unwrap()).unwrap(), back);
     }

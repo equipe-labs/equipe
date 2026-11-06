@@ -136,7 +136,7 @@ impl Transcript {
                 Some(Entry::Note { undo: None, text: format!("{}{}{}", notes::WORKING_ON, ws.branch, notes::WORKING_REST) })
             }
             // A message sent while it worked, where it was read.
-            Event::UserMessage { text, .. } | Event::Steered { text, .. } => Some(Entry::User { text: text.clone() }),
+            Event::UserMessage { text, kept, .. } | Event::Steered { text, kept, .. } => Some(Entry::User { text: text.clone(), kept: kept.clone() }),
             Event::Notice { text, undo, .. } => Some(Entry::Note { text: text.clone(), undo: undo.clone() }),
             Event::Thread { project, .. } => Some(Entry::Thread { project: project.clone() }),
             Event::WorkStarted { ticket, title, workspace, .. } => Some(Entry::Note {
@@ -214,7 +214,7 @@ pub mod scope {
     pub fn marker(entry: &Entry) -> Option<Option<String>> {
         match entry {
             Entry::Thread { project } => Some(project.clone()),
-            Entry::User { text } => said_about(text),
+            Entry::User { text, .. } => said_about(text),
             _ => None,
         }
     }
@@ -289,7 +289,7 @@ pub mod scope {
     pub fn is_said(entry: &Entry) -> bool {
         match entry {
             // The harness's turns (a background task ending) are not said by anyone.
-            Entry::User { text } => !crate::harness::only_harness(text),
+            Entry::User { text, .. } => !crate::harness::only_harness(text),
             Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
             Entry::Note { text, .. } => !text.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
             Entry::Tool { .. } | Entry::Thread { .. } => false,
@@ -326,7 +326,7 @@ pub mod scope {
         // Folds with only the project's news between them are one fold: a
         // row each, a news line between, read as clutter.
         let news_only = |range: &Range<usize>| lines[range.clone()].iter().all(|(e, _)| match e.borrow() {
-            Entry::User { text } => crate::harness::only_harness(text),
+            Entry::User { text, .. } => crate::harness::only_harness(text),
             Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => false,
             _ => true,
         });
@@ -359,14 +359,15 @@ pub fn markdown(entries: &[Entry], heading: &str) -> String {
     let mut out = format!("# {heading}\n\n");
     for entry in entries {
         match entry {
-            Entry::User { text } => {
+            Entry::User { text, kept } => {
                 let said = crate::harness::read(text);
                 for task in &said.tasks {
                     let how = if task.failed() { "failed" } else { "done" };
                     out.push_str(&format!("_Background task {how}{}_\n\n", task.summary.as_ref().map(|s| format!(": {s}")).unwrap_or_default()));
                 }
                 if said.persons() {
-                    out.push_str(&format!("**You:** {}\n\n", said.words));
+                    // With the words its files kept: the export outlasts the files.
+                    out.push_str(&format!("**You:** {}\n\n", crate::tags::read_back(&said.words, kept)));
                 }
             }
             Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
@@ -421,7 +422,7 @@ mod tests {
         use crate::Entry;
 
         fn user(text: &str) -> Entry {
-            Entry::User { text: text.into() }
+            Entry::User { text: text.into(), kept: Vec::new() }
         }
         fn reply(text: &str) -> Entry {
             Entry::Reply { text: text.into() }
@@ -529,7 +530,7 @@ mod tests {
 
         #[test]
         fn a_background_task_ending_is_not_something_said() {
-            let done = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into() };
+            let done = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into(), kept: Vec::new() };
             assert!(!scope::is_said(&done));
             assert!(scope::is_said(&user("go")));
             let lines = vec![about(Some("site")), done.clone(), about(Some("app")), user("a")];
@@ -552,7 +553,7 @@ mod tests {
     #[test]
     fn streaming_joins_one_reply_and_is_final_when_the_turn_ends() {
         let mut t = Transcript::default();
-        assert!(t.apply(&Event::UserMessage { session: 1, text: "hi".into() }).len() == 1);
+        assert!(t.apply(&Event::UserMessage { session: 1, text: "hi".into(), kept: Vec::new() }).len() == 1);
         assert!(t.apply(&delta("Hel")).is_empty());
         assert!(t.apply(&delta("lo")).is_empty());
         assert_eq!(t.entries().last(), Some(&Entry::Reply { text: "Hello".into() }));
@@ -567,14 +568,22 @@ mod tests {
     #[test]
     fn the_markdown_says_a_background_task_ended_never_that_you_said_it() {
         let lines = vec![
-            Entry::User { text: "<task-notification><task-id>b1</task-id><status>failed</status><summary>tests exited 1</summary></task-notification>".into() },
-            Entry::User { text: "<system-reminder>for the model</system-reminder>".into() },
-            Entry::User { text: "go".into() },
+            Entry::User { text: "<task-notification><task-id>b1</task-id><status>failed</status><summary>tests exited 1</summary></task-notification>".into(), kept: Vec::new() },
+            Entry::User { text: "<system-reminder>for the model</system-reminder>".into(), kept: Vec::new() },
+            Entry::User { text: "go".into(), kept: Vec::new() },
         ];
         let md = markdown(&lines, "h");
         assert!(md.contains("_Background task failed: tests exited 1_"), "{md}");
         assert_eq!(md.matches("**You:**").count(), 1, "{md}");
         assert!(!md.contains("task-notification") && !md.contains("system-reminder"), "{md}");
+    }
+
+    #[test]
+    fn the_markdown_holds_the_words_a_message_kept_of_its_files() {
+        let kept = vec![crate::tags::Kept { path: "/u/1792073093607-memo-transcript.txt".into(), text: "Ship the pricing page.".into() }];
+        let lines = vec![Entry::User { text: "listen [file: /u/1792073093607-memo-transcript.txt · 1 line]".into(), kept }];
+        let md = markdown(&lines, "h");
+        assert!(md.contains("--- memo-transcript.txt ---\nShip the pricing page."), "{md}");
     }
 
     #[test]
@@ -643,8 +652,8 @@ mod tests {
         t.apply(&delta("ing."));
         assert_eq!(t.entries(), &[Entry::Reply { text: "Looking.".into() }]);
         // Read where it was: the reply so far is final, the steer follows it.
-        let done = t.apply(&Event::Steered { session: 1, text: "skip the footer".into() });
-        assert_eq!(done, vec![Entry::Reply { text: "Looking.".into() }, Entry::User { text: "skip the footer".into() }]);
+        let done = t.apply(&Event::Steered { session: 1, text: "skip the footer".into(), kept: Vec::new() });
+        assert_eq!(done, vec![Entry::Reply { text: "Looking.".into() }, Entry::User { text: "skip the footer".into(), kept: Vec::new() }]);
         // A token count leaves the next text in the same reply; the turn's end closes it.
         t.apply(&delta("Done."));
         assert!(t.apply(&Event::Output { session: 1, tokens: 40 }).is_empty());
@@ -724,10 +733,10 @@ mod tests {
     fn memory_keeps_only_the_latest_lines() {
         let mut t = Transcript::default();
         for i in 0..(IN_MEMORY_LINES + 20) {
-            t.apply(&Event::UserMessage { session: 1, text: i.to_string() });
+            t.apply(&Event::UserMessage { session: 1, text: i.to_string(), kept: Vec::new() });
         }
         assert_eq!(t.entries().len(), IN_MEMORY_LINES);
-        assert_eq!(t.entries().last(), Some(&Entry::User { text: (IN_MEMORY_LINES + 19).to_string() }));
+        assert_eq!(t.entries().last(), Some(&Entry::User { text: (IN_MEMORY_LINES + 19).to_string(), kept: Vec::new() }));
         assert_eq!(t.times().len(), IN_MEMORY_LINES, "their times go with them");
     }
 
@@ -737,12 +746,12 @@ mod tests {
         #[test]
         fn a_message_is_said_when_it_comes_and_a_reply_when_it_ends() {
             let mut t = Transcript::default();
-            t.apply_at(&Event::UserMessage { session: 1, text: "fix the header".into() }, 1_000);
+            t.apply_at(&Event::UserMessage { session: 1, text: "fix the header".into(), kept: Vec::new() }, 1_000);
             t.apply_at(&delta("On "), 1_005);
             assert_eq!(t.times(), &[Some(1_000), None], "a reply streaming has no time yet");
             t.apply_at(&delta("it."), 1_030);
             t.apply_at(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, 1_042);
-            assert_eq!(t.entries(), &[Entry::User { text: "fix the header".into() }, Entry::Reply { text: "On it.".into() }]);
+            assert_eq!(t.entries(), &[Entry::User { text: "fix the header".into(), kept: Vec::new() }, Entry::Reply { text: "On it.".into() }]);
             assert_eq!(t.times(), &[Some(1_000), Some(1_042)], "the reply's time is when it was done, as the journal keeps it");
             assert_eq!(t.at(1), Some(1_042));
             assert_eq!(t.at(9), None);
@@ -758,7 +767,7 @@ mod tests {
 
         #[test]
         fn kept_lines_keep_their_times_and_lines_without_one_have_none() {
-            let entries = vec![Entry::User { text: "a".into() }, Entry::Reply { text: "b".into() }, Entry::User { text: "c".into() }];
+            let entries = vec![Entry::User { text: "a".into(), kept: Vec::new() }, Entry::Reply { text: "b".into() }, Entry::User { text: "c".into(), kept: Vec::new() }];
             let t = Transcript::with_times(entries.clone(), vec![Some(5), None]);
             assert_eq!(t.entries(), &entries[..]);
             assert_eq!(t.times(), &[Some(5), None, None], "a short list of times: the rest unknown");
@@ -772,13 +781,13 @@ mod tests {
         fn a_screens_own_line_can_carry_the_time_it_was_said() {
             let mut t = Transcript::default();
             t.push_local(Entry::Note { undo: None, text: "help".into() });
-            t.push_local_at(Entry::User { text: "taken back".into() }, Some(77));
+            t.push_local_at(Entry::User { text: "taken back".into(), kept: Vec::new() }, Some(77));
             assert_eq!(t.times(), &[None, Some(77)]);
         }
 
         #[test]
         fn the_latest_lines_carry_their_times_and_the_marker_none() {
-            let lines = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "a".into() }, Entry::Reply { text: "b".into() }];
+            let lines = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "a".into(), kept: Vec::new() }, Entry::Reply { text: "b".into() }];
             let times = vec![Some(1), Some(2), Some(3)];
             let (recent, at) = scope::from_at(&lines, &times, 2);
             assert_eq!(recent, scope::from(&lines, 2));

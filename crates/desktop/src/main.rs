@@ -1408,6 +1408,15 @@ impl Shell {
             .collect()
     }
 
+    /// The words a sent message kept of the file at `path` (gone, or on a
+    /// machine whose files don't open here), in the document panel.
+    pub fn open_kept(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(words) = self.chat.sent.borrow().kept(path).map(str::to_owned) else { return };
+        self.doc_reads += 1;
+        self.doc = Some(doc::Doc::of_kept(path.into(), &words, self.doc_reads));
+        cx.notify();
+    }
+
     pub fn open_doc(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         self.doc_reads += 1;
         let read = self.doc_reads;
@@ -1428,7 +1437,11 @@ impl Shell {
                 let Some(doc) = this.doc.as_mut().filter(|d| d.read == read) else { return };
                 match got {
                     Ok((text, cut)) => (doc.text, doc.cut) = (Some(Ok(text)), cut),
-                    Err(why) => doc.text = Some(Err(why)),
+                    // A file a message sent and kept the words of, gone since: its words.
+                    Err(why) => match this.chat.sent.borrow().kept(&doc.path.to_string_lossy()) {
+                        Some(words) => (doc.text, doc.kept) = (Some(Ok(words.to_owned())), true),
+                        None => doc.text = Some(Err(why)),
+                    },
                 }
                 // A deck opened afresh is shown as it was made to be: slide by slide.
                 if std::mem::take(&mut doc.fresh) && doc.slides().is_some_and(|s| !s.is_empty()) {
@@ -1537,7 +1550,7 @@ impl Shell {
     }
 
     pub fn reload_doc(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
+        if let Some(path) = self.doc.as_ref().filter(|d| !d.kept).map(|d| d.path.clone()) {
             self.open_doc(path, cx);
         }
     }

@@ -193,7 +193,7 @@ async fn an_empty_quiet_board_wakes_the_pm_once_and_not_again_within_the_day() {
     handle.send(Command::SetIdleWake { squad: "acme".into(), hours: 24 });
     let seen = until(&mut events, |e| matches!(e, Event::IdleWakeChanged { hours: 24, .. })).await;
     assert_eq!(idle_wakes(&seen), 1, "{seen:#?}");
-    let woke = seen.iter().find_map(|e| if let Event::UserMessage { session: 1, text } = e { Some(text.clone()) } else { None }).expect("the PM's");
+    let woke = seen.iter().find_map(|e| if let Event::UserMessage { session: 1, text, .. } = e { Some(text.clone()) } else { None }).expect("the PM's");
     assert!(woke.starts_with("[Idle · 24h]") && woke.contains("propose what's next"), "{woke}");
     assert_eq!(handle.snapshot("acme").await.idle_wake_hours, Some(24));
 
@@ -289,7 +289,7 @@ fn set_up_design(project: &Path) {
 /// What `to` was told, at once or left for after its turn.
 fn said_to(events: &[Event], to: u64) -> Option<String> {
     events.iter().find_map(|e| match e {
-        Event::UserMessage { session, text } | Event::MessageQueued { session, text, .. } if *session == to => Some(text.clone()),
+        Event::UserMessage { session, text, .. } | Event::MessageQueued { session, text, .. } if *session == to => Some(text.clone()),
         _ => None,
     })
 }

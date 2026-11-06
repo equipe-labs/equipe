@@ -134,7 +134,7 @@ pub fn summary(entries: &[Entry]) -> String {
     let lines: Vec<String> = entries
         .iter()
         .filter_map(|e| match e {
-            Entry::User { text } => Some(format!("Person: {}", clip(text))),
+            Entry::User { text, kept } => Some(format!("Person: {}", clip(&equipe_protocol::tags::read_back(text, kept)))),
             Entry::Reply { text } if !text.trim().is_empty() => Some(format!("You: {}", clip(text))),
             _ => None,
         })
@@ -216,13 +216,13 @@ mod tests {
     #[test]
     fn the_summary_keeps_the_latest_of_the_talk_and_says_when_it_left_some_out() {
         let entries = vec![
-            Entry::User { text: "Fix the header".into() },
+            Entry::User { text: "Fix the header".into(), kept: Vec::new() },
             Entry::Tool { tool: "Read".into(), target: None, outcome: None, label: None, background: false },
             Entry::Reply { text: "Done: the header is fixed.".into() },
             Entry::Note { undo: None, text: "Stopped.".into() },
         ];
         assert_eq!(summary(&entries), "Person: Fix the header\nYou: Done: the header is fixed.");
-        let long: Vec<Entry> = (0..40).map(|n| Entry::User { text: format!("{n} {}", "word ".repeat(100)) }).collect();
+        let long: Vec<Entry> = (0..40).map(|n| Entry::User { text: format!("{n} {}", "word ".repeat(100)), kept: Vec::new() }).collect();
         let short = summary(&long);
         assert!(short.starts_with("(earlier messages left out)\n"), "{}", &short[..60]);
         assert!(short.len() <= SUMMARY_CHARS + 40, "{}", short.len());

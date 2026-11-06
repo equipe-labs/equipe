@@ -283,8 +283,8 @@ mod tests {
     fn the_answers_read_as_one_line_in_the_conversation() {
         let mut app = pm();
         let message = decide::answer_message(&set(), &[Answer { picked: vec![0], ..Default::default() }, Answer::skipped()]);
-        app.on_event(Event::UserMessage { session: 1, text: message });
-        app.on_event(Event::UserMessage { session: 1, text: decide::dismissed_message(&set()) });
+        app.on_event(Event::UserMessage { session: 1, text: message, kept: Vec::new() });
+        app.on_event(Event::UserMessage { session: 1, text: decide::dismissed_message(&set()), kept: Vec::new() });
         let shot = screen(&app, 110, 30);
         assert!(shot.contains("✓ Decided · 2 questions — Magic link (Recommended) · skipped"), "{shot}");
         assert!(shot.contains("✕ Closed without answering"), "{shot}");

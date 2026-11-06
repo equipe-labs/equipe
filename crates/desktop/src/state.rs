@@ -2081,7 +2081,7 @@ mod tests {
         let inside = |event: Event| Update::Event(Event::SideChat { squad: Some("acme".into()), session: 2, side: 9, event: Box::new(event) });
         assert!(model.apply(Update::Event(Event::SideChatOpened { squad: Some("acme".into()), session: 2, side: 9, search: false }), T0), "drawn again");
         assert_eq!(model.side_chats[&9].search, Some(false));
-        model.apply(inside(Event::UserMessage { session: 9, text: "why?".into() }), T0);
+        model.apply(inside(Event::UserMessage { session: 9, text: "why?".into(), kept: Vec::new() }), T0);
         model.apply(inside(Event::TextDelta { session: 9, text: "Because.".into() }), T0);
         let usage = equipe_core::protocol::Usage { input_tokens: Some(10), output_tokens: Some(5), cache_tokens: Some(100), ..Default::default() };
         model.apply(inside(Event::TurnEnded { session: 9, outcome: TurnOutcome::Completed, usage: Some(usage) }), T0);
@@ -2247,7 +2247,7 @@ mod tests {
         let mut model = Model::new("acme");
         let mut pm = session(1, "pm", "pm", SessionState::Ready);
         let about = |p: &str| Entry::Thread { project: Some(p.into()) };
-        let said = |t: &str| Entry::User { text: t.into() };
+        let said = |t: &str| Entry::User { text: t.into(), kept: Vec::new() };
         let reply = |t: &str| Entry::Reply { text: t.into() };
         pm.recent = vec![about("app"), said("app q"), reply("app a"), about("site"), said("site q"), reply("site a")];
         model.apply(hello(vec![pm, session(2, "frontend", "frontend", SessionState::Ready)]), T0);
@@ -2288,7 +2288,7 @@ mod tests {
         let mut model = pm_in_two_projects();
         assert_eq!(at(&model.conversation(true)), [None; 4], "an older daemon's snapshot: no times");
         let mut pm = session(1, "pm", "pm", SessionState::Ready);
-        pm.recent = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "app q".into() }, Entry::Reply { text: "app a".into() }];
+        pm.recent = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "app q".into(), kept: Vec::new() }, Entry::Reply { text: "app a".into() }];
         pm.recent_at = vec![None, Some(1_762_300_000), Some(1_762_300_090)];
         model.apply(hello(vec![pm]), T0);
         assert_eq!(at(&model.conversation(true)), [Some(1_762_300_000), Some(1_762_300_090)]);
@@ -2296,7 +2296,7 @@ mod tests {
         // A conversation put away, taken up again: as it was left, times and all.
         model.apply(Update::Event(Event::SessionStarted { session: 51, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
         model.apply(Update::Event(Event::LaneOpened { session: 51, of: 1, project: Some("app".into()), kept: true }), T0);
-        let lines = vec![Entry::User { text: "what next?".into() }, Entry::Reply { text: "this".into() }];
+        let lines = vec![Entry::User { text: "what next?".into(), kept: Vec::new() }, Entry::Reply { text: "this".into() }];
         model.apply(Update::Event(Event::ConversationBack { session: 51, title: None, lines, lines_at: vec![Some(10), Some(20)] }), T0);
         assert_eq!(model.convos[&51].transcript.times(), &[Some(10), Some(20)]);
     }
@@ -2306,7 +2306,7 @@ mod tests {
         let mut model = Model::new("acme");
         let mut pm = session(1, "pm", "pm", SessionState::Ready);
         let about = |p: Option<&str>| Entry::Thread { project: p.map(Into::into) };
-        let said = |t: &str| Entry::User { text: t.into() };
+        let said = |t: &str| Entry::User { text: t.into(), kept: Vec::new() };
         let reply = |t: &str| Entry::Reply { text: t.into() };
         pm.recent = vec![about(None), said("plan the week"), reply("ok"), about(Some("site")), said("site q"), reply("site a"), about(Some("app")), said("app q"), reply("app a")];
         model.apply(hello(vec![pm]), T0);
@@ -2422,12 +2422,12 @@ mod tests {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
         let event = |e: Event| Update::Event(e);
-        model.apply(event(Event::UserMessage { session: 1, text: "어떻게 됐어?".into() }), T0);
+        model.apply(event(Event::UserMessage { session: 1, text: "어떻게 됐어?".into(), kept: Vec::new() }), T0);
         model.apply(event(Event::TextDelta { session: 1, text: "**다 됐어요.** 테스트도\n통과".into() }), T0);
         assert!(model.take_alerts().is_empty(), "not before the turn ends");
         model.apply(event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }), T0);
         assert_eq!(model.take_alerts(), vec![Alert::Reply { session: 1, member: "pm".into(), line: "다 됐어요. 테스트도".into() }]);
-        model.apply(event(Event::UserMessage { session: 1, text: "멈춰".into() }), T0);
+        model.apply(event(Event::UserMessage { session: 1, text: "멈춰".into(), kept: Vec::new() }), T0);
         model.apply(event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Interrupted, usage: None }), T0);
         assert!(model.take_alerts().is_empty(), "stopped, and nothing said since the person spoke");
 
@@ -2702,7 +2702,7 @@ mod tests {
         model.tickets = vec![working, ticket(8, "todo", None)];
         model.members[1].ticket = Some(7);
         model.apply(Update::Event(Event::Notice { undo: None, session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
-        model.apply(Update::Event(Event::UserMessage { session: 2, text: "hero work".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 2, text: "hero work".into(), kept: Vec::new() }), T0);
         assert_eq!(model.team(), [1, 2], "the PM heads the team");
         // A ticket at work: its member's work on it, and what is typed steers it.
         assert!(model.open(Side::Ticket(7)));
@@ -2732,7 +2732,7 @@ mod tests {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "frontend", "frontend", SessionState::Ready)]), T0);
         model.projects = vec!["/code/site".into(), "/code/app".into()];
-        model.apply(Update::Event(Event::UserMessage { session: 1, text: "사이트는?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 1, text: "사이트는?".into(), kept: Vec::new() }), T0);
         model.members[0].ticket = Some(9);
         model.apply(Update::Event(Event::SessionStarted { session: 77, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
         model.apply(Update::Event(Event::LaneOpened { session: 77, of: 1, project: None, kept: false }), T0);
@@ -2746,7 +2746,7 @@ mod tests {
         assert_eq!(model.lanes.len(), 1);
         assert_eq!(model.selected, Some(1));
         assert_eq!(model.viewed(), Some(77));
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0);
         model.apply(Update::Event(Event::TextDelta { session: 77, text: "앱은 괜찮습니다.".into() }), T0);
         // What the member said before, then the lane's own.
         assert_eq!(model.convo().unwrap().blocks().len(), 3);
@@ -2772,7 +2772,7 @@ mod tests {
             let before = model.revision;
             // As the daemon says it: the PM's desk marks the project the message is about.
             model.apply(Update::Event(Event::Thread { session: 77, project: focus.clone() }), T0);
-            assert!(model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0), "the person's message in the lane is a redraw");
+            assert!(model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0), "the person's message in the lane is a redraw");
             assert!(model.revision > before, "the chat pane syncs only on a new revision");
             assert!(on_screen(&model).iter().any(|b| matches!(b, crate::convo::Block::User(t) if t == "앱은?")), "their bubble shows at once ({focus:?})");
             let before = model.revision;
@@ -2785,7 +2785,7 @@ mod tests {
             );
             // Read at its next step: the bubble is the conversation's.
             let before = model.revision;
-            model.apply(Update::Event(Event::Steered { session: 77, text: "그리고 웹도".into() }), T0);
+            model.apply(Update::Event(Event::Steered { session: 77, text: "그리고 웹도".into(), kept: Vec::new() }), T0);
             assert!(model.revision > before);
             assert!(!on_screen(&model).iter().any(|b| matches!(b, crate::convo::Block::Pending { .. })));
             // And the lane's reply streams in as it comes.
@@ -2808,7 +2808,7 @@ mod tests {
     fn the_member_row_reads_how_many_conversations_work_at_once() {
         let mut model = with_lane();
         // The lane is at work (the PM too, in site): two at once.
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0);
         assert_eq!(model.at_once(&model.members[0]), 2);
         // Only the lane at work: the member counts as working too.
         model.apply(Update::Event(Event::TurnEnded { session: 1, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None }), T0);
@@ -2821,7 +2821,7 @@ mod tests {
     #[test]
     fn stopping_reaches_only_the_conversation_in_view() {
         let mut model = with_lane();
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0);
         assert_eq!((model.viewed(), model.viewed_presence()), (Some(77), Some(Presence::Working)));
         // Without its conversation beside, the PM at work on its ticket is free to talk: one would open.
         model.apply(Update::Event(Event::SessionClosed { session: 77 }), T0);
@@ -2832,7 +2832,7 @@ mod tests {
     #[test]
     fn a_lane_that_closes_goes_back_into_its_member() {
         let mut model = with_lane();
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0);
         model.apply(Update::Event(Event::TextDelta { session: 77, text: "괜찮습니다.".into() }), T0);
         model.apply(Update::Event(Event::TurnEnded { session: 77, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None }), T0);
         model.apply(Update::Event(Event::SessionClosed { session: 77 }), T0);
@@ -2843,8 +2843,8 @@ mod tests {
         // What was said in it stays, in the member's one conversation.
         assert_eq!(model.viewed(), Some(1));
         let shown = model.convo().unwrap().shown();
-        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text } if text == "앱은?")), "{shown:?}");
-        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text } if text == "사이트는?")));
+        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text, .. } if text == "앱은?")), "{shown:?}");
+        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text, .. } if text == "사이트는?")));
     }
 
     #[test]

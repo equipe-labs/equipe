@@ -136,11 +136,11 @@ The friction fell on backend: 1 failure, 1 sent back, 1 late, 1 wait for approva
 Pick one on each card below. I won't change anything before you do."
         .to_owned();
     vec![
-        Entry::User { text: retro::message(&routine, &facts(last)) },
+        Entry::User { text: retro::message(&routine, &facts(last)), kept: Vec::new() },
         Entry::Reply { text: earlier },
-        Entry::User { text: "Great, same again next week please".into() },
+        Entry::User { text: "Great, same again next week please".into(), kept: Vec::new() },
         Entry::Reply { text: "Sure, I'll bring it again on Friday.".into() },
-        Entry::User { text: retro::message(&routine, &facts(this)) },
+        Entry::User { text: retro::message(&routine, &facts(this)), kept: Vec::new() },
         Entry::Reply { text: week },
     ]
 }

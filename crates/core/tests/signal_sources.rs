@@ -286,7 +286,7 @@ APPLE\tequipe\t4\t1\t6740000000\nAPPLE\tequipe\t9\t7\t6740000000\nAPPLE\tequipe\
     let r = reading(&journal, "site/pageviews-wrong").await;
     assert_eq!((r.ok, r.note.as_deref()), (false, Some("PostHog said 401: Invalid personal API key.")));
     until(&mut events, &mut seen, |s| {
-        s.iter().any(|e| matches!(e, Event::UserMessage { session: 1, text } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } if text.starts_with("[Signal · pageviews-wrong · failing]")))
+        s.iter().any(|e| matches!(e, Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } if text.starts_with("[Signal · pageviews-wrong · failing]")))
     })
     .await;
 

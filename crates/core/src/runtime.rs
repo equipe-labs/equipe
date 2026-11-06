@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use equipe_protocol::harness;
+use equipe_protocol::tags;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
@@ -1346,7 +1347,7 @@ impl Runtime {
                     }
                     match *event {
                         // What the engine echoes as it reads the person's steers: each said as it was.
-                        Event::Steered { session, text } => self.steered(session, &text),
+                        Event::Steered { session, text, .. } => self.steered(session, &text),
                         event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
                         event => {
                             // A build that failed for want of room says so plainly.
@@ -1534,6 +1535,14 @@ impl Runtime {
             && let Some(s) = self.sessions.get(session)
         {
             asked.clone_from(&s.model);
+        }
+        // The person's message: what it attached is kept from now on, and
+        // the words of its text files go with it into the conversation.
+        if let Event::UserMessage { text, kept, .. } | Event::Steered { text, kept, .. } = &mut event
+            && kept.is_empty()
+        {
+            crate::kept::keep(&self.config.home, text);
+            *kept = crate::kept::words(&self.config.home, text);
         }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
@@ -1844,6 +1853,19 @@ impl Runtime {
     }
 
     async fn handle(&mut self, command: Command) {
+        // What the person sends keeps its attachments from the moment it is
+        // sent, even while it waits for a member (`crate::kept`).
+        match &command {
+            Command::Submit { text, .. } | Command::SubmitLater { text, .. } | Command::SideChatSubmit { text, .. } => {
+                crate::kept::keep(&self.config.home, text);
+            }
+            Command::SendNow { texts, .. } => {
+                for text in texts {
+                    crate::kept::keep(&self.config.home, text);
+                }
+            }
+            _ => {}
+        }
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
             Command::OnPhone { command } => {
@@ -3375,7 +3397,7 @@ runbooks and reports live there, and work across the projects or on running them
             if elsewhere {
                 self.publish(Event::Thread { session: id, project: about });
             }
-            self.publish(Event::Steered { session: id, text });
+            self.publish(Event::Steered { session: id, text, kept: Vec::new() });
             if elsewhere {
                 self.publish(Event::Thread { session: id, project: now });
             }
@@ -3548,7 +3570,7 @@ runbooks and reports live there, and work across the projects or on running them
         {
             self.publish(Event::Thread { session: id, project: about.clone() });
         }
-        self.publish(Event::UserMessage { session: id, text: text.clone() });
+        self.publish(Event::UserMessage { session: id, text: text.clone(), kept: Vec::new() });
         // What the person writes in is what the squad writes for them.
         if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
             && let Some(journal) = self.journal(&squad)
@@ -3798,7 +3820,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(m) = self.sessions.get(&pm) else { return };
         let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
         let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
-        let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
+        let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text, .. } = e { first_said_line(text) } else { None }));
         lane.title = title.clone();
         lane.transcript = Transcript::with_times(lines.clone(), lines_at.clone());
         self.publish_lane(id, lane, pm, c.project, true);
@@ -7372,6 +7394,17 @@ it back there once they have done it.{again} End your turn now with a short line
             if let Err(err) = journal::fold_member_memories(&self.config.home, &squad) {
                 crate::daemon_log!("equipe: {squad}'s members' memories couldn't be gathered: {err}");
             }
+            // Attachments sent before they were kept: what is still there stays, with its words.
+            match crate::kept::rescue(&self.config.home, &journal) {
+                Ok(Some(r)) if r != crate::kept::Rescued::default() => crate::daemon_log!(
+                    "equipe: {squad}: sent attachments rescued: {} files kept, the words of {} text files kept with their messages, {} gone already",
+                    r.kept,
+                    r.words,
+                    r.gone
+                ),
+                Ok(_) => {}
+                Err(err) => crate::daemon_log!("equipe: {squad}'s sent attachments couldn't be looked through: {err}"),
+            }
             let projects = journal.projects().unwrap_or_default();
             keep_docs_from_repos(&dir.path(), &home, &projects);
             let tickets = journal.tickets().unwrap_or_default();
@@ -7385,7 +7418,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 let history = conversation
                     .iter()
                     .filter_map(|entry| match entry {
-                        Entry::User { text } => harness::words(text).map(|text| responses::Message { role: responses::Role::User, text: text.into_owned() }),
+                        Entry::User { text, kept } => harness::words(text).map(|text| responses::Message { role: responses::Role::User, text: tags::read_back(&text, kept).into_owned() }),
                         Entry::Reply { text } => {
                             Some(responses::Message { role: responses::Role::Assistant, text: text.clone() })
                         }
@@ -7511,7 +7544,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
                     let mut lane = lane_of(pm, &self.sessions[&pm], c.project, thread, true);
                     let (lines, lines_at) = journal.conversation_at(c.id).unwrap_or_default();
-                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
+                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text, .. } = e { first_said_line(text) } else { None }));
                     lane.transcript = Transcript::with_times(lines, lines_at);
                     self.sessions.insert(c.id, lane);
                 }
@@ -7600,7 +7633,7 @@ check what is already done in your worktree first."
             .entries()
             .iter()
             .filter_map(|e| match e {
-                Entry::User { text } => harness::words(text).map(|text| format!("- the person: {}", clip(&text, 600))),
+                Entry::User { text, kept } => harness::words(text).map(|text| format!("- the person: {}", clip(&tags::read_back(&text, kept), 600))),
                 Entry::Reply { text } => Some(format!("- you: {}", clip(text, 600))),
                 _ => None,
             })
@@ -8289,7 +8322,7 @@ fn suggestion_context(member: &str, entries: &[Entry]) -> Option<String> {
     let said: Vec<(bool, &str)> = entries
         .iter()
         .filter_map(|e| match e {
-            Entry::User { text } if !harness::only_harness(text) => Some((true, text.as_str())),
+            Entry::User { text, .. } if !harness::only_harness(text) => Some((true, text.as_str())),
             Entry::Reply { text } if !text.trim().is_empty() => Some((false, text.as_str())),
             _ => None,
         })
@@ -8433,7 +8466,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         }
         Activity::SubagentText { id: sub, text } => Event::SubagentEntry { session: id, id: sub, entry: Entry::Reply { text } },
         Activity::SubagentEnded { id: sub, result, failed } => Event::SubagentEnded { session: id, id: sub, result, failed },
-        Activity::Steered(text) => Event::Steered { session: id, text },
+        Activity::Steered(text) => Event::Steered { session: id, text, kept: Vec::new() },
         // Filled in on the loop, which knows who it is and how long the last ones took.
         Activity::Compacting => {
             Event::Compacting { session: id, member: None, project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 0 }
@@ -8718,7 +8751,7 @@ mod tests {
         let done = "<task-notification><task-id>b1</task-id><status>completed</status><summary>built</summary></task-notification>";
         assert_eq!(first_said_line(done), None);
         assert_eq!(first_said_line("fix the header\nplease").as_deref(), Some("fix the header"));
-        let talk = [Entry::User { text: "go".into() }, Entry::Reply { text: "Started the build.".into() }, Entry::User { text: done.into() }];
+        let talk = [Entry::User { text: "go".into(), kept: Vec::new() }, Entry::Reply { text: "Started the build.".into() }, Entry::User { text: done.into(), kept: Vec::new() }];
         let context = suggestion_context("frontend", &talk).expect("the member answered last");
         assert!(!context.contains("task-notification"), "{context}");
     }

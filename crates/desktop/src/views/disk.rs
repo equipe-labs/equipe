@@ -257,6 +257,7 @@ fn fix_row(shell: &Shell, n: usize, fix: &Fix, cx: &mut Context<Shell>) -> AnyEl
         FixKind::Worktrees => (Icon::Folder, t!("disk.fix_worktrees").into(), t!("disk.fix_worktrees_desc", count = count)),
         FixKind::Builds => (Icon::Terminal, t!("disk.fix_builds").into(), t!("disk.fix_builds_desc", count = count)),
         FixKind::Logs => (Icon::FileText, t!("disk.fix_logs").into(), t!("disk.fix_logs_desc").into()),
+        FixKind::Attachments => (Icon::File, t!("disk.fix_attachments").into(), t!("disk.fix_attachments_desc").into()),
         FixKind::Yourself => {
             let it = fix.ids.first().and_then(item);
             let kind = it.map_or("", |i| label::disk_kind(lang, i.kind));

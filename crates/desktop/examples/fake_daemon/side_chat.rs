@@ -32,7 +32,7 @@ pub async fn turn(session: SessionId, side: SideChatId, text: String, events: br
         let _ = events.send(Event::SideChat { squad: Some("demo".into()), session, side, event: Box::new(event) });
     };
     let pause = || tokio::time::sleep(Duration::from_millis(350));
-    say(Event::UserMessage { session: side, text });
+    say(Event::UserMessage { session: side, text, kept: Vec::new() });
     pause().await;
     let answer = if searches() {
         let query = "TextSelection ends gpui floating toolbar".to_owned();

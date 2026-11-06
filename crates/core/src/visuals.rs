@@ -333,7 +333,7 @@ fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut S
     let folder = crate::squad_home::path(home, squad);
     let mut cwds: HashSet<PathBuf> = HashSet::new();
     for (cwd, entry) in journal.said_with_paths(SAID).unwrap_or_default() {
-        let (Entry::User { text } | Entry::Reply { text } | Entry::Note { text, .. }) = &entry else { continue };
+        let (Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. }) = &entry else { continue };
         for image in markdown::local_images(text) {
             for base in [&cwd, &folder] {
                 if let Some(path) = markdown::lexical(&image.path, base) {
@@ -895,7 +895,7 @@ mod tests {
             "시안입니다.\n\n![평면도]({abs})\n![배치도](outputs/T-2 갤러리 디자인/images/배치도.png \"A안\")\n![x]({}/secret.png)\n![l](outputs/T-2 갤러리 디자인/images/link.png)\n![t](outputs/T-2 갤러리 디자인/images/notes.txt)\n![up](../t2-6ad338ba/outputs/T-2 갤러리 디자인/images/단면.png)",
             outside.display()
         );
-        conversation(&journal, 1, &worktree, &[Entry::User { text: "보여 주세요".into() }, reply(&text)]);
+        conversation(&journal, 1, &worktree, &[Entry::User { text: "보여 주세요".into(), kept: Vec::new() }, reply(&text)]);
         let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
         // Absolute, and relative to where the member works: given.
         assert_eq!(serve(&home, &ask(&images.join("평면도.png")), None).unwrap().width, Some(40));

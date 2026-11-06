@@ -775,8 +775,8 @@ fn brief_talk(entries: &[Entry]) -> String {
     let mut size = 0;
     for entry in entries.iter().rev() {
         let line = match entry {
-            Entry::User { text } => match equipe_protocol::harness::words(text) {
-                Some(text) => format!("Person: {}", clip(&text, 1_200)),
+            Entry::User { text, kept } => match equipe_protocol::harness::words(text) {
+                Some(text) => format!("Person: {}", clip(&equipe_protocol::tags::read_back(&text, kept), 1_200)),
                 None => continue,
             },
             Entry::Reply { text } => format!("You: {}", clip(text, 1_800)),
@@ -870,7 +870,7 @@ mod tests {
             images: Default::default(),
         };
         let part = brief_ticket(&ticket, " src/login.rs | 12 ++++++");
-        let talk = brief_talk(&[Entry::User { text: "Use Redis".into() }, Entry::Reply { text: "Counting in Redis now; tests next.".into() }]);
+        let talk = brief_talk(&[Entry::User { text: "Use Redis".into(), kept: Vec::new() }, Entry::Reply { text: "Counting in Redis now; tests next.".into() }]);
         let text = brief("backend", &backend_move(), Why::Shift, Some(&part), &talk);
         for wanted in ["You are backend", "on Codex", "on Claude", "Claude's plan is running low", "T-42 Rate limit the login", "Five tries", "Which store for counters?", "equipe/backend-t42", "src/login.rs", "Person: Use Redis", "You: Counting in Redis", "## Next", "AGENTS.md"] {
             assert!(text.contains(wanted), "{wanted} in:\n{text}");

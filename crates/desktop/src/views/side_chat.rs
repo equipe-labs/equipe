@@ -423,7 +423,7 @@ pub fn panel(shell: &Shell, cx: &mut Context<Shell>) -> Option<(AnyElement, bool
     let last = entries.len().saturating_sub(1);
     for (n, entry) in entries.iter().enumerate() {
         match entry {
-            Entry::User { text } => rows.push(bubble(p, text)),
+            Entry::User { text, .. } => rows.push(bubble(p, text)),
             Entry::Reply { text } if !text.trim().is_empty() => rows.push(div().child(words(p, ("side-chat-said", key ^ (n as u64) << 1), text, p.prose)).into_any_element()),
             Entry::Tool { tool, target, outcome, .. } => {
                 let running = chat.working && outcome.is_none() && last_tool == Some(n) && n == last;

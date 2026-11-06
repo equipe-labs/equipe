@@ -1385,6 +1385,44 @@ impl Journal {
         Ok(())
     }
 
+    /// The person's messages whose kept line holds `needle`, each with where
+    /// it is kept (session, line): for a look through what was sent
+    /// (`crate::kept::rescue`).
+    pub fn messages_holding(&self, needle: &str) -> Result<Vec<(SessionId, i64, Entry)>> {
+        let mut stmt = self.conn.prepare("SELECT session, seq, body FROM entries WHERE instr(body, ?1) > 0 ORDER BY session, seq")?;
+        let rows = stmt.query_map([needle], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?;
+        Ok(rows
+            .filter_map(|row| row.ok())
+            .filter_map(|(session, seq, body)| Some((session as SessionId, seq, serde_json::from_str::<Entry>(&body).ok()?)))
+            .filter(|(.., entry)| matches!(entry, Entry::User { .. }))
+            .collect())
+    }
+
+    /// Line `seq` of `session`'s conversation, as `entry` now has it — when it
+    /// was said stays.
+    pub fn rewrite(&self, session: SessionId, seq: i64, entry: &Entry) -> Result<()> {
+        let body = serde_json::to_string(entry).map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute("UPDATE entries SET body = ?1 WHERE session = ?2 AND seq = ?3", params![body, session as i64, seq])?;
+        Ok(())
+    }
+
+    /// Everything waiting for members' next turns, of every kind.
+    pub fn all_waiting(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT text FROM waiting ORDER BY session, kind, seq")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    /// Whether this journal's sent attachments were looked through once
+    /// already ([`crate::kept::rescue`]).
+    pub fn kept_rescued(&self) -> bool {
+        self.meta("kept_rescued").is_some()
+    }
+
+    pub fn set_kept_rescued(&self) -> Result<()> {
+        self.set_meta("kept_rescued", "1")
+    }
+
     fn entries(&self, id: SessionId, limit: Option<u64>) -> Result<Vec<Entry>> {
         Ok(self.timed_entries(id, limit)?.0)
     }
@@ -1527,7 +1565,7 @@ mod tests {
         j.record_session(&record(1)).unwrap();
         let pages: i64 = j.conn.query_row("PRAGMA max_page_count = 1", [], |r| r.get(0)).unwrap();
         assert!(pages >= 1);
-        let err = j.append(1, &Entry::User { text: "x".repeat(200_000) }).unwrap_err();
+        let err = j.append(1, &Entry::User { text: "x".repeat(200_000), kept: Vec::new() }).unwrap_err();
         assert!(is_full(&err), "{err:?}");
         assert!(!is_full(&Error::QueryReturnedNoRows));
         // What it holds is still there to read; a lock left behind would fail this.
@@ -1595,7 +1633,7 @@ mod tests {
         j.record_conversation(51, None, Path::new("/squad/pm")).unwrap();
         j.record_conversation(52, Some("app"), Path::new("/squad/pm")).unwrap();
         j.set_title_if_empty(50, "the pricing page").unwrap();
-        j.append(50, &Entry::User { text: "the pricing page".into() }).unwrap();
+        j.append(50, &Entry::User { text: "the pricing page".into(), kept: Vec::new() }).unwrap();
         j.close_conversation(50).unwrap();
         j.close_conversation(52).unwrap();
         j.conn.execute("UPDATE conversations SET updated_at = 100 WHERE id = 50", []).unwrap();
@@ -1608,7 +1646,7 @@ mod tests {
         assert_eq!(j.put_away(1).unwrap().len(), 1);
         let back = j.reopen_conversation(50).unwrap().expect("taken up");
         assert_eq!((back.id, back.project.as_deref(), back.title.as_deref()), (50, Some("web"), Some("the pricing page")));
-        assert_eq!(j.conversation(50).unwrap(), [Entry::User { text: "the pricing page".into() }], "its lines, as they were");
+        assert_eq!(j.conversation(50).unwrap(), [Entry::User { text: "the pricing page".into(), kept: Vec::new() }], "its lines, as they were");
         assert_eq!(j.put_away(10).unwrap().iter().map(|c| c.session).collect::<Vec<_>>(), [52]);
         assert!(j.reopen_conversation(50).unwrap().is_none(), "open already");
         assert!(j.reopen_conversation(99).unwrap().is_none(), "no such one");
@@ -1624,7 +1662,7 @@ mod tests {
             j.set_title_if_empty(7, "not this one").unwrap();
             j.set_engine_session(7, "sess-1").unwrap();
             j.add_tokens(7, 40).unwrap();
-            j.append(7, &Entry::User { text: "add a docstring".into() }).unwrap();
+            j.append(7, &Entry::User { text: "add a docstring".into(), kept: Vec::new() }).unwrap();
             j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
         }
         let j = Journal::for_squad(&home, "acme").unwrap();
@@ -1635,7 +1673,7 @@ mod tests {
         assert_eq!(open[0].tokens, 40);
         assert_eq!(
             j.conversation(7).unwrap(),
-            vec![Entry::User { text: "add a docstring".into() }, Entry::Reply { text: "done".into() }]
+            vec![Entry::User { text: "add a docstring".into(), kept: Vec::new() }, Entry::Reply { text: "done".into() }]
         );
         assert_eq!(j.squad().as_deref(), Some("acme"));
     }
@@ -1645,7 +1683,7 @@ mod tests {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(7)).unwrap();
         let before = now() as u64;
-        j.append(7, &Entry::User { text: "add a docstring".into() }).unwrap();
+        j.append(7, &Entry::User { text: "add a docstring".into(), kept: Vec::new() }).unwrap();
         j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
         let (lines, times) = j.conversation_at(7).unwrap();
         assert_eq!(lines, j.conversation(7).unwrap());
