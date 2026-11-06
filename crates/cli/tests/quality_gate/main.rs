@@ -168,10 +168,10 @@ pub fn compliance(task: &Task, out: &Outcome) -> (BTreeMap<String, Option<bool>>
     let transcripts = out.transcripts_of(task.role);
     let mut rules = Rules::default();
     let mut skills = Vec::new();
-    if transcripts.is_empty() {
-        if let Some(session) = out.state.session(task.role) {
-            rules = quality::rules(&steps_from_events(&out.state.events, session));
-        }
+    if transcripts.is_empty()
+        && let Some(session) = out.state.session(task.role)
+    {
+        rules = quality::rules(&steps_from_events(&out.state.events, session));
     }
     for t in &transcripts {
         rules.add(&quality::rules(&t.steps));

@@ -327,7 +327,7 @@ impl Run {
                 let said = s.current.remove(session).unwrap_or_default();
                 s.turns.entry(*session).or_default().push(said);
                 if let Some(u) = usage {
-                    s.usage.entry(*session).or_default().push(u.clone());
+                    s.usage.entry(*session).or_default().push(*u);
                 }
             }
             Event::Error { message, .. } => s.errors.push(message.clone()),

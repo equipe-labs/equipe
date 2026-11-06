@@ -170,10 +170,13 @@ pub mod fake {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    /// What a command's words start with, and what it answers.
+    type Rules = Arc<Mutex<Vec<(Vec<String>, Out)>>>;
+
     #[derive(Default, Clone)]
     pub struct Fake {
         pub calls: Arc<Mutex<Vec<String>>>,
-        rules: Arc<Mutex<Vec<(Vec<String>, Out)>>>,
+        rules: Rules,
     }
 
     pub struct Still(pub Arc<Mutex<Vec<String>>>, pub String);

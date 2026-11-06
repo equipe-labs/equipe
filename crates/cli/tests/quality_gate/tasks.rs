@@ -366,7 +366,7 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
             let phone: Vec<&str> = calls.lines().filter_map(|l| l.split(' ').next()).filter(|n| n.starts_with("mcp__phone__")).collect();
             checks.push(must("drove the app with the phone tools", phone.contains(&"mcp__phone__act"), phone.join(", ")));
             let reports = files_named(out, None, |p| p.to_string_lossy().ends_with(".report.json"));
-            let report: Option<Report> = reports.iter().filter_map(|p| serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()).last();
+            let report: Option<Report> = reports.iter().rev().find_map(|p| serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok());
             match &report {
                 Some(r) => {
                     checks.push(must("a recording attached", r.recording.is_file() && r.seconds.is_some_and(|s| s > 1.), r.recording.display().to_string()));

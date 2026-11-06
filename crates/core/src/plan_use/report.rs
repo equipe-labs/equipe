@@ -582,7 +582,7 @@ pub fn burns(engine: Engine, rows: &[Row], squads: &Squads, week: Option<PlanWin
             })
         })
         .collect();
-    burns.sort_by(|a, b| b.week_bp.cmp(&a.week_bp));
+    burns.sort_by_key(|b| std::cmp::Reverse(b.week_bp));
     burns
 }
 

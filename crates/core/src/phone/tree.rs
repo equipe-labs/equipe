@@ -170,13 +170,16 @@ fn quoted(s: &str) -> String {
     if cut.len() < one_line.len() { format!("\"{cut}…\"") } else { format!("\"{cut}\"") }
 }
 
+/// What makes two elements the same thing said twice: kind, label, value and where.
+type Said = (String, Option<String>, Option<String>, i64, i64);
+
 /// The screen as a member reads it: one line per element that says something
 /// and is on screen — `Button "Pay" id=pay @ 20,700 362×50` — flat,
 /// in the tree's reading order (unnamed containers between make nesting
 /// misleading), the same thing said twice once, at most [`COMPACT_LINES`].
 pub fn compact(screen: &Screen) -> String {
     let mut lines: Vec<String> = Vec::new();
-    let mut seen: Vec<(String, Option<String>, Option<String>, i64, i64)> = Vec::new();
+    let mut seen: Vec<Said> = Vec::new();
     let mut left_out = 0;
     let shown: Vec<&Element> = screen.elements.iter().filter(|e| e.named() && e.frame.visible(screen.size) && e.kind != "Application").collect();
     for e in shown {

@@ -5,7 +5,6 @@
 //! the whole video.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use image::{GrayImage, RgbImage, imageops::FilterType};
 
@@ -314,6 +313,7 @@ mod ffmpeg {
 #[cfg(target_os = "macos")]
 mod avf {
     use super::*;
+    use std::time::Duration;
     use objc2::rc::Retained;
     use objc2_av_foundation::{AVAsset, AVAssetImageGenerator};
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
