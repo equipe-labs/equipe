@@ -42,8 +42,7 @@ impl Runtime {
         let mut facts = rules::facts_text(&facts, &routines::Local);
         // Decisions made in the person's words this week, and where they went wrong — only when there were any.
         if let Some(line) = self.words_week(squad, from) {
-            facts.push_str(&format!("
-{line}"));
+            facts.push_str(&format!("\n\n{line}"));
         }
         rules::message(routine, &facts)
     }
