@@ -829,6 +829,34 @@ fn the_report_shows_the_reviewers_scores_and_they_never_fail_a_run() {
 }
 
 #[test]
+fn on_codex_the_reviewer_gets_the_pictures_attached_and_its_tokens_from_its_events() {
+    for rubric in [design_grade::LANDING_RUBRIC, design_grade::EMPTY_STATE_RUBRIC] {
+        let codex = design_grade::for_codex(rubric);
+        assert!(!codex.contains("Read tool") && codex.contains("The images are attached") && codex.contains("only one JSON object"), "the same rubric, read from attachments");
+        assert_eq!(codex.replace("The images are attached, in the order listed.", ""), rubric.replace("Open every image with the Read tool first.", ""), "and nothing else changed");
+    }
+    let events = "{\"type\":\"thread.started\"}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":800,\"output_tokens\":150}}\nnot json\n";
+    assert_eq!(design_grade::codex_tokens(events), 1350, "input (its cached part included) and output");
+}
+
+#[test]
+fn without_a_transcript_a_skill_read_among_the_first_steps_counts_as_opened_first() {
+    use equipe_core::protocol::Ticket;
+    let ticket: Ticket = serde_json::from_value(json!({
+        "id": 1, "title": "x", "body": "", "status": "review", "kind": "task", "owner": null, "assignee": "designer",
+        "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": null,
+    }))
+    .unwrap();
+    let mut out = outcome_with(&scratch("early"), ticket);
+    out.state.sessions.insert("designer".into(), 7);
+    let used = |target: &str| (1.0, Event::ToolUse { session: 7, tool: "exec_command".into(), target: Some(target.into()), label: None, background: false });
+    out.state.events = vec![used("ls"), used("cat /h/skills/0.1/designer-x/skills/design-process/SKILL.md")];
+    assert!(tasks::opened_early(&out, "designer", "design-process").is_some());
+    out.state.events = (0..tasks::EARLY).map(|_| used("ls")).chain([used("cat /h/skills/design-process/SKILL.md")]).collect();
+    assert!(tasks::opened_early(&out, "designer", "design-process").is_none(), "read too late");
+}
+
+#[test]
 fn a_reviewers_scores_are_read_from_its_reply() {
     let said = "Here you go:\n{\"hierarchy\": 4, \"typography\": 3, \"layout\": 4, \"specificity\": 2, \"phone\": 5, \"finish\": 3, \"worst\": \"a {brace} in words\"}\nthanks";
     let v = design_grade::first_object(said).unwrap();

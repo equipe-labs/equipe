@@ -348,6 +348,9 @@ pub fn review(images: &[(String, PathBuf)], rubric: &str, dir: &Path) -> Result<
         listed.push(to.display().to_string());
     }
     std::fs::write(dir.join("rubric.txt"), rubric).map_err(|e| e.to_string())?;
+    if review_engine() == "codex" {
+        return review_on_codex(images, rubric, dir, &listed);
+    }
     let prompt = format!("{rubric}\n\nThe images:\n{}", listed.join("\n"));
     let model = std::env::var("EQUIPE_EVAL_REVIEW_MODEL").ok().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| "opus".into());
     let o = Process::new("claude")
@@ -367,6 +370,55 @@ pub fn review(images: &[(String, PathBuf)], rubric: &str, dir: &Path) -> Result<
     let u = &out["usage"];
     let tokens = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().map(|k| u[*k].as_u64().unwrap_or(0)).sum();
     Ok(Review { score, max, scores, tokens, cost_usd: out["total_cost_usd"].as_f64().unwrap_or(0.0) })
+}
+
+/// The reviewer's engine: `EQUIPE_EVAL_REVIEW_ENGINE` (`claude` or `codex`),
+/// else the members' when the run puts them all on Codex, else Claude.
+pub fn review_engine() -> String {
+    let var = |n: &str| std::env::var(n).ok().map(|v| v.trim().to_lowercase()).filter(|v| !v.is_empty());
+    var("EQUIPE_EVAL_REVIEW_ENGINE").unwrap_or_else(|| if var("EQUIPE_EVAL_ENGINE").as_deref() == Some("codex") { "codex".into() } else { "claude".into() })
+}
+
+/// The rubric as Codex reads it: the pictures come attached, not to be opened.
+pub fn for_codex(rubric: &str) -> String {
+    rubric.replace("Open every image with the Read tool first.", "The images are attached, in the order listed.")
+}
+
+/// The same review on Codex: `codex exec`, read-only, not kept (`--ephemeral`),
+/// the pictures attached; its usage read from its JSON events.
+fn review_on_codex(images: &[(String, PathBuf)], rubric: &str, dir: &Path, listed: &[String]) -> Result<Review, String> {
+    let names: Vec<&str> = images.iter().map(|(n, _)| n.as_str()).collect();
+    let prompt = format!("{}\n\nThe images: {}", for_codex(rubric), names.join(", "));
+    let answer = dir.join("answer.md");
+    let mut args: Vec<String> = ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never", "--json"].map(String::from).into();
+    if let Some(model) = std::env::var("EQUIPE_EVAL_REVIEW_MODEL").ok().filter(|m| !m.trim().is_empty()) {
+        args.extend(["--model".into(), model]);
+    }
+    for image in listed {
+        args.extend(["--image".into(), image.clone()]);
+    }
+    args.extend(["--output-last-message".into(), answer.display().to_string(), prompt]);
+    let o = Process::new("codex").args(&args).current_dir(dir).stdin(Stdio::null()).output().map_err(|e| format!("codex: {e}"))?;
+    let events = String::from_utf8_lossy(&o.stdout).into_owned();
+    let _ = std::fs::write(dir.join("review.jsonl"), &events);
+    let said = std::fs::read_to_string(&answer).map_err(|_| format!("the reviewer wrote no answer: {}", String::from_utf8_lossy(&o.stderr).chars().take(200).collect::<String>()))?;
+    let scores = first_object(&said).ok_or_else(|| format!("no scores in the review: {}", said.chars().take(200).collect::<String>()))?;
+    let (score, max) = total(&scores);
+    if max == 0.0 {
+        return Err(format!("no 1–5 scores in {scores}"));
+    }
+    Ok(Review { score, max, scores, tokens: codex_tokens(&events), cost_usd: 0.0 })
+}
+
+/// The tokens a `codex exec --json` run reports: each turn's input (cached
+/// ones included) and output.
+pub fn codex_tokens(events: &str) -> u64 {
+    events
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["type"] == "turn.completed")
+        .map(|e| ["input_tokens", "output_tokens"].iter().map(|k| e["usage"][*k].as_u64().unwrap_or(0)).sum::<u64>())
+        .sum()
 }
 
 /// A review as a check of its own: never required — it informs, the

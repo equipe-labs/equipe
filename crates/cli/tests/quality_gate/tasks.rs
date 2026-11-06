@@ -350,8 +350,15 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
             let mut checks = vec![handed_in()];
             let pictures = files_named(out, ticket, |p| p.extension().is_some_and(|x| ["png", "svg", "jpg", "jpeg", "webp"].contains(&x.to_string_lossy().to_lowercase().as_str())));
             checks.push(must("a mockup picture", !pictures.is_empty(), pictures.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
-            let opened = out.transcripts_of("designer").iter().flat_map(|t| equipe_core::quality::skill_checks(t, Some("designer"))).find(|c| c.skill == "design-process");
-            checks.push(must("design-process opened first", opened.as_ref().is_some_and(|c| c.opened.in_time()), opened.map(|c| format!("{:?}", c.opened)).unwrap_or_else(|| "not offered, or no transcript".into())));
+            let transcripts = out.transcripts_of("designer");
+            if transcripts.is_empty() {
+                // No Claude Code transcript (Codex): the skill is a file it reads, seen in the daemon's events.
+                let first = opened_early(out, "designer", "design-process");
+                checks.push(must("design-process opened first", first.is_some(), first.unwrap_or_else(|| format!("not among its first {EARLY} tool uses"))));
+            } else {
+                let opened = transcripts.iter().flat_map(|t| equipe_core::quality::skill_checks(t, Some("designer"))).find(|c| c.skill == "design-process");
+                checks.push(must("design-process opened first", opened.as_ref().is_some_and(|c| c.opened.in_time()), opened.map(|c| format!("{:?}", c.opened)).unwrap_or_else(|| "not offered, or no transcript".into())));
+            }
             checks
         }
         "designer-landing-page" => {
@@ -446,6 +453,27 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
         }
         other => panic!("no task {other}"),
     }
+}
+
+/// How many of a member's first tool uses count as "first" for a skill read
+/// from the daemon's events (as `quality::skill_checks` counts right after).
+pub const EARLY: usize = 8;
+
+/// Whether `role` read `skill`'s file among its first [`EARLY`] tool uses, by
+/// the daemon's events — for an engine with no Claude Code transcript, whose
+/// skills are files it reads (`…/skills/<skill>/SKILL.md`). `Some(the use)`.
+pub fn opened_early(out: &Outcome, role: &str, skill: &str) -> Option<String> {
+    let session = out.state.session(role)?;
+    let needle = format!("/skills/{skill}/");
+    out.state
+        .events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            equipe_core::protocol::Event::ToolUse { session: s, tool, target, .. } if *s == session => Some(format!("{tool} {}", target.clone().unwrap_or_default())),
+            _ => None,
+        })
+        .take(EARLY)
+        .find(|used| used.contains(&needle))
 }
 
 /// The landing page a run built: `index.html` at the top of its work, else
