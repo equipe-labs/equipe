@@ -91,7 +91,7 @@ async fn a_live_side_chat_forks_searches_and_leaves_the_session_as_it_was() {
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
     handle.send(Command::Submit { session: 1, text: "We'll ship the next release on Rust's newest stable version. Reply with one short sentence.".into(), about: None });
     let main = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
-    let main_usage = main.iter().find_map(|e| if let Event::TurnEnded { usage, .. } = e { Some(usage.clone()) } else { None }).flatten();
+    let main_usage = main.iter().find_map(|e| if let Event::TurnEnded { usage, .. } = e { Some(*usage) } else { None }).flatten();
     // The main conversation's transcript: the only one in this project's folder
     // of Claude Code's (named after the folder, each other character a `-`).
     let folder = |dir: &Path| dir.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>();
@@ -118,7 +118,7 @@ async fn a_live_side_chat_forks_searches_and_leaves_the_session_as_it_was() {
     let tools: Vec<(String, Option<String>)> = inner.iter().filter_map(|e| if let Event::ToolUse { tool, target, .. } = e { Some((tool.clone(), target.clone())) } else { None }).collect();
     let sources: Vec<String> = inner.iter().filter_map(|e| if let Event::ToolResult { tool, outcome, .. } = e { (tool == "WebSearch").then(|| outcome.output.clone()) } else { None }).collect();
     let answer: String = inner.iter().filter_map(|e| if let Event::TextDelta { text, .. } = e { Some(text.as_str()) } else { None }).collect();
-    let side_usage = inner.iter().find_map(|e| if let Event::TurnEnded { usage, .. } = e { Some(usage.clone()) } else { None }).flatten();
+    let side_usage = inner.iter().find_map(|e| if let Event::TurnEnded { usage, .. } = e { Some(*usage) } else { None }).flatten();
     eprintln!("tools: {tools:?}\nsources: {sources:#?}\nanswer: {answer}\nmain turn tokens: {}\nside chat tokens: {}", total(&main_usage), total(&side_usage));
     let errors: Vec<&Event> = inner.iter().filter(|e| matches!(e, Event::Error { .. })).collect();
     assert!(errors.is_empty(), "{errors:?}");
