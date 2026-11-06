@@ -2879,7 +2879,6 @@
   "words.via_typed": "輸入",
   "words.via_dictated": "聽寫",
   "words.via_voice": "語音",
-  "words.asked_again": "又問了 {n} 次",
   "words.outcome_done": "已完成",
   "words.outcome_undone": "已撤銷",
   "words.outcome_cancelled": "已取消",

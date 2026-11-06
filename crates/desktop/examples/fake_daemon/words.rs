@@ -274,14 +274,12 @@ pub fn log() -> Vec<Entry> {
         device: None,
         flags,
     };
-    let ko = lang() == Lang::Ko;
-    let t = |ko_text: &'static str, en_text: &'static str| if ko { ko_text } else { en_text };
     vec![
-        entry(6, day + 50 * 60_000, Kind::Push, Via::Voice, t("T-42 머지하고 push", "merge T-42 and push"), t("T-42를 main에 머지하고 main을 origin에 push", "Merge T-42 into main and push main to origin"), vec![heard(t("응", "yes"), Reply::Yes, day + 50 * 60_000 + 4_000, Via::Voice), heard(t("잠깐 취소", "wait, cancel"), Reply::Cancel, day + 50 * 60_000 + 9_000, Via::Voice)], Outcome::Cancelled, vec![Flag::Cancelled]),
-        entry(5, day + 40 * 60_000, Kind::Merge, Via::Typed, t("T-42 머지", "merge T-42"), t("T-42를 이 Mac에서 main에 머지", "Merge T-42 into main, on this Mac"), vec![heard(t("음", "hmm"), Reply::Unclear, day + 40 * 60_000 + 6_000, Via::Typed), heard("ㄱㄱ", Reply::Yes, day + 40 * 60_000 + 14_000, Via::Typed)], Outcome::Done, vec![Flag::AskedAgain, Flag::Ambiguous, Flag::RevertedLater]),
-        entry(4, day + 30 * 60_000, Kind::AcceptTask, Via::Dictated, t("T-12 수락", "accept T-12"), "", vec![heard(t("되돌려", "undo"), Reply::Undo, day + 30 * 60_000 + 2_000, Via::Typed)], Outcome::Undone, vec![Flag::Undone]),
-        entry(3, day + 20 * 60_000, Kind::AllowOutward, Via::Typed, t("허용", "allow it"), t("frontend가 스쿼드 밖으로 나가는 일을 이번 한 번 허용: git push origin main", "Let frontend reach outside the squad, once: git push origin main"), vec![heard(t("아니 아직", "not yet"), Reply::No, day + 20 * 60_000 + 3_000, Via::Typed)], Outcome::Held, vec![Flag::Held]),
-        entry(2, day + 10 * 60_000, Kind::KeepIdea, Via::Typed, t("T-5 아이디어로 남겨", "keep T-5 as an idea"), "", vec![], Outcome::Done, vec![]),
-        entry(1, day, Kind::RunRoutine, Via::Voice, t("주간 리포트 한 번 돌려", "run the weekly report"), "", vec![], Outcome::Done, vec![]),
+        entry(6, day + 50 * 60_000, Kind::Push, Via::Voice, "merge T-42 and push", "Merge T-42 into main and push main to origin", vec![heard("yes", Reply::Yes, day + 50 * 60_000 + 4_000, Via::Voice), heard("wait, cancel", Reply::Cancel, day + 50 * 60_000 + 9_000, Via::Voice)], Outcome::Cancelled, vec![Flag::Cancelled]),
+        entry(5, day + 40 * 60_000, Kind::Merge, Via::Typed, "merge T-42", "Merge T-42 into main, on this Mac", vec![heard("hmm", Reply::Unclear, day + 40 * 60_000 + 6_000, Via::Typed), heard("ok", Reply::Yes, day + 40 * 60_000 + 14_000, Via::Typed)], Outcome::Done, vec![Flag::AskedAgain, Flag::Ambiguous, Flag::RevertedLater]),
+        entry(4, day + 30 * 60_000, Kind::AcceptTask, Via::Dictated, "accept T-12", "", vec![heard("undo", Reply::Undo, day + 30 * 60_000 + 2_000, Via::Typed)], Outcome::Undone, vec![Flag::Undone]),
+        entry(3, day + 20 * 60_000, Kind::AllowOutward, Via::Typed, "allow it", "Let frontend reach outside the squad, once: git push origin main", vec![heard("not yet", Reply::No, day + 20 * 60_000 + 3_000, Via::Typed)], Outcome::Held, vec![Flag::Held]),
+        entry(2, day + 10 * 60_000, Kind::KeepIdea, Via::Typed, "keep T-5 as an idea", "", vec![], Outcome::Done, vec![]),
+        entry(1, day, Kind::RunRoutine, Via::Voice, "run the weekly report", "", vec![], Outcome::Done, vec![]),
     ]
 }

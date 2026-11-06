@@ -2943,7 +2943,6 @@
   "words.via_typed": "typed",
   "words.via_dictated": "dictated",
   "words.via_voice": "by voice",
-  "words.asked_again": "Asked again {n}×",
   "words.outcome_done": "Done",
   "words.outcome_undone": "Undone",
   "words.outcome_cancelled": "Cancelled",

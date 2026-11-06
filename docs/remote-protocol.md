@@ -243,7 +243,7 @@ own message: a clear yes runs it (`outward`: after a 10-second cancel window); a
 card; a yes with more said is asked again (twice, then held); anything else goes on to the member as
 usual, the read-back still waiting until it lapses to its card after two minutes. Said aloud or
 dictated, a yes to something high-risk must be short (three words at most) and on its own. An approval
-word with nothing it names ("approve", "승인") starts a read-back only when the message is little more
+word with nothing it names ("approve", "allow") starts a read-back only when the message is little more
 than the word. A secret's value, pairing a phone, "always allow" and settings that widen what members
 do alone never go by words, in any mode; what equipe refuses stays refused.
 

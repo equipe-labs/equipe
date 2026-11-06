@@ -350,7 +350,7 @@ mod tests {
         assert!(sheet.rows[0].heading && sheet.rows[1].head.starts_with("⚑ ") && sheet.rows[1].head.ends_with("목소리"));
         assert_eq!(
             sheet.rows[1].text,
-            "말한 것 “merge T-1” → 읽어 준 것: Merge T-1 into main, on this Mac → pm이 쓴 말: “급해요” → “음” (알아듣지 못함) → “ㄱㄱ” (네) → 했어요 · 확인이 필요해요 · 8초 걸림 → 다시 물음, 나중에 되돌림"
+            "말한 것 “merge T-1” → 읽어 준 것: Merge T-1 into main, on this Mac → pm의 말: “급해요” → “음” (알아듣지 못함) → “ㄱㄱ” (네) → 했어요 · 확인이 필요해요 · 8초 걸림 → 다시 물음, 나중에 되돌림"
         );
         assert!(sheet.rows[2].heading && !sheet.rows[3].head.starts_with('⚑'));
         assert_eq!(log_sheet(&[], "acme").rows[0].text, "아직 말로 정한 게 없어요.");

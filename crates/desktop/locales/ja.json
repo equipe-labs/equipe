@@ -2879,7 +2879,6 @@
   "words.via_typed": "入力",
   "words.via_dictated": "音声入力",
   "words.via_voice": "声",
-  "words.asked_again": "{n} 回聞き直しました",
   "words.outcome_done": "実行しました",
   "words.outcome_undone": "元に戻しました",
   "words.outcome_cancelled": "キャンセルしました",

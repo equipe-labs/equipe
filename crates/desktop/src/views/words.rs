@@ -147,10 +147,8 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .text_color(p.text2)
         .child(div().pt(px(2.)).child(icon(Icon::Shield, 12., p.muted)))
         .child(div().flex_1().min_w_0().child(rules::hint(&live, now)));
-    let mut said = format!("{} · {}", t!("words.log_said", said = live.said.clone()), rules::via(live.via));
-    if live.asked_again > 0 {
-        said.push_str(&format!(" · {}", t!("words.asked_again", n = live.asked_again.to_string())));
-    }
+    // Asked again shows on the line above: said once.
+    let said = format!("{} · {}", t!("words.log_said", said = live.said.clone()), rules::via(live.via));
     let stop = {
         let handle = handle.clone();
         let kind = if live.stage == Stage::Countdown { Kind::Danger } else { Kind::Secondary };
