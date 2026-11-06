@@ -148,7 +148,7 @@ impl Runtime {
         if chat.turn.as_ref().is_some_and(|t| !t.is_finished()) {
             return self.side_event(side, Event::Error { session: Some(side), message: say!(self, "error.side_chat_busy"), next: None });
         }
-        self.side_event(side, Event::UserMessage { session: side, text: text.clone() });
+        self.side_event(side, Event::UserMessage { session: side, text: text.clone(), kept: Vec::new() });
         if let Err(message) = self.start_side_turn(side, text) {
             self.side_event(side, Event::Error { session: Some(side), message, next: None });
             self.side_event(side, Event::TurnEnded { session: side, outcome: TurnOutcome::Failed, usage: None });

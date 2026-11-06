@@ -156,7 +156,7 @@ mod tests {
     fn it_works_from_the_persons_message_to_the_turns_end_and_its_answer_is_the_last_reply() {
         let mut c = SideConvo::new(1, "the header");
         assert!(!c.said_anything() && c.last_answer().is_none());
-        said(&mut c, &[Event::UserMessage { session: 9, text: "why?".into() }, Event::TextDelta { session: 9, text: "Because ".into() }]);
+        said(&mut c, &[Event::UserMessage { session: 9, text: "why?".into(), kept: Vec::new() }, Event::TextDelta { session: 9, text: "Because ".into() }]);
         assert!(c.working && c.last_answer().is_none(), "not while it answers");
         said(&mut c, &[
             Event::ToolUse { session: 9, tool: "WebSearch".into(), target: Some("q".into()), label: None, background: false },
@@ -165,7 +165,7 @@ mod tests {
         ]);
         assert!(!c.working);
         assert_eq!(c.last_answer().as_deref(), Some("it was **first**."));
-        said(&mut c, &[Event::UserMessage { session: 9, text: "and?".into() }, Event::TurnEnded { session: 9, outcome: TurnOutcome::Failed, usage: None }]);
+        said(&mut c, &[Event::UserMessage { session: 9, text: "and?".into(), kept: Vec::new() }, Event::TurnEnded { session: 9, outcome: TurnOutcome::Failed, usage: None }]);
         assert_eq!(c.last_answer(), None, "the last message has no answer");
     }
 

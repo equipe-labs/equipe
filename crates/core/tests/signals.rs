@@ -100,7 +100,7 @@ fn signal_wakes(events: &[Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::UserMessage { session: 1, text } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } => Some(text.clone()),
+            Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } => Some(text.clone()),
             _ => None,
         })
         .filter(|t| t.starts_with("[Signal · "))

@@ -220,6 +220,9 @@ impl Chat {
         if !moved && model.revision == self.seen_revision && self.expanded == self.shown_expanded {
             return;
         }
+        if let Some(convo) = model.convo() {
+            self.sent.borrow_mut().keep_words(convo.kept());
+        }
         let mut view = model.conversation(self.follow);
         crate::yourturn::mark(&mut view.blocks, looks);
         crate::convo::mark_handed(&mut view.blocks);
@@ -383,7 +386,7 @@ impl Chat {
     fn search(&mut self, cx: &mut App) {
         let query = self.find.input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
         self.find.query = query.trim().to_owned();
-        self.find.hits = find_hits(&self.blocks, &self.find.query);
+        self.find.hits = find_hits(&self.blocks, &self.find.query, &self.sent.borrow());
         // The match nearest the end: the conversation is read from there.
         self.find.at = self.find.hits.len().saturating_sub(1);
         self.show_hit(cx);
@@ -463,14 +466,25 @@ fn occurrences(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
 }
 
 /// Each match of `query` in the conversation: its row and its number there.
-pub fn find_hits(blocks: &[Block], query: &str) -> Vec<(usize, usize)> {
+/// Your message's row also holds the words its text files kept (`sent`),
+/// after its own.
+pub fn find_hits(blocks: &[Block], query: &str, sent: &crate::sent::Sent) -> Vec<(usize, usize)> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
     }
     let mut hits = Vec::new();
     for (ix, block) in blocks.iter().enumerate() {
-        if let Some(text) = block.searchable() {
+        let mut found = block.searchable();
+        if let (Some(text), Block::User(said) | Block::Pending { text: said, .. }) = (&mut found, block) {
+            for tag in crate::sent::parts(said).tags {
+                if let Some(words) = sent.kept(&tag.path) {
+                    text.push('\n');
+                    text.push_str(words);
+                }
+            }
+        }
+        if let Some(text) = found {
             let n = text.to_lowercase().matches(&query).count();
             hits.extend((0..n).map(|k| (ix, k)));
         }
@@ -2817,9 +2831,20 @@ mod tests {
             Block::Thought { n: 0, secs: 2, text: "header".into() },
             Block::Note("footer".into()),
         ];
-        assert_eq!(find_hits(&blocks, "header"), [(0, 0), (1, 0), (1, 1)]);
-        assert_eq!(find_hits(&blocks, "  "), []);
+        let none = crate::sent::Sent::default();
+        assert_eq!(find_hits(&blocks, "header", &none), [(0, 0), (1, 0), (1, 1)]);
+        assert_eq!(find_hits(&blocks, "  ", &none), []);
         assert_eq!(occurrences("A header, a Header", "header"), [2..8, 12..18]);
+    }
+
+    #[test]
+    fn find_reaches_the_words_a_message_kept_of_its_files() {
+        let memo = "/u/.equipe/uploads/1792073093607-memo-transcript.txt";
+        let blocks = vec![Block::User(format!("listen [audio: /u/.equipe/uploads/1792073093606-memo.m4a · 0:31] [file: {memo} · 1 line]")), Block::Reply { text: "On it.".into(), first: true, live: false, worked: None }];
+        let mut sent = crate::sent::Sent::default();
+        assert_eq!(find_hits(&blocks, "pricing", &sent), [], "nothing kept: only the words typed");
+        sent.keep_words(&[equipe_core::protocol::tags::Kept { path: memo.into(), text: "Ship the pricing page by Friday.".into() }]);
+        assert_eq!(find_hits(&blocks, "pricing", &sent), [(0, 0)], "the voice memo's words, found on its message");
     }
 
     #[test]

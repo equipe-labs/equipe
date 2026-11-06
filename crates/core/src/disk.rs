@@ -594,8 +594,20 @@ impl Scan<'_> {
                 continue;
             }
             let (bytes, whole) = measure(&path, &mut self.budget);
-            if bytes >= MB {
-                self.push(DiskGroup::Equipe, kind, format!("{folder}/"), &path, bytes, whole, false, DiskWhy::Needed);
+            // What sent messages attached is told apart: kept, and the person's to remove.
+            let kept = if kind == DiskKind::Uploads { crate::kept::usage(&home, std::time::SystemTime::now()) } else { crate::kept::Usage::default() };
+            let rest = bytes.saturating_sub(kept.bytes);
+            if rest >= MB {
+                self.push(DiskGroup::Equipe, kind, format!("{folder}/"), &path, rest, whole, false, DiskWhy::Needed);
+            }
+            let recent = (kept.files - kept.old_files, kept.bytes - kept.old_bytes);
+            if recent.0 > 0 {
+                let at = self.push(DiskGroup::Equipe, DiskKind::Attachments, format!("{folder}/ ({})", recent.0), &path, recent.1, true, false, DiskWhy::Sent);
+                self.items[at].id = format!("{}:sent", id(DiskKind::Attachments, &path));
+            }
+            if kept.old_files > 0 {
+                let at = self.push(DiskGroup::Equipe, DiskKind::Attachments, format!("{folder}/ ({})", kept.old_files), &path, kept.old_bytes, true, true, DiskWhy::SentLongAgo);
+                self.items[at].id = format!("{}:old", id(DiskKind::Attachments, &path));
             }
         }
         self.recordings();
@@ -752,6 +764,15 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
             }
             DiskKind::Log if removable(&item.path, &roots) => trim_log(&item.path).is_ok(),
             DiskKind::Recordings if removable(&item.path, &roots) => std::fs::remove_dir_all(&item.path).is_ok(),
+            // Kept attachments sent long ago: the files go, their names with them.
+            DiskKind::Attachments if item.why == DiskWhy::SentLongAgo => {
+                let (files, bytes) = crate::kept::remove_old(&known.home, std::time::SystemTime::now());
+                if files > 0 {
+                    done.freed += bytes;
+                    done.removed.push(id.clone());
+                }
+                continue;
+            }
             _ => false,
         };
         if gone {
@@ -1393,6 +1414,45 @@ mod tests {
         let none = clean(&known, &[format!("worktree:{}", tree.outside.display()), format!("build_cache:{}", tree.repo.display())]);
         assert_eq!(none.removed.len(), 0);
         assert!(tree.outside.join("blob").exists() && tree.repo.join(".gitignore").exists());
+    }
+
+    #[test]
+    fn attachments_the_person_sent_are_told_apart_and_go_only_when_they_pick_the_old_ones() {
+        use std::io::Write as _;
+        let tree = Tree::new();
+        let home = &tree.home;
+        let put = |name: &str, bytes: usize, days: u64| {
+            let (mut file, path) = crate::gateway::create_upload(home, name, Some(equipe_protocol::rpc::UploadKind::File)).unwrap();
+            file.write_all(&vec![1u8; bytes]).unwrap();
+            file.set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 24 * 3600)).unwrap();
+            path
+        };
+        let draft = put("draft.txt", 2 * MB as usize, 0);
+        let recent = put("recent.txt", 2 * MB as usize, 2);
+        let old = put("old.txt", 3 * MB as usize, 31);
+        crate::kept::keep(home, &format!("[file: {}] [file: {}]", recent.display(), old.display()));
+        let known = Known { home: home.clone(), ..Known::default() };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        let uploads = crate::gateway::uploads_dir(home);
+        let of = |why: DiskWhy| items.iter().find(|i| i.path == uploads && i.why == why).unwrap_or_else(|| panic!("no {why:?}: {items:#?}"));
+        // The room each takes on disk: its bytes, and a block or so more.
+        let about = |bytes: u64, n: u64| (n * MB..n * MB + 64 * 1024).contains(&bytes);
+        let rest = of(DiskWhy::Needed);
+        assert!(rest.kind == DiskKind::Uploads && about(rest.bytes, 2), "the draft, apart: {rest:?}");
+        let sent = of(DiskWhy::Sent);
+        assert!(sent.kind == DiskKind::Attachments && about(sent.bytes, 2) && !sent.safe, "{sent:?}");
+        let long_ago = of(DiskWhy::SentLongAgo).clone();
+        assert!(long_ago.kind == DiskKind::Attachments && about(long_ago.bytes, 3) && long_ago.safe, "{long_ago:?}");
+        assert!(!certain(&long_ago), "never given back on equipe's own");
+        assert_eq!(clean_certain(&known).freed, 0);
+        assert!(old.exists());
+        let report = DiskReport { items: items.clone(), ..DiskReport::default() };
+        assert_eq!(report.reclaimable(), 0, "not part of everything equipe may give back");
+        // The person picks them: only the old ones go, and are kept no more.
+        let done = clean(&known, &[long_ago.id.clone(), sent.id.clone()]);
+        assert_eq!((done.freed, done.removed.clone()), (long_ago.bytes, vec![long_ago.id.clone()]), "{done:?}");
+        assert!(!old.exists() && recent.exists() && draft.exists());
+        assert!(!crate::kept::names(home).contains(old.file_name().unwrap().to_str().unwrap()));
     }
 
     #[test]

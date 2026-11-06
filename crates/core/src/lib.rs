@@ -35,6 +35,7 @@ pub mod eta;
 pub mod gateway;
 pub mod i18n;
 pub mod journal;
+pub mod kept;
 pub mod language;
 pub mod looks;
 pub mod mcp;

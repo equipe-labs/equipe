@@ -58,7 +58,7 @@ pub async fn stopped_and_read(session: SessionId, events: broadcast::Sender<Even
     let outcome = ToolOutcome { ok: false, exit: Some(143), ms: Some(1_686_000), output: "Terminated".into(), ..Default::default() };
     let _ = events.send(Event::ToolResult { session, tool: "Bash".into(), target: Some(COMMAND.into()), outcome });
     for text in read {
-        let _ = events.send(Event::Steered { session, text });
+        let _ = events.send(Event::Steered { session, text, kept: Vec::new() });
     }
     for chunk in ["The query was stopped. ", "I'll read the count from the journal instead."] {
         let _ = events.send(Event::TextDelta { session, text: chunk.into() });
@@ -76,6 +76,6 @@ pub async fn read_at_next_step(session: SessionId, events: broadcast::Sender<Eve
     }
     tokio::time::sleep(Duration::from_millis(1500)).await;
     for text in read {
-        let _ = events.send(Event::Steered { session, text });
+        let _ = events.send(Event::Steered { session, text, kept: Vec::new() });
     }
 }

@@ -731,8 +731,9 @@ fn squads(home: &Path) -> rpc::Squads {
 const UPLOAD_MAX: usize = 40 << 20;
 /// What `equipe receive` takes at most.
 pub const RECEIVE_MAX: u64 = 2 << 30;
-/// Uploads older than this are swept when another arrives.
-const UPLOAD_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+/// Uploads no sent message keeps are swept this long after they came, when
+/// another arrives.
+pub const UPLOAD_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 const IMAGE_KINDS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 /// Where uploads are kept on this machine.
@@ -768,23 +769,33 @@ pub fn upload_name(name: &str, kind: Option<rpc::UploadKind>) -> Result<(String,
     Ok((if stem.is_empty() { "upload".into() } else { stem }, ext))
 }
 
+/// Sweep, as of `now`, the uploads no sent message keeps (a draft given up)
+/// that are older than [`UPLOAD_KEEP`]: what a sent message attached stays
+/// until the person removes it (`crate::kept`). How many went.
+pub fn sweep_uploads(home: &Path, now: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(uploads_dir(home)) else { return 0 };
+    let kept = crate::kept::names(home);
+    let mut swept = 0;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let old = meta.modified().ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age > UPLOAD_KEEP);
+        if old && !meta.is_dir() && !kept.contains(entry.file_name().to_string_lossy().as_ref()) && std::fs::remove_file(entry.path()).is_ok() {
+            swept += 1;
+        }
+    }
+    swept
+}
+
 /// A new file under `<home>/uploads` (0600 in a 0700 folder) for `name`,
 /// named by equipe — `<stamp>-<stem>.<ext>`, never a folder of the screen's
-/// choosing — and old uploads swept while there.
+/// choosing — and old drafts swept while there ([`sweep_uploads`]).
 pub fn create_upload(home: &Path, name: &str, kind: Option<rpc::UploadKind>) -> Result<(std::fs::File, PathBuf), String> {
     use std::os::unix::fs::OpenOptionsExt as _;
     let (stem, ext) = upload_name(name, kind)?;
     let dir = uploads_dir(home);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     restrict(&dir, 0o700).map_err(|e| e.to_string())?;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > UPLOAD_KEEP);
-            if old {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
+    sweep_uploads(home, std::time::SystemTime::now());
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
     let dot = if ext.is_empty() { String::new() } else { format!(".{ext}") };
     for n in 0.. {

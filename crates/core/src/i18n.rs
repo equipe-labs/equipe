@@ -708,6 +708,7 @@ pub mod label {
             K::Yarn => "disk.kind.yarn",
             K::Docker => "disk.kind.docker",
             K::Recordings => "disk.kind.recordings",
+            K::Attachments => "disk.kind.attachments",
         })
     }
 
@@ -727,6 +728,8 @@ pub mod label {
             W::OldLog => "disk.why.old_log",
             W::Needed => "disk.why.needed",
             W::NotEquipes => "disk.why.not_equipes",
+            W::Sent => "disk.why.sent",
+            W::SentLongAgo => "disk.why.sent_long_ago",
         })
     }
 }

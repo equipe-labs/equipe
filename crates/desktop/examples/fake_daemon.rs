@@ -31,7 +31,8 @@
 //! already, `queued` with two messages waiting; `done` and `fail` end it after
 //! `FAKE_COMPACT_AFTER` ms (default 4000). "Try again" (`/compact`) starts it again.
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
-//! last message of the person's to the PM's history (attachment tags and all).
+//! last message of the person's to the PM's history (attachment tags and all);
+//! `FAKE_KEPT=<words>` a voice memo whose files are gone, its words kept with it.
 //! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
 //! (no such ticket), to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
 //! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
@@ -590,7 +591,7 @@ fn close_questions(id: u64, answers: Option<Vec<Answer>>, events: &broadcast::Se
         None => equipe_core::protocol::decide::dismissed_message(&set),
     };
     let _ = events.send(Event::QuestionsClosed { squad: "demo".into(), id, answers });
-    let _ = events.send(Event::UserMessage { session: set.session, text: text.clone() });
+    let _ = events.send(Event::UserMessage { session: set.session, text: text.clone(), kept: Vec::new() });
     Some((set.session, text))
 }
 
@@ -1014,7 +1015,7 @@ fn on(mut info: SessionInfo, ticket: u32, project: &str, title: &str, working: b
     info.state = if working { SessionState::Working } else { SessionState::Ready };
     info.recent = vec![
         Entry::Note { undo: None, text: format!("── T-{ticket} · {title} — on branch equipe/t-{ticket}") },
-        Entry::User { text: format!("Please start T-{ticket}.") },
+        Entry::User { text: format!("Please start T-{ticket}."), kept: Vec::new() },
         Entry::Reply { text: "Sure, I'll look at the structure first. I'll reuse the existing components and write the tests first.".into() },
         Entry::Tool { tool: tool.0.into(), target: Some(if tool.0 == "Bash" { tool.1.to_owned() } else { format!("{}/{}", repo(project).display(), tool.1) }), outcome: None, label: None, background: false },
     ];
@@ -1175,7 +1176,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     (Some(rpc::HELLO), Some(id)) => {
                         let params: rpc::HelloParams = message.params_as().unwrap();
                         let history = vec![
-                            Entry::User { text: "Carry on with what you were doing yesterday".into() },
+                            Entry::User { text: "Carry on with what you were doing yesterday".into(), kept: Vec::new() },
                             Entry::Reply { text: "Sure, I'll carry on from **T-9**.".into() },
                             Entry::Tool { tool: "Read".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None, label: None, background: false },
                             Entry::Tool { tool: "Edit".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None, label: None, background: false },
@@ -1194,7 +1195,20 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         if let Some(n) = std::env::var("FAKE_HISTORY").ok().and_then(|n| n.parse().ok()) {
                             history = history::history(n);
                         }
-                        history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
+                        history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text, kept: Vec::new() }));
+                        // `FAKE_KEPT=<words>`: a voice memo sent a while ago, its files
+                        // gone since, its words kept with the message
+                        // (`FAKE_KEPT_SAID`: what was typed with it).
+                        if let Some(words) = std::env::var("FAKE_KEPT").ok().filter(|w| !w.is_empty()) {
+                            let uploads = std::path::Path::new("/tmp/fake/uploads");
+                            let (memo, transcript) = (uploads.join("1792385027904-voice-memo.m4a"), uploads.join("1792385027905-voice-memo-transcript.txt"));
+                            let said = std::env::var("FAKE_KEPT_SAID").unwrap_or_else(|_| "Sort this out, please.".into());
+                            let lines = words.lines().count().max(1);
+                            let text = format!("{said} [audio: {} · 2:14] [file: {} · {lines} lines]", memo.display(), transcript.display());
+                            let kept = vec![equipe_core::protocol::tags::Kept { path: transcript.display().to_string(), text: words }];
+                            history.push(Entry::User { text, kept });
+                            history.push(Entry::Reply { text: std::env::var("FAKE_KEPT_REPLY").unwrap_or_else(|_| "Got it — three things, in order.".into()) });
+                        }
                         // `FAKE_RETRO=1`: last week's retro and this week's, in the PM's conversation.
                         if retro::on() {
                             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
@@ -1202,12 +1216,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         // `FAKE_ASKLIST=1`: the PM's last reply asks three things in a list of its own words.
                         if std::env::var("FAKE_ASKLIST").is_ok_and(|v| v == "1") {
-                            history.push(Entry::User { text: "Can we ship to the EU stores right away too?".into() });
+                            history.push(Entry::User { text: "Can we ship to the EU stores right away too?".into(), kept: Vec::new() });
                             history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None, label: None, background: false });
                             history.push(Entry::Reply { text: ASKLIST.into() });
                         }
                         if reading::on() {
-                            history.push(Entry::User { text: reading::ASKED.into() });
+                            history.push(Entry::User { text: reading::ASKED.into(), kept: Vec::new() });
                             history.push(Entry::Reply { text: reading::REPLY.into() });
                         }
                         if pictures::on() {
@@ -1227,14 +1241,14 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             signin::attached(events.clone());
                         }
                         if browser::handover() {
-                            history.push(Entry::User { text: "Change the EU DSA trader status in App Store Connect".into() });
+                            history.push(Entry::User { text: "Change the EU DSA trader status in App Store Connect".into(), kept: Vec::new() });
                             history.push(Entry::Reply { text: "My browser isn't signed in to App Store Connect, so you'll need to sign in first.".into() });
                             history.push(Entry::Note { undo: None, text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
                         }
                         // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
                         // long gone, for the tickets' cards on the pointer.
                         if std::env::var_os("FAKE_CARDS").is_some() {
-                            history.push(Entry::User { text: "Anything for me to look at?".into() });
+                            history.push(Entry::User { text: "Anything for me to look at?".into(), kept: Vec::new() });
                             let pictures = if replies::on() { " Have a look at T-4's pictures too." } else { "" };
                             history.push(Entry::Reply { text: format!("T-42 is waiting for review. T-117 is your turn, and the old T-999 is gone.{pictures}") });
                         }
@@ -1328,7 +1342,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // running in the background (described, as Claude Code's are).
                         let pm_waits = std::env::var("FAKE_BACKGROUND").is_ok_and(|v| v == "1");
                         if pm_waits {
-                            history.push(Entry::User { text: "Check it as soon as the new deploy is up".into() });
+                            history.push(Entry::User { text: "Check it as soon as the new deploy is up".into(), kept: Vec::new() });
                             history.push(Entry::Tool { tool: "Bash".into(), target: Some("git -C ~/site log -1 --format=%h".into()), outcome: Some(Box::new(equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(100), output: "6ad5f11".into(), skipped: 0, diff: None })), label: Some("Check the current commit".into()), background: false });
                             history.push(Entry::Tool { tool: "Bash".into(), target: Some("until [ \"$(git -C ~/site log -1 --format=%h)\" != 6ad5f11 ]; do sleep 30; done".into()), outcome: None, label: Some("Watch for a new commit and deploy".into()), background: true });
                             history.push(Entry::Reply { text: "Sure, I'm watching for a new commit and deploy. When it's up I'll check the screen and show you.".into() });
@@ -1606,7 +1620,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 } else {
                                     // `torture <n>`: a part of the Markdown torture test (see `torture.rs`).
                                     let part = text.strip_prefix("torture").and_then(|n| n.trim().parse::<usize>().ok());
-                                    let _ = events.send(Event::UserMessage { session, text });
+                                    let _ = events.send(Event::UserMessage { session, text, kept: Vec::new() });
                                     let task = match part {
                                         Some(part) => tokio::spawn(torture::turn(session, part, events.clone(), seconds)),
                                         None => tokio::spawn(turn(session, events.clone(), seconds)),
@@ -1637,7 +1651,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::SessionStarted { session, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some(squad.clone()) });
                                     let _ = events.send(Event::LaneOpened { session, of: 1, project: c.project.clone(), kept: true });
                                     let title = c.title.clone().unwrap_or_default();
-                                    let lines = vec![Entry::User { text: title }, Entry::Reply { text: "This is where we left off last time. Shall I carry on?".into() }];
+                                    let lines = vec![Entry::User { text: title, kept: Vec::new() }, Entry::Reply { text: "This is where we left off last time. Shall I carry on?".into() }];
                                     let lines_at = said_at(&lines, unix() - 2 * 86_400);
                                     let _ = events.send(Event::ConversationBack { session, title: c.title, lines, lines_at });
                                     let _ = events.send(Event::PutAwayChanged { squad, list: left });
@@ -1683,7 +1697,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     continue;
                                 }
                                 let _ = events.send(Event::QueueSent { session, texts: order.clone() });
-                                let _ = events.send(Event::UserMessage { session, text: order.join("\n\n") });
+                                let _ = events.send(Event::UserMessage { session, text: order.join("\n\n"), kept: Vec::new() });
                                 turns.lock().await.insert(session, tokio::spawn(turn(session, events.clone(), seconds)));
                             }
                             Command::Refresh { session, summary: true } => {
@@ -1815,7 +1829,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
 /// the whole squad, the app again.
 fn scoped_history() -> Vec<Entry> {
     let about = |p: Option<&str>| Entry::Thread { project: p.map(str::to_owned) };
-    let user = |t: &str| Entry::User { text: t.into() };
+    let user = |t: &str| Entry::User { text: t.into(), kept: Vec::new() };
     let reply = |t: &str| Entry::Reply { text: t.into() };
     let read = |p: &str, f: &str| Entry::Tool { tool: "Read".into(), target: Some(format!("/tmp/fake/site/{p}/{f}")), outcome: None, label: None, background: false };
     vec![

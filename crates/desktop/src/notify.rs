@@ -343,7 +343,7 @@ pub fn reply_line(entries: &[Entry]) -> Option<String> {
                 }
             }
             // A background task ending is the engine's word, not the person's.
-            Entry::User { text } if !equipe_core::protocol::harness::only_harness(text) => return None,
+            Entry::User { text, .. } if !equipe_core::protocol::harness::only_harness(text) => return None,
             _ => {}
         }
     }
@@ -742,20 +742,20 @@ mod tests {
 
     #[test]
     fn a_reply_is_its_first_line_of_prose_cut_short() {
-        let said = |text: &str| vec![Entry::User { text: "고쳐 줘".into() }, Entry::Reply { text: text.into() }];
+        let said = |text: &str| vec![Entry::User { text: "고쳐 줘".into(), kept: Vec::new() }, Entry::Reply { text: text.into() }];
         assert_eq!(reply_line(&said("## **끝났어요.** 테스트도 통과\n자세히는…")), Some("끝났어요. 테스트도 통과".into()));
         assert_eq!(reply_line(&said("```sh\nrm -rf /tmp/x\n```\n\n- `main`에 올렸어요")), Some("main에 올렸어요".into()), "never a code block");
         let long = "가".repeat(300);
         let line = reply_line(&said(&long)).unwrap();
         assert_eq!(line.chars().count(), LINE_MAX);
         assert!(line.ends_with('…'));
-        assert_eq!(reply_line(&[Entry::Reply { text: "old".into() }, Entry::User { text: "new".into() }]), None, "the person spoke last");
-        let ended = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into() };
+        assert_eq!(reply_line(&[Entry::Reply { text: "old".into() }, Entry::User { text: "new".into(), kept: Vec::new() }]), None, "the person spoke last");
+        let ended = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into(), kept: Vec::new() };
         assert_eq!(reply_line(&[Entry::Reply { text: "Built it.".into() }, ended]), Some("Built it.".into()), "the engine's word, not the person's");
         // A turn's last answer is the one told; an empty one falls back.
-        let turn = vec![Entry::User { text: "q".into() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "다 됐어요".into() }];
+        let turn = vec![Entry::User { text: "q".into(), kept: Vec::new() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "다 됐어요".into() }];
         assert_eq!(reply_line(&turn), Some("다 됐어요".into()));
-        let turn = vec![Entry::User { text: "q".into() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "```\nx\n```".into() }];
+        let turn = vec![Entry::User { text: "q".into(), kept: Vec::new() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "```\nx\n```".into() }];
         assert_eq!(reply_line(&turn), Some("살펴볼게요".into()));
     }
 

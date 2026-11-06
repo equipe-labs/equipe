@@ -27,15 +27,15 @@ pub fn history() -> Vec<Entry> {
     };
     let ok = |output: &str| ToolOutcome { ok: true, exit: Some(0), ms: Some(900), output: output.into(), skipped: 0, diff: None };
     vec![
-        Entry::User { text: "Render the three onboarding screens and show me".into() },
+        Entry::User { text: "Render the three onboarding screens and show me".into(), kept: Vec::new() },
         run("npm run render -- onboarding", "Render the onboarding screens", Some(ok("Command running in background with ID: b16yoo5kk.")), true),
         run("sleep 240 && ls shots/", "Wait for the render to finish", Some(ToolOutcome { ok: false, exit: None, ms: Some(3), output: BLOCKED.into(), skipped: 0, diff: None }), false),
         Entry::Reply { text: "The render is running in the background. I'll show you as soon as it's done.".into() },
-        Entry::User { text: DONE.into() },
+        Entry::User { text: DONE.into(), kept: Vec::new() },
         run("ls shots/onboarding", "Check the render", Some(ok("1-welcome.png\n2-goals.png\n3-ready.png")), false),
         run("npm run contrast -- shots/onboarding", "Contrast check", Some(ok("Command running in background with ID: bq83mm1zx.")), true),
-        Entry::User { text: FAILED.into() },
-        Entry::User { text: "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>".into() },
+        Entry::User { text: FAILED.into(), kept: Vec::new() },
+        Entry::User { text: "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>".into(), kept: Vec::new() },
         Entry::Reply { text: "All three screens are rendered. The contrast check caught the secondary text on the second screen — I'll make its colour a step darker and look again.".into() },
     ]
 }

@@ -100,8 +100,9 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             None,
         ))
         .when(doc.slides().is_some_and(|s| !s.is_empty()), |bar| bar.child(ui::icon_button(p, "doc-present", Icon::Play, t!("deck.present"), None).on_click(cx.listener(|this, _, _, cx| this.present(0, cx)))))
-        .child(ui::icon_button(p, "doc-reload", Icon::Reload, t!("doc.reload"), None).on_click(cx.listener(|this, _, _, cx| this.reload_doc(cx))))
-        .when(local, |bar| {
+        // Kept words have no file to read again or open.
+        .when(!doc.kept, |bar| bar.child(ui::icon_button(p, "doc-reload", Icon::Reload, t!("doc.reload"), None).on_click(cx.listener(|this, _, _, cx| this.reload_doc(cx)))))
+        .when(local && !doc.kept, |bar| {
             let path = doc.path.clone();
             bar.child(ui::icon_button(p, "doc-open", Icon::External, t!("doc.open"), None).on_click(move |_, _, cx| crate::render::open_file(&path, crate::render::Open::Edit, cx)))
         })
@@ -128,6 +129,19 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
                 .pt_4()
                 .pb_8()
                 .min_w_0()
+                .when(doc.kept, |b| {
+                    b.child(
+                        h_flex()
+                            .id("doc-kept")
+                            .mb_3()
+                            .gap_2()
+                            .items_center()
+                            .text_size(px(SMALL))
+                            .text_color(p.muted)
+                            .child(icon(Icon::Info, 13., p.muted))
+                            .child(t!("doc.kept")),
+                    )
+                })
                 .child(crate::render::view::document(p, ("doc", crate::render::hash_of((&doc.path, doc.read))), &markdown, look))
                 .when(doc.cut, |b| b.child(div().pt_3().text_size(px(SMALL)).text_color(p.muted).child(t!("doc.cut", size = crate::doc::MOST / 1024))))
                 .into_any_element()

@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
-use equipe_core::protocol::tags::{Tag, TagKind};
+use equipe_core::protocol::tags::{Kept, Tag, TagKind};
 use gpui_kit::{Image, ImageFormat};
 
 use crate::attach::{Payload, Prepared, Ready};
@@ -81,6 +81,9 @@ pub struct Sent {
     whole_bytes: usize,
     /// Counts up when the machine changes: loads started before don't land.
     pub generation: u64,
+    /// The words of text files kept with the messages that sent them, by
+    /// the file's path: what is read once the file is gone.
+    kept: HashMap<String, String>,
 }
 
 impl Sent {
@@ -131,6 +134,20 @@ impl Sent {
         let better = !matches!(self.shown.get(path), Some(Shown::Picture(_)));
         if better {
             self.put(path, shown);
+        }
+    }
+
+    /// The words a message kept of the file at `path`.
+    pub fn kept(&self, path: &str) -> Option<&str> {
+        self.kept.get(path).map(String::as_str)
+    }
+
+    /// Words kept with messages, as a conversation has them.
+    pub fn keep_words<'a>(&mut self, kept: impl IntoIterator<Item = &'a Kept>) {
+        for k in kept {
+            if self.kept.get(&k.path) != Some(&k.text) {
+                self.kept.insert(k.path.clone(), k.text.clone());
+            }
         }
     }
 

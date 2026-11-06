@@ -118,7 +118,7 @@ async fn the_persons_routine_is_kept_run_on_their_click_and_handed_to_the_pm() {
     handle.send(Command::RunRoutine { squad: "acme".into(), id: 1 });
     let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
     assert!(
-        seen.iter().any(|e| matches!(e, Event::UserMessage { session: 1, text } if text == "[Routine · 주간 리포트]\n\n이번 주 프로젝트별로 정리해 줘")),
+        seen.iter().any(|e| matches!(e, Event::UserMessage { session: 1, text, .. } if text == "[Routine · 주간 리포트]\n\n이번 주 프로젝트별로 정리해 줘")),
         "{seen:#?}"
     );
     let ran = routines_in(&seen);

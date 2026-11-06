@@ -146,7 +146,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     let session = &hello.snapshot.sessions[0];
     assert_eq!(session.session, 11);
     assert_eq!(session.state, SessionState::Working);
-    assert_eq!(session.recent, vec![Entry::User { text: "keep going without me".into() }]);
+    assert_eq!(session.recent, vec![Entry::User { text: "keep going without me".into(), kept: Vec::new() }]);
     let rest = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(rest.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "fresh")));
     drop(b);
@@ -162,7 +162,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     assert_eq!(session.state, SessionState::Ready);
     assert_eq!(
         session.recent,
-        vec![Entry::User { text: "keep going without me".into() }, Entry::Reply { text: "fresh".into() }]
+        vec![Entry::User { text: "keep going without me".into(), kept: Vec::new() }, Entry::Reply { text: "fresh".into() }]
     );
     c.send(Command::Submit { session: 11, text: "and now?".into(), about: None });
     let turn = until(&mut c, |e| matches!(e, Event::TurnEnded { .. })).await;

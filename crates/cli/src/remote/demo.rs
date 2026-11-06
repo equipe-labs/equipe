@@ -168,7 +168,7 @@ impl Scene {
             "pm",
             PROJECTS[0],
             vec![
-                Entry::User { text: "We launch the website this month. What's left?".into() },
+                Entry::User { text: "We launch the website this month. What's left?".into(), kept: Vec::new() },
                 Entry::Reply {
                     text: "Here's the plan: the sign-up API (T-2) is handed in for your review, the landing page (T-3) is in progress, \
                            and the pricing page (T-5) follows it. The payment provider (T-4) waits on an API key only you can create."
@@ -254,8 +254,8 @@ impl Scene {
                 self.state(approval.session, SessionState::Working);
             }
             Event::ApprovalResolved { approval, .. } => self.approvals.retain(|a| a.id != *approval),
-            Event::UserMessage { session, text } => {
-                self.entry(*session, Entry::User { text: text.clone() });
+            Event::UserMessage { session, text, .. } => {
+                self.entry(*session, Entry::User { text: text.clone(), kept: Vec::new() });
                 self.state(*session, SessionState::Working);
             }
             Event::TextDelta { session, text } => {
@@ -347,7 +347,7 @@ impl Scene {
                 let start = self.free_at(session, now) + 800;
                 let reply = if member == "pm" { self.pm_reply(&text, lang, start) } else { member_reply(&member, lang) };
                 self.say(session, start, &reply);
-                vec![Event::UserMessage { session, text }]
+                vec![Event::UserMessage { session, text, kept: Vec::new() }]
             }
             Command::Interrupt { session } => {
                 if self.sessions.iter().all(|s| s.session != session || s.state != SessionState::Working) {
@@ -517,7 +517,7 @@ mod tests {
         let mut demo = Demo::default();
         hello(&mut demo, "a");
         let out = demo.command("a", Command::Submit { session: PM, text: "What's the status?".into(), about: None }, 0);
-        assert_eq!(out, vec![Event::UserMessage { session: PM, text: "What's the status?".into() }]);
+        assert_eq!(out, vec![Event::UserMessage { session: PM, text: "What's the status?".into(), kept: Vec::new() }]);
         let later: Vec<Event> = demo.due(30_000).into_iter().map(|(_, e)| e).collect();
         let said: String = later.iter().filter_map(|e| match e { Event::TextDelta { session: PM, text } => Some(text.as_str()), _ => None }).collect();
         assert!(said.contains("T-2"), "{said}");
