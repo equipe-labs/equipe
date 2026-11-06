@@ -41,20 +41,45 @@ pub async fn install(engine: Engine) -> equipe_protocol::InstallStep {
     install_with(installer(engine), INSTALL_WAIT).await
 }
 
+/// Install `engine`'s tool, or bring the one already here up to date. Claude
+/// Code that is already installed updates itself (`claude update`) wherever
+/// it came from — its installer, npm or Homebrew — rather than the installer
+/// laying a second copy beside one put there another way. `claude_binary` is
+/// the one equipe runs; when it isn't there, the installer puts it in.
+pub async fn install_or_update(engine: Engine, claude_binary: &str) -> equipe_protocol::InstallStep {
+    if engine == Engine::Claude {
+        let mut update = Command::new(claude_binary);
+        update.arg("update");
+        if let Some(step) = run_with(update, INSTALL_WAIT).await {
+            return step;
+        }
+    }
+    install(engine).await
+}
+
 /// Run `line` in `sh`: done when it exits well, else failed with its last
 /// words (or the wait run out).
 pub async fn install_with(line: &str, wait: Duration) -> equipe_protocol::InstallStep {
+    let mut sh = Command::new("/bin/sh");
+    sh.args(["-c", line]);
+    run_with(sh, wait).await.unwrap_or_else(|| equipe_protocol::InstallStep::Failed { detail: "/bin/sh not found".into() })
+}
+
+/// Run `command` to its end: done when it exits well, else failed with its
+/// last words (or the wait run out); `None` when its program isn't there.
+async fn run_with(mut command: Command, wait: Duration) -> Option<equipe_protocol::InstallStep> {
     use equipe_protocol::InstallStep;
-    let run = Command::new("/bin/sh").args(["-c", line]).stdin(Stdio::null()).kill_on_drop(true).output();
-    match tokio::time::timeout(wait, run).await {
+    let run = command.stdin(Stdio::null()).kill_on_drop(true).output();
+    Some(match tokio::time::timeout(wait, run).await {
         Ok(Ok(out)) if out.status.success() => InstallStep::Done,
         Ok(Ok(out)) => {
             let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
             InstallStep::Failed { detail: last_words(&said) }
         }
+        Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Ok(Err(err)) => InstallStep::Failed { detail: err.to_string() },
         Err(_) => InstallStep::Failed { detail: String::new() },
-    }
+    })
 }
 
 /// The last few lines of what a tool said, for a screen.
@@ -297,6 +322,30 @@ mod tests {
         let failed = install_with("echo one; echo two; echo 'no curl here' >&2; exit 3", Duration::from_secs(5)).await;
         assert_eq!(failed, InstallStep::Failed { detail: "one\ntwo\nno curl here".into() });
         assert!(matches!(install_with("sleep 5", Duration::from_millis(100)).await, InstallStep::Failed { .. }), "the wait runs out");
+    }
+
+    #[tokio::test]
+    async fn an_installed_claude_code_updates_itself_rather_than_being_installed_again() {
+        use equipe_protocol::InstallStep;
+        let dir = std::env::temp_dir().join(format!("equipe-claude-update-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A Claude Code put here some other way (npm, Homebrew): asked to
+        // update itself, it does — and remembers that it was asked.
+        let claude = dir.join("claude");
+        let asked = dir.join("asked");
+        std::fs::write(&claude, format!("#!/bin/sh\necho \"$@\" > '{}'\n", asked.display())).unwrap();
+        std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert_eq!(install_or_update(Engine::Claude, &claude.to_string_lossy()).await, InstallStep::Done);
+        assert_eq!(std::fs::read_to_string(&asked).unwrap().trim(), "update");
+        // Its own update failing says so; the installer isn't run behind it.
+        std::fs::write(&claude, "#!/bin/sh\necho 'cannot update a managed install' >&2\nexit 1\n").unwrap();
+        let failed = install_or_update(Engine::Claude, &claude.to_string_lossy()).await;
+        assert_eq!(failed, InstallStep::Failed { detail: "cannot update a managed install".into() });
+        // Not there at all: nothing to update — `run_with` says so, and the installer would put it in.
+        let mut missing = Command::new(dir.join("no-claude-here"));
+        missing.arg("update");
+        assert_eq!(run_with(missing, Duration::from_secs(5)).await, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

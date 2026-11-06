@@ -2289,7 +2289,7 @@ impl Runtime {
         self.publish(Event::EngineInstall { engine, step: InstallStep::Running });
         let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
         tokio::spawn(async move {
-            let step = crate::engines::install(engine).await;
+            let step = crate::engines::install_or_update(engine, &claude).await;
             let _ = internal.send(Internal::Event(Box::new(Event::EngineInstall { engine, step })));
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
             let _ = internal.send(Internal::InstallEnded(engine));
