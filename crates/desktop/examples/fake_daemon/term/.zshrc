@@ -1,11 +1,11 @@
 # The terminal panel's fixture (see `shell` beside it): what a sign-in shows,
-# and a prompt like powerlevel10k's two lines — Hangul, emoji, Nerd Font and
+# and a prompt like powerlevel10k's two lines — wide CJK letters, emoji, Nerd Font and
 # Powerline glyphs, box drawing, and a long URL that wraps.
 unsetopt PROMPT_SP
 HISTFILE=/dev/null
-place="/tmp/equipe-term/한글 폴더"
-mkdir -p "$place/보고서" && cd "$place"
-print -r -- "한글: 안녕하세요, 터미널입니다 — 넓은 글자는 두 칸"
+place="/tmp/equipe-term/日本語 フォルダ"
+mkdir -p "$place/报告" && cd "$place"
+print -r -- "CJK: こんにちは、ターミナルです — 全角文字は二マス"
 print -r -- "emoji: ✔ ✅ 🚀 🐳 👍 ok"
 print -r -- $'nerd:       end'
 print -r -- "box: ╭─ ─╮ ╰─ │ ┃ ━"

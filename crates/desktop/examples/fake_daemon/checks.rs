@@ -32,7 +32,7 @@ fn first_check() -> Summary {
         habits: 1,
         finish: 1,
         widths: WIDTHS.to_vec(),
-        failing: vec![pair("contrast", "p.hint “매일 오전 9시에 보내요” is 3.1:1 (#8A8C93 on #F6F5F1), under 4.5:1 (at 360, 390, 768, 1024, 1280, 1440, 1920 px)"), pair("token-space", "padding: 13px is off the spacing scale (4, 8, 12, 16, 24, 32)")],
+        failing: vec![pair("contrast", "p.hint “Sent every day at 9 am” is 3.1:1 (#8A8C93 on #F6F5F1), under 4.5:1 (at 360, 390, 768, 1024, 1280, 1440, 1920 px)"), pair("token-space", "padding: 13px is off the spacing scale (4, 8, 12, 16, 24, 32)")],
         open: vec![pair("eyebrow", "2 of 2 heading(s) have a small label over them: “EMAIL”, “PUSH”")],
         notes: vec![pair("touch-target", "input#digest is 20×20")],
         screen: Some(SCREEN.into()),
@@ -44,7 +44,7 @@ fn second_check() -> Summary {
     Summary {
         floor: (11, 11),
         habits: 0,
-        waived: vec![pair("tracked-caps", "brand.md의 고정값: 채널 이름은 대문자 라벨로 둔다")],
+        waived: vec![pair("tracked-caps", "Locked in brand.md: channel names stay uppercase labels")],
         finish: 2,
         widths: WIDTHS.to_vec(),
         notes: vec![pair("touch-target", "input#digest is 20×20"), pair("literal-on-scale", "gap: 16px is `space.4`")],
@@ -60,7 +60,7 @@ fn lint_run(summary: &Summary, report: &str) -> Entry {
         tool: "Bash".into(),
         target: Some(format!("equipe design lint design/mockups/notifications.html --render --screen {SCREEN}")),
         outcome: Some(Box::new(ToolOutcome { ok: passed, exit: Some(if passed { 0 } else { 1 }), ms: Some(14_200), output, skipped: 0, diff: None })),
-        label: Some("화면 점검 (7개 폭)".into()),
+        label: Some("Screen check (7 widths)".into()),
         background: false,
     }
 }
@@ -69,9 +69,9 @@ fn look_run(first: bool, verdict: &Verdict) -> Entry {
     let output = format!("A fresh Claude Code is looking at 7 picture(s) of {SCREEN}…\n{}{}", second_look::text(verdict), second_look::mark_line(SCREEN, verdict));
     Entry::Tool {
         tool: "Bash".into(),
-        target: Some(format!("equipe design second-look {SCREEN}{} --criteria \"다이제스트를 한 번에 끈다\"", if first { " --first" } else { "" })),
+        target: Some(format!("equipe design second-look {SCREEN}{} --criteria \"The digest turns off in one go\"", if first { " --first" } else { "" })),
         outcome: Some(Box::new(ToolOutcome { ok: verdict.pass, exit: Some(if verdict.pass { 0 } else { 1 }), ms: Some(48_000), output, skipped: 0, diff: None })),
-        label: Some(if first { "첫 화면만 새 시선으로" } else { "새 시선 검토" }.into()),
+        label: Some(if first { "Fresh eyes on the first screen" } else { "Fresh-eyes review" }.into()),
         background: false,
     }
 }
@@ -83,9 +83,9 @@ fn edit(file: &str) -> Entry {
 pub fn history() -> Vec<Entry> {
     let read = |f: &str| Entry::Tool { tool: "Read".into(), target: Some(format!("/tmp/fake/app/design/{f}")), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(30), ..ToolOutcome::default() })), label: None, background: false };
     let mut out = vec![
-        Entry::Note { text: "── T-61 · 알림 설정 화면 시안 — on branch equipe/t-61".into() },
-        Entry::User { text: "알림 설정 화면 시안 만들어 줘. 다이제스트를 한 번에 끌 수 있어야 해.".into() },
-        Entry::Reply { text: "브리프와 디자인 시스템부터 읽고, 첫 화면을 먼저 만들어 점검할게요.".into() },
+        Entry::Note { text: "── T-61 · Notification settings screen draft — on branch equipe/t-61".into() },
+        Entry::User { text: "Make a draft of the notification settings screen. The digest has to turn off in one go.".into() },
+        Entry::Reply { text: "I'll read the brief and the design system first, then make the first screen and check it.".into() },
         read("brand.md"),
         read("guidelines.md"),
         read("tokens.json"),
@@ -95,38 +95,38 @@ pub fn history() -> Vec<Entry> {
     if failing_only() {
         return out;
     }
-    let first_look = Verdict { pass: true, summary: "첫 화면이 다이제스트 스위치로 시작해서 할 일이 바로 보여요. 이 위에 나머지를 쌓아도 됩니다.".into(), by: "claude".into(), widths: WIDTHS.to_vec(), first: true, ..Verdict::default() };
+    let first_look = Verdict { pass: true, summary: "The first screen opens on the digest switch, so what to do is plain at once. Build the rest on it.".into(), by: "claude".into(), widths: WIDTHS.to_vec(), first: true, ..Verdict::default() };
     let fixes = Verdict {
         pass: false,
-        summary: "한 번에 끄는 흐름은 맞지만, 좁은 폭에서 저장 상태가 보이지 않아요.".into(),
+        summary: "Turning it off in one go works, but at narrow widths you can't see that it saved.".into(),
         fixes: vec![
-            Fix { place: "다이제스트 줄, 360·390".into(), what: "스위치 옆 “저장됨” 표시가 줄바꿈으로 밀려 안 보여요 — 스위치 아래로 내리세요".into(), why: "껐는지 확신할 수 없어요".into() },
-            Fix { place: "푸시 카드".into(), what: "꺼진 채널의 설명 글자를 muted로 맞추세요".into(), why: String::new() },
+            Fix { place: "Digest row, 360·390".into(), what: "The “Saved” mark beside the switch wraps out of sight — move it under the switch".into(), why: "You can't be sure it's off".into() },
+            Fix { place: "Push card".into(), what: "Set a turned-off channel's description in muted".into(), why: String::new() },
         ],
         by: "claude".into(),
         widths: WIDTHS.to_vec(),
         ..Verdict::default()
     };
-    let passed = Verdict { pass: true, summary: "다이제스트를 한 번에 끄고, 바뀐 상태가 모든 폭에서 보여요.".into(), by: "claude".into(), widths: WIDTHS.to_vec(), ..Verdict::default() };
+    let passed = Verdict { pass: true, summary: "The digest turns off in one go, and the new state shows at every width.".into(), by: "claude".into(), widths: WIDTHS.to_vec(), ..Verdict::default() };
     out.extend([
-        Entry::Reply { text: "기준선 두 개가 걸렸어요 — 보조 문구 대비와 간격 하나. 고치고, 제목 위 라벨은 brand.md에 고정된 대문자 라벨이라 이유를 남겨 유지할게요.".into() },
+        Entry::Reply { text: "Two baseline checks failed — the secondary text's contrast and one spacing value. I'll fix them, and keep the label above the title, an uppercase label locked in brand.md, with the reason noted.".into() },
         edit("notifications.html"),
         Entry::Tool {
             tool: "Bash".into(),
-            target: Some("equipe design lint --waive tracked-caps --why \"brand.md의 고정값: 채널 이름은 대문자 라벨로 둔다\" --ticket T-61".into()),
+            target: Some("equipe design lint --waive tracked-caps --why \"Locked in brand.md: channel names stay uppercase labels\" --ticket T-61".into()),
             outcome: Some(Box::new(ToolOutcome { ok: true, exit: Some(0), ms: Some(60), output: "wrote design/decisions/2026-11-05-keep-tracked-caps.md — `tracked-caps` is kept with its reason.".into(), skipped: 0, diff: None })),
-            label: Some("습관 유지 이유 기록".into()),
+            label: Some("Note why the habit stays".into()),
             background: false,
         },
         lint_run(&second_check(), "Finish — worth doing, never blocking:\n  · touch-target …"),
         look_run(true, &first_look),
         look_run(false, &fixes),
-        Entry::Reply { text: "새 시선이 두 가지를 짚었어요. 좁은 폭의 저장 표시를 스위치 아래로 내리고, 꺼진 채널 설명 색을 맞출게요.".into() },
+        Entry::Reply { text: "Fresh eyes caught two things. I'll move the saved mark under the switch at narrow widths and fix the colour of a turned-off channel's description.".into() },
         edit("notifications.html"),
         lint_run(&second_check(), "Finish — worth doing, never blocking:\n  · touch-target …"),
         look_run(false, &passed),
-        Entry::Tool { tool: "mcp__equipe__submit_for_review".into(), target: Some("알림 설정 화면 시안".into()), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(80), ..ToolOutcome::default() })), label: None, background: false },
-        Entry::Reply { text: "시안을 넘겼어요. 기준선 11/11, 대문자 라벨은 brand.md 고정값이라 유지했고, 새 시선이 짚은 두 가지는 고쳐서 통과했어요.".into() },
+        Entry::Tool { tool: "mcp__equipe__submit_for_review".into(), target: Some("Notification settings screen draft".into()), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(80), ..ToolOutcome::default() })), label: None, background: false },
+        Entry::Reply { text: "Handed in the draft. Baseline 11/11; the uppercase label stays, as brand.md locks it; the two things fresh eyes caught are fixed and pass.".into() },
     ]);
     out
 }

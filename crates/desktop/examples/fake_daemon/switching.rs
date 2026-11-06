@@ -9,7 +9,7 @@
 //! - `both_low`: Claude 5h 91%, Codex week 88% — a card proposing lighter settings.
 //!
 //! `FAKE_SWITCHING=auto` makes it the card that tells what equipe did, with
-//! 되돌리기 (backend moved already, frontend at its next ticket); `off`, no
+//! Undo (backend moved already, frontend at its next ticket); `off`, no
 //! card. `FAKE_SETUP=1` shows the recommended setup card instead.
 //! `FAKE_ENGINES_MIXED=1` puts backend on Codex (gpt-6.1-sol).
 //! `FAKE_MODELS=1` has the PM set to `opus` while an older Claude Code runs
@@ -185,7 +185,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         }
         Command::ApplyEngineProposal { id, .. } => {
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: true });
-            let _ = events.send(Event::Notice { session: 1, text: "옮기기로 했어요 — backend·frontend는 각자 다음 티켓부터 바뀝니다".into() });
+            let _ = events.send(Event::Notice { session: 1, text: "Moving them — backend and frontend each switch from their next ticket".into() });
         }
         Command::DismissEngineProposal { id, .. } | Command::UndoEngineProposal { id, .. } => {
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: false });

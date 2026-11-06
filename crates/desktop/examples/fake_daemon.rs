@@ -3,7 +3,7 @@
 //! designer, three projects — real git repositories it makes under
 //! `$TMPDIR/equipe-fake`, with a branch for each piece of work handed in) and a
 //! board with work in every state, and answers every message with a streamed
-//! Korean reply — Markdown with a list, a table, a code block and `T-12` —
+//! reply — Markdown with a list, a table, a code block and `T-12` —
 //! between tool steps. `interrupt` ends the turn at once; `focus` moves the PM's
 //! thread; accept, merge, reopen, resume and cancel move tickets as the daemon
 //! would — and so do the person's own create, edit, move and comment (by
@@ -24,7 +24,7 @@
 //! `FAKE_COMPACT=auto|manual|long|queued|done|fail` has the PM's (and frontend's)
 //! conversation being summarized when a screen attaches — `long` for 75 seconds
 //! already, `queued` with two messages waiting; `done` and `fail` end it after
-//! `FAKE_COMPACT_AFTER` ms (default 4000). "다시 시도" (`/compact`) starts it again.
+//! `FAKE_COMPACT_AFTER` ms (default 4000). "Try again" (`/compact`) starts it again.
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all).
 //! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
@@ -67,7 +67,7 @@
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
 //! `FAKE_HISTORY_PICTURES=<n>`: its screenshots are n different ones, and every
 //! other reply embeds one too — for measuring what pictures hold (`EQUIPE_SNAPSHOT_HIDDEN`, `snapshot.rs`).
-//! `FAKE_READING=1`: it ends on a long Korean reply with every kind of text
+//! `FAKE_READING=1`: it ends on a long reply with every kind of text
 //! (`fake_daemon/reading.rs`), to compare how the conversation reads.
 //!
 //! `FAKE_TEAM=1`: the PM proposes one more frontend, for the person to
@@ -78,7 +78,7 @@
 //!
 //! `FAKE_DESIGN_REVIEW=1`: the designer's weekly design review has come — its
 //! routine's message and the review in the designer's conversation, its
-//! proposal waiting in 나에게 as a visual question (`fake_daemon/review.rs`).
+//! proposal waiting in the inbox as a visual question (`fake_daemon/review.rs`).
 //!
 //! `FAKE_CHECKS=1`: the designer's conversation checks a screen in code and has a
 //! second look at it (`fake_daemon/checks.rs`); `FAKE_CHECKS=fail` stops at a failing check.
@@ -128,10 +128,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
 
-const REPLY: &str = "네, 확인했습니다. 지금 보드를 살펴보고 **T-12**를 먼저 처리하겠습니다.\n\n진행 순서는 다음과 같습니다.\n\n- 헤더 컴포넌트 정리\n- 입력창 한글 조합 확인\n- 스트리밍 표시 점검 (`T-13`)\n\n| 항목 | 상태 | 담당 |\n|---|---|---|\n| 헤더 | 진행 중 | frontend |\n| 입력창 | 대기 | frontend |\n| 데몬 연결 | 완료 | backend |\n\n```rust\nfn main() {\n    println!(\"안녕, equipe\");\n}\n```\n\n끝나면 다시 알려 드리겠습니다.";
+/// The language the daemon's own words are in: `EQUIPE_LANG`, as the screen
+/// is run with, else English.
+fn lang() -> equipe_core::i18n::Lang {
+    std::env::var("EQUIPE_LANG").ok().and_then(|tag| equipe_core::i18n::Lang::parse(&tag)).unwrap_or(equipe_core::i18n::Lang::En)
+}
+
+const REPLY: &str = "Sure, got it. I'll look over the board now and take **T-12** first.\n\nHere's the order:\n\n- Tidy the header component\n- Check IME composition in the composer\n- Check the streaming display (`T-13`)\n\n| Item | Status | Owner |\n|---|---|---|\n| Header | In progress | frontend |\n| Composer | Waiting | frontend |\n| Daemon link | Done | backend |\n\n```rust\nfn main() {\n    println!(\"hello, equipe\");\n}\n```\n\nI'll let you know when it's done.";
 
 /// `FAKE_ASKLIST`'s reply: what the PM needs to know, as a numbered list in prose.
-const ASKLIST: &str = "EU 디지털 서비스법(DSA) 때문에 EU 스토어에 앱을 내려면 판매자 연락처를 공개해야 합니다. App Store Connect에 아직 비어 있어서 **T-117** 제출이 여기서 멈춰 있어요.\n\n## 알려 주세요\n\n1. EU 스토어에 공개할 전화번호: 국가번호 포함 (예: +82 10-1234-5678)\n2. 공개할 이메일: 스토어 페이지에 그대로 보입니다\n3. T-117 심사 연락처: 위와 같은 번호와 메일을 써도 되는지\n\n받으면 바로 입력합니다.";
+const ASKLIST: &str = "Under the EU Digital Services Act (DSA), an app in the EU stores has to show its trader's contact details. They're still empty in App Store Connect, so the **T-117** submission is stuck here.\n\n## Please tell me\n\n1. The phone number to show in the EU stores, with the country code (e.g. +1 415 555 0134)\n2. The email to show: it appears on the store page as it is\n3. The T-117 review contact: whether the same number and email will do\n\nI'll enter them as soon as I have them.";
 
 fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
     SessionInfo {
@@ -183,7 +189,7 @@ fn phones() -> &'static std::sync::Mutex<Vec<equipe_core::protocol::PairedDevice
     PHONES.get_or_init(|| {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let phone = |id: &str, name: &str, platform: &str, online: bool, seen: Option<u64>| equipe_core::protocol::PairedDevice { id: id.into(), name: name.into(), platform: platform.into(), added: now - 9 * 86_400, online, seen };
-        std::sync::Mutex::new(vec![phone("a1", "Abel의 iPhone", "ios", true, Some(now - 60)), phone("b2", "iPad Pro", "ipados", false, Some(now - 3 * 3600))])
+        std::sync::Mutex::new(vec![phone("a1", "Abel's iPhone", "ios", true, Some(now - 60)), phone("b2", "iPad Pro", "ipados", false, Some(now - 3 * 3600))])
     })
 }
 
@@ -210,15 +216,15 @@ async fn pairing(command: &Command, events: &broadcast::Sender<Event>) {
                 let events = events.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(1500)).await;
-                    let _ = events.send(Event::PairAsked { name: "Abel의 iPhone 16".into(), platform: "ios".into() });
+                    let _ = events.send(Event::PairAsked { name: "Abel's iPhone 16".into(), platform: "ios".into() });
                 });
             }
         }
         Command::PairAnswer { approve: true } => {
             tokio::time::sleep(Duration::from_millis(700)).await;
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-            phones().lock().unwrap().push(equipe_core::protocol::PairedDevice { id: "c3".into(), name: "Abel의 iPhone 16".into(), platform: "ios".into(), added: now, online: true, seen: Some(now) });
-            let _ = events.send(Event::Paired { name: "Abel의 iPhone 16".into() });
+            phones().lock().unwrap().push(equipe_core::protocol::PairedDevice { id: "c3".into(), name: "Abel's iPhone 16".into(), platform: "ios".into(), added: now, online: true, seen: Some(now) });
+            let _ = events.send(Event::Paired { name: "Abel's iPhone 16".into() });
         }
         Command::PairAnswer { approve: false } => drop(events.send(Event::PairEnded { why: PairEnd::Refused, message: String::new() })),
         Command::Unpair { device } => {
@@ -245,8 +251,8 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
         let on = std::env::var("FAKE_ASKS").map_or(true, |v| v != "0") && !crowd::on();
         std::sync::Mutex::new(if on {
             vec![
-                ask(7, 3, "backend", "Bash", "cargo test -p equipe-core -- --nocapture\ncat > /tmp/out.txt <<EOF\nx\nEOF", Some("테스트를 돌리기 전에 허가가 필요합니다")),
-                ask(8, 2, "frontend", "Send", "press return in Slack · #general\n내일 회의 3시로 옮겨요", None),
+                ask(7, 3, "backend", "Bash", "cargo test -p equipe-core -- --nocapture\ncat > /tmp/out.txt <<EOF\nx\nEOF", Some("Permission needed before running the tests")),
+                ask(8, 2, "frontend", "Send", "press return in Slack · #general\nMoving tomorrow's meeting to 3pm", None),
             ]
         } else {
             vec![]
@@ -276,7 +282,7 @@ fn put_away() -> &'static std::sync::Mutex<Vec<equipe_core::protocol::PutAway>> 
     AWAY.get_or_init(|| {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default();
         let away = |session, title: &str, ago: i64| equipe_core::protocol::PutAway { session, project: Some("web".into()), title: Some(title.into()), at: now - ago };
-        std::sync::Mutex::new(vec![away(90, "랜딩 문구 다듬기", 3 * 3600), away(91, "결제 오류 원인 찾기", 2 * 86400)])
+        std::sync::Mutex::new(vec![away(90, "Polish the landing copy", 3 * 3600), away(91, "Find the cause of the payment error", 2 * 86400)])
     })
 }
 
@@ -292,12 +298,12 @@ fn reviews() -> Vec<equipe_core::protocol::review::CodeReview> {
             ticket: 42,
             model: "nvidia/fake-nemotron (FAKE_REVIEW)".into(),
             verdict: ReviewVerdict::NeedsAttention,
-            summary: "결제 수단 선택은 되지만, 새로고침 후 선택이 남는다는 기준을 코드가 지키지 않아요.".into(),
+            summary: "Choosing a payment method works, but the code doesn't meet the criterion that the choice survives a refresh.".into(),
             risks: vec![
-                ReviewPoint { file: "src/checkout.tsx".into(), line: Some(31), why: "선택한 수단을 state에만 두어 새로고침하면 사라져요.".into() },
-                ReviewPoint { file: "src/api/pay.ts".into(), line: Some(12), why: "금액을 클라이언트 값 그대로 서버에 보내요.".into() },
+                ReviewPoint { file: "src/checkout.tsx".into(), line: Some(31), why: "The chosen method is only kept in state, so a refresh loses it.".into() },
+                ReviewPoint { file: "src/api/pay.ts".into(), line: Some(12), why: "It sends the amount to the server straight from the client.".into() },
             ],
-            missing_tests: vec!["새로고침 후 선택 유지".into(), "모바일 너비 레이아웃".into()],
+            missing_tests: vec!["The choice kept after a refresh".into(), "The layout at mobile width".into()],
             truncated: false,
             at: unix(),
         },
@@ -305,7 +311,7 @@ fn reviews() -> Vec<equipe_core::protocol::review::CodeReview> {
             ticket: 71,
             model: "nvidia/fake-nemotron (FAKE_REVIEW)".into(),
             verdict: ReviewVerdict::LooksGood,
-            summary: "토큰 버킷 제한과 남은 횟수 헤더가 기준대로 들어갔어요.".into(),
+            summary: "The token-bucket limit and the remaining-requests header are in, as the criteria ask.".into(),
             risks: Vec::new(),
             missing_tests: Vec::new(),
             truncated: false,
@@ -316,10 +322,10 @@ fn reviews() -> Vec<equipe_core::protocol::review::CodeReview> {
 
 /// T-42's hand-in: a few lines, or (`FAKE_CARDS=long`) one long enough to scroll on its card.
 fn checkout_note() -> String {
-    let short = "결제 수단 선택을 **라디오 그룹**으로 바꿨습니다.\n\n- 카드 / 계좌이체 / 간편결제\n- 선택은 `localStorage`에 남습니다\n- 결제 API 호출은 `pay.ts`로 모았습니다";
+    let short = "Payment method choice is now a **radio group**.\n\n- Card / bank transfer / wallet\n- The choice is kept in `localStorage`\n- Payment API calls are gathered in `pay.ts`";
     if std::env::var("FAKE_CARDS").is_ok_and(|v| v == "long") {
-        let more: Vec<String> = (1..=14).map(|n| format!("{n}. 결제 흐름의 {n}번째 화면을 손봤습니다 — 버튼 간격, 오류 문구, 키보드 순서를 맞췄습니다.")).collect();
-        return format!("{short}\n\n## 바뀐 것\n\n{}\n\n여기가 마지막 줄입니다.", more.join("\n"));
+        let more: Vec<String> = (1..=14).map(|n| format!("{n}. Reworked screen {n} of the checkout flow — button spacing, error copy and keyboard order.")).collect();
+        return format!("{short}\n\n## What changed\n\n{}\n\nThis is the last line.", more.join("\n"));
     }
     short.into()
 }
@@ -348,7 +354,7 @@ fn seed_repos() {
                 let old = std::fs::read_to_string(&path).unwrap_or_default();
                 let mut text: String = old.lines().skip(1).map(|l| format!("{l}\n")).collect();
                 for n in 0..lines {
-                    text.push_str(&format!("// {branch} line {n}: 결제 흐름을 정리합니다\n"));
+                    text.push_str(&format!("// {branch} line {n}: tidies the checkout flow\n"));
                 }
                 std::fs::write(path, text).unwrap();
             }
@@ -371,40 +377,40 @@ fn board() -> Vec<Ticket> {
     }
     let empty = std::env::var("FAKE_EMPTY").is_ok_and(|v| v == "1");
     let mut out = vec![
-        ticket(47, "in_progress", "web", "frontend", "상품 상세 페이지 이미지 갤러리", "스와이프와 확대를 지원하는 갤러리.", &[], Some("equipe/t-47-gallery"), None),
-        ticket(45, "todo", "web", "frontend", "결제 완료 후 주문 내역으로 이동", "- 결제 완료 화면에서 주문 내역 링크\n- 영수증 메일 발송 확인", &[42], None, None),
-        ticket(38, "done", "web", "frontend", "헤더 내비게이션 정리", "", &[], None, Some("정리했습니다.")),
-        ticket(36, "done", "web", "designer", "로그인 화면 시안", "", &[], None, None),
-        ticket(60, "in_progress", "app", "designer", "온보딩 세 화면 시안", "앱 첫 실행 온보딩 3장.", &[], None, None),
-        ticket(61, "todo", "app", "frontend", "푸시 알림 권한 요청 시점 조정", "", &[], None, None),
-        ticket(62, "todo", "app", "frontend", "설정 화면 다크 모드", "", &[60], None, None),
-        ticket(58, "done", "app", "designer", "앱 아이콘 후보 세 가지", "", &[], None, None),
-        ticket(66, "cancelled", "app", "frontend", "태블릿 레이아웃", "", &[], None, None),
-        ticket(70, "in_progress", "api", "backend", "주문 API 페이지네이션", "커서 기반 페이지네이션.", &[], Some("equipe/t-70-cursor"), None),
-        ticket(72, "todo", "api", "backend", "주문 검색 인덱스", "", &[70], None, None),
-        ticket(68, "done", "api", "backend", "헬스 체크 엔드포인트", "", &[], None, None),
+        ticket(47, "in_progress", "web", "frontend", "Product detail page image gallery", "A gallery with swipe and zoom.", &[], Some("equipe/t-47-gallery"), None),
+        ticket(45, "todo", "web", "frontend", "Go to order history after paying", "- A link to order history on the payment-done screen\n- Check the receipt email is sent", &[42], None, None),
+        ticket(38, "done", "web", "frontend", "Tidy the header navigation", "", &[], None, Some("Tidied.")),
+        ticket(36, "done", "web", "designer", "Sign-in screen draft", "", &[], None, None),
+        ticket(60, "in_progress", "app", "designer", "Three onboarding screen drafts", "Three onboarding screens for the app's first run.", &[], None, None),
+        ticket(61, "todo", "app", "frontend", "Rethink when to ask for push permission", "", &[], None, None),
+        ticket(62, "todo", "app", "frontend", "Dark mode for the settings screen", "", &[60], None, None),
+        ticket(58, "done", "app", "designer", "Three app icon candidates", "", &[], None, None),
+        ticket(66, "cancelled", "app", "frontend", "Tablet layout", "", &[], None, None),
+        ticket(70, "in_progress", "api", "backend", "Orders API pagination", "Cursor-based pagination.", &[], Some("equipe/t-70-cursor"), None),
+        ticket(72, "todo", "api", "backend", "Order search index", "", &[70], None, None),
+        ticket(68, "done", "api", "backend", "Health check endpoint", "", &[], None, None),
     ];
     if !empty {
         out.extend([
-            ticket(42, "review", "web", "frontend", "체크아웃 페이지 결제 수단 선택", "- [ ] 카드와 계좌이체 둘 다 선택된다\n- [ ] 선택이 새로고침 후에도 남는다\n- [ ] 모바일 너비에서 깨지지 않는다", &[], Some("equipe/t-42-checkout"), Some(&checkout_note())),
-            ticket(71, "review", "api", "backend", "요청 수 제한 미들웨어", "- [ ] 분당 60회를 넘으면 429\n- [ ] 헤더에 남은 횟수", &[], Some("equipe/t-71-rate-limit"), Some("토큰 버킷으로 분당 60회 제한을 넣었습니다. 테스트 6개 추가.")),
-            ticket(55, "waiting", "web", "frontend", "결제 테스트 키 연결", "Stripe 테스트 모드로 결제를 끝까지 돌려 봅니다.", &[], None, Some("Waiting on you:\n- [ ] Stripe 대시보드에서 테스트 키 만들기\n- [ ] `.env.local`에 STRIPE_KEY 넣기\n- [ ] Vercel 프로젝트에도 같은 키 추가")),
-            ticket(73, "waiting", "api", "backend", "운영 DB 읽기 전용 계정", "", &[], None, Some("Waiting on you:\n- [ ] 운영 DB 읽기 전용 비밀번호 알려 주기")),
-            ticket(52, "proposed", "web", "frontend", "다크 모드 토글", "사용자 설정에 다크 모드를 넣으면 야간 이용 시간이 늘 것 같습니다.\n\n- [ ] 시스템 설정을 따른다\n- [ ] 직접 고를 수 있다", &[], None, None),
-            ticket(64, "proposed", "app", "designer", "빈 화면 일러스트 세트", "", &[], None, None),
+            ticket(42, "review", "web", "frontend", "Checkout page payment method choice", "- [ ] Both card and bank transfer can be chosen\n- [ ] The choice survives a refresh\n- [ ] Nothing breaks at mobile width", &[], Some("equipe/t-42-checkout"), Some(&checkout_note())),
+            ticket(71, "review", "api", "backend", "Rate-limit middleware", "- [ ] 429 past 60 a minute\n- [ ] The remaining count in a header", &[], Some("equipe/t-71-rate-limit"), Some("Added a 60-a-minute limit with a token bucket. 6 tests added.")),
+            ticket(55, "waiting", "web", "frontend", "Connect the payment test key", "Run a payment all the way through in Stripe's test mode.", &[], None, Some("Waiting on you:\n- [ ] Make a test key in the Stripe dashboard\n- [ ] Put STRIPE_KEY in `.env.local`\n- [ ] Add the same key to the Vercel project")),
+            ticket(73, "waiting", "api", "backend", "Read-only production DB account", "", &[], None, Some("Waiting on you:\n- [ ] Share the production DB's read-only password")),
+            ticket(52, "proposed", "web", "frontend", "Dark mode toggle", "Dark mode in the user settings would likely lengthen night-time use.\n\n- [ ] Follows the system setting\n- [ ] Can be picked by hand", &[], None, None),
+            ticket(64, "proposed", "app", "designer", "Empty-state illustration set", "", &[], None, None),
             // The person's ideas, kept for later — and one the PM brought back.
-            ticket(80, "idea", "app", "pm", "클라우드 서버에서 equipe 돌리기", "맥미니 없이도 쓸 수 있게, 서버를 빌려 컴퓨터 전체를 맡기는 방식.", &[], None, None),
-            ticket(81, "idea", "web", "marketing", "온보딩 영상 가이드", "처음 쓰는 사람이 3분 영상으로 따라 할 수 있게.", &[], None, None),
-            ticket(82, "proposed", "web", "frontend", "주간 리포트 이메일", "매주 월요일, 지난주 지표를 메일로 받아 보기.", &[], None, Some("Why now: 지난주 지표 대시보드가 막 출시돼서, 같은 데이터로 바로 만들 수 있어요. 지금 손이 비는 멤버도 있어요.")),
+            ticket(80, "idea", "app", "pm", "Run equipe on a cloud server", "Usable without a Mac mini: rent a server and hand it a whole computer.", &[], None, None),
+            ticket(81, "idea", "web", "marketing", "Onboarding video guide", "A 3-minute video a first-time user can follow along.", &[], None, None),
+            ticket(82, "proposed", "web", "frontend", "Weekly report email", "Last week's metrics by email, every Monday.", &[], None, Some("Why now: the weekly metrics dashboard just shipped, so this can be built from the same data right away. Some members are free now, too.")),
         ]);
-        let mut task = ticket(63, "review", "app", "designer", "경쟁 앱 온보딩 조사", "", &[], None, Some("다섯 개 앱의 온보딩을 정리했습니다. `research/onboarding.md`"));
+        let mut task = ticket(63, "review", "app", "designer", "Competitor onboarding research", "", &[], None, Some("Summed up five apps' onboarding. `research/onboarding.md`"));
         task.kind = equipe_core::protocol::TicketKind::Task;
         out.push(task);
         out.extend(design::ticket());
-        let mut done = ticket(51, "done", "web", "frontend", "푸터 링크 정리", "", &[], Some("equipe/t-51-footer"), Some("링크를 정리했습니다."));
+        let mut done = ticket(51, "done", "web", "frontend", "Tidy the footer links", "", &[], Some("equipe/t-51-footer"), Some("Tidied the links."));
         done.merged = Some(false);
         out.push(done);
-        let mut clash = ticket(49, "done", "web", "frontend", "공지 배너", "", &[], Some("equipe/t-49-banner"), Some("상단 공지 배너를 넣었습니다."));
+        let mut clash = ticket(49, "done", "web", "frontend", "Announcement banner", "", &[], Some("equipe/t-49-banner"), Some("Added the announcement banner at the top."));
         clash.merged = Some(false);
         clash.off_main = Some(equipe_core::protocol::OffMain::Conflict { detail: "equipe/t-49-banner conflicts with main in README.md — nothing was merged".into() });
         out.push(clash);
@@ -414,7 +420,7 @@ fn board() -> Vec<Ticket> {
     {
         let plan = briefs::folder().join("docs/web/plans/2026-11-04-checkout-payment.md").to_string_lossy().into_owned();
         t.plan = Some(plan.clone());
-        t.body.push_str(&format!("\n\n계획: `{plan}`\n\n이 티켓의 테스트 계획:\n\n- TP-1: 카드를 고르고 결제하면 주문이 만들어진다\n- TP-3: 새로고침해도 고른 결제 수단이 남는다"));
+        t.body.push_str(&format!("\n\nPlan: `{plan}`\n\nThis ticket's test plan:\n\n- TP-1: choosing a card and paying creates an order\n- TP-3: the chosen payment method survives a refresh"));
     }
     if your_turn().is_some() {
         out.push(turn_ticket());
@@ -424,18 +430,18 @@ fn board() -> Vec<Ticket> {
     }
     // `FAKE_DECIDE=logo`: the designer's brand guide, handed in with its pictures.
     if pictures::on() {
-        let note = "브랜드 가이드를 정리했습니다 — 이름과 로고는 그대로 두고 쓰임새를 맞췄습니다.\n\n- 로고 시트: 흰 바탕과 어두운 바탕\n- 앱 아이콘 1024px\n- 색상 다섯 가지 (`brand/palette.md`)";
-        out.push(pictures::hand_in(ticket(144, "review", "app", "designer", "equipe 브랜드 정리·체계화 (이름·로고 유지)", "- [ ] 로고가 작은 크기에서도 읽힌다\n- [ ] 색상 대비가 충분하다", &[], None, Some(note))));
+        let note = "I put the brand guide in order — the name and logo stay as they are, and how they're used is now consistent.\n\n- Logo sheet: on white and on dark\n- App icon at 1024px\n- Five colours (`brand/palette.md`)";
+        out.push(pictures::hand_in(ticket(144, "review", "app", "designer", "equipe brand clean-up and system (name and logo kept)", "- [ ] The logo reads at small sizes\n- [ ] Colour contrast is enough", &[], None, Some(note))));
     }
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
-            ticket(84, "waiting", "web", "frontend", "도메인 DNS 레코드 확인", "", &[], None, Some("Waiting on you:\n- [ ] DNS에 CNAME 추가")),
-            ticket(85, "todo", "web", "frontend", "장바구니 수량 버튼 접근성", "", &[], None, None),
-            ticket(86, "todo", "web", "qa", "결제 회귀 테스트 목록", "", &[], None, None),
-            ticket(87, "done", "web", "qa", "로그인 오류 메시지 문구", "", &[], None, None),
-            ticket(88, "done", "app", "designer", "스플래시 화면 색 조정", "", &[], None, None),
-            ticket(89, "done", "api", "backend", "주문 상태 웹훅", "", &[], None, None),
+            ticket(84, "waiting", "web", "frontend", "Check the domain's DNS records", "", &[], None, Some("Waiting on you:\n- [ ] Add a CNAME to the DNS")),
+            ticket(85, "todo", "web", "frontend", "Cart quantity button accessibility", "", &[], None, None),
+            ticket(86, "todo", "web", "qa", "Checkout regression test list", "", &[], None, None),
+            ticket(87, "done", "web", "qa", "Sign-in error message copy", "", &[], None, None),
+            ticket(88, "done", "app", "designer", "Splash screen colour tweak", "", &[], None, None),
+            ticket(89, "done", "api", "backend", "Order status webhook", "", &[], None, None),
         ]);
         // Three finished within the hour or two, the rest days ago.
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
@@ -471,23 +477,23 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                 ticket: None,
                 questions: vec![
                     Question {
-                        question: "로그인은 어떤 방식으로 만들까요?".into(),
-                        header: "로그인".into(),
+                        question: "How should sign-in work?".into(),
+                        header: "Sign-in".into(),
                         options: vec![
-                            choice("이메일 매직 링크 (추천)", "비밀번호 없이 메일 링크로 로그인 — 가장 빨리 만들 수 있습니다"),
-                            choice("Google 로그인", "한 번에 가입되지만 Google 계정이 있어야 합니다"),
-                            choice("이메일 + 비밀번호", "익숙하지만 재설정 흐름까지 만들어야 합니다"),
+                            choice("Email magic link (Recommended)", "Sign in from a link in an email, no password — the quickest to build"),
+                            choice("Sign in with Google", "Sign-up in one step, but it needs a Google account"),
+                            choice("Email + password", "Familiar, but the reset flow has to be built too"),
                         ],
                         multi_select: false,
                         ..Question::default()
                     },
                     Question {
-                        question: "첫 릴리스에 어떤 화면을 넣을까요?".into(),
-                        header: "범위".into(),
+                        question: "Which screens go in the first release?".into(),
+                        header: "Scope".into(),
                         options: vec![
-                            choice("온보딩", "세 화면 — 시안이 T-60에 있습니다"),
-                            choice("주문 내역", "api의 페이지네이션(T-70) 다음에"),
-                            choice("설정", "알림·계정 관리"),
+                            choice("Onboarding", "Three screens — the drafts are on T-60"),
+                            choice("Order history", "After api's pagination (T-70)"),
+                            choice("Settings", "Notifications and account"),
                         ],
                         multi_select: true,
                         ..Question::default()
@@ -503,9 +509,9 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                 member: "backend".into(),
                 ticket: Some(70),
                 questions: vec![Question {
-                    question: "주문 목록 페이지 크기는 얼마로 할까요?".into(),
-                    header: "페이지".into(),
-                    options: vec![choice("20개 (추천)", "앱 목록 화면 한 번에 맞습니다"), choice("50개", "요청은 줄지만 첫 화면이 느려집니다")],
+                    question: "What page size should the order list use?".into(),
+                    header: "Page".into(),
+                    options: vec![choice("20 (Recommended)", "Fits the app's list screen in one go"), choice("50", "Fewer requests, but a slower first screen")],
                     multi_select: false,
                     ..Question::default()
                 }],
@@ -536,13 +542,13 @@ fn scope_set(now: u64) -> QuestionSet {
         member: "pm".into(),
         ticket: None,
         questions: vec![Question {
-            question: "체크아웃 결제 수단 계획, 범위를 어디까지 잡을까요?".into(),
-            header: "범위".into(),
+            question: "The checkout payment methods plan: how wide should the scope be?".into(),
+            header: "Scope".into(),
             options: vec![
-                choice("선택적으로 넓히기 (추천)", "요청한 카드·계좌이체에 간편결제 하나만 더해요 — 리뷰에서 가장 많이 나온 요청이에요"),
-                choice("넓히기", "간편결제 셋과 저장된 결제 수단까지 — 티켓 7개, 두 주쯤"),
-                choice("범위 유지", "카드와 계좌이체만, 요청한 그대로 — 티켓 4개"),
-                choice("줄이기", "카드 결제만 먼저 내보내고 계좌이체는 다음에 — 티켓 2개"),
+                choice("Widen selectively (Recommended)", "One wallet on top of the card and bank transfer asked for — the most requested thing in reviews"),
+                choice("Widen", "Three wallets and saved payment methods too — 7 tickets, about two weeks"),
+                choice("Keep the scope", "Card and bank transfer only, as asked — 4 tickets"),
+                choice("Narrow", "Ship card payments first, bank transfer later — 2 tickets"),
             ],
             multi_select: false,
             ..Question::default()
@@ -585,10 +591,10 @@ fn working() -> u32 {
 
 /// The busy squad's extra members: (ticket, session, name, title).
 const BUSY: [(u32, SessionId, &str, &str); 4] = [
-    (80, 5, "frontend-2", "검색 결과 무한 스크롤"),
-    (81, 6, "frontend-3", "상품 카드 스켈레톤 로딩과 이미지 지연 로딩, 접근성 라벨까지 한 번에 정리"),
-    (82, 7, "qa", "체크아웃 E2E 테스트"),
-    (83, 8, "data", "구매 전환 대시보드 이벤트"),
+    (80, 5, "frontend-2", "Infinite scroll for search results"),
+    (81, 6, "frontend-3", "Product card skeleton loading, lazy image loading and accessibility labels, all in one go"),
+    (82, 7, "qa", "Checkout end-to-end tests"),
+    (83, 8, "data", "Purchase conversion dashboard events"),
 ];
 
 /// `FAKE_SUBAGENTS=1`: frontend and backend hand side work to subagents, which
@@ -609,7 +615,7 @@ fn live_subagents() -> &'static std::sync::Mutex<Vec<(SessionId, SubagentInfo, s
     LIVE.get_or_init(|| {
         // Backend's, at it since before anyone looked.
         let since = std::time::Instant::now() - Duration::from_secs(48);
-        std::sync::Mutex::new(vec![(3, SubagentInfo { id: "sub-b0".into(), what: "API 에러 로그에서 타임아웃 원인 찾기".into(), step: Some("Grep TimeoutError logs/".into()), secs: 0, ..Default::default() }, since)])
+        std::sync::Mutex::new(vec![(3, SubagentInfo { id: "sub-b0".into(), what: "Find the cause of timeouts in the API error logs".into(), step: Some("Grep TimeoutError logs/".into()), secs: 0, ..Default::default() }, since)])
     })
 }
 
@@ -626,12 +632,12 @@ fn subagents_of(session: SessionId) -> (Vec<SubagentInfo>, Vec<Entry>) {
 async fn subagents_play(events: broadcast::Sender<Event>) {
     let beat = Duration::from_millis(std::env::var("FAKE_SUBAGENTS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500));
     let tasks: [(SessionId, &str, &[&str]); 6] = [
-        (2, "갤러리 썸네일 크기와 비율 조사", &["Read src/gallery.tsx", "Grep aspect-ratio", "Read src/thumb.tsx"]),
-        (2, "모바일 스와이프 제스처 동작 확인", &["Read src/swipe.ts", "Bash npm test swipe"]),
-        (3, "페이지네이션 커서 인코딩 비교", &["Read api/cursor.rs", "WebFetch RFC 4648"]),
-        (2, "이미지 지연 로딩 테스트 작성", &["Write src/gallery.test.tsx", "Bash npm test gallery"]),
-        (2, "접근성 라벨과 키보드 이동 점검", &["Read src/gallery.tsx", "Grep aria-label"]),
-        (2, "번들 크기 변화 측정", &["Bash npm run build", "Read dist/stats.json"]),
+        (2, "Look into the gallery thumbnails' size and ratio", &["Read src/gallery.tsx", "Grep aspect-ratio", "Read src/thumb.tsx"]),
+        (2, "Check the mobile swipe gesture", &["Read src/swipe.ts", "Bash npm test swipe"]),
+        (3, "Compare pagination cursor encodings", &["Read api/cursor.rs", "WebFetch RFC 4648"]),
+        (2, "Write the lazy image loading tests", &["Write src/gallery.test.tsx", "Bash npm test gallery"]),
+        (2, "Check accessibility labels and keyboard navigation", &["Read src/gallery.tsx", "Grep aria-label"]),
+        (2, "Measure the change in bundle size", &["Bash npm run build", "Read dist/stats.json"]),
     ];
     let mut round = 0u32;
     loop {
@@ -639,7 +645,7 @@ async fn subagents_play(events: broadcast::Sender<Event>) {
         for (n, (session, what, _)) in tasks.iter().enumerate() {
             let id = format!("sub-{round}-{n}");
             let _ = events.send(Event::ToolUse { session: *session, tool: "Agent".into(), target: Some((*what).into()), label: None, background: false });
-            let brief = format!("{what}.\n\n코드를 읽고 찾은 것을 파일 경로와 줄 번호로 정리해서 돌려줘요. 고치지는 말고, 근거만 모아요.");
+            let brief = format!("{what}.\n\nRead the code and hand back what you find, with file paths and line numbers. Don't fix anything — just gather the evidence.");
             live_subagents().lock().unwrap().push((*session, SubagentInfo { id: id.clone(), what: (*what).into(), step: None, secs: 0, brief: brief.clone(), ..Default::default() }, std::time::Instant::now()));
             let _ = events.send(Event::SubagentStarted { session: *session, id: id.clone(), what: (*what).into(), brief });
             started.push((*session, id, n));
@@ -657,7 +663,7 @@ async fn subagents_play(events: broadcast::Sender<Event>) {
                     label: None,
                     background: false,
                 };
-                let said = (n % 2 == 0).then(|| Entry::Reply { text: format!("`{target}`을 봤어요. 다음은 관련 테스트를 확인할게요.") });
+                let said = (n % 2 == 0).then(|| Entry::Reply { text: format!("Looked at `{target}`. Next, the tests around it.") });
                 if let Some(entry) = live_subagents().lock().unwrap().iter_mut().find(|(_, info, _)| info.id == *id) {
                     entry.1.step = Some(step.into());
                     entry.1.entries.push(done.clone());
@@ -698,7 +704,7 @@ fn end_subagent(events: &broadcast::Sender<Event>, session: SessionId, id: &str)
     };
     let outcome = equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(9_000), output: String::new(), skipped: 0, diff: None };
     let _ = events.send(Event::ToolResult { session, tool: "Agent".into(), target: what.clone(), outcome });
-    let result = what.as_ref().map(|w| format!("**{w}** — 정리했어요.\n\n- `src/gallery.tsx:12` 썸네일 240px 고정\n- `src/thumb.tsx:13` 비율 4:3"));
+    let result = what.as_ref().map(|w| format!("**{w}** — done.\n\n- `src/gallery.tsx:12` thumbnails fixed at 240px\n- `src/thumb.tsx:13` ratio 4:3"));
     let _ = events.send(Event::SubagentEnded { session, id: id.into(), result, failed: false });
 }
 
@@ -709,26 +715,26 @@ fn your_turn() -> Option<String> {
 
 /// What T-117 asks: as the person saw it — one question, one thing to do.
 const TURN_ASKS: [&str; 2] = [
-    "App Review 연락처를 알려 주세요: 전화번호(국가번호 포함)와 이메일. 심사팀만 보고 공개되지 않습니다.",
-    "App Store Connect에서 EU DSA 상태를 trader(사업자)로 바꿔 주세요 — 앱 정보 › 디지털 서비스법.",
+    "Tell me the App Review contact: a phone number (with the country code) and an email. Only the review team sees them; they aren't public.",
+    "In App Store Connect, set the EU DSA status to trader — App Information › Digital Services Act.",
 ];
 
 /// What T-117 asked before (`FAKE_TURN=files`): as the person once saw it joined into one line.
 const TURN_ASKS_FILES: [&str; 3] = [
-    "심사 연락처(App Review Information)를 알려 주세요: 이름, 전화번호(국가번호 포함), 이메일. 심사팀만 보고 공개되지 않습니다.",
-    "회사 iOS 엔지니어 리뷰를 언제, 누가 할지 정해 주세요. equipe-app 규칙상 스토어 출시 전에 꼭 받아야 합니다.",
-    "스크린샷과 문구를 확인해 주세요: outputs/T-117 앱스토어 제출/screenshots-6.9/ (en·ko 5장씩, 실제 앱 화면) 와 listing.json. ko 스크린샷 속 티켓 제목은 데모 데이터라 영어입니다. 그대로 둬도 되면 '괜찮음'이라고만 답해 주세요.",
+    "Tell me the review contact (App Review Information): a name, a phone number (with the country code) and an email. Only the review team sees them; they aren't public.",
+    "Decide when, and by whom, the company's iOS engineer review happens. equipe-app's rules require it before a store release.",
+    "Check the screenshots and copy: outputs/T-117 App Store submission/screenshots-6.9/ (5 each in en and fr, real app screens) and listing.json. The ticket titles in the fr screenshots are demo data, so they're in English. If they can stay as they are, just answer 'fine'.",
 ];
 
 /// T-117, waiting, with the folder and file its third ask names on disk.
 fn turn_ticket() -> Ticket {
-    let shots = repo("app").join("outputs/T-117 앱스토어 제출/screenshots-6.9");
+    let shots = repo("app").join("outputs/T-117 App Store submission/screenshots-6.9");
     let _ = std::fs::create_dir_all(&shots);
     let _ = std::fs::write(repo("app").join("listing.json"), "{ \"name\": \"equipe\" }\n");
     let files = your_turn().as_deref() == Some("files");
     let asks: Vec<String> = if files { TURN_ASKS_FILES.iter().map(|a| (*a).to_owned()).collect() } else { TURN_ASKS.iter().map(|a| (*a).to_owned()).collect() };
-    let note = equipe_core::protocol::asks::waiting_note(&asks, Some("앱스토어 심사 제출에 필요합니다"));
-    let mut t = ticket(117, "waiting", "app", "frontend", "앱스토어 제출", "App Store Connect에 1.0을 제출합니다.", &[], None, Some(&note));
+    let note = equipe_core::protocol::asks::waiting_note(&asks, Some("Needed for the App Store review submission"));
+    let mut t = ticket(117, "waiting", "app", "frontend", "App Store submission", "Submit 1.0 in App Store Connect.", &[], None, Some(&note));
     t.kind = equipe_core::protocol::TicketKind::Task;
     t.asks = asks;
     t
@@ -767,14 +773,14 @@ fn records() -> &'static std::sync::Mutex<HashMap<u32, Vec<TicketEntry>>> {
         out.insert(
             42,
             vec![
-                e(3 * 86_400, "pm", "created", "체크아웃 페이지 결제 수단 선택"),
+                e(3 * 86_400, "pm", "created", "Checkout page payment method choice"),
                 e(3 * 86_400 - 60, "equipe", "assigned", "frontend"),
-                e(2 * 86_400, "you", "edited", "우선순위 보통 → 긴급"),
-                e(86_400, "you", "comment", "간편결제는 토스페이만 먼저 붙여 주세요."),
-                e(5_400, "frontend", "handed in", "결제 수단 선택을 라디오 그룹으로 바꿨습니다."),
+                e(2 * 86_400, "you", "edited", "Priority normal → urgent"),
+                e(86_400, "you", "comment", "For wallets, add only Apple Pay first, please."),
+                e(5_400, "frontend", "handed in", "Payment method choice is now a radio group."),
             ],
         );
-        out.insert(47, vec![e(2 * 86_400, "pm", "created", "상품 상세 페이지 이미지 갤러리"), e(86_400, "equipe", "assigned", "frontend")]);
+        out.insert(47, vec![e(2 * 86_400, "pm", "created", "Product detail page image gallery"), e(86_400, "equipe", "assigned", "frontend")]);
         std::sync::Mutex::new(out)
     })
 }
@@ -798,7 +804,7 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
     match command {
         Command::CreateTicket { draft, .. } => {
             if draft.title.trim().is_empty() {
-                return Some(refuse("티켓에는 제목이 있어야 합니다.".into()));
+                return Some(refuse("A ticket needs a title.".into()));
             }
             let id = all.iter().map(|t| t.id).max().unwrap_or(0) + 1;
             let mut t = ticket(id, "todo", "web", "", draft.title.trim(), &draft.body, &draft.depends_on, None, None);
@@ -819,7 +825,7 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
                 && let Some(path) = equipe_core::board::dependency_loop(&all, *ticket, deps)
             {
                 let path: Vec<String> = path.iter().map(|id| format!("T-{id}")).collect();
-                return Some(refuse(format!("서로를 기다리는 고리가 생깁니다: {}.", path.join(" → "))));
+                return Some(refuse(format!("That makes a loop of tickets waiting on each other: {}.", path.join(" → "))));
             }
             let t = all.iter_mut().find(|t| t.id == *ticket)?;
             if let Some(title) = &changes.title {
@@ -948,8 +954,8 @@ fn on(mut info: SessionInfo, ticket: u32, project: &str, title: &str, working: b
     info.state = if working { SessionState::Working } else { SessionState::Ready };
     info.recent = vec![
         Entry::Note { text: format!("── T-{ticket} · {title} — on branch equipe/t-{ticket}") },
-        Entry::User { text: format!("T-{ticket} 시작해 주세요.") },
-        Entry::Reply { text: "네, 지금 구조부터 보겠습니다. 기존 컴포넌트를 재사용하고 테스트를 먼저 쓰겠습니다.".into() },
+        Entry::User { text: format!("Please start T-{ticket}.") },
+        Entry::Reply { text: "Sure, I'll look at the structure first. I'll reuse the existing components and write the tests first.".into() },
         Entry::Tool { tool: tool.0.into(), target: Some(if tool.0 == "Bash" { tool.1.to_owned() } else { format!("{}/{}", repo(project).display(), tool.1) }), outcome: None, label: None, background: false },
     ];
     info.estimate = estimate;
@@ -1093,11 +1099,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     (Some(rpc::HELLO), Some(id)) => {
                         let params: rpc::HelloParams = message.params_as().unwrap();
                         let history = vec![
-                            Entry::User { text: "어제 하던 일 이어서 해 줘".into() },
-                            Entry::Reply { text: "네, **T-9**부터 이어서 하겠습니다.".into() },
+                            Entry::User { text: "Carry on with what you were doing yesterday".into() },
+                            Entry::Reply { text: "Sure, I'll carry on from **T-9**.".into() },
                             Entry::Tool { tool: "Read".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None, label: None, background: false },
                             Entry::Tool { tool: "Edit".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None, label: None, background: false },
-                            Entry::Reply { text: "고쳤습니다.".into() },
+                            Entry::Reply { text: "Fixed.".into() },
                         ];
                         // `FAKE_SAID`: one more message of the person's, last — as one with
                         // attachment tags comes back after a restart.
@@ -1120,7 +1126,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         // `FAKE_ASKLIST=1`: the PM's last reply asks three things in a list of its own words.
                         if std::env::var("FAKE_ASKLIST").is_ok_and(|v| v == "1") {
-                            history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
+                            history.push(Entry::User { text: "Can we ship to the EU stores right away too?".into() });
                             history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None, label: None, background: false });
                             history.push(Entry::Reply { text: ASKLIST.into() });
                         }
@@ -1140,20 +1146,20 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             signin::attached(events.clone());
                         }
                         if browser::handover() {
-                            history.push(Entry::User { text: "App Store Connect에서 EU DSA 거래자 상태를 바꿔 줘".into() });
-                            history.push(Entry::Reply { text: "제 브라우저는 App Store Connect에 로그인되어 있지 않아서, 로그인만 먼저 해 주셔야 합니다.".into() });
+                            history.push(Entry::User { text: "Change the EU DSA trader status in App Store Connect".into() });
+                            history.push(Entry::Reply { text: "My browser isn't signed in to App Store Connect, so you'll need to sign in first.".into() });
                             history.push(Entry::Note { text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
                         }
                         // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
                         // long gone, for the tickets' cards on the pointer.
                         if std::env::var_os("FAKE_CARDS").is_some() {
-                            history.push(Entry::User { text: "지금 볼 거 있어?".into() });
-                            let pictures = if replies::on() { " T-4의 그림도 봐 주세요." } else { "" };
-                            history.push(Entry::Reply { text: format!("T-42가 검토를 기다리고 있어요. T-117은 당신 차례이고, 예전 T-999는 이제 없습니다.{pictures}") });
+                            history.push(Entry::User { text: "Anything for me to look at?".into() });
+                            let pictures = if replies::on() { " Have a look at T-4's pictures too." } else { "" };
+                            history.push(Entry::Reply { text: format!("T-42 is waiting for review. T-117 is your turn, and the old T-999 is gone.{pictures}") });
                         }
                         if let Some(how) = your_turn() {
-                            history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });
-                            history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · 앱스토어 제출.".into() });
+                            history.push(Entry::Note { text: "frontend handed in T-63 for your review · Competitor onboarding research.".into() });
+                            history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · App Store submission.".into() });
                             if how == "elsewhere" {
                                 let events = events.clone();
                                 tokio::spawn(async move {
@@ -1164,7 +1170,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                         all.iter_mut().find(|t| t.id == 117 && t.status == TicketStatus::Waiting).map(|t| {
                                             t.status = TicketStatus::InProgress;
                                             use equipe_core::protocol::asks::{self, Answers, Reply};
-                                            let answers = Answers { replies: vec![Reply::Text("+82 10 1234 5678, review@equipe.im".into()), Reply::Later], ..Answers::default() };
+                                            let answers = Answers { replies: vec![Reply::Text("+1 415 555 0134, review@equipe.im".into()), Reply::Later], ..Answers::default() };
                                             let message = asks::answer_message(&t.asks(), &answers);
                                             t.remaining = asks::still_open(&t.asks(), &message);
                                             t.note = Some(format!("Resumed: {message}"));
@@ -1183,17 +1189,17 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             tokio::spawn(async move {
                                 let after = std::env::var("FAKE_DECIDE_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
                                 tokio::time::sleep(Duration::from_millis(after)).await;
-                                close_questions(9001, Some(vec![Answer { picked: vec![1], ..Default::default() }, Answer { picked: vec![0, 2], other: Some("설정은 알림만".into()), ..Default::default() }]), &events);
+                                close_questions(9001, Some(vec![Answer { picked: vec![1], ..Default::default() }, Answer { picked: vec![0, 2], other: Some("Settings: notifications only".into()), ..Default::default() }]), &events);
                             });
                         }
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                        let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", working() >= 1, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
-                        let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", working() >= 2, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
-                        let designer = on(info(4, "designer", vec![]), 60, "app", "온보딩 세 화면 시안", false, ("Read", "brief.md"), Some(Estimate { done_at: Some(now.saturating_sub(12 * 60)), ..Default::default() }));
+                        let frontend = on(info(2, "frontend", vec![]), 47, "web", "Product detail page image gallery", working() >= 1, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
+                        let backend = on(info(3, "backend", vec![]), 70, "api", "Orders API pagination", working() >= 2, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
+                        let designer = on(info(4, "designer", vec![]), 60, "app", "Three onboarding screen drafts", false, ("Read", "brief.md"), Some(Estimate { done_at: Some(now.saturating_sub(12 * 60)), ..Default::default() }));
                         // `FAKE_DESIGN=working`: the designer mid-turn on T-378, shooting the map.
                         let designer = if design::mode().as_deref() == Some("working") {
-                            let what = Estimate { done_at: Some(now + 18 * 60), what: Some("결제 흐름 상태 찍는 중".into()), ..Default::default() };
-                            on(info(4, "designer", vec![]), design::WORKING_TICKET, "app", "화면 지도 만들기", true, ("Write", "design/flows/checkout/pay/default.light.390.png"), Some(what))
+                            let what = Estimate { done_at: Some(now + 18 * 60), what: Some("Shooting the checkout flow's states".into()), ..Default::default() };
+                            on(info(4, "designer", vec![]), design::WORKING_TICKET, "app", "Make the UI map", true, ("Write", "design/flows/checkout/pay/default.light.390.png"), Some(what))
                         } else {
                             designer
                         };
@@ -1234,10 +1240,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // running in the background (described, as Claude Code's are).
                         let pm_waits = std::env::var("FAKE_BACKGROUND").is_ok_and(|v| v == "1");
                         if pm_waits {
-                            history.push(Entry::User { text: "새 배포 올라오면 바로 확인해 줘".into() });
-                            history.push(Entry::Tool { tool: "Bash".into(), target: Some("git -C ~/site log -1 --format=%h".into()), outcome: Some(Box::new(equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(100), output: "6ad5f11".into(), skipped: 0, diff: None })), label: Some("지금 커밋 확인".into()), background: false });
-                            history.push(Entry::Tool { tool: "Bash".into(), target: Some("until [ \"$(git -C ~/site log -1 --format=%h)\" != 6ad5f11 ]; do sleep 30; done".into()), outcome: None, label: Some("새 커밋·배포 감시".into()), background: true });
-                            history.push(Entry::Reply { text: "네, 새 커밋과 새 배포를 지켜보고 있어요. 올라오면 화면을 확인해서 보여 드릴게요.".into() });
+                            history.push(Entry::User { text: "Check it as soon as the new deploy is up".into() });
+                            history.push(Entry::Tool { tool: "Bash".into(), target: Some("git -C ~/site log -1 --format=%h".into()), outcome: Some(Box::new(equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(100), output: "6ad5f11".into(), skipped: 0, diff: None })), label: Some("Check the current commit".into()), background: false });
+                            history.push(Entry::Tool { tool: "Bash".into(), target: Some("until [ \"$(git -C ~/site log -1 --format=%h)\" != 6ad5f11 ]; do sleep 30; done".into()), outcome: None, label: Some("Watch for a new commit and deploy".into()), background: true });
+                            history.push(Entry::Reply { text: "Sure, I'm watching for a new commit and deploy. When it's up I'll check the screen and show you.".into() });
                         }
                         let mut pm_info = info(1, "pm", history);
                         if let Some(mode) = std::env::var("FAKE_COMPACT").ok().filter(|m| !m.is_empty()) {
@@ -1251,7 +1257,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             pm_info.compacting = Some(CompactingInfo { trigger, started_at: ago(secs), estimate_ms: 120_000 });
                             frontend.compacting = Some(CompactingInfo { trigger: CompactTrigger::Auto, started_at: ago(41), estimate_ms: 120_000 });
                             if mode == "queued" {
-                                pm_info.steering = vec!["그리고 웹도 확인해 줘".into(), "끝나면 알려 줘".into()];
+                                pm_info.steering = vec!["And check the web too".into(), "Tell me when it's done".into()];
                                 pm_info.steering_in = vec![None, None];
                             }
                             if mode == "done" || mode == "fail" {
@@ -1297,10 +1303,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     session: 3,
                                     member: "backend".into(),
                                     ticket: Some(117),
-                                    why: "NAS 매일 자동 수집에 쓸 NAS 로그인".into(),
+                                    why: "The NAS sign-in for the daily automatic collection".into(),
                                     fields: vec![
-                                        equipe_core::protocol::secrets::SecretField { key: "NAS_USER".into(), label: "NAS 아이디".into(), secret: false },
-                                        equipe_core::protocol::secrets::SecretField { key: "NAS_PASSWORD".into(), label: "NAS 비밀번호".into(), secret: true },
+                                        equipe_core::protocol::secrets::SecretField { key: "NAS_USER".into(), label: "NAS user name".into(), secret: false },
+                                        equipe_core::protocol::secrets::SecretField { key: "NAS_PASSWORD".into(), label: "NAS password".into(), secret: true },
                                     ],
                                     save_to: "~/.config/atinum/nas.env".into(),
                                     at: 0,
@@ -1507,7 +1513,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::SessionStarted { session, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some(squad.clone()) });
                                     let _ = events.send(Event::LaneOpened { session, of: 1, project: c.project.clone(), kept: true });
                                     let title = c.title.clone().unwrap_or_default();
-                                    let lines = vec![Entry::User { text: title }, Entry::Reply { text: "지난번에 여기까지 했어요. 이어서 할까요?".into() }];
+                                    let lines = vec![Entry::User { text: title }, Entry::Reply { text: "This is where we left off last time. Shall I carry on?".into() }];
                                     let _ = events.send(Event::ConversationBack { session, title: c.title, lines });
                                     let _ = events.send(Event::PutAwayChanged { squad, list: left });
                                 }
@@ -1629,7 +1635,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     && browser::handover()
                                     && lane == browser::PM
                                 {
-                                    let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
+                                    let _ = events.send(Event::Notice { session: 1, text: "🖐 Handed the browser back.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
                                 // A card confirmed: what the board's buttons send, run as the board runs them.
@@ -1680,22 +1686,22 @@ fn scoped_history() -> Vec<Entry> {
     let read = |p: &str, f: &str| Entry::Tool { tool: "Read".into(), target: Some(format!("/tmp/fake/site/{p}/{f}")), outcome: None, label: None, background: false };
     vec![
         about(Some("app")),
-        user("온보딩 첫 화면 문구를 다듬어 줘"),
+        user("Polish the copy on the first onboarding screen"),
         read("app", "src/onboarding.tsx"),
-        reply("네, **T-60** 시안에 맞춰 첫 화면 제목을 \"팀이 일하는 곳\"으로 바꾸고 버튼은 \"시작하기\" 하나로 줄이겠습니다."),
+        reply("Sure — to match the **T-60** draft, I'll change the first screen's title to \"Where your team works\" and cut the buttons down to one, \"Get started\"."),
         about(Some("web")),
-        Entry::Note { text: "frontend이(가) T-47을(를) 검토해 달라고 넘겼습니다 · 상품 상세 페이지 이미지 갤러리.".into() },
-        user("상품 상세 갤러리는 어디까지 됐어?"),
+        Entry::Note { text: "frontend handed in T-47 for your review · Product detail page image gallery.".into() },
+        user("How far along is the product detail gallery?"),
         read("web", "src/gallery.tsx"),
         read("web", "src/gallery.test.tsx"),
-        reply("**T-47**은 검토를 기다리고 있습니다. 스와이프와 확대는 끝났고, 썸네일 줄은 다음 차례입니다."),
+        reply("**T-47** is waiting for review. Swipe and zoom are done; the thumbnail strip is next."),
         about(None),
-        user("이번 주 우선순위 정리해 줘"),
-        reply("이번 주는 세 가지입니다.\n\n1. web — 갤러리 검토 (**T-47**)\n2. api — 주문 페이지네이션 (**T-70**)\n3. app — 온보딩 시안 (**T-60**)"),
+        user("Sort out this week's priorities"),
+        reply("Three things this week.\n\n1. web — the gallery review (**T-47**)\n2. api — orders pagination (**T-70**)\n3. app — the onboarding drafts (**T-60**)"),
         about(Some("app")),
-        user("온보딩 두 번째 화면도 같은 톤으로"),
+        user("The second onboarding screen in the same tone too"),
         read("app", "src/onboarding.tsx"),
-        reply("두 번째 화면도 같은 톤으로 맞췄습니다. 설명은 두 줄로 줄였어요."),
+        reply("The second screen now has the same tone. I cut its description down to two lines."),
     ]
 }
 
@@ -1720,5 +1726,5 @@ async fn turn(session: SessionId, events: broadcast::Sender<Event>, seconds: f32
     }
     let usage = Usage { input_tokens: Some(1200), output_tokens: Some(340), context_tokens: Some(420), context_window: Some(1000), ..Default::default() };
     let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Completed, usage: Some(usage) });
-    let _ = events.send(Event::Suggestion { session, text: "다른 페이지도 정리해줘".into() });
+    let _ = events.send(Event::Suggestion { session, text: "Tidy up the other pages too".into() });
 }

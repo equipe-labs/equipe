@@ -1,4 +1,4 @@
-//! `FAKE_ACCEPT=1`: the person told the PM "전부 수락할게", and the PM put
+//! `FAKE_ACCEPT=1`: the person told the PM "accept them all", and the PM put
 //! T-42 and T-71 (both in review) to them on a card to confirm. Confirmed,
 //! each ticket gets what the board's buttons send — accept, then merge when
 //! the card says so — as the daemon would; declined, the PM's conversation
@@ -30,7 +30,7 @@ fn waiting() -> &'static std::sync::Mutex<Vec<AcceptProposal>> {
             verdict: Verdict::Accept,
             tickets: vec![42, 71],
             note: String::new(),
-            summary: "결제 수단 선택과 요청 수 제한 — 둘 다 테스트를 통과했어요.".into(),
+            summary: "Payment method choice and the rate limit — both pass their tests.".into(),
             by: "pm".into(),
             session: PM,
             proposed_at: now,
@@ -87,13 +87,13 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> Optio
             }
             let _ = events.send(Event::AcceptClosed { squad: squad(), id, confirmed: true, tickets: acted.clone() });
             for ticket in acted {
-                let _ = events.send(Event::Notice { session: PM, text: format!("T-{ticket}을(를) 수락했습니다.") });
+                let _ = events.send(Event::Notice { session: PM, text: format!("Accepted T-{ticket}.") });
             }
         }
         None => {
             let _ = events.send(Event::AcceptClosed { squad: squad(), id, confirmed: false, tickets: Vec::new() });
             let list = card.tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
-            let _ = events.send(Event::Notice { session: PM, text: format!("{list} 수락하지 않았어요 — 검토 대기로 그대로 둬요") });
+            let _ = events.send(Event::Notice { session: PM, text: format!("Didn't accept {list} — left waiting for review") });
         }
     }
     Some(out)
