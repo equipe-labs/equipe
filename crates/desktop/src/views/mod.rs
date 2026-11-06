@@ -56,4 +56,5 @@ pub mod visuals;
 pub mod watch;
 pub mod new_squad;
 pub mod welcome;
+pub mod words;
 pub mod yourturn;

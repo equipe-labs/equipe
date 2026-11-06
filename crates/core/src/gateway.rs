@@ -257,6 +257,12 @@ async fn serve_client(
     stop: UnboundedSender<oneshot::Sender<()>>,
     metrics: std::sync::Arc<crate::metrics::Metrics>,
 ) {
+    // Who is on the other end: the person's own screen, a self-connection
+    // (phone relay, Telegram), or a member's process reaching in. Read once,
+    // before the stream is split, from the peer's credentials. Person-only
+    // commands from a member are refused below ([`crate::origin`]).
+    let peer = stream.peer_cred().ok().and_then(|cred| cred.pid()).and_then(|pid| u32::try_from(pid).ok());
+    let origin = crate::origin::of(peer);
     let (reader, writer) = stream.into_split();
     // Replies and events share the write half; a task owns it.
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Message>();
@@ -334,6 +340,16 @@ async fn serve_client(
                         if let Some(bridge) = &mut pairing {
                             bridge.lang = now;
                         }
+                    }
+                    // The floor: a person-only command (an approval, an
+                    // acceptance, a settings change, pairing) is refused when it
+                    // comes from a member's own process rather than the person's
+                    // screen — an agent never decides its own approvals. Reads
+                    // and the person's own messages are untouched.
+                    if crate::permissions::person_only(&command) && !origin.person_may() {
+                        let squad = serde_json::to_value(&command).ok().and_then(|v| v["squad"].as_str().map(str::to_owned));
+                        core.refused_person_only(squad);
+                        continue;
                     }
                     if crate::pairing::is_pairing(&command) {
                         pairing.get_or_insert_with(|| crate::pairing::Bridge::new(&home, lang)).send(&command, &out_tx).await;

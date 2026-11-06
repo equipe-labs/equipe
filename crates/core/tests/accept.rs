@@ -179,7 +179,7 @@ async fn the_pm_puts_it_on_a_card_and_only_the_persons_confirmation_accepts_and_
     assert_eq!(handle.snapshot("acme").await.accepts.len(), 1);
 
     // The person confirms, merging as their screen's way says: what A and the merge send.
-    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Merge) }] });
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Merge) }], said: None });
     let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
     assert!(seen.iter().any(|e| matches!(e, Event::AcceptClosed { id, confirmed: true, tickets, .. } if *id == card.id && tickets == &[1])), "{seen:#?}");
     assert_eq!(git(&repo, &["show", "main:HERO.md"]), "made by the squad", "on main");
@@ -187,7 +187,7 @@ async fn the_pm_puts_it_on_a_card_and_only_the_persons_confirmation_accepts_and_
     assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
     assert!(handle.snapshot("acme").await.accepts.is_empty());
     // Confirmed again from another screen: nothing more.
-    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed::only(1)] });
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed::only(1)], said: None });
     handle.send(Command::DeclineAccept { squad: "acme".into(), id: card.id });
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(status(&handle, 1).await, TicketStatus::Done);
@@ -263,7 +263,7 @@ async fn the_persons_words_raise_the_card_a_no_keeps_it_as_it_is_and_the_board_s
     let seen = until(&mut events, |e| matches!(e, Event::AcceptClosed { .. })).await;
     assert!(matches!(seen.last(), Some(Event::AcceptClosed { id, confirmed: false, .. }) if *id == back.id), "{seen:#?}");
     // Confirmed late, from a screen that hadn't heard: nothing is sent back.
-    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: back.id, tickets: vec![Confirmed::only(1)] });
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: back.id, tickets: vec![Confirmed::only(1)], said: None });
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(status(&handle, 1).await, TicketStatus::Done);
     handle.shutdown().await;
@@ -272,13 +272,15 @@ async fn the_persons_words_raise_the_card_a_no_keeps_it_as_it_is_and_the_board_s
 /// The guarantee, in the code itself: the daemon accepts a ticket only for
 /// [`Command::Accept`] (or the person's own move to done on the board), merges
 /// only for [`Command::Merge`], sends back only for [`Command::Reopen`] (or
-/// their move back) — and the only other place those commands are sent is the
-/// person's [`Command::ConfirmAccept`]. No tool, and no reading of anyone's
-/// words, reaches any of it.
+/// their move back) — and the only other places those commands are sent are
+/// the person's [`Command::ConfirmAccept`] and the person's own words in a
+/// [`Command::Say`] (`by_words`: low risk after its undo window, the rest only
+/// read back and confirmed by their next own message, in "all by words"). No
+/// tool, and no reading of a member's words, reaches any of it.
 #[test]
 fn nothing_accepts_or_merges_but_the_persons_commands() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = vec![src.join("runtime.rs")];
+    let mut files = vec![src.join("runtime.rs"), src.join("by_words.rs")];
     files.extend(std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()));
     files.sort();
     let watched = ["self.accept(", "self.merge(", "self.reopen(", "end_work(id, WorkEnd::Accepted)", "TicketStatus::Done)", "Command::Accept {", "Command::Merge {", "Command::Reopen {", "confirm_accept("];
@@ -303,7 +305,7 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             // The PM's `accept_work`, only while the person lets the PM accept (`SetPmAccepts`).
             "accept.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
             "accept.rs: self.merge(squad, ticket, push);",
-            "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>) {",
+            "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>, said: Option<equipe_protocol::by_words::Said>) {",
             "accept.rs: Box::pin(self.handle(Command::Reopen { squad, ticket, note: proposal.note.clone() })).await;",
             "accept.rs: Box::pin(self.handle(Command::Accept { squad: squad.clone(), ticket })).await;",
             "accept.rs: Box::pin(self.handle(Command::Merge { squad, ticket, push: land == Land::Push })).await;",
@@ -312,11 +314,15 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             "runtime.rs: Command::Accept { squad, ticket } => self.accept(&squad, ticket, crate::telemetry::Accepter::Person).await,",
             "runtime.rs: Command::Merge { squad, ticket, push } => self.merge(&squad, ticket, push),",
             "runtime.rs: Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,",
-            "runtime.rs: Command::ConfirmAccept { squad, id, tickets } => self.confirm_accept(&squad, id, tickets).await,",
+            "runtime.rs: Command::ConfirmAccept { squad, id, tickets, said } => self.confirm_accept(&squad, id, tickets, said).await,",
             "runtime.rs: self.end_work(id, WorkEnd::Accepted);",
             "runtime.rs: None => self.close_ticket(squad, found, TicketStatus::Done),",
             "tickets.rs: board::Move::Accept => self.accept(squad, id, crate::telemetry::Accepter::Person).await,",
             "tickets.rs: board::Move::SendBack => self.reopen(squad, id, String::new()).await,",
+            // The person's own words (`Say`), as their card's buttons would: run by `runtime/words.rs` only.
+            "by_words.rs: Verb::Accept => vec![Command::Accept { squad, ticket }],",
+            "by_words.rs: out.push(Command::Accept { squad: squad.clone(), ticket });",
+            "by_words.rs: out.push(Command::Merge { squad, ticket, push });",
     ];
     expected.sort();
     assert_eq!(found, expected, "accepting, merging and sending back run only on the person's commands — and the PM's accept_work they allow");

@@ -1,5 +1,23 @@
 {
+  "match.accept": "acept|aprob|aprueb",
+  "match.all_starts": "",
+  "match.all_words": "todo|todos|todas",
+  "match.allow": "permite|permitir|autoriza|autorizar|aprueba|aprobar",
+  "match.always": "siempre|de ahora en adelante|desde ahora|cada vez",
   "match.answers": "dime|indica|elige|decide|cuál|cuándo|quién",
+  "match.branch": "en su rama|en la rama",
+  "match.cancel": "cancela|cancelar|para|detente|espera|alto",
   "match.confirms": "revisa|comprueba|está bien|de acuerdo",
-  "match.recommended": "recomendado|recomendada"
+  "match.idea": "idea",
+  "match.merge": "fusiona|fusión|fusion",
+  "match.no": "no|nunca|jamás|espera|para|detente|cancela|cancelar|todavía|aún|después|luego|alto",
+  "match.number": "",
+  "match.push": "empuja|sube",
+  "match.recommended": "recomendado|recomendada",
+  "match.run": "ejecuta|corre|lanza|ejecutar",
+  "match.take_on": "toma|empieza|comienza|arranca",
+  "match.undo": "deshaz|deshacer|revierte|revertir|vuelve atrás",
+  "match.unsure": "no |todavía|todavia|aún no|espera|luego|después|despues|más tarde|si |a menos",
+  "match.yes": "sí|si|vale|dale|adelante|claro|venga|acuerdo|perfecto|confirmo|confirmado|hazlo|listo|bueno|va",
+  "match.yes_with": "por|favor|gracias|ya|ahora|entonces|todo|todos|los|las|ambos|lo|de|eso"
 }
