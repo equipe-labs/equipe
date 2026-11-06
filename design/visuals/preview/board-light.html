@@ -37,7 +37,7 @@
   --eq-color-on-err: #FFFFFF;
 
   /* font */
-  --eq-font-family-sans: 'Inter Variable', Inter, 'Pretendard Variable', system-ui, sans-serif;
+  --eq-font-family-sans: 'Inter Variable', Inter, 'Pretendard Variable', 'Noto Sans JP', 'Noto Sans SC', system-ui, sans-serif;
   --eq-font-family-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, Menlo, monospace;
 
   /* space */
@@ -361,6 +361,12 @@
   --eq-color-err-bg: #EE7B741F;
   --eq-color-on-err: #0A0A0C;
 }
+
+/* Type in the document's language (<html lang>): its script's face before the others. */
+:lang(ko) { --eq-font-family-sans: 'Inter Variable', Inter, 'Pretendard Variable', system-ui, sans-serif; }
+:lang(ja) { --eq-font-family-sans: 'Inter Variable', Inter, 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif; }
+:lang(zh), :lang(zh-Hans) { --eq-font-family-sans: 'Inter Variable', Inter, 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif; }
+:lang(zh-Hant), :lang(zh-TW), :lang(zh-HK) { --eq-font-family-sans: 'Inter Variable', Inter, 'PingFang TC', 'Noto Sans TC', system-ui, sans-serif; }
 
 @media (max-width: 640px) {
   :root {

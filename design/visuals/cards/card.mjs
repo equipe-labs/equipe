@@ -61,7 +61,7 @@ export function render(type, data, mode = 'auto') {
   if (!TYPES[type]) throw new Error(`type must be one of ${Object.keys(TYPES).join(', ')}`);
   const theme = mode === 'light' || mode === 'dark' ? ` data-theme="${mode}"` : '';
   const css = read('../../build/css/tokens.css') + '\n' + read('card.css');
-  return `<!doctype html><html lang="en"${theme}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><title>${esc(data.title)}</title><style>${css}</style></head><body><main class="vc"><article class="vc-card">${TYPES[type](data)}</article></main></body></html>`;
+  return `<!doctype html><html lang="${esc(data.lang ?? 'en')}"${theme}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><title>${esc(data.title)}</title><style>${css}</style></head><body><main class="vc"><article class="vc-card">${TYPES[type](data)}</article></main></body></html>`;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

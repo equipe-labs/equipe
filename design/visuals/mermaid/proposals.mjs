@@ -10,7 +10,7 @@ for (const mode of ['light', 'dark']) {
   const T = Object.fromEntries((await resolve('web', mode)).map((x) => [x.name, x.value]));
   const c = (n) => T['color.' + n].hex.slice(0, 7);
   const tint = (n, base = 'surface') => over(T['color.' + n], T['color.' + base]);
-  const base = { base: mode, font_family: '"Helvetica Neue", "Apple SD Gothic Neo", sans-serif', font_size: 14, background: 'transparent',
+  const base = { base: mode, font_family: '"Helvetica Neue", "Hiragino Sans", "PingFang SC", "Apple SD Gothic Neo", sans-serif', font_size: 14, background: 'transparent',
     primary_color: c('surface'), primary_text_color: c('text'), text_color: c('muted'), primary_border_color: c('border-strong'), line_color: c('muted'),
     secondary_color: c('sunken'), tertiary_color: c('raised'), edge_label_background: c('surface'), cluster_background: c('sunken'), cluster_border: over(T['color.line'], T['color.sunken']) };
   const st = (k) => `fill:${tint(k + '-bg')},stroke:${c(k)},stroke-width:1.5px,color:${c('text')}`;

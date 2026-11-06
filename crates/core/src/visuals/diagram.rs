@@ -80,11 +80,26 @@ pub fn is_drawn(home: &Path, squad: &str, path: &Path) -> bool {
     named.is_some_and(|k| k.len() == 16 && k.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))) && path.parent() == Some(dir(home, squad).as_path())
 }
 
+/// The faces a diagram's words are drawn in, by the language it is written
+/// in: Helvetica for Latin, then the Mac's face for its script — Korean in
+/// Apple SD Gothic Neo, Japanese in Hiragino Sans, Chinese in PingFang. Each of
+/// those also has kana and Han, so a diagram in no one language lists them in
+/// the order that gives every script its own: Hiragino (kana, and the Han they
+/// share), PingFang (Han only Chinese writes), Apple SD Gothic Neo (Hangul).
+pub fn font_family(source: &str) -> &'static str {
+    match crate::language::detect(source) {
+        Some("Korean") => "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif",
+        Some("Japanese") => "\"Helvetica Neue\", \"Hiragino Sans\", sans-serif",
+        Some("Chinese") => "\"Helvetica Neue\", \"PingFang SC\", sans-serif",
+        _ => "\"Helvetica Neue\", \"Hiragino Sans\", \"PingFang SC\", \"Apple SD Gothic Neo\", sans-serif",
+    }
+}
+
 /// The diagram's SVG, in colours that sit on the conversation's background.
 pub fn svg(source: &str, dark: bool) -> Result<String, String> {
     use mermaid_rs_renderer::{RenderOptions, Theme, render_with_options};
     let mut theme = if dark { Theme::dark() } else { Theme::modern() };
-    theme.font_family = "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif".into();
+    theme.font_family = font_family(source).into();
     theme.font_size = 14.;
     if dark {
         theme.background = "transparent".into();
@@ -224,6 +239,17 @@ mod tests {
     use super::*;
 
     const FLOW: &str = "flowchart LR\n  A[Ask] --> B[Draw]\n  B --> C[Show]";
+
+    #[test]
+    fn a_diagrams_words_take_the_face_of_their_own_script() {
+        let face = |source: &str| font_family(source).split(", ").nth(1).unwrap().trim_matches('"').to_owned();
+        assert_eq!(face("flowchart LR\n  A[요청] --> B[그리기]"), "Apple SD Gothic Neo", "Korean as it always was");
+        assert_eq!(face("flowchart LR\n  A[見積もり] --> B[確認する]"), "Hiragino Sans");
+        assert_eq!(face("flowchart LR\n  A[需求] --> B[设计]"), "PingFang SC");
+        assert_eq!(face(FLOW), "Hiragino Sans", "no one language: each script to its own, Hangul last");
+        assert!(font_family(FLOW).ends_with("\"Apple SD Gothic Neo\", sans-serif"));
+        assert!(svg("flowchart LR\n  A[見積もり] --> B[確認する]", false).unwrap().contains("Hiragino Sans"));
+    }
 
     #[test]
     fn mermaid_blocks_are_found_by_their_fence_and_others_left() {

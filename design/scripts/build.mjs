@@ -63,6 +63,12 @@ function css() {
   const narrowLines = narrow.flatMap((t) => decl(t, web.narrow)).map((l) => '  ' + l);
   const motionVars = rootTokens.filter((t) => t.name.startsWith('motion.duration.') && !/\.(reduced|toast)$/.test(t.name));
   const travel = rootTokens.filter((t) => t.name.startsWith('motion.travel.') && !t.name.endsWith('.reduced'));
+  // A font stack per document language: its script's face first. `:lang(zh)` also matches zh-Hant, whose rule comes after.
+  const LANG_SELECTORS = { ko: ':lang(ko)', ja: ':lang(ja)', 'zh-Hans': ':lang(zh), :lang(zh-Hans)', 'zh-Hant': ':lang(zh-Hant), :lang(zh-TW), :lang(zh-HK)' };
+  const langLines = rootTokens.filter((t) => t.type === 'fontFamily' && t.lang).flatMap((t) => Object.entries(t.lang).map(([tag, stack]) => {
+    if (!LANG_SELECTORS[tag]) throw new Error(`css: ${t.name}: no selector for lang ${tag}`);
+    return `${LANG_SELECTORS[tag]} { ${v(t)}: ${fam(stack)}; }`;
+  }));
   const text = [
     `/* ${HEADER('')} */`.replace('/*  ', '/* '),
     '/* Mode: light is the default. Dark follows prefers-color-scheme and can be forced with <html data-theme="dark|light">. */',
@@ -70,6 +76,7 @@ function css() {
     '@media (prefers-color-scheme: dark) {', '  :root:not([data-theme="light"]) {', '    /* color — dark */', ...darkLines('    '), '  }', '}',
     ':root[data-theme="light"] { color-scheme: light; }',
     ':root[data-theme="dark"] {', '  color-scheme: dark;', ...darkLines('  '), '}', '',
+    ...(langLines.length ? ["/* Type in the document's language (<html lang>): its script's face before the others. */", ...langLines, ''] : []),
     `@media (max-width: ${trim(nm['layout.breakpoint-narrow'].value)}px) {`, '  :root {', ...narrowLines, '  }', '}', '',
     '/* Reduce Motion: no travel, and the only motion left is a short fade (motion.duration.reduced). */',
     '@media (prefers-reduced-motion: reduce) {', '  :root {',
