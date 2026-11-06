@@ -42,9 +42,14 @@ const heightFor = (w) => (w < 600 ? 780 : w < 1000 ? 1024 : 900);
 // ── Chrome, headless, in a profile of its own ──
 const profile = mkdtempSync(join(tmpdir(), 'eqeval-chrome-'));
 const proc = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions', '--hide-scrollbars', '--force-color-profile=srgb', '--mute-audio', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-const done = (code) => {
+// Chrome stopped, and its profile removed once it has let go of it.
+const done = async (code) => {
+  const gone = proc.exitCode !== null ? Promise.resolve() : new Promise((r) => proc.once('exit', r));
   try { proc.kill('SIGKILL'); } catch {}
-  try { rmSync(profile, { recursive: true, force: true }); } catch {}
+  await Promise.race([gone, sleep(3000)]);
+  for (let i = 0; i < 5; i++) {
+    try { rmSync(profile, { recursive: true, force: true }); break; } catch { await sleep(200); }
+  }
   process.exit(code);
 };
 const wsUrl = await new Promise((res, rej) => {
@@ -56,7 +61,7 @@ const wsUrl = await new Promise((res, rej) => {
     if (m) { clearTimeout(t); res(m[1]); }
   });
   proc.on('exit', (c) => rej(new Error(`Chrome exited (${c}): ${buf.slice(-400)}`)));
-}).catch((e) => { console.error(String(e)); done(3); });
+}).catch((e) => { console.error(String(e)); return done(3); });
 
 const ws = new WebSocket(wsUrl);
 await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error('no DevTools connection')); });
@@ -328,7 +333,7 @@ try {
     const { files } = await shots(tab, 1200, 'shot', 1600, 2);
     await tab.close();
     console.log(JSON.stringify({ shots: files }));
-    done(0);
+    await done(0);
   }
   const result = { url, widths: {}, contrast: {}, focus: null, structure: null, shots: [] };
   for (const width of [360, 768, 1440]) {
@@ -356,8 +361,8 @@ try {
     await tab.close();
   }
   console.log(JSON.stringify(result));
-  done(0);
+  await done(0);
 } catch (e) {
   console.error(String(e && e.stack || e));
-  done(1);
+  await done(1);
 }
