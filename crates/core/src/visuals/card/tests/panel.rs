@@ -14,6 +14,10 @@ use std::sync::mpsc;
 use base64::Engine as _;
 use serde_json::{Value, json};
 
+/// The longest Chrome may take to answer, or to get somewhere: only ever
+/// waited out when it doesn't, a busy test run's Chrome slow to come up.
+const WAIT: Duration = Duration::from_secs(30);
+
 /// A headless Chrome of the test's own, spoken to over DevTools' pipe.
 struct Devtools {
     child: std::process::Child,
@@ -33,16 +37,26 @@ impl Devtools {
             let mut fds = [0; 2];
             // SAFETY: two fds written into an array of two.
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-            // Chrome gets them as 3 and 4 only: not inherited past exec.
-            for fd in fds {
-                // SAFETY: an fd of ours.
-                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-            }
-            // SAFETY: both are fresh fds of ours.
-            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+            // Each end moved above 4, not inherited past exec: Chrome gets
+            // them as 3 and 4 only, dup2'd there from elsewhere. An end left
+            // at 3 or 4 — free ones in a busy test run, other tests' files
+            // coming and going — breaks that: dup2 onto itself leaves it
+            // close-on-exec, and the first dup2 can overwrite the other end.
+            // Chrome then never hears us, or never answers.
+            fds.map(|fd| {
+                // SAFETY: an fd of ours, duplicated at 5 or above.
+                let high = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 5) };
+                assert!(high >= 5, "{}", std::io::Error::last_os_error());
+                // SAFETY: the low fd, ours and used nowhere else, closed once;
+                // the high one is fresh and ours.
+                unsafe {
+                    libc::close(fd);
+                    OwnedFd::from_raw_fd(high)
+                }
+            })
         };
-        let (their_in, our_out) = pipe();
-        let (our_in, their_out) = pipe();
+        let [their_in, our_out] = pipe();
+        let [our_in, their_out] = pipe();
         let (r, w) = (std::os::fd::AsRawFd::as_raw_fd(&their_in), std::os::fd::AsRawFd::as_raw_fd(&their_out));
         let mut command = Command::new(chrome);
         command
@@ -100,7 +114,7 @@ impl Devtools {
         let mut bytes = serde_json::to_vec(&message).unwrap();
         bytes.push(0);
         self.to.write_all(&bytes).unwrap();
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = Instant::now() + WAIT;
         loop {
             let left = until.saturating_duration_since(Instant::now());
             let Ok(value) = self.from.recv_timeout(left) else {
@@ -156,17 +170,37 @@ struct Went {
 fn press_everything(chrome: &Path, proxy: &str, url: &str) -> Went {
     let mut tools = Devtools::start(chrome, proxy);
     tools.call(None, "Target.setDiscoverTargets", json!({ "discover": true }));
+    // The tab Chrome starts with is told of once Chrome has made it, which a
+    // busy machine can put after the page loaded: waited for here, so it is
+    // never taken for one the page opened.
+    let until = Instant::now() + WAIT;
+    while !tools.named("Target.targetCreated").iter().any(|e| e["params"]["targetInfo"]["type"] == "page") {
+        assert!(Instant::now() < until, "Chrome's first tab never came\n{}", tools.log());
+        tools.settle(Duration::from_millis(50));
+    }
     let target = tools.call(None, "Target.createTarget", json!({ "url": "about:blank" }))["targetId"].as_str().unwrap().to_owned();
     let session = tools.call(None, "Target.attachToTarget", json!({ "targetId": target, "flatten": true }))["sessionId"].as_str().unwrap().to_owned();
     let s = Some(session.as_str());
     tools.call(s, "Page.enable", json!({}));
     tools.call(s, "Page.navigate", json!({ "url": url }));
-    let until = Instant::now() + Duration::from_secs(10);
-    while tools.named("Page.loadEventFired").is_empty() {
-        assert!(Instant::now() < until, "the page never loaded");
+    // Loaded: the top frame at `url`, then its load — not the new tab's own
+    // `about:blank` loading late.
+    let here = url.split('#').next().unwrap();
+    let at_url = |e: &Value| {
+        e["method"] == "Page.frameNavigated"
+            && e["params"]["frame"].get("parentId").is_none()
+            && e["params"]["frame"]["url"].as_str().is_some_and(|u| u.split('#').next() == Some(here))
+    };
+    let until = Instant::now() + WAIT;
+    let loaded = loop {
+        if let Some(at) = tools.events.iter().position(at_url)
+            && let Some(n) = tools.events[at..].iter().position(|e| e["method"] == "Page.loadEventFired")
+        {
+            break at + n + 1;
+        }
+        assert!(Instant::now() < until, "the page never loaded\n{}", tools.log());
         tools.settle(Duration::from_millis(50));
-    }
-    let loaded = tools.events.len();
+    };
     // DevTools' own script runs whatever the page's CSP says: it only finds
     // where things are, it presses nothing.
     let found = tools.call(
@@ -206,7 +240,14 @@ fn press_everything(chrome: &Path, proxy: &str, url: &str) -> Went {
         })
         .map(str::to_owned)
         .collect();
-    let opened = after.iter().filter(|e| e["method"] == "Target.targetCreated").map(|e| e["params"]["targetInfo"]["url"].as_str().unwrap_or_default().to_owned()).collect();
+    // Tabs and windows only: Chrome's own extensions start their background
+    // pages and service workers (`chrome-extension://`) when they get to it,
+    // after the page loaded as often as not.
+    let opened = after
+        .iter()
+        .filter(|e| e["method"] == "Target.targetCreated" && e["params"]["targetInfo"]["type"] == "page")
+        .map(|e| e["params"]["targetInfo"]["url"].as_str().unwrap_or_default().to_owned())
+        .collect();
     Went { navigated, opened, href }
 }
 
