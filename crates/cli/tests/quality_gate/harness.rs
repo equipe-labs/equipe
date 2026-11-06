@@ -584,12 +584,15 @@ pub fn repo(dir: &Path, files: &[(&str, &str)]) -> String {
 }
 
 /// The files a worktree changed since `base`: committed or not, new ones too.
+/// Bytecode Python leaves when the tests run (`__pycache__/`, `*.pyc`) is the
+/// grader's own trace, not the member's work — left out, whatever the
+/// machine's global gitignore says.
 pub fn changed_files(worktree: &Path, base: &str) -> Vec<String> {
     let mut files: Vec<String> = git(worktree, &["diff", "--name-only", base]).lines().map(str::to_owned).collect();
     files.extend(git(worktree, &["ls-files", "--others", "--exclude-standard"]).lines().map(str::to_owned));
     files.sort();
     files.dedup();
-    files.retain(|f| !f.is_empty());
+    files.retain(|f| !f.is_empty() && !f.ends_with(".pyc") && !f.split('/').any(|part| part == "__pycache__"));
     files
 }
 

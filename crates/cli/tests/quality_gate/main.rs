@@ -722,3 +722,17 @@ fn ticket_work_is_timed_from_its_start_to_its_end() {
     assert_eq!(work_seconds(&[start(10.0), notice(250.0)], 7), 240.0, "still at it when the run ended");
     assert_eq!(work_seconds(&[start(10.0), end(70.0)], 8), 0.0);
 }
+
+#[test]
+fn bytecode_python_leaves_is_not_counted_as_changed() {
+    // Running the tests writes `__pycache__/` beside the code wherever Python
+    // isn't told to keep it elsewhere (CI's runners do): the grader's trace,
+    // not the member's work.
+    let dir = scratch("pyc");
+    let base = harness::repo(&dir, &[("stats.py", "x = 1\n")]);
+    std::fs::write(dir.join("stats.py"), "x = 2\n").unwrap();
+    std::fs::create_dir_all(dir.join("__pycache__")).unwrap();
+    std::fs::write(dir.join("__pycache__/stats.cpython-312.pyc"), "bytecode").unwrap();
+    std::fs::write(dir.join("loose.pyc"), "bytecode").unwrap();
+    assert_eq!(harness::changed_files(&dir, &base), ["stats.py"]);
+}
