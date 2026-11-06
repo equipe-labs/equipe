@@ -23,7 +23,7 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::ProviderKey;
+use equipe_protocol::{ProviderKey, ProviderProblem};
 use equipe_providers::relay::Wire;
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,8 @@ pub const OTHER: &str = "other";
 pub const CUSTOM: &str = nemotron::CUSTOM_PROVIDER;
 /// Nebius Token Factory's id, the key's file as before.
 pub const NEBIUS: &str = "nebius";
+/// Google Gemini's id: its models asked for by bare ids.
+pub const GEMINI: &str = "gemini";
 
 /// The providers a screen offers, in its order. Each base URL is the one
 /// the provider's own documentation gives for its OpenAI-compatible API;
@@ -252,18 +254,21 @@ pub enum AddError {
 }
 
 impl AddError {
-    /// Why, in the person's language.
+    /// Why, as a screen says it in its own language ([`words`]).
+    pub fn problem(&self) -> ProviderProblem {
+        match self {
+            AddError::Unknown => ProviderProblem::Unknown,
+            AddError::BadUrl => ProviderProblem::BadUrl,
+            AddError::Insecure => ProviderProblem::Insecure,
+            AddError::NoKey => ProviderProblem::NoKey,
+            AddError::BadKey => ProviderProblem::BadKey,
+            AddError::Io(why) => ProviderProblem::NotSaved { why: why.clone() },
+        }
+    }
+
+    /// Why, in `lang`.
     pub fn why(&self, lang: crate::i18n::Lang, provider: &str) -> String {
-        let words = crate::i18n::core(lang);
-        let key = match self {
-            AddError::Unknown => "provider.add.unknown",
-            AddError::BadUrl => "provider.add.bad_url",
-            AddError::Insecure => "provider.add.insecure",
-            AddError::NoKey => "provider.add.no_key",
-            AddError::BadKey => "provider.add.bad_key",
-            AddError::Io(why) => return words.fill("provider.add.io", &[("provider", provider.to_owned()), ("why", why.clone())]),
-        };
-        words.fill(key, &[("provider", provider.to_owned())])
+        words(&self.problem(), provider, "", lang)
     }
 }
 
@@ -416,7 +421,12 @@ pub fn split_ref(model: &str) -> Option<(&str, &str)> {
 
 /// The model's own id, without the provider it is on: what the provider is asked for.
 pub fn bare_model(model: &str) -> &str {
-    split_ref(model).map_or(model.trim(), |(_, m)| m)
+    match split_ref(model) {
+        // Gemini's OpenAI-compatible API is asked by bare ids, as Google's examples do.
+        Some((GEMINI, m)) => m.strip_prefix("models/").unwrap_or(m),
+        Some((_, m)) => m,
+        None => model.trim(),
+    }
 }
 
 /// A model's id as a person reads it: without the provider, nor Gemini's `models/`.
@@ -446,7 +456,7 @@ pub fn chat_models(ids: &[String]) -> Vec<String> {
 /// Provider `id`'s models, best first, as `GET /models` lists them, for
 /// members: on Nebius its NVIDIA Nemotron chat models first.
 pub async fn list(cfg: &nemotron::Config, id: &str) -> Result<Vec<String>, ReviewError> {
-    let listed = chat_models(&nemotron::models(cfg).await?);
+    let listed = own_ids(id, chat_models(&nemotron::models(cfg).await?));
     if listed.is_empty() {
         return Err(ReviewError::NoModel);
     }
@@ -458,25 +468,71 @@ pub async fn list(cfg: &nemotron::Config, id: &str) -> Result<Vec<String>, Revie
     Ok(best)
 }
 
-/// Why a provider's models couldn't be listed, in plain words, naming it.
-pub fn why(err: &ReviewError, provider: &str, base_url: &str, lang: crate::i18n::Lang) -> String {
-    let words = crate::i18n::core(lang);
-    let args = |extra: Option<(&'static str, String)>| {
-        let mut args = vec![("provider", provider.to_owned()), ("url", base_url.to_owned())];
-        args.extend(extra);
-        args
-    };
-    match err {
-        ReviewError::MissingKey => words.fill("provider.why.missing_key", &args(None)),
-        ReviewError::Unauthorized => words.fill("provider.why.unauthorized", &args(None)),
-        ReviewError::RateLimited => words.fill("provider.why.rate_limited", &args(None)),
-        ReviewError::Timeout => words.fill("provider.why.timeout", &args(None)),
-        ReviewError::NoModel => words.fill("provider.why.no_models", &args(None)),
-        ReviewError::Http(404, _) => words.fill("provider.why.not_found", &args(None)),
-        ReviewError::Http(status, _) => words.fill("provider.why.http", &args(Some(("status", status.to_string())))),
-        ReviewError::BadOutput => words.fill("provider.why.bad_output", &args(None)),
-        ReviewError::Network(_) | ReviewError::Diff(_) | ReviewError::EmptyDiff => words.fill("provider.why.network", &args(None)),
+/// The ids a provider lists, as it is asked for them: Gemini's without
+/// `models/`, as Google's OpenAI-compatible examples name them.
+fn own_ids(id: &str, listed: Vec<String>) -> Vec<String> {
+    if id != GEMINI {
+        return listed;
     }
+    let mut out: Vec<String> = Vec::new();
+    for m in listed.into_iter().map(|m| m.strip_prefix("models/").map_or(m.clone(), str::to_owned)) {
+        if !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out
+}
+
+/// Why a provider's models couldn't be listed, as a screen says it in its
+/// own language ([`words`]).
+pub fn problem(err: &ReviewError) -> ProviderProblem {
+    match err {
+        ReviewError::MissingKey => ProviderProblem::MissingKey,
+        ReviewError::Unauthorized => ProviderProblem::Unauthorized,
+        ReviewError::RateLimited => ProviderProblem::RateLimited,
+        ReviewError::Timeout => ProviderProblem::Timeout,
+        ReviewError::NoModel => ProviderProblem::NoModels,
+        ReviewError::Http(404, _) => ProviderProblem::NotFound,
+        ReviewError::Http(status, _) => ProviderProblem::Http { status: *status },
+        ReviewError::BadOutput => ProviderProblem::BadOutput,
+        ReviewError::Network(_) | ReviewError::Diff(_) | ReviewError::EmptyDiff => ProviderProblem::Network,
+    }
+}
+
+/// Why a provider's models couldn't be listed, in plain words in `lang`, naming it.
+pub fn why(err: &ReviewError, provider: &str, base_url: &str, lang: crate::i18n::Lang) -> String {
+    words(&problem(err), provider, base_url, lang)
+}
+
+/// A provider's `problem` in plain words in `lang`, naming it (and where
+/// it was looked for, `base_url`). `None` for one this build doesn't know.
+pub fn words(problem: &ProviderProblem, provider: &str, base_url: &str, lang: crate::i18n::Lang) -> String {
+    let words = crate::i18n::core(lang);
+    let mut args = vec![("provider", provider.to_owned()), ("url", base_url.to_owned())];
+    let key = match problem {
+        ProviderProblem::MissingKey => "provider.why.missing_key",
+        ProviderProblem::Unauthorized => "provider.why.unauthorized",
+        ProviderProblem::RateLimited => "provider.why.rate_limited",
+        ProviderProblem::Timeout => "provider.why.timeout",
+        ProviderProblem::NoModels => "provider.why.no_models",
+        ProviderProblem::NotFound => "provider.why.not_found",
+        ProviderProblem::Http { status } => {
+            args.push(("status", status.to_string()));
+            "provider.why.http"
+        }
+        ProviderProblem::BadOutput => "provider.why.bad_output",
+        ProviderProblem::Network | ProviderProblem::Other => "provider.why.network",
+        ProviderProblem::Unknown => "provider.add.unknown",
+        ProviderProblem::BadUrl => "provider.add.bad_url",
+        ProviderProblem::Insecure => "provider.add.insecure",
+        ProviderProblem::NoKey => "provider.add.no_key",
+        ProviderProblem::BadKey => "provider.add.bad_key",
+        ProviderProblem::NotSaved { why } => {
+            args.push(("why", why.clone()));
+            "provider.add.io"
+        }
+    };
+    words.fill(key, &args)
 }
 
 #[cfg(test)]
@@ -541,6 +597,13 @@ mod tests {
         assert_eq!(bare_model("@groq/llama-3.3-70b-versatile"), "llama-3.3-70b-versatile");
         assert_eq!(bare_model("nvidia/x"), "nvidia/x");
         assert_eq!(display("@gemini/models/gemini-2.5-pro"), "gemini-2.5-pro");
+        // Gemini is asked by bare ids, whichever way the member was set.
+        assert_eq!(bare_model("@gemini/models/gemini-2.5-pro"), "gemini-2.5-pro");
+        assert_eq!(bare_model("@gemini/gemini-2.5-flash"), "gemini-2.5-flash");
+        assert_eq!(bare_model("@openrouter/models/x"), "models/x", "another provider's id is its own");
+        let listed = |ids: &[&str]| ids.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(own_ids(GEMINI, listed(&["models/gemini-2.5-pro", "gemini-2.5-pro", "models/gemini-2.5-flash"])), ["gemini-2.5-pro", "gemini-2.5-flash"]);
+        assert_eq!(own_ids("openrouter", listed(&["models/x"])), ["models/x"]);
         // An open model either way: it runs on Codex's agent.
         assert!(nemotron::is_agent_model(&model_ref("deepseek", "deepseek-chat")));
         assert!(nemotron::is_agent_model(&model_ref("mistral", "devstral-medium-latest")));
@@ -701,6 +764,15 @@ mod tests {
             let text = said(err.clone());
             assert!(text.contains("Groq") && !text.contains('{'), "{err:?}: {text}");
         }
+        // Said in the screen's own language, from the problem the daemon sends.
+        for lang in crate::i18n::Lang::ALL {
+            for problem in [problem(&ReviewError::Network(String::new())), problem(&ReviewError::Http(502, String::new())), AddError::Io("disk full".into()).problem(), ProviderProblem::Other] {
+                let text = words(&problem, "Ollama", "http://localhost:11434/v1", lang);
+                assert!(!text.contains('{') && text.contains("Ollama"), "{lang:?} {problem:?}: {text}");
+            }
+        }
+        let ko = words(&ProviderProblem::Network, "Ollama", "http://localhost:11434/v1", crate::i18n::Lang::Ko);
+        assert!(ko.contains("http://localhost:11434/v1") && !ko.contains("Couldn't"), "{ko}");
     }
 
     #[tokio::test]

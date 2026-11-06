@@ -95,7 +95,7 @@ impl Runtime {
             Ok(models) => Listed { test: ProviderTest::Ok { count: models.len() }, models },
             Err(err) => {
                 crate::daemon_log!("equipe: provider {id}: models not listed ({})", err.kind());
-                Listed { test: ProviderTest::Failed { why: mp::why(&err, &name, &base_url, self.config.lang) }, models: Vec::new() }
+                Listed { test: ProviderTest::Failed { why: mp::why(&err, &name, &base_url, self.config.lang), problem: Some(mp::problem(&err)) }, models: Vec::new() }
             }
         };
         let test = listed.test.clone();
@@ -120,7 +120,7 @@ impl Runtime {
             }
             Err(err) => {
                 let why = err.why(self.config.lang, &name);
-                self.publish(Event::ProviderTested { id: preset, test: ProviderTest::Failed { why: why.clone() } });
+                self.publish(Event::ProviderTested { id: preset, test: ProviderTest::Failed { why: why.clone(), problem: Some(err.problem()) } });
                 self.error(None, why, None);
             }
         }

@@ -1123,8 +1123,54 @@ pub enum ProviderTest {
     Testing,
     /// It answered with `count` models members can be set to.
     Ok { count: usize },
-    /// It couldn't be listed: why, in plain words, in the person's language.
-    Failed { why: String },
+    /// It couldn't be listed (or added): why, as a screen words it in its
+    /// own language (`problem`), and in the daemon's (`why`) for a screen
+    /// that doesn't know the problem.
+    Failed {
+        why: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<ProviderProblem>,
+    },
+}
+
+/// Why a provider couldn't be listed or added, for a screen to say in its
+/// own language ([`ProviderTest::Failed`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderProblem {
+    /// No key for it.
+    MissingKey,
+    /// It refused the key (401, 403).
+    Unauthorized,
+    /// Its rate limit, still there after trying again.
+    RateLimited,
+    /// No answer in time.
+    Timeout,
+    /// It lists no model a member can work with.
+    NoModels,
+    /// No model list at its address (404).
+    NotFound,
+    /// Another error, by its status.
+    Http { status: u16 },
+    /// Something answered, but not with a list of models.
+    BadOutput,
+    /// It couldn't be reached.
+    Network,
+    /// Not a provider equipe knows.
+    Unknown,
+    /// Not an address: `https://…/v1`.
+    BadUrl,
+    /// `http://` to another machine: the key would go unencrypted.
+    Insecure,
+    /// It needs a key and none was given.
+    NoKey,
+    /// What was pasted isn't a key.
+    BadKey,
+    /// Its key couldn't be saved: the system's words.
+    NotSaved { why: String },
+    /// One a newer daemon knows: the screen says `why`.
+    #[serde(other)]
+    Other,
 }
 
 /// A model provider connected on the daemon's machine ([`Event::Providers`]):
@@ -3302,5 +3348,15 @@ mod tests {
         assert_eq!((bare.test, bare.removable, bare.models.len()), (ProviderTest::Untested, false, 0));
         assert!(event.for_everyone() && event.squad().is_none());
         assert_eq!(serde_json::to_value(Command::Providers).unwrap(), json!({ "type": "providers" }));
+        // Why it failed goes as a problem a screen words in its own language.
+        let failed = ProviderTest::Failed { why: "Groq didn't accept the key.".into(), problem: Some(ProviderProblem::Http { status: 502 }) };
+        let wire = serde_json::to_value(&failed).unwrap();
+        assert_eq!(wire, json!({ "state": "failed", "why": "Groq didn't accept the key.", "problem": { "kind": "http", "status": 502 } }));
+        assert_eq!(serde_json::from_value::<ProviderTest>(wire).unwrap(), failed);
+        // A problem a newer daemon knows: the screen says its words as they came.
+        let newer: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w", "problem": { "kind": "quota_gone" } })).unwrap();
+        assert_eq!(newer, ProviderTest::Failed { why: "w".into(), problem: Some(ProviderProblem::Other) });
+        let older: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w" })).unwrap();
+        assert_eq!(older, ProviderTest::Failed { why: "w".into(), problem: None });
     }
 }

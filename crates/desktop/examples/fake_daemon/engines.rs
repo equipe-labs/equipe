@@ -47,7 +47,9 @@ fn providers() -> &'static std::sync::Mutex<Vec<ProviderStatus>> {
         let openrouter = provider("openrouter", ProviderKey::Saved, &["qwen/qwen3-coder", "moonshotai/kimi-k2", "z-ai/glm-4.6", "deepseek/deepseek-chat-v3.1", "openai/gpt-oss-120b", "mistralai/devstral-medium", "x-ai/grok-code-fast-1", "google/gemini-2.5-pro", "meta-llama/llama-4-maverick", "minimax/minimax-m2"]);
         let mut ollama = provider("ollama", ProviderKey::NotNeeded, &[]);
         let base = ollama.base_url.clone();
-        ollama.test = ProviderTest::Failed { why: equipe_core::model_providers::why(&equipe_core::nemotron::ReviewError::Network(String::new()), "Ollama", &base, equipe_core::i18n::Lang::En) };
+        // As the daemon says it: in its own words, and as a problem each screen words in its language.
+        let problem = equipe_core::protocol::ProviderProblem::Network;
+        ollama.test = ProviderTest::Failed { why: equipe_core::model_providers::words(&problem, "Ollama", &base, equipe_core::i18n::Lang::En), problem: Some(problem) };
         std::sync::Mutex::new(vec![nebius, openrouter, ollama])
     })
 }

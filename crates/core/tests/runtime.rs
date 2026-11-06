@@ -3627,6 +3627,29 @@ async fn a_role_set_to_a_providers_model_starts_its_new_members_on_it_on_codexs_
 }
 
 #[tokio::test]
+async fn a_claude_member_set_to_a_providers_model_moves_to_codexs_agent_on_it_at_its_next_ticket() {
+    let cwd = scratch("move-provider");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    // Between tickets: the boundary is now.
+    handle.send(Command::SetModel { session: 1, model: model.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { engine: Engine::Codex, .. } | Event::Error { .. })).await;
+    // Told where it goes, on a card the person can undo.
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("qwen3-coder:30b") && text.contains("Ollama") && text.contains("next ticket"))), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.moves.iter().any(|m| m.member == "frontend" && m.to == Engine::Codex && m.model.as_deref() == Some(model.as_str())))), "{seen:#?}");
+    let Some(Event::SessionStarted { session, engine: Engine::Codex, model: Some(on), member, .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_ne!(*session, 1, "started again on the other engine");
+    assert_eq!((on.as_str(), member.as_ref().map(|m| m.name.as_str())), (model.as_str(), Some("frontend")), "under the same name, on the provider's model");
+    // Its old conversation is closed, and it isn't on Claude Code any more.
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "{seen:#?}");
+}
+
+#[tokio::test]
 async fn a_folder_inside_a_repository_is_a_project_of_its_own_worked_in_its_folder() {
     let repo = repo();
     let desktop = repo.join("crates").join("desktop");

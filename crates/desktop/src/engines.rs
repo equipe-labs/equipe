@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{AuthState, Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, ProviderStatus, ProviderTest, SessionId, SignInFailure, SignInStep};
+use equipe_core::protocol::{AuthState, Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, ProviderProblem, ProviderStatus, ProviderTest, SessionId, SignInFailure, SignInStep};
 use equipe_core::t;
 
 use crate::icons::Icon;
@@ -170,8 +170,9 @@ pub struct Engines {
     /// Whether the Codex CLI their members run on is there.
     pub providers_codex: bool,
     /// What the daemon said of a provider this screen asked to add, by its
-    /// preset, when it couldn't be ([`Event::ProviderTested`]).
-    pub add_failed: Option<(String, String)>,
+    /// preset, when it couldn't be ([`Event::ProviderTested`]): its words,
+    /// and the problem to say in this screen's language.
+    pub add_failed: Option<(String, String, Option<ProviderProblem>)>,
     /// Engines whose tool is being installed, or whose install failed.
     installs: HashMap<Engine, Install>,
     /// Whether some engine was ready when last told.
@@ -402,8 +403,8 @@ impl Engines {
                     Some(provider) => provider.test = test.clone(),
                     // Not one connected: an add that failed, by its preset.
                     None => {
-                        if let ProviderTest::Failed { why } = test {
-                            self.add_failed = Some((id.clone(), why.clone()));
+                        if let ProviderTest::Failed { why, problem } = test {
+                            self.add_failed = Some((id.clone(), why.clone(), problem.clone()));
                         }
                     }
                 }
@@ -752,8 +753,9 @@ mod tests {
         assert_eq!(e.provider("groq").map(|p| &p.test), Some(&ProviderTest::Ok { count: 3 }));
         assert!(e.add_failed.is_none());
         // Refused before it was kept: said by its preset.
-        e.on_event(&Event::ProviderTested { id: "mistral".into(), test: ProviderTest::Failed { why: "Mistral AI needs an API key.".into() } });
-        assert_eq!(e.add_failed, Some(("mistral".to_owned(), "Mistral AI needs an API key.".to_owned())));
+        let problem = Some(equipe_core::protocol::ProviderProblem::NoKey);
+        e.on_event(&Event::ProviderTested { id: "mistral".into(), test: ProviderTest::Failed { why: "Mistral AI needs an API key.".into(), problem: problem.clone() } });
+        assert_eq!(e.add_failed, Some(("mistral".to_owned(), "Mistral AI needs an API key.".to_owned(), problem)));
         e.attached();
         assert!(e.providers.is_none() && e.add_failed.is_none(), "another daemon: asked again");
     }

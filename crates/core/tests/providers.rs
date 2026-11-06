@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use equipe_core::protocol::{Access, Command, Engine, Event, ProviderKey, ProviderStatus, ProviderTest, SessionSpec, TurnOutcome, secrets::SecretValue};
+use equipe_core::protocol::{Access, Command, Engine, Event, ProviderKey, ProviderProblem, ProviderStatus, ProviderTest, SessionSpec, TurnOutcome, secrets::SecretValue};
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_providers::CredentialStore;
 use serde_json::Value;
@@ -180,19 +180,23 @@ async fn a_provider_that_refuses_the_key_or_isnt_there_says_so_in_plain_words() 
     let id = until(&mut events, |e| matches!(e, Event::Providers { providers, .. } if !providers.is_empty())).await;
     let Some(Event::Providers { providers, .. }) = id.last() else { unreachable!() };
     let id = providers[0].id.clone();
-    let ProviderTest::Failed { why } = tested(&mut events, &id).await else { panic!() };
+    let ProviderTest::Failed { why, problem } = tested(&mut events, &id).await else { panic!() };
     assert!(why.contains("didn't accept the key") && !why.contains(KEY), "{why}");
+    // And as a problem, for each screen to say in its own language.
+    assert_eq!(problem, Some(ProviderProblem::Unauthorized));
     // Nothing listening there: it can't be reached, and says where it looked.
     let closed = {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         format!("http://{}/v1", listener.local_addr().unwrap())
     };
     handle.send(Command::AddProvider { preset: "lmstudio".into(), base_url: Some(closed.clone()), key: None });
-    let ProviderTest::Failed { why } = tested(&mut events, "lmstudio").await else { panic!() };
+    let ProviderTest::Failed { why, problem } = tested(&mut events, "lmstudio").await else { panic!() };
+    assert_eq!(problem, Some(ProviderProblem::Network));
     assert!(why.contains("Couldn't reach LM Studio") && why.contains(&closed), "{why}");
     // What can't be added says why, before anything is kept.
     handle.send(Command::AddProvider { preset: "groq".into(), base_url: None, key: None });
-    let ProviderTest::Failed { why } = tested(&mut events, "groq").await else { panic!() };
+    let ProviderTest::Failed { why, problem } = tested(&mut events, "groq").await else { panic!() };
+    assert_eq!(problem, Some(ProviderProblem::NoKey));
     assert!(why.contains("Groq needs an API key"), "{why}");
     assert!(!home.join("keys").join("groq").exists());
 }

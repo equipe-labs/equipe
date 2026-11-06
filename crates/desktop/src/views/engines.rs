@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use equipe_core::protocol::{Command, Engine, EngineState, ProviderKey, ProviderStatus, ProviderTest};
+use equipe_core::protocol::{Command, Engine, EngineState, ProviderKey, ProviderProblem, ProviderStatus, ProviderTest};
 use equipe_core::t;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{h_flex, v_flex};
@@ -261,6 +261,25 @@ fn provider_pill(status: &ProviderStatus) -> (Option<Tone>, String) {
     }
 }
 
+/// Why a provider couldn't be listed or added, in this screen's language:
+/// from the problem the daemon sent; its own words for one this build
+/// doesn't know, or from a daemon that sends none.
+pub(crate) fn problem_words(why: &str, problem: Option<&ProviderProblem>, provider: &str, base_url: &str) -> String {
+    match problem {
+        Some(ProviderProblem::Other) | None => why.to_owned(),
+        Some(problem) => equipe_core::model_providers::words(problem, provider, base_url, crate::i18n::lang()),
+    }
+}
+
+/// A preset's name as a screen shows it.
+fn preset_name(preset: &str) -> String {
+    match equipe_core::model_providers::preset(preset) {
+        Some(p) if p.id == equipe_core::model_providers::OTHER => t!("engines.provider_other").to_owned(),
+        Some(p) => p.name.to_owned(),
+        None => preset.to_owned(),
+    }
+}
+
 /// Settings › AI platforms' model providers: each one connected on the
 /// daemon's machine — Nebius among them — with its models, a test and a
 /// removal; then one more to connect, from a preset or any
@@ -303,9 +322,9 @@ fn providers(shell: &Shell, cx: &mut Context<Shell>) -> Section {
 
     // What the daemon said no to, by the preset the screen asked for.
     if ui.adding.is_none()
-        && let Some((_, why)) = &shell.engines.add_failed
+        && let Some((preset, why, problem)) = &shell.engines.add_failed
     {
-        lines.push(Line::new(t!("engines.provider_add_failed"), why.clone()).warn(true).words(words.clone()));
+        lines.push(Line::new(t!("engines.provider_add_failed"), problem_words(why, problem.as_ref(), &preset_name(preset), "")).warn(true).words(words.clone()));
     }
 
     match ui.adding {
@@ -352,7 +371,7 @@ fn provider_line(shell: &Shell, at: usize, status: &ProviderStatus, words: &str,
         );
     }
     let below = match &status.test {
-        ProviderTest::Failed { why } => Some(div().text_size(px(12.)).text_color(p.danger()).child(why.clone()).into_any_element()),
+        ProviderTest::Failed { why, problem } => Some(div().text_size(px(12.)).text_color(p.danger()).child(problem_words(why, problem.as_ref(), &status.name, &status.base_url)).into_any_element()),
         ProviderTest::Ok { .. } if !status.models.is_empty() => {
             let names: Vec<String> = status.models.iter().take(4).map(|m| crate::models::label(&m.id, &[])).collect();
             let more = if status.models.len() > names.len() { "…" } else { "" };
@@ -406,7 +425,7 @@ fn provider_form(shell: &Shell, preset: &'static str, words: &str, connected: bo
         buttons = buttons.child(ui::button(p, "provider-get-key", Kind::Secondary, t!("engines.nebius_get_key")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(page)));
     }
     form = form.child(buttons);
-    let problem = ui.provider_problem.clone().or_else(|| shell.engines.add_failed.as_ref().filter(|(p, _)| p == preset).map(|(_, why)| why.clone()));
+    let problem = ui.provider_problem.clone().or_else(|| shell.engines.add_failed.as_ref().filter(|(p, _, _)| p == preset).map(|(_, why, problem)| problem_words(why, problem.as_ref(), &name, "")));
     form = form.children(problem.map(|why| div().text_size(px(12.)).text_color(p.danger()).child(why)));
     let desc = if info.local {
         t!("engines.provider_form_local", host = host(shell), provider = name.clone())
