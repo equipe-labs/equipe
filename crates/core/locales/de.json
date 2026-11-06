@@ -204,7 +204,7 @@
   "mode.ask.summary": "fragt dich vor jeder Änderung und jedem Befehl",
   "mode.auto": "automatisch",
   "mode.auto.short": "arbeitet allein in der Sandbox; fragt bei allem darüber hinaus",
-  "mode.auto.summary": "bearbeitet, installiert, baut und testet selbst, in der Sandbox seines Worktrees; fragt vor allem darüber hinaus – Netzwerk, Pushes, deine Konten",
+  "mode.auto.summary": "bearbeitet, installiert, baut und testet selbst, in der Sandbox seines Worktrees; fragt vor allem darüber hinaus (Netzwerk, Pushes, deine Konten)",
   "mode.full": "voller Zugriff",
   "mode.full.short": "fragt nichts, außer um in deinem Namen zu handeln",
   "mode.full.summary": "tut ohne zu fragen alles, was dein Konto kann, außer was equipe immer sperrt; fragt weiterhin, bevor es in deinem Namen handelt",

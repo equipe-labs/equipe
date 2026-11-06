@@ -559,7 +559,7 @@ impl Mode {
         match self {
             Mode::ReadOnly => "reads and plans — changes nothing, runs nothing but looking around",
             Mode::Ask => "asks you before every edit and every command",
-            Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond — network, pushes, your accounts",
+            Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond (network, pushes, your accounts)",
             Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name",
         }
     }

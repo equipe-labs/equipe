@@ -204,7 +204,7 @@
   "mode.ask.summary": "vous demande avant chaque modification et chaque commande",
   "mode.auto": "auto",
   "mode.auto.short": "travaille seul, dans le bac à sable ; demande pour le reste",
-  "mode.auto.summary": "modifie, installe, compile et teste seul, dans le bac à sable de son worktree ; demande avant tout le reste : réseau, push, vos comptes",
+  "mode.auto.summary": "modifie, installe, compile et teste seul, dans le bac à sable de son worktree ; demande avant tout le reste (réseau, push, vos comptes)",
   "mode.full": "accès complet",
   "mode.full.short": "ne demande rien, sauf pour agir en votre nom",
   "mode.full.summary": "fait sans demander tout ce que votre compte permet, sauf ce qu'equipe bloque toujours ; demande encore avant d'agir en votre nom",
