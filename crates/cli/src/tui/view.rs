@@ -3223,6 +3223,7 @@ mod tests {
                 cache_tokens: Some(98_766),
                 context_tokens: Some(130_000),
                 context_window: Some(200_000),
+                ..Default::default()
             }),
         });
         let plan = equipe_core::protocol::PlanWindow { used_percent: 84, resets_at: 0 };

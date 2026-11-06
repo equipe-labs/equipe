@@ -190,6 +190,38 @@ pub struct TicketWork {
     pub engine_session: Option<String>,
 }
 
+/// What a member's turn used: its engine and model, the engine's session it
+/// ran in, and its tokens by kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnUse {
+    pub engine: Engine,
+    pub model: Option<String>,
+    pub session: Option<String>,
+    pub tokens: crate::protocol::plan_use::Tokens,
+    /// Of `tokens.cache_write`, written to be kept an hour.
+    pub cache_write_long: u64,
+    pub calls: u64,
+}
+
+impl TurnUse {
+    /// From a turn's usage, as its engine reported it.
+    pub fn of(engine: Engine, model: Option<String>, session: Option<String>, u: &crate::protocol::Usage) -> Self {
+        // An engine that said only the sum: read from the cache, as most of it is.
+        let (write, read) = match (u.cache_write_tokens, u.cache_read_tokens) {
+            (None, None) => (0, u.cache_tokens.unwrap_or(0)),
+            (write, read) => (write.unwrap_or(0), read.unwrap_or(0)),
+        };
+        TurnUse {
+            engine,
+            model,
+            session,
+            tokens: crate::protocol::plan_use::Tokens { input: u.input_tokens.unwrap_or(0), output: u.output_tokens.unwrap_or(0), cache_write: write, cache_read: read },
+            cache_write_long: u.cache_write_long_tokens.unwrap_or(0).min(write),
+            calls: u.calls.unwrap_or(1),
+        }
+    }
+}
+
 /// How long turns and waits are kept for the retros: a quarter.
 const KEPT_FOR_RETROS: i64 = 92 * 24 * 60 * 60;
 
@@ -401,6 +433,21 @@ impl Journal {
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT", []);
+        // What a member's turn used, by kind, on which engine and model, in
+        // which of the engine's sessions (`crate::plan_use`).
+        for column in [
+            "engine TEXT",
+            "model TEXT",
+            "session TEXT",
+            "input INTEGER",
+            "output INTEGER",
+            "cache_write INTEGER",
+            "cache_write_long INTEGER",
+            "cache_read INTEGER",
+            "calls INTEGER",
+        ] {
+            let _ = conn.execute(&format!("ALTER TABLE turns ADD COLUMN {column}"), []);
+        }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN off_main TEXT", []);
         // The person's say on how soon and in which order: normal and by number
         // for tickets from before.
@@ -1074,9 +1121,33 @@ impl Journal {
     /// Keep a member's turn — who, on what, how long, how it ended, what it
     /// used — for the weekly retro. A quarter's worth is kept.
     pub fn record_turn(&self, t: &crate::retro::Turn) -> Result<()> {
+        self.record_turn_use(t, None)
+    }
+
+    /// Keep a member's turn with what it used, by kind ([`TurnUse`]).
+    pub fn record_turn_use(&self, t: &crate::retro::Turn, used: Option<&TurnUse>) -> Result<()> {
+        let n = |f: fn(&TurnUse) -> u64| used.map(|u| f(u) as i64);
         self.conn.execute(
-            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![t.member, t.role, t.ticket, t.began as i64, t.ended as i64, t.outcome, t.tokens as i64],
+            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens, engine, model, session, input, output, cache_write, cache_write_long, cache_read, calls)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                t.member,
+                t.role,
+                t.ticket,
+                t.began as i64,
+                t.ended as i64,
+                t.outcome,
+                t.tokens as i64,
+                used.map(|u| engine_str(u.engine)),
+                used.and_then(|u| u.model.clone()),
+                used.and_then(|u| u.session.clone()),
+                n(|u| u.tokens.input),
+                n(|u| u.tokens.output),
+                n(|u| u.tokens.cache_write),
+                n(|u| u.cache_write_long),
+                n(|u| u.tokens.cache_read),
+                n(|u| u.calls)
+            ],
         )?;
         self.conn.execute("DELETE FROM turns WHERE ended < ?1", [now() - KEPT_FOR_RETROS])?;
         Ok(())
@@ -1804,6 +1875,36 @@ mod tests {
         t.plan = None;
         j.save_ticket(&t).unwrap();
         assert_eq!(j.ticket(1).unwrap().unwrap().plan, None);
+    }
+
+    #[test]
+    fn a_turn_keeps_what_it_used_by_kind_and_a_journal_from_before_gains_the_columns() {
+        let home = temp_home();
+        let path = squad_dir(&home, "acme").join("squad.db");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            // The turns table as it first was.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch("CREATE TABLE turns (member TEXT NOT NULL, role TEXT NOT NULL, ticket INTEGER, began INTEGER NOT NULL, ended INTEGER NOT NULL, outcome TEXT NOT NULL, tokens INTEGER NOT NULL DEFAULT 0);
+                INSERT INTO turns VALUES ('pm', 'pm', NULL, 1, 2, 'completed', 50);").unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let usage = crate::protocol::Usage { input_tokens: Some(10), output_tokens: Some(200), cache_tokens: Some(1300), cache_read_tokens: Some(1000), cache_write_tokens: Some(300), cache_write_long_tokens: Some(300), calls: Some(4), ..Default::default() };
+        let used = TurnUse::of(Engine::Claude, Some("claude-opus-5-5".into()), Some("s-1".into()), &usage);
+        assert_eq!((used.tokens.cache_read, used.tokens.cache_write, used.cache_write_long, used.calls), (1000, 300, 300, 4));
+        let now = now() as u64;
+        let turn = crate::retro::Turn { member: "frontend".into(), role: "frontend".into(), ticket: Some(7), began: now - 60, ended: now, outcome: "completed".into(), tokens: 1510 };
+        j.record_turn_use(&turn, Some(&used)).unwrap();
+        let kept: (String, String, String, i64, i64, i64, i64) = j
+            .conn
+            .query_row("SELECT engine, model, session, output, cache_read, cache_write_long, calls FROM turns WHERE member = 'frontend'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
+            .unwrap();
+        assert_eq!(kept, ("claude".into(), "claude-opus-5-5".into(), "s-1".into(), 200, 1000, 300, 4));
+        // The retro reads them as before.
+        assert_eq!(j.turns_since(now - 100).unwrap(), [turn]);
+        // A sum alone: read from the cache.
+        let summed = TurnUse::of(Engine::Codex, None, None, &crate::protocol::Usage { cache_tokens: Some(900), ..Default::default() });
+        assert_eq!((summed.tokens.cache_read, summed.tokens.cache_write, summed.calls), (900, 0, 1));
     }
 
     #[test]

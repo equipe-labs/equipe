@@ -93,7 +93,9 @@
 //! `FAKE_ACCEPT=1`: the PM puts T-42 and T-71 to the person on a card to
 //! confirm accepting them (`fake_daemon/accept.rs`; `merge`, `words`).
 //!
-//! `FAKE_USAGE=healthy|claude86|claude_out|both_low`: both engines' plans,
+//! The Usage screen's look at where the plans went is a made-up week (`fake_daemon/plan_use.rs`);
+//! `FAKE_BURN=1` adds T-42's fast burn as the notice over every screen.
+//! `FAKE_USAGE=healthy|claude86|claude_out|both_low|week61`: both engines' plans,
 //! and the card for moving members between them (`fake_daemon/engines.rs`;
 //! `FAKE_SWITCHING=auto|off`, `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
 //! backend on Codex.
@@ -1039,6 +1041,8 @@ mod engines;
 
 #[path = "fake_daemon/disk.rs"]
 mod disk;
+#[path = "fake_daemon/plan_use.rs"]
+mod plan_use;
 #[path = "fake_daemon/command.rs"]
 mod command;
 #[path = "fake_daemon/helpers.rs"]
@@ -1205,6 +1209,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         if replies::on() {
                             history.extend(replies::history());
                         }
+                        // `FAKE_BURN`: a ticket burning the plan fast, told as a screen attaches.
+                        plan_use::attached(events.clone());
                         // `FAKE_SIGNIN`: the PM's last turn stopped by a lost sign-in, and its card.
                         if signin::on() {
                             history.extend(signin::history());
@@ -1769,7 +1775,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) {
+                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

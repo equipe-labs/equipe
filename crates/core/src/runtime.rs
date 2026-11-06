@@ -84,6 +84,7 @@ mod review;
 mod retro;
 mod watch;
 mod words;
+mod plan_use;
 mod helping;
 mod side_chat;
 mod providers;
@@ -577,6 +578,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         disk: Default::default(),
+        plan_use: Default::default(),
         commands: Default::default(),
         words: Default::default(),
         helping: HashMap::new(),
@@ -866,6 +868,8 @@ enum Internal {
     Merged { squad: String, ticket: TicketId, result: MergeResult },
     /// The free space on equipe's disk, as a look begun then found it.
     Disk(Option<crate::disk::DiskStatus>, std::time::Instant),
+    /// A pass over the engines' transcripts ended: the burns going on now.
+    PlanUsePassed(Vec<equipe_protocol::plan_use::Burn>),
     /// What uses the disk, as a look begun then found it.
     DiskReport(Box<crate::disk::DiskReport>, std::time::Instant),
     /// What a clean gave back, the free space after it, and who asked.
@@ -1077,6 +1081,8 @@ struct Runtime {
     merging: std::collections::HashSet<(String, TicketId)>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
+    /// Where the plans went, as followed (`plan_use.rs`).
+    plan_use: plan_use::PlanUseWatch,
     /// Members' commands under way, as watched running (`watch.rs`).
     commands: watch::Commands,
     /// Members' helpers, by the conversation they work for (`helping.rs`).
@@ -1161,6 +1167,7 @@ impl Wake {
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
+            Wake::Internal(Internal::PlanUsePassed(..)) => Borrowed("where the plans went"),
             Wake::Internal(Internal::DiskCleaned(..)) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
             Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
@@ -1279,6 +1286,10 @@ impl Runtime {
                     for (engine, fix) in &self.auth {
                         let _ = tx.send(fix.event(*engine));
                     }
+                    // A plan burning fast, lately.
+                    for burn in self.recent_burns() {
+                        let _ = tx.send(Event::PlanBurn { burn });
+                    }
                     self.subscribers.push((Some(squad.clone()), tx));
                     self.keep_awake();
                     let _ = reply.send((self.snapshot(&squad), rx));
@@ -1367,6 +1378,7 @@ impl Runtime {
                 Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
+                Internal::PlanUsePassed(burns) => self.on_plan_use_passed(burns),
                 Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
                 Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
@@ -1443,6 +1455,7 @@ impl Runtime {
             Wake::DesignTick => self.design_tick(),
             Wake::Minute => {
                 self.keep_awake();
+                self.plan_use_pass();
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
                 self.trim_builds();
@@ -1556,6 +1569,11 @@ impl Runtime {
                 }),
                 _ => None,
             };
+            // …and what it used, by kind, for where the plans went.
+            let turn_use = match (&event, &turn) {
+                (Event::TurnEnded { usage: Some(u), .. }, Some(_)) => Some(journal::TurnUse::of(session.engine, session.ran.clone().or_else(|| session.model.clone()), session.claude_session.clone(), u)),
+                _ => None,
+            };
             match &event {
                 Event::UserMessage { text, .. } if session.title.is_none() => {
                     session.title = text.lines().next().map(str::to_owned);
@@ -1617,7 +1635,7 @@ impl Runtime {
                 if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
                     no_room = !record(journal, id, &event, &finished, title.as_deref());
                     if let Some(turn) = &turn {
-                        let _ = journal.record_turn(turn);
+                        let _ = journal.record_turn_use(turn, turn_use.as_ref());
                     }
                 }
             }
@@ -2092,6 +2110,7 @@ impl Runtime {
             // phone link (`crate::pairing`); they never reach the runtime.
             Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
             Command::DiskScan => self.disk_report(None, true),
+            Command::PlanUse { engine, span } => self.plan_use_look(engine, span),
             Command::DiskClean { ids } => self.disk_clean(ids, None),
             Command::DiskRun { id } => self.disk_run(id),
             Command::Engines => {
@@ -5841,6 +5860,9 @@ them with `propose_accept`. Then carry on with what else waits.]"
         if call.name == crate::helpers::SPAWN_HELPER {
             return self.spawn_helper(call, reply);
         }
+        if call.name == crate::plan_use::TOOL {
+            return self.plan_use_answer(&call, reply);
+        }
         if call.name == crate::helpers::HELPER_RESULT {
             return self.helper_result(call, reply);
         }
@@ -8310,6 +8332,10 @@ fn finish_turn(
                 input_tokens: u.input_tokens,
                 output_tokens: u.output_tokens,
                 cache_tokens: u.cache_tokens,
+                cache_read_tokens: u.cache_read_tokens,
+                cache_write_tokens: u.cache_write_tokens,
+                cache_write_long_tokens: u.cache_write_long_tokens,
+                calls: u.calls,
                 context_tokens: u.context_tokens,
                 context_window: u.context_window,
             });
@@ -8700,7 +8726,7 @@ mod tests {
     #[test]
     fn a_turn_on_token_factory_logs_its_requests_never_its_text() {
         let turn = codex_app::Turn {
-            result: TurnResult { text: "secret answer".into(), status: "completed".into(), usage: Some(equipe_providers::turn::TurnUsage { input_tokens: Some(1200), output_tokens: Some(40), cache_tokens: None, context_tokens: None, context_window: None }) },
+            result: TurnResult { text: "secret answer".into(), status: "completed".into(), usage: Some(equipe_providers::turn::TurnUsage { input_tokens: Some(1200), output_tokens: Some(40), ..Default::default() }) },
             thread_id: None,
             provider_requests: vec![
                 equipe_providers::relay::Exchange { path: "/responses".into(), status: 200, request_id: Some("req-1".into()), ms: 900 },

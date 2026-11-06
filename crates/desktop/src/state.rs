@@ -2083,7 +2083,7 @@ mod tests {
         assert_eq!(model.side_chats[&9].search, Some(false));
         model.apply(inside(Event::UserMessage { session: 9, text: "why?".into() }), T0);
         model.apply(inside(Event::TextDelta { session: 9, text: "Because.".into() }), T0);
-        let usage = equipe_core::protocol::Usage { input_tokens: Some(10), output_tokens: Some(5), cache_tokens: Some(100), context_tokens: None, context_window: None };
+        let usage = equipe_core::protocol::Usage { input_tokens: Some(10), output_tokens: Some(5), cache_tokens: Some(100), ..Default::default() };
         model.apply(inside(Event::TurnEnded { session: 9, outcome: TurnOutcome::Completed, usage: Some(usage) }), T0);
         assert_eq!(model.side_chats[&9].last_answer().as_deref(), Some("Because."));
         assert!(model.convos.get(&2).is_none_or(|c| c.transcript.is_empty()), "nothing of it in the member's conversation");

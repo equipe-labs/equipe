@@ -204,6 +204,16 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
         let members = engines::members_line(status, &shell.model.squad).unwrap_or_else(|| t!("engines.members_none").to_owned());
         lines.push(Line::new(t!("engines.row_members"), "").words(format!("{words} member")).control(value(p, members)));
         lines.push(usage(shell, platform, signed_in).words(format!("{words} usage limit")));
+        // Where the plan went: the Usage screen, on this engine.
+        if signed_in {
+            let engine = platform.engine;
+            let see = ui::button(p, ("engine-plan-use", at), Kind::Secondary, t!("plan_use.see")).on_click(cx.listener(move |this, _, _, cx| {
+                let asks = this.plan_use.pick_engine(engine);
+                this.plan_use_send(asks, cx);
+                this.open_usage(cx);
+            }));
+            lines.push(Line::new(t!("plan_use.settings_row"), t!("plan_use.settings_desc")).words(format!("{words} usage where went plan share outside")).control(see));
+        }
         if status.legacy {
             lines.push(Line::new(t!("engines.legacy"), t!("engines.legacy_desc")).words(format!("{words} legacy equipe login")).control(command_chip(p, SharedString::from(format!("engine-legacy-{at}")), "equipe logout")));
         }

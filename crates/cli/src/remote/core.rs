@@ -196,6 +196,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Focus { .. }
         | Command::Refresh { .. }
         | Command::Engines
+        // Where the plans went: a look, which changes nothing.
+        | Command::PlanUse { .. }
         | Command::Design { .. }
         | Command::ProjectDocs { .. }) => Some(c),
         _ => None,
@@ -1452,6 +1454,8 @@ pub(crate) mod tests {
     fn a_phone_sees_where_the_engines_stand_but_signs_none_in_or_out() {
         use equipe_core::protocol::Engine;
         assert_eq!(allowed(Command::Engines), Some(Command::Engines));
+        let look = Command::PlanUse { engine: equipe_core::protocol::Engine::Claude, span: equipe_core::protocol::plan_use::Span::Day };
+        assert_eq!(allowed(look.clone()), Some(look), "where the plans went: read from a phone too");
         for command in [
             Command::SignIn { engine: Engine::Codex, device: true },
             Command::SignInCancel { engine: Engine::Codex },

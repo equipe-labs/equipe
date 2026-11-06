@@ -202,6 +202,8 @@ pub enum Screen {
     Project,
     /// Progress: what needs a look, what is under way, what finished (`views/progress.rs`).
     Progress,
+    /// Usage: where the plans went (`views/usage.rs`).
+    Usage,
 }
 
 pub struct Shell {
@@ -314,8 +316,8 @@ pub struct Shell {
     pub forgetting: Option<String>,
     /// "Disk": the banner while it runs short, and the panel (`disk.rs`).
     pub disk: disk::DiskUi,
-    /// `/usage`, over the window (`views/usage.rs`).
-    pub usage_open: bool,
+    /// Usage: where the plans went, and the notice of a fast burn (`usage.rs`).
+    pub plan_use: usage::PlanUseUi,
     /// The window's size, shown for a moment after it changes (`zoom.rs`).
     pub zoom_hud: Option<zoom::Hud>,
     _pair_tick: Option<Task<()>>,
@@ -473,7 +475,7 @@ impl Shell {
             setup: setup::Setup::default(),
             forgetting: None,
             disk: Default::default(),
-            usage_open: false,
+            plan_use: Default::default(),
             zoom_hud: None,
             _pair_tick: None,
             notices,
@@ -999,6 +1001,11 @@ impl Shell {
                             }
                             continue;
                         }
+                        // Where the plans went: the Usage screen's and its notice's, never the model's.
+                        if let daemon::Update::Event(event @ (Event::PlanUse { .. } | Event::PlanBurn { .. })) = &update {
+                            changed |= this.plan_use.on_event(event);
+                            continue;
+                        }
                         // The disk: the banner's and the panel's, never the model's.
                         if let daemon::Update::Event(event @ (Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. })) = &update {
                             changed |= this.disk.on_event(event);
@@ -1290,7 +1297,7 @@ impl Shell {
     // ── questions from ssh ──
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.usage_open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
+        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1302,8 +1309,6 @@ impl Shell {
             self.close_pairing(window, cx);
         } else if self.disk.open {
             self.close_disk(window, cx);
-        } else if self.usage_open {
-            self.close_usage(window, cx);
         } else if self.bell.sheet {
             self.notify_later(window, cx);
         } else if self.connect.open {
@@ -1652,8 +1657,9 @@ impl Shell {
                     Screen::Metrics => views::metrics::render(self, cx),
                     Screen::Project => views::project::render(self, cx),
                     Screen::Progress => views::progress::render(self, cx),
+                    Screen::Usage => views::usage::render(self, cx),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
         }
     }
@@ -2113,7 +2119,6 @@ impl Render for Shell {
                 .children(views::new_squad::sheet(self, cx))
                 .children(views::pair::sheet(self, cx))
                 .children(views::disk::sheet(self, cx))
-                .children(views::usage::panel(self, cx))
                 .children(views::bell::sheet(self, cx))
                 .children(views::connect::question(self, cx))
                 .children(self.zoom_chip(window, cx))
@@ -2157,7 +2162,6 @@ impl Render for Shell {
             .children(views::new_squad::sheet(self, cx))
             .children(views::pair::sheet(self, cx))
             .children(views::disk::sheet(self, cx))
-                .children(views::usage::panel(self, cx))
             .children(views::bell::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(self.zoom_chip(window, cx))

@@ -56,6 +56,6 @@ pub async fn turn(session: SessionId, side: SideChatId, text: String, events: br
         say(Event::TextDelta { session: side, text: chunk.to_owned() });
         tokio::time::sleep(Duration::from_millis(12)).await;
     }
-    let usage = Usage { input_tokens: Some(12), output_tokens: Some(140), cache_tokens: Some(18_400), context_tokens: None, context_window: None };
+    let usage = Usage { input_tokens: Some(12), output_tokens: Some(140), cache_tokens: Some(18_400), ..Default::default() };
     say(Event::TurnEnded { session: side, outcome: TurnOutcome::Completed, usage: Some(usage) });
 }

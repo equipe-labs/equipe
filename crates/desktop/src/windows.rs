@@ -88,7 +88,7 @@ impl Spot {
                 (None, None) => Spot::Pm,
             },
             Screen::Board => Spot::Board(place.menu),
-            Screen::Progress | Screen::Design | Screen::Roadmap | Screen::Metrics => Spot::Screen(place.screen),
+            Screen::Progress | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Usage => Spot::Screen(place.screen),
             Screen::Project => project.map_or(Spot::Pm, |p| Spot::Project(p.to_owned())),
             // Settings is a visit, not a place to come back to.
             Screen::Settings => Spot::Pm,
@@ -132,7 +132,7 @@ impl Spot {
                 _ => Menu::Inbox,
             })),
             "project" if !rest.trim().is_empty() => Some(Spot::Project(rest.to_owned())),
-            screen => [Screen::Progress, Screen::Design, Screen::Roadmap, Screen::Metrics].into_iter().find(|s| screen_code(*s) == screen).map(Spot::Screen),
+            screen => [Screen::Progress, Screen::Design, Screen::Roadmap, Screen::Metrics, Screen::Usage].into_iter().find(|s| screen_code(*s) == screen).map(Spot::Screen),
         };
         spot.unwrap_or_default()
     }
@@ -153,6 +153,7 @@ fn screen_code(screen: Screen) -> &'static str {
         Screen::Design => "design",
         Screen::Roadmap => "roadmap",
         Screen::Metrics => "metrics",
+        Screen::Usage => "usage",
         _ => "pm",
     }
 }
