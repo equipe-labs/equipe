@@ -421,6 +421,9 @@ pub struct Context<'a> {
     /// (`crate::guard`, Claude Code's hook): what it refuses — a long sleep
     /// in the foreground — needs no word in the charter.
     pub guard: bool,
+    /// Whether its engine has no subagents of its own, and equipe's helpers
+    /// stand in for them ([`crate::helpers`]).
+    pub helpers: bool,
 }
 
 /// What an engine is told about who it is on the team.
@@ -737,6 +740,8 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
         " Never sleep in the foreground to wait for something: run a long command in the background and wait for it \
 with your engine's own wait or monitor tool."
     };
+    // How it hands work off: its engine's own subagents, or equipe's helpers.
+    let delegating = if ctx.helpers { crate::helpers::charter_paragraph() } else { OWN_SUBAGENTS.to_owned() };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
 Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{pictures}{visuals}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
@@ -760,7 +765,14 @@ machine; open each before you answer: `[image: <path>]` — look at it with Read
 (a long one a few pages at a time); `[file: <path> · N lines]` — Read it; `[video: <path> · 1:42 · 1920×1080 · \
 sheet: <s> · frames: <f>@0:03, …]` — you can't watch a video: Read the frame images (each taken at its time) or the \
 one sheet of them all, and say what you saw at which moment; `[audio: <path> · 0:31]` — you can't hear it: say so \
-and ask what it says unless a tool you have can transcribe it. Side work that \
+and ask what it says unless a tool you have can transcribe it. {delegating} When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
+their preferences, and anything they asked for that isn't done. {PRIVATE} {language} Be concise.",
+        duties
+    )
+}
+
+/// How a member hands side work to its engine's own subagents (Claude Code's Agent tool).
+const OWN_SUBAGENTS: &str = "Side work that \
 is long or stands on its own — running a whole test suite, reading logs, surveying unfamiliar code, researching — \
 hand to subagents (your Agent tool), several at once when the pieces don't depend on each other, and keep only \
 their summaries: your own context stays small. Working in parallel is the squad's strength: anything that would \
@@ -771,11 +783,7 @@ back briefly; then you put their results together and check them. Parts that cha
 when the change itself can't be split, subagents still take the reading, surveying and testing around it. Work only \
 alone what truly can't split. The person sees each subagent at work under your name, so describe each in a few plain words. \
 Your engine runs at most 20 subagents at once: for more, start up to 20 and start the rest as earlier ones hand back, \
-never past the cap (a call past it is refused, not queued). When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
-their preferences, and anything they asked for that isn't done. {PRIVATE} {language} Be concise.",
-        duties
-    )
-}
+never past the cap (a call past it is refused, not queued).";
 
 /// Every member, every turn: what a repository must never carry.
 pub const PRIVATE: &str = "A project's repository may be public: never put the person's personal information — names, \
@@ -1091,7 +1099,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, helpers: false }
     }
 
     use crate::skills::Delivery;
@@ -1154,6 +1162,7 @@ mod tests {
                 edits: r.edits,
                 skills: Delivery::Plugin(SKILLS_AT),
                 guard: true,
+                helpers: false,
             };
             let bare = Context { board_tools: false, browser: false, desktop: false, design: false, pm_accepts: false, profiles: &[], guard: false, ..full };
             for (variant, c) in [("full", full), ("bare", bare)] {
@@ -1742,6 +1751,32 @@ invent one."), "{id}: true numbers");
         let doc = tool["description"].as_str().unwrap();
         for part in ["more than a couple of minutes", "a ticket, research, subagents' work", "again whenever your guess changes by much", "when it will be live", "what goes live", "Honest minutes"] {
             assert!(doc.contains(part), "{part}: {doc}");
+        }
+    }
+
+    #[test]
+    fn a_member_with_no_subagents_of_its_own_is_told_of_its_helpers_and_keeps_its_edits() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "backend", role: "backend" }];
+        let flat = |text: String| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for r in ROLES.iter().chain([&CUSTOM]) {
+            let helped = flat(charter(r, r.id, &Context { helpers: true, ..ctx(&team, &[], true) }));
+            for part in [
+                "Your engine has no subagents of its own; equipe gives you helpers instead (`spawn_helper`, `helper_result`)",
+                "Hand reading, surveying and checking to helpers",
+                "several at once when the parts don't depend on each other (up to 3 run at once; more wait their turn)",
+                "Keep every edit yourself: helpers never change files",
+                "collect every answer with `helper_result` before you end your turn",
+            ] {
+                assert!(helped.contains(part), "{}: {part}", r.id);
+            }
+            for gone in ["your Agent tool", "several Agent calls", "at most 20 subagents"] {
+                assert!(!helped.contains(gone), "{}: no word of subagents it hasn't: {gone}", r.id);
+            }
+            // Everyone else hears of its engine's own subagents, as before, word for word.
+            let own = flat(charter(r, r.id, &ctx(&team, &[], true)));
+            assert!(own.contains(&flat(OWN_SUBAGENTS.to_owned())), "{}", r.id);
+            assert!(own.contains("can transcribe it. Side work that is long") && own.contains("refused, not queued). When your conversation is compacted"), "{}", r.id);
+            assert!(!own.contains("spawn_helper"), "{}", r.id);
         }
     }
 }

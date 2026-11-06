@@ -348,6 +348,7 @@ mod tests {
             edits: false,
             skills: Delivery::Inline,
             guard: false,
+            helpers: false,
         }
     }
 

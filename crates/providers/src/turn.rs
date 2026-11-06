@@ -57,6 +57,10 @@ pub enum Activity {
     Limits(Limits),
     /// Output the turn has produced so far, in tokens.
     Output(u64),
+    /// Every token the turn's requests processed so far, summed — input not
+    /// cached, cached input and output: what a budget on the turn counts.
+    /// Codex says it with each request's usage.
+    Spent(u64),
     /// The member handed `what` to a subagent (Claude Code's Agent tool);
     /// `brief`, the whole of what it was asked.
     SubagentStarted { id: String, what: String, brief: String },
@@ -68,6 +72,10 @@ pub enum Activity {
     SubagentText { id: String, text: String },
     /// A subagent finished and handed back what it found (`result`), or failed.
     SubagentEnded { id: String, result: Option<String>, failed: bool },
+    /// A subagent of the engine's own was heard from on its own thread —
+    /// anything it did or said — so it isn't stalled. Said at most every few
+    /// seconds a subagent, never its words: those are its own.
+    SubagentHeard { id: String },
     /// A message sent while the turn ran was read, at this point of it.
     Steered(String),
     /// The engine began compacting the conversation — summarizing it to make

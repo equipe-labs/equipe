@@ -194,6 +194,9 @@ enum Command {
         role: String,
         #[arg(long)]
         home: std::path::PathBuf,
+        /// The member's engine has no subagents of its own: equipe's helpers too
+        #[arg(long)]
+        helpers: bool,
     },
     /// Sign in to sites in a browser, for the squad to work in as you
     Browser {
@@ -654,7 +657,7 @@ async fn run(cli: Cli) -> ExitCode {
                 },
             }
         }
-        Command::Mcp { server, squad, member, role, home } => serve_mcp(&server, squad, member, role, home).await,
+        Command::Mcp { server, squad, member, role, home, helpers } => serve_mcp(&server, squad, member, role, home, helpers).await,
         // Answered in `main`, before anything starts.
         Command::Hook { .. } => Ok(()),
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
@@ -758,7 +761,7 @@ async fn run(cli: Cli) -> ExitCode {
 
 /// `equipe mcp`: a member's board tools, as a stdio MCP server. Every call goes
 /// to the daemon, which decides; stdout carries only the protocol.
-async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf) -> CmdResult {
+async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf, helpers: bool) -> CmdResult {
     use equipe_core::mcp::{self, Step};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
@@ -767,7 +770,7 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
     let (info, tools) = if desktop {
         (mcp::DESKTOP, equipe_desktop_control::tools::tools())
     } else {
-        (mcp::BOARD, equipe_core::board::tools_for(&role))
+        (mcp::BOARD, equipe_core::helpers::with_board(&role, helpers))
     };
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
