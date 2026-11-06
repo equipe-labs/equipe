@@ -4,9 +4,9 @@
 //! step's `write_plan` through [`Runtime::docs_changed`]). The PM writes a
 //! brief with `write_brief`: into the squad's own folder, never a project's
 //! repository, saved there as the PM's change off the loop, its answer sent
-//! when it is in.
-
-use equipe_protocol::ProjectDoc;
+//! when it is in. A screen searches them (`Command::SearchDocs`) and, for one
+//! saved under more than one project, keeps one copy (`Command::KeepDocCopy`):
+//! the others go from the squad's folder as the person's change.
 
 use super::*;
 use crate::briefs::{self, Kind, Target, brief_args, brief_text};
@@ -24,13 +24,57 @@ impl Runtime {
     pub(crate) fn docs_changed(&mut self, squad: &str) {
         let (home, internal, squad) = (self.config.home.clone(), self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
-            let docs = briefs::catalog(&home, &squad);
-            let _ = internal.send(Internal::Docs(squad, docs));
+            let catalog = briefs::catalog(&home, &squad);
+            let _ = internal.send(Internal::Docs(squad, catalog));
         });
     }
 
-    pub(super) fn on_docs(&mut self, squad: String, docs: Vec<ProjectDoc>) {
-        self.publish(Event::ProjectDocs { squad, docs });
+    pub(super) fn on_docs(&mut self, squad: String, catalog: briefs::Catalog) {
+        let briefs::Catalog { docs, copies, in_repos } = catalog;
+        self.publish(Event::ProjectDocs { squad, docs, copies, in_repos });
+    }
+
+    /// A screen searches the briefs and plans: read off the loop, in the
+    /// squad's folder only, and answered.
+    pub(super) fn docs_searched(&mut self, squad: String, query: String) {
+        if !crate::squads::valid_name(&squad) {
+            return;
+        }
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let found = briefs::search(&squad_home::path(&home, &squad), &briefs::docs(&home, &squad), &query);
+            let _ = internal.send(Internal::DocsFound(squad, query, found));
+        });
+    }
+
+    /// The person keeps one copy of a brief or plan saved under more than one
+    /// project: the others go from the squad's folder off the loop, as their
+    /// change — told in `session`'s conversation, which must be the squad's.
+    pub(super) fn keep_doc_copy(&mut self, squad: String, session: SessionId, keep: String) {
+        if self.sessions.get(&session).is_none_or(|s| s.squad.as_deref() != Some(squad.as_str())) {
+            return;
+        }
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let folder = squad_home::path(&home, &squad);
+            let kept = briefs::keep_copy(&folder, &briefs::docs(&home, &squad), &keep);
+            let _ = internal.send(Internal::DocCopyKept(squad.clone(), session, kept));
+            let _ = internal.send(Internal::Docs(squad.clone(), briefs::catalog(&home, &squad)));
+        });
+    }
+
+    pub(super) fn on_doc_copy_kept(&mut self, squad: String, session: SessionId, kept: Result<briefs::Kept, String>) {
+        match kept {
+            Ok(kept) => {
+                let undo = kept.change.as_ref().map(|c| c.id.clone());
+                if let Some(change) = &kept.change {
+                    let text = say!(self, "notice.doc_copy_kept", title = kept.title, what = change.said(self.config.lang));
+                    self.publish(Event::Notice { session, text, undo: undo.clone() });
+                }
+                self.publish(Event::DocCopyKept { squad, kept: kept.kept, removed: kept.removed, undo });
+            }
+            Err(err) => self.error(Some(session), say!(self, "error.doc_copy_not_kept", err = err), None),
+        }
     }
 
     /// The PM writes a brief: checked here, written off the loop, answered
@@ -80,8 +124,8 @@ Give the person its path in backticks in one line; {}",
                 },
                 Err(text) => ToolResult { text: format!("The brief wasn't written: {text}"), is_error: true, image: None },
             });
-            let docs = briefs::catalog(&home, &squad);
-            let _ = internal.send(Internal::Docs(squad, docs));
+            let catalog = briefs::catalog(&home, &squad);
+            let _ = internal.send(Internal::Docs(squad, catalog));
         });
     }
 }

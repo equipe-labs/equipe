@@ -80,6 +80,7 @@ pub fn reads(command: &Command) -> bool {
         | C::Models { .. }
         | C::Design { .. }
         | C::ProjectDocs { .. }
+        | C::SearchDocs { .. }
         | C::DesignVersions { .. }
         | C::DiskScan
         // Where the plans went: a look.
@@ -92,6 +93,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SubmitLater { .. }
         | C::OnPhone { .. }
         | C::UndoHomeChange { .. }
+        | C::KeepDocCopy { .. }
         // A side chat runs an engine on the person's account.
         | C::StartSideChat { .. }
         | C::SideChatSubmit { .. }
@@ -588,6 +590,8 @@ mod tests {
             Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude, model: None, effort: None },
             Command::Design { squad: s() },
             Command::ProjectDocs { squad: s() },
+            Command::SearchDocs { squad: s(), query: "checkout".into() },
+            Command::KeepDocCopy { squad: s(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() },
             Command::DesignVersions { squad: s(), project: None },
             Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
             Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
@@ -628,9 +632,9 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
-        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider"] {
+        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");
         }
         // Outside the real view, everything goes, as ever.

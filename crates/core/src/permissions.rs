@@ -48,6 +48,9 @@ pub fn person_only(command: &Command) -> bool {
         // Taking back a change to the squad's folder: the person's, as the
         // notice that offers it is theirs.
         C::UndoHomeChange { .. } => true,
+        // Keeping one copy of a brief or plan removes the others from the
+        // squad's folder: the person's pick, on their screen.
+        C::KeepDocCopy { .. } => true,
         // What the person sent from their phone, wrapped by the gateway after
         // this floor; one arriving already wrapped is judged by what it wraps.
         C::OnPhone { command } => person_only(command),
@@ -169,6 +172,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::DiskRun { .. }
         | C::Design { .. }
         | C::ProjectDocs { .. }
+        | C::SearchDocs { .. }
         | C::DesignVersions { .. }
         | C::Taste { .. } => false,
     }
@@ -515,6 +519,7 @@ mod tests {
             Command::PairStart,
             Command::Unpair { device: "phone".into() },
             Command::UndoHomeChange { squad: "a".into(), session: 1, change: "abc".into() },
+            Command::KeepDocCopy { squad: "a".into(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() },
             Command::OnPhone { command: Box::new(Command::Accept { squad: "a".into(), ticket: 1 }) },
             // A side chat reads the member's files and the web on the
             // person's account: theirs to open, never a member's.
@@ -542,6 +547,7 @@ mod tests {
             Command::PlanUse { engine: crate::protocol::Engine::Claude, span: crate::protocol::plan_use::Span::Week },
             Command::Language { lang: "ko".into() },
             Command::Logins,
+            Command::SearchDocs { squad: "a".into(), query: "checkout".into() },
             Command::OnPhone { command: Box::new(Command::Submit { session: 1, text: "hi".into(), about: None }) },
         ];
         for command in &shared {

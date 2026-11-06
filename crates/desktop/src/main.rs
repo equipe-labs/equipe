@@ -27,6 +27,7 @@ mod deck;
 mod daemon;
 mod disk;
 mod doc;
+mod docs;
 mod compare;
 mod design;
 mod design_talk;
@@ -205,6 +206,8 @@ pub enum Screen {
     Progress,
     /// Usage: where the plans went (`views/usage.rs`).
     Usage,
+    /// Briefs and plans: every project's and the squad's own, in one place (`views/docs.rs`).
+    Docs,
 }
 
 pub struct Shell {
@@ -256,6 +259,10 @@ pub struct Shell {
     pub releases: Vec<(std::path::PathBuf, releases::Release)>,
     /// The squad's briefs and plans, as the daemon last sent them.
     pub docs: Vec<equipe_core::protocol::briefs::ProjectDoc>,
+    /// The rest of what it said of them, and the docs screen's filters, search and choices.
+    pub shelf: docs::Shelf,
+    /// The docs screen's search box.
+    pub docs_search: Entity<InputState>,
     pub releases_asked: Option<std::time::Instant>,
     /// Metrics' state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
@@ -443,6 +450,8 @@ impl Shell {
             routines_ui: Default::default(),
             releases: Vec::new(),
             docs: Vec::new(),
+            shelf: docs::Shelf::default(),
+            docs_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("docs.search_placeholder"))),
             releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
@@ -606,6 +615,13 @@ impl Shell {
             InputEvent::PressEnter { .. } => this.design_redo_send(window, cx),
             InputEvent::Change => cx.notify(),
             _ => {}
+        }));
+        // The docs screen's search: titles at once, the words a moment after typing rests.
+        let docs_search = shell.docs_search.clone();
+        shell._subscriptions.push(cx.subscribe_in(&docs_search, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.docs_typed(cx);
+            }
         }));
         let settings_search = shell.settings.search.clone();
         shell._subscriptions.push(cx.subscribe_in(&settings_search, window, |_, _, event: &InputEvent, _, cx| {
@@ -969,8 +985,16 @@ impl Shell {
                                 continue;
                             }
                             // Briefs and plans: the project pages'.
-                            daemon::Update::Event(Event::ProjectDocs { squad, docs }) => {
-                                changed |= this.docs_arrived(squad, docs);
+                            daemon::Update::Event(Event::ProjectDocs { squad, docs, copies, in_repos }) => {
+                                changed |= this.docs_arrived(squad, docs, copies, in_repos);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DocsFound { squad, query, paths }) => {
+                                changed |= this.docs_found(squad, query, paths);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DocCopyKept { squad, kept, removed, undo }) => {
+                                changed |= this.doc_copy_kept(squad, kept, removed, undo);
                                 continue;
                             }
                             other => other,
@@ -1062,6 +1086,8 @@ impl Shell {
                             this.composer.codex_asked = Some(std::time::Instant::now());
                             // The model providers connected there, and their models, for the same menus.
                             this.send_command(Command::Providers);
+                            // The squad's briefs and plans: the tickets they name show them.
+                            this.send_command(Command::ProjectDocs { squad: hello.snapshot.squad.clone() });
                         }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
@@ -1660,6 +1686,7 @@ impl Shell {
                     Screen::Project => views::project::render(self, cx),
                     Screen::Progress => views::progress::render(self, cx),
                     Screen::Usage => views::usage::render(self, cx),
+                    Screen::Docs => views::docs::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
@@ -1950,6 +1977,7 @@ impl Shell {
         self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
         self.design_redo.update(cx, |s, cx| s.set_placeholder(t!("design.compare_redo_placeholder"), window, cx));
+        self.docs_search.update(cx, |s, cx| s.set_placeholder(t!("docs.search_placeholder"), window, cx));
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
 }
@@ -2132,7 +2160,7 @@ impl Render for Shell {
         let sidebar = if away { None } else { self.sidebar(window, cx) };
         // A document open takes the right side; closed, the browser is back.
         // A project's page opens its briefs and plans there too.
-        let doc = matches!(self.screen, Screen::Chat | Screen::Project).then(|| views::doc::panel(self, window, cx)).flatten();
+        let doc = matches!(self.screen, Screen::Chat | Screen::Project | Screen::Docs).then(|| views::doc::panel(self, window, cx)).flatten();
         // Then the terminal, sized to the panel as the window is now.
         views::terminal::fit(self, window, cx);
         let terminal = (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten();

@@ -910,7 +910,13 @@ enum Internal {
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
     /// A squad's briefs and plans, read off the loop.
-    Docs(String, Vec<equipe_protocol::ProjectDoc>),
+    Docs(String, crate::briefs::Catalog),
+    /// What a search of a squad's briefs and plans found, off the loop: the
+    /// squad, the words, the paths.
+    DocsFound(String, String, Vec<String>),
+    /// One copy of a brief or plan kept off the loop, the others removed from
+    /// the squad's folder: the squad, the session told, and how it went.
+    DocCopyKept(String, SessionId, Result<crate::briefs::Kept, String>),
     /// A plan written off the loop (`write_plan`): what follows, and the answer.
     PlanWritten(Box<plans::Written>),
     /// A plan read off the loop for a ticket cut from it (`create_ticket` with `plan`).
@@ -1188,6 +1194,8 @@ impl Wake {
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
+            Wake::Internal(Internal::DocsFound(..)) => Borrowed("a search of the briefs and plans"),
+            Wake::Internal(Internal::DocCopyKept(..)) => Borrowed("one copy of a brief or plan kept"),
             Wake::Internal(Internal::PlanWritten(..)) => Borrowed("a plan written"),
             Wake::Internal(Internal::PlanCut(..)) => Borrowed("a plan read for a ticket"),
             Wake::Internal(Internal::PlanListed(..)) => Borrowed("a ticket listed in its plan"),
@@ -1427,7 +1435,9 @@ impl Runtime {
                     }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
-                Internal::Docs(squad, docs) => self.on_docs(squad, docs),
+                Internal::Docs(squad, catalog) => self.on_docs(squad, catalog),
+                Internal::DocsFound(squad, query, paths) => self.publish(Event::DocsFound { squad, query, paths }),
+                Internal::DocCopyKept(squad, session, kept) => self.on_doc_copy_kept(squad, session, kept),
                 Internal::PlanWritten(written) => self.plan_written(*written),
                 Internal::PlanCut(cut) => self.plan_cut(*cut).await,
                 Internal::PlanListed(squad, error) => self.plan_listed(&squad, error),
@@ -2168,6 +2178,8 @@ impl Runtime {
             Command::MoveEngine { squad, members, engine, model, effort } => self.move_engine(&squad, members, engine, model, effort).await,
             Command::Design { squad } => self.design_asked(squad),
             Command::ProjectDocs { squad } => self.docs_asked(squad),
+            Command::SearchDocs { squad, query } => self.docs_searched(squad, query),
+            Command::KeepDocCopy { squad, session, keep } => self.keep_doc_copy(squad, session, keep),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
@@ -4522,6 +4534,10 @@ for one project goes to it as tickets for its owners, with that project — and 
             Ok((taken, undo)) => {
                 let text = say!(self, "notice.taken_back", what = taken.said(self.config.lang));
                 self.publish(Event::Notice { session, text, undo: Some(undo.id) });
+                // A brief or plan back, or gone again: the screens' lists follow.
+                if taken.files.iter().any(|(_, file)| file.starts_with(&format!("{}/", crate::briefs::DOCS))) {
+                    self.docs_changed(squad);
+                }
             }
             Err(err) => self.error(Some(session), say!(self, "error.undo_failed", err = err), None),
         }

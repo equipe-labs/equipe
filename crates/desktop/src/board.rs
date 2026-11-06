@@ -1631,7 +1631,7 @@ mod tests {
     }
 
     fn doc(kind: DocKind, project: Option<&str>, date: &str, title: &str, status: &str) -> ProjectDoc {
-        ProjectDoc { kind, project: project.map(str::to_owned), path: format!("/r/{}/{date}-{title}.md", kind.dir()), title: title.into(), date: date.into(), status: status.into(), ticket: None, mode: None }
+        ProjectDoc { kind, project: project.map(str::to_owned), path: format!("/r/{}/{date}-{title}.md", kind.dir()), title: title.into(), date: date.into(), status: status.into(), ticket: None, mode: None, tickets: Vec::new() }
     }
 
     #[test]

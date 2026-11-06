@@ -1654,6 +1654,8 @@ impl App {
                 | Event::Allowed { .. }
                 | Event::Design { .. }
                 | Event::ProjectDocs { .. }
+                | Event::DocsFound { .. }
+                | Event::DocCopyKept { .. }
                 | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });

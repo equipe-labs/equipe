@@ -511,6 +511,34 @@ fn links(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     if !unblocks.is_empty() {
         out.push(v_flex().child(kicker(p, t!("peek.unblocks"))).children(unblocks).into_any_element());
     }
+    // The brief it came from, the plan it was cut from: opened beside, on a screen that shows them.
+    let came_from: Vec<AnyElement> = crate::docs::docs_of_ticket(&shell.docs, t.id)
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let path = std::path::PathBuf::from(&d.path);
+            h_flex()
+                .id(("from-doc", i))
+                .h(px(26.))
+                .px_1()
+                .gap_2()
+                .items_center()
+                .rounded(px(6.))
+                .text_size(px(13.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.wash))
+                .aria_label(d.title.clone())
+                .on_click(cx.listener(move |this, _, _, cx| this.open_doc_of_ticket(path.clone(), cx)))
+                .child(crate::icons::icon(crate::icons::Icon::FileText, 12., p.muted))
+                .child(div().w(px(40.)).flex_none().text_size(px(12.)).text_color(p.muted).child(crate::board::doc_kind(d.kind)))
+                .child(div().flex_1().min_w_0().truncate().text_color(p.text2).child(d.title.clone()))
+                .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(super::docs::where_of(d.project.as_deref())))
+                .into_any_element()
+        })
+        .collect();
+    if !came_from.is_empty() {
+        out.push(v_flex().child(kicker(p, t!("peek.from_docs"))).children(came_from).into_any_element());
+    }
     out
 }
 
