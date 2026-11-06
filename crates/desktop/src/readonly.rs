@@ -585,7 +585,7 @@ mod tests {
             Command::UndoHomeChange { squad: s(), session: 1, change: "abc".into() },
             Command::OnPhone { command: Box::new(Command::Interrupt { session: 1 }) },
             Command::ShowEngineSetup { squad: s() },
-            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude, model: None },
+            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude, model: None, effort: None },
             Command::Design { squad: s() },
             Command::ProjectDocs { squad: s() },
             Command::DesignVersions { squad: s(), project: None },

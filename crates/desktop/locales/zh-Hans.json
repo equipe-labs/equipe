@@ -80,6 +80,7 @@
   "approvals.noun_bash": "运行命令",
   "approvals.noun_browser_code": "运行浏览器代码",
   "approvals.noun_edit": "编辑文件",
+  "approvals.noun_engine": "换到另一个引擎",
   "approvals.noun_other": "一项操作",
   "approvals.noun_send": "发送消息",
   "approvals.noun_sign_in": "用已保存的账户登录",

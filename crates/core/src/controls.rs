@@ -8,8 +8,9 @@
 
 use serde_json::{Value, json};
 
-use crate::protocol::Mode;
+use crate::i18n::{Lang, core};
 use crate::protocol::engines::Switching;
+use crate::protocol::{Engine, Mode};
 
 pub const SETTINGS: &str = "settings";
 pub const CHANGE_SETTING: &str = "change_setting";
@@ -17,6 +18,10 @@ pub const CHANGE_SETTING: &str = "change_setting";
 /// The tool an approval for a change is asked under: the person's yes makes
 /// the daemon do it, not the member.
 pub const SETTING_TOOL: &str = "Change setting";
+
+/// The tool an engine move the PM asked for is put to the person under: a
+/// move as their own model picker makes it, so it is decided as one.
+pub const ENGINE_TOOL: &str = "Move engine";
 
 /// One change, as the PM asked for it — names, not ids: the runtime finds
 /// them.
@@ -29,8 +34,11 @@ pub enum Change {
     PmAccepts(bool),
     /// Hours the board may lie empty before the PM is woken; 0 off.
     IdleWake(u32),
-    /// A member's model.
+    /// A member's model, within the engine it runs on.
     Model { member: String, model: String },
+    /// Members moved to another engine — on `model` and at `effort` there,
+    /// when named (else what that engine recommends for each one's role).
+    Engine { members: Vec<String>, engine: Engine, model: Option<String>, effort: Option<String> },
     /// A member's effort; none: its engine's default.
     Effort { member: String, effort: Option<String> },
     /// How members move between engines as plans run low.
@@ -70,7 +78,8 @@ impl Change {
             Change::PmAccepts(on) => *on,
             Change::EngineSwitching(mode) => *mode == Switching::Auto,
             Change::Signal { on, .. } => *on,
-            Change::Merge { .. } => true,
+            // Another plan, another bill, another way of working: the person's, always.
+            Change::Merge { .. } | Change::Engine { .. } => true,
             _ => false,
         }
     }
@@ -103,8 +112,28 @@ impl Change {
             }
             "pm_accepts" => Change::PmAccepts(on(&value()?)?),
             "idle_wake_hours" => Change::IdleWake(value()?.parse().map_err(|_| "`value` is a number of hours; 0 turns it off.")?),
-            "model" => Change::Model { member: member()?, model: value()? },
-            "effort" => Change::Effort { member: member()?, effort: Some(value()?).filter(|v| v != "default") },
+            // The model named as `model` rather than `value`: read as meant.
+            "model" => Change::Model { member: member()?, model: s("value").or_else(|| s("model")).ok_or("Give the new `value`.")? },
+            "engine" => {
+                let engine = match value()?.to_ascii_lowercase().as_str() {
+                    "claude" | "claude code" | "claude_code" => Engine::Claude,
+                    "codex" => Engine::Codex,
+                    v => return Err(format!("An engine is claude or codex, not {v:?}.")),
+                };
+                let one = s("member");
+                let mut members: Vec<String> = Vec::new();
+                let named = args.get("members").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).chain(one.as_deref());
+                for name in named.map(str::trim).filter(|n| !n.is_empty()) {
+                    if !members.iter().any(|m| m == name) {
+                        members.push(name.to_owned());
+                    }
+                }
+                if members.is_empty() {
+                    return Err("Which members? Give `members` (or one `member`).".to_owned());
+                }
+                Change::Engine { members, engine, model: s("model"), effort: s("effort").filter(|e| e != "default") }
+            }
+            "effort" => Change::Effort { member: member()?, effort: Some(s("value").or_else(|| s("effort")).ok_or("Give the new `value`.")?).filter(|v| v != "default") },
             "engine_switching" => Change::EngineSwitching(match value()?.as_str() {
                 "off" => Switching::Off,
                 "suggest" => Switching::Suggest,
@@ -124,6 +153,88 @@ impl Change {
     }
 }
 
+/// Whether a model runs on an engine, as far as its name and Codex's list say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelFit {
+    Fits,
+    /// Another engine's: set it there by moving the member (`engine`).
+    Other(Engine),
+    /// Neither engine's, as far as is known.
+    Unknown,
+}
+
+/// Whether `model` runs on `engine`: Claude Code takes its families' aliases
+/// and ids (`crate::models`); Codex takes what its own live list has
+/// (`codex`, `None` when it couldn't be listed) and a connected provider's
+/// models, which run on its agent.
+pub fn model_fit(engine: Engine, model: &str, codex: Option<&[String]>) -> ModelFit {
+    let model = model.trim();
+    let provider = crate::model_providers::split_ref(model).is_some();
+    let claude = !provider && crate::models::family(model).is_some();
+    let listed = codex.is_some_and(|list| list.iter().any(|m| m == model));
+    let lower = model.to_ascii_lowercase();
+    // What Codex's ids look like, for when its list can't say.
+    let codex_like = listed || provider || lower.starts_with("gpt-") || lower.contains("codex") || (lower.starts_with('o') && lower[1..].starts_with(|c: char| c.is_ascii_digit()));
+    match engine {
+        Engine::Claude if claude => ModelFit::Fits,
+        Engine::Claude if codex_like => ModelFit::Other(Engine::Codex),
+        Engine::Codex if listed || provider => ModelFit::Fits,
+        Engine::Codex if claude => ModelFit::Other(Engine::Claude),
+        _ => ModelFit::Unknown,
+    }
+}
+
+/// An engine as people name it.
+pub fn engine_name(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Claude => "Claude",
+        Engine::Codex => "Codex",
+    }
+}
+
+/// A member an engine move takes, as it stands when the card is written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mover {
+    pub name: String,
+    pub from: Engine,
+    /// Mid-turn.
+    pub working: bool,
+    /// On a ticket: it finishes it where it is.
+    pub on_ticket: bool,
+}
+
+/// When a move to `to` reaches `m`, in the model picker's own words: the
+/// daemon's rule — between tickets, else when the turn ends, else at once.
+pub fn move_when(lang: Lang, m: &Mover, to: Engine) -> String {
+    let words = core(lang);
+    let (name, from, to) = (("name", m.name.clone()), ("from", engine_name(m.from).to_owned()), ("to", engine_name(to).to_owned()));
+    if m.on_ticket {
+        words.fill("control.engine_ticket", &[name, from, to])
+    } else if m.working {
+        words.fill("control.engine_turn_end", &[name, to])
+    } else {
+        words.fill("control.engine_free", &[name, to])
+    }
+}
+
+/// An engine move's card: who moves where, on what model and effort there
+/// (`model` as people name it), then when each one moves.
+pub fn move_words(lang: Lang, movers: &[Mover], to: Engine, model: Option<&str>, effort: Option<&str>) -> String {
+    let words = core(lang);
+    let engine = ("engine", engine_name(to).to_owned());
+    let names = movers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
+    let mut lines = vec![words.fill("control.engine", &[("members", names), engine.clone()])];
+    lines.push(match model {
+        Some(model) => words.fill("control.engine_model", &[("model", model.to_owned())]),
+        None => words.fill("control.engine_model_default", &[engine]),
+    });
+    if let Some(effort) = effort {
+        lines.push(words.fill("control.engine_effort", &[("effort", effort.to_owned())]));
+    }
+    lines.extend(movers.iter().map(|m| move_when(lang, m, to)));
+    lines.join("\n")
+}
+
 /// The PM's tools for the squad's settings.
 pub fn tools() -> Vec<Value> {
     vec![
@@ -139,19 +250,25 @@ routines, signals, and the \"always allow\" rules. Read it before you change one
             "name": CHANGE_SETTING,
             "description": "Change one of the squad's settings, only when the person asked for that change. One that \
 only narrows what the squad does happens at once. One that widens it — a mode that lets members do more on their own, \
-you accepting the team's work, engine switching on auto, a signal on again, a merge — is put to the person as an \
-approval card saying exactly what changes; it happens only if they tap yes, and this call waits for their answer. \
-Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default with member), \
-pm_accepts (on | off), idle_wake_hours (a number, 0 off), model (member, value), effort (member, value, or default), \
-engine_switching (off | suggest | auto), remove_project (project), hq (project, or none), run_routine (id), \
-delete_routine (id), signal (project, name, value on | off), disallow (value: the rule as `settings` lists it), \
-merge (ticket, push), keep_on_branch (ticket). Adding a project is `add_project`; adding a routine, `propose_routine`.",
+you accepting the team's work, engine switching on auto, a signal on again, a merge, a move to another engine — is put \
+to the person as an approval card saying exactly what changes; it happens only if they tap yes, and this call waits for \
+their answer. Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default \
+with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), model (member, value: a model of the engine \
+the member runs on), effort (member, value, or default), engine (members — every one in one call — value claude | \
+codex, and optionally model and effort there), engine_switching (off | suggest | auto), remove_project (project), \
+hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
+the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket). Never set another engine's model \
+through `model`: moving a member to it is `engine`. Adding a project is `add_project`; adding a routine, \
+`propose_routine`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "model", "effort", "engine_switching", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "model", "effort", "engine", "engine_switching", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
-                    "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model and effort." },
+                    "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort and engine." },
+                    "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
+                    "model": { "type": "string", "description": "engine: the model there (left out: what that engine recommends for each one's role)." },
+                    "effort": { "type": "string", "description": "engine: the effort there (left out: its default)." },
                     "project": { "type": "string", "description": "The project's name, for remove_project, hq and signal." },
                     "name": { "type": "string", "description": "The signal's name." },
                     "id": { "type": "integer", "description": "The routine's id." },
@@ -220,6 +337,81 @@ mod tests {
         for setting in listed {
             let doc = tools[1]["description"].as_str().unwrap();
             assert!(doc.contains(setting.as_str().unwrap()), "{setting} is explained");
+        }
+    }
+
+    #[test]
+    fn an_engine_move_names_its_members_and_engine_and_always_waits_for_the_persons_tap() {
+        let moved = change(json!({ "setting": "engine", "members": ["designer", "mobile", "mobile-2"], "value": "codex" }));
+        assert_eq!(moved, Change::Engine { members: vec!["designer".into(), "mobile".into(), "mobile-2".into()], engine: Engine::Codex, model: None, effort: None });
+        for now in [Mode::ReadOnly, Mode::Ask, Mode::Auto, Mode::Full] {
+            assert!(moved.needs_yes(now), "never at once, in any mode");
+        }
+        // One member as `member`, both at once, each once; the model and effort there.
+        let one = change(json!({ "setting": "engine", "member": "qa", "members": ["backend", "qa"], "value": "Claude", "model": "opus", "effort": "high" }));
+        assert_eq!(one, Change::Engine { members: vec!["backend".into(), "qa".into()], engine: Engine::Claude, model: Some("opus".into()), effort: Some("high".into()) });
+        assert_eq!(change(json!({ "setting": "engine", "member": "qa", "value": "codex", "effort": "default" })), Change::Engine { members: vec!["qa".into()], engine: Engine::Codex, model: None, effort: None });
+        let err = |args: Value| Change::parse(&args).unwrap_err();
+        assert!(err(json!({ "setting": "engine", "value": "codex" })).contains("`members`"));
+        assert!(err(json!({ "setting": "engine", "members": [], "value": "codex" })).contains("`members`"));
+        assert!(err(json!({ "setting": "engine", "member": "qa", "value": "gemini" })).contains("claude or codex"));
+        // A model named as `model` for the model setting is read as its value.
+        assert_eq!(change(json!({ "setting": "model", "member": "qa", "model": "sonnet" })), Change::Model { member: "qa".into(), model: "sonnet".into() });
+        let doc = tools()[1]["description"].as_str().unwrap().to_owned();
+        assert!(doc.contains("Never set another engine's model through `model`") && doc.contains("a move to another engine"), "{doc}");
+    }
+
+    #[test]
+    fn a_model_fits_the_engine_that_runs_it_and_another_engines_is_told_apart() {
+        let codex: Vec<String> = ["gpt-6.1-sol", "gpt-6-luna"].map(String::from).to_vec();
+        let list = Some(codex.as_slice());
+        for claude in ["opus", "sonnet", "claude-opus-5-5", "claude-sonnet-4-5-20250929", "claude-opus-5-5[1m]"] {
+            assert_eq!(model_fit(Engine::Claude, claude, list), ModelFit::Fits, "{claude}");
+            assert_eq!(model_fit(Engine::Codex, claude, list), ModelFit::Other(Engine::Claude), "{claude}");
+        }
+        assert_eq!(model_fit(Engine::Codex, "gpt-6.1-sol", list), ModelFit::Fits);
+        assert_eq!(model_fit(Engine::Claude, "gpt-6.1-sol", list), ModelFit::Other(Engine::Codex), "the bug: a Codex model set on a Claude member");
+        // Without Codex's list, its ids still read as its own — never as Claude's.
+        assert_eq!(model_fit(Engine::Claude, "gpt-6.1-sol", None), ModelFit::Other(Engine::Codex));
+        assert_eq!(model_fit(Engine::Claude, "o4-mini", None), ModelFit::Other(Engine::Codex));
+        assert_eq!(model_fit(Engine::Codex, "gpt-6.1-sol", None), ModelFit::Unknown, "not on a list that couldn't be read");
+        assert_eq!(model_fit(Engine::Codex, "gpt-7-nova", list), ModelFit::Unknown, "not on the list");
+        // A provider's model runs on Codex's agent: setting it on Claude would move the member.
+        assert_eq!(model_fit(Engine::Codex, "@openrouter/qwen/qwen3-coder", list), ModelFit::Fits);
+        assert_eq!(model_fit(Engine::Claude, "@openrouter/qwen/qwen3-coder", list), ModelFit::Other(Engine::Codex));
+        assert_eq!(model_fit(Engine::Claude, "@openrouter/anthropic/claude-opus-5", list), ModelFit::Other(Engine::Codex));
+        assert_eq!(model_fit(Engine::Claude, "llama-4", list), ModelFit::Unknown);
+    }
+
+    #[test]
+    fn an_engine_moves_card_says_who_moves_where_and_when_each_one_does_in_the_pickers_words() {
+        let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket };
+        let movers = [mover("designer", false, true), mover("mobile", true, false), mover("mobile-2", false, false)];
+        let card = move_words(Lang::En, &movers, Engine::Codex, None, None);
+        assert_eq!(
+            card.lines().collect::<Vec<_>>(),
+            [
+                "Move designer, mobile, mobile-2 to Codex",
+                "Model there: the one Codex recommends for each one's role",
+                "designer keeps Claude for the ticket in progress and switches to Codex from its next ticket, its work handed over.",
+                "mobile switches to Codex when this turn ends, its conversation handed over.",
+                "mobile-2 switches to Codex as soon as it's free, its conversation handed over.",
+            ]
+        );
+        let picked = move_words(Lang::En, &movers[2..], Engine::Codex, Some("GPT-6.1 Sol"), Some("high"));
+        assert_eq!(picked.lines().take(3).collect::<Vec<_>>(), ["Move mobile-2 to Codex", "Model there: GPT-6.1 Sol", "Effort there: high"]);
+        // In the person's language, its particles fitted to each name.
+        let ko = move_words(Lang::Ko, &movers, Engine::Codex, None, None);
+        let ko: Vec<&str> = ko.lines().collect();
+        assert_eq!(ko[0], "designer, mobile, mobile-2를 Codex로 옮겨요");
+        assert_eq!(ko[2], "designer는 진행 중인 티켓은 Claude로 마치고 다음 티켓부터 Codex로 옮겨요. 하던 일은 넘겨줘요.");
+        assert_eq!(ko[3], "mobile은 이번 턴이 끝나면 Codex로 옮겨요. 대화 내용은 넘겨줘요.");
+        assert_eq!(ko[4], "mobile-2는 손이 비는 대로 Codex로 옮겨요. 대화 내용은 넘겨줘요.");
+        // Every language words each case.
+        for lang in Lang::ALL {
+            let card = move_words(lang, &movers, Engine::Codex, Some("GPT-6.1 Sol"), Some("high"));
+            assert_eq!(card.lines().count(), 6, "{lang:?}: {card}");
+            assert!(!card.contains('{') && card.contains("mobile-2") && card.contains("GPT-6.1 Sol"), "{lang:?}: {card}");
         }
     }
 }

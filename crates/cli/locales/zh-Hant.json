@@ -629,6 +629,7 @@
   "remote.push_accept_merge": "請確認接受並合併 {tickets}",
   "remote.push_asks_confirm": "{member} 請你確認一件事",
   "remote.push_asks_edit": "{member} 請求編輯檔案",
+  "remote.push_asks_engine": "{member} 請求把成員換到另一個引擎",
   "remote.push_asks_fetch": "{member} 請求擷取網頁",
   "remote.push_asks_permission": "{member} 請求權限",
   "remote.push_asks_run": "{member} 請求執行指令",

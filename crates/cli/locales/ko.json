@@ -629,6 +629,7 @@
   "remote.push_accept_merge": "{tickets} 수락·머지를 확인해 주세요",
   "remote.push_asks_confirm": "{member}이(가) 확인을 요청해요",
   "remote.push_asks_edit": "{member}이(가) 파일 편집 허가를 요청해요",
+  "remote.push_asks_engine": "{member}이(가) 멤버를 다른 엔진으로 옮기자고 요청해요",
   "remote.push_asks_fetch": "{member}이(가) 페이지 가져오기 허가를 요청해요",
   "remote.push_asks_permission": "{member}이(가) 권한을 요청해요",
   "remote.push_asks_run": "{member}이(가) 명령 실행 허가를 요청해요",

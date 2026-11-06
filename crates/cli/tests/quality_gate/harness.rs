@@ -222,11 +222,18 @@ impl Run {
 
     /// Bring a member onto the squad as a screen's `/add` does, and wait until it has started.
     pub async fn add(&mut self, role: &str, cwd: &Path) -> SessionId {
+        let (engine, model) = (self.setup.engine, self.setup.model.clone());
+        self.add_on(role, cwd, engine, model).await
+    }
+
+    /// The same, on `engine` and `model` whatever the run's setup says: a
+    /// squad that starts where the task needs it.
+    pub async fn add_on(&mut self, role: &str, cwd: &Path, engine: Option<Engine>, model: Option<String>) -> SessionId {
         let id = equipe_core::protocol::new_session_id();
         let edits = equipe_core::roles::role_or_custom(role).edits;
         let spec = SessionSpec {
-            engine: self.setup.engine,
-            model: self.setup.model.clone(),
+            engine,
+            model,
             access: if edits { Access::EditFiles } else { Access::ReadOnly },
             cwd: cwd.to_owned(),
             role: Some(role.to_owned()),
@@ -235,7 +242,8 @@ impl Run {
         self.send(Command::Start { session: id, spec });
         let ok = self.wait_for(Duration::from_secs(120), |s| s.sessions.values().any(|v| *v == id)).await;
         assert!(ok, "{role} started; errors: {:?}", self.state.errors);
-        self.state.sessions.insert(role.to_owned(), id);
+        // A second member of a role is known by its own name (`mobile-2`), from its start.
+        self.state.sessions.entry(role.to_owned()).or_insert(id);
         id
     }
 

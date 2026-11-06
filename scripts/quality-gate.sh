@@ -13,7 +13,7 @@ usage() {
 	cat <<'EOF'
 usage: scripts/quality-gate.sh [--baseline <git ref>] [--tasks <a,b,…>] [--runs <n>] [--jobs <n>] [--out <dir>]
   --baseline  the ref A is built from; left out, only B (this checkout) runs
-  --tasks     task names, comma-separated (default: all eleven)
+  --tasks     task names, comma-separated (default: all twelve)
   --runs      runs of each task per variant (default 3)
   --jobs      runs at once (default 1)
   --out       the report's folder (default target/quality-gate/<time>)

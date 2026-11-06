@@ -361,6 +361,37 @@ async fn acting_in_the_persons_name_is_read_back_with_the_members_words_quoted_a
 }
 
 #[tokio::test]
+async fn an_engine_move_the_pm_asked_for_is_decided_by_the_persons_words_as_their_own_moves_are() {
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "designer")).await;
+    all_on(&handle, &mut events).await;
+    let handle2 = handle.clone();
+    let asking = tokio::spawn(async move { tool(&handle2, "pm", "change_setting", json!({ "setting": "engine", "members": ["designer"], "value": "codex" })).await });
+    until(&mut events, |e| matches!(e, Event::ApprovalRequested { approval, .. } if approval.tool == "Move engine")).await;
+    // "Approve": read back in equipe's words, with when it moves; nothing moves on that alone.
+    handle.send(say("승인", false));
+    let seen = until(&mut events, |e| matches!(e, Event::WordsLive { .. })).await;
+    let shown = live(&seen);
+    assert_eq!((shown.stage, shown.tier, shown.kind), (Stage::ReadBack, Tier::High, Kind::MoveEngine));
+    assert!(shown.read_back.contains("Move designer to Codex"), "{}", shown.read_back);
+    assert!(shown.items.iter().any(|i| i.starts_with("designer switches to Codex")), "{:?}", shown.items);
+    assert!(!seen.iter().any(|e| matches!(e, Event::EngineProposed { .. })));
+    // Their clear yes: the card's own answer, and the move is theirs.
+    handle.send(say("응", false));
+    let moved = until(&mut events, |e| matches!(e, Event::EngineProposed { .. })).await;
+    let Some(Event::EngineProposed { proposal, .. }) = moved.last() else { unreachable!() };
+    assert_eq!(proposal.moves.iter().map(|m| m.member.as_str()).collect::<Vec<_>>(), ["designer"]);
+    assert!(asking.await.unwrap().text.starts_with("The person said yes"));
+    let kept = log(&handle, &mut events).await;
+    assert_eq!((kept[0].kind, kept[0].outcome), (Kind::MoveEngine, Outcome::Done));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn what_waited_in_words_when_the_daemon_stopped_is_logged_as_dropped() {
     let repo = repo();
     let home = scratch("home");

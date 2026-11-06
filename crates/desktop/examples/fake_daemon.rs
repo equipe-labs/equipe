@@ -178,7 +178,8 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
     }
 }
 
-/// Requests for permission still unanswered; a `decide` removes one. `FAKE_ASKS=0` starts with none.
+/// Requests for permission still unanswered; a `decide` removes one. `FAKE_ASKS=0` starts with none;
+/// `FAKE_ASKS=engine` with the PM's card to move three members to Codex.
 /// The squad's "always allow" rules, as settings lists them.
 /// The looks screens told (`rpc::SCREEN_LOOK`).
 fn looks() -> &'static std::sync::Mutex<equipe_core::looks::Looks> {
@@ -257,6 +258,15 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
             preview: None,
         };
         let on = std::env::var("FAKE_ASKS").map_or(true, |v| v != "0") && !crowd::on();
+        // `FAKE_ASKS=engine`: the PM asks to move three members to Codex, on
+        // the card the daemon writes, in the daemon's language.
+        if std::env::var("FAKE_ASKS").is_ok_and(|v| v == "engine") {
+            use equipe_core::controls::{ENGINE_TOOL, Mover, move_words};
+            let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket };
+            let movers = [mover("designer", false, true), mover("frontend", true, false), mover("backend", false, false)];
+            let action = move_words(lang(), &movers, Engine::Codex, Some("GPT-6.1 Sol"), None);
+            return std::sync::Mutex::new(vec![Approval { ticket: None, ..ask(9, 1, "pm", ENGINE_TOOL, &action, None) }]);
+        }
         std::sync::Mutex::new(if on {
             vec![
                 ask(7, 3, "backend", "Bash", "cargo test -p equipe-core -- --nocapture\ncat > /tmp/out.txt <<EOF\nx\nEOF", Some("Permission needed before running the tests")),

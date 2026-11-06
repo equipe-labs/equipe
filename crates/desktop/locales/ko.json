@@ -80,6 +80,7 @@
   "approvals.noun_bash": "명령 실행",
   "approvals.noun_browser_code": "브라우저 코드 실행",
   "approvals.noun_edit": "파일 수정",
+  "approvals.noun_engine": "다른 엔진으로 이동",
   "approvals.noun_other": "작업",
   "approvals.noun_send": "메시지 전송",
   "approvals.noun_sign_in": "저장된 계정으로 로그인",

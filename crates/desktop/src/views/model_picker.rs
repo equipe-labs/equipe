@@ -218,7 +218,7 @@ impl Shell {
                 // What happens and when, as the picker said it.
                 let said = self.with_picker(|member, _| picker::applies(member, to, self.model.listed(Some(to))));
                 self.close_picker(cx);
-                self.send_command(Command::MoveEngine { squad: self.model.squad.clone(), members: vec![name], engine: to, model });
+                self.send_command(Command::MoveEngine { squad: self.model.squad.clone(), members: vec![name], engine: to, model, effort: None });
                 self.composer.flash = said;
             }
             Act::SignIn(_) => {

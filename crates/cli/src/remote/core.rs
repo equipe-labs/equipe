@@ -758,6 +758,7 @@ impl Core {
                     "Write" | "Edit" | "MultiEdit" => t!("remote.push_asks_edit", member = member),
                     "WebFetch" => t!("remote.push_asks_fetch", member = member),
                     "Confirm" => t!("remote.push_asks_confirm", member = member),
+                    equipe_core::controls::ENGINE_TOOL => t!("remote.push_asks_engine", member = member),
                     _ => t!("remote.push_asks_permission", member = member),
                 };
                 let mut short = approval.clone();
@@ -1328,6 +1329,31 @@ pub(crate) mod tests {
         let mut stranger = Phone::new();
         stranger.id = phone.id.clone();
         assert!(core.on_relay(&stranger.send(&c, None, ask, now), now).is_empty(), "someone else's key");
+    }
+
+    #[test]
+    fn an_engine_move_the_pm_asked_for_reaches_a_phone_whole_and_its_yes_is_once() {
+        use equipe_core::controls::{ENGINE_TOOL, Mover, move_words};
+        use equipe_core::protocol::Engine;
+        let (mut core, phone, now) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let movers: Vec<Mover> = ["designer", "mobile", "mobile-2"].iter().map(|n| Mover { name: (*n).into(), from: Engine::Claude, working: false, on_ticket: true }).collect();
+        let action = move_words(equipe_core::i18n::Lang::En, &movers, Engine::Codex, None, None);
+        let approval = Approval { id: 12, session: 1, member: "pm".into(), ticket: None, tool: ENGINE_TOOL.into(), action: action.clone(), reason: None, preview: None };
+        core.on_relay(&json!({ "type": "presence", "device": phone.id, "online": false }), now);
+        let out = core.on_squad_event("acme", &Event::ApprovalRequested { squad: "acme".into(), approval });
+        let Action::Relay(push) = &out[0] else { panic!() };
+        assert_eq!((push["title"].as_str(), push["category"].as_str()), (Some("pm asks to move members to another engine"), Some("approval")));
+        assert!(!push.to_string().contains("mobile-2"), "who moves travels sealed only");
+        let opened = phone.open(&c, &out[0]);
+        assert_eq!(opened["rpc"]["params"]["approval"]["action"].as_str(), Some(action.as_str()), "the whole card, every member's line");
+        // The phone's yes is the card's own; an "always" from it is a yes once.
+        let yes = Command::Decide { squad: "acme".into(), approval: 12, decision: Decision::Allow, words: None, said: None };
+        assert_eq!(allowed(yes.clone()), Some(yes));
+        let always = Command::Decide { squad: "acme".into(), approval: 12, decision: Decision::Always, words: None, said: None };
+        assert!(matches!(allowed(always), Some(Command::Decide { decision: Decision::Allow, .. })));
+        // A phone never moves members itself.
+        assert_eq!(allowed(Command::MoveEngine { squad: "acme".into(), members: vec!["mobile".into()], engine: Engine::Codex, model: None, effort: None }), None);
     }
 
     #[test]

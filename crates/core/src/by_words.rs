@@ -78,6 +78,10 @@ pub fn approval_kind(a: &Approval) -> Kind {
     if tool == crate::controls::SETTING_TOOL {
         return Kind::WidenSetting;
     }
+    // A move the PM asked for is decided as the person's own engine moves are.
+    if tool == crate::controls::ENGINE_TOOL {
+        return Kind::MoveEngine;
+    }
     if permissions::blocked(tool, &a.action) {
         return Kind::Blocked;
     }
@@ -484,6 +488,13 @@ pub fn read_back(lang: Lang, ask: &Ask, w: &Waiting) -> ReadBack {
             let (head, mut quotes) = match kind {
                 // What it asks to do in the person's name is the member's own sentence: quoted.
                 Kind::ActInName => (words.fill("words.do.act_in_name", &[("member", a.member.clone())]), quote(&a.member, &a.action).into_iter().collect::<Vec<_>>()),
+                // equipe's own card: what moves where, then when each one does, as items.
+                Kind::MoveEngine => {
+                    let mut lines = a.action.lines();
+                    let head = words.fill("words.do.setting", &[("member", a.member.clone()), ("action", lines.next().unwrap_or_default().to_owned())]);
+                    let quotes = a.reason.as_deref().and_then(|why| quote(&a.member, why)).into_iter().collect();
+                    return ReadBack { head, items: lines.map(str::to_owned).collect(), quotes };
+                }
                 _ => {
                     let key = match kind {
                         Kind::SendAsPerson => "words.do.send",
@@ -947,6 +958,28 @@ mod tests {
         assert_eq!(read_back(Lang::En, &Ask::RunRoutine(1), &w).head, "Run the routine “Weekly report” once, now");
         assert_eq!(ask_line(Lang::En, Tier::Outward), "Say yes and it goes in 10 s — say cancel to stop it then.");
         assert_eq!(ask_line(Lang::En, Tier::High), "Say yes to go ahead, or no to leave it on its card.");
+    }
+
+    #[test]
+    fn an_engine_move_the_pm_asked_for_is_decided_in_words_as_the_persons_own_moves_are() {
+        let action = "Move designer, mobile to Codex\nModel there: the one Codex recommends for each one's role\ndesigner switches to Codex as soon as it's free, its conversation handed over.\nmobile switches to Codex when this turn ends, its conversation handed over.";
+        let mut f = Fixture::new();
+        f.approvals = vec![approval(30, "pm", crate::controls::ENGINE_TOOL, action), approval(31, "pm", crate::controls::SETTING_TOOL, "Set the squad's mode to 'Full'")];
+        let w = f.waiting();
+        assert_eq!(kind(&Ask::Approval(30), &w), Kind::MoveEngine);
+        assert_eq!((Kind::MoveEngine.tier(), Kind::MoveEngine.reach()), (Tier::High, Reach::Words), "read back, then the person's clear yes");
+        // The approval word alone is the engine move's — a widening setting stays on its card.
+        assert_eq!(read("approve", &w, &tongue("en")), [Ask::Approval(30)]);
+        assert_eq!(read("승인", &w, &tongue("ko")), [Ask::Approval(30)]);
+        assert_eq!(read("move them to codex, approve", &w, &tongue("en")), [Ask::Approval(30)], "named by its words");
+        let back = read_back(Lang::En, &Ask::Approval(30), &w);
+        assert_eq!(back.head, "Change a setting as pm asked: Move designer, mobile to Codex");
+        assert_eq!(back.items.len(), 3, "the model there, and when each one moves: {:?}", back.items);
+        assert!(back.items[2].starts_with("mobile switches to Codex when this turn ends"));
+        assert_eq!(back.quotes, [Quote { by: "pm".into(), text: "to see the tests".into() }], "why the PM asked, as the PM's");
+        // Saying yes sends exactly the card's own answer.
+        let said = Said { via: by_words::Via::Typed, utterance: "yes".into() };
+        assert_eq!(commands("acme", &Ask::Approval(30), &w, &said), [Command::Decide { squad: "acme".into(), approval: 30, decision: Decision::Allow, words: None, said: Some(said.clone()) }]);
     }
 
     #[test]
