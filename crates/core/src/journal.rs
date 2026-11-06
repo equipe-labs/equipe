@@ -618,6 +618,16 @@ impl Journal {
         self.set_meta("pm_accepts", if on { "on" } else { "off" })
     }
 
+    /// "All by words": the person's own words decide high-risk requests too,
+    /// read back and confirmed. Off unless they turned it on, at the Mac.
+    pub fn words_all(&self) -> bool {
+        self.meta("words_all").as_deref() == Some("on")
+    }
+
+    pub fn set_words_all(&self, on: bool) -> Result<()> {
+        self.set_meta("words_all", if on { "on" } else { "off" })
+    }
+
     /// How many subagents each member runs at once, where its engine has
     /// them, as the person set it; `None`: each engine's own.
     pub fn subagents_at_once(&self) -> Option<u32> {

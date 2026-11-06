@@ -45,6 +45,31 @@ fn lists() -> &'static BTreeMap<String, &'static [&'static str]> {
     })
 }
 
+/// Each language's own words, by language code and key, read once.
+fn own() -> &'static BTreeMap<(String, String), &'static [&'static str]> {
+    static OWN: OnceLock<BTreeMap<(String, String), &'static [&'static str]>> = OnceLock::new();
+    OWN.get_or_init(|| {
+        let mut out = BTreeMap::new();
+        for (code, text) in FILES {
+            let file: BTreeMap<String, String> = serde_json::from_str(text).unwrap_or_else(|e| panic!("protocol locales/{code}.json: {e}"));
+            for (key, list) in file {
+                let list: &'static str = String::leak(list);
+                let words: &'static [&'static str] = Vec::leak(list.split('|').filter(|w| !w.is_empty()).collect());
+                out.insert(((*code).to_owned(), key), words);
+            }
+        }
+        out
+    })
+}
+
+/// The languages words can be read in, by code.
+pub const CODES: [&str; 8] = ["en", "de", "es", "fr", "ja", "ko", "zh-Hans", "zh-Hant"];
+
+/// `key`'s words in language `code` only (none for one it hasn't).
+pub fn of(code: &str, key: &str) -> &'static [&'static str] {
+    own().get(&(code.to_owned(), key.to_owned())).copied().unwrap_or_default()
+}
+
 /// `key`'s words in every language (none for a key no file has).
 pub fn every(key: &str) -> &'static [&'static str] {
     lists().get(key).copied().unwrap_or_default()

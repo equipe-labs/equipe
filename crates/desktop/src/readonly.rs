@@ -82,11 +82,16 @@ pub fn reads(command: &Command) -> bool {
         | C::ProjectDocs { .. }
         | C::DesignVersions { .. }
         | C::DiskScan
+        | C::WordsLog { .. }
         // A picture of a member's page now and then: following, as a screen does.
         | C::WatchBrowser { .. } => true,
         C::Start { .. }
         | C::Submit { .. }
         | C::SubmitLater { .. }
+        | C::Say { .. }
+        | C::UndoWords { .. }
+        | C::ClearWordsLog { .. }
+        | C::SetWordsAll { .. }
         | C::Interrupt { .. }
         | C::Close { .. }
         | C::Accept { .. }
@@ -479,13 +484,13 @@ mod tests {
             Command::CommentTicket { squad: s(), ticket: 1, text: "x".into() },
             Command::TicketHistory { squad: s(), ticket: 1 },
             Command::SetMode { squad: s(), member: None, mode: Some(Mode::default()) },
-            Command::Decide { squad: s(), approval: 1, decision: Decision::Allow, words: None },
+            Command::Decide { squad: s(), approval: 1, decision: Decision::Allow, words: None, said: None },
             Command::AnswerQuestions { squad: s(), id: 1, answers: vec![decide::Answer::default()], about: None },
             Command::DismissQuestions { squad: s(), id: 1 },
             Command::ApproveTeamChange { squad: s(), id: 1 },
             Command::DeclineTeamChange { squad: s(), id: 1 },
             Command::ProposeAccept { squad: s(), session: 1, verdict: accept::Verdict::Accept, tickets: vec![1], note: String::new() },
-            Command::ConfirmAccept { squad: s(), id: 1, tickets: vec![accept::Confirmed::only(1)] },
+            Command::ConfirmAccept { squad: s(), id: 1, tickets: vec![accept::Confirmed::only(1)], said: None },
             Command::DeclineAccept { squad: s(), id: 1 },
             Command::Scale { squad: s(), extra: 1 },
             Command::Refresh { session: 1, summary: true },
@@ -537,6 +542,11 @@ mod tests {
             Command::Devices,
             Command::Unpair { device: "d".into() },
             Command::DiskScan,
+            Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None },
+            Command::UndoWords { squad: s(), id: 1 },
+            Command::WordsLog { squad: s() },
+            Command::ClearWordsLog { squad: s() },
+            Command::SetWordsAll { squad: s(), on: true },
             Command::DiskClean { ids: vec![] },
             Command::DiskRun { id: "i".into() },
             Command::Engines,
@@ -604,9 +614,9 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "engines", "providers", "models", "design", "project_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "words_log", "engines", "providers", "models", "design", "project_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
-        for kept in ["submit", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider"] {
+        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");
         }
         // Outside the real view, everything goes, as ever.
