@@ -13,6 +13,162 @@
 
 use serde_json::Value;
 
+use crate::protocol::Command;
+
+/// Commands only the person may send, never a member — whatever its mode or
+/// engine. The product's floor: an approval is the person's, decided by their
+/// own hands or words, never an agent's. A member acts through its own tools
+/// (the board's MCP server, `core.tool`), never these screen commands; if one
+/// reaches the daemon's socket from a member's own process — which can happen
+/// only outside the fence, in full access — the daemon refuses it
+/// ([`crate::gateway`], by the connecting process's origin).
+///
+/// The match is exhaustive on purpose, with no catch-all: a new [`Command`]
+/// does not compile until it is placed here as the person's or as shared, so
+/// the floor can't be widened by forgetting one.
+pub fn person_only(command: &Command) -> bool {
+    use Command as C;
+    match command {
+        // Accepting, merging, keeping or sending back a member's work — and the
+        // words-read proposals that lead there. The person's gate on every one.
+        C::Accept { .. }
+        | C::Merge { .. }
+        | C::KeepOnBranch { .. }
+        | C::Reopen { .. }
+        | C::Resume { .. }
+        | C::Cancel { .. }
+        | C::ProposeAccept { .. }
+        | C::ConfirmAccept { .. }
+        | C::DeclineAccept { .. } => true,
+        // Deciding in words (the `words-approvals` flow): the person's own
+        // message read as a decision, turning "all by words" on, and undoing or
+        // clearing what was decided in words. The person's own, by definition —
+        // a member must never speak as the person or widen how decisions are made.
+        C::Say { .. } | C::SetWordsAll { .. } | C::UndoWords { .. } | C::ClearWordsLog { .. } => true,
+        // Taking back a change to the squad's folder: the person's, as the
+        // notice that offers it is theirs.
+        C::UndoHomeChange { .. } => true,
+        // What the person sent from their phone, wrapped by the gateway after
+        // this floor; one arriving already wrapped is judged by what it wraps.
+        C::OnPhone { command } => person_only(command),
+        // Answering a member's request for permission or its questions, and
+        // approving the PM's, the routines' and the engine moves' proposals:
+        // the very decisions this review is about.
+        C::Decide { .. }
+        | C::AnswerQuestions { .. }
+        | C::DismissQuestions { .. }
+        | C::ApproveTeamChange { .. }
+        | C::DeclineTeamChange { .. }
+        | C::ApproveRoutine { .. }
+        | C::DeclineRoutine { .. }
+        | C::ApplyEngineProposal { .. }
+        | C::DismissEngineProposal { .. }
+        | C::UndoEngineProposal { .. }
+        | C::MoveEngine { .. } => true,
+        // The board the person owns: tickets they make, change, move, comment on.
+        C::CreateTicket { .. }
+        | C::EditTicket { .. }
+        | C::EditTickets { .. }
+        | C::MoveTicket { .. }
+        | C::CommentTicket { .. }
+        | C::RestoreDesign { .. } => true,
+        // What widens what members may do, or changes how they run: modes, who
+        // accepts, how many, engine switching, subagents, scaling, idle wake,
+        // the models and effort, taking back an "always allow", pausing signals,
+        // the Mac's screen. A member must never turn any of these up on itself.
+        C::SetMode { .. }
+        | C::SetPmAccepts { .. }
+        | C::SetEngineSwitching { .. }
+        | C::SetSubagentsAtOnce { .. }
+        | C::Scale { .. }
+        | C::SetIdleWake { .. }
+        | C::SetModel { .. }
+        | C::SetRoleModel { .. }
+        | C::SetEffort { .. }
+        | C::Disallow { .. }
+        | C::SetSignalOn { .. }
+        | C::Desktop { .. } => true,
+        // Projects, HQ and the squad's routines: the shape of the work.
+        C::AddProject { .. }
+        | C::RemoveProject { .. }
+        | C::SetHq { .. }
+        | C::SaveRoutine { .. }
+        | C::DeleteRoutine { .. }
+        | C::RunRoutine { .. } => true,
+        // Credentials and accounts: logins, secrets, browser profiles, model
+        // providers, engine sign-in and install. The keys to everything.
+        C::SaveLogin { .. }
+        | C::DeleteLogin { .. }
+        | C::ForgetLoginAllowance { .. }
+        | C::SaveBrowserProfile { .. }
+        | C::DeleteBrowserProfile { .. }
+        | C::SaveSecret { .. }
+        | C::DismissSecret { .. }
+        | C::SetNebiusKey { .. }
+        | C::AddProvider { .. }
+        | C::RemoveProvider { .. }
+        | C::SignIn { .. }
+        | C::SignInCancel { .. }
+        | C::SignInCode { .. }
+        | C::SignOut { .. }
+        | C::InstallEngine { .. }
+        | C::MoveIntoLogin => true,
+        // Pairing a phone: a member must not pair its own device in, nor unpair
+        // the person's. (Handled on the pairing path in the gateway too.)
+        C::PairStart | C::PairAnswer { .. } | C::PairCancel | C::Devices | C::Unpair { .. } => true,
+
+        // Not the person's alone. Session plumbing and the person's own
+        // messages; screen, conversation and panel state; reads and lists;
+        // stopping a member's own work. A member reaching these over the socket
+        // is odd but gains no authority it doesn't already have through its
+        // tools, and refusing them would risk the person's own screens. (Some —
+        // Submit, NewConversation, BrowserControl, DiskRun — are noted in the
+        // review as a narrower residual, out of this floor's scope.)
+        C::Start { .. }
+        | C::Submit { .. }
+        | C::SubmitLater { .. }
+        | C::Interrupt { .. }
+        | C::Close { .. }
+        | C::TicketHistory { .. }
+        | C::Refresh { .. }
+        | C::Focus { .. }
+        | C::NewConversation { .. }
+        | C::MoveConversation { .. }
+        | C::CloseConversation { .. }
+        | C::ReopenConversation { .. }
+        | C::Unqueue { .. }
+        | C::SendNow { .. }
+        | C::StopCommand { .. }
+        | C::StopSubagent { .. }
+        | C::Suggestions { .. }
+        | C::ShowBrowser { .. }
+        | C::WatchBrowser { .. }
+        | C::BrowserNav { .. }
+        | C::BrowserNewTab { .. }
+        | C::BrowserCloseTab { .. }
+        | C::BrowserControl { .. }
+        | C::BrowserDialog { .. }
+        | C::BrowserPopOut { .. }
+        | C::Language { .. }
+        | C::Logins
+        | C::WordsLog { .. }
+        | C::BrowserProfiles
+        | C::Models { .. }
+        | C::Providers
+        | C::TestProvider { .. }
+        | C::Engines
+        | C::CheckEngine { .. }
+        | C::ShowEngineSetup { .. }
+        | C::DiskScan
+        | C::DiskClean { .. }
+        | C::DiskRun { .. }
+        | C::Design { .. }
+        | C::ProjectDocs { .. }
+        | C::DesignVersions { .. }
+        | C::Taste { .. } => false,
+    }
+}
+
 /// Hosts a member's sandboxed commands may reach: package registries and source
 /// hosts, so it can install, build and test.
 pub const ALLOWED_DOMAINS: [&str; 16] = [
@@ -328,6 +484,59 @@ fn host(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_persons_own_decisions_are_never_a_members_to_send() {
+        // The decisions this review is about, and the authority around them.
+        let person_only = [
+            Command::Accept { squad: "a".into(), ticket: 1 },
+            Command::Merge { squad: "a".into(), ticket: 1, push: false },
+            Command::Decide { squad: "a".into(), approval: 1, decision: crate::protocol::Decision::Always, words: None, said: None },
+            Command::ConfirmAccept { squad: "a".into(), id: 1, tickets: vec![], said: None },
+            Command::ApproveTeamChange { squad: "a".into(), id: 1 },
+            Command::ApproveRoutine { squad: "a".into(), id: 1 },
+            Command::ApplyEngineProposal { squad: "a".into(), id: 1 },
+            Command::SetMode { squad: "a".into(), member: None, mode: None },
+            Command::SetPmAccepts { squad: "a".into(), on: true },
+            Command::Disallow { squad: "a".into(), rule: "Bash(rm:*)".into() },
+            Command::DeleteLogin { id: 1 },
+            Command::SetNebiusKey { key: None },
+            Command::Desktop { open: true },
+            Command::PairStart,
+            Command::Unpair { device: "phone".into() },
+            Command::UndoHomeChange { squad: "a".into(), session: 1, change: "abc".into() },
+            Command::OnPhone { command: Box::new(Command::Accept { squad: "a".into(), ticket: 1 }) },
+        ];
+        for command in &person_only {
+            assert!(person_only_fn(command), "person-only: {command:?}");
+        }
+    }
+
+    #[test]
+    fn reads_and_the_persons_own_messages_are_not_the_floor() {
+        // A member reaching these over the socket gains nothing it hasn't
+        // through its own tools; refusing them would risk the person's screens.
+        let shared = [
+            Command::Submit { session: 1, text: "hi".into(), about: None },
+            Command::Interrupt { session: 1 },
+            Command::TicketHistory { squad: "a".into(), ticket: 1 },
+            Command::Focus { squad: "a".into(), project: None },
+            Command::WatchBrowser { squad: "a".into(), session: None },
+            Command::Models { engine: crate::protocol::Engine::Claude },
+            Command::DiskScan,
+            Command::Language { lang: "ko".into() },
+            Command::Logins,
+            Command::OnPhone { command: Box::new(Command::Submit { session: 1, text: "hi".into(), about: None }) },
+        ];
+        for command in &shared {
+            assert!(!person_only_fn(command), "shared, not person-only: {command:?}");
+        }
+    }
+
+    // `person_only` shadows the test array name above; alias for clarity.
+    fn person_only_fn(command: &Command) -> bool {
+        super::person_only(command)
+    }
 
     #[test]
     fn code_in_any_profiles_browser_is_asked_about_as_the_browsers_code() {

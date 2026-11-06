@@ -166,6 +166,15 @@ mod tests {
         dir.canonicalize().unwrap()
     }
 
+    /// What the charters stopped saying because the tool says it (crates/core/charter-moved.txt).
+    #[test]
+    fn ask_secrets_description_says_the_person_types_it_into_a_card_never_in_words() {
+        let said = tool()["description"].as_str().unwrap().to_owned();
+        for part in ["They type it into a card in equipe", "saves it straight to a file for you", "Never ask for one in words", "never have the person run a command to type it", "never print, echo or copy a value"] {
+            assert!(said.contains(part), "{part}: {said}");
+        }
+    }
+
     #[test]
     fn a_request_names_its_keys_and_a_file_of_its_own_under_home() {
         let home = home("ask");

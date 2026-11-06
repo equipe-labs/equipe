@@ -383,6 +383,21 @@ mod tests {
         assert_eq!(tool()["inputSchema"]["required"], json!(["verdict"]));
     }
 
+    /// What the PM's charter stopped saying because the tool says it (crates/core/charter-moved.txt).
+    #[test]
+    fn propose_accepts_description_says_when_to_call_it_and_to_say_only_that_the_card_is_up() {
+        let said = tool()["description"].as_str().unwrap().to_owned();
+        for part in [
+            "Call it right away whenever the person says in words that they accept, approve, merge or reject work in review",
+            "\"accept them all\", \"accept T-1 and T-3\"",
+            "\"merge it too\", \"reject this one\"",
+            "Don't explain buttons or ask them to click anything",
+            "say in one line, in their language, that the card is up (\"The card is up\")",
+        ] {
+            assert!(said.contains(part), "{part}: {said}");
+        }
+    }
+
     #[test]
     fn a_proposal_stays_open_while_one_of_its_tickets_still_takes_it() {
         let p = proposed(json!({ "verdict": "accept", "tickets": [1, 3] })).into_proposal(1, "pm", 1, 0);

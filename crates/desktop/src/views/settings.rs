@@ -104,6 +104,8 @@ pub struct SettingsUi {
     pub provider_removing: Option<String>,
     /// Apple's servers for dictation, asked about: what goes where, and a yes.
     pub dictation_consent: bool,
+    /// "All by words", asked about before it is on: what changes, and a yes.
+    pub words_consent: bool,
 }
 
 impl SettingsUi {
@@ -124,6 +126,7 @@ impl SettingsUi {
             provider_problem: None,
             provider_removing: None,
             dictation_consent: false,
+            words_consent: false,
         }
     }
 
@@ -861,9 +864,46 @@ fn permissions(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .control(ui::button(p, "to-browser", Kind::Ghost, t!("settings.cat_browser")).icon(Icon::ArrowRight).on_click(cx.listener(|this, _, _, cx| this.settings_go(Category::Browser, cx))));
     vec![
         Section::new(t!("settings.section_mode"), first).foot(t!("settings.mode_foot")),
+        Section::new(t!("settings.words_section"), words_rows(shell, cx)).foot(t!("settings.words_foot")),
         Section::new(t!("settings.section_rules"), rules).foot(t!("settings.rules_foot")),
         Section::new(t!("settings.section_never"), vec![blocked, sign_in]),
     ]
+}
+
+/// Deciding in words: "All by words" — asked about before it is on, with
+/// what changes — and the log of where words went wrong.
+fn words_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
+    let p = shell.palette;
+    let on = shell.model.words.all;
+    let can = matches!(shell.model.conn, Conn::Connected { .. }) && shell.model.words.read;
+    let all = Line::new(t!("settings.words_all"), if on { t!("settings.words_all_on") } else { t!("settings.words_all_desc") })
+        .words("words voice dictation approve yes all by words risk")
+        .switch(shell, "all-by-words", on || shell.settings.words_consent, can, |this, on, _, cx| {
+            if on {
+                this.settings.words_consent = true;
+                cx.notify();
+            } else {
+                this.set_all_by_words(false, cx);
+            }
+        }, cx);
+    let mut rows = vec![all];
+    if shell.settings.words_consent && !on {
+        let buttons = h_flex()
+            .gap_2()
+            .child(ui::button(p, "all-by-words-no", Kind::Ghost, t!("settings.words_cancel")).on_click(cx.listener(|this, _, _, cx| {
+                this.settings.words_consent = false;
+                cx.notify();
+            })))
+            .child(ui::button(p, "all-by-words-yes", Kind::Primary, t!("settings.words_agree")).on_click(cx.listener(|this, _, _, cx| this.set_all_by_words(true, cx))))
+            .into_any_element();
+        rows.push(Line::new(t!("settings.words_ask"), t!("settings.words_ask_desc")).words("words all by words risk read back cancel").control(buttons));
+    }
+    rows.push(
+        Line::new(t!("settings.words_log"), t!("settings.words_log_desc"))
+            .words("words log flags undone cancelled")
+            .control(ui::button(p, "words-log", Kind::Secondary, t!("settings.words_log_open")).disabled(!can).on_click(cx.listener(|this, _, _, cx| this.open_words_log(cx)))),
+    );
+    rows
 }
 
 fn projects(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {

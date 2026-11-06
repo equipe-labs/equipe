@@ -1253,7 +1253,7 @@ async fn the_pm_changes_code_only_on_a_ticket_of_its_own_in_its_worktree_and_nev
     let up = until(&mut events, |e| matches!(e, Event::AcceptProposed { .. })).await;
     let Some(Event::AcceptProposed { proposal, .. }) = up.last() else { panic!("{up:#?}") };
     let pick = equipe_core::protocol::accept::Confirmed { ticket: 1, merge: Some(equipe_core::protocol::accept::Land::Merge) };
-    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: proposal.id, tickets: vec![pick] });
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: proposal.id, tickets: vec![pick], said: None });
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
     assert_eq!(git(&repo, &["show", "main:FIX.md"]), "fixed");
     handle.shutdown().await;
@@ -2167,7 +2167,7 @@ async fn the_pm_changes_what_the_person_asks_and_only_their_tap_widens_what_the_
     assert_eq!(approval.tool, "Change setting");
     assert!(approval.action.contains("frontend"), "the card says whose: {}", approval.action);
     assert!(!asked.iter().any(|e| matches!(e, Event::ModeChanged { mode: Some(Mode::Full), .. })), "not before the tap");
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: Some(m), mode: Some(Mode::Full), .. } if m == "frontend")).await;
     assert!(asking.await.unwrap().text.starts_with("The person said yes"));
 
@@ -2176,7 +2176,7 @@ async fn the_pm_changes_what_the_person_asks_and_only_their_tap_widens_what_the_
     let asking = tokio::spawn(async move { tool(&handle3, "pm", "change_setting", serde_json::json!({ "setting": "pm_accepts", "value": "on" })).await });
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
     assert!(asking.await.unwrap().text.starts_with("The person said no"));
 }
 
@@ -2195,7 +2195,7 @@ async fn running_code_in_the_browser_shows_the_code_to_the_person() {
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     assert_eq!(approval.action, code, "the person sees the code itself");
     assert!(approval.reason.as_deref().is_some_and(|r| r.contains("outside the sandbox")), "{:?}", approval.reason);
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
     let verdict: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
     assert_eq!(verdict["behavior"], "allow");
 }
@@ -2220,7 +2220,7 @@ async fn the_persons_words_on_a_request_reach_the_member_with_their_answer() {
     let code = |c: &str| serde_json::json!({ "tool_name": "mcp__browser__browser_run_code_unsafe", "input": { "code": c } });
     let waiting = ask(&handle, "approve", code("async (page) => page.click('#delete')"));
     let id = requested(&until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await);
-    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Deny, words: Some("삭제 말고 보관으로 옮겨".into()) });
+    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Deny, words: Some("삭제 말고 보관으로 옮겨".into()), said: None });
     let verdict: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
     assert_eq!(verdict["behavior"], "deny");
     assert!(verdict["message"].as_str().unwrap().contains("삭제 말고 보관으로 옮겨"), "{verdict}");
@@ -2228,14 +2228,14 @@ async fn the_persons_words_on_a_request_reach_the_member_with_their_answer() {
     // A question the member asked: the yes carries the words.
     let waiting = ask(&handle, "ask_person", serde_json::json!({ "action": "CSR에 삭제 요청 등록", "why": "-" }));
     let id = requested(&until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await);
-    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Allow, words: Some("제목에 [긴급] 붙여".into()) });
+    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Allow, words: Some("제목에 [긴급] 붙여".into()), said: None });
     let said = waiting.await.unwrap().text;
     assert!(said.contains("said yes") && said.contains("제목에 [긴급] 붙여"), "{said}");
 
     // Allowed: the permission can't carry words, so they go to the member as the person's own.
     let waiting = ask(&handle, "approve", code("async (page) => page.title()"));
     let id = requested(&until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await);
-    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Allow, words: Some("끝나면 결과 요약해 줘".into()) });
+    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Allow, words: Some("끝나면 결과 요약해 줘".into()), said: None });
     let verdict: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
     assert_eq!(verdict["behavior"], "allow");
     let seen = until(&mut events, |e| matches!(e, Event::UserMessage { session: 2, .. } | Event::SteerQueued { session: 2, .. } | Event::MessageQueued { session: 2, .. })).await;
@@ -2457,14 +2457,14 @@ async fn a_member_asks_the_person_before_doing_something_on_their_behalf() {
     assert_eq!(approval.action, "Sign up for PostHog with GitHub (EU region)");
     assert_eq!(approval.reason.as_deref(), Some("T-10 needs a project key"));
     assert!(equipe_core::permissions::rule_for(&approval.tool, &approval.action).is_none(), "never an \"always\"");
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
     let answer = waiting.await.unwrap();
     assert!(!answer.is_error && answer.text.contains("yes"), "{}", answer.text);
 
     let waiting = ask("Start the Vercel Pro trial");
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
     let answer = waiting.await.unwrap();
     assert!(answer.text.contains("no"), "{}", answer.text);
 }
@@ -2557,7 +2557,7 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     assert_eq!(handle.snapshot("acme").await.approvals.len(), 1, "a screen attaching now sees it waiting");
     assert!(!waiting.is_finished(), "the member waits for the person");
 
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None, said: None });
     let answer = waiting.await.unwrap();
     let verdict: serde_json::Value = serde_json::from_str(&answer.text).unwrap();
     assert_eq!(verdict["behavior"], "allow");
@@ -2572,7 +2572,7 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     let other = ask(&handle, "curl https://example.com");
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
     let no: serde_json::Value = serde_json::from_str(&other.await.unwrap().text).unwrap();
     assert_eq!((no["behavior"].as_str(), no["message"].as_str()), (Some("deny"), Some("The person declined.")));
     handle.shutdown().await;
@@ -2595,7 +2595,7 @@ async fn an_always_allow_rule_is_listed_for_screens_and_taken_back_asks_again() 
     let waiting = ask(&handle, "npm install react");
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None, said: None });
     waiting.await.unwrap();
     let seen = until(&mut events, |e| matches!(e, Event::Allowed { .. })).await;
     assert!(matches!(seen.last(), Some(Event::Allowed { squad, rules }) if squad == "acme" && rules == &["Bash(npm install:*)"]), "{seen:#?}");
@@ -3157,7 +3157,7 @@ async fn a_send_from_a_messaging_app_waits_for_the_persons_yes_every_time() {
         let preview = approval.preview.clone().expect("the screen, to open");
         assert_eq!(std::fs::read(&preview).unwrap(), b"\x89PNG fake");
         assert!(equipe_core::permissions::rule_for(&approval.tool, &approval.action).is_none(), "never an \"always\"");
-        handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision, words: None });
+        handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision, words: None, said: None });
         let answer = waiting.await.unwrap();
         assert!(!answer.is_error, "{}", answer.text);
         assert!(!Path::new(&preview).exists(), "the screenshot is gone once answered");
@@ -3168,7 +3168,7 @@ async fn a_send_from_a_messaging_app_waits_for_the_persons_yes_every_time() {
     let waiting = send();
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
     let answer = waiting.await.unwrap();
     assert!(answer.is_error && answer.text.contains("Not sent"), "{}", answer.text);
 
@@ -4526,7 +4526,7 @@ async fn a_members_send_from_teams_waits_for_the_persons_yes_and_a_password_fiel
     assert_eq!(approval.action, "press return in Microsoft Teams · Chat | Kim Minji\n내일 회의 3시로 옮겨요");
     let preview = approval.preview.clone().expect("the screen, to look at");
     assert!(preview.ends_with(".jpg") && std::fs::read(&preview).unwrap() == b"\xff\xd8fake", "{preview}");
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Deny, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Deny, words: None, said: None });
     let answer = waiting.await.unwrap();
     assert!(answer.is_error && answer.text.contains("Not sent"), "{}", answer.text);
     assert_eq!(helper.tools(), ["type_text"]);
@@ -4547,7 +4547,7 @@ async fn a_members_send_from_teams_waits_for_the_persons_yes_and_a_password_fiel
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     assert_eq!(helper.tools(), ["type_text"], "nothing pressed while the person decides");
     *hands.lock().unwrap() = 1.0;
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Allow, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Allow, words: None, said: None });
     let answer = waiting.await.unwrap();
     assert_eq!(answer.text, "key done");
     let reached = helper.reached.lock().unwrap().clone();

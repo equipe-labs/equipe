@@ -28,7 +28,7 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     concurrency:
-      group: release-build-${{ matrix.target }}
+      group: release-build-${{ github.ref }}-${{ matrix.target }}
       cancel-in-progress: true
     strategy:
       fail-fast: false

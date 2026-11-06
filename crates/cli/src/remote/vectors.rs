@@ -780,6 +780,16 @@ fn routine_proposal() -> equipe_core::protocol::routines::RoutineProposal {
 }
 
 /// The person told the PM "T-38 수락할게": the PM puts it to them on a card.
+/// A decision in words waiting on the person, at `stage`.
+fn words_live(stage: equipe_core::protocol::by_words::Stage) -> equipe_core::protocol::by_words::Live {
+    use equipe_core::protocol::by_words::{Kind, Live, Stage, Tier, Via};
+    let (tier, kind, read_back) = match stage {
+        Stage::ReadBack => (Tier::High, Kind::Merge, "Merge T-38 into main, on this Mac"),
+        _ => (Tier::Low, Kind::AcceptTask, "Accept T-38"),
+    };
+    Live { id: 12_000_001, session: 1_000_001, stage, tier, kind, read_back: read_back.into(), items: vec!["T-38 “로그인 API 에러 메시지”".into()], quotes: vec![], until: NOW + 5_000, said: "T-38 수락".into(), via: Via::Voice, asked_again: 0, device: Some(device_id()) }
+}
+
 fn accept_proposal() -> equipe_core::protocol::accept::AcceptProposal {
     equipe_core::protocol::accept::AcceptProposal {
         id: 8_000_001,
@@ -981,6 +991,8 @@ fn snapshot() -> Snapshot {
         disk: Some(disk_status()),
         reviews: vec![code_review()],
         put_away: Vec::new(),
+        words: Some(vec![]),
+        words_all: false,
     }
 }
 
@@ -1241,6 +1253,15 @@ fn message_vectors() -> Value {
     // A reply's Mermaid block, drawn by the daemon for a phone (docs/VISUALS.md): put in place of the block whose source has `key`.
     let drawn = |tone: &str| equipe_core::protocol::RenderedImage { path: format!("/Users/me/.equipe/squads/{SQUAD}/visuals/558211ed72b2d696-{tone}.png"), width: 880, height: 724 };
     tell(&mut core, &mut examples, "event: visuals rendered", Event::VisualsRendered { session: pm, visuals: vec![equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: drawn("light"), dark: drawn("dark"), page: None }] });
+    // Deciding in the person's own words: said (the device stamped by the daemon, all by words off
+    // from a phone), what waits on them shown, undone, and how it ended; a call mode's own decide, by voice.
+    let say = |text: &str| json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "say", "squad": SQUAD, "session": 1_000_001, "text": text, "via": "voice", "all": true } });
+    ask(&mut core, &mut examples, "say", Some(SQUAD), say("T-38 수락"));
+    tell(&mut core, &mut examples, "event: words live, undo window", Event::WordsLive { squad: SQUAD.into(), live: words_live(equipe_core::protocol::by_words::Stage::Undo) });
+    tell(&mut core, &mut examples, "event: words live, read back", Event::WordsLive { squad: SQUAD.into(), live: words_live(equipe_core::protocol::by_words::Stage::ReadBack) });
+    ask(&mut core, &mut examples, "undo words", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "undo_words", "squad": SQUAD, "id": 12_000_001 } }));
+    tell(&mut core, &mut examples, "event: words closed", Event::WordsClosed { squad: SQUAD.into(), id: 12_000_001, outcome: equipe_core::protocol::by_words::Outcome::Undone, text: "Undone — nothing happened: Accept T-38".into() });
+    ask(&mut core, &mut examples, "decide: by voice, made sure of on the phone", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decide", "squad": SQUAD, "approval": 17, "decision": "allow", "via": "voice", "utterance": "응 해" } }));
     // Pushes, to a phone away.
     core.on_relay(&json!({ "type": "presence", "device": device_id(), "online": false }), NOW);
     for (name, event) in [

@@ -23,7 +23,7 @@ impl Ask {
     /// a ticket: its button says so in red.
     pub fn destructive(&self) -> bool {
         use equipe_core::protocol::Command;
-        matches!(&self.then, Then::Send(commands) if commands.iter().any(|c| matches!(c, Command::RemoveProject { .. } | Command::Close { .. } | Command::Cancel { .. })))
+        matches!(&self.then, Then::Send(commands) if commands.iter().any(|c| matches!(c, Command::RemoveProject { .. } | Command::Close { .. } | Command::Cancel { .. } | Command::ClearWordsLog { .. })))
     }
 }
 
@@ -100,6 +100,8 @@ pub enum Button {
     Run(String, String),
     /// Open a folder on this Mac.
     Open(String, std::path::PathBuf),
+    /// Put a question first; its yes does the rest.
+    Ask(String, Box<Ask>),
 }
 
 /// What `after` decided.
