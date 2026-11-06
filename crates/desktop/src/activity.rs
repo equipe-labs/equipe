@@ -324,6 +324,58 @@ pub fn handed_of(text: &str) -> Option<(String, String)> {
     None
 }
 
+/// A member's report of a flow it tested on a phone (equipe core's
+/// `notice.qa_report`, then a line a step, then the key frames as pictures).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QaReport {
+    pub name: String,
+    pub flow: String,
+    pub ticket: u32,
+    pub passed: usize,
+    pub total: usize,
+    /// The recording, by its path on the Mac that runs the squad.
+    pub video: String,
+    /// Each step: its verdict, number, what was done and what was seen.
+    pub steps: Vec<(equipe_core::phone::report::Verdict, usize, String, String)>,
+    /// The key frames, by path.
+    pub frames: Vec<String>,
+}
+
+impl QaReport {
+    pub fn verdict(&self) -> equipe_core::phone::report::Verdict {
+        use equipe_core::phone::report::Verdict;
+        if self.steps.iter().any(|s| s.0 == Verdict::Fail) {
+            Verdict::Fail
+        } else if self.steps.iter().any(|s| s.0 == Verdict::Blocked) || self.passed < self.total {
+            Verdict::Blocked
+        } else {
+            Verdict::Pass
+        }
+    }
+}
+
+/// A transcript line that is a phone test's report, in any language.
+pub fn qa_report_of(text: &str) -> Option<QaReport> {
+    let mut lines = text.trim().lines();
+    let head = lines.next()?.trim();
+    let args = Lang::ALL.into_iter().map(|lang| core(lang).get("notice.qa_report")).find_map(|wording| match_template(wording, head))?;
+    let arg = |name: &str| args.iter().find(|(k, _)| k == name).map(|(_, v)| v.trim().to_owned());
+    let mut report = QaReport {
+        name: arg("name")?,
+        flow: arg("flow")?,
+        ticket: arg("ticket")?.parse().ok()?,
+        passed: arg("passed")?.parse().ok()?,
+        total: arg("steps")?.parse().ok()?,
+        video: arg("video")?,
+        steps: Vec::new(),
+        frames: Vec::new(),
+    };
+    let rest: Vec<&str> = lines.collect();
+    report.steps = rest.iter().filter_map(|l| equipe_core::phone::report::step_line(l)).collect();
+    report.frames = equipe_core::visuals::markdown::local_images(&rest.join("\n")).into_iter().map(|i| i.path).filter(|p| p.starts_with('/')).collect();
+    Some(report)
+}
+
 /// A message equipe sent a member as the person's (before 0.48): its browser
 /// handed back to it.
 pub fn handed_back_line(text: &str) -> bool {
@@ -626,6 +678,32 @@ pub fn said_changes(zone: &dyn Zone, at: u64, now: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phone_report_reads_back_as_a_card_in_any_language() {
+        use equipe_core::phone::report::{Report, Step, Verdict, head_args, note};
+        let report = Report {
+            flow: "상품 두 개 결제".into(),
+            ticket: 12,
+            member: "qa".into(),
+            recording: "/h/recordings/T-12/checkout.mp4".into(),
+            seconds: Some(6.),
+            steps: vec![
+                Step { step: "Add item 두 번 탭".into(), expected: "Items: 2".into(), seen: "Items: 2".into(), verdict: Verdict::Pass, frame: Some("/h/recordings/T-12/checkout/02.jpg".into()) },
+                Step { step: "Checkout 탭".into(), expected: "Total: $10".into(), seen: "Total: $5".into(), verdict: Verdict::Fail, frame: Some("/h/recordings/T-12/checkout/05.jpg".into()) },
+            ],
+        };
+        for lang in [Lang::Ko, Lang::En, Lang::Ja, Lang::De] {
+            let head = core(lang).fill("notice.qa_report", &head_args(&report));
+            let card = qa_report_of(&note(&head, &report)).unwrap_or_else(|| panic!("{lang:?}: {head}"));
+            assert_eq!((card.name.as_str(), card.flow.as_str(), card.ticket, card.passed, card.total), ("qa", "상품 두 개 결제", 12, 1, 2), "{lang:?}");
+            assert_eq!(card.video, "/h/recordings/T-12/checkout.mp4");
+            assert_eq!(card.steps[1], (Verdict::Fail, 2, "Checkout 탭".to_owned(), "Total: $5".to_owned()));
+            assert_eq!(card.frames, ["/h/recordings/T-12/checkout/02.jpg", "/h/recordings/T-12/checkout/05.jpg"]);
+            assert_eq!(card.verdict(), Verdict::Fail);
+        }
+        assert!(qa_report_of("frontend handed in T-4").is_none());
+    }
 
     fn line(verb: &str, targets: &[&str], status: Status) -> ToolLine {
         let mut l = ToolLine::new(verb, targets.iter().map(|t| (*t).to_owned()).collect(), matches!(verb, "edit" | "write"));
