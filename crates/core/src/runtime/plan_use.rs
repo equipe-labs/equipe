@@ -3,8 +3,7 @@
 //! from where they were left, and a ticket — or the use outside equipe — that
 //! burns a large share of a week in a few hours is told to every screen once
 //! (again to a screen that attaches while it is recent). A screen's look and
-//! the PM's `plan_use` (answered here; not offered to the PM until the quality
-//! gate passes it, `crate::plan_use::TOOL`) read the same, off the loop too.
+//! the PM's `plan_use` (`crate::plan_use::TOOL`) read the same, off the loop too.
 
 use super::*;
 use crate::plan_use::{self, transcripts::Roots};

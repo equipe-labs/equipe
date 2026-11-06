@@ -568,8 +568,8 @@ fn task(name: &str) -> Task {
 }
 
 #[test]
-fn there_are_twelve_tasks_across_the_roles_with_names_of_their_own() {
-    assert_eq!(TASKS.len(), 12);
+fn there_are_thirteen_tasks_across_the_roles_with_names_of_their_own() {
+    assert_eq!(TASKS.len(), 13);
     let mut names: Vec<&str> = TASKS.iter().map(|t| t.name).collect();
     names.sort();
     names.dedup();
@@ -735,4 +735,41 @@ fn bytecode_python_leaves_is_not_counted_as_changed() {
     std::fs::write(dir.join("__pycache__/stats.cpython-312.pyc"), "bytecode").unwrap();
     std::fs::write(dir.join("loose.pyc"), "bytecode").unwrap();
     assert_eq!(harness::changed_files(&dir, &base), ["stats.py"]);
+}
+
+#[test]
+fn the_plan_use_run_starts_on_a_week_whose_heaviest_use_is_the_persons_own_folder() {
+    let root = scratch("plan-use");
+    let t = task("pm-plan-use");
+    let fx = tasks::setup(&t, &root);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let look = equipe_core::plan_use::look(&root.join("home"), Engine::Claude, equipe_core::protocol::plan_use::Span::Week, None, now, false);
+    let outside = look.outside.as_ref().expect("the person's own use");
+    let top = &outside.children[0];
+    assert!(matches!(&top.who, equipe_core::protocol::plan_use::Who::Outside { folder: Some(f) } if f.ends_with(&fx.expected[0])), "{top:?}");
+    assert!(outside.share_bp > 5_000, "the most of it: {}", outside.share_bp);
+    assert_eq!(look.tickets.len(), 1, "and a ticket of the squad's");
+    assert_eq!(tasks::percents("It took 57.6% — then 12 % and T-3 at 9%."), [57.6, 12.0, 9.0]);
+    // Graded as a run leaves it: the PM read it, named the folder, and gave
+    // only numbers the tool gave — Codex's week as the daemon read it among them.
+    use equipe_core::protocol::{PlanUsage, PlanWindow};
+    let answer = |reply: &str, called: bool| {
+        let mut state = State::default();
+        state.sessions.insert("pm".into(), 1);
+        state.turns.insert(1, vec![reply.to_owned()]);
+        let week = PlanUsage { five_hour: None, seven_day: Some(PlanWindow { used_percent: 7, resets_at: now + 86_400 }) };
+        state.events.push((1.0, Event::PlanUsage { usage: week, engine: Engine::Codex }));
+        if called {
+            state.events.push((2.0, Event::ToolUse { session: 1, tool: "mcp__equipe__plan_use".into(), target: None, label: None, background: false }));
+        }
+        let out = Outcome { state, histories: BTreeMap::new(), transcripts: Vec::new(), wall: std::time::Duration::from_secs(60), root: root.clone(), home_dir: root.join("home") };
+        tasks::grade(&t, &fx, &out)
+    };
+    let share = |bp: u32| format!("{:.1}%", f64::from(bp) / 100.0);
+    let good = format!("Mostly your own sessions outside equipe: /opt/kiwi-scraper took {}. Codex used 7% of its week.", share(top.share_bp));
+    assert!(answer(&good, true).iter().all(|c| c.ok || !c.required), "{:?}", answer(&good, true));
+    let made_up = format!("{good} About 42% went to reviews.");
+    assert!(answer(&made_up, true).iter().any(|c| c.name == "no number it didn't read" && !c.ok));
+    assert!(answer(&good, false).iter().any(|c| c.name == "called plan_use" && !c.ok));
+    let _ = std::fs::remove_dir_all(&root);
 }

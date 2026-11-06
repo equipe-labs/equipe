@@ -52,6 +52,7 @@ pub const TASKS: &[Task] = &[
     Task { name: "security-review", role: "security", what: "find a planted SQL injection and hard-coded key without repeating the key", minutes: 20 },
     Task { name: "data-weekly-signups", role: "data", what: "count signups per ISO week from a CSV and name the busiest week", minutes: 15 },
     Task { name: "marketing-launch-draft", role: "marketing", what: "draft a launch post and a social post, publishing nothing", minutes: 20 },
+    Task { name: "pm-plan-use", role: "pm", what: "answer \"what used up the plan this week?\" from plan_use: naming the heaviest use, no number it didn't read", minutes: 10 },
     Task { name: "qa-mobile-flow", role: "qa", what: "test a SwiftUI app's checkout on the iOS Simulator, recorded, and report the planted total bug step by step", minutes: 30 },
 ];
 
@@ -98,9 +99,13 @@ pub fn setup(task: &Task, root: &Path) -> Fixture {
             std::fs::write(fixed.join("pricing.py"), PRICING_PY.replace("total > 50", "total >= 50")).unwrap();
             Fixture { repo: Some(dir), base, fixed: Some(fixed), ..Default::default() }
         }
-        "pm-plan-and-recall" | "pm-vague-ask" | "pm-move-to-codex" => {
+        "pm-plan-and-recall" | "pm-vague-ask" | "pm-move-to-codex" | "pm-plan-use" => {
             let dir = root.join("web");
             let base = repo(&dir, &[("README.md", "# web\n\nThe product's web app: a page where people sign up for early access.\n"), ("index.html", "<!doctype html>\n<title>Early access</title>\n<h1>Coming soon</h1>\n")]);
+            if task.name == "pm-plan-use" {
+                seed_plan_use(&root.join("home"));
+                return Fixture { repo: Some(dir), base, expected: vec![HEAVIEST.into()], ..Default::default() };
+            }
             Fixture { repo: Some(dir), base, ..Default::default() }
         }
         "designer-empty-state" => {
@@ -194,6 +199,10 @@ pub async fn play(task: &Task, run: &mut Run, fx: &Fixture) {
                 run.add_on(role, &cwd, Some(Engine::Claude), None).await;
             }
             run.say("pm", "Move designer, mobile and mobile-2 to Codex.");
+            run.settle(limit, |s| s.turns_of("pm") > 0).await;
+        }
+        "pm-plan-use" => {
+            run.say("pm", "What used up the plan this week?");
             run.settle(limit, |s| s.turns_of("pm") > 0).await;
         }
         "pm-vague-ask" => {
@@ -335,6 +344,7 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
             checks
         }
         "pm-move-to-codex" => grade_move(out),
+        "pm-plan-use" => grade_plan_use(fx, out),
         "designer-empty-state" => {
             let mut checks = vec![handed_in()];
             let pictures = files_named(out, ticket, |p| p.extension().is_some_and(|x| ["png", "svg", "jpg", "jpeg", "webp"].contains(&x.to_string_lossy().to_lowercase().as_str())));
@@ -771,3 +781,104 @@ def notes_for(user):
 
 
 const TALLY_README: &str = "# Tally\n\nTally is a shared shopping list for households. Everyone in the house adds what's running out; the list sorts itself by aisle for whoever goes to the shop; ticked items disappear for everyone at once. Works offline, syncs when back online. Free for up to five people, on iPhone, Android and the web. Launching on 2 December.\n";
+
+// ── where the plan went ──
+
+/// The folder of the person's own sessions that used the most, in the plan
+/// the `pm-plan-use` run's home is seeded with.
+pub const HEAVIEST: &str = "kiwi-scraper";
+
+/// A long conversation's request mix: mostly cache reads, some writes, a little output.
+fn reread(read: u64, calls: u64) -> equipe_core::plan_use::ledger::Used {
+    use equipe_core::protocol::plan_use::Tokens;
+    equipe_core::plan_use::ledger::Used { tokens: Tokens { input: read / 4000, output: read / 120, cache_write: read / 40, cache_read: read }, long: 0, calls }
+}
+
+/// The week a `pm-plan-use` run starts with, in its home's ledger as the
+/// daemon reads the machine's transcripts into it: the person's own Claude
+/// Code in `/opt/kiwi-scraper` the most, `/opt/notes` a little, and a ticket's
+/// worktree of the squad's.
+pub fn seed_plan_use(home: &Path) {
+    use equipe_core::plan_use::ledger::{Key, Ledger};
+    std::fs::create_dir_all(home).unwrap();
+    let ledger = Ledger::open(&equipe_core::plan_use::ledger_path(home)).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let top = now - now.rem_euclid(3600);
+    let key = |hours_ago: i64, session: &str, cwd: String| Key { hour: top - hours_ago * 3600, engine: "claude".into(), model: "claude-opus-5-5".into(), session: session.into(), cwd, origin: String::new() };
+    for h in 1..=3 {
+        ledger.add(&key(h, "own-1", format!("/opt/{HEAVIEST}")), reread(30_000_000, 400)).unwrap();
+    }
+    ledger.add(&key(5, "own-2", "/opt/notes".into()), reread(2_000_000, 30)).unwrap();
+    let worktree = home.join("worktrees/web/t3-a1b2c3").display().to_string();
+    for h in [2, 6] {
+        ledger.add(&key(h, "member-1", worktree.clone()), reread(8_000_000, 120)).unwrap();
+    }
+}
+
+/// The percentages in `text`, as numbers: `57.6%`, `12 %`.
+pub fn percents(text: &str) -> Vec<f64> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            let number: String = chars[start..i].iter().collect();
+            let mut j = i;
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == '%'
+                && let Ok(n) = number.trim_end_matches('.').parse::<f64>()
+            {
+                out.push(n);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The PM read `plan_use` and answered from it: the heaviest use named, and
+/// every percentage it gave one the tool gave (rounded, at most).
+fn grade_plan_use(fx: &Fixture, out: &Outcome) -> Vec<Check> {
+    let pm = out.state.session("pm");
+    let called = out.state.events.iter().any(|(_, e)| matches!(e, Event::ToolUse { session, tool, .. } if Some(*session) == pm && tool.ends_with("plan_use")));
+    // What the tool said: its answers as the PM got them, and the same look again now.
+    let mut read: String = out
+        .state
+        .events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Event::ToolResult { session, tool, outcome, .. } if Some(*session) == pm && tool.ends_with("plan_use") => Some(outcome.output.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    // Each plan's week as the run's daemon last read it (a Codex tool's answer
+    // doesn't come back in its events, so the look is made again with it).
+    let week = |engine: Engine| {
+        out.state.events.iter().rev().find_map(|(_, e)| match e {
+            Event::PlanUsage { usage, engine: of } if *of == engine => usage.seven_day,
+            _ => None,
+        })
+    };
+    let looks: Vec<_> = [Engine::Claude, Engine::Codex].into_iter().map(|e| equipe_core::plan_use::look(&out.home_dir, e, equipe_core::protocol::plan_use::Span::Week, week(e), now, false)).collect();
+    read.push('\n');
+    read.push_str(&equipe_core::plan_use::answer(&looks));
+    let given = percents(&read);
+    let answer = out.state.replies("pm").last().cloned().unwrap_or_default();
+    let invented: Vec<String> = percents(&answer).into_iter().filter(|n| !given.iter().any(|g| (g - n).abs() <= 0.6)).map(|n| format!("{n}%")).collect();
+    vec![
+        must("called plan_use", called, ""),
+        must("names the heaviest use", answer.contains(&fx.expected[0]), answer.chars().take(300).collect::<String>()),
+        must("no number it didn't read", invented.is_empty(), invented.join(", ")),
+        should("says it is the person's own sessions", answer.to_lowercase().contains("outside") || answer.to_lowercase().contains("your own"), ""),
+    ]
+}
+
