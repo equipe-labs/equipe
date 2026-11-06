@@ -116,6 +116,8 @@ bug filed with its clip does; that one stays until the bug is done too. `equipe 
   person's own iPhone or Android phone (WebDriverAgent signed with their team over USB, or adb over
   USB) would be an explicit step of theirs; it is left for later.
 - Android's `input text` is ASCII only; other text is typed by tapping the on-screen keyboard.
+- Android has been checked against a fake `adb`/emulator only so far; the live check below
+  (`phone_live_android`) is written but hasn't been run on a real emulator yet.
 
 ## Checking it
 
@@ -123,5 +125,7 @@ bug filed with its clip does; that one stays until the bug is done too. `equipe 
 - `EQUIPE_PHONE_LIVE_APP=/path/to/Shop.app cargo test -p equipe-core --test phone_live -- --ignored
   --nocapture` — the whole loop on a real iOS Simulator: AXe installed from its pinned release, a
   simulator made, a flow recorded, framed, reported, and the simulator deleted.
+- `EQUIPE_PHONE_LIVE_ANDROID=1 cargo test -p equipe-core --test phone_live_android -- --ignored
+  --nocapture` — the same on a real Android emulator (its first boot writes a few GB of userdata).
 - `qa-mobile-flow` in the quality gate (`docs/quality-gate.md`): a real QA member tests a small
   SwiftUI app with a planted bug.
