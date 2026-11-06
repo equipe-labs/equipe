@@ -570,10 +570,7 @@ pub fn picked(text: &str, count: usize) -> Option<usize> {
             if found.is_some() {
                 return None;
             }
-            found = digits.parse::<usize>().ok().filter(|n| (1..=count).contains(n));
-            if found.is_none() {
-                return None;
-            }
+            found = Some(digits.parse::<usize>().ok().filter(|n| (1..=count).contains(n))?);
         } else if !yes.contains(&token.as_str()) && !with.contains(&token.as_str()) {
             return None;
         }

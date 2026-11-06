@@ -87,6 +87,7 @@ mod visuals;
 mod voiceover;
 mod windows;
 mod wire;
+mod words;
 mod yourturn;
 mod zoom;
 
@@ -276,6 +277,8 @@ pub struct Shell {
     /// The person closed the banner: not again this launch.
     /// The daemon's update was asked for with the app's: the app restarts once it is in.
     relaunch_after_daemon: bool,
+    /// The redraw each half second while something waits in words (`views/words.rs`).
+    pub(crate) words_tick: Option<Task<()>>,
     /// The status page's releases, as last found.
     /// The banner's "restart now" asked once: the next click restarts.
     pub(crate) daemon_restart_armed: bool,
@@ -448,6 +451,7 @@ impl Shell {
             term_drag: None,
             daemon_update: None,
             relaunch_after_daemon: false,
+            words_tick: None,
             daemon_restart_armed: false,
             board_ticket: None,
             bell: Default::default(),
@@ -1136,6 +1140,12 @@ impl Shell {
                         this.composer.problem = Some(problem);
                         changed = true;
                     }
+                    // The log of decisions in words, asked for in settings: its sheet.
+                    if let Some(entries) = this.model.words.take_log() {
+                        this.sheet = Some(words::log_sheet(&entries));
+                        changed = true;
+                    }
+                    this.tick_words(cx);
                     if changed {
                         if this.log_renders {
                             eprintln!("daemon update -> redraw");

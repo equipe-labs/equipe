@@ -33,6 +33,8 @@ pub(super) struct Talk {
 pub(super) struct Words {
     talks: HashMap<u64, Talk>,
     running: bool,
+    /// equipe's read-back of words just said, shown after them in the conversation.
+    after: Vec<Event>,
 }
 
 /// What waits on the person, owned for a moment to read the words against.
@@ -96,11 +98,13 @@ impl Runtime {
     pub(super) async fn say(&mut self, squad: String, session: SessionId, text: String, via: Via, all: bool, later: bool, pasted: bool, about: Option<Option<String>>, device: Option<String>) {
         let ours = self.sessions.get(&session).is_some_and(|s| s.squad.as_deref() == Some(squad.as_str()));
         let passes = if ours && !pasted { self.words_heard(&squad, session, &text, via, all, device.as_deref()).await } else { true };
-        if !passes {
-            return;
+        if passes {
+            let command = if later { Command::SubmitLater { session, text, about } } else { Command::Submit { session, text, about } };
+            Box::pin(self.handle(command)).await;
         }
-        let command = if later { Command::SubmitLater { session, text, about } } else { Command::Submit { session, text, about } };
-        Box::pin(self.handle(command)).await;
+        for event in std::mem::take(&mut self.words.after) {
+            self.publish(event);
+        }
     }
 
     /// Read the person's words for a decision. Whether they go on to the member.
@@ -171,7 +175,7 @@ impl Runtime {
                     let until = now_ms() + rules::READ_BACK_MS;
                     self.words_start(Talk { squad: squad.to_owned(), live: live(Stage::ReadBack, until), ask: Some(ask.clone()), choices: Vec::new(), entry }, rules::READ_BACK_MS);
                     let text = self.read_back_notice(&head, &items, tier);
-                    self.publish(Event::Notice { session, text });
+                    self.words.after.push(Event::Notice { session, text });
                 }
                 // Cards decide it: accepting or merging in words raises one, as it always did.
                 _ => {
@@ -203,7 +207,7 @@ impl Runtime {
         let live = Live { id, session, stage: Stage::Which, tier, kind, read_back: head.clone(), items: items.clone(), until, said, via, asked_again: 0, device };
         self.words_start(Talk { squad: squad.to_owned(), live, ask: None, choices: asks, entry }, rules::READ_BACK_MS);
         let numbered: Vec<String> = items.iter().enumerate().map(|(n, i)| format!("{}. {i}", n + 1)).collect();
-        self.publish(Event::Notice { session, text: format!("{head}\n{}", numbered.join("\n")) });
+        self.words.after.push(Event::Notice { session, text: format!("{head}\n{}", numbered.join("\n")) });
         true
     }
 

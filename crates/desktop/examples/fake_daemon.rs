@@ -908,6 +908,24 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
 
 
 /// A command about a ticket, done as the daemon would: the ticket as it is now.
+/// Commands a decision sends — a card confirmed, words decided — run as the
+/// board's buttons run on the fake board.
+fn run_commands(commands: Vec<Command>, events: &broadcast::Sender<Event>) {
+    for command in commands {
+        if let Some(more) = accept::on_command(&command, events) {
+            run_commands(more, events);
+            continue;
+        }
+        if let Some(said) = on_board_command(&command) {
+            for event in said {
+                let _ = events.send(event);
+            }
+        } else if let Some(ticket) = on_ticket_command(&command) {
+            let _ = events.send(Event::TicketChanged { squad: "demo".into(), ticket });
+        }
+    }
+}
+
 fn on_ticket_command(command: &Command) -> Option<Ticket> {
     let mut all = tickets().lock().unwrap();
     let id = match command {
@@ -1016,6 +1034,10 @@ mod signin;
 
 #[path = "fake_daemon/crowd.rs"]
 mod crowd;
+
+// Deciding in the person's own words, as the daemon reads them: `FAKE_WORDS`, `FAKE_WORDS_LANG`.
+#[path = "fake_daemon/words.rs"]
+mod words;
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
@@ -1284,6 +1306,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                         }
                         switching::mix(&mut sessions);
+                        // Read apart: the board's lock is held while the snapshot is put together.
+                        let waiting_words = {
+                            let board = tickets().lock().unwrap().clone();
+                            words::on_hello(&board)
+                        };
                         let snapshot = Snapshot {
                             plans: switching::plans(),
                             plan: switching::claude().or_else(engines::plan),
@@ -1326,6 +1353,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             disk: disk::status(),
                             reviews: reviews(),
                             put_away: put_away().lock().unwrap().clone(),
+                            words: Some(waiting_words),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1435,6 +1463,24 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     (Some(rpc::COMMAND), None) => {
                         let command: Command = message.params_as().unwrap();
                         eprintln!("command: {command:?}");
+                        // The person's own message: read for a decision in words first, as the daemon does.
+                        let command = match command {
+                            Command::Say { text, all, later, pasted, session, about, .. } => {
+                                if !words::on_say(&text, all, pasted, &events) {
+                                    continue;
+                                }
+                                if later { Command::SubmitLater { session, text, about } } else { Command::Submit { session, text, about } }
+                            }
+                            Command::UndoWords { id, .. } => {
+                                words::on_undo(id, &events);
+                                continue;
+                            }
+                            Command::WordsLog { squad } => {
+                                let _ = events.send(Event::WordsLog { squad, entries: words::log() });
+                                continue;
+                            }
+                            other => other,
+                        };
                         match command {
                             Command::Submit { session, text, about } => {
                                 let working = |id: SessionId| {
