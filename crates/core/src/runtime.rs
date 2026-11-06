@@ -602,6 +602,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.prune();
         memos = runtime.resume_work();
         runtime.restore_stopped();
+        // Chrome's first start, off the loop, before a reply's card waits on it.
+        let _ = crate::visuals::card::warm_up(&runtime.config.home);
     }
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);

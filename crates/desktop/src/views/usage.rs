@@ -22,7 +22,7 @@ use gpui_kit::*;
 use crate::icons::{Icon, icon};
 use crate::theme::{ICON_SM, Palette, R_LG, R_MD, SMALL};
 use crate::ui::{self, Kind};
-use crate::usage::{self, Cut, Fill};
+use crate::usage::{self, Cut};
 use crate::{Screen, Shell};
 
 /// The page's column, at its widest.
@@ -131,9 +131,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// The engine's week: how much is used, a bar coloured by it, when it
-/// refills, and when it runs out at this pace.
+/// The engine's week: how much is used, a meter coloured by it (amber from
+/// 80%, red from 95%) with its even-pace mark, when it refills, and when it
+/// runs out at this pace; at 100%, "Limit reached" and when it refills.
 fn plan_card(shell: &Shell, now: i64) -> AnyElement {
+    use crate::switching::{self as rules, Tone};
+    use crate::tips::TipExt as _;
     let p = shell.palette;
     let engine = shell.plan_use.engine;
     let plan = match engine {
@@ -142,9 +145,20 @@ fn plan_card(shell: &Shell, now: i64) -> AnyElement {
     };
     let report = shell.plan_use.report();
     let week: Option<PlanWindow> = report.and_then(|r| r.week).or_else(|| plan.and_then(|u| u.seven_day).filter(|w| w.resets_at > now));
-    let head = h_flex().gap_2().items_center().child(crate::views::switching::label(p, engine)).child(div().flex_1()).children(plan.and_then(|u| u.five_hour).filter(|w| w.resets_at > now).map(|w| {
-        div().text_size(px(12.)).text_color(p.muted).child(format!("{} {}%", t!("usage.five_hour"), w.used_percent.min(100)))
-    }));
+    let five = plan.and_then(|u| u.five_hour).filter(|w| w.resets_at > now).map(|w| {
+        let used = w.used_percent.min(100);
+        let tone = rules::tone(used);
+        let words = match tone {
+            Tone::Out => t!("usage.window_out", window = t!("usage.five_hour"), span = rules::span(w.resets_at, now)),
+            _ => t!("usage.window_used", window = t!("usage.five_hour"), used = used),
+        };
+        div()
+            .text_size(px(12.))
+            .text_color(crate::views::switching::tone_color(p, tone, p.muted))
+            .when(tone >= Tone::Critical, |d| d.font_weight(FontWeight::SEMIBOLD))
+            .child(words)
+    });
+    let head = h_flex().gap_2().items_center().child(crate::views::switching::label(p, engine)).child(div().flex_1()).children(five);
     let body: AnyElement = match week {
         None => div()
             .text_size(px(12.5))
@@ -154,11 +168,9 @@ fn plan_card(shell: &Shell, now: i64) -> AnyElement {
             .into_any_element(),
         Some(w) => {
             let pct = w.used_percent.min(100);
-            let color = match usage::fill(pct) {
-                Fill::Room => p.accent,
-                Fill::Full => p.amber,
-                Fill::Out => p.red,
-            };
+            let gauge = rules::Gauge { window: equipe_core::protocol::engines::Window::Weekly, percent: pct, resets_at: w.resets_at, tone: rules::tone(pct) };
+            let color = crate::views::switching::tone_color(p, gauge.tone, p.accent);
+            let out = gauge.tone == Tone::Out;
             let pace = report.and_then(|r| usage::pace_words(r, now)).map(|(words, warn)| {
                 h_flex()
                     .id("plan-use-pace")
@@ -171,16 +183,30 @@ fn plan_card(shell: &Shell, now: i64) -> AnyElement {
                     .child(div().pt(px(2.)).flex_none().child(icon(Icon::Clock, 12., if warn { p.amber } else { p.muted })))
                     .child(div().flex_1().min_w_0().child(words))
             });
+            let number = if out {
+                h_flex().child(div().text_size(px(24.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(color).child(t!("usage.limit_reached")))
+            } else {
+                h_flex()
+                    .items_baseline()
+                    .gap_2()
+                    .child(div().text_size(px(24.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(if gauge.tone == Tone::Calm { p.text } else { color }).child(format!("{pct}%")))
+                    .child(div().text_size(px(12.5)).text_color(p.muted).child(t!("plan_use.week_used")))
+            };
+            let meter = div()
+                .id("plan-use-week")
+                .w_full()
+                .py(px(2.))
+                .role(Role::Meter)
+                .aria_numeric_value(f64::from(pct))
+                .aria_min_numeric_value(0.)
+                .aria_max_numeric_value(100.)
+                .tip(p, rules::used_words(engine, &gauge, now, usage::local_time), None)
+                .aria_label(rules::gauge_aria(engine, &gauge))
+                .child(crate::views::switching::meter_bar(p, pct, color, gauge.pace(now), 8.).w_full());
             v_flex()
                 .gap_1p5()
-                .child(
-                    h_flex()
-                        .items_baseline()
-                        .gap_2()
-                        .child(div().text_size(px(24.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(format!("{pct}%")))
-                        .child(div().text_size(px(12.5)).text_color(p.muted).child(t!("plan_use.week_used"))),
-                )
-                .child(div().h(px(8.)).w_full().rounded_full().bg(p.hair).child(div().h_full().w(relative(f32::from(pct) / 100.)).rounded_full().bg(color)))
+                .child(number)
+                .child(meter)
                 .child(div().text_size(px(11.5)).text_color(p.muted).child(t!("usage.resets", left = usage::time_left(w.resets_at, now), when = usage::local_time(w.resets_at))))
                 .children(pace)
                 .into_any_element()

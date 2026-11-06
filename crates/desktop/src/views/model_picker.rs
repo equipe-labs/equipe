@@ -56,7 +56,8 @@ impl Shell {
             working: m.presence == Presence::Working,
             on_ticket: m.ticket.is_some(),
         };
-        let meters = self.model.engines.meters(now());
+        let now = now();
+        let meters = self.model.engines.meters(now);
         let role_start = picker::ENGINES.map(|engine| {
             let set = self.model.role_models.iter().find(|d| d.role == m.role && d.engine == engine).and_then(|d| d.model.clone());
             set.or_else(|| {
@@ -71,6 +72,7 @@ impl Shell {
             codex_waited: self.composer.codex_asked.map(|at| at.elapsed()),
             providers: self.engines.providers.as_deref().unwrap_or_default(),
             meters: &meters,
+            now,
             moving: picker::moving(self.model.engines.open(), &m.name),
             role_start,
         };
@@ -283,14 +285,9 @@ impl Shell {
     }
 }
 
-/// A window's colour by how low it runs.
+/// A window's colour by how used it is: quiet, then amber from 80%, red from 95%.
 fn tone_color(p: Palette, tone: Tone) -> Rgba {
-    match tone {
-        Tone::Calm => p.muted,
-        Tone::Watch => p.amber,
-        Tone::Low => p.orange,
-        Tone::Out => p.red,
-    }
+    crate::views::switching::tone_color(p, tone, p.muted)
 }
 
 /// How hard a model hits the plan, as four small bars rising.
@@ -318,7 +315,7 @@ pub fn layer(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let focus = open.ui.focus;
     let name = shell.model.selected_member().map(|m| m.name.clone()).unwrap_or_default();
 
-    // The engines, as tabs: each with what is left of its plan.
+    // The engines, as tabs: each with how much of its plan is used.
     let tabs = h_flex().id("picker-tabs").role(Role::TabList).aria_label(t!("models.tabs_aria")).mx_1().p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash).children(view.tabs.iter().map(|tab| {
         let engine = tab.engine;
         let on = engine == view.tab;

@@ -550,12 +550,12 @@ fn usage(shell: &Shell, platform: &Platform, signed_in: bool) -> Line {
             if rows.is_empty() {
                 return line.control(value(p, t!("engines.usage_unknown")));
             }
-            let bars = v_flex().w_full().gap_2().children(rows.into_iter().map(|(words, percent)| {
-                let fill = if percent >= 90 { p.danger() } else if percent >= 70 { p.amber } else { p.accent };
+            let bars = v_flex().w_full().gap_2().children(rows.into_iter().map(|(words, percent, pace)| {
+                let fill = super::switching::tone_color(p, crate::switching::tone(percent), p.accent);
                 v_flex()
                     .gap_1()
                     .child(div().text_size(px(12.5)).text_color(p.text2).child(words))
-                    .child(div().w_full().h(px(5.)).rounded(px(3.)).bg(p.wash).child(div().h_full().w(relative(percent as f32 / 100.)).rounded(px(3.)).bg(fill)))
+                    .child(super::switching::meter_bar(p, percent, fill, pace, 5.).w_full())
             }));
             line.below(bars)
         }

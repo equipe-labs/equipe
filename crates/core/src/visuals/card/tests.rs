@@ -392,6 +392,36 @@ fn a_reply_draws_its_first_cards_in_its_time_and_the_rest_show_their_source() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// Until a Chrome has drawn once since the daemon started, a drawing gets
+/// Chrome's cold first start's time and a reply room for it; after, the
+/// usual ten seconds and thirty.
+#[test]
+fn chromes_first_start_gets_its_allowance_and_every_drawing_after_the_usual_time() {
+    let usual = Limits::default().time;
+    assert_eq!(usual, Duration::from_secs(10));
+    assert_eq!(allowance(false, usual), FIRST_START, "the first start, cold");
+    assert_eq!(allowance(true, usual), usual, "warm: ten seconds, as ever");
+    assert_eq!(allowance(true, Duration::from_millis(50)), Duration::from_millis(50), "a shorter limit holds once warm");
+    assert_eq!(allowance(false, Duration::from_secs(300)), Duration::from_secs(300), "never less than asked");
+    assert_eq!(reply_time(true), REPLY_TIME);
+    assert_eq!(reply_time(false), REPLY_TIME + FIRST_START, "the first start doesn't eat the reply's other cards");
+    assert!(allowance(false, usual) < reply_time(false));
+}
+
+/// A drawing that ends well leaves Chrome warm; with cards off there is
+/// nothing to warm, and no Chrome is started.
+#[test]
+fn a_drawing_warms_chrome_and_cards_off_start_none() {
+    let home = temp_home("warm");
+    assert!(warm_up(&home).is_none(), "cards are off");
+    let chrome = fake_chrome(&home, 0.0);
+    render(&chrome, &page("<p>warm</p>", Some(false)), false, &Limits::default()).expect("drawn");
+    assert!(is_warm());
+    std::fs::write(home.join("visuals.json"), r#"{"html_cards": true}"#).unwrap();
+    assert!(warm_up(&home).is_none(), "warm already: nothing to do");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Many sessions' replies, each full of cards never drawn before, ending at
 /// once: never more than [`CHROMES`] Chromes, no reply past its time, and the
 /// squad's `visuals/` within its quota, what is shown kept.

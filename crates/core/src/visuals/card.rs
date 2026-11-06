@@ -16,11 +16,19 @@
 //! most [`REPLY_TIME`], waiting included, and what is past that shows its
 //! source.
 //!
+//! Chrome's first start on a machine just booted can take far longer than
+//! [`Limits::time`] (it reads its few hundred megabytes cold: 28 s against
+//! 0.3 s warm, measured on Ubuntu 24.04). So the daemon draws one throwaway
+//! card in the background as it starts ([`warm_up`]), and until a Chrome has
+//! drawn once, a drawing gets [`FIRST_START`] instead ([`allowance`]) and a
+//! reply that much more time ([`reply_time`]).
+//!
 //! Off until it has been through a security review (T-340): on with
 //! `{"html_cards": true}` in `~/.equipe/visuals.json`, or `EQUIPE_HTML_CARDS=1`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,6 +55,30 @@ pub const PER_REPLY: usize = 4;
 pub const REPLY_TIME: Duration = Duration::from_secs(30);
 /// Replies waiting for a Chrome at once: one more draws none.
 pub const WAITING_MAX: usize = 8;
+/// What a drawing may take while no Chrome has drawn since the daemon
+/// started: a cold first start, on a machine just booted.
+pub const FIRST_START: Duration = Duration::from_secs(120);
+
+/// Whether a Chrome has drawn here once (the warm-up or any card): Chrome's
+/// files are read in, and a drawing takes its usual time.
+static WARM: AtomicBool = AtomicBool::new(false);
+
+/// Whether a Chrome has drawn once since this process started.
+pub fn is_warm() -> bool {
+    WARM.load(Ordering::Relaxed)
+}
+
+/// What one drawing may take: its `usual` time once a Chrome has drawn
+/// here, and at least [`FIRST_START`] before that.
+pub fn allowance(warm: bool, usual: Duration) -> Duration {
+    if warm { usual } else { usual.max(FIRST_START) }
+}
+
+/// What one reply's cards may take: [`REPLY_TIME`], and room for Chrome's
+/// first start too while no Chrome has drawn yet.
+pub fn reply_time(warm: bool) -> Duration {
+    if warm { REPLY_TIME } else { REPLY_TIME + FIRST_START }
+}
 
 /// What one drawing may take.
 #[derive(Debug, Clone)]
@@ -127,9 +159,9 @@ pub struct Budget {
 }
 
 impl Budget {
-    /// A reply's: [`PER_REPLY`] cards in [`REPLY_TIME`], from now.
+    /// A reply's: [`PER_REPLY`] cards in [`reply_time`], from now.
     pub fn reply() -> Self {
-        Self { until: Instant::now() + REPLY_TIME, cards: PER_REPLY, limits: Limits::default() }
+        Self { until: Instant::now() + reply_time(is_warm()), cards: PER_REPLY, limits: Limits::default() }
     }
 }
 
@@ -455,6 +487,8 @@ pub fn render(chrome: &Path, html: &str, dark: bool, limits: &Limits) -> Result<
     let _ = child.wait();
     ended?;
     let bytes = std::fs::read(&shot).map_err(|_| "Chrome drew nothing".to_owned())?;
+    // It started and drew: whatever it read from disk is read now.
+    WARM.store(true, Ordering::Relaxed);
     if bytes.len() > diagram::PNG_MAX {
         return Err(format!("{} bytes, bigger than {}", bytes.len(), diagram::PNG_MAX));
     }
@@ -514,7 +548,8 @@ fn draw_one(home: &Path, squad: &str, key: &str, source: &str, chrome: &Path, da
     if left.is_zero() {
         return Err("out of the reply's time".into());
     }
-    let limits = Limits { time: budget.limits.time.min(left), ..budget.limits.clone() };
+    // Before any Chrome has drawn here (the warm-up still going), Chrome's first start's allowance.
+    let limits = Limits { time: allowance(is_warm(), budget.limits.time).min(left), ..budget.limits.clone() };
     let (png, width, height) = render(chrome, &page(source, Some(dark)), dark, &limits)?;
     keep(&path, &png)?;
     Ok(RenderedImage { path: path.to_string_lossy().into_owned(), width, height })
@@ -533,6 +568,33 @@ pub fn draw(home: &Path, squad: &str, text: &str) -> Vec<Rendered> {
         return Vec::new();
     };
     draw_within(home, squad, text, &chrome, Budget::reply())
+}
+
+/// Chrome started once, in the background, as the daemon starts — while cards
+/// are on and there is a Chrome: one throwaway card drawn with one of the
+/// [`CHROMES`] and [`FIRST_START`] to do it in, the way every card is drawn
+/// (its own throwaway profile, no network, its process group killed after).
+/// It never holds up the caller; a card drawn meanwhile gets the first
+/// start's allowance too. `None` when there is nothing to warm.
+pub fn warm_up(home: &Path) -> Option<std::thread::JoinHandle<()>> {
+    if !enabled(home) || is_warm() {
+        return None;
+    }
+    let chrome = chrome()?;
+    let spawned = std::thread::Builder::new().name("card-warm-up".into()).spawn(move || {
+        let started = Instant::now();
+        let Some(_slot) = Slot::take(started + FIRST_START) else { return };
+        let limits = Limits { time: FIRST_START, ..Limits::default() };
+        match render(&chrome, &page("<p>warm</p>", Some(false)), false, &limits) {
+            Ok(_) => crate::daemon_log!("equipe: Chrome started for cards in {:.1}s", started.elapsed().as_secs_f32()),
+            Err(why) => crate::daemon_log!("equipe: Chrome's first start for cards failed after {:.1}s ({why})", started.elapsed().as_secs_f32()),
+        }
+        // Tried once, however it went: a Chrome that won't draw in the first
+        // start's time won't for a card either, and the cards after get their
+        // usual time rather than tying a Chrome up for minutes each.
+        WARM.store(true, Ordering::Relaxed);
+    });
+    spawned.ok()
 }
 
 /// [`draw`] with this Chrome, within `budget`.

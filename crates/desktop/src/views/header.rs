@@ -1,7 +1,7 @@
 //! The conversation's header, which is the window's title bar on the right:
 //! the conversation's name with ⌄ (the team, to switch), a small chip for the
 //! project slice — opening a list with what works and what waits in each,
-//! ⌃0–9 — the plans' tightest window while the sidebar is away, and the
+//! ⌃0–9 — the plan window used most while the sidebar is away, and the
 //! context fill. The title bar's fixed buttons float over its
 //! left with the sidebar away; its content slides beside them.
 
@@ -121,7 +121,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(who)
         .children(slice)
         .child(crate::ui::title_gap())
-        // The plans' tightest window, while the sidebar's meters are away.
+        // The plan window used most, while the sidebar's meters are away.
         .children(super::switching::glance(shell, cx))
         .children(screen)
         .children(context)

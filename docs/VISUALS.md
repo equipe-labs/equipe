@@ -178,6 +178,14 @@ picture** — Google Chrome, Chrome for Testing or Chromium where they are insta
   replies are waiting for a Chrome already, the next draws no card. Whatever is past these shows
   its source, like any card that didn't draw (the daemon's log says how many). A window of 640×1200 CSS pixels at 2×: the PNG is cut to the
   card's height, and what is below 1200 pixels is cut off.
+- **Chrome's first start.** On a machine just booted, Chrome's first start reads its few hundred
+  megabytes cold and can take far past 10 seconds (28 s against 0.3 s warm, measured on Ubuntu
+  24.04). So while cards are on and a Chrome is found, the daemon draws one throwaway card as it
+  starts, on a thread of its own (never on its loop), with one of the 2 Chromes and up to
+  **120 seconds**, the same way as any card: its own throwaway profile, no network, its process
+  group killed after. Until a Chrome has drawn once — that warm-up still going, or none run — a
+  drawing gets 120 seconds instead of 10, and a reply 30 + 120 seconds. On every platform: on
+  one already warm it costs a fraction of a second.
 - Light and dark: the page is set to `data-theme="light"`/`"dark"` (the tokens' own switch) and,
   for dark, Chrome's `--force-dark-mode`, so a card's `prefers-color-scheme: dark` holds too. The
   ground around the card's rounded corners is transparent.
@@ -210,7 +218,7 @@ same page with a link out, past the check, is seen to go (`card/tests/panel.rs`)
 | Source of one block | Mermaid: at most 20 000 bytes; a card: 32 KB; longer shows as source |
 | Blocks drawn per reply | the first 8 (by key, repeats once) |
 | Drawn size | 2×, at most 2048 pixels on the longer side; a card 1280 wide, at most 2400 high |
-| Drawing a card | 10 s, then Chrome is killed |
+| Drawing a card | 10 s, then Chrome is killed (120 s until a Chrome has drawn once since the daemon started) |
 | Chromes at once | 2, the whole daemon; 8 replies waiting at most, the next draws no card |
 | New cards per reply | 4, in 30 s all together (waiting included); the rest show their source |
 | A squad's `visuals/` | 1000 keys and 256 MiB, used longest ago go first; what an open conversation shows stays |
