@@ -40,8 +40,8 @@ fn leads() -> &'static [&'static str] {
     crate::i18n::every("match.ask_leads")
 }
 
-/// What says the work was done, not asked about (beside Korean's past
-/// tense, which [`past_ko`] reads).
+/// What says the work was done, not asked about (beside a past tense marked
+/// on the stem, which [`past_marked`] reads).
 fn done() -> &'static [&'static str] {
     crate::i18n::every("match.done")
 }
@@ -140,7 +140,7 @@ pub fn is_asking(text: &str) -> bool {
 /// Whether an item says what was done.
 fn is_done(text: &str) -> bool {
     let end = bare(text);
-    if past_ko(&end) || done().iter().any(|d| end.ends_with(d)) {
+    if past_marked(&end) || done().iter().any(|d| end.ends_with(d)) {
         return true;
     }
     // "Fixed the header", "Added a test".
@@ -148,14 +148,21 @@ fn is_done(text: &str) -> bool {
     first.len() > 3 && first.chars().next().is_some_and(char::is_uppercase) && first.ends_with("ed") && !end.ends_with('?')
 }
 
-/// Whether Korean words end in the past tense: "고쳤습니다", "했어요" — a
-/// syllable closing on ㅆ before the ending (Korean "있습니다" is the present).
-fn past_ko(end: &str) -> bool {
+/// Whether the words end in a past tense a language marks on the stem, by
+/// each language's words: one of its `match.past_endings` after a letter whose
+/// canonical decomposition (NFD) ends in one of its `match.past_marks`, the
+/// letter not one of its `match.past_not`. Korean's: a syllable closing on the
+/// final consonant SSANG SIOS (U+11BB) before `-seumnida` or `-eoyo`, the
+/// syllable of "to be there" aside, which is the present.
+fn past_marked(end: &str) -> bool {
     let Some(stem) = crate::i18n::every("match.past_endings").iter().find_map(|e| end.strip_suffix(e)) else { return false };
     let Some(last) = stem.chars().last() else { return false };
-    let code = last as u32;
-    let present = crate::i18n::every("match.past_not");
-    (0xAC00..=0xD7A3).contains(&code) && (code - 0xAC00) % 28 == 20 && !present.iter().any(|p| p.chars().eq(std::iter::once(last)))
+    if crate::i18n::every("match.past_not").iter().any(|p| p.chars().eq(std::iter::once(last))) {
+        return false;
+    }
+    let mut letter = [0; 4];
+    let parts = icu_normalizer::DecomposingNormalizerBorrowed::new_nfd().normalize(last.encode_utf8(&mut letter));
+    crate::i18n::every("match.past_marks").iter().any(|mark| parts.ends_with(mark))
 }
 
 /// Whether `text` (lowercase) has one of `words`: an ASCII one as a whole

@@ -1,10 +1,10 @@
-//! `FAKE_DESIGN=1`'s UI map: the web project's flows — 온보딩, 결제, 검색,
-//! 설정 — their screens in every state, light and dark at 390 and 1280,
+//! `FAKE_DESIGN=1`'s UI map: the web project's flows — Onboarding, Checkout, Search,
+//! Settings — their screens in every state, light and dark at 390 and 1280,
 //! some states missing and one screen stale; the pictures drawn as small
 //! placeholder PNGs under the web project's `design/flows/`, as the
-//! designer keeps them. 온보딩 has a walkthrough (an MP4 made with
+//! designer keeps them. Onboarding has a walkthrough (an MP4 made with
 //! `ffmpeg` when this Mac has it; else its path is absent, as one on another
-//! machine) and an older one; 결제's is on "another machine"; 검색 has none.
+//! machine) and an older one; Checkout's is on "another machine"; Search has none.
 //! No `flows.json` is written: the map is put on the system as the daemon
 //! would read it, so its counts and marks are exactly these.
 
@@ -40,33 +40,33 @@ struct F {
 const FLOWS: &[F] = &[
     F {
         id: "onboarding",
-        title: "온보딩",
-        summary: "첫 방문부터 첫 프로젝트까지",
+        title: "Onboarding",
+        summary: "From the first visit to the first project",
         screens: &[
             S {
                 id: "login",
-                title: "로그인",
-                note: Some("이메일과 비밀번호. 틀리면 필드 아래 한 줄로 알려요."),
+                title: "Sign in",
+                note: Some("Email and password. A mistake gets one line under the field."),
                 ticket: Some(142),
-                states: &[("default", "기본", "default", None, Drawn::Both), ("error", "오류", "error", Some("비밀번호가 틀렸을 때"), Drawn::Both), ("loading", "로딩", "loading", None, Drawn::Phone)],
+                states: &[("default", "Default", "default", None, Drawn::Both), ("error", "Error", "error", Some("When the password is wrong"), Drawn::Both), ("loading", "Loading", "loading", None, Drawn::Phone)],
                 missing: &["offline"],
                 stale: false,
             },
             S {
                 id: "signup",
-                title: "가입",
-                note: Some("이름·이메일·비밀번호 세 칸, 약관은 한 줄."),
+                title: "Sign up",
+                note: Some("Three fields — name, email, password — and one line of terms."),
                 ticket: Some(143),
-                states: &[("default", "기본", "default", None, Drawn::Both), ("error", "오류", "error", Some("이미 쓰는 이메일일 때"), Drawn::Phone), ("long", "긴 글", "long", Some("이름이 아주 길 때"), Drawn::Phone)],
+                states: &[("default", "Default", "default", None, Drawn::Both), ("error", "Error", "error", Some("When the email is already in use"), Drawn::Phone), ("long", "Long text", "long", Some("When the name is very long"), Drawn::Phone)],
                 missing: &[],
                 stale: true,
             },
             S {
                 id: "welcome",
-                title: "첫 프로젝트",
+                title: "First project",
                 note: None,
                 ticket: None,
-                states: &[("first", "첫 사용", "first", Some("처음 들어왔을 때 — 안내 세 줄"), Drawn::Both), ("default", "기본", "default", None, Drawn::Both), ("empty", "빈 상태", "empty", Some("프로젝트를 모두 지웠을 때"), Drawn::No)],
+                states: &[("first", "First use", "first", Some("On the first visit — three lines of guidance"), Drawn::Both), ("default", "Default", "default", None, Drawn::Both), ("empty", "Empty", "empty", Some("When every project is deleted"), Drawn::No)],
                 missing: &["empty"],
                 stale: false,
             },
@@ -74,52 +74,52 @@ const FLOWS: &[F] = &[
     },
     F {
         id: "checkout",
-        title: "결제",
-        summary: "요금제 고르기부터 영수증까지",
+        title: "Checkout",
+        summary: "From picking a plan to the receipt",
         screens: &[
             S {
                 id: "plans",
-                title: "요금제",
-                note: Some("월·연 전환, 추천 요금제 하나만 강조."),
+                title: "Plans",
+                note: Some("Monthly and yearly toggle; only the recommended plan stands out."),
                 ticket: Some(151),
-                states: &[("default", "기본", "default", None, Drawn::Both), ("permission", "권한 없음", "permission", Some("팀 관리자가 아닐 때"), Drawn::Phone)],
+                states: &[("default", "Default", "default", None, Drawn::Both), ("permission", "No permission", "permission", Some("When you aren't the team's admin"), Drawn::Phone)],
                 missing: &[],
                 stale: false,
             },
             S {
                 id: "pay",
-                title: "결제 정보",
+                title: "Payment details",
                 note: None,
                 ticket: Some(152),
-                states: &[("default", "기본", "default", None, Drawn::Both), ("error", "오류", "error", Some("카드가 거절됐을 때"), Drawn::Both), ("loading", "로딩", "loading", None, Drawn::Phone)],
+                states: &[("default", "Default", "default", None, Drawn::Both), ("error", "Error", "error", Some("When the card is declined"), Drawn::Both), ("loading", "Loading", "loading", None, Drawn::Phone)],
                 missing: &["offline"],
                 stale: false,
             },
-            S { id: "receipt", title: "영수증", note: None, ticket: None, states: &[("success", "성공", "success", None, Drawn::Both)], missing: &[], stale: false },
+            S { id: "receipt", title: "Receipt", note: None, ticket: None, states: &[("success", "Success", "success", None, Drawn::Both)], missing: &[], stale: false },
         ],
     },
     F {
         id: "search",
-        title: "검색",
-        summary: "질문을 찾아 답까지",
+        title: "Search",
+        summary: "From finding a question to its answer",
         screens: &[
             S {
                 id: "results",
-                title: "검색 결과",
-                note: Some("입력하는 대로 걸러요. 일치하는 말은 형광으로."),
+                title: "Search results",
+                note: Some("Filters as you type. Matching words are highlighted."),
                 ticket: Some(160),
-                states: &[("default", "기본", "default", None, Drawn::Both), ("empty", "빈 상태", "empty", Some("아무것도 찾지 못했을 때"), Drawn::Both), ("loading", "로딩", "loading", None, Drawn::Phone), ("long", "긴 글", "long", None, Drawn::Phone)],
+                states: &[("default", "Default", "default", None, Drawn::Both), ("empty", "Empty", "empty", Some("When nothing is found"), Drawn::Both), ("loading", "Loading", "loading", None, Drawn::Phone), ("long", "Long text", "long", None, Drawn::Phone)],
                 missing: &[],
                 stale: false,
             },
-            S { id: "question", title: "질문 상세", note: None, ticket: None, states: &[("default", "기본", "default", None, Drawn::Both)], missing: &["error", "permission"], stale: false },
+            S { id: "question", title: "Question detail", note: None, ticket: None, states: &[("default", "Default", "default", None, Drawn::Both)], missing: &["error", "permission"], stale: false },
         ],
     },
     F {
         id: "settings",
-        title: "설정",
-        summary: "프로필과 알림",
-        screens: &[S { id: "profile", title: "프로필", note: None, ticket: None, states: &[("default", "기본", "default", None, Drawn::Both), ("offline", "오프라인", "offline", None, Drawn::Phone)], missing: &[], stale: false }],
+        title: "Settings",
+        summary: "Profile and notifications",
+        screens: &[S { id: "profile", title: "Profile", note: None, ticket: None, states: &[("default", "Default", "default", None, Drawn::Both), ("offline", "Offline", "offline", None, Drawn::Phone)], missing: &[], stale: false }],
     },
 ];
 
@@ -214,7 +214,7 @@ pub fn map(design: &Path) -> FlowMap {
             videos: videos(design, f.id),
         })
         .collect();
-    FlowMap { flows, problems: vec!["flows/search/results/loading.sepia.390.png: 모드는 light나 dark여야 해요".into()], unlisted: vec!["onboarding/login/eror.dark.390.png".into()], installed: live().then(|| LIVE_INSTALLED.into()), installed_on: None }
+    FlowMap { flows, problems: vec!["flows/search/results/loading.sepia.390.png: the mode must be light or dark".into()], unlisted: vec!["onboarding/login/eror.dark.390.png".into()], installed: live().then(|| LIVE_INSTALLED.into()), installed_on: None }
 }
 
 fn video_path(design: &Path, flow: &str) -> PathBuf {
@@ -294,8 +294,8 @@ pub fn seed_draft(draft: &Path, accepted: &Path) {
 }
 
 /// `FAKE_DESIGN=working`: T-378's worktree mid-way through the squad's
-/// map — `flows.json` naming 온보딩 and 결제, read the daemon's way; 온보딩
-/// shot, 결제 only its first screen so far.
+/// map — `flows.json` naming Onboarding and Checkout, read the daemon's way; Onboarding
+/// shot, Checkout only its first screen so far.
 pub fn seed_working(design: &Path) {
     let flows: Vec<serde_json::Value> = FLOWS
         .iter()

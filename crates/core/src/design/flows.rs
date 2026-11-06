@@ -57,7 +57,7 @@
 //!   `blockFonts: true` (as it looks while webfonts load), `fullPage: false`
 //!   (the first screen only), `selector` (that element alone) and `actions` —
 //!   a walk's `click`/`fill`/`press`/`wait`/`go` steps, run before the shot:
-//!   `{ "id": "menu-open", "locale": "ko-KR", "actions": [{ "click": "summary" }, { "wait": 300 }] }`.
+//!   `{ "id": "menu-open", "locale": "de-DE", "actions": [{ "click": "summary" }, { "wait": 300 }] }`.
 //!   Before a whole page or an element is shot the page is scrolled through
 //!   (JavaScript on), so what appears on scroll has. A `command` is given
 //!   none of these.
@@ -76,7 +76,7 @@
 //!   `{"millis": 8200, "marks": [{"screen": "login", "at": 3200}]}`, how long
 //!   it runs and where each screen starts. Recorded again, the last one moves
 //!   to `history/`, named by when it was recorded. The browser it walks in
-//!   is in `en-US` unless the flow says its `locale` (`"locale": "ko-KR"`);
+//!   is in `en-US` unless the flow says its `locale` (`"locale": "de-DE"`);
 //!   `reducedMotion: true` and `permissions` (`["clipboard-write"]`) are
 //!   set on the flow too.
 //! - An app that records itself gives its flow a `record_command` instead of

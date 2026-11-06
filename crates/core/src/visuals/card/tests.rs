@@ -174,7 +174,12 @@ fn the_page_holds_the_card_in_the_design_system_and_its_csp_first() {
     assert!(page.contains("data-theme=\"dark\""));
     assert!(page.contains("--eq-color-text") && page.contains(".vc-card"));
     assert!(page.contains("<article class=\"vc-card\"><p>hi</p></article>"));
-    assert!(super::page("<p>hi</p>", None).contains("<html lang=\"ko\"><head>"));
+    // The page says the language the card is written in, so its type is that
+    // script's: English when it can't tell, never one built in.
+    assert!(super::page("<p>hi</p>", None).contains("<html lang=\"en\"><head>"));
+    for (card, lang) in [("<h2 class=\"vc-title\">이번 주 스쿼드 숫자</h2>", "ko"), ("<p>今週の数字を<b>確認</b>する</p>", "ja"), ("<p>本周的数字</p>", "zh"), ("<p>Les chiffres de la semaine, revus avec toute l'équipe</p>", "fr")] {
+        assert!(super::page(card, Some(false)).contains(&format!("<html lang=\"{lang}\" data-theme=\"light\">")), "{card}: {lang}");
+    }
 }
 
 #[test]

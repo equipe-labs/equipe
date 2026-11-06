@@ -116,7 +116,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "type_text",
-            "Type text, Korean and emoji included, where the keyboard focus is. Refused if focus isn't in the app (or element) you mean; stops if focus moves away while typing.",
+            "Type text, any script and emoji included, where the keyboard focus is. Refused if focus isn't in the app (or element) you mean; stops if focus moves away while typing.",
             json!({
                 "text": { "type": "string", "description": "What to type. A newline presses return." },
                 "element": json!({ "type": "string", "description": "Focus this text field first (id from `elements`)." }),

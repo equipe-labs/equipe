@@ -1,5 +1,5 @@
 //! The box the person writes in: several lines, Enter sends and ⇧Enter breaks
-//! the line, a Korean syllable still being composed is never sent, ↑↓ walk what
+//! the line, text an input source is still composing is never sent, ↑↓ walk what
 //! was sent, `/…` and `@…` complete, Esc stops the member who is working.
 //! Around it: what is attached (any file — pictures, videos, PDFs, text,
 //! documents), the "+" menu (⌘U), the memos and steers waiting for a member at
@@ -624,7 +624,7 @@ impl Shell {
 
     /// As `send`; `later` leaves a member at work a memo instead of steering it.
     pub fn send_as(&mut self, later: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // The Enter that ends a Korean composition is only that.
+        // The Enter that ends a composition is only that.
         if !self.composer.guard.allows_send(Instant::now()) {
             return;
         }
@@ -755,7 +755,7 @@ impl Shell {
     }
 
     /// The language to listen for now: the one picked; else the keyboard's
-    /// (한글 typed, Korean spoken) when this Mac can hear it; else the first
+    /// (the language of the input source typed with) when this Mac can hear it; else the first
     /// [`crate::dictation::choose`] finds.
     fn dictation_lang(&self) -> equipe_core::i18n::Lang {
         let servers = self.remembered.dictation_servers;

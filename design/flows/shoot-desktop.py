@@ -12,8 +12,8 @@ reach the state, then a shot at each width, light and dark.
     python3 design/flows/shoot-desktop.py --bin …/t379/debug [--only conversation/] [--jobs 3]
 
 Widths are the window's in points at 1x: 1200 (the size it opens at) and 760
-(the narrowest it allows). The app speaks Korean here (EQUIPE_LANG=ko), as the
-person's Mac does; `long` states switch to German, the longest language.
+(the narrowest it allows). The app speaks English here (EQUIPE_LANG=en) unless a
+state names another language; `long` states switch to German, the longest language.
 """
 
 import argparse
@@ -58,7 +58,7 @@ state("first-run/squad/default", "setup:squad", no_daemon=True)
 state("first-run/squad/loading", "setup:creating;wait:300;scroll:20,-80", no_daemon=True)
 state("first-run/squad/error", "setup:error;wait:300;scroll:20,-80", no_daemon=True)
 
-# ── Inbox (나에게): decisions, permissions, cards ───────────────────────────
+# ── Inbox: decisions, permissions, cards ───────────────────────────
 state("inbox/inbox/default", "menu:inbox")
 state("inbox/inbox/empty", "menu:inbox", {"FAKE_EMPTY": "1", "FAKE_ASKS": "0"})
 state("inbox/inbox/long", "menu:inbox", lang="de")
@@ -75,7 +75,7 @@ state("inbox/accept/default", "menu:inbox;wait:600;cpick", {"FAKE_ACCEPT": "1"})
 # ── Conversation ───────────────────────────────────────────────────────────
 state("conversation/chat/default", "chat")
 state("conversation/chat/empty", "newtalk;wait:800")
-state("conversation/chat/loading", "chat;say:지금 어디까지 했어?;wait:1500", {"FAKE_SECONDS": "12"})
+state("conversation/chat/loading", "chat;say:Where are you up to?;wait:1500", {"FAKE_SECONDS": "12"})
 state("conversation/chat/long", "chat;wait:800", {"FAKE_READING": "1"})
 state("conversation/chat/pictures", "chat;wait:800", {"FAKE_REPLY_IMAGES": "1"}, wait=2500)
 state("conversation/chat/ticket-cards", "chat;wait:800", {"FAKE_CARDS": "1"})
@@ -90,7 +90,7 @@ state("conversation/engine-switch/success", "chat", {"FAKE_USAGE": "claude86", "
 state("conversation/chat/your-turn", "chat;wait:600", {"FAKE_TURN": "1", "FAKE_ASKS": "0"})
 state("conversation/composer/attachments", "chat;attach:{ROOT}/design/brand/logo-in-use.png,{ROOT}/design/guidelines.md;wait:600")
 state("conversation/composer/drop", "chat;drag:{ROOT}/design/guidelines.md;wait:400")
-state("conversation/composer/queued", "chat;say:첫 번째;wait:200;say:두 번째도 이어서 해 줘;wait:600", {"FAKE_SECONDS": "12"})
+state("conversation/composer/queued", "chat;say:First one;wait:200;say:Carry on with the second too;wait:600", {"FAKE_SECONDS": "12"})
 
 # ── Board & tickets ────────────────────────────────────────────────────────
 state("board/board/default", "menu:all", wait=1200)
@@ -133,7 +133,7 @@ state("disk/panel/error", "disk", {"FAKE_DISK": "critical"}, wait=1500)
 state("disk/panel/full", "disk", {"FAKE_DISK": "full"}, wait=1500)
 state("disk/fix/default", "disk;wait:1500;disk:fix1", {"FAKE_DISK": "low"})
 state("disk/fix/success", "disk;wait:1500;disk:fix1;wait:300;disk:yes;wait:2500", {"FAKE_DISK": "low"})
-# ── Overview (현황), roadmap, routines ─────────────────────────────────────
+# ── Overview, roadmap, routines ─────────────────────────────────────
 state("overview/overview/default", "overview", {"FAKE_BUSY": "1"}, wait=1500)
 state("overview/overview/empty", "overview", {"FAKE_EMPTY": "1", "FAKE_WORKING": "0", "FAKE_ASKS": "0"}, wait=1500)
 state("overview/roadmap/default", "roadmap", wait=1500)
@@ -170,21 +170,21 @@ for _path, _env, _steps, _opts in STATES:
 V = "crates/desktop/src/"
 FLOWS = [
     ("first-run", "First run", "A Mac with no squad: git, connecting the AI (ChatGPT sign-in, or Claude Code install and sign-in), the first squad, then the usage-data question. The steps up to the squad are held by the snapshot tool's `setup:` without a daemon, as a Mac with no squad has none; the usage question needs the daemon, so it comes once the squad is made."),
-    ("inbox", "Inbox (나에게) · decisions · permissions", "What waits for the person: a member's questions, permission requests, a ticket put down for them, a team change, a routine, work to confirm."),
-    ("conversation", "Conversation", "The PM's conversation: replies streaming, the engine-switching card, long Korean text, pictures, ticket cards, a list of questions, diagrams and HTML cards, the summary band, the composer with attachments."),
-    ("board", "Board · tickets", "Every ticket by where it stands (티켓), what is at work (작업 중), and one ticket picked — peeking beside the list (Space) or as a page (⏎): its hand-in, review and pictures."),
-    ("overview", "Squad views: 현황 · 로드맵 · 정기 업무 · 지표 · 디자인 시스템", "The sidebar's views of the whole squad: its projects side by side, the roadmap, the regular work the PM is handed, the numbers (metrics) and the design system."),
+    ("inbox", "Inbox · decisions · permissions", "What waits for the person: a member's questions, permission requests, a ticket put down for them, a team change, a routine, work to confirm."),
+    ("conversation", "Conversation", "The PM's conversation: replies streaming, the engine-switching card, long text, pictures, ticket cards, a list of questions, diagrams and HTML cards, the summary band, the composer with attachments."),
+    ("board", "Board · tickets", "Every ticket by where it stands (Tickets), what is at work (In progress), and one ticket picked — peeking beside the list (Space) or as a page (⏎): its hand-in, review and pictures."),
+    ("overview", "Squad views: Overview · Roadmap · Routines · Metrics · Design system", "The sidebar's views of the whole squad: its projects side by side, the roadmap, the regular work the PM is handed, the numbers (metrics) and the design system."),
     ("settings", "Settings", "General (with privacy: anonymous usage data), AI platforms, squad and devices, team and signals, permissions, projects, browser, accounts, keys, about."),
     ("tools", "Panels and sheets", "The browser panel, terminal, a document beside the conversation, a subagent, pairing a phone, the notifications sheet."),
     ("disk", "Disk", "The disk panel when space runs short, a fix's sheet and its result."),
     ("connection", "Daemon and machine", "Attaching to the daemon: the daemon gone (under a banner, or with nothing to show yet), equipe not installed, the machine chooser."),
 ]
 SCREENS = {
-    "first-run/git": ("Git (developer tools)", ["views/setup.rs", "setup.rs"], "A card at the top of the AI screen (먼저 AI를 연결할게요), shown only on a Mac without Apple's developer tools."),
+    "first-run/git": ("Git (developer tools)", ["views/setup.rs", "setup.rs"], "A card at the top of the AI screen (Let’s connect an AI first), shown only on a Mac without Apple's developer tools."),
     "first-run/ai": ("Connect the AI (ChatGPT · Claude Code)", ["views/setup.rs", "setup.rs", "engines.rs"], "Two cards: ChatGPT (sign in, the easiest way) and Claude Code (install, then sign in; edits files). Next lights up once one is connected. The install error is a canned curl failure."),
     "first-run/squad": ("First squad", ["views/welcome.rs"], None),
     "first-run/usage-data": ("Anonymous usage data", ["views/telemetry.rs"], "Asked once, after the first squad is made on a first run, or the first open after the update; two buttons of the same weight."),
-    "inbox/inbox": ("나에게 (the inbox)", ["views/sidebar.rs", "views/board.rs", "views/peek.rs", "board.rs"], None),
+    "inbox/inbox": ("Inbox", ["views/sidebar.rs", "views/board.rs", "views/peek.rs", "board.rs"], None),
     "inbox/decision": ("A member's questions (decision card)", ["views/decide.rs", "decide.rs", "visuals.rs", "views/visuals.rs"], None),
     "inbox/permission": ("Permission requests", ["views/approvals.rs"], "Allow once (Y/A), always (⇧A), decline (N)."),
     "inbox/your-turn": ("A ticket put down for the person", ["views/yourturn.rs", "yourturn.rs"], None),
@@ -192,14 +192,14 @@ SCREENS = {
     "inbox/routine": ("A routine the PM proposes", ["views/routine.rs", "routine.rs"], None),
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
     "conversation/chat": ("PM conversation", ["views/chat.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on."),
-    "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with 되돌리기."),
+    "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with Undo."),
     "conversation/composer": ("Composer", ["views/composer.rs", "views/attached.rs", "attach.rs", "compose.rs"], None),
     "board/board": ("Board", ["views/tickets.rs", "views/ticket_card.rs", "views/sidebar.rs", "tickets.rs"], None),
-    "board/working": ("작업 중 (at work)", ["views/tickets.rs", "views/sidebar.rs", "board.rs"], None),
+    "board/working": ("In progress (at work)", ["views/tickets.rs", "views/sidebar.rs", "board.rs"], None),
     "board/ticket": ("Ticket", ["views/peek.rs", "views/tickets.rs", "views/diffview.rs"], None),
-    "overview/overview": ("현황 (overview)", ["views/overview.rs", "portfolio.rs"], None),
-    "overview/roadmap": ("로드맵 (roadmap)", ["views/roadmap.rs", "roadmap.rs"], None),
-    "overview/routines": ("정기 업무 (routines)", ["views/routines.rs", "routine.rs"], "The two routines are the snapshot tool's own (`rseed`), no daemon asked."),
+    "overview/overview": ("Overview", ["views/overview.rs", "portfolio.rs"], None),
+    "overview/roadmap": ("Roadmap", ["views/roadmap.rs", "roadmap.rs"], None),
+    "overview/routines": ("Routines", ["views/routines.rs", "routine.rs"], "The two routines are the snapshot tool's own (`rseed`), no daemon asked."),
     "settings/general": ("General · privacy", ["views/settings.rs"], "Privacy (anonymous usage data) is a section of General."),
     "settings/engines": ("AI platforms", ["views/engines.rs", "engines.rs", "views/settings_switching.rs"], None),
     "settings/squad": ("Squad", ["views/settings.rs"], None),
@@ -210,8 +210,8 @@ SCREENS = {
     "settings/accounts": ("Accounts (logins)", ["views/accounts.rs"], "The two logins are the snapshot tool's own (`lseed`)."),
     "settings/keys": ("Keys", ["views/secrets.rs", "views/settings.rs"], None),
     "settings/about": ("About", ["views/settings.rs", "update.rs"], None),
-    "overview/metrics": ("지표 (metrics)", ["views/metrics.rs", "metrics.rs"], "On the app's own sample (`metrics:`), no daemon asked."),
-    "overview/design": ("디자인 시스템 (design system)", ["views/design.rs", "design.rs"], None),
+    "overview/metrics": ("Metrics", ["views/metrics.rs", "metrics.rs"], "On the app's own sample (`metrics:`), no daemon asked."),
+    "overview/design": ("Design system", ["views/design.rs", "design.rs"], None),
     "tools/browser": ("Browser panel", ["views/browser.rs", "browse.rs"], None),
     "tools/terminal": ("Terminal panel", ["views/terminal.rs", "term.rs"], "A real shell on this Mac, in the shot's temporary home."),
     "tools/document": ("Document panel", ["views/doc.rs", "doc.rs"], None),
@@ -295,7 +295,7 @@ def write_map():
         if fid in RECORDED:
             flow["record_command"] = f"python3 design/flows/record-desktop.py --flow {fid} --out {{out}} --mode {{mode}} --width {{width}}"
         flows.append(flow)
-    doc = {"note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). Korean UI, as the person's Mac; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk` (`flows record` plays a walk in a browser, which can't drive the app): a recorded flow has a `record_command`, design/flows/record-desktop.py, which steps the same snapshot build through it and writes the video with its screen marks — record with `--widths 1200,760`.", "flows": flows}
+    doc = {"note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). English UI unless a state names a language; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk` (`flows record` plays a walk in a browser, which can't drive the app): a recorded flow has a `record_command`, design/flows/record-desktop.py, which steps the same snapshot build through it and writes the video with its screen marks — record with `--widths 1200,760`.", "flows": flows}
     with open(os.path.join(HERE, "flows.json"), "w") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)
         f.write("\n")
@@ -338,7 +338,7 @@ def run_state(item, bin_dir, root):
         if opts["cli"] == "fails":
             base["PATH"] = os.path.join(HERE, "fixtures", "no-daemon") + os.pathsep + base["PATH"]
     base.update({"HOME": user, "EQUIPE_HOME": home, "EQUIPE_SQUAD": "demo", "EQUIPE_TELEMETRY": "off",
-                 "EQUIPE_LANG": opts.get("lang", "ko"), "TMPDIR": tmp + "/", "EQUIPE_SNAPSHOT_SCALE": "1"})
+                 "EQUIPE_LANG": opts.get("lang", "en"), "TMPDIR": tmp + "/", "EQUIPE_SNAPSHOT_SCALE": "1"})
     daemon = None
     if not opts.get("no_daemon"):
         denv = dict(base)

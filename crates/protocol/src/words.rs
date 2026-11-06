@@ -50,6 +50,17 @@ pub fn every(key: &str) -> &'static [&'static str] {
     lists().get(key).copied().unwrap_or_default()
 }
 
+/// A letter beyond ASCII of a script that puts spaces between its words —
+/// Hangul, Cyrillic, Greek, Arabic, accented Latin — so a word in it starts
+/// where no such letter comes before. Not Han, kana, Thai, Lao, Khmer or
+/// Myanmar, written without spaces: a word in them may start anywhere.
+pub fn spaced_letter(c: char) -> bool {
+    let unspaced = matches!(c as u32,
+        0x0E00..=0x0EFF | 0x1000..=0x109F | 0x1780..=0x17FF | 0x3040..=0x30FF | 0x31F0..=0x31FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF
+        | 0xF900..=0xFAFF | 0xFF66..=0xFF9F | 0x20000..=0x3FFFF);
+    !c.is_ascii() && c.is_alphabetic() && !unspaced
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,5 +86,15 @@ mod tests {
             assert!(answers.contains(&word), "{word}");
         }
         assert!(every("match.nothing").is_empty());
+    }
+
+    #[test]
+    fn a_spaced_letter_is_by_script_not_by_language() {
+        for c in ['한', 'д', 'λ', 'ب', 'é', 'ß'] {
+            assert!(spaced_letter(c), "{c}");
+        }
+        for c in ['a', 'Z', '7', ' ', '?', '漢', 'か', 'カ', 'ก', '。'] {
+            assert!(!spaced_letter(c), "{c}");
+        }
     }
 }

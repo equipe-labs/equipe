@@ -1,12 +1,12 @@
-// Puts each drawn diagram into the proposed block frame (no code-block header; 원문/복사 appear on hover or focus) → one HTML per option, light and dark panels.
+// Puts each drawn diagram into the proposed block frame (no code-block header; Source/Copy appear on hover or focus) → one HTML per option, light and dark panels.
 // node sheet.mjs <dir with a-light.svg…> <outdir>
 import fs from 'node:fs'; import path from 'node:path';
 const [dir, out] = process.argv.slice(2); fs.mkdirSync(out, { recursive: true });
 const tokens = fs.readFileSync(new URL('../../build/css/tokens.css', import.meta.url), 'utf8').replace(/@media \(prefers-color-scheme: dark\) \{[\s\S]*?\n\}\n/, '').replace(':root[data-theme="dark"]', '[data-theme="dark"]');
-const NAMES = { a: ['A', '카드형', '상태 색을 입힌 둥근 카드, 역할은 둘째 줄'], b: ['B', '레인형', '맡은 역할끼리 묶어 한 칸에'], c: ['C', '알약형', '지금 중요한 줄기만 진하게'] };
+const NAMES = { a: ['A', 'Cards', 'Rounded cards in status colours, the role on the second line'], b: ['B', 'Lanes', 'Grouped by role, one lane each'], c: ['C', 'Pills', 'Only the path that matters now in bold'] };
 for (const k of ['a', 'b', 'c']) {
-  const panel = (m) => `<section data-theme="${m}" class="p"><p class="cap">${m === 'light' ? '라이트' : '다크'}</p><figure class="blk"><div class="tools" aria-hidden="true"><span>원문</span><span>복사</span></div>${fs.readFileSync(path.join(dir, `${k}-${m}.svg`), 'utf8').replace(/<\?xml[^>]*>/, '')}</figure><p class="alt">T-336 ~ T-340 흐름</p></section>`;
-  fs.writeFileSync(path.join(out, `option-${k}.html`), `<!doctype html><html lang="ko"><head><meta charset="utf-8"><style>${tokens}
+  const panel = (m) => `<section data-theme="${m}" class="p"><p class="cap">${m === 'light' ? 'Light' : 'Dark'}</p><figure class="blk"><div class="tools" aria-hidden="true"><span>Source</span><span>Copy</span></div>${fs.readFileSync(path.join(dir, `${k}-${m}.svg`), 'utf8').replace(/<\?xml[^>]*>/, '')}</figure><p class="alt">T-336 – T-340 flow</p></section>`;
+  fs.writeFileSync(path.join(out, `option-${k}.html`), `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>${tokens}
 body{margin:0;font:var(--eq-type-ui);-webkit-font-smoothing:antialiased;background:#888}
 .p{background:var(--eq-color-bg);color:var(--eq-color-text);padding:var(--eq-space-4) var(--eq-space-5) var(--eq-space-5)}
 .cap{font:var(--eq-type-meta);color:var(--eq-color-muted);margin:0 0 var(--eq-space-2);letter-spacing:.06em}

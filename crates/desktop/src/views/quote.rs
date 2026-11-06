@@ -247,7 +247,7 @@ impl Shell {
                     cx.notify();
                 }
             }),
-            // The Enter that ends a Korean syllable is only that.
+            // The Enter that ends a composition is only that.
             cx.observe_in(&input, window, |shell: &mut Shell, input, window, cx| {
                 let composing = input.update(cx, |s, cx| gpui_kit::EntityInputHandler::marked_text_range(s, window, cx).is_some());
                 if let Some(w) = shell.quote.writing.as_mut() {

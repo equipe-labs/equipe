@@ -1,5 +1,5 @@
 {
-  "note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). Korean UI, as the person's Mac; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk` (`flows record` plays a walk in a browser, which can't drive the app): a recorded flow has a `record_command`, design/flows/record-desktop.py, which steps the same snapshot build through it and writes the video with its screen marks — record with `--widths 1200,760`.",
+  "note": "The equipe desktop app (crates/desktop) as it is. It has no URL, so `equipe design flows shoot` can't reach it: every picture is the real app built with `--features snapshot`, attached to the fake daemon (crates/desktop/examples/fake_daemon.rs) and driven by a snapshot script — see design/flows/shoot-desktop.py, which also writes this file. Widths are the window's in points, 1x: 1200 (as it opens) and 760 (the narrowest it allows, so every state's 760 picture is the narrow window). English UI unless a state names a language; `long` states are German. Each run has a throwaway home with sample SSH hosts and a stand-in `tailscale` (design/flows/fixtures/), so nothing of this Mac's own is pictured. No flow has a `walk` (`flows record` plays a walk in a browser, which can't drive the app): a recorded flow has a `record_command`, design/flows/record-desktop.py, which steps the same snapshot build through it and writes the video with its screen marks — record with `--widths 1200,760`.",
   "flows": [
     {
       "id": "first-run",
@@ -9,7 +9,7 @@
         {
           "id": "git",
           "title": "Git (developer tools)",
-          "note": "A card at the top of the AI screen (먼저 AI를 연결할게요), shown only on a Mac without Apple's developer tools.",
+          "note": "A card at the top of the AI screen (Let’s connect an AI first), shown only on a Mac without Apple's developer tools.",
           "source": [
             "crates/desktop/src/views/setup.rs",
             "crates/desktop/src/setup.rs"
@@ -163,12 +163,12 @@
     },
     {
       "id": "inbox",
-      "title": "Inbox (나에게) · decisions · permissions",
+      "title": "Inbox · decisions · permissions",
       "summary": "What waits for the person: a member's questions, permission requests, a ticket put down for them, a team change, a routine, work to confirm.",
       "screens": [
         {
           "id": "inbox",
-          "title": "나에게 (the inbox)",
+          "title": "Inbox",
           "source": [
             "crates/desktop/src/views/sidebar.rs",
             "crates/desktop/src/views/board.rs",
@@ -342,7 +342,7 @@
     {
       "id": "conversation",
       "title": "Conversation",
-      "summary": "The PM's conversation: replies streaming, the engine-switching card, long Korean text, pictures, ticket cards, a list of questions, diagrams and HTML cards, the summary band, the composer with attachments.",
+      "summary": "The PM's conversation: replies streaming, the engine-switching card, long text, pictures, ticket cards, a list of questions, diagrams and HTML cards, the summary band, the composer with attachments.",
       "screens": [
         {
           "id": "chat",
@@ -380,7 +380,7 @@
               "id": "loading",
               "label": "Loading / under way",
               "kind": "loading",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=12 FAKE_ASKS=0; script `chat;say:지금 어디까지 했어?;wait:1500`"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=12 FAKE_ASKS=0; script `chat;say:Where are you up to?;wait:1500`"
             },
             {
               "id": "long",
@@ -441,7 +441,7 @@
         {
           "id": "engine-switch",
           "title": "Engine switching card (over the composer)",
-          "note": "Error: Claude's week used up; Done: what equipe did in auto, with 되돌리기.",
+          "note": "Error: Claude's week used up; Done: what equipe did in auto, with Undo.",
           "source": [
             "crates/desktop/src/views/switching.rs",
             "crates/desktop/src/switching.rs",
@@ -502,7 +502,7 @@
               "id": "queued",
               "label": "A message waiting while the member works",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=12 FAKE_ASKS=0; script `chat;say:첫 번째;wait:200;say:두 번째도 이어서 해 줘;wait:600`"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=12 FAKE_ASKS=0; script `chat;say:First one;wait:200;say:Carry on with the second too;wait:600`"
             }
           ]
         }
@@ -511,7 +511,7 @@
     {
       "id": "board",
       "title": "Board · tickets",
-      "summary": "Every ticket by where it stands (티켓), what is at work (작업 중), and one ticket picked — peeking beside the list (Space) or as a page (⏎): its hand-in, review and pictures.",
+      "summary": "Every ticket by where it stands (Tickets), what is at work (In progress), and one ticket picked — peeking beside the list (Space) or as a page (⏎): its hand-in, review and pictures.",
       "screens": [
         {
           "id": "board",
@@ -556,7 +556,7 @@
         },
         {
           "id": "working",
-          "title": "작업 중 (at work)",
+          "title": "In progress (at work)",
           "source": [
             "crates/desktop/src/views/tickets.rs",
             "crates/desktop/src/views/sidebar.rs",
@@ -616,12 +616,12 @@
     },
     {
       "id": "overview",
-      "title": "Squad views: 현황 · 로드맵 · 정기 업무 · 지표 · 디자인 시스템",
+      "title": "Squad views: Overview · Roadmap · Routines · Metrics · Design system",
       "summary": "The sidebar's views of the whole squad: its projects side by side, the roadmap, the regular work the PM is handed, the numbers (metrics) and the design system.",
       "screens": [
         {
           "id": "overview",
-          "title": "현황 (overview)",
+          "title": "Overview",
           "source": [
             "crates/desktop/src/views/overview.rs",
             "crates/desktop/src/portfolio.rs"
@@ -647,7 +647,7 @@
         },
         {
           "id": "roadmap",
-          "title": "로드맵 (roadmap)",
+          "title": "Roadmap",
           "source": [
             "crates/desktop/src/views/roadmap.rs",
             "crates/desktop/src/roadmap.rs"
@@ -666,7 +666,7 @@
         },
         {
           "id": "routines",
-          "title": "정기 업무 (routines)",
+          "title": "Routines",
           "note": "The two routines are the snapshot tool's own (`rseed`), no daemon asked.",
           "source": [
             "crates/desktop/src/views/routines.rs",
@@ -692,7 +692,7 @@
         },
         {
           "id": "metrics",
-          "title": "지표 (metrics)",
+          "title": "Metrics",
           "note": "On the app's own sample (`metrics:`), no daemon asked.",
           "source": [
             "crates/desktop/src/views/metrics.rs",
@@ -732,7 +732,7 @@
         },
         {
           "id": "design",
-          "title": "디자인 시스템 (design system)",
+          "title": "Design system",
           "source": [
             "crates/desktop/src/views/design.rs",
             "crates/desktop/src/design.rs"

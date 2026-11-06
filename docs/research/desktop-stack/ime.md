@@ -17,15 +17,15 @@ The inputs below are Korean, typed with the Korean 2-Set input source.
 
 | # | Scenario | How to check | Result |
 |---|---|---|---|
-| 1 | Composition underline | While typing Korean "한", the last character is underlined (being composed) | unchecked |
-| 2 | Candidate window position (Hanja key / ⌥Enter) | After typing Korean "한", ⌥Enter → does the candidate window open near the caret? | unchecked |
-| 3 | Backspace during composition | Korean "한" → ⌫ → "하" → ⌫ → "ㅎ" → ⌫ → empty | unchecked |
-| 4 | Mouse click / focus change during composition | While composing Korean "한", click another input or an empty spot → is the character committed, lost or doubled? | unchecked |
+| 1 | Composition underline | While typing Korean *han* (h → ha → han), the last character is underlined (being composed) | unchecked |
+| 2 | Candidate window position (Hanja key / ⌥Enter) | After typing Korean *han*, ⌥Enter → does the candidate window open near the caret? | unchecked |
+| 3 | Backspace during composition | Korean *han* → ⌫ → *ha* → ⌫ → *h* (the lone consonant) → ⌫ → empty | unchecked |
+| 4 | Mouse click / focus change during composition | While composing Korean *han*, click another input or an empty spot → is the character committed, lost or doubled? | unchecked |
 | 5 | ⌘C / ⌘A during composition | Works without a panic (the process ending)? | unchecked |
-| 6 | Enter: commit vs send | Enter while composing Korean "안녕" → only a commit in the log; `ENTER` on the second Enter | unchecked |
+| 6 | Enter: commit vs send | Enter while composing Korean *annyeong* → only a commit in the log; `ENTER` on the second Enter | unchecked |
 | 7 | First character right after switching English ↔ Korean | Type English → switch with Caps/⌃Space → the first consonant is neither lost nor doubled | unchecked |
 | 8 | A long sentence typed fast | 40+ characters, fast → no characters dropped or out of order | unchecked |
-| 9 | Cursor movement in mixed Korean and English | ←/→/⌥←/⌥→ in "abc한글def" (Korean in the middle) | unchecked |
+| 9 | Cursor movement in mixed Korean and English | ←/→/⌥←/⌥→ in "abc", two Korean syllables, "def" (Korean in the middle) | unchecked |
 
 ## Rendering comparison (not done)
 

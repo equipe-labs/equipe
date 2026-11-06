@@ -1,16 +1,16 @@
 //! `FAKE_DESIGN`: the squad's design system, as a designer keeps it in
 //! `design/` (`docs/DESIGN-SYSTEM.md`) — modelled on T-144's brand guideline
-//! (equipe's own: warm neutrals, one signal blue, Inter and Pretendard), its
+//! (equipe's own: warm neutrals, one signal blue, Inter and a face for each script), its
 //! folders written under `$EQUIPE_HOME/design-system` and read the
 //! daemon's way (`equipe_core::design`), pictures and all.
 //!
 //! - `1`: the squad's, and the web project's own (the site's older palette),
 //!   with its UI map (`fake_daemon/flows.rs`).
 //! - `draft`: the squad's as the desktop has it now (steel blue), and T-144
-//!   in review with its draft (signal blue) — the "검토 중" pill.
+//!   in review with its draft (signal blue) — the "In review" pill.
 //! - `working`: the squad's, its setup at the UI map, and T-378 still at work
 //!   on it in its worktree — two flows partly shot, the designer mid-turn
-//!   (`fake_daemon/flows.rs`, `seed_working`): the "만드는 중" chip and the
+//!   (`fake_daemon/flows.rs`, `seed_working`): the "In the works" chip and the
 //!   empty map that says who is making it.
 //! - `empty`: none yet.
 //!
@@ -20,7 +20,7 @@
 //! the run (the squad's) or in the web project's `taste.md`.
 //!
 //! `FAKE_DESIGN_CHANGE_AFTER=<ms>`: the designer saves new tokens that long
-//! after the first ask — an accent moved, a colour added — for "바뀐 것".
+//! after the first ask — an accent moved, a colour added — for "Changed since you last looked".
 //! The folders are watched as the daemon watches them: edit them by hand and
 //! the screen follows.
 
@@ -48,7 +48,7 @@ fn base() -> PathBuf {
 fn places() -> Vec<Place> {
     let mut out = vec![Place { project: None, draft: None, dir: base().join("squad/design"), live: None, installed: None }];
     match mode().as_deref() {
-        Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "브랜드 가이드라인".into(), working: false }), dir: base().join("t144/design"), live: None, installed: None }),
+        Some("draft") => out.push(Place { project: None, draft: Some(DraftOf { ticket: 144, title: "Brand guidelines".into(), working: false }), dir: base().join("t144/design"), live: None, installed: None }),
         Some("working") => out.push(Place { project: None, draft: Some(DraftOf { ticket: WORKING_TICKET, title: WORKING_TITLE.into(), working: true }), dir: base().join("t378/design"), live: None, installed: None }),
         Some("empty") | None => {}
         Some(_) => {
@@ -60,10 +60,10 @@ fn places() -> Vec<Place> {
     out
 }
 
-const REFRESH_TITLE: &str = "사이트 리프레시 — 강조색과 버튼";
+const REFRESH_TITLE: &str = "Site refresh — accent and buttons";
 /// `working`: the ticket making the squad's UI map.
 pub const WORKING_TICKET: u32 = 378;
-const WORKING_TITLE: &str = "화면 지도 만들기";
+const WORKING_TITLE: &str = "Make the UI map";
 
 /// The ticket in review whose draft is shown: T-144 (`draft`), T-170 (`1`).
 pub fn ticket() -> Option<Ticket> {
@@ -74,7 +74,7 @@ pub fn ticket() -> Option<Ticket> {
             "app",
             "designer",
             WORKING_TITLE,
-            "- [ ] 온보딩·결제 흐름을 flows/flows.json에\n- [ ] 화면마다 상태별로 라이트·다크 찍기",
+            "- [ ] The onboarding and checkout flows in flows/flows.json\n- [ ] Shoot every screen in each state, light and dark",
             &[],
             None,
             None,
@@ -90,10 +90,10 @@ pub fn ticket() -> Option<Ticket> {
             "web",
             "designer",
             REFRESH_TITLE,
-            "- [ ] 강조색을 바이올렛으로\n- [ ] 주 버튼을 더 둥글게\n- [ ] 바뀐 화면 다시 찍기",
+            "- [ ] The accent to violet\n- [ ] A rounder primary button\n- [ ] Shoot the changed screens again",
             &[],
             Some("equipe/t-170-refresh"),
-            Some("강조색을 #6D28D9로 바꾸고 주 버튼을 다듬었습니다. 바뀐 화면 다섯 개를 다시 찍었어요."),
+            Some("Changed the accent to #6D28D9 and refined the primary button. Shot the five changed screens again."),
         );
         t.kind = equipe_core::protocol::TicketKind::Code;
         return Some(t);
@@ -104,11 +104,11 @@ pub fn ticket() -> Option<Ticket> {
             "review",
             "app",
             "designer",
-            "브랜드 가이드라인",
-            "- [ ] 로고·색·서체·목소리 정리\n- [ ] 라이트·다크 대비 AA 이상\n- [ ] `design/`에 토큰과 가이드라인",
+            "Brand guidelines",
+            "- [ ] Logo, colour, type and voice settled\n- [ ] Light and dark contrast at AA or better\n- [ ] Tokens and guidelines in `design/`",
             &[],
             None,
-            Some("Signal blue 안으로 `design/`을 정리했습니다. 색 토큰 라이트·다크, 서체, 간격, 모션, 로고 세 가지."),
+            Some("Set up `design/` on the Signal blue option. Colour tokens light and dark, type, spacing, motion, three logos."),
         );
         t.kind = equipe_core::protocol::TicketKind::Task;
         t.project = None;
@@ -148,16 +148,16 @@ static SQUAD_NOTES: std::sync::Mutex<Vec<TasteNote>> = std::sync::Mutex::new(Vec
 fn seeded_notes() -> Vec<TasteNote> {
     let note = |text: &str, from: TasteFrom, date: &str, confirmed: bool, seen: &[u32]| TasteNote { text: text.into(), from, date: Some(date.into()), confirmed, seen: seen.to_vec(), ..TasteNote::default() };
     vec![
-        note("모서리는 둥글게 — 카드 12, 버튼 8", TasteFrom::Person, "2026-10-21", true, &[]),
-        note("채도 높은 파랑은 싫어함", TasteFrom::SentBack { ticket: 336 }, "2026-10-28", true, &[]),
-        note("여백은 넉넉하게, 한 화면에 하나만 강조", TasteFrom::Answered { ticket: 272 }, "2026-11-01", false, &[]),
-        note("숫자는 고정폭으로 맞춰 정렬", TasteFrom::Noticed { ticket: Some(288) }, "2026-11-03", false, &[301]),
+        note("Round corners — cards 12, buttons 8", TasteFrom::Person, "2026-10-21", true, &[]),
+        note("Dislikes highly saturated blue", TasteFrom::SentBack { ticket: 336 }, "2026-10-28", true, &[]),
+        note("Generous space, one emphasis per screen", TasteFrom::Answered { ticket: 272 }, "2026-11-01", false, &[]),
+        note("Numbers in tabular figures, aligned", TasteFrom::Noticed { ticket: Some(288) }, "2026-11-03", false, &[301]),
     ]
 }
 
 /// What equipe kept of the person's send-backs, as the memory would give it.
 fn sent_backs() -> Vec<equipe_core::protocol::design::Evidence> {
-    let body = "## 2026-10-27 · T-336 (designer)\n- Sent back \u{201c}요금제 페이지\u{201d}: \u{201c}파랑이 너무 쨍해요. 눈이 아파요\u{201d}\n\n## 2026-11-02 · T-288 (designer)\n- Sent back \u{201c}대시보드 표\u{201d}: \u{201c}숫자 줄이 안 맞아서 비교가 안 돼요\u{201d}";
+    let body = "## 2026-10-27 · T-336 (designer)\n- Sent back \u{201c}Pricing page\u{201d}: \u{201c}The blue is too loud. It hurts my eyes\u{201d}\n\n## 2026-11-02 · T-288 (designer)\n- Sent back \u{201c}Dashboard table\u{201d}: \u{201c}The numbers don\u{2019}t line up, so I can\u{2019}t compare them\u{201d}";
     equipe_core::taste::evidence::sent_backs(body)
 }
 
@@ -182,12 +182,12 @@ fn write_decisions(squad: &Path, web: &Path) {
     ];
     for (dir, list) in [
         (squad, vec![
-            d("2026-11-03", "로고 방향", "점 하나 — 소문자 e와 브랜드 점", "mark-dot.svg", &["네 점 그대로", "워드마크만"], Some("작아져도 알아볼 수 있으면 좋겠어요"), 144),
-            d("2026-11-01", "히어로 레이아웃", "B — 한 단, 여백 넉넉히", "hero-airy.svg", &["A — 두 단", "C — 꽉 찬 사진"], Some("좀 더 숨 쉬게"), 272),
-            d("2026-10-28", "강조 색", "Signal blue #3F6FF5", "accent-signal.svg", &["Steel #2E5C8A"], Some("너무 쨍한 파랑 말고, 점 하나에만"), 336),
-            d("2026-10-21", "입력창 모서리", "16 — 둥글게", "input-round.svg", &["8", "각지게"], None, 301),
+            d("2026-11-03", "Logo direction", "One dot — a lowercase e and the brand dot", "mark-dot.svg", &["Four dots as they are", "Wordmark only"], Some("I'd like it to stay recognisable when small"), 144),
+            d("2026-11-01", "Hero layout", "B — one column, generous space", "hero-airy.svg", &["A — two columns", "C — a full-bleed photo"], Some("Let it breathe a little more"), 272),
+            d("2026-10-28", "Accent colour", "Signal blue #3F6FF5", "accent-signal.svg", &["Steel #2E5C8A"], Some("Not a loud blue — just on the one dot"), 336),
+            d("2026-10-21", "Input corners", "16 — round", "input-round.svg", &["8", "Square"], None, 301),
         ]),
-        (web, vec![d("2026-10-15", "사이트 일러스트", "네 점", "four-dots.svg", &["사진"], Some("우리 이야기를 점으로"), 120)]),
+        (web, vec![d("2026-10-15", "Site illustration", "Four dots", "four-dots.svg", &["Photos"], Some("Our story told in dots"), 120)]),
     ] {
         std::fs::create_dir_all(dir.join("decisions")).unwrap();
         for (name, body) in &pictures {
@@ -198,7 +198,7 @@ fn write_decisions(squad: &Path, web: &Path) {
         }
     }
     std::fs::write(web.join(store::NOTES_FILE), format!("{}
-- 사진보다 점과 선 _(the person, 2026-10-15)_
+- Dots and lines over photos _(the person, 2026-10-15)_
 ", store::TEMPLATE)).unwrap();
 }
 
@@ -233,7 +233,7 @@ fn change_taste(project: Option<&str>, change: &equipe_core::protocol::design::T
         None => {
             let _ = taste();
             let mut kept = SQUAD_NOTES.lock().unwrap();
-            *kept = notes::change(&kept, change, &today).map_err(|why| equipe_core::i18n::core(equipe_core::i18n::Lang::Ko).fill(why.key(), &[("max", equipe_core::protocol::design::NOTE_MAX.to_string())]))?;
+            *kept = notes::change(&kept, change, &today).map_err(|why| equipe_core::i18n::core(crate::lang()).fill(why.key(), &[("max", equipe_core::protocol::design::NOTE_MAX.to_string())]))?;
             Ok(())
         }
         Some(_) => {
@@ -303,15 +303,15 @@ fn tokens(p: &Palette) -> String {
     let side = |light: bool| {
         let v = |pair: (&str, &str)| if light { pair.0.to_owned() } else { pair.1.to_owned() };
         serde_json::json!({
-            "bg": { "$value": v(p.bg), "$description": "페이지·앱 바탕" },
-            "surface": { "$value": v(p.surface), "$description": "카드·시트" },
-            "sunken": { "$value": v(p.sunken), "$description": "코드·눌린 면" },
-            "text": { "$value": v(p.text), "$description": "본문·제목" },
-            "muted": { "$value": v(p.muted), "$description": "보조 글자" },
-            "accent": { "$value": v(p.accent), "$description": "링크·선택·포커스" },
-            "onAccent": { "$value": v(p.on_accent), "$description": "채운 accent 위 글자" },
+            "bg": { "$value": v(p.bg), "$description": "Page and app background" },
+            "surface": { "$value": v(p.surface), "$description": "Cards and sheets" },
+            "sunken": { "$value": v(p.sunken), "$description": "Code and pressed surfaces" },
+            "text": { "$value": v(p.text), "$description": "Body and headings" },
+            "muted": { "$value": v(p.muted), "$description": "Secondary text" },
+            "accent": { "$value": v(p.accent), "$description": "Links, selection, focus" },
+            "onAccent": { "$value": v(p.on_accent), "$description": "Text on a filled accent" },
             "focus": { "$value": if light { "{color.light.accent}" } else { "{color.dark.accent}" } },
-            "line": { "$value": if light { "rgba(10,10,12,.14)" } else { "rgba(233,230,223,.14)" }, "$description": "헤어라인" }
+            "line": { "$value": if light { "rgba(10,10,12,.14)" } else { "rgba(233,230,223,.14)" }, "$description": "Hairline" }
         })
     };
     let tokens = serde_json::json!({
@@ -321,22 +321,22 @@ fn tokens(p: &Palette) -> String {
             "light": side(true),
             "dark": side(false),
             "status": {
-                "ok": { "$value": "#1F6B33", "$extensions": { "mode": { "dark": "#7FCB8E" } }, "$description": "완료" },
-                "work": { "$value": "#825600", "$extensions": { "mode": { "dark": "#E2B865" } }, "$description": "진행 중" },
-                "wait": { "$value": "#A04610", "$extensions": { "mode": { "dark": "#EC9A62" } }, "$description": "내 차례·허락 대기" },
-                "err": { "$value": "#AD2E27", "$extensions": { "mode": { "dark": "#EE7B74" } }, "$description": "오류" }
+                "ok": { "$value": "#1F6B33", "$extensions": { "mode": { "dark": "#7FCB8E" } }, "$description": "Done" },
+                "work": { "$value": "#825600", "$extensions": { "mode": { "dark": "#E2B865" } }, "$description": "In progress" },
+                "wait": { "$value": "#A04610", "$extensions": { "mode": { "dark": "#EC9A62" } }, "$description": "Your turn, waiting for permission" },
+                "err": { "$value": "#AD2E27", "$extensions": { "mode": { "dark": "#EE7B74" } }, "$description": "Error" }
             },
             "link": { "$value": "{color.accent}" }
         },
         "brand": {
             "$type": "color",
-            "dot": { "$value": p.dot.0, "$extensions": { "mode": { "dark": p.dot.1 } }, "$description": "브랜드 점 — 로고 전용 그래픽" },
-            "tile": { "$value": "#0A0A0C", "$description": "마크 타일 (void)" },
-            "mark-fg": { "$value": "#EFEDE7", "$description": "마크 글자 (bone)" }
+            "dot": { "$value": p.dot.0, "$extensions": { "mode": { "dark": p.dot.1 } }, "$description": "The brand dot — a graphic for the logo only" },
+            "tile": { "$value": "#0A0A0C", "$description": "Mark tile (void)" },
+            "mark-fg": { "$value": "#EFEDE7", "$description": "Mark letter (bone)" }
         },
         "font": {
             "$type": "fontFamily",
-            "sans": { "$value": ["Inter", "Pretendard Variable", "Apple SD Gothic Neo", "system-ui", "sans-serif"] },
+            "sans": { "$value": ["Inter", "Noto Sans JP", "Pretendard Variable", "Noto Sans SC", "system-ui", "sans-serif"] },
             "mono": { "$value": ["JetBrains Mono", "ui-monospace", "Menlo", "monospace"] },
             "weight": {
                 "$type": "fontWeight",
@@ -347,10 +347,10 @@ fn tokens(p: &Palette) -> String {
         },
         "type": {
             "$type": "typography",
-            "display": { "$value": { "fontFamily": "{font.sans}", "fontSize": "56px", "fontWeight": "{font.weight.bold}", "lineHeight": 1.05, "letterSpacing": "-0.02em" }, "$description": "사이트 H1 (모바일 36)" },
+            "display": { "$value": { "fontFamily": "{font.sans}", "fontSize": "56px", "fontWeight": "{font.weight.bold}", "lineHeight": 1.05, "letterSpacing": "-0.02em" }, "$description": "Site H1 (36 on mobile)" },
             "title": { "$value": { "fontFamily": "{font.sans}", "fontSize": "32px", "fontWeight": "{font.weight.bold}", "lineHeight": 1.2 } },
             "heading": { "$value": { "fontFamily": "{font.sans}", "fontSize": "18px", "fontWeight": "{font.weight.semibold}", "lineHeight": "26px" } },
-            "body": { "$value": { "fontFamily": "{font.sans}", "fontSize": "15px", "fontWeight": "{font.weight.regular}", "lineHeight": "25px" }, "$description": "본문 15/25 — 한국어 1.65 행간" },
+            "body": { "$value": { "fontFamily": "{font.sans}", "fontSize": "15px", "fontWeight": "{font.weight.regular}", "lineHeight": "25px" }, "$description": "Body 15/25 — 1.65 line height for CJK" },
             "small": { "$value": { "fontFamily": "{font.sans}", "fontSize": "13px", "fontWeight": "{font.weight.regular}", "lineHeight": "20px" } },
             "code": { "$value": { "fontFamily": "{font.mono}", "fontSize": "12.5px", "fontWeight": 400, "lineHeight": "19px" } }
         },
@@ -361,29 +361,29 @@ fn tokens(p: &Palette) -> String {
         },
         "radius": {
             "$type": "dimension",
-            "sm": { "$value": "6px", "$description": "칩·작은 버튼" },
-            "md": { "$value": "8px", "$description": "컨트롤·메뉴·줄" },
-            "lg": { "$value": "12px", "$description": "카드" },
-            "xl": { "$value": "16px", "$description": "입력창·대화 상자" },
-            "tile": { "$value": "14px", "$description": "마크 타일 (64 기준 22%)" }
+            "sm": { "$value": "6px", "$description": "Chips, small buttons" },
+            "md": { "$value": "8px", "$description": "Controls, menus, rows" },
+            "lg": { "$value": "12px", "$description": "Cards" },
+            "xl": { "$value": "16px", "$description": "Inputs, dialogs" },
+            "tile": { "$value": "14px", "$description": "Mark tile (22% of 64)" }
         },
         "shadow": {
             "$type": "shadow",
             "card": { "$value": { "color": "#0000001A", "offsetX": "0px", "offsetY": "1px", "blur": "3px", "spread": "0px" } },
-            "float": { "$value": [{ "color": "#00000038", "offsetX": "0px", "offsetY": "8px", "blur": "24px", "spread": "-4px" }, { "color": "#0000001A", "offsetX": "0px", "offsetY": "2px", "blur": "6px", "spread": "0px" }], "$description": "메뉴·팝오버" },
+            "float": { "$value": [{ "color": "#00000038", "offsetX": "0px", "offsetY": "8px", "blur": "24px", "spread": "-4px" }, { "color": "#0000001A", "offsetX": "0px", "offsetY": "2px", "blur": "6px", "spread": "0px" }], "$description": "Menus, popovers" },
             "dialog": { "$value": { "color": "#00000047", "offsetX": "0px", "offsetY": "24px", "blur": "48px", "spread": "-12px" } }
         },
         "motion": {
             "duration": {
                 "$type": "duration",
-                "fast": { "$value": "120ms", "$description": "호버·툴팁·누름" },
-                "base": { "$value": "160ms", "$description": "팝오버·메뉴" },
-                "slow": { "$value": "200ms", "$description": "대화 상자·카드 도착" },
-                "slide": { "$value": "180ms", "$description": "사이드바" }
+                "fast": { "$value": "120ms", "$description": "Hover, tooltip, press" },
+                "base": { "$value": "160ms", "$description": "Popovers, menus" },
+                "slow": { "$value": "200ms", "$description": "A dialog or card arriving" },
+                "slide": { "$value": "180ms", "$description": "Sidebar" }
             },
             "ease": {
                 "$type": "cubicBezier",
-                "out": { "$value": [0.33, 1, 0.68, 1], "$description": "하나뿐인 곡선 — 빨리 시작, 부드럽게 도착" },
+                "out": { "$value": [0.33, 1, 0.68, 1], "$description": "The one curve — starts fast, lands softly" },
                 "slide": { "$value": [0.22, 1, 0.36, 1] },
                 "in-out": { "$value": "ease-in-out" }
             },
@@ -471,7 +471,7 @@ fn social_card(dot: &str) -> image::RgbaImage {
 
 /// The design systems as the daemon would send them now.
 fn event() -> Event {
-    let (mut systems, folder) = folder::catalog_of(&places(), Lang::Ko);
+    let (mut systems, folder) = folder::catalog_of(&places(), crate::lang());
     super::flows::dress(&mut systems);
     // As the daemon does while a draft is in review: what each picture holds.
     folder::fingerprint(&mut systems);
@@ -508,12 +508,12 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
             let version = versions(project.as_deref()).into_iter().find(|v| v.commit.starts_with(commit.as_str()));
             let event = match version {
                 Some(v) => {
-                    let (title, body) = equipe_core::design::versions::restore(&v, Lang::Ko);
+                    let (title, body) = equipe_core::design::versions::restore(&v, crate::lang());
                     let mut t = super::ticket(171, "todo", project.as_deref().unwrap_or("app"), "designer", &title, &body, &[], None, None);
                     t.kind = if project.is_some() { equipe_core::protocol::TicketKind::Code } else { equipe_core::protocol::TicketKind::Task };
                     Event::TicketChanged { squad: "demo".into(), ticket: t }
                 }
-                None => Event::Error { session: None, message: format!("그 디자인 버전({commit})을 찾지 못했어요."), next: None },
+                None => Event::Error { session: None, message: format!("Couldn't find that design version ({commit})."), next: None },
             };
             let _ = events.send(event);
             return true;
@@ -544,7 +544,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                 // The designer moves the accent a step and adds a highlight.
                 let moved = text.replacen("\"#1D4ED8\"", "\"#2251E0\"", 1).replacen("\"#2E5C8A\"", "\"#2B5F94\"", 1).replacen(
                     "\"link\": {",
-                    "\"highlight\": { \"$value\": \"#FFE58A\", \"$extensions\": { \"mode\": { \"dark\": \"#5C4A12\" } }, \"$description\": \"검색 일치\" },\n      \"link\": {",
+                    "\"highlight\": { \"$value\": \"#FFE58A\", \"$extensions\": { \"mode\": { \"dark\": \"#5C4A12\" } }, \"$description\": \"Search match\" },\n      \"link\": {",
                     1,
                 );
                 let _ = std::fs::write(dir.join("tokens.json"), moved);
@@ -567,16 +567,16 @@ fn versions(project: Option<&str>) -> Vec<DesignVersion> {
     use DesignPart::{Flows, Guidelines, Logo, Other, Tokens};
     match project {
         Some(_) => vec![
-            v(1, 1, "결제 화면 오류 상태 다시 찍기", Some(152), &[Flows]),
-            v(2, 3, "검색 결과 빈 상태와 로딩", Some(160), &[Flows]),
-            v(3, 6, "온보딩 화면 지도", Some(142), &[Flows, Guidelines]),
-            v(4, 9, "사이트 토큰을 스쿼드 이름으로 맞춤", Some(131), &[Tokens, Guidelines]),
-            v(5, 21, "the person: 바탕색 조금 따뜻하게", None, &[Tokens]),
-            v(6, 40, "사이트 디자인 토큰 처음", Some(98), &[Tokens, Logo, Other]),
+            v(1, 1, "Shoot the payment screen's error state again", Some(152), &[Flows]),
+            v(2, 3, "Search results empty and loading", Some(160), &[Flows]),
+            v(3, 6, "Onboarding UI map", Some(142), &[Flows, Guidelines]),
+            v(4, 9, "Site tokens renamed to the squad's names", Some(131), &[Tokens, Guidelines]),
+            v(5, 21, "the person: a slightly warmer background", None, &[Tokens]),
+            v(6, 40, "Site design tokens, first", Some(98), &[Tokens, Logo, Other]),
         ],
         None => vec![
-            v(7, 2, "브랜드 가이드라인 v1", Some(144), &[Tokens, Logo, Guidelines]),
-            v(8, 12, "로고 세 가지", Some(120), &[Logo]),
+            v(7, 2, "Brand guidelines v1", Some(144), &[Tokens, Logo, Guidelines]),
+            v(8, 12, "Three logos", Some(120), &[Logo]),
             v(9, 30, "equipe: the squad's folder", None, &[Other]),
         ],
     }
@@ -596,86 +596,86 @@ pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
     equipe_core::visuals::read(Path::new(&ask.path), &roots, ask.max)
 }
 
-const GUIDELINES: &str = r#"# equipe 브랜드 가이드라인 v1
+const GUIDELINES: &str = r#"# equipe brand guidelines v1
 
-상태: **확정 v1** — 사람이 네 가지를 모두 추천안으로 골랐다(D1 ① · D2 A · D3 1 · D4 해요체). 토큰은 `tokens.json`, 그림은 `assets/`.
+Status: **settled v1** — the person picked the recommendation in all four (D1 ① · D2 A · D3 1 · D4 one register per language). Tokens in `tokens.json`, pictures in `assets/`.
 
-## 1. 로고
+## 1. Logo
 
-### 1.1 구성
-- **마크 `e.`**: void `#0A0A0C` 타일 + bone `#EFEDE7` 소문자 `e` + 브랜드 점. 앱 아이콘·파비콘·아바타. 모서리 반지름 = 한 변의 22%.
-- **점의 뜻**: 사이트 4점의 "꽉 찬 점 = 이끄는 사람"을 점 하나로 줄인 것. 4점은 본문 일러스트로 남긴다.
+### 1.1 Parts
+- **Mark `e.`**: a void `#0A0A0C` tile + a bone `#EFEDE7` lowercase `e` + the brand dot. App icon, favicon, avatar. Corner radius = 22% of a side.
+- **What the dot means**: the site's four dots ("the filled dot = the one who leads") brought down to one. The four dots stay as an illustration.
 
-### 1.2 사용 규칙
-- **여백**: 마크 한 변의 ¼ — 안쪽엔 아무것도 들어오지 않는다.
-- **최소 크기**: 마크 16px. 16px에서도 점이 2px 이상 남는다.
-- **배경**: 밝은 바탕에는 글자 `#15161A`, 어두운 바탕에는 bone `#EFEDE7`. 점은 양쪽 모두 `#3F6FF5`.
-- **하지 말 것**: 점·글자 색 바꾸기, 늘이기·기울이기, 그림자·그라데이션, 사진 위에 얹기.
+### 1.2 How to use it
+- **Clear space**: ¼ of the mark's side — nothing comes inside it.
+- **Smallest size**: the mark at 16px. At 16px the dot stays at least 2px.
+- **Background**: on light, letters `#15161A`; on dark, bone `#EFEDE7`. The dot is `#3F6FF5` on both.
+- **Don't**: recolour the dot or the letter, stretch or slant it, add shadows or gradients, or set it on a photo.
 
-## 2. 색
+## 2. Colour
 
-### 2.1 원칙
-1. **색은 둘뿐: 브랜드 파랑(단 하나)과 의미색.** 나머지는 따뜻한 중립(bone·void).
-2. 라이트·다크 모두 같은 **역할 이름**을 쓴다. 값만 모드별로 다르다.
-3. 글자 조합은 WCAG 2.x AA(4.5:1), 그래픽은 3:1 이상. 색만으로 상태를 전달하지 않는다.
+### 2.1 Principles
+1. **Only two kinds of colour: the brand blue (just one) and the status colours.** Everything else is a warm neutral (bone, void).
+2. Light and dark use the same **role names**; only the values differ by mode.
+3. Text pairs meet WCAG 2.x AA (4.5:1), graphics 3:1 or more. Colour alone never carries a state.
 
-### 2.2 역할 토큰
+### 2.2 Role tokens
 
-| 역할 | 라이트 | 다크 | 쓰임 |
+| Role | Light | Dark | Used for |
 |---|---|---|---|
-| `bg` | `#F6F5F1` | `#0A0A0C` | 페이지·앱 바탕 |
-| `surface` | `#FFFFFF` | `#16171A` | 카드·시트 |
-| `text` | `#15161A` | `#EFEDE7` | 본문·제목 |
-| `muted` | `#4F5159` | `#A3A5AB` | 보조 글자 |
-| `accent` | `#1D4ED8` | `#8FB0FF` | 링크·선택·포커스 |
-| `dot` | `#3F6FF5` | `#3F6FF5` | 브랜드 점(로고 전용) |
+| `bg` | `#F6F5F1` | `#0A0A0C` | Page and app background |
+| `surface` | `#FFFFFF` | `#16171A` | Cards and sheets |
+| `text` | `#15161A` | `#EFEDE7` | Body and headings |
+| `muted` | `#4F5159` | `#A3A5AB` | Secondary text |
+| `accent` | `#1D4ED8` | `#8FB0FF` | Links, selection, focus |
+| `dot` | `#3F6FF5` | `#3F6FF5` | The brand dot (logo only) |
 
-> 점(`dot`)의 "배경 대비 3:1"은 그래픽 기준이다. 점을 **글자 색**으로 쓰지 않는다(라이트 bg 위 4.01:1).
+> The dot's "3:1 against the background" is the graphics threshold. Never use the dot as a **text colour** (4.01:1 on the light bg).
 
-### 2.3 의미색
-- amber = 일하는 중, orange = 사람을 기다림, red = 오류, green = 완료. 프로젝트 색으로 쓰지 않는다.
+### 2.3 Status colours
+- amber = at work, orange = waiting on the person, red = error, green = done. Never a project's colour.
 
-## 3. 서체
+## 3. Type
 
-### 3.1 스택
-- **웹**: Inter + Pretendard(ko) + Noto Sans(ja·zh). **앱**: 플랫폼 시스템 글꼴.
-- **모노**: JetBrains Mono, 폴백 `ui-monospace, Menlo`.
-- 굵기: 제목 700(자간 −0.02em, CJK는 0), 본문 400, 버튼·라벨 600.
+### 3.1 Stack
+- **Web**: Inter, with a face made for each script the product speaks (Noto Sans JP for Japanese, Pretendard for Korean, Noto Sans SC/TC for Chinese). **Apps**: the platform's system font.
+- **Mono**: JetBrains Mono, falling back to `ui-monospace, Menlo`.
+- Weights: headings 700 (tracking −0.02em, 0 for CJK), body 400, buttons and labels 600.
 
-### 3.2 한국어
-- `word-break: keep-all`, 본문 행간 1.65. 12px 밑으로 쓰지 않는다.
+### 3.2 Scripts
+- Line breaking by script: Korean `word-break: keep-all`; Japanese and Chinese between characters. CJK body line height 1.65. Never below 12px.
 
-## 4. 간격과 모서리
-- 4 · 8 · 12 · 16 · 24 · 32 · 48 · 64. 그 사이 값은 쓰지 않는다.
-- 반지름: 칩 6, 컨트롤 8, 카드 12, 입력창·대화 상자 16.
+## 4. Space and corners
+- 4 · 8 · 12 · 16 · 24 · 32 · 48 · 64. Nothing in between.
+- Radii: chip 6, control 8, card 12, input and dialog 16.
 
-## 5. 모션
-- 세 길이(120 · 160 · 200ms)와 곡선 하나(ease-out). 사이드바만 180ms quint.
-- "동작 줄이기"를 켜면 끝 상태를 바로 보여 준다.
+## 5. Motion
+- Three durations (120 · 160 · 200ms) and one curve (ease-out). Only the sidebar is 180ms quint.
+- With "Reduce motion" on, the end state shows at once.
 
-## 6. 목소리
-짧게·능동·구체. 사람이 할 일을 먼저. 과장어·느낌표·이모지·ALL CAPS 장식 금지. 한국어는 **해요체**.
+## 6. Voice
+Short, active, concrete. What the person does comes first. No hype words, exclamation marks, emoji or ALL CAPS decoration. One register throughout in every language.
 "#;
 
-const GUIDELINES_STEEL: &str = r#"# equipe 디자인 시스템 (현행)
+const GUIDELINES_STEEL: &str = r#"# equipe design system (current)
 
-데스크톱 앱이 지금 쓰는 값이다. T-144의 브랜드 가이드라인이 받아들여지면 이 폴더가 그 안으로 바뀐다.
+The values the desktop app uses today. Once T-144's brand guidelines are accepted, this folder becomes them.
 
-## 색
-- 강조색은 강철 파랑 `#2E5C8A`(다크 `#B4CDE6`). 점은 크롬 회색.
-- 제품 UI의 채운 주 버튼은 `text` 색 면.
+## Colour
+- The accent is steel blue `#2E5C8A` (dark `#B4CDE6`). The dot is chrome grey.
+- The product UI's filled primary button is a `text`-coloured surface.
 
-## 서체
-- 앱은 시스템 글꼴(Helvetica Neue), 모노는 Menlo.
+## Type
+- The app uses the system font (Helvetica Neue), mono is Menlo.
 "#;
 
-const GUIDELINES_WEB: &str = r#"# 사이트 디자인 토큰
+const GUIDELINES_WEB: &str = r#"# Site design tokens
 
-equipe.im 사이트가 쓰는 값. 스쿼드 디자인 시스템과 이름은 같고 값만 다르다.
+The values the equipe.im site uses. The same names as the squad's design system, only different values.
 
-## 색
-- 바탕은 조금 더 따뜻한 `#FAF8F4`. 링크·버튼은 `#1D4ED8`.
+## Colour
+- The background is a slightly warmer `#FAF8F4`. Links and buttons are `#1D4ED8`.
 
-## 서체
-- Inter(자체 호스팅), 한국어 Pretendard. H1 56/1.05, 본문 18/1.6.
+## Type
+- Inter (self-hosted), with a face for each script. H1 56/1.05, body 18/1.6.
 "#;

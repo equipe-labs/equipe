@@ -142,7 +142,7 @@ cp crates/desktop/macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 # The languages the app speaks, each with its name and its reasons for the
 # microphone and speech recognition: macOS lists equipe under System Settings ›
 # General › Language & Region › Applications, and asks in the person's language.
-langs=(ko en ja zh-Hans zh-Hant es fr de)
+langs=(en de es fr ja ko zh-Hans zh-Hant)
 localizations=""
 for lang in "${langs[@]}"; do
   strings="crates/desktop/macos/lproj/$lang.lproj/InfoPlist.strings"
