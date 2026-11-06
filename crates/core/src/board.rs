@@ -393,18 +393,19 @@ pub const WRITE_PLAN: &str = "write_plan";
 pub const ALONE_AT_MOST: f64 = 20.0;
 
 /// What `estimate` answers: shown — and, when the work would keep one agent
-/// long while no subagent shares it and it could, a push to split it and run
-/// the parts at once. Parallel hands are what a squad is for.
-pub fn estimate_reply(done_in: Option<f64>, shared: bool, has_subagents: bool) -> String {
+/// long while no subagent shares it and its engine has them, a push to split
+/// it and run the parts at once. Parallel hands are what a squad is for.
+pub fn estimate_reply(done_in: Option<f64>, shared: bool, subagents: Option<crate::roles::Subagents>) -> String {
     let shown = "Shown to the person.";
-    match done_in {
-        Some(m) if m > ALONE_AT_MOST && !shared && has_subagents => format!(
+    match (done_in, subagents) {
+        (Some(m), Some(sub)) if m > ALONE_AT_MOST && !shared => format!(
             "{shown} {} minutes is long for one agent. If it splits into parts that don't depend on each other — areas \
-to survey, screens, endpoints, files, test suites — hand them to subagents now, several Agent calls in one message so they \
+to survey, screens, endpoints, files, test suites — hand them to subagents now, several {} calls in one message so they \
 run at once, each told exactly its part and to report back briefly; then put their results together, check them, and \
 call `estimate` again with the shorter time. Parts that change files must not touch the same ones. Only if it truly \
 can't split, carry on alone.",
-            m.round() as u64
+            m.round() as u64,
+            sub.tool()
         ),
         _ => shown.to_owned(),
     }
@@ -984,18 +985,24 @@ pub fn arg_id(args: &Value, key: &str) -> Option<TicketId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::roles::Subagents;
+    use equipe_protocol::Engine;
 
     #[test]
     fn a_long_estimate_with_nobody_sharing_it_is_told_to_split_it_across_subagents() {
         // Long, alone, on an engine with subagents: split it and run the parts at once.
-        let alone = estimate_reply(Some(80.0), false, true);
+        let claude = Some(Subagents { engine: Engine::Claude, at_once: 20 });
+        let alone = estimate_reply(Some(80.0), false, claude);
         assert!(alone.starts_with("Shown to the person."));
-        assert!(alone.contains("80 minutes") && alone.contains("subagents") && alone.contains("one message"), "{alone}");
+        assert!(alone.contains("80 minutes") && alone.contains("subagents") && alone.contains("several Agent calls in one message"), "{alone}");
+        // Codex on OpenAI has subagents too, pushed alike, with its own tool.
+        let codex = estimate_reply(Some(80.0), false, Some(Subagents { engine: Engine::Codex, at_once: 6 }));
+        assert!(codex.contains("80 minutes") && codex.contains("several `spawn_agent` calls in one message") && !codex.contains("Agent calls"), "{codex}");
         // Short, already shared out, or no subagents to hand it to: just shown.
-        assert_eq!(estimate_reply(Some(ALONE_AT_MOST), false, true), "Shown to the person.");
-        assert_eq!(estimate_reply(Some(120.0), true, true), "Shown to the person.");
-        assert_eq!(estimate_reply(Some(120.0), false, false), "Shown to the person.");
-        assert_eq!(estimate_reply(None, false, true), "Shown to the person.");
+        assert_eq!(estimate_reply(Some(ALONE_AT_MOST), false, claude), "Shown to the person.");
+        assert_eq!(estimate_reply(Some(120.0), true, claude), "Shown to the person.");
+        assert_eq!(estimate_reply(Some(120.0), false, None), "Shown to the person.");
+        assert_eq!(estimate_reply(None, false, claude), "Shown to the person.");
     }
 
     /// Every ticket number `ticket_ref` finds in `text`, in order.

@@ -66,11 +66,11 @@ fn refused(text: impl Into<String>) -> ToolResult {
 static NEXT_WAITER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Runtime {
-    /// Whether `session`'s engine has no subagents of its own, so equipe's
-    /// helpers stand in: Codex's CLI on another provider.
+    /// Whether `session`'s engine runs tools but no subagents of its own,
+    /// so equipe's helpers stand in: Codex's CLI on a provider other than
+    /// OpenAI. The same word as its charter's ([`subagents_of`]).
     pub(super) fn helpers_offered(&self, session: &Session) -> bool {
-        let other_provider = self.config.nemotron.is_some() && session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
-        helpers::offered(session.engine, session.codex.is_none(), other_provider)
+        has_tools(session) && subagents_of(session, None).is_none()
     }
 
     /// The conversation a member's call is about: its own when that works
@@ -95,6 +95,10 @@ impl Runtime {
         }
         if !session.is_working() {
             let _ = reply.send(refused("Helpers work during your turn: start them as you work."));
+            return;
+        }
+        if self.config.nemotron.is_none() {
+            let _ = reply.send(refused("Your model's provider isn't set up on this machine: helpers can't start."));
             return;
         }
         let Some(brief) = board::arg_str(&call.arguments, "brief").map(str::trim).filter(|b| !b.is_empty()).map(str::to_owned) else {

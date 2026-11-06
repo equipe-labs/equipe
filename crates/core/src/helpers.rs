@@ -79,11 +79,13 @@ pub fn tool_timeout_secs() -> u64 {
     limits().wait.as_secs() + 60
 }
 
-/// Whether a member gets helpers: only on an engine with no subagents of its
-/// own — Codex's CLI (`codex_cli`, not equipe's own Codex sign-in, which
-/// runs no tools) on another provider than OpenAI (`other_provider`).
-pub fn offered(engine: Engine, codex_cli: bool, other_provider: bool) -> bool {
-    engine == Engine::Codex && codex_cli && other_provider
+/// Whether a member gets helpers: only one whose engine runs tools
+/// (`has_tools`: Claude Code, or Codex's CLI — not equipe's own Codex
+/// sign-in, which only answers) but no subagents of its own, as
+/// [`crate::roles::Subagents::of`] says: today Codex's CLI on a provider
+/// other than OpenAI (`other_provider`), whichever it is.
+pub fn offered(engine: Engine, has_tools: bool, other_provider: bool) -> bool {
+    has_tools && crate::roles::Subagents::of(engine, has_tools, other_provider, None).is_none()
 }
 
 /// A member's tools on the board's server: its role's, and — when its
@@ -197,6 +199,8 @@ pub fn request<'a>(
         writable: &[],
         env,
         provider: Some(provider),
+        // None of its own on another provider, nor any to cap.
+        subagents: None,
     }
 }
 
@@ -448,7 +452,7 @@ mod tests {
     fn only_codex_on_another_provider_gets_helpers() {
         assert!(offered(Engine::Codex, true, true), "Codex's CLI on Nebius: no subagents of its own");
         assert!(!offered(Engine::Codex, true, false), "Codex on OpenAI keeps its multi_agent");
-        assert!(!offered(Engine::Claude, false, false) && !offered(Engine::Claude, false, true), "Claude Code keeps its Agent tool");
+        assert!(!offered(Engine::Claude, true, false) && !offered(Engine::Claude, true, true), "Claude Code keeps its Agent tool");
         assert!(!offered(Engine::Codex, false, true), "equipe's own Codex sign-in runs no tools");
     }
 

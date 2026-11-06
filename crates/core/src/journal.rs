@@ -618,6 +618,16 @@ impl Journal {
         self.set_meta("pm_accepts", if on { "on" } else { "off" })
     }
 
+    /// How many subagents each member runs at once, where its engine has
+    /// them, as the person set it; `None`: each engine's own.
+    pub fn subagents_at_once(&self) -> Option<u32> {
+        self.meta("subagents_at_once").and_then(|n| n.parse().ok()).map(equipe_protocol::subagents_at_once)
+    }
+
+    pub fn set_subagents_at_once(&self, at_once: Option<u32>) -> Result<()> {
+        self.set_meta("subagents_at_once", &at_once.map(|n| equipe_protocol::subagents_at_once(n).to_string()).unwrap_or_default())
+    }
+
     /// What new members of a role start with on an engine, where the person
     /// set it; every other role takes equipe's recommendation.
     pub fn role_models(&self) -> Vec<equipe_protocol::RoleModel> {
@@ -1448,6 +1458,22 @@ mod tests {
             tokens: 0,
             open: true,
         }
+    }
+
+    #[test]
+    fn a_squad_keeps_how_many_subagents_a_member_runs_at_once_within_what_engines_take() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        assert_eq!(j.subagents_at_once(), None, "unset: each engine's own");
+        j.set_subagents_at_once(Some(4)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(4));
+        // Never none (both engines refuse 0), never past what equipe offers.
+        j.set_subagents_at_once(Some(0)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(1));
+        j.set_subagents_at_once(Some(500)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(equipe_protocol::MOST_SUBAGENTS_AT_ONCE));
+        // Back to each engine's own.
+        j.set_subagents_at_once(None).unwrap();
+        assert_eq!(j.subagents_at_once(), None);
     }
 
     #[test]
