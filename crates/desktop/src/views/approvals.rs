@@ -152,6 +152,7 @@ pub fn noun(tool: &str) -> &'static str {
         equipe_core::desktop_gate::SEND => t!("approvals.noun_send"),
         equipe_core::permissions::BROWSER_CODE => t!("approvals.noun_browser_code"),
         SIGN_IN => t!("approvals.noun_sign_in"),
+        equipe_core::phone::INSTALL => t!("approvals.noun_install"),
         _ => t!("approvals.noun_other"),
     }
 }
@@ -524,6 +525,14 @@ mod tests {
         q.resolve(1);
         q.forget_answers();
         assert_eq!(q.ids(), vec![2]);
+    }
+
+    #[test]
+    fn installing_a_tool_is_named_and_never_allowed_always() {
+        let install = approval(1, 2, equipe_core::phone::INSTALL, "Install AXe 1.8.0 …");
+        let card = Card::of(&install);
+        assert_eq!(card.noun, equipe_core::t!("approvals.noun_install"));
+        assert_eq!(card.always, None, "asked each time it comes up, which is once");
     }
 
     #[test]

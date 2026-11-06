@@ -40,7 +40,9 @@ Asked for (`disk_scan`, `equipe disk`), within a 20-second budget — never the 
   `DerivedData/`, `.turbo/` up to three levels down, only what git ignores there).
 - **Members' build folders** (`~/.equipe/cache/build/<squad>/<member>`, their
   `CARGO_TARGET_DIR`).
-- **equipe's own**: logs, the members' browser, journals, uploads.
+- **equipe's own**: logs, the members' browser, journals, uploads, and each ticket's phone
+  recordings (`<squad home>/recordings/T-<n>/`, given back once the ticket is done or
+  cancelled; see [mobile-qa.md](./mobile-qa.md)).
 - **Build output in the squads' projects**, other tools' worktrees there included
   (`.claude/worktrees/*`, `.codex/worktrees/*`): the person's, so reported with a command.
 - **The Mac's caches**, reported only, with the command that clears each: Xcode DerivedData,
