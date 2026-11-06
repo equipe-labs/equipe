@@ -16,6 +16,9 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test (${{ matrix.os }})
@@ -25,11 +28,14 @@ jobs:
         os: [macos-15, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The desktop app pulls in GPUI and its platform toolchain; the CLI is
       # what ships, so CI covers everything else.
       - run: cargo test --workspace --exclude equipe-desktop --locked
@@ -41,8 +47,10 @@ jobs:
       run:
         working-directory: relay
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
@@ -54,8 +62,17 @@ jobs:
   install-script:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - run: shellcheck -s sh install.sh paste-setup.sh
+      # Every action pinned to a full commit SHA: a tag can be moved under us.
+      - name: Actions are pinned
+        run: |
+          if grep -rnE '^\s*-?\s*uses:\s' .github/workflows | grep -vE 'uses:\s+(\./|[^@[:space:]]+@[0-9a-f]{40}(\s|$))'; then
+            echo "::error::Pin these actions to a full commit SHA (with the version in a comment)"
+            exit 1
+          fi
 
   # The release's builds, on main, so their caches live where tag runs can
   # read them: what a tag run saves stays with that tag and no later release
@@ -93,14 +110,17 @@ jobs:
             key: release-desktop-x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: musl toolchain
         if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ${{ matrix.key }}
           cache-workspace-crates: ${{ matrix.package == 'equipe-desktop' }}
