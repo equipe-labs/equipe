@@ -85,7 +85,7 @@ impl LineWrapper {
                             }
                         } else {
                             // CJK may not be space separated, e.g.: `Hello world你好世界`
-                            if c != ' ' && first_non_whitespace_ix.is_some() {
+                            if c != ' ' && first_non_whitespace_ix.is_some() && Self::may_break_between(prev_c, c) {
                                 last_candidate_ix = ix;
                                 last_candidate_width = width;
                             }
@@ -433,7 +433,7 @@ impl LineWrapper {
                     last_candidate_ix = ix;
                     last_candidate_width = width;
                 }
-            } else if c != ' ' && first_non_whitespace_ix.is_some() {
+            } else if c != ' ' && first_non_whitespace_ix.is_some() && Self::may_break_between(prev_c, c) {
                 last_candidate_ix = ix;
                 last_candidate_width = width;
             }
@@ -547,6 +547,19 @@ impl LineWrapper {
 
         // Non-breaking glue characters
         matches!(c, '\u{202F}' | '\u{00A0}' | '\u{2011}')
+    }
+
+    /// equipe: Japanese and Chinese break between any two characters, but
+    /// not after an opening bracket nor before closing punctuation (kinsoku
+    /// shori; UAX #14 LB13, LB14, LB30): `以外（` never ends a line and `）は`
+    /// or `、` never starts one.
+    pub(crate) fn may_break_between(prev: char, c: char) -> bool {
+        let opens = matches!(prev, '（' | '「' | '『' | '【' | '〈' | '《' | '〔' | '［' | '｛' | '〖' | '〘');
+        let closes = matches!(
+            c,
+            '）' | '」' | '』' | '】' | '〉' | '》' | '〕' | '］' | '｝' | '〗' | '〙' | '、' | '。' | '，' | '．' | '；' | '：' | '！' | '？' | '・'
+        );
+        !opens && !closes
     }
 
     #[inline(always)]
