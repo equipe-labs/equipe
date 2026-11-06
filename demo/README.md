@@ -22,7 +22,7 @@ brew install asciinema agg
 demo/render.sh --headless # builds, records demo/equipe.cast, renders demo/equipe.gif
 ```
 
-Both write the same `demo/equipe.gif`, embedded at the top of the root `README.md`.
+Both write the same `demo/equipe.gif`. (The root `README.md` shows desktop app screenshots instead, drawn offscreen with `scripts/design-shot.sh`.)
 
 ## How it works
 
