@@ -282,8 +282,24 @@ struct Recording {
     name: String,
     path: PathBuf,
     running: Box<dyn Running>,
+    /// When the recorder was started; marks are taken from here, and set to
+    /// the video's own clock when it stops.
     started: Instant,
     marks: Vec<Mark>,
+}
+
+impl Recording {
+    /// Stop it and save it, with its marks on the video's clock: the recorder
+    /// starts writing a moment after it is started, and the video ends when it
+    /// stops, so its start was its length before the stop.
+    fn close(self, d: &dyn Device) -> Result<(PathBuf, Vec<Mark>), String> {
+        let wall = self.started.elapsed().as_secs_f64();
+        let finished = d.finish(self.running, &self.path);
+        let late = frames::duration(&self.path).map_or(0., |length| (wall - length).max(0.));
+        let marks: Vec<Mark> = self.marks.into_iter().map(|m| Mark { at: (m.at - late).max(0.), ..m }).collect();
+        save_marks(&self.path, &marks);
+        finished.map(|()| (self.path, marks))
+    }
 }
 
 struct Seat {
@@ -354,8 +370,7 @@ fn put_away(exec: &dyn Exec, seat: &mut Seat) {
     if let Some(rec) = seat.recording.take()
         && let Ok(d) = device(exec, seat, None)
     {
-        let _ = d.finish(rec.running, &rec.path);
-        save_marks(&rec.path, &rec.marks);
+        let _ = rec.close(d.as_ref());
     }
     match seat.platform {
         Platform::Ios => ios::shutdown(exec, &seat.id),
@@ -405,11 +420,12 @@ pub fn call(phones: &Phones, exec: &dyn Exec, c: &Call, name: &str, args: &Value
         && seat.recording.as_ref().is_some_and(|r| r.started.elapsed() > RECORDING_MAX)
     {
         let rec = seat.recording.take().expect("checked");
+        let name = rec.name.clone();
         if let Ok(d) = device(exec, seat, axe.clone()) {
-            let _ = d.finish(rec.running, &rec.path);
+            let _ = rec.close(d.as_ref());
         }
-        save_marks(&rec.path, &rec.marks);
-        said = format!("(Your recording {} ran past {} minutes and was stopped and saved.)\n", rec.name, RECORDING_MAX.as_secs() / 60);
+        seat.last = Some(name.clone());
+        said = format!("(Your recording {name} ran past {} minutes and was stopped and saved.)\n", RECORDING_MAX.as_secs() / 60);
     }
     if name == START {
         return start(exec, c, args, &mut seats, axe).map_or_else(|e| Outcome::Done(ToolResult::error(e)), |t| Outcome::Done(ToolResult::ok(format!("{said}{t}"))));
@@ -631,7 +647,7 @@ fn act(exec: &dyn Exec, seat: &mut Seat, axe: Option<String>, args: &Value) -> R
             loop {
                 let here = screen().is_ok_and(|s| tree::has(&s, &t));
                 if here != gone {
-                    break format!("{} {} ", t.describe(), if gone { "is gone" } else { "is on the screen" });
+                    break format!("{} {}", t.describe(), if gone { "is gone" } else { "is on the screen" });
                 }
                 if Instant::now() >= until {
                     return Err(format!(
@@ -691,22 +707,22 @@ fn record(exec: &dyn Exec, seat: &mut Seat, c: &Call, args: &Value) -> Result<To
                 .find(|n| !c.recordings.join(format!("{n}.mp4")).exists())
                 .unwrap_or(base);
             let path = c.recordings.join(format!("{name}.mp4"));
+            let started = Instant::now();
             let running = d.record(&path)?;
             // The recorder takes a moment to start: the flow's first step waits for it.
             exec.sleep(Duration::from_millis(1200));
-            seat.recording = Some(Recording { name: name.clone(), path: path.clone(), running, started: Instant::now(), marks: Vec::new() });
+            seat.recording = Some(Recording { name: name.clone(), path: path.clone(), running, started, marks: Vec::new() });
             Ok(ToolResult::ok(format!("Recording {name} to {}. Act through the flow (give each action its `step`), then `record` `stop`.", path.display())))
         }
         "stop" => {
             let rec = seat.recording.take().ok_or("You aren't recording.")?;
-            d.finish(rec.running, &rec.path)?;
-            save_marks(&rec.path, &rec.marks);
             seat.last = Some(rec.name.clone());
-            let length = frames::duration(&rec.path).map(frames::clock).unwrap_or_else(|| "?".into());
-            let marks: Vec<String> = rec.marks.iter().map(|m| format!("{} {}", frames::clock(m.at), m.what)).collect();
+            let (path, marks) = rec.close(d.as_ref())?;
+            let length = frames::duration(&path).map(frames::clock).unwrap_or_else(|| "?".into());
+            let marks: Vec<String> = marks.iter().map(|m| format!("{} {}", frames::clock(m.at), m.what)).collect();
             Ok(ToolResult::ok(format!(
                 "Saved {} ({length}). Marked: {}. Next: `frames` to check each step.",
-                rec.path.display(),
+                path.display(),
                 if marks.is_empty() { "nothing".to_owned() } else { marks.join("; ") }
             )))
         }

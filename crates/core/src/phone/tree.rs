@@ -171,16 +171,14 @@ fn quoted(s: &str) -> String {
 }
 
 /// The screen as a member reads it: one line per element that says something
-/// and is on screen — `Button "Pay" id=pay @ 20,700 362×50` — nested by
-/// indent, the same thing said twice once, at most [`COMPACT_LINES`].
+/// and is on screen — `Button "Pay" id=pay @ 20,700 362×50` — flat,
+/// in the tree's reading order (unnamed containers between make nesting
+/// misleading), the same thing said twice once, at most [`COMPACT_LINES`].
 pub fn compact(screen: &Screen) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut seen: Vec<(String, Option<String>, Option<String>, i64, i64)> = Vec::new();
     let mut left_out = 0;
-    // Depth relative to the shallowest element shown, so the indent stays small.
     let shown: Vec<&Element> = screen.elements.iter().filter(|e| e.named() && e.frame.visible(screen.size) && e.kind != "Application").collect();
-    let base = shown.iter().map(|e| e.depth).min().unwrap_or(0);
-    let mut depths: Vec<usize> = Vec::new();
     for e in shown {
         let key = (e.kind.clone(), e.label.clone(), e.value.clone(), e.frame.x.round() as i64, e.frame.y.round() as i64);
         if seen.contains(&key) {
@@ -191,13 +189,7 @@ pub fn compact(screen: &Screen) -> String {
             left_out += 1;
             continue;
         }
-        // Indent by nesting among the lines shown, two spaces a level, at most four levels.
-        while depths.last().is_some_and(|d| *d >= e.depth) {
-            depths.pop();
-        }
-        let indent = "  ".repeat(depths.len().min(4));
-        depths.push(e.depth.max(base));
-        let mut line = format!("{indent}{}", e.kind);
+        let mut line = e.kind.clone();
         if let Some(label) = &e.label {
             line.push(' ');
             line.push_str(&quoted(label));
@@ -358,7 +350,7 @@ mod tests {
         assert!(text.contains("TextField \"Coupon\" value=\"SAVE10\""), "{text}");
         assert!(!text.contains("Hidden"), "off screen: left out\n{text}");
         assert!(!text.contains("Application"), "{text}");
-        assert!(text.contains("  StaticText \"Pay\""), "nested under its button: {text}");
+        assert!(text.contains("\nStaticText \"Pay\""), "its button's text too, on a line of its own: {text}");
     }
 
     #[test]

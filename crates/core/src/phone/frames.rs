@@ -12,14 +12,17 @@ use image::{GrayImage, RgbImage, imageops::FilterType};
 /// A frame's longest side when it is saved for a member and the person: sharp
 /// enough to read a phone's text, small enough to send.
 pub const SAVED_SIDE: u32 = 1200;
-/// The small copies compared to find changes.
-const PROBE_SIDE: u32 = 64;
+/// The small copies compared to find changes, and the blocks they are compared in.
+const PROBE_SIDE: u32 = 128;
+const BLOCK: u32 = 8;
 /// At most this many samples across a video, at least this far apart.
 const SAMPLES: usize = 240;
 const SAMPLE_EVERY: f64 = 0.25;
-/// How different two samples are (mean absolute grey difference, 0–255) for
-/// the screen to have changed, and how still for it to have settled.
-const CHANGED: f64 = 6.0;
+/// How different two samples are (the most any block of them differs, as a
+/// mean absolute grey difference, 0–255) for the screen to have changed, and
+/// how still for it to have settled. By block, so a digit changing in a
+/// counter counts as a change, where a whole-frame mean would drown it.
+const CHANGED: f64 = 4.0;
 const STILL: f64 = 1.5;
 
 /// The times to sample a video of `duration` seconds at.
@@ -32,13 +35,27 @@ pub fn sample_times(duration: f64) -> Vec<f64> {
     (0..=n).map(|i| (i as f64 * step).min((duration - 0.05).max(0.))).collect()
 }
 
-/// How different two small grey frames are: the mean absolute difference.
+/// How different two small grey frames are: the mean absolute difference of
+/// the block of [`BLOCK`]×[`BLOCK`] pixels that differs most.
 pub fn difference(a: &GrayImage, b: &GrayImage) -> f64 {
     if a.dimensions() != b.dimensions() || a.is_empty() {
         return 255.;
     }
-    let sum: u64 = a.pixels().zip(b.pixels()).map(|(p, q)| u64::from(p.0[0].abs_diff(q.0[0]))).sum();
-    sum as f64 / f64::from(a.width() * a.height())
+    let (w, h) = a.dimensions();
+    let mut most: f64 = 0.;
+    for by in (0..h).step_by(BLOCK as usize) {
+        for bx in (0..w).step_by(BLOCK as usize) {
+            let (mut sum, mut n) = (0u64, 0u64);
+            for y in by..(by + BLOCK).min(h) {
+                for x in bx..(bx + BLOCK).min(w) {
+                    sum += u64::from(a.get_pixel(x, y).0[0].abs_diff(b.get_pixel(x, y).0[0]));
+                    n += 1;
+                }
+            }
+            most = most.max(sum as f64 / n.max(1) as f64);
+        }
+    }
+    most
 }
 
 /// A small grey copy, to compare.
@@ -107,10 +124,16 @@ pub fn choose(duration: f64, settled: &[f64], marks: &[Mark], asked: &[f64], max
     for t in asked {
         picked.push((clamp(*t), Why::Asked, 0));
     }
-    for mark in marks {
+    for (i, mark) in marks.iter().enumerate() {
         picked.push((clamp(mark.at - 0.15), Why::Before(mark.what.clone()), 1));
-        // The screen it led to: the first settled moment after it, else a second on.
-        let after = settled.iter().copied().find(|t| *t > mark.at + 0.1).filter(|t| *t < mark.at + 8.).unwrap_or(mark.at + 1.0);
+        // The screen it led to, before the next action: the first moment it
+        // settled after it, else a second on (or just before the next action).
+        let next = marks.get(i + 1).map_or(duration, |m| m.at);
+        let after = settled
+            .iter()
+            .copied()
+            .find(|t| *t > mark.at + 0.1 && *t < next)
+            .unwrap_or_else(|| (mark.at + 1.0).min(next - 0.3).max(mark.at + 0.2));
         picked.push((clamp(after), Why::After(mark.what.clone()), 1));
     }
     for t in settled {
