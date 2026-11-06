@@ -45,11 +45,12 @@ there writes `design/tokens.json` (light as `$value`, dark in
 ### Counts and what waits (equipe's own screens)
 
 How the desktop app shows that something waits on the person, derived from
-`design/guidelines.md` — "사람의 승인이 가장 크게 보인다 … 주 행동은 한 영역에
-하나" (principle 1), "색만으로 말하지 않는다. 상태는 색 + 기호 + 글자"
-(principle 2), "색은 둘뿐: 브랜드 파랑(단 하나)과 의미색. 나머지는 따뜻한 중립"
-(§2.1), orange (`wait`) = "사람을 기다림" (§2.2), and brand §4: icons follow
-the text colour, "색을 쓰는 건 상태 아이콘(ok/work/wait/err)뿐":
+`design/guidelines.md` — "The person's approval shows the most … an area has
+one primary action" (principle 1), "Never say it with colour alone. A status is
+colour + symbol + words" (principle 2), "Only two kinds of colour: the brand
+blue (just one) and the semantic colours. Everything else is warm neutrals"
+(§2.1), orange (`wait`) = "waiting on the person" (§2.2), and brand §4: icons
+follow the text colour, "Colour is only for the status icons (`ok/work/wait/err`)":
 
 1. **One filled badge.** The total of what waits on the person (the sidebar's
    Needs you) is the only count drawn as a filled `wait` pill, figures in

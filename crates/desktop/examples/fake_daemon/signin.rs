@@ -1,10 +1,10 @@
 //! A turn that lost its engine's sign-in, and its card, as the daemon would
 //! tell it — nothing is run, nothing is signed in. `FAKE_SIGNIN`:
 //! `outside` — the daemon runs outside the Mac's login session (started over
-//! SSH): "로그인 세션에서 다시 띄우기" moves it, and 2.5 s later Claude Code
+//! SSH): "Start again in the login session" moves it, and 2.5 s later Claude Code
 //! works and the turn carries on. `outside_stuck` — the same, with no login
 //! service to move it with. `locked` — the login Keychain is locked;
-//! "다시 확인" finds it unlocked the second time. `expired` — signed out:
+//! "Check again" finds it unlocked the second time. `expired` — signed out:
 //! the sign-in shows its page, and a pasted code signs it in. `failed` — the
 //! pasted code is refused. `missing` — Claude Code isn't installed.
 //! `unknown` — it couldn't tell. `back` — signed in again, the turn carried
@@ -33,9 +33,9 @@ fn engine() -> Engine {
 pub fn history() -> Vec<Entry> {
     let (message, next) = match engine() {
         Engine::Claude => ("Failed to authenticate: OAuth session expired and could not be refreshed", equipe_core::engine_auth::CLAUDE_HINT),
-        Engine::Codex => ("Codex CLI에 로그인되어 있지 않아요. `codex login`으로 로그인하세요.", equipe_core::engine_auth::CODEX_HINT),
+        Engine::Codex => ("Codex CLI isn't signed in. Sign in with `codex login`.", equipe_core::engine_auth::CODEX_HINT),
     };
-    vec![Entry::User { text: "헤더를 조금 더 차분하게 바꿔 줘".into() }, Entry::Error { message: message.into(), next: Some(next.into()) }]
+    vec![Entry::User { text: "Make the header a little calmer".into() }, Entry::Error { message: message.into(), next: Some(next.into()) }]
 }
 
 static CHECKS: AtomicU32 = AtomicU32::new(0);
@@ -62,7 +62,7 @@ fn tell(events: &broadcast::Sender<Event>, state: AuthState) {
 /// Signed in again: the stopped turn carries on, the conversation told.
 fn back(events: &broadcast::Sender<Event>) {
     let name = if engine() == Engine::Claude { "Claude Code" } else { "Codex" };
-    let _ = events.send(Event::Notice { session: 1, text: format!("{name}에 다시 로그인돼서, 멈췄던 일을 이어서 해요.") });
+    let _ = events.send(Event::Notice { session: 1, text: format!("Signed in to {name} again — carrying on with the work that stopped.") });
     tell(events, AuthState::SignedIn { resumed: 1 });
 }
 

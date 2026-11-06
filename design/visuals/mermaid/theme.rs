@@ -3,7 +3,7 @@ use mermaid_rs_renderer::{LayoutConfig, Theme};
 
 pub fn equipe_theme_light() -> Theme {
     let mut t = Theme::modern();
-    t.font_family = "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif".into();
+    t.font_family = "\"Helvetica Neue\", \"Hiragino Sans\", \"PingFang SC\", \"Apple SD Gothic Neo\", sans-serif".into();
     t.font_size = 14.;
     t.background = "transparent".into();
     t.primary_color = "#FFFFFF".into();
@@ -38,7 +38,7 @@ pub const CLASSDEFS_LIGHT: &str = "classDef next fill:#FFFFFF,stroke:#74767D,str
 
 pub fn equipe_theme_dark() -> Theme {
     let mut t = Theme::dark();
-    t.font_family = "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif".into();
+    t.font_family = "\"Helvetica Neue\", \"Hiragino Sans\", \"PingFang SC\", \"Apple SD Gothic Neo\", sans-serif".into();
     t.font_size = 14.;
     t.background = "transparent".into();
     t.primary_color = "#16171A".into();
@@ -70,6 +70,16 @@ pub fn equipe_theme_dark() -> Theme {
 
 /// Appended to a diagram's source when it has no `classDef` of its own.
 pub const CLASSDEFS_DARK: &str = "classDef next fill:#16171A,stroke:#7C7E85,stroke-width:1.5px,color:#EFEDE7\nclassDef work fill:#2F2B23,stroke:#E2B865,stroke-width:1.5px,color:#EFEDE7\nclassDef wait fill:#302723,stroke:#EC9A62,stroke-width:1.5px,color:#EFEDE7\nclassDef ok fill:#232D28,stroke:#7FCB8E,stroke-width:1.5px,color:#EFEDE7\nclassDef err fill:#302325,stroke:#EE7B74,stroke-width:1.5px,color:#EFEDE7\nlinkStyle default stroke:#A3A5AB,stroke-width:1.5px\n";
+
+/// The faces for a diagram written in `language` (its English name); `font_family`'s otherwise.
+pub fn font_family_for(language: Option<&str>) -> &'static str {
+    match language {
+        Some("Korean") => "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif",
+        Some("Japanese") => "\"Helvetica Neue\", \"Hiragino Sans\", sans-serif",
+        Some("Chinese") => "\"Helvetica Neue\", \"PingFang SC\", sans-serif",
+        _ => "\"Helvetica Neue\", \"Hiragino Sans\", \"PingFang SC\", \"Apple SD Gothic Neo\", sans-serif",
+    }
+}
 
 pub fn equipe_layout(mut l: LayoutConfig) -> LayoutConfig {
     l.node_spacing = 28.;

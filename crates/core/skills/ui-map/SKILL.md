@@ -12,7 +12,7 @@ by using it included; a state's `kind` is `default`, `empty`, `loading`, `error`
 `flows/<flow>/<screen>/<state>.<mode>.<width>.png`, light and dark at each width the product supports. A screen's
 `expects` lists the states it should have. `equipe design flows init` starts it; `equipe design flows shoot`
 (`--flow`, `--screen`) shoots them from the running app, a state reached through the fixture or URL parameter in its
-`url`, in an en-US browser unless the state (or its screen, or its flow) says otherwise: `locale` (`ko-KR`),
+`url`, in an en-US browser unless the state (or its screen, or its flow) says otherwise: `locale` (`de-DE`),
 `js: false`, `reducedMotion: true`, `blockFonts: true` (as it looks while webfonts load), `fullPage: false` (the first
 screen only), `selector` (that element alone, sticky headers out of the way), `permissions` (`clipboard-write`) and
 `actions` (the walk's `click`, `fill`, `press`, `wait` steps, run before the shot); the page is scrolled through first,

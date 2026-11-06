@@ -10,18 +10,18 @@ for (const mode of ['light', 'dark']) {
   const T = Object.fromEntries((await resolve('web', mode)).map((x) => [x.name, x.value]));
   const c = (n) => T['color.' + n].hex.slice(0, 7);
   const tint = (n, base = 'surface') => over(T['color.' + n], T['color.' + base]);
-  const base = { base: mode, font_family: '"Helvetica Neue", "Apple SD Gothic Neo", sans-serif', font_size: 14, background: 'transparent',
+  const base = { base: mode, font_family: '"Helvetica Neue", "Hiragino Sans", "PingFang SC", "Apple SD Gothic Neo", sans-serif', font_size: 14, background: 'transparent',
     primary_color: c('surface'), primary_text_color: c('text'), text_color: c('muted'), primary_border_color: c('border-strong'), line_color: c('muted'),
     secondary_color: c('sunken'), tertiary_color: c('raised'), edge_label_background: c('surface'), cluster_background: c('sunken'), cluster_border: over(T['color.line'], T['color.sunken']) };
   const st = (k) => `fill:${tint(k + '-bg')},stroke:${c(k)},stroke-width:1.5px,color:${c('text')}`;
 
   const A = `flowchart LR
-  T336("● T-336 도표 테마·HTML 카드<br/>designer"):::work
-  T335("○ T-335 계약·지시 문구·폰용 변환<br/>backend"):::next
-  T337("○ T-337 HTML 카드 렌더<br/>backend"):::next
-  T338("○ T-338 데스크톱 표시<br/>frontend"):::next
-  T339("○ T-339 iOS·Android 표시<br/>mobile"):::next
-  T340("○ T-340 보안 검토<br/>security"):::next
+  T336("● T-336 Chart theme·HTML cards<br/>designer"):::work
+  T335("○ T-335 Contract·prompts·phone format<br/>backend"):::next
+  T337("○ T-337 HTML card render<br/>backend"):::next
+  T338("○ T-338 Desktop display<br/>frontend"):::next
+  T339("○ T-339 iOS·Android display<br/>mobile"):::next
+  T340("○ T-340 Security review<br/>security"):::next
   T335 --> T337
   T335 --> T338
   T335 --> T339
@@ -33,18 +33,18 @@ for (const mode of ['light', 'dark']) {
 
   const B = `flowchart LR
   subgraph L1[designer]
-    T336("● T-336 도표 테마·HTML 카드"):::work
+    T336("● T-336 Chart theme·HTML cards"):::work
   end
   subgraph L2[backend]
-    T335("○ T-335 계약·지시 문구"):::next
-    T337("○ T-337 HTML 카드 렌더"):::next
+    T335("○ T-335 Contract·prompts"):::next
+    T337("○ T-337 HTML card render"):::next
   end
   subgraph L3[frontend · mobile]
-    T338("○ T-338 데스크톱 표시"):::next
-    T339("○ T-339 iOS·Android 표시"):::next
+    T338("○ T-338 Desktop display"):::next
+    T339("○ T-339 iOS·Android display"):::next
   end
   subgraph L4[security]
-    T340("○ T-340 보안 검토"):::next
+    T340("○ T-340 Security review"):::next
   end
   T335 --> T337
   T335 --> T338
@@ -56,12 +56,12 @@ for (const mode of ['light', 'dark']) {
   linkStyle default stroke:${c('muted')},stroke-width:1.5px`;
 
   const C = `flowchart LR
-  T336(["● T-336 도표 테마·카드"]):::focus
-  T335(["T-335 계약"]):::next
-  T337(["T-337 카드 렌더"]):::next
-  T338(["T-338 데스크톱"]):::next
+  T336(["● T-336 Chart theme·cards"]):::focus
+  T335(["T-335 Contract"]):::next
+  T337(["T-337 Card render"]):::next
+  T338(["T-338 Desktop"]):::next
   T339(["T-339 iOS·Android"]):::next
-  T340(["T-340 보안 검토"]):::next
+  T340(["T-340 Security review"]):::next
   T335 --> T337
   T335 --> T338
   T335 --> T339

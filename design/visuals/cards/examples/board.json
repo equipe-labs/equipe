@@ -1,24 +1,24 @@
 {
-  "title": "스쿼드 현황",
-  "subtitle": "4개 프로젝트",
-  "asOf": "11월 3일",
-  "source": "equipe 보드",
+  "title": "Where the squad stands",
+  "subtitle": "4 projects",
+  "asOf": "Nov 3",
+  "source": "equipe board",
   "projects": [
     { "name": "equipe",
-      "work": [{ "id": "T-312", "title": "지표 연결 어댑터 3개", "who": "backend" }, { "id": "T-336", "title": "도표 테마와 HTML 카드 템플릿", "who": "designer" }],
-      "next": [{ "id": "T-335", "title": "대화 속 그림 계약 문서", "who": "backend" }, { "id": "T-337", "title": "데몬이 HTML 카드를 PNG로 렌더", "who": "backend" }],
-      "wait": [{ "id": "T-24", "title": "첫 데모", "who": "backend", "note": "손쉬운 사용 스위치를 켜 주세요" }] },
+      "work": [{ "id": "T-312", "title": "Three metrics adapters", "who": "backend" }, { "id": "T-336", "title": "Diagram theme and HTML card templates", "who": "designer" }],
+      "next": [{ "id": "T-335", "title": "Pictures-in-conversation contract", "who": "backend" }, { "id": "T-337", "title": "Daemon renders HTML cards to PNG", "who": "backend" }],
+      "wait": [{ "id": "T-24", "title": "First demo", "who": "backend", "note": "Turn on the Accessibility switch, please" }] },
     { "name": "equipe-app",
-      "work": [{ "id": "T-314", "title": "iOS·Android 지표 요약 카드", "who": "mobile" }],
-      "next": [{ "id": "T-162", "title": "Android 디자인 시스템 v1 적용", "who": "mobile" }, { "id": "T-339", "title": "대화 속 도표·카드를 그림으로 표시", "who": "mobile" }],
+      "work": [{ "id": "T-314", "title": "iOS·Android metrics summary card", "who": "mobile" }],
+      "next": [{ "id": "T-162", "title": "Apply design system v1 on Android", "who": "mobile" }, { "id": "T-339", "title": "Show diagrams·cards as pictures", "who": "mobile" }],
       "wait": [] },
     { "name": "equipe-design",
-      "work": [{ "id": "T-298", "title": "정확도 평가 하네스", "who": "qa" }],
-      "next": [{ "id": "T-307", "title": "라이브러리 발행 명령 + 월 1회 재추출", "who": "backend" }],
-      "wait": [{ "id": "T-297", "title": "Figma 변수 플러그인", "who": "frontend", "note": "Figma 로그인과 플러그인 불러오기가 필요해요" }] },
+      "work": [{ "id": "T-298", "title": "Accuracy evaluation harness", "who": "qa" }],
+      "next": [{ "id": "T-307", "title": "Library publish command + monthly re-extract", "who": "backend" }],
+      "wait": [{ "id": "T-297", "title": "Figma variables plugin", "who": "frontend", "note": "Needs a Figma sign-in and the plugin imported" }] },
     { "name": "equipe-site",
       "work": [],
-      "next": [{ "id": "T-320", "title": "방문자 익명 ID + 유럽·영국 동의 배너", "who": "frontend" }],
-      "wait": [{ "id": "T-317", "title": "자동 배포 + PR별 미리보기", "who": "frontend", "note": "Vercel 로그인과 GitHub 저장소 연결이 필요해요" }] }
+      "next": [{ "id": "T-320", "title": "Anonymous visitor ID + EU·UK consent banner", "who": "frontend" }],
+      "wait": [{ "id": "T-317", "title": "Auto deploy + per-PR previews", "who": "frontend", "note": "Needs a Vercel sign-in and the GitHub repository linked" }] }
   ]
 }

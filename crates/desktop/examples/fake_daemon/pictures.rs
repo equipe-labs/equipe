@@ -360,45 +360,45 @@ pub fn make() {
 /// One of `FAKE_DECIDE_CASE`'s questions.
 fn case(name: &str) -> Option<Question> {
     let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: if image.is_empty() { Vec::new() } else { vec![at(image)] }, ..Choice::default() };
-    let marks = |n: usize| (0..n).map(|i| option(&format!("{} 안", (b'A' + i as u8) as char), "모서리를 조금 더 둥글게 — 작은 크기에서도 읽힙니다", &format!("case-mark-{}.png", i % 4))).collect::<Vec<_>>();
+    let marks = |n: usize| (0..n).map(|i| option(&format!("Option {}", (b'A' + i as u8) as char), "Corners a little rounder — reads at small sizes too", &format!("case-mark-{}.png", i % 4))).collect::<Vec<_>>();
     Some(match name {
         "four" => Question {
-            question: "Gallery Y 로고로 어느 안을 쓸까요?".into(),
-            header: "로고".into(),
+            question: "Which option should be the Gallery Y logo?".into(),
+            header: "Logo".into(),
             images: vec![at("case-now.png")],
             options: vec![
-                option("A 세 벽 (Recommended)", "세 개의 벽이 빛을 받아들이는 공간 — 16px 파비콘 어디서나 같은 모양으로 읽힙니다", "case-walls.png"),
-                option("B 빛의 교회", "벽을 가르는 십자형 빛 — 안도 다다오의 건축 언어예요. 다만 종교적인 연상이 강할 수 있습니다", "case-light.png"),
-                option("C 폼타이", "콘크리트 거푸집의 폼타이 구멍 — 재료의 흔적을 그대로 씁니다", "case-tie.png"),
-                option("D 원과 사각", "원과 사각의 대비 — 가장 단순하지만 다른 갤러리와 겹칠 수 있습니다", "case-circle-square.png"),
+                option("A Three walls (Recommended)", "Three walls taking in the light — reads as the same shape anywhere, down to a 16px favicon", "case-walls.png"),
+                option("B Church of the Light", "A cross of light splitting the wall — Tadao Ando's architectural language. It may read as strongly religious, though", "case-light.png"),
+                option("C Form ties", "The form-tie holes of concrete formwork — the material's traces used as they are", "case-tie.png"),
+                option("D Circle and square", "A circle against a square — the simplest, but it may overlap with other galleries", "case-circle-square.png"),
             ],
             ..Question::default()
         },
-        "five" => Question { question: "다섯 안 가운데 어느 것으로 갈까요?".into(), header: "로고".into(), options: marks(5), ..Question::default() },
-        "eight" => Question { question: "스티커 세트에 넣을 마크를 모두 골라 주세요".into(), header: "스티커".into(), options: marks(8), multi_select: true, ..Question::default() },
+        "five" => Question { question: "Which of the five shall we go with?".into(), header: "Logo".into(), options: marks(5), ..Question::default() },
+        "eight" => Question { question: "Pick every mark for the sticker set".into(), header: "Stickers".into(), options: marks(8), multi_select: true, ..Question::default() },
         "mixed" => Question {
-            question: "앱 아이콘 배경은 어떻게 할까요?".into(),
-            header: "아이콘".into(),
+            question: "What should the app icon's background be?".into(),
+            header: "Icon".into(),
             options: vec![
-                option("파란 바탕 (추천)", "스토어에서 눈에 띕니다", "app-icon.png"),
-                option("흰 바탕", "시안은 다음에 그려 드릴게요", ""),
-                option("🎨 Gradient — 파랑에서 보라로 이어지는 아주 긴 이름의 그라데이션 배경 안", "A long English description that keeps going, 한국어와 섞여서, past two lines of the tile so it has to end in an ellipsis somewhere", "case-mark-3.png"),
-                option("Dark 모드 전용", "", ""),
-                option("원과 사각", "원과 사각의 대비", "case-circle-square.png"),
+                option("Blue background (Recommended)", "Stands out in the store", "app-icon.png"),
+                option("White background", "I'll draw this one next time", ""),
+                option("🎨 Gradient — a gradient background running from blue into purple, with a very long name", "A long English description that keeps going, 日本語も混ざって (wide letters mixed in), past two lines of the tile so it has to end in an ellipsis somewhere", "case-mark-3.png"),
+                option("Dark mode only", "", ""),
+                option("Circle and square", "A circle against a square", "case-circle-square.png"),
             ],
             ..Question::default()
         },
         "aspect" => Question {
-            question: "배너 모양은 어느 쪽이 좋을까요?".into(),
-            header: "배너".into(),
-            options: vec![option("가로로 긴 띠", "2400×240", "case-wide.png"), option("세로로 긴 탑", "240×2400", "case-tower.png"), option("정사각", "600×600", "case-square.png"), option("SVG 4점", "크기를 말하지 않는 SVG", "logo-four-dots.svg")],
+            question: "Which banner shape works best?".into(),
+            header: "Banner".into(),
+            options: vec![option("A wide strip", "2400×240", "case-wide.png"), option("A tall tower", "240×2400", "case-tower.png"), option("Square", "600×600", "case-square.png"), option("SVG four dots", "An SVG that gives no size", "logo-four-dots.svg")],
             ..Question::default()
         },
         "lead" => Question {
-            question: "지금 사이트 머리글을 그대로 둘까요?".into(),
-            header: "머리글".into(),
+            question: "Keep the site's header as it is?".into(),
+            header: "Header".into(),
             images: vec![at("case-now.png")],
-            options: vec![Choice { label: "그대로 (추천)".into(), description: "이번 릴리스에서는 손대지 않습니다".into(), ..Choice::default() }, Choice { label: "로고만 바꾸기".into(), description: "새 마크로 바꾸고 나머지는 둡니다".into(), ..Choice::default() }],
+            options: vec![Choice { label: "As it is (Recommended)".into(), description: "Not touched in this release".into(), ..Choice::default() }, Choice { label: "Change the logo only".into(), description: "Swap in the new mark, leave the rest".into(), ..Choice::default() }],
             ..Question::default()
         },
         _ => return None,
@@ -411,19 +411,19 @@ pub fn question_set(now: u64) -> QuestionSet {
     let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: vec![at(image)], ..Choice::default() };
     let aspects = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
     if brand() {
-        let direction = |label: &str, description: &str, image: &str| Choice { aspects: aspects(&["글꼴", "색", "모양"]), ..option(label, description, image) };
+        let direction = |label: &str, description: &str, image: &str| Choice { aspects: aspects(&["Type", "Colour", "Shape"]), ..option(label, description, image) };
         return QuestionSet {
             id: 9003,
             session: 4,
             member: "designer".into(),
             ticket: Some(150),
             questions: vec![Question {
-                question: "브랜드 방향은 어느 쪽으로 갈까요? 세 안을 홈 화면에 입혀 봤어요".into(),
-                header: "브랜드".into(),
+                question: "Which way should the brand go? I put all three on the home screen".into(),
+                header: "Brand".into(),
                 options: vec![
-                    direction("차분 (추천)", "얇은 글꼴과 넉넉한 여백, 파랑 하나 — 오래 써도 지치지 않습니다", "brand-calm.png"),
-                    direction("선명", "어두운 바탕에 굵은 글꼴, 각진 모서리 — 첫눈에 기억됩니다", "brand-bold.png"),
-                    direction("따뜻", "둥근 모서리와 초록 — 다가가기 쉬운 인상입니다", "brand-warm.png"),
+                    direction("Calm (Recommended)", "Light type, generous space and a single blue — easy on the eyes for hours", "brand-calm.png"),
+                    direction("Bold", "Heavy type on a dark background, square corners — remembered at first sight", "brand-bold.png"),
+                    direction("Warm", "Round corners and green — feels approachable", "brand-warm.png"),
                 ],
                 ..Question::default()
             }],
@@ -445,19 +445,19 @@ pub fn question_set(now: u64) -> QuestionSet {
         ticket: Some(144),
         questions: vec![
             Question {
-                question: "로고 마스터는 어느 안으로 할까요? (사이트는 파란 4점, 앱·스토어는 'e.' 회색 점으로 갈라져 있습니다)".into(),
-                header: "로고".into(),
+                question: "Which option should be the master logo? (The site uses four blue dots, the app and stores an 'e.' with a grey dot)".into(),
+                header: "Logo".into(),
                 options: vec![
-                    Choice { aspects: aspects(&["점"]), ..option("e. + 파란 원 점 (추천)", "사이트와 앱을 하나로 — 작은 크기에서도 또렷합니다", "logo-blue-dot.png") },
-                    Choice { aspects: aspects(&["점"]), ..option("e. 회색 점 유지", "지금 앱·스토어 그대로", "logo-grey-dot.png") },
-                    Choice { aspects: aspects(&["색"]), ..option("파란 4점을 주 로고로", "사이트의 4점을 앱에도 씁니다", "logo-four-dots.svg") },
+                    Choice { aspects: aspects(&["Dot"]), ..option("e. + a round blue dot (Recommended)", "One mark for site and app — crisp at small sizes", "logo-blue-dot.png") },
+                    Choice { aspects: aspects(&["Dot"]), ..option("Keep the e. grey dot", "The app and stores as they are", "logo-grey-dot.png") },
+                    Choice { aspects: aspects(&["Colour"]), ..option("Four blue dots as the main logo", "The site's four dots in the app too", "logo-four-dots.svg") },
                 ],
                 ..Question::default()
             },
             Question {
-                question: "앱 아이콘 배경은 어떻게 할까요?".into(),
-                header: "아이콘".into(),
-                options: vec![option("파란 바탕 (추천)", "스토어에서 눈에 띕니다", "app-icon.png"), Choice { label: "흰 바탕".into(), description: "시안은 다음에 그려 드릴게요".into(), ..Choice::default() }],
+                question: "What should the app icon's background be?".into(),
+                header: "Icon".into(),
+                options: vec![option("Blue background (Recommended)", "Stands out in the store", "app-icon.png"), Choice { label: "White background".into(), description: "I'll draw this one next time".into(), ..Choice::default() }],
                 ..Question::default()
             },
         ],
@@ -475,7 +475,7 @@ pub fn hand_in(mut ticket: Ticket) -> Ticket {
 }
 
 /// The news of it in the PM's conversation, as the daemon words it.
-pub const NEWS: &str = "designer handed in T-144 for your review · equipe 브랜드 정리·체계화 (이름·로고 유지).";
+pub const NEWS: &str = "designer handed in T-144 for your review · equipe brand clean-up and system (name and logo kept).";
 
 /// A picture read back: from the pictures' folder only, as the daemon reads a member's.
 pub fn read(ask: &ReadImage) -> Result<ImageRead, String> {

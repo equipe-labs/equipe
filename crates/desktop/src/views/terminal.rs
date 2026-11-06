@@ -63,8 +63,9 @@ const BAR: f32 = 36.;
 
 /// Where a glyph the main font lacks comes from, in order: a Nerd Font's
 /// (powerline arrows, prompt icons) — its symbols-only cut, else one-cell
-/// "Mono" cut of any installed —, then Hangul, emoji, symbols.
-pub fn fallback_chain(installed: &[String]) -> Vec<String> {
+/// "Mono" cut of any installed —, then the Mac's CJK faces ([`cjk_faces`]),
+/// emoji, symbols.
+pub fn fallback_chain(installed: &[String], lang: equipe_core::i18n::Lang) -> Vec<String> {
     let nerd = |name: &str| name.contains("Nerd Font") || name.ends_with(" NF") || name.contains(" NF ");
     let proportional = |name: &str| name.contains("Propo");
     let mut chain: Vec<String> = Vec::new();
@@ -86,10 +87,24 @@ pub fn fallback_chain(installed: &[String]) -> Vec<String> {
     if let Some(any) = installed.first() {
         add(any);
     }
-    for name in ["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"] {
+    for name in cjk_faces(lang).iter().chain(&["Apple Color Emoji", "Apple Symbols"]) {
         add(name);
     }
     chain
+}
+
+/// The Mac's CJK faces, the one for `lang` first. Each has kana and Han too,
+/// so with none of those the order gives every script its own: Hiragino
+/// (kana, and the Han they share), PingFang (Han only Chinese writes), Apple
+/// SD Gothic Neo (Hangul). Korean keeps the one face it always had.
+fn cjk_faces(lang: equipe_core::i18n::Lang) -> &'static [&'static str] {
+    use equipe_core::i18n::Lang;
+    match lang {
+        Lang::Ko => &["Apple SD Gothic Neo"],
+        Lang::ZhHans => &["PingFang SC", "Apple SD Gothic Neo"],
+        Lang::ZhHant => &["PingFang TC", "Apple SD Gothic Neo"],
+        _ => &["Hiragino Sans", "PingFang SC", "Apple SD Gothic Neo"],
+    }
 }
 
 /// The text's own font: Menlo, the Mac's terminal font — not the system's
@@ -100,7 +115,7 @@ const TERM_FONT: &str = "Menlo";
 /// The text's font: [`TERM_FONT`], then [`fallback_chain`].
 fn term_font(window: &Window, bold: bool, italic: bool) -> Font {
     static CHAIN: OnceLock<FontFallbacks> = OnceLock::new();
-    let fallbacks = CHAIN.get_or_init(|| FontFallbacks::from_fonts(fallback_chain(&window.text_system().all_font_names()))).clone();
+    let fallbacks = CHAIN.get_or_init(|| FontFallbacks::from_fonts(fallback_chain(&window.text_system().all_font_names(), crate::i18n::lang()))).clone();
     Font {
         family: TERM_FONT.into(),
         features: FontFeatures::disable_ligatures(),
@@ -629,17 +644,31 @@ pub fn fit(shell: &mut Shell, window: &Window, cx: &mut Context<Shell>) {
 #[cfg(test)]
 mod tests {
     use super::fallback_chain;
+    use equipe_core::i18n::Lang;
 
     #[test]
     fn missing_glyphs_come_from_a_nerd_font_then_hangul_and_emoji() {
         let installed: Vec<String> = ["Menlo", "MesloLGS Nerd Font", "MesloLGS Nerd Font Mono", "MesloLGS Nerd Font Propo", "Helvetica"].iter().map(|s| (*s).to_owned()).collect();
-        assert_eq!(fallback_chain(&installed), ["MesloLGS Nerd Font Mono", "MesloLGS Nerd Font", "Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]);
+        assert_eq!(fallback_chain(&installed, Lang::Ko), ["MesloLGS Nerd Font Mono", "MesloLGS Nerd Font", "Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]);
         // The symbols-only one first, when there is one.
         let installed: Vec<String> = ["Symbols Nerd Font Mono", "Hack Nerd Font Mono"].iter().map(|s| (*s).to_owned()).collect();
-        assert_eq!(fallback_chain(&installed)[..2], ["Symbols Nerd Font Mono", "Hack Nerd Font Mono"]);
+        assert_eq!(fallback_chain(&installed, Lang::En)[..2], ["Symbols Nerd Font Mono", "Hack Nerd Font Mono"]);
         // p10k's own, by its old name.
-        assert_eq!(fallback_chain(&["MesloLGS NF".to_owned()])[0], "MesloLGS NF");
+        assert_eq!(fallback_chain(&["MesloLGS NF".to_owned()], Lang::En)[0], "MesloLGS NF");
         // None installed: the Mac's own.
-        assert_eq!(fallback_chain(&[]), ["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]);
+        assert_eq!(fallback_chain(&[], Lang::Ko), ["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"], "Korean as it always was");
+    }
+
+    #[test]
+    fn wide_letters_come_from_the_face_of_the_language_in_use() {
+        // Every CJK face has kana and Han too: the one for the language first.
+        let emoji = ["Apple Color Emoji", "Apple Symbols"];
+        assert_eq!(fallback_chain(&[], Lang::Ja), [&["Hiragino Sans", "PingFang SC", "Apple SD Gothic Neo"][..], &emoji[..]].concat());
+        assert_eq!(fallback_chain(&[], Lang::ZhHans), [&["PingFang SC", "Apple SD Gothic Neo"][..], &emoji[..]].concat());
+        assert_eq!(fallback_chain(&[], Lang::ZhHant), [&["PingFang TC", "Apple SD Gothic Neo"][..], &emoji[..]].concat());
+        // Another language: each script to its own — kana and shared Han to Hiragino, Han only Chinese writes to PingFang, Hangul last.
+        for lang in [Lang::En, Lang::De, Lang::Fr, Lang::Es] {
+            assert_eq!(fallback_chain(&[], lang), [&["Hiragino Sans", "PingFang SC", "Apple SD Gothic Neo"][..], &emoji[..]].concat(), "{lang:?}");
+        }
     }
 }

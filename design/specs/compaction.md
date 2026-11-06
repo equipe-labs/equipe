@@ -1,80 +1,80 @@
-# 대화 요약 중 표시 — 인계 스펙 (T-164)
+# Showing a conversation being summarized — hand-off spec (T-164)
 
-상태: **확정** — 사람이 안 B(흐르는 막대 + 경과 시간)를 골랐다(2026-10-30). 그림: `specs/compaction/options.png`(안 비교) · `states.png`(상태) · `platforms.png`(플랫폼별) · 개별 화면 `desktop|ios|android-{light,dark}.png`, `tui.png`. 렌더 원본은 `specs/compaction/build.mjs`(토큰은 `build/css/tokens.css`만 읽는다).
+Status: **settled** — the person chose option B (a flowing bar + elapsed time) (2026-10-30). Pictures: `specs/compaction/options.png` (options compared) · `states.png` (states) · `platforms.png` (per platform) · individual screens `desktop|ios|android-{light,dark}.png`, `tui.png`. The render source is `specs/compaction/build.mjs` (it reads tokens only from `build/css/tokens.css`).
 
-## 1. 무엇을 알리나
-엔진(Claude Code·Codex)이 대화를 스스로 압축하거나, 사람이 `/compact`("요약해서 새로 시작")를 누르면 멤버는 한동안 답이 없다. 그동안 멈춘 게 아니라 **요약 중**임을 보여 준다. 엔진은 진행률을 주지 않는다 → **%를 지어내지 않는다**(안 B: 흐르는 막대 + 실제 경과 시간).
+## 1. What it tells
+When the engine (Claude Code·Codex) compacts a conversation by itself, or the person presses `/compact` ("Summarize and continue fresh"), the member doesn't answer for a while. Meanwhile it shows that it's **summarizing**, not stuck. The engine gives no progress → **no made-up %** (option B: a flowing bar + the real elapsed time).
 
-## 2. 상태
-| # | 상태 | 시작 조건 | 보이는 것 | 끝 조건 |
+## 2. States
+| # | State | Starts when | What shows | Ends when |
 |---|---|---|---|---|
-| 1 | 요약 중 (자동) | 엔진이 압축 시작 이벤트 | 띠 `대화를 요약하고 있어요` + 흐르는 막대 + 경과 | 끝/실패 이벤트 |
-| 2 | 요약 중 (`/compact`) | 사람이 실행 | 제목만 `요약해서 새로 시작하고 있어요` | 〃 |
-| 3 | 오래 걸림 | 요약 60초 경과 | 제목 `요약이 오래 걸리고 있어요`, 막대·경과 그대로 | 〃. **시간 제한으로 실패 처리하지 않는다** |
-| 4 | 요약 중 입력 | 사람이 메시지 전송 | 입력은 받아 두고, 띠에 `메시지 N개 대기 중 · 요약이 끝나면 보낼게요` 칩 | 끝나면 순서대로 전달(백엔드). 실패해도 전달 |
-| 5 | 끝 | 끝 이벤트 | 띠가 `요약했어요 / 이어서 대화할 수 있어요`(ok, ✓)로 바뀌고 4초 뒤 사라짐. 대화에 구분선 `요약했어요 · 이어서 대화할 수 있어요` 남음 | — |
-| 6 | 실패 | 실패 이벤트 | 띠 `요약하지 못했어요 / 대화는 그대로예요. 다시 시도할까요?` + `다시 시도`(보조 버튼). 사람이 닫을 때까지 유지 | 다시 시도 → 1 |
+| 1 | Summarizing (auto) | the engine's compaction-start event | band `Summarizing the conversation` + flowing bar + elapsed | the done/failed event |
+| 2 | Summarizing (`/compact`) | the person runs it | only the title: `Summarizing to start fresh` | 〃 |
+| 3 | Taking long | 60 seconds of summarizing | title `Summarizing is taking a while`, bar·elapsed as they were | 〃. **No time limit turns it into a failure** |
+| 4 | Input while summarizing | the person sends a message | the input is kept, and the band gets a chip `N messages waiting · I'll send them when the summary is done` | delivered in order when it ends (backend). Delivered even on failure |
+| 5 | Done | the done event | the band changes to `Summarized / You can keep chatting` (ok, ✓) and goes after 4 seconds. A divider `Summarized · you can keep chatting` stays in the conversation | — |
+| 6 | Failed | the failed event | band `Couldn't summarize / The conversation is unchanged. Try again?` + `Try again` (secondary button). Stays until the person closes it | try again → 1 |
 
-가정(미확인 — 백엔드 확인 필요): 엔진이 시작·끝·실패 이벤트를 준다 / 실패해도 대화 원문은 그대로다 / 대기 메시지를 순서대로 전달한다.
+Assumptions (unconfirmed — backend to confirm): the engine gives start·done·failed events / on failure the conversation's original text is unchanged / waiting messages are delivered in order.
 
-## 3. 위치
-- **데스크톱·iOS·Android**: 대화 목록 맨 아래, 입력창 바로 위. 입력창과 간격 `space.3`(12). 대화 스크롤 영역을 줄이고 띠가 보이는 동안 바닥 고정.
-- **사이드바(멤버 목록)**: 요약 중인 멤버 줄은 기존 "일하는 중" 스피너 + 보조 줄 `대화 요약 중 · 12초`. 끝나면 일반 상태로.
-- **터미널 TUI**: 입력 프롬프트 바로 위 한 줄 `⠹ 대화 요약 중… 12초`(+ 대기 메시지가 있으면 보조 줄). 끝 `✓ 요약했어요. 이어서 대화할 수 있어요`, 실패 `✕ 요약하지 못했어요. 대화는 그대로예요 · /compact로 다시 시도`.
+## 3. Placement
+- **Desktop·iOS·Android**: at the very bottom of the conversation, right above the composer. Gap to the composer `space.3` (12). The conversation's scroll area shrinks, and the band stays pinned to the bottom while it shows.
+- **Sidebar (member list)**: a summarizing member's row shows the existing "working" spinner + the secondary line `Summarizing · 12s`. Back to its usual state when done.
+- **Terminal TUI**: one line right above the input prompt, `⠹ Summarizing… 12s` (+ a secondary line if messages are waiting). Done: `✓ Summarized. You can keep chatting`; failed: `✕ Couldn't summarize. The conversation is unchanged · retry with /compact`.
 
-## 4. 토큰 (디자인 시스템 v1)
-| 부분 | 토큰 |
+## 4. Tokens (design system v1)
+| Part | Tokens |
 |---|---|
-| 띠 면·테두리·모서리 | `color.surface`, `color.line`, `radius.card` |
-| 띠 안 여백 | 세로 `space.3` · 가로 `space.4`, 요소 간격 `space.3` |
-| 아이콘(압축) | 20px(`size.icon.md`), 요약 중 `color.work` · 끝 `color.ok` · 실패 `color.err` |
-| 제목 / 보조 | `type.small` semibold + `color.text` / `type.meta` + `color.muted` |
-| 막대 | 높이 4(`space.1`), 모서리 `radius.full`, 트랙 `color.sunken`, 채움 `color.work`, 조각 폭 32% |
-| 경과 시간 | `type.small` + `color.muted`, 숫자 tabular, 최소 폭 48 |
-| 대기 칩 | `type.meta`, 면 `color.sunken`, 모서리 `radius.full` |
-| 다시 시도 버튼 | 컴포넌트 `button` secondary (데스크톱 sm) |
-| 구분선(대화 속) | 선 `color.line`, 글자 `type.meta` + `color.muted`, ✓는 `color.ok` |
-| 사이드바 | 기존 멤버 행(`row.*`) + 스피너 `color.work` |
-| 모바일 | 띠 모서리·여백은 모바일 카드 규칙(`radius.card` 16, 패딩 16) |
+| Band fill·border·corners | `color.surface`, `color.line`, `radius.card` |
+| Band padding | vertical `space.3` · horizontal `space.4`, gap between elements `space.3` |
+| Icon (compress) | 20px (`size.icon.md`); summarizing `color.work` · done `color.ok` · failed `color.err` |
+| Title / secondary | `type.small` semibold + `color.text` / `type.meta` + `color.muted` |
+| Bar | height 4 (`space.1`), corners `radius.full`, track `color.sunken`, fill `color.work`, segment width 32% |
+| Elapsed time | `type.small` + `color.muted`, tabular figures, min width 48 |
+| Waiting chip | `type.meta`, fill `color.sunken`, corners `radius.full` |
+| Try again button | component `button` secondary (desktop sm) |
+| Divider (in the conversation) | line `color.line`, text `type.meta` + `color.muted`, ✓ in `color.ok` |
+| Sidebar | the existing member row (`row.*`) + spinner `color.work` |
+| Mobile | the band's corners·padding follow the mobile card rule (`radius.card` 16, padding 16) |
 
-**새 토큰 제안(원천 수정 → T-145 `tokens/`)**: `motion.duration.loop` = 1600ms (막대 한 번 흐르는 시간). 스피너 회전(1000ms)은 기존 사이드바 스피너 값을 따른다. 이 외 새 값 없음.
+**Proposed new token (a source change → T-145 `tokens/`)**: `motion.duration.loop` = 1600ms (one pass of the bar). The spinner's rotation (1000ms) follows the existing sidebar spinner's value. No other new values.
 
-## 5. 모션
-- 나타남: 투명도 0→1, `motion.duration.fast`(120ms) `out-cubic`, 위로 `motion.travel.rise`(6px) 이동.
-- 막대: 32% 폭 조각이 트랙을 왼쪽에서 오른쪽으로 `motion.duration.loop` 선형 반복(끝에서 다시 처음).
-- 끝: 아이콘·제목 교차 페이드 `fast`, 4초 뒤 사라짐은 페이드 `slow`(200ms).
-- **동작 줄이기**(웹 `prefers-reduced-motion`·iOS `accessibilityReduceMotion`·Android 애니메이션 배율 0·macOS 손쉬운 사용): 이동 0, 막대 조각은 고정(왼쪽에서 20%), 나타남·사라짐은 `motion.duration.reduced`(100ms) 페이드만. **경과 시간 숫자는 계속 올라간다**(움직임이 아니라 글자). TUI 스피너는 고정 기호 `…`.
+## 5. Motion
+- Appearing: opacity 0→1, `motion.duration.fast` (120ms) `out-cubic`, rising `motion.travel.rise` (6px).
+- Bar: a 32%-wide segment crosses the track left to right, repeating linearly over `motion.duration.loop` (from the end back to the start).
+- Done: icon·title cross-fade `fast`; leaving after 4 seconds is a fade `slow` (200ms).
+- **Reduce motion** (web `prefers-reduced-motion`·iOS `accessibilityReduceMotion`·Android animation scale 0·macOS Accessibility): no travel, the bar segment holds still (20% from the left), appearing·leaving only as a `motion.duration.reduced` (100ms) fade. **The elapsed time keeps counting up** (it's text, not motion). The TUI spinner becomes the fixed symbol `…`.
 
-## 6. 문구 키 (ko 해요체 / en)
-| 키 | ko | en |
-|---|---|---|
-| `compact.title.auto` | 대화를 요약하고 있어요 | Summarizing the conversation |
-| `compact.body.auto` | 길어진 대화를 정리하는 중이에요. 끝나면 이어서 할 수 있어요. | Tidying up a long conversation. You can continue when it's done. |
-| `compact.title.manual` | 요약해서 새로 시작하고 있어요 | Summarizing to start fresh |
-| `compact.body.manual` | 지금까지의 대화를 요약해 다음 대화로 넘겨요. | Carrying a summary into the next conversation. |
-| `compact.title.long` | 요약이 오래 걸리고 있어요 | Summarizing is taking a while |
-| `compact.body.long` | 대화가 길어서 시간이 더 필요해요. 그대로 기다려 주세요. | The conversation is long and needs more time. Hang tight. |
-| `compact.elapsed` | {n}초 / {m}분 {s}초 | {n}s / {m}m {s}s |
-| `compact.queued` | 메시지 {n}개 대기 중 · 요약이 끝나면 보낼게요 | {n} message(s) waiting · I'll send when it's done |
-| `compact.done.title` / `.body` | 요약했어요 / 이어서 대화할 수 있어요. | Summarized / You can keep chatting. |
-| `compact.divider` | 요약했어요 · 이어서 대화할 수 있어요 | Summarized · you can keep chatting |
-| `compact.fail.title` / `.body` | 요약하지 못했어요 / 대화는 그대로예요. 다시 시도할까요? | Couldn't summarize / The conversation is unchanged. Try again? |
-| `compact.retry` | 다시 시도 | Try again |
-| `compact.sidebar` | 대화 요약 중 · {elapsed} | Summarizing · {elapsed} |
-| `compact.tui.run` / `.queued` / `.fail` | 대화 요약 중… {elapsed} / 메시지 {n}개는 요약이 끝나면 보낼게요 / 요약하지 못했어요. 대화는 그대로예요 · /compact로 다시 시도 | Summarizing… {elapsed} / {n} message(s) will be sent when it's done / Couldn't summarize. The conversation is unchanged · retry with /compact |
+## 6. Copy keys (en shown; every language has its own wording in its locale file, in its register)
+| Key | en |
+|---|---|
+| `compact.title.auto` | Summarizing the conversation |
+| `compact.body.auto` | Tidying up a long conversation. You can continue when it's done. |
+| `compact.title.manual` | Summarizing to start fresh |
+| `compact.body.manual` | Carrying a summary into the next conversation. |
+| `compact.title.long` | Summarizing is taking a while |
+| `compact.body.long` | The conversation is long and needs more time. Hang tight. |
+| `compact.elapsed` | {n}s / {m}m {s}s |
+| `compact.queued` | {n} message(s) waiting · I'll send when it's done |
+| `compact.done.title` / `.body` | Summarized / You can keep chatting. |
+| `compact.divider` | Summarized · you can keep chatting |
+| `compact.fail.title` / `.body` | Couldn't summarize / The conversation is unchanged. Try again? |
+| `compact.retry` | Try again |
+| `compact.sidebar` | Summarizing · {elapsed} |
+| `compact.tui.run` / `.queued` / `.fail` | Summarizing… {elapsed} / {n} message(s) will be sent when it's done / Couldn't summarize. The conversation is unchanged · retry with /compact |
 
-글은 `word-break: keep-all` + `overflow-wrap: anywhere`(웹·데스크톱), 시간은 tabular 숫자.
+The other languages' wording lives with the rest of each front end's words (`crates/desktop/locales/<lang>.json`, and the CLI's). Text uses `word-break: keep-all` + `overflow-wrap: anywhere` (web·desktop), times use tabular figures.
 
-## 7. 접근성
-- **띠는 `role="status"`(polite live region)**. 시작 때 한 번 `대화를 요약하고 있어요`를 읽고, **경과 시간은 읽지 않는다**(1초마다 읽히지 않게 `aria-live` 밖의 별도 요소 또는 `aria-hidden`). 60초에 한 번 `요약이 오래 걸리고 있어요`, 끝에 `요약했어요. 이어서 대화할 수 있어요`, 실패는 `assertive` 한 번.
-- **VoiceOver(iOS)**: 띠를 하나의 접근성 요소로 묶고 label = 제목, value = `{경과}`. 시작·끝·실패는 `UIAccessibility.post(.announcement, …)`. 막대 장식은 숨김. `다시 시도`는 버튼 trait, 눌림 영역 44.
-- **TalkBack(Android)**: 띠는 `liveRegion = polite`, 막대는 `contentDescription` 없음(장식). 끝·실패는 `announceForAccessibility`. 눌림 영역 48.
-- 색만으로 전달 안 함: 요약 중 압축 아이콘, 끝 ✓, 실패 ✕ + 문구. 대비는 `docs/contrast.md`의 `work/ok/err`·`muted` 조합(전부 AA 통과).
-- 막대는 진행률(`progressbar` 값)이 아니다 → 값을 가진 `progressbar` 역할을 쓰지 않는다(없는 값을 읽게 되므로). 필요하면 불확정 `progressbar`이되 값 없음.
-- 키보드(데스크톱·TUI): `다시 시도`에 포커스 링(`focus.ring-*`). 띠가 입력 포커스를 빼앗지 않는다.
+## 7. Accessibility
+- **The band is `role="status"` (a polite live region)**. At the start it reads `Summarizing the conversation` once, and **never reads the elapsed time** (keep it outside `aria-live` in a separate element, or `aria-hidden`, so it isn't read every second). Once at 60 seconds, `Summarizing is taking a while`; at the end, `Summarized. You can keep chatting`; a failure once as `assertive`.
+- **VoiceOver (iOS)**: group the band into one accessibility element, label = the title, value = `{elapsed}`. Start·done·failed via `UIAccessibility.post(.announcement, …)`. The bar's decoration is hidden. `Try again` has the button trait, press area 44.
+- **TalkBack (Android)**: the band is `liveRegion = polite`, the bar has no `contentDescription` (decoration). Done·failed via `announceForAccessibility`. Press area 48.
+- Never by colour alone: the compress icon while summarizing, ✓ when done, ✕ + words on failure. Contrast is the `work/ok/err`·`muted` pairs in `docs/contrast.md` (all pass AA).
+- The bar isn't progress (a `progressbar` value) → never the `progressbar` role with a value (it would read a value that doesn't exist). If needed, an indeterminate `progressbar` without a value.
+- Keyboard (desktop·TUI): a focus ring on `Try again` (`focus.ring-*`). The band never takes input focus.
 
-## 8. 하지 말 것
-- %를 보여 주는 것(근거 없는 값) · 일정 시간 뒤 자동 실패 처리 · 요약 중 입력창 막기(입력은 받는다) · 띠가 대화 위를 덮어 메시지를 가리기 · 이모지·귀여운 문구 · 새 색 도입(`work`·`ok`·`err`만).
+## 8. Don'ts
+- Showing % (a value without grounds) · failing automatically after a set time · blocking the composer while summarizing (input is kept) · the band covering the conversation and hiding messages · emoji·cute wording · bringing in new colours (`work`·`ok`·`err` only).
 
-## 9. 완성 후 디자인 QA에서 볼 것
-요약 중/오래 걸림/끝/실패/대기 칩 5개 상태 × 라이트·다크 × 데스크톱·iOS·Android·TUI, 동작 줄이기에서 막대 고정, 320px 폭에서 막대·시간 한 줄 유지, 스크린리더 안내 횟수.
+## 9. What design QA looks at once it's built
+The five states summarizing/taking long/done/failed/waiting chip × light·dark × desktop·iOS·Android·TUI, the bar held still under reduce motion, the bar·time staying on one line at 320px wide, how many times the screen reader announces.

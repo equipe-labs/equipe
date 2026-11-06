@@ -108,7 +108,7 @@ pub fn parse_ticket_id(text: &str) -> Option<TicketId> {
 }
 
 /// The first ticket number in `text` that stands on its own — `T-8`, `(T-8)`,
-/// `T-8:`, `T-8,`, a particle after it (Korean `T-8와`), `T-8.` closing a
+/// `T-8:`, `T-8,`, a particle written onto it (Japanese `T-8の`, as Korean does too), `T-8.` closing a
 /// sentence, each of `T-2/T-3` — where, and how long. Not one inside a word (`MAT-8`, `T-8a`), a path or a
 /// file name (`outputs/T-2 gallery/`, `T-2.png`, `a_T-2`, `T-2-draft`), or an
 /// address (`https://x.y/?t=T-2`): those are not about the ticket.
@@ -161,7 +161,7 @@ fn free_before(text: &str, at: usize) -> bool {
 }
 
 /// Nothing of a word or a name runs on from the number ending at `end`: a
-/// Korean particle may (`T-2와`), a slash only to another number, a full stop
+/// particle written onto it may (`T-2の`), a slash only to another number, a full stop
 /// only to end the sentence.
 fn free_after(text: &str, end: usize) -> bool {
     match text[end..].chars().next() {
