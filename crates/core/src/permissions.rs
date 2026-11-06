@@ -40,6 +40,11 @@ pub fn person_only(command: &Command) -> bool {
         | C::ProposeAccept { .. }
         | C::ConfirmAccept { .. }
         | C::DeclineAccept { .. } => true,
+        // Deciding in words (the `words-approvals` flow): the person's own
+        // message read as a decision, turning "all by words" on, and undoing or
+        // clearing what was decided in words. The person's own, by definition —
+        // a member must never speak as the person or widen how decisions are made.
+        C::Say { .. } | C::SetWordsAll { .. } | C::UndoWords { .. } | C::ClearWordsLog { .. } => true,
         // Answering a member's request for permission or its questions, and
         // approving the PM's, the routines' and the engine moves' proposals:
         // the very decisions this review is about.
@@ -140,6 +145,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::BrowserPopOut { .. }
         | C::Language { .. }
         | C::Logins
+        | C::WordsLog { .. }
         | C::BrowserProfiles
         | C::Models { .. }
         | C::Providers
@@ -479,8 +485,8 @@ mod tests {
         let person_only = [
             Command::Accept { squad: "a".into(), ticket: 1 },
             Command::Merge { squad: "a".into(), ticket: 1, push: false },
-            Command::Decide { squad: "a".into(), approval: 1, decision: crate::protocol::Decision::Always, words: None },
-            Command::ConfirmAccept { squad: "a".into(), id: 1, tickets: vec![] },
+            Command::Decide { squad: "a".into(), approval: 1, decision: crate::protocol::Decision::Always, words: None, said: None },
+            Command::ConfirmAccept { squad: "a".into(), id: 1, tickets: vec![], said: None },
             Command::ApproveTeamChange { squad: "a".into(), id: 1 },
             Command::ApproveRoutine { squad: "a".into(), id: 1 },
             Command::ApplyEngineProposal { squad: "a".into(), id: 1 },
