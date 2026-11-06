@@ -236,6 +236,55 @@ async fn a_thread_is_continued_and_a_lost_one_started_afresh() {
     assert!(method(&lost.log, "thread/start").is_some());
 }
 
+/// A side chat's turn on the fake: forked from `thread`, read-only, searching the web.
+async fn forked(thread: &str) -> Run {
+    let cwd = scratch("cwd");
+    let log = scratch("log").join("sent.jsonl");
+    let env = [("FAKE_CODEX_LOG".to_owned(), log.to_string_lossy().into_owned())];
+    let none = serde_json::json!({});
+    let request = TurnRequest {
+        prompt: "what does it mean?",
+        fresh_prompt: Some("[the conversation so far, summed up] what does it mean?"),
+        access: Access::ReadOnly,
+        resume: Some(thread),
+        fork: true,
+        web_search: true,
+        mcp_servers: Some(&none),
+        env: &env,
+        ..Default::default()
+    };
+    let mut activities = Vec::new();
+    let result = tokio::time::timeout(Duration::from_secs(20), codex_app::run_turn(&fake(), &cwd, request, None, None, None, |a| activities.push(a))).await.expect("the turn ends");
+    Run { activities, result, log: sent(&log), cwd }
+}
+
+#[tokio::test]
+async fn a_fork_continues_a_copy_of_the_thread_and_never_the_thread_itself() {
+    let run = forked("thr-7").await;
+    assert_eq!(run.result.unwrap().thread_id.as_deref(), Some("fork-of-thr-7"), "its own thread, to go on in");
+    let fork = &method(&run.log, "thread/fork").expect("forked")["params"];
+    assert_eq!(fork["threadId"], "thr-7");
+    assert_eq!((fork["sandbox"].as_str(), fork["approvalPolicy"].as_str()), (Some("read-only"), Some("never")));
+    assert_eq!(fork["config"]["web_search"], "live", "it searches the web");
+    assert_eq!(fork["config"]["mcp_servers"]["node_repl"]["enabled"], false, "the person's own servers off");
+    assert!(fork["config"]["mcp_servers"].get("equipe").is_none(), "and no board");
+    assert!(method(&run.log, "thread/resume").is_none() && method(&run.log, "thread/start").is_none(), "the member's thread is never resumed");
+    let turn = &method(&run.log, "turn/start").unwrap()["params"];
+    assert_eq!(turn["threadId"], "fork-of-thr-7");
+    assert_eq!(turn["sandboxPolicy"]["type"], "readOnly");
+    assert_eq!(turn["input"][0]["text"], "what does it mean?", "the fork knows the conversation: only the question");
+}
+
+#[tokio::test]
+async fn without_a_fork_a_fresh_thread_starts_with_the_conversation_summed_up() {
+    let run = forked("thr-nofork").await;
+    assert_eq!(run.result.unwrap().thread_id.as_deref(), Some("thr-1"));
+    assert!(method(&run.log, "thread/resume").is_none(), "never the member's own thread");
+    let start = &method(&run.log, "thread/start").expect("a fresh thread")["params"];
+    assert_eq!((start["sandbox"].as_str(), start["config"]["web_search"].as_str()), (Some("read-only"), Some("live")));
+    assert_eq!(method(&run.log, "turn/start").unwrap()["params"]["input"][0]["text"], "[the conversation so far, summed up] what does it mean?");
+}
+
 #[tokio::test]
 async fn an_exhausted_plan_fails_the_turn_with_codexs_words() {
     let run = run("fail", Access::ReadOnly, None, None, None, None).await;

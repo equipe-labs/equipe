@@ -264,10 +264,16 @@ def handle(message):
         # The person's own: a configured server, a plugin's, and Codex's apps.
         servers = [("codex_apps", None), ("node_repl", None), ("cua_repl", "unified-computer-use@openai-bundled")]
         send({"id": request_id, "result": {"data": [{"name": n, "pluginId": p, "tools": {}} for n, p in servers], "nextCursor": None}})
-    elif method in ("thread/start", "thread/resume"):
+    elif method in ("thread/start", "thread/resume", "thread/fork"):
         state["cwd"] = params.get("cwd") or state["cwd"]
         state["model"] = params.get("model") or state["model"]
-        if method == "thread/resume":
+        if method == "thread/fork":
+            # A copy of the thread under a new id; an older Codex has no fork.
+            if params.get("threadId") in ("thr-gone", "thr-nofork"):
+                send({"id": request_id, "error": {"code": -32601, "message": "method not found: thread/fork"}})
+                return
+            state["thread"] = "fork-of-" + params["threadId"]
+        elif method == "thread/resume":
             if params.get("threadId") == "thr-gone":
                 send({"id": request_id, "error": {"code": -32600, "message": "no rollout found for thread id thr-gone"}})
                 return

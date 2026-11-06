@@ -88,6 +88,10 @@ pub fn reads(command: &Command) -> bool {
         C::Start { .. }
         | C::Submit { .. }
         | C::SubmitLater { .. }
+        // A side chat runs an engine on the person's account.
+        | C::StartSideChat { .. }
+        | C::SideChatSubmit { .. }
+        | C::CloseSideChat { .. }
         | C::Say { .. }
         | C::UndoWords { .. }
         | C::ClearWordsLog { .. }

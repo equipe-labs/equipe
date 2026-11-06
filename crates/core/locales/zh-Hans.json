@@ -529,5 +529,6 @@
   "notice.provider_limits": "在 {provider} 上，这个成员可以使用文件、命令和看板，但暂时没有子智能体和网页搜索，也看不了图片。请选择能调用工具的模型。",
   "notice.provider_move": "从下一个工单起改用 {provider} 的 {model}，在 Codex CLI 的智能体上运行。",
   "error.provider_needs_codex": "{provider} 上的成员在 Codex CLI 的智能体上运行（免费、开源，无需登录 ChatGPT）。请先安装 codex CLI。",
+  "error.side_chat_busy": "侧边聊天还在回答。请稍候，或将其关闭。",
   "security.member_refused": "某个成员自己的进程试图通过 equipe 的套接字以你的身份操作——批准、接受、合并或更改设置。equipe 已拒绝：只有你能决定。"
 }

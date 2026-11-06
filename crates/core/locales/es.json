@@ -533,5 +533,6 @@
   "notice.provider_limits": "En {provider} este miembro trabaja con archivos, comandos y el tablero, pero aún no tiene subagentes ni búsqueda web, y no puede ver imágenes. Elige un modelo que pueda llamar herramientas.",
   "notice.provider_move": "Pasa a {model} en {provider} en su próximo ticket, con el agente de la CLI de Codex.",
   "error.provider_needs_codex": "Los miembros en {provider} funcionan con el agente de la CLI de Codex (gratis, de código abierto; no hace falta iniciar sesión en ChatGPT). Instala primero la CLI codex.",
+  "error.side_chat_busy": "El chat lateral todavía está respondiendo. Espera o ciérralo.",
   "security.member_refused": "El propio proceso de un miembro intentó actuar en tu nombre — aprobar, aceptar, fusionar o cambiar ajustes — por el socket de equipe. equipe lo rechazó: eso solo lo decides tú."
 }
