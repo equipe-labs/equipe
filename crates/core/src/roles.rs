@@ -82,6 +82,17 @@ boxes or so — with short labels in the person's language. Every number in it c
 invent one. Every screen shows it as a picture — equipe draws it for a phone — and where it can't be drawn its source \
 shows instead, so it should still read as text.";
 
+/// Answers read on a phone: a message the person sends from the equipe app
+/// comes marked ([`PHONE_MARK`]), and the answer fits a small screen. The same
+/// for every member and squad.
+const PHONE: &str = "\n\nWhen a message comes marked as sent from the person's phone, they read your answer there, \
+on a small screen, often on the move. Put the answer and anything they must do in the first two or three lines. Use \
+short lists, never a wide table. Give a path or a command only when they need it to act. Detail goes after that, or \
+in a file you name. A message without the mark is read on a computer, as usual.";
+
+/// What opens a message the person sent from their phone, for the member.
+pub const PHONE_MARK: &str = "[equipe: sent from the person's phone — they read your answer there; answer for a phone screen]";
+
 pub const ROLES: [Role; 9] = [
     Role {
         id: PM,
@@ -764,6 +775,7 @@ absolute path ending in `/`, and its first pictures show as a strip.{}",
         }
     );
     let visuals = VISUALS;
+    let phone = PHONE;
     let report_folder = match ctx.home {
         Some(home) => format!(" in the squad's folder, under `{home}/notes/reports/<date> <topic>/`"),
         None => " in a folder of its own".to_owned(),
@@ -846,7 +858,7 @@ with your engine's own wait or monitor tool."
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{pictures}{visuals}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{pictures}{visuals}{phone}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -1335,6 +1347,24 @@ mod tests {
                 assert!(text.contains(&format!("until they have written, in {screen}, the language of their screen")), "{}: {screen}", r.id);
             }
         }
+    }
+
+    #[test]
+    fn every_member_answers_a_message_from_the_phone_for_a_phone_screen() {
+        let team = [Teammate { name: "pm", role: PM }];
+        for role in ROLES.iter().chain([&CUSTOM]) {
+            let id = role.id;
+            for context in [ctx(&team, &[], true), ctx(&team, &[], false)] {
+                let text = charter(role, id, &context);
+                assert!(text.contains("When a message comes marked as sent from the person's phone"), "{id}: when");
+                assert!(text.contains("the answer and anything they must do in the first two or three lines"), "{id}: answer first");
+                assert!(text.contains("short lists, never a wide table"), "{id}: no wide tables");
+                assert!(text.contains("a path or a command only when they need it to act"), "{id}: few paths");
+                assert!(text.contains("Detail goes after that, or in a file you name"), "{id}: detail after");
+            }
+        }
+        // The mark names the phone in the charter's own words, and nothing of one squad's own.
+        assert!(PHONE_MARK.contains("sent from the person's phone") && !PHONE.contains('/') && !PHONE.contains("acme"));
     }
 
     #[test]

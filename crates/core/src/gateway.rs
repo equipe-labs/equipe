@@ -271,6 +271,8 @@ async fn serve_client(
     // Pairing a phone: this screen's line to the phone link, opened when it asks.
     let mut pairing: Option<crate::pairing::Bridge> = None;
     let mut lang: Option<crate::i18n::Lang> = None;
+    // A phone: what the person sends from it is read there.
+    let mut phone = false;
     // A screen with a browser panel, counted while it is attached.
     let mut panel_screen: Option<std::sync::Arc<crate::browser::Hub>> = None;
     loop {
@@ -294,6 +296,7 @@ async fn serve_client(
                     lang = crate::i18n::Lang::parse(&code);
                     core.send(Command::Language { lang: code });
                 }
+                phone = params.phone;
                 if params.browser_panel
                     && panel_screen.is_none()
                     && let Some(hub) = core.browser_hub().await
@@ -337,6 +340,8 @@ async fn serve_client(
                     }
                     if crate::pairing::is_pairing(&command) {
                         pairing.get_or_insert_with(|| crate::pairing::Bridge::new(&home, lang)).send(&command, &out_tx).await;
+                    } else if phone && matches!(command, Command::Submit { .. } | Command::SubmitLater { .. } | Command::SendNow { .. } | Command::AnswerQuestions { .. }) {
+                        core.send(Command::OnPhone { command: Box::new(command) });
                     } else {
                         core.send(command);
                     }
@@ -878,9 +883,18 @@ impl Client {
     /// [`Client::connect`], saying the screen speaks `lang`: what the daemon
     /// says to the person is in it from now on.
     pub async fn connect_in(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>) -> io::Result<(Self, Hello)> {
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false, phone: false }).await
+    }
+
+    /// [`Client::connect`] for a phone, through the relay: what the person
+    /// sends from it reaches members marked as sent from a phone.
+    pub async fn connect_phone(socket: &Path, version: &str, squad: &str) -> io::Result<(Self, Hello)> {
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: None, browser_panel: false, phone: true }).await
+    }
+
+    async fn attach(socket: &Path, params: HelloParams) -> io::Result<(Self, Hello)> {
         let stream = UnixStream::connect(socket).await?;
         let (reader, mut writer) = stream.into_split();
-        let params = HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false };
         let hello = Message::request(1, rpc::HELLO, params);
         write_line(&mut writer, &hello).await?;
 

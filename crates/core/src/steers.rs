@@ -5,15 +5,20 @@
 
 use equipe_protocol::transcript::scope::{LOOKING_AT, WHOLE_SQUAD};
 
+use crate::roles::PHONE_MARK;
+
 /// How the word that a steer was taken back opens.
 pub const TAKEN_BACK: &str = "[equipe: the person took back a message they sent while you work, before you read it — disregard it: ";
 
 /// A steer about `project` as it goes into the turn (`None`: the whole
-/// squad, said when `whole` — the PM's desk with several projects).
-pub fn words(text: &str, project: Option<&str>, whole: bool) -> String {
+/// squad, said when `whole` — the PM's desk with several projects); sent from
+/// the person's phone, the [`PHONE_MARK`] follows the project on its line.
+pub fn words(text: &str, project: Option<&str>, whole: bool, phone: bool) -> String {
+    let mark = if phone { format!(" {PHONE_MARK}") } else { String::new() };
     match project {
-        Some(project) => format!("{LOOKING_AT}{project} — this message is about it]\n\n{text}"),
-        None if whole => format!("{WHOLE_SQUAD} — this message is about all of it]\n\n{text}"),
+        Some(project) => format!("{LOOKING_AT}{project} — this message is about it]{mark}\n\n{text}"),
+        None if whole => format!("{WHOLE_SQUAD} — this message is about all of it]{mark}\n\n{text}"),
+        None if phone => format!("{PHONE_MARK}\n\n{text}"),
         None => text.to_owned(),
     }
 }
@@ -33,7 +38,7 @@ pub fn taken_back(text: &str) -> String {
 
 /// Whether a line opens a steer of equipe's.
 fn opens(line: &str) -> bool {
-    line.starts_with(LOOKING_AT) || line.starts_with(WHOLE_SQUAD) || line.starts_with(TAKEN_BACK)
+    line.starts_with(PHONE_MARK) || line.starts_with(LOOKING_AT) || line.starts_with(WHOLE_SQUAD) || line.starts_with(TAKEN_BACK)
 }
 
 /// What the engine echoed as it read the person's steers, as the steers it
@@ -71,13 +76,13 @@ pub fn read(raw: &str, pending: &[String]) -> Vec<String> {
 
 /// A part without the project it opened with.
 fn strip(part: &str) -> String {
-    let part = part.trim();
+    let mut part = part.trim();
     if (part.starts_with(LOOKING_AT) || part.starts_with(WHOLE_SQUAD))
         && let Some(end) = part.find(']')
     {
-        return part[end + 1..].trim().to_owned();
+        part = part[end + 1..].trim();
     }
-    part.to_owned()
+    part.strip_prefix(PHONE_MARK).map_or(part, str::trim).to_owned()
 }
 
 /// `part` as pending steers one after another, if it is.
@@ -121,17 +126,17 @@ mod tests {
 
     #[test]
     fn a_steer_opens_with_the_project_it_is_about() {
-        assert_eq!(words("fix it", Some("site"), true), "[equipe: the person is looking at the project site — this message is about it]\n\nfix it");
-        assert!(words("all", None, true).starts_with(WHOLE_SQUAD));
-        assert_eq!(words("plain", None, false), "plain");
+        assert_eq!(words("fix it", Some("site"), true, false), "[equipe: the person is looking at the project site — this message is about it]\n\nfix it");
+        assert!(words("all", None, true, false).starts_with(WHOLE_SQUAD));
+        assert_eq!(words("plain", None, false, false), "plain");
         // The conversation reads it the way it reads a message.
-        assert_eq!(equipe_protocol::transcript::scope::said_about(&words("x", Some("app"), true)), Some(Some("app".into())));
+        assert_eq!(equipe_protocol::transcript::scope::said_about(&words("x", Some("app"), true, false)), Some(Some("app".into())));
     }
 
     #[test]
     fn one_steer_read_is_itself_without_its_opening() {
         let p = pending(&["fix it"]);
-        assert_eq!(read(&words("fix it", Some("site"), true), &p), ["fix it"]);
+        assert_eq!(read(&words("fix it", Some("site"), true, false), &p), ["fix it"]);
         assert_eq!(read("fix it", &p), ["fix it"]);
         assert_eq!(read("not pending", &p), ["not pending"], "an echo equipe didn't send is shown as it is");
     }
@@ -139,7 +144,7 @@ mod tests {
     #[test]
     fn several_read_at_one_step_are_each_their_own_with_their_projects_gone() {
         let p = pending(&["a\n\nwith a paragraph", "b", "c"]);
-        let raw = format!("{}\n\n{}\n{}", words("a\n\nwith a paragraph", Some("site"), true), words("b", Some("app"), true), words("c", None, true));
+        let raw = format!("{}\n\n{}\n{}", words("a\n\nwith a paragraph", Some("site"), true, false), words("b", Some("app"), true, false), words("c", None, true, false));
         assert_eq!(read(&raw, &p), ["a\n\nwith a paragraph", "b", "c"]);
         // Without openings, joined as one: the pending ones in order.
         assert_eq!(read("b\n\nc", &p), ["b", "c"]);
@@ -149,9 +154,19 @@ mod tests {
     }
 
     #[test]
+    fn a_steer_from_the_phone_says_so_and_reads_back_as_itself() {
+        let p = pending(&["a", "b", "c"]);
+        let a = words("a", Some("site"), true, true);
+        assert!(a.starts_with(LOOKING_AT) && a.contains(PHONE_MARK), "{a}");
+        assert_eq!(equipe_protocol::transcript::scope::said_about(&a), Some(Some("site".into())));
+        let raw = format!("{a}\n\n{}\n{}", words("b", None, false, true), words("c", None, true, true));
+        assert_eq!(read(&raw, &p), ["a", "b", "c"]);
+    }
+
+    #[test]
     fn the_word_that_one_was_taken_back_stays_whole_to_be_left_out() {
         let p = pending(&["keep"]);
-        let raw = format!("{}\n\n{}", taken_back("never mind"), words("keep", Some("site"), true));
+        let raw = format!("{}\n\n{}", taken_back("never mind"), words("keep", Some("site"), true, false));
         let got = read(&raw, &p);
         assert_eq!(got.len(), 2);
         assert!(got[0].starts_with(TAKEN_BACK), "{got:?}");

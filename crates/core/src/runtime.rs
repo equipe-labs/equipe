@@ -521,6 +521,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_approval: 1,
         focus: HashMap::new(),
         said_about: None,
+        on_phone: false,
         builds_trimmed: None,
         compactions: compact::CompactTimes::default(),
         browsers: HashMap::new(),
@@ -744,6 +745,9 @@ struct Session {
     /// The turn running answers the person (not the board, not the team), so
     /// a guess at what they say next may follow it.
     answers_person: bool,
+    /// The person last spoke to it from their phone: what it answers is read
+    /// there, and its messages say so ([`crate::roles::PHONE_MARK`]).
+    on_phone: bool,
     /// How hard it thinks (`--effort` for Claude Code, reasoning effort for
     /// Codex); `None`: the engine's default.
     effort: Option<String>,
@@ -958,6 +962,8 @@ struct Runtime {
     /// that sent it shows (`Some(None)`: the whole squad) — it, not the
     /// focus another screen set last, says what the message is about.
     said_about: Option<Option<String>>,
+    /// While a command the person sent from their phone is handled ([`Command::OnPhone`]).
+    on_phone: bool,
     /// When members' build caches were last looked at.
     builds_trimmed: Option<std::time::Instant>,
     /// How long members' conversations took to compact, for the next one's guess.
@@ -1769,11 +1775,17 @@ impl Runtime {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
+            Command::OnPhone { command } => {
+                self.on_phone = true;
+                Box::pin(self.handle(*command)).await;
+                self.on_phone = false;
+            }
             Command::Submit { session, text, about } => {
                 // A conversation the person opened is about its own project, whatever the screen shows.
                 self.said_about = self.conversation_about(session).or(about);
                 let session = self.route(session);
                 self.note_person_active(session);
+                self.note_screen(session);
                 self.submit(session, text).await;
                 self.said_about = None;
             }
@@ -1781,6 +1793,7 @@ impl Runtime {
                 self.said_about = self.conversation_about(session).or(about);
                 let session = self.route(session);
                 self.note_person_active(session);
+                self.note_screen(session);
                 match self.sessions.get(&session) {
                     Some(s) if s.is_working() => self.leave_memo(session, text),
                     _ => self.submit(session, text).await,
@@ -1869,7 +1882,7 @@ impl Runtime {
                 if let Some(s) = self.sessions.get_mut(&session) {
                     s.refresh = Some(summary);
                     let text = if summary { say!(self, "notice.refresh_summary") } else { say!(self, "notice.refresh_clean") };
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
             }
             Command::SetModel { session, model } => {
@@ -1897,7 +1910,7 @@ impl Runtime {
                     }
                     self.publish(Event::ModelKnown { session, model: model.clone(), asked: Some(model.clone()) });
                     let text = say!(self, "notice.model", model = model);
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
             }
             Command::Models { engine } => self.models_asked(engine),
@@ -1915,7 +1928,10 @@ impl Runtime {
                 }
             }
             Command::Unqueue { session, text } => self.unqueue(session, &text),
-            Command::SendNow { session, texts } => self.send_now(session, texts).await,
+            Command::SendNow { session, texts } => {
+                self.note_screen(session);
+                self.send_now(session, texts).await
+            }
             Command::StopCommand { session } => self.stop_command(session),
             Command::StopSubagent { session, id } => self.stop_subagent(session, &id),
             Command::SetEffort { session, effort } => {
@@ -1926,7 +1942,7 @@ impl Runtime {
                         Some(effort) => say!(self, "notice.effort", effort = effort),
                         None => say!(self, "notice.effort_default"),
                     };
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
             }
             Command::AddProject { squad, path } => self.add_project(squad, path),
@@ -2066,6 +2082,7 @@ impl Runtime {
             Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
+            Command::UndoHomeChange { squad, session, change } => self.undo_home_change(&squad, session, &change),
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
             Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
             Command::Design { squad } => self.design_asked(squad),
@@ -2325,7 +2342,7 @@ impl Runtime {
             return false;
         };
         let text = say!(self, "news.sign_in_carried_on", engine = engine_name(stopped.engine));
-        self.publish(Event::Notice { session: id, text });
+        self.publish(Event::Notice { undo: None, session: id, text });
         self.set_going(id, crate::engine_auth::carry_on_prompt(stopped.engine, &stopped.prompts)).await;
         true
     }
@@ -2767,14 +2784,14 @@ runbooks and reports live there, and work across the projects or on running them
         let at = self.sessions.iter().find(|(_, s)| !s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
         let desk = self.sessions.get(&at).filter(|s| s.work.is_none()).map(|s| (scope::current(s.transcript.entries()).flatten(), s.is_working(), s.squad.clone()));
         let Some((now, working, Some(squad))) = desk else {
-            return self.publish(Event::Notice { session: at, text });
+            return self.publish(Event::Notice { undo: None, session: at, text });
         };
         let about = self.news_project(&squad, &text);
         if about == now {
-            return self.publish(Event::Notice { session: at, text });
+            return self.publish(Event::Notice { undo: None, session: at, text });
         }
         self.publish(Event::Thread { session: at, project: about });
-        self.publish(Event::Notice { session: at, text });
+        self.publish(Event::Notice { undo: None, session: at, text });
         if working {
             self.publish(Event::Thread { session: at, project: now });
         }
@@ -3107,6 +3124,7 @@ runbooks and reports live there, and work across the projects or on running them
                 subagents: Vec::new(),
                 compacting: None,
                 answers_person: false,
+                on_phone: false,
                 effort: role_effort,
                 briefing: Vec::new(),
                 memory,
@@ -3135,11 +3153,11 @@ runbooks and reports live there, and work across the projects or on running them
                 Some(cfg) => say!(self, "notice.on_open_model", model = model, provider = cfg.provider_name.clone()),
                 None => say!(self, "notice.on_nebius", model = model),
             };
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
             // What it can't do there yet, so the person isn't surprised.
             let provider = named.map(|(_, p)| p).or_else(|| self.config.nemotron.as_ref().map(|c| c.provider_name.clone())).unwrap_or_else(|| crate::nemotron::PROVIDER_NAME.to_owned());
             let text = say!(self, "notice.provider_limits", provider = provider);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
         }
         // A new member may be just who a waiting ticket needs.
         if let Some(squad) = squad {
@@ -3232,7 +3250,17 @@ runbooks and reports live there, and work across the projects or on running them
     fn steer_words(&mut self, id: SessionId, text: &str, project: Option<&str>) -> String {
         let desk = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone());
         let whole = project.is_none() && desk.is_some_and(|squad| self.projects(&squad).len() > 1);
-        steers::words(text, project, whole)
+        let phone = self.sessions.get(&id).is_some_and(|s| s.on_phone);
+        steers::words(text, project, whole, phone)
+    }
+
+    /// The person's word to `id` came from the screen it came from: their
+    /// phone ([`Command::OnPhone`]) or not. Its answers are for that screen.
+    pub(super) fn note_screen(&mut self, id: SessionId) {
+        let phone = self.on_phone;
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.on_phone = phone;
+        }
     }
 
     /// The engine read what the person said while it works: `raw` as it
@@ -3470,6 +3498,11 @@ runbooks and reports live there, and work across the projects or on running them
                 briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")
             ),
         };
+        // Read on the phone: the member answers for its screen. Before the
+        // project's word, which opens the message as the conversation reads it.
+        if session.on_phone {
+            prompt = format!("{}\n\n{prompt}", crate::roles::PHONE_MARK);
+        }
         // With several projects, which one the person is looking at.
         if let Some(project) = about {
             prompt = format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}");
@@ -4363,10 +4396,27 @@ for one project goes to it as tickets for its owners, with that project — and 
         match squad_home::save(&dir, &name, &asked_for(prompt)) {
             Ok(Some(change)) => {
                 let text = say!(self, "news.desk_saved", name = name, what = change.said(self.config.lang));
-                self.publish(Event::Notice { session: id, text });
+                self.publish(Event::Notice { undo: Some(change.id), session: id, text });
             }
             Ok(None) => {}
             Err(err) => self.error(Some(id), say!(self, "error.folder_not_saved", err = err), None),
+        }
+    }
+
+    /// The person takes back `change` to `squad`'s folder or memory, as
+    /// `/home undo` does, and hears it in `session`'s conversation — a change
+    /// equipe told of, only (one of its latest): never an arbitrary revision.
+    fn undo_home_change(&mut self, squad: &str, session: SessionId, change: &str) {
+        if self.sessions.get(&session).is_none_or(|s| s.squad.as_deref() != Some(squad)) {
+            return;
+        }
+        let dir = squad_home::path(&self.config.home, squad);
+        match squad_home::undo_change(&dir, change) {
+            Ok((taken, undo)) => {
+                let text = say!(self, "notice.taken_back", what = taken.said(self.config.lang));
+                self.publish(Event::Notice { session, text, undo: Some(undo.id) });
+            }
+            Err(err) => self.error(Some(session), say!(self, "error.undo_failed", err = err), None),
         }
     }
 
@@ -4758,7 +4808,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 Box::pin(self.close(*id)).await;
                 if let Some(pm) = self.pm_of(&squad) {
                     let text = say!(self, "news.helper_left", name = name);
-                    self.publish(Event::Notice { session: pm, text });
+                    self.publish(Event::Notice { undo: None, session: pm, text });
                 }
             }
             // Gone or let go: no longer helpers.
@@ -5107,7 +5157,7 @@ todo); or drop it if it's no longer wanted.]"
         // Back at its desk: the thread it was in there.
         let desk = self.sessions.get(&id).and_then(|s| s.thread.clone());
         self.publish(Event::Thread { session: id, project: desk });
-        self.publish(Event::Notice { session: id, text: shown.clone() });
+        self.publish(Event::Notice { undo: None, session: id, text: shown.clone() });
         let briefing = match &summary {
             Some(summary) => format!("{line}: {summary}"),
             None => format!("{line}."),
@@ -5190,7 +5240,7 @@ them with `propose_accept`. Then carry on with what else waits.]"
                 // In the conversation of the member who handed it in, else the PM's.
                 let session = Some(member).filter(|id| self.sessions.contains_key(id)).or_else(|| self.pm_of(squad));
                 if let Some(session) = session {
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
             }
         }
@@ -5711,7 +5761,7 @@ them with `propose_accept`. Then carry on with what else waits.]"
             if self.ask_in_panel(&call.squad, &call.member, url.as_deref(), &why) {
                 if let Some(id) = self.member_id(&call.squad, &call.member) {
                     let text = say!(self, "notice.browser_in_panel", name = call.member, why = why);
-                    self.publish(Event::Notice { session: id, text });
+                    self.publish(Event::Notice { undo: None, session: id, text });
                 }
                 let _ = reply.send(ToolResult {
                     text: "Your browser is open in the person's browser panel, at that page, in their hands, with your `why` \
@@ -5729,7 +5779,7 @@ and hand it back you get a message and carry on by yourself — don't ask them t
             self.show_browser(&call.squad, Some(call.member.clone()), true);
             if let Some(id) = self.member_id(&call.squad, &call.member) {
                 let text = say!(self, "notice.browser_on_screen", name = call.member, why = why);
-                self.publish(Event::Notice { session: id, text });
+                self.publish(Event::Notice { undo: None, session: id, text });
             }
             let _ = reply.send(ToolResult {
                 text: "Your browser comes up on the person's screen when this turn ends, at that page. Tell them what to do \
@@ -5791,14 +5841,14 @@ there, end your turn, and carry on when they say they're done."
         if permissions::blocked(&tool, &action) {
             let _ = reply.send(verdict(Decision::Deny, &input, "equipe never allows this, in any mode."));
             let text = say!(self, "notice.blocked", action = action);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
             self.audit(&call.squad, ticket, "equipe", "blocked", &action);
             return;
         }
         if let Some(why) = self.off_limits(id, &call.squad, &tool, &action, &input) {
             let _ = reply.send(verdict(Decision::Deny, &input, why));
             let text = say!(self, "notice.refused", why = why, action = action);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
             self.audit(&call.squad, ticket, "equipe", "refused", &action);
             return;
         }
@@ -5932,7 +5982,7 @@ there, end your turn, and carry on when they say they're done."
             Verdict::Blocked(why) => {
                 let _ = reply.send(refuse(format!("{why} Ask the person to do it.")));
                 let text = say!(self, "notice.blocked", action = first_line(&action));
-                self.publish(Event::Notice { session: id, text });
+                self.publish(Event::Notice { undo: None, session: id, text });
                 self.audit(&check.squad, ticket, "equipe", "blocked", &action);
                 return;
             }
@@ -6056,7 +6106,7 @@ there, end your turn, and carry on when they say they're done."
             (Decision::Deny, _, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
             (Decision::Deny, _, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
         };
-        self.publish(Event::Notice { session: approval.session, text: line });
+        self.publish(Event::Notice { undo: None, session: approval.session, text: line });
         let verb = match decision {
             Decision::Allow => "allowed",
             Decision::Always => "always allowed",
@@ -6480,7 +6530,7 @@ there, end your turn, and carry on when they say they're done."
                         self.carry_on(session, text, "[equipe: the person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.]".into()).await;
                     } else if working {
                         let text = say!(self, "notice.browser_given_back");
-                        self.publish(Event::Notice { session, text });
+                        self.publish(Event::Notice { undo: None, session, text });
                     }
                     return;
                 }
@@ -6491,7 +6541,7 @@ there, end your turn, and carry on when they say they're done."
                     // Only a turn under way needs telling: between turns nothing waits on it.
                     (true, _) if working => {
                         let text = say!(self, "notice.browser_taken");
-                        self.publish(Event::Notice { session, text });
+                        self.publish(Event::Notice { undo: None, session, text });
                     }
                     // Done with what it asked of them: it carries on.
                     (false, true) => {
@@ -6501,7 +6551,7 @@ there, end your turn, and carry on when they say they're done."
                     }
                     (false, false) if working => {
                         let text = say!(self, "notice.browser_given_back");
-                        self.publish(Event::Notice { session, text });
+                        self.publish(Event::Notice { undo: None, session, text });
                     }
                     _ => {}
                 }
@@ -6545,7 +6595,7 @@ there, end your turn, and carry on when they say they're done."
                 if let Some(session) = session {
                     let site = browser::site_of(&url).to_owned();
                     let text = say!(self, "notice.browser_check", site = site);
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
                 self.checking.insert(lane.to_owned(), (page, url, check));
             }
@@ -6570,7 +6620,7 @@ there, end your turn, and carry on when they say they're done."
             let prompt = format!("[equipe: the person closed your browser tab {url}. Don't open it again unless they ask; carry on without it.]");
             self.carry_on(session, text, prompt).await;
         } else {
-            self.publish(Event::Notice { session, text });
+            self.publish(Event::Notice { undo: None, session, text });
         }
     }
 
@@ -6580,7 +6630,7 @@ there, end your turn, and carry on when they say they're done."
     /// `prompt` to the member — read at its next step if it is at work, else
     /// starting a turn of its own.
     async fn carry_on(&mut self, id: SessionId, notice: String, prompt: String) {
-        self.publish(Event::Notice { session: id, text: notice });
+        self.publish(Event::Notice { undo: None, session: id, text: notice });
         self.set_going(id, prompt).await;
     }
 
@@ -7016,7 +7066,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     let change = squad_memory::forget(&folder, &member, fact, language.as_deref())?;
                     (change, say!(self, "notice.forgot", name = member, fact = fact))
                 };
-                self.publish(Event::Notice { session: id, text });
+                self.publish(Event::Notice { undo: Some(change.id.clone()), session: id, text });
                 Ok(format!("Saved in the squad's memory ({}). Every member has it from their next turn.", change.what()))
             }
             other => Err(format!("equipe has no tool called {other}.")),
@@ -7333,6 +7383,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         lane: None,
                         kept: false,
                         answers_person: false,
+                        on_phone: false,
                         effort: None,
                     },
                 );
@@ -7386,7 +7437,7 @@ it back there once they have done it.{again} End your turn now with a short line
         }
         for (id, ticket) in on_tickets {
             let text = say!(self, "notice.restarted", id = ticket);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
             self.start_turn(
                 id,
                 format!(
@@ -7455,7 +7506,7 @@ check what is already done in your worktree first."
         if let Some(journal) = squad.as_deref().and_then(|s| journal_for(&mut self.journals, &self.config.home, s)) {
             let _ = journal.clear_engine_session(id);
         }
-        self.publish(Event::Notice { session: id, text: shown });
+        self.publish(Event::Notice { undo: None, session: id, text: shown });
         self.compaction_ended(id, None);
         Some(if summary && !tail.is_empty() {
             format!(
@@ -8065,6 +8116,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         subagents: Vec::new(),
         compacting: None,
         answers_person: false,
+        on_phone: false,
         effort: None,
         briefing: Vec::new(),
         memory: m.memory.clone(),

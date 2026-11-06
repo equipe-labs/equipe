@@ -138,6 +138,11 @@ pub struct HelloParams {
     /// may be looking at. An older screen, or one without a panel: `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub browser_panel: bool,
+    /// The screen is a phone (the equipe app, through the relay): the person
+    /// reads members' answers to what they send from it on a small screen,
+    /// and members are told so ([`crate::Command::OnPhone`]). Others: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub phone: bool,
 }
 
 /// A member calling one of its board tools.
@@ -505,7 +510,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());

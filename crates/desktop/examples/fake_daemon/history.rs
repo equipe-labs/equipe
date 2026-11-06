@@ -149,7 +149,7 @@ pub fn history(n: usize) -> Vec<Entry> {
         if rng.below(3) == 0 {
             for k in 0..1 + rng.below(3) {
                 let t = 40 + (turn + k) % 90;
-                out.push(Entry::Note { text: format!("frontend handed in T-{t} for your review · Product detail page image gallery.") });
+                out.push(Entry::Note { undo: None, text: format!("frontend handed in T-{t} for your review · Product detail page image gallery.") });
             }
         }
         turn += 1;

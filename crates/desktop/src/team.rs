@@ -197,8 +197,8 @@ mod tests {
     #[test]
     fn the_headline_says_what_waits_and_who_is_busy() {
         let team = [Holder { name: "pm", role: "pm", ticket: None }, Holder { name: "mobile", role: "mobile", ticket: Some(130) }, Holder { name: "qa", role: "qa", ticket: Some(9) }];
-        assert_eq!(headline(&add(), &team, Some(4 * 3600)), "mobile 한 명 더 추가 — T-117이(가) 4시간째 기다리고 있어요 (mobile은(는) T-130 중)");
-        assert_eq!(headline(&add(), &team, None), "mobile 한 명 더 추가 — T-117이(가) 기다리고 있어요 (mobile은(는) T-130 중)");
+        assert_eq!(headline(&add(), &team, Some(4 * 3600)), "mobile 한 명 더 추가 — T-117이 4시간째 기다리고 있어요 (mobile은 T-130 중)");
+        assert_eq!(headline(&add(), &team, None), "mobile 한 명 더 추가 — T-117이 기다리고 있어요 (mobile은 T-130 중)");
         let bare = TeamChange { unblocks: vec![], count: 2, ..add() };
         assert_eq!(headline(&bare, &team[..1], None), "mobile 2명 더 추가");
         let remove = TeamChange { change: Change::Remove, member: Some("qa".into()), role: "qa".into(), busy_on: Some(9), ..add() };

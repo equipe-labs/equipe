@@ -155,7 +155,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// is allowed once, never always; a member's questions are the person's to
 /// answer or close from anywhere, and so is a change to the team the PM
 /// proposed to approve or decline, and moves between engines to make, leave
-/// or undo; so is handed-in work put to them on a card to confirm or decline
+/// or undo; so is taking back a change to the squad's folder or memory a
+/// member made, which equipe told of; so is handed-in work put to them on a card to confirm or decline
 /// — confirmed from a phone it is accepted, never merged; starting, closing,
 /// merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
@@ -189,6 +190,7 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::ApplyEngineProposal { .. }
         | Command::DismissEngineProposal { .. }
         | Command::UndoEngineProposal { .. }
+        | Command::UndoHomeChange { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }
         | Command::Engines
@@ -222,6 +224,7 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::ApplyEngineProposal { squad, .. }
         | Command::DismissEngineProposal { squad, .. }
         | Command::UndoEngineProposal { squad, .. }
+        | Command::UndoHomeChange { squad, .. }
         | Command::ShowEngineSetup { squad }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
@@ -1155,7 +1158,7 @@ pub(crate) mod tests {
         let other = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "zeta", "ticket": 1 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), other, now), now).is_empty());
         // Events go on to it, sealed, counted.
-        let out = core.on_event(&phone.id, "acme", &Event::Notice { session: 1, text: "hi".into() });
+        let out = core.on_event(&phone.id, "acme", &Event::Notice { undo: None, session: 1, text: "hi".into() });
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["squad"].as_str(), opened["rpc"]["method"].as_str()), (Some("acme"), Some("event")));
         assert!(opened["seq"].as_u64().unwrap() >= 3);
@@ -1396,6 +1399,15 @@ pub(crate) mod tests {
         for command in [Command::PairStart, Command::PairAnswer { approve: true }, Command::PairCancel, Command::Devices, Command::Unpair { device: "x".into() }] {
             assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens");
         }
+    }
+
+    #[test]
+    fn a_phone_takes_back_a_change_but_never_says_itself_a_phone() {
+        let undo = Command::UndoHomeChange { squad: "acme".into(), session: 1, change: "abc".into() };
+        assert_eq!(allowed(undo.clone()), Some(undo));
+        // The mark is the daemon's to put on what the relay link brings, not the phone's to send.
+        let submit = Command::Submit { session: 1, text: "hi".into(), about: None };
+        assert_eq!(allowed(Command::OnPhone { command: Box::new(submit) }), None);
     }
 
     #[test]

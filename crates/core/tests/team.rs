@@ -162,7 +162,7 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { session, ticket: 2, .. } if *session == joined)), "{seen:#?}");
     assert!(matches!(seen.last(), Some(Event::TeamChangeClosed { id, approved: true, members, .. }) if *id == change.id && members == &["qa-2".to_owned()]));
     let news = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
-    assert!(matches!(news.last(), Some(Event::Notice { text, .. }) if text == "팀에 qa-2을(를) 추가했어요"), "{news:#?}");
+    assert!(matches!(news.last(), Some(Event::Notice { text, .. }) if text == "팀에 qa-2를 추가했어요"), "{news:#?}");
     assert_eq!(names(&handle).await, ["pm", "qa", "qa-2"]);
     assert!(handle.snapshot("acme").await.team_changes.is_empty());
 

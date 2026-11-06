@@ -91,7 +91,7 @@ impl Runtime {
             session.briefing.push(line.to_owned());
         }
         self.save_waiting(id);
-        self.publish(Event::Notice { session: id, text: shown.to_owned() });
+        self.publish(Event::Notice { undo: None, session: id, text: shown.to_owned() });
     }
 
     /// The PM and the members a change concerns hear of it.

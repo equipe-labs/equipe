@@ -87,6 +87,8 @@ pub fn reads(command: &Command) -> bool {
         C::Start { .. }
         | C::Submit { .. }
         | C::SubmitLater { .. }
+        | C::OnPhone { .. }
+        | C::UndoHomeChange { .. }
         | C::Interrupt { .. }
         | C::Close { .. }
         | C::Accept { .. }
@@ -560,6 +562,8 @@ mod tests {
             Command::ApplyEngineProposal { squad: s(), id: 1 },
             Command::DismissEngineProposal { squad: s(), id: 1 },
             Command::UndoEngineProposal { squad: s(), id: 1 },
+            Command::UndoHomeChange { squad: s(), session: 1, change: "abc".into() },
+            Command::OnPhone { command: Box::new(Command::Interrupt { session: 1 }) },
             Command::ShowEngineSetup { squad: s() },
             Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude },
             Command::Design { squad: s() },

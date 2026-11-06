@@ -341,6 +341,11 @@ fn unmark(text: &str) -> &str {
 
 /// `{name}`s of `template` as they are in `text`, when the rest is the same.
 fn match_template(template: &str, text: &str) -> Option<Vec<(String, String)>> {
+    // A Korean particle after a placeholder reads as the one its value took.
+    equipe_core::i18n::particle_forms(template).iter().find_map(|form| match_form(form, text))
+}
+
+fn match_form(template: &str, text: &str) -> Option<Vec<(String, String)>> {
     // The template cut at its placeholders: literal, name, literal, name, …
     let mut literals: Vec<&str> = Vec::new();
     let mut names: Vec<String> = Vec::new();
@@ -704,9 +709,14 @@ mod tests {
     #[test]
     fn news_is_known_in_any_language_and_reads_in_the_one_in_use() {
         let old = news_of("backend handed in T-118 for your review · 주문 API.").unwrap();
-        assert_eq!(old, News { kind: NewsKind::HandedIn, text: "backend이(가) T-118을(를) 검토해 달라고 넘겼어요 · 주문 API.".into() });
+        assert_eq!(old, News { kind: NewsKind::HandedIn, text: "backend가 T-118을 검토해 달라고 넘겼어요 · 주문 API.".into() });
         assert_eq!(news_of("You accepted T-58 · 헤더.").unwrap().kind, NewsKind::Accepted);
         assert_eq!(news_of("pm이(가) T-9을(를) 제안했습니다: 로그인").unwrap().kind, NewsKind::Proposed);
+        // Its particles as the names took them, or as kept from before they did.
+        let handed = news_of("backend가 T-118을 검토해 달라고 넘겼어요 · 주문 API.").unwrap();
+        assert_eq!((handed.kind, handed.text.as_str()), (NewsKind::HandedIn, "backend가 T-118을 검토해 달라고 넘겼어요 · 주문 API."));
+        assert_eq!(news_of("backend이(가) T-118을(를) 검토해 달라고 넘겼어요 · 주문 API.").unwrap().kind, NewsKind::HandedIn);
+        assert_eq!(news_of("mobile이 T-7을 검토해 달라고 넘겼어요 · 앱.").unwrap().kind, NewsKind::HandedIn);
         let failed = news_of("✗ T-4 couldn't start for designer: no workspace").unwrap();
         assert_eq!(failed.kind, NewsKind::CannotStart);
         assert!(!failed.text.starts_with('✗'), "the icon says it: {}", failed.text);
@@ -743,8 +753,8 @@ mod tests {
 
     #[test]
     fn send_now_never_says_the_work_was_stopped() {
-        assert_eq!(read_now("pm", true, true, true, 1), "명령을 멈추는 중 — pm이(가) 바로 읽고 어떻게 할지 정해요");
-        assert_eq!(read_now("pm", true, true, false, 2), "pm이(가) 곧 다음 단계에서 읽어요 — 하던 일은 계속돼요");
+        assert_eq!(read_now("pm", true, true, true, 1), "명령을 멈추는 중 — pm이 바로 읽고 어떻게 할지 정해요");
+        assert_eq!(read_now("pm", true, true, false, 2), "pm이 곧 다음 단계에서 읽어요 — 하던 일은 계속돼요");
         assert!(read_now("pm", true, false, false, 1).contains("이번 차례가 끝나면"), "an engine that can't read mid-work: at the turn's end");
         assert_eq!(read_now("pm", false, true, false, 1), "지금 보냈어요");
         assert_eq!(read_now("pm", false, true, false, 3), "기다리던 3개를 한 메시지로 지금 보냈어요");

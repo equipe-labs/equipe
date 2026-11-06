@@ -1171,7 +1171,12 @@ fn message_vectors() -> Value {
     // Each engine's plan usage, for every screen; a phone that knows no `engine` reads Claude's.
     tell(&mut core, &mut examples, "event: plan usage (claude)", Event::PlanUsage { usage: claude_plan(), engine: Engine::Claude });
     tell(&mut core, &mut examples, "event: plan usage (codex)", Event::PlanUsage { usage: codex_plan(), engine: Engine::Codex });
-    tell(&mut core, &mut examples, "event: notice", Event::Notice { session: pm, text: "↪ You → backend: 로그인 API 먼저".into() });
+    tell(&mut core, &mut examples, "event: notice", Event::Notice { undo: None, session: pm, text: "↪ You → backend: 로그인 API 먼저".into() });
+    // A member's change to the squad's folder, told with what takes it back; the person takes it back.
+    let change = "3f1c2a9b7e5d4c6a8b0f1e2d3c4b5a6978877665";
+    tell(&mut core, &mut examples, "event: notice of a change to the squad's folder", Event::Notice { undo: Some(change.into()), session: pm, text: "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back".into() });
+    ask(&mut core, &mut examples, "undo home change", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "undo_home_change", "squad": SQUAD, "session": pm, "change": change } }));
+    tell(&mut core, &mut examples, "event: notice of a change taken back", Event::Notice { undo: Some("9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3".into()), session: pm, text: "Taken back: saved notes/tax-deadline.md · you can take this back too".into() });
     tell(&mut core, &mut examples, "event: error", Event::Error { session: Some(pm), message: "Claude Code isn't signed in".into(), next: Some("claude login".into()) });
     // What the screen shows goes with the message: a project, or (null) the whole squad.
     ask(&mut core, &mut examples, "submit: about a project", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "웹사이트는 어떻게 되어가?", "about": "web" } }));

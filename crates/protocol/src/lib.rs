@@ -662,6 +662,12 @@ pub enum Command {
         #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
         about: Option<Option<String>>,
     },
+    /// `command`, sent from the person's phone: what they say there is read
+    /// there, so the member hears so with it. The daemon wraps what a phone
+    /// sends (a screen that said hello with `phone`) — `Submit`,
+    /// `SubmitLater`, `SendNow` and `AnswerQuestions`; anything else inside
+    /// runs as it would on its own.
+    OnPhone { command: Box<Command> },
     /// A message for after the turn running now (a memo): it doesn't steer
     /// the work under way. With no turn running, the same as `Submit`.
     SubmitLater {
@@ -1054,6 +1060,12 @@ pub enum Command {
     /// The person takes back moves equipe made on its own: each member goes
     /// back to the engine and model it ran on, at its next ticket boundary.
     UndoEngineProposal { squad: SquadName, id: u64 },
+    /// The person takes back `change` to the squad's folder or memory — the
+    /// one an [`Event::Notice`]'s `undo` named — as `/home undo` does: as a
+    /// change of their own, so it can be taken back too. Told in `session`'s
+    /// conversation: a notice of what was taken back (its `undo` the new
+    /// change), or an error when later changes built on it.
+    UndoHomeChange { squad: SquadName, session: SessionId, change: String },
     /// Propose the squad's recommended setup for both engines again.
     ShowEngineSetup { squad: SquadName },
     /// The person moves `members` (none named: every member) to `engine`,
@@ -1815,7 +1827,16 @@ pub enum Event {
     QueueSent { session: SessionId, texts: Vec<String> },
     /// A line from equipe for this session's conversation — e.g. the PM being
     /// told that the person spoke to a member directly.
-    Notice { session: SessionId, text: String },
+    ///
+    /// `undo`: the change to the squad's folder (or memory) this line tells
+    /// of, which [`Command::UndoHomeChange`] takes back — a screen may put a
+    /// button on the line. Absent for every other line.
+    Notice {
+        session: SessionId,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
     /// A fragment of the agent's answer.
     TextDelta { session: SessionId, text: String },
     /// The agent is using a tool, e.g. `Edit` on a file.
@@ -2443,8 +2464,12 @@ pub enum Entry {
         #[serde(default, skip_serializing_if = "is_false")]
         background: bool,
     },
-    /// A quiet line from equipe itself.
-    Note { text: String },
+    /// A quiet line from equipe itself; `undo` as its [`Event::Notice`] had it.
+    Note {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
     /// What follows is about `project` — or, with `None`, about the whole
@@ -2912,7 +2937,7 @@ mod tests {
             Event::TicketChanged { squad: "acme".into(), ticket: ticket(3) },
             Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None },
             Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
-            Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
+            Event::Notice { undo: None, session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
             Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()), label: None, background: false },
             Event::TurnEnded {
