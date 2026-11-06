@@ -1,13 +1,13 @@
 {
-  "title": "대화 속 그림, 어떤 방식으로 보여 줄까",
-  "subtitle": "T-335 계약 후보 3가지",
-  "options": [{ "name": "Mermaid만" }, { "name": "HTML 카드 → PNG", "pick": true }, { "name": "SVG 직접 그림" }],
+  "title": "Pictures in the conversation: which way to show them",
+  "subtitle": "T-335's three contract candidates",
+  "options": [{ "name": "Mermaid only" }, { "name": "HTML card → PNG", "pick": true }, { "name": "SVG drawn directly" }],
   "rows": [
-    { "label": "폰에서 보임", "values": ["PNG로 바꿔야 해요", "PNG라 그대로 보여요", "앱이 SVG를 그려야 해요"] },
-    { "label": "화면과 같은 모양", "values": ["테마로 맞춰요", "토큰을 그대로 써요", "멤버가 색을 직접 골라요"] },
-    { "label": "멤버가 채우는 일", "values": ["글자 몇 줄", "데이터 JSON만", "좌표까지 직접"] },
-    { "label": "안전", "values": ["스크립트 없음", "스크립트·네트워크 차단", "스크립트 없음"] }
+    { "label": "Shows on a phone", "values": ["Must become a PNG", "A PNG, shows as is", "The app must draw SVG"] },
+    { "label": "Looks like the screen", "values": ["Matched by a theme", "Uses the tokens as they are", "The member picks colours"] },
+    { "label": "What the member fills in", "values": ["A few lines of text", "Only data JSON", "Coordinates and all"] },
+    { "label": "Safety", "values": ["No scripts", "Scripts·network blocked", "No scripts"] }
   ],
-  "why": "표와 숫자 요약은 Mermaid로 못 그리고, 멤버가 데이터만 채우면 토큰대로 나와서 화면과 어긋나지 않아요.",
-  "asOf": "11월 3일"
+  "why": "Mermaid can't draw tables and number summaries, and when the member fills in only data it comes out as the tokens say, never out of step with the screen.",
+  "asOf": "Nov 3"
 }

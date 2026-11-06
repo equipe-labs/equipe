@@ -1,6 +1,6 @@
 @import url("../../build/css/tokens.css");
 *{box-sizing:border-box;margin:0}
-html,body{background:var(--eq-color-bg);color:var(--eq-color-text);font:var(--eq-type-small);font-family:'Pretendard Variable',Pretendard,'Apple SD Gothic Neo',var(--eq-font-family-sans);word-break:keep-all;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+html,body{background:var(--eq-color-bg);color:var(--eq-color-text);font:var(--eq-type-small);font-family:var(--eq-font-family-sans);word-break:keep-all;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 .win{width:1280px;min-height:100vh;display:grid;grid-template-columns:232px 1fr;background:var(--eq-color-bg)}
 .side{background:var(--eq-color-sunken);border-right:1px solid var(--eq-color-line);padding:20px 12px;display:flex;flex-direction:column;gap:4px}
 .side h6{font-weight:600;font-size:12px;line-height:18px;;color:var(--eq-color-muted);padding:12px 12px 4px;letter-spacing:0}

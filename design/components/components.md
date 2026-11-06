@@ -1,107 +1,107 @@
-# 컴포넌트 규칙 v1
+# Component rules v1
 
-9개: 버튼 · 입력창 · 카드 · 칩 · 배지 · 목록 행 · 시트/모달 · 결정 카드 · 토스트(요청한 8개에서 칩·배지를 나눔). 각 컴포넌트는 **용도 → 변형 → 상태 → 크기 → 토큰 → 플랫폼 차이 → 하지 말 것** 순서. 렌더: `components/<이름>-light.png` · `-dark.png` (HTML 원본 `build/sheets/`, `npm run sheets`가 만든다, 웹 참조 구현 `reference/components.css`). 값은 전부 `tokens/component.json`(→ 의미 토큰 → 원시값)에서 온다.
+Nine: button · input · card · chip · badge · list row · sheet/modal · decision card · toast (chip and badge split from the eight requested). Each component goes **use → variants → states → size → tokens → platform differences → don'ts**. Renders: `components/<name>-light.png` · `-dark.png` (HTML source in `build/sheets/`, made by `npm run sheets`; the web reference implementation is `reference/components.css`). Every value comes from `tokens/component.json` (→ semantic tokens → primitives).
 
-## 공통 규칙
+## Shared rules
 
-**상태** — 모든 눌러지는 것은 같은 문법을 쓴다.
-| 상태 | 표현 | 토큰 |
+**States** — everything pressable uses the same grammar.
+| State | Expression | Tokens |
 |---|---|---|
-| 기본 | 변형별 기본 면·글자 | 컴포넌트 토큰 |
-| 호버 (포인터 있는 곳만: 웹·데스크톱·iPad 포인터) | 중립 오버레이 한 겹. 주 버튼만 전용 색 | `color.hover`, `button.primary-bg-hover` |
-| 눌림 | 호버보다 한 단계 진한 오버레이. iOS·Android는 시스템 눌림 효과 대신 이것을 쓴다 | `color.pressed`, `button.primary-bg-pressed` |
-| 포커스 | 링 2px, 오프셋 3px(데스크톱 2px). **키보드·보조 기술 포커스에만** 보인다(`:focus-visible`) | `color.focus`, `focus.ring-*` |
-| 비활성 | 불투명도 0.4 + 동작 없음 + `aria-disabled`/`disabled`. 이유가 필요하면 옆에 글로 | `opacity.disabled` |
-| 로딩 | 글자를 "…중" 문구로 바꾸고 비활성처럼 막는다(스피너만 두지 않는다). 폭은 유지 | — |
-| 오류 | 색 + 아이콘/기호 + 문구 셋 | `color.err` |
+| Default | each variant's default fill·text | component tokens |
+| Hover (only where there's a pointer: web·desktop·iPad pointer) | one layer of neutral overlay. Only the primary button has its own colour | `color.hover`, `button.primary-bg-hover` |
+| Pressed | an overlay one step darker than hover. iOS·Android use this instead of the system press effect | `color.pressed`, `button.primary-bg-pressed` |
+| Focus | ring 2px, offset 3px (desktop 2px). Shows **only for keyboard·assistive-technology focus** (`:focus-visible`) | `color.focus`, `focus.ring-*` |
+| Disabled | opacity 0.4 + no action + `aria-disabled`/`disabled`. If a reason is needed, in words beside it | `opacity.disabled` |
+| Loading | the label changes to an "…ing" wording and it's blocked like disabled (never a spinner alone). The width stays | — |
+| Error | colour + icon/symbol + words, all three | `color.err` |
 
-**접근성** — 글자 4.5:1, 그래픽 3:1(`contrast.md` 116조합 전부 통과). 색만으로 의미를 전달하지 않는다. 눌림 영역 웹·iOS 44 / Android 48 / 데스크톱 28(포인터) 이상 — 보이는 크기가 작으면 투명 영역으로 키운다.
-**움직임** — 시간 3개(`fast` 120 · `base` 160 · `slow` 200ms), 곡선 1개(`out-cubic`). 이동은 팝오버 4 · 카드 6 · 대화상자 8. **동작 줄이기**(웹 `prefers-reduced-motion`, iOS `accessibilityReduceMotion`, Android 시스템 애니메이션 배율 0, 데스크톱 macOS 손쉬운 사용): 이동 0, 남기는 건 100ms 이하 투명도 페이드뿐.
-**글자** — 이 표의 역할 이름(`label`, `ui`…)은 `tokens/semantic.json`의 `type.*`. 앱은 플랫폼 글꼴을 쓰고 iOS는 Dynamic Type, Android는 sp 배율을 따른다 — 고정 높이로 글자를 자르지 않는다(최소 높이만).
-**언어** — 문구는 짧게, 한국어 해요체, 이름은 `equipe`(brand.md). 버튼 글자는 동사: "허용", "거절"(예/아니오 금지).
+**Accessibility** — text 4.5:1, graphics 3:1 (all 116 pairs in `contrast.md` pass). Meaning is never carried by colour alone. Press areas at least web·iOS 44 / Android 48 / desktop 28 (pointer) — if the visible size is smaller, a transparent area makes up the rest.
+**Motion** — three durations (`fast` 120 · `base` 160 · `slow` 200ms), one curve (`out-cubic`). Travel: popover 4 · card 6 · dialog 8. **Reduce motion** (web `prefers-reduced-motion`, iOS `accessibilityReduceMotion`, Android system animation scale 0, desktop macOS Accessibility): no travel; all that remains is an opacity fade of 100ms or less.
+**Type** — the role names in this table (`label`, `ui`…) are `type.*` in `tokens/semantic.json`. The apps use the platform font and follow Dynamic Type on iOS and sp scaling on Android — never cut text with a fixed height (minimum heights only).
+**Language** — copy is short, in each language's chosen register (Korean: the polite -yo register, haeyo-che), the name is `equipe` (brand.md). Button labels are verbs: "Allow", "Decline" (never yes/no).
 
-## 1. 버튼 Button — `components/button-*.png`
-- **용도**: 한 가지 행동을 시작한다. 한 영역에 *주 버튼은 하나*.
-- **변형**: `primary`(`color.action` 면 — 글자색 면, 제품 UI의 주 행동) · `secondary`(테두리 `border-strong`) · `ghost`(링크색 글자, 면 없음 — 3순위 행동) · `danger`(`err` 면 — 되돌릴 수 없는 행동) · `brand`(`accent` 파랑 면 — **웹 마케팅 전용**, 제품 UI에 쓰지 않는다. 이유: 승인 같은 한 행동이 묻히지 않게, T-144 가이드 §2.2).
-- **크기**: md = `size.button`, sm = `button.height-sm`. 가로 패딩 `button.padding-x`.
-- **토큰**: `button.*`(`tokens/component.json`).
+## 1. Button — `components/button-*.png`
+- **Use**: starts one action. An area has *one primary button*.
+- **Variants**: `primary` (`color.action` fill — a text-coloured fill, the product UI's primary action) · `secondary` (border `border-strong`) · `ghost` (link-coloured text, no fill — third-rank actions) · `danger` (`err` fill — actions that can't be undone) · `brand` (`accent` blue fill — **web marketing only**, never in product UI. Why: so one action like approving isn't lost, T-144 guide §2.2).
+- **Size**: md = `size.button`, sm = `button.height-sm`. Horizontal padding `button.padding-x`.
+- **Tokens**: `button.*` (`tokens/component.json`).
 
-| | 웹 | 데스크톱 | iOS | Android |
+| | Web | Desktop | iOS | Android |
 |---|---|---|---|---|
-| 높이 md / sm | 44 / 36 | 28 / 24 | 44 / 36 | 48 / 36(터치 영역 48) |
-| 가로 패딩 | 20 | 12 | 16 | 24 |
-| 모서리 | 8 | 8 | 12 (연속 곡선 `.continuous`) | 12 |
-| 눌림 | 오버레이 | 오버레이 | 오버레이(시스템 하이라이트 대신) | 오버레이(리플 대신 — 리플 색을 `pressed`로) |
-| 글자 | `label` 16/600 | 14/600 | 15/600(subheadline) | 14/600(labelLarge) |
+| Height md / sm | 44 / 36 | 28 / 24 | 44 / 36 | 48 / 36 (touch area 48) |
+| Horizontal padding | 20 | 12 | 16 | 24 |
+| Corners | 8 | 8 | 12 (continuous curve `.continuous`) | 12 |
+| Pressed | overlay | overlay | overlay (instead of the system highlight) | overlay (instead of the ripple — ripple colour set to `pressed`) |
+| Text | `label` 16/600 | 14/600 | 15/600 (subheadline) | 14/600 (labelLarge) |
 
-- **하지 말 것**: 한 영역에 주 버튼 둘 · 모바일에서 둘을 세로로 놓을 때 위험을 *위에*(주 행동이 위, 취소는 아래) 두되 위험한 일이면 위험 버튼이 주 자리 · 글자 2줄 이상 · 아이콘만 있는 버튼에 라벨(접근성 이름) 빠뜨리기.
+- **Don't**: two primary buttons in an area · when two are stacked on mobile, put the risky one *on top* (primary on top, cancel below), and for a risky action the danger button takes the primary place · labels of two or more lines · leave out the label (accessible name) on an icon-only button.
 
-## 2. 입력창 Input — `components/input-*.png`
-- **용도**: 한 줄 글 입력(이름·코드). 여러 줄은 같은 토큰, 높이만 `auto`.
-- **구성**: 라벨(항상 보임, `label` 글자) → 필드 → 도움말(`small`). 플레이스홀더는 예시이지 라벨이 아니다.
-- **상태**: 기본 · 호버 · 포커스(테두리 2px `focus` — 링이 아니라 테두리가 두꺼워짐) · 오류(테두리 `err` + `✕` + 문구) · 비활성.
-- **크기**: `size.field` — 웹 44 · 데스크톱 36 · iOS 44 · Android 48. 글자 `ui`; **웹·iOS에서 16px 미만이면 포커스 시 화면이 확대되므로** 웹 입력은 16px(`ui` 웹 값 16 ✓).
-- **플랫폼**: iOS는 `TextField` + `.textFieldStyle(.plain)`에 직접 테두리, Android는 `OutlinedTextField` 색만 토큰으로(Material 라벨 애니메이션은 쓰지 않고 라벨을 위에 고정 — 웹과 같은 동작).
-- **하지 말 것**: 헤어라인(`line`)을 필드 테두리로 쓰기(3:1 미달) · 플레이스홀더로 형식 설명을 대신하기 · 오류를 색만으로 표시.
+## 2. Input — `components/input-*.png`
+- **Use**: one line of text input (names·codes). Multi-line uses the same tokens, only the height is `auto`.
+- **Construction**: label (always visible, `label` type) → field → help text (`small`). A placeholder is an example, not a label.
+- **States**: default · hover · focus (border 2px `focus` — the border thickens rather than a ring) · error (border `err` + `✕` + words) · disabled.
+- **Size**: `size.field` — web 44 · desktop 36 · iOS 44 · Android 48. Type `ui`; **on web·iOS, under 16px the screen zooms on focus**, so web inputs are 16px (`ui`'s web value 16 ✓).
+- **Platforms**: iOS draws the border itself on a `TextField` + `.textFieldStyle(.plain)`; Android takes only the colours of `OutlinedTextField` from tokens (no Material label animation; the label stays fixed on top — the same behaviour as the web).
+- **Don't**: use the hairline (`line`) as a field border (below 3:1) · let the placeholder stand in for a format description · show an error by colour alone.
 
-## 3. 카드 Card — `components/card-*.png`
-- **용도**: 한 묶음의 정보. 변형: 기본(`surface` + 헤어라인) · 떠 있는(`raised` + `elevation.float` — 팝오버·메뉴·토스트처럼 위로 뜨는 것에만) · 누르는 카드(기본 + 오버레이 + 포커스).
-- **패딩**: `card.padding` 웹·데스크톱 24 · 모바일 16. 모서리 `radius.card` 웹·데스크톱 12 · 모바일 16.
-- **상태**: 눌러서 여는 카드만 호버·눌림·포커스가 있다. 정보 카드는 상태 없음.
-- **플랫폼**: iOS 카드는 `.background(colors.surface, in: RoundedRectangle(cornerRadius:, style: .continuous))`, 그림자 대신 헤어라인(다크에서 그림자는 안 보임).
-- **하지 말 것**: 카드 안에 카드 · 카드마다 다른 모서리·그림자 · 그림자로 계층 만들기(헤어라인과 면 색으로).
+## 3. Card — `components/card-*.png`
+- **Use**: one bundle of information. Variants: default (`surface` + hairline) · floating (`raised` + `elevation.float` — only for what floats above, like popovers·menus·toasts) · pressable card (default + overlay + focus).
+- **Padding**: `card.padding` web·desktop 24 · mobile 16. Corners `radius.card` web·desktop 12 · mobile 16.
+- **States**: only cards that open on a press have hover·pressed·focus. Information cards have no states.
+- **Platforms**: an iOS card is `.background(colors.surface, in: RoundedRectangle(cornerRadius:, style: .continuous))`, with a hairline instead of a shadow (shadows don't show in dark).
+- **Don't**: cards inside cards · different corners·shadows per card · build hierarchy with shadows (use hairlines and fill colour).
 
-## 4. 칩 Chip — `components/chip-*.png`
-- **용도**: 필터·선택(여러 개 중 고름). 알약형(`radius.chip`). 변형: 기본 · 선택됨(`accent-bg` + `accent` 글자·테두리 + 앞에 `✓`).
-- **크기**: 높이 32(데스크톱 24), 가로 12, 글자 `small`. 모바일은 눌림 영역 44/48까지 투명 영역으로.
-- **하지 말 것**: 상태 표시에 쓰기(→ 배지) · 선택을 색만으로 · 칩 안에 긴 문장.
+## 4. Chip — `components/chip-*.png`
+- **Use**: filtering·choosing (picking among several). A pill (`radius.chip`). Variants: default · selected (`accent-bg` + `accent` text·border + a leading `✓`).
+- **Size**: height 32 (desktop 24), horizontal 12, type `small`. On mobile the press area reaches 44/48 with a transparent area.
+- **Don't**: use one to show a status (→ badge) · show selection by colour alone · put a long sentence in a chip.
 
-## 5. 배지 Badge — `components/badge-*.png`
-- **용도**: 한눈에 알아볼 상태. 5종: `ok` 완료 · `work` 일하는 중 · `wait` 내 차례 · `err` 오류 · `neutral`.
-- **구성**: **기호 + 글자 필수**(✓ 완료, ⋯ 일하는 중, ! 내 차례, ✕ 오류). 기호는 플랫폼 아이콘 세트(Lucide/SF Symbols/Material Symbols)로 — 시트의 유니코드 글리프는 자리표시. 면은 의미색 12% 투명 + 글자는 의미색 — 어느 바탕 위에서도 4.5:1(`contrast.md` 배지 행).
-- **크기**: 높이 22(데스크톱 20), 글자 `meta` 600, 가로 8.
-- **의미 고정**: amber(work)는 "에이전트가 일하는 중", orange(wait)는 "사람을 기다림". **프로젝트·멤버 색으로 amber/orange를 쓰지 않는다**(desktop `PROJECT_HUES` 규칙 그대로).
-- **상태**: 눌러서 동작하는 배지는 만들지 않는다(눌러야 하면 칩이나 버튼).
-- **개수 (데스크톱 사이드바·목록 행 끝)**: `wait`로 *채운* 개수 알약은 한 화면에 하나 — 사람을 기다리는 것의 합계(확인 필요)뿐. 그 내역(프로젝트별 개수, 진행 상황, "내 차례 N")은 `muted` 숫자이고, 무엇을 세는지는 앞의 **점**(6pt, 상태색, 그래픽 3:1)이 말한다. 항목 하나가 기다릴 때(대화·멤버 얼굴·프로젝트)도 같은 주황 점, 옆 글자는 잉크(`text2`, medium). 개수는 행 끝 22pt 칸 가운데, 점은 그 앞 한 줄로 — 1이든 10이든 줄이 맞는다. 툴팁·접근성 이름은 숫자가 무엇인지 말로. 이유: 거의 모든 프로젝트가 기다릴 때 주황 숫자가 줄마다 반복되면 신호가 사라진다(원칙 1·2, 브랜드 §2.1·§4). 자세히 `docs/DESIGN-SYSTEM.md` "Counts and what waits".
+## 5. Badge — `components/badge-*.png`
+- **Use**: a status read at a glance. Five kinds: `ok` done · `work` working · `wait` your turn · `err` error · `neutral`.
+- **Construction**: **a symbol + words, required** (✓ Done, ⋯ Working, ! Your turn, ✕ Error). The symbols come from the platform icon set (Lucide/SF Symbols/Material Symbols) — the sheet's Unicode glyphs are placeholders. The fill is the semantic colour at 12% + text in the semantic colour — 4.5:1 on any background (`contrast.md`'s badge rows).
+- **Size**: height 22 (desktop 20), type `meta` 600, horizontal 8.
+- **Fixed meanings**: amber (work) is "an agent is working", orange (wait) is "waiting on the person". **Amber/orange are never project·member colours** (exactly the desktop's `PROJECT_HUES` rule).
+- **States**: no badge acts on a press (if it must be pressed, it's a chip or a button).
+- **Counts (desktop sidebar·end of list rows)**: one count pill *filled* with `wait` per screen — only the total of what waits on the person (needs checking). Its breakdown (counts per project, progress, "your turn N") is `muted` numbers, and what they count is said by the **dot** in front (6pt, status colour, graphics 3:1). When one item waits (a conversation·a member's face·a project) it's the same orange dot, with the text beside it in ink (`text2`, medium). The count sits centred in a 22pt slot at the row's end, the dot in one line before it — rows line up whether it's 1 or 10. Tooltips·accessible names say in words what the number is. Why: when nearly every project waits, an orange number repeated on every row loses the signal (principles 1·2, brand §2.1·§4). More in `docs/DESIGN-SYSTEM.md` "Counts and what waits".
 
-## 6. 목록 행 List row — `components/row-*.png`
-- **용도**: 같은 종류 항목의 나열(멤버, 티켓, 기기). 앞(아바타/점) · 본문 2줄(제목 `ui`, 보조 `small`) · 뒤(배지/값/›).
-- **높이** `size.row`: 웹 48 · 데스크톱 32 · iOS 44 · Android 56. 가로 패딩 16(데스크톱 12). 구분선 `line` 1px(마지막 행은 없음). 데스크톱 행은 모서리 8(호버 면이 둥글게), 나머지는 0.
-- **상태**: 호버·눌림(오버레이) · 선택(`accent-bg`, **글자색은 그대로** — 선택을 면 하나로만 알리지 않고 체크·굵기·`aria-selected`를 함께) · 포커스 · 비활성.
-- **플랫폼**: iOS는 `List` 대신 `LazyVStack`로 구분선을 직접(시스템 인셋 구분선이 토큰과 어긋남), 스와이프 동작은 시스템 것을 그대로. Android는 `ListItem` 대신 `Row` + `Modifier.clickable`(리플 색 `pressed`).
-- **하지 말 것**: 행 안에 버튼 둘 이상(눌림 영역 충돌) · 뒤 칸에 긴 글 · 구분선과 카드 테두리 동시 사용.
+## 6. List row — `components/row-*.png`
+- **Use**: a list of items of one kind (members, tickets, devices). Leading (avatar/dot) · a two-line body (title `ui`, secondary `small`) · trailing (badge/value/›).
+- **Height** `size.row`: web 48 · desktop 32 · iOS 44 · Android 56. Horizontal padding 16 (desktop 12). Divider `line` 1px (none after the last row). Desktop rows have corners of 8 (the hover fill is rounded), the rest 0.
+- **States**: hover·pressed (overlay) · selected (`accent-bg`, **text colour unchanged** — selection is never told by a fill alone but with a check·weight·`aria-selected`) · focus · disabled.
+- **Platforms**: iOS draws its own dividers with `LazyVStack` instead of `List` (the system's inset dividers disagree with the tokens), and keeps the system's swipe actions. Android uses `Row` + `Modifier.clickable` (ripple colour `pressed`) instead of `ListItem`.
+- **Don't**: two or more buttons in a row (press areas collide) · long text in the trailing slot · dividers and card borders together.
 
-## 7. 시트·모달 Sheet / Modal — `components/sheet-*.png`
-- **용도**: 지금 하던 일을 막고 하나의 결정·입력을 받는다. 웹·데스크톱: 가운데 대화상자(최대 `sheet.max-width` 480). 모바일: 바텀 시트(손잡이 36×4, 위 모서리 24, 시스템 시트 `presentationDetents`/`ModalBottomSheet`를 쓰되 색·모서리는 토큰).
-- **구성**: 제목(`title`) → 설명(`body`) → 행동(오른쪽 정렬, 모바일은 세로 전체 폭). 행동은 최대 둘 + 닫기.
-- **상태**: 열림(대화상자 `slow` 200ms + 8 이동, 시트는 시스템 곡선) · 닫는 길 항상 있음(취소 버튼 · 바깥 탭 · Esc/뒤로) · 처리 중(행동 비활성 + 문구).
-- **뒤**: `color.scrim`. 포커스는 시트 안에 가두고, 닫히면 연 곳으로 돌려준다.
-- **하지 말 것**: 시트 위 시트 · 닫는 길 없는 모달 · 단순 알림에 모달(→ 토스트/배너) · 위험 행동을 기본 포커스로.
+## 7. Sheet / Modal — `components/sheet-*.png`
+- **Use**: stops what was under way to take one decision·input. Web·desktop: a centred dialog (max `sheet.max-width` 480). Mobile: a bottom sheet (grabber 36×4, top corners 24; use the system sheet `presentationDetents`/`ModalBottomSheet`, with colours·corners from tokens).
+- **Construction**: title (`title`) → description (`body`) → actions (right-aligned; on mobile stacked, full width). At most two actions + close.
+- **States**: open (dialog `slow` 200ms + 8 travel, the sheet on the system curve) · always a way to close (cancel button · tap outside · Esc/back) · processing (actions disabled + words).
+- **Behind**: `color.scrim`. Focus is kept inside the sheet and goes back to where it was opened when it closes.
+- **Don't**: sheets on sheets · a modal with no way to close · a modal for a simple notice (→ toast/banner) · default focus on the risky action.
 
-## 8. 결정 카드 Decision card — `components/decision-*.png` (equipe 고유)
-- **용도**: 사람의 승인이 필요한 순간(허락 요청·내 차례). **제품에서 가장 크게 보여야 하는 컴포넌트**(playbook A2 원칙: 승인이 가장 크게).
-- **구성**(위→아래): 배지 `! 내 차례` + 시각 → 누가 무엇을(`title`) → 어디서(`small`, muted) → 실제 내용(코드 블록 `sunken`) → 한 줄 안내("한 번만 허용돼요…") → 행동 둘(같은 폭, **거절=보조 · 허용=주**, 거절이 왼쪽).
-- **면**: 테두리 2px `wait`(내 차례 색). 해결되면 테두리가 `line`으로 돌아가고 배지가 `✓ 허용했어요`로 바뀐다 — 사라지지 않고 기록으로 남는다.
-- **상태**: 기본 · 포커스(허용 버튼) · 처리 중(두 버튼 비활성, 허용 글자 "보내는 중…") · 완료 · 오류(카드 안 배너, 버튼 재활성).
-- **플랫폼**: iOS는 시트(`ApprovalSheetView`)로 올라오며 그 안에서 같은 구성, 완료 햅틱 1회. Android는 바텀 시트. 데스크톱은 대화 흐름 안 인라인 + 알림(알림 본문에 내용을 넣지 않는다 — 누가 무엇이 필요한지만, `desktop-cmdk-palette` 결정).
-- **하지 말 것**: 허용을 기본 포커스로 *자동* 이동 · 두 버튼 크기·색을 같게 · 코드 내용 숨기기("자세히" 뒤에 두면 안 됨 — 판단 근거는 앞에) · 같은 승인을 토스트로.
+## 8. Decision card — `components/decision-*.png` (equipe's own)
+- **Use**: the moment the person's approval is needed (permission requests·your turn). **The component that must show most in the product** (playbook A2 principle: approval shows the most).
+- **Construction** (top→bottom): badge `! Your turn` + time → who wants what (`title`) → where (`small`, muted) → the actual content (code block `sunken`) → a one-line note ("Allowed this once…") → two actions (same width, **decline = secondary · allow = primary**, decline on the left).
+- **Surface**: border 2px `wait` (the your-turn colour). Once resolved the border goes back to `line` and the badge changes to `✓ Allowed` — it doesn't vanish but stays as a record.
+- **States**: default · focus (the allow button) · processing (both buttons disabled, the allow label "Sending…") · done · error (a banner inside the card, buttons enabled again).
+- **Platforms**: on iOS it rises as a sheet (`ApprovalSheetView`) with the same construction inside, one haptic on done. Android: a bottom sheet. Desktop: inline in the conversation + a notification (the notification never carries the content — only who needs what, the `desktop-cmdk-palette` decision).
+- **Don't**: move default focus to allow *automatically* · make both buttons the same size·colour · hide the code content (never behind "details" — the grounds for judging come first) · the same approval as a toast.
 
-## 9. 토스트 Toast — `components/toast-*.png`
-- **용도**: 방금 한 일의 가벼운 확인("복사했어요"). 사라져도 큰일이 없는 정보만.
-- **면**: 페이지 반대색(`inverse` / `on-inverse`, 액션 `inverse-accent`) — 어떤 바탕 위에서도 읽힌다. 모서리 `radius.control`, 그림자 `elevation.float`, 최대 폭 520.
-- **시간**: `motion.duration.toast` 5초, 호버·포커스·스크린리더 읽는 동안 멈춤. 액션이 있으면 닫기 전까지 두거나 다른 길(내역·설정)을 남긴다. `role="status"`(iOS `UIAccessibility.post(.announcement)`, Android `LiveRegion.Polite`).
-- **위치**: 웹·데스크톱 하단 가운데(화면 가장자리에서 `space.4`), iOS·Android 하단 탭바/입력창 위.
-- **하지 말 것**: 오류를 토스트로(→ 배너·필드 오류, 놓치면 안 되므로) · 토스트에 두 개 이상 액션 · 쌓아 올리기(최대 1개, 새 것이 이전 것을 대체).
+## 9. Toast — `components/toast-*.png`
+- **Use**: a light confirmation of what was just done ("Copied"). Only information that's no loss if it goes.
+- **Surface**: the page's opposite colour (`inverse` / `on-inverse`, action `inverse-accent`) — reads over any background. Corners `radius.control`, shadow `elevation.float`, max width 520.
+- **Time**: `motion.duration.toast` 5 seconds, held while hovered·focused·being read by a screen reader. With an action, keep it until closed or leave another way (history·settings). `role="status"` (iOS `UIAccessibility.post(.announcement)`, Android `LiveRegion.Polite`).
+- **Position**: web·desktop bottom centre (`space.4` from the screen's edge), iOS·Android above the bottom tab bar/composer.
+- **Don't**: errors as toasts (→ banner·field error, since they mustn't be missed) · two or more actions in a toast · stacking (at most one; a new one replaces the last).
 
-## 부록 — 플랫폼 이름 대응 (토큰 → 코드)
+## Appendix — names across platforms (token → code)
 
-| 토큰 | CSS | Rust (`tokens.rs`) | Swift | Kotlin |
+| Token | CSS | Rust (`tokens.rs`) | Swift | Kotlin |
 |---|---|---|---|---|
 | `color.surface` | `var(--eq-color-surface)` | `palette(dark).color_surface` | `colors.colorSurface` | `colors.colorSurface` |
 | `space.4` | `var(--eq-space-4)` | `SPACE_4` | `EquipeSpace.s4` | `EquipeSpace.s4` |
 | `radius.card` | `var(--eq-radius-card)` | `RADIUS_CARD` | `EquipeRadius.card` | `EquipeRadius.card` |
 | `type.body` | `font: var(--eq-type-body)` | `TYPE_BODY` | `EquipeType.body.font` | `EquipeType.body.toTextStyle()` |
-| `motion.duration.fast` | `var(--eq-motion-duration-fast)` | `MOTION_DURATION_FAST_MS` | `EquipeMotion.durationFast` (초) | `EquipeMotion.durationFast` (ms) |
+| `motion.duration.fast` | `var(--eq-motion-duration-fast)` | `MOTION_DURATION_FAST_MS` | `EquipeMotion.durationFast` (seconds) | `EquipeMotion.durationFast` (ms) |
 | `button.primary-bg` | `var(--eq-button-primary-bg)` | `palette(dark).button_primary_bg` | `colors.buttonPrimaryBg` | `colors.buttonPrimaryBg` |
 
-규칙: 이름은 토큰 경로 그대로(점 → CSS `-`, Rust `_`, Swift·Kotlin camelCase). 숫자로 시작하는 단계는 `space` → `s4`, `border` → `w1`로 글자를 붙인다. 단위: CSS px · Rust 논리 px(f32)·시간 ms · Swift pt(CGFloat)·시간 초 · Kotlin dp/sp·시간 ms. 색: CSS `#RRGGBB(AA)` · Rust `0xRRGGBBAA` · Swift `Color(0x…)` · Kotlin `Color(0xAARRGGBB)`.
+Rule: names are the token path as is (dots → CSS `-`, Rust `_`, Swift·Kotlin camelCase). Steps starting with a digit get letters: `space` → `s4`, `border` → `w1`. Units: CSS px · Rust logical px (f32)·time ms · Swift pt (CGFloat)·time seconds · Kotlin dp/sp·time ms. Colours: CSS `#RRGGBB(AA)` · Rust `0xRRGGBBAA` · Swift `Color(0x…)` · Kotlin `Color(0xAARRGGBB)`.

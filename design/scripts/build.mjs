@@ -232,7 +232,7 @@ function kotlin() {
   write('build/kotlin/EquipeTokens.kt', tail.join('\n'));
 }
 
-// ─────────────────── tokens.json (what equipe's 디자인 시스템 screen reads) ───────────────────
+// ─────────────────── tokens.json (what equipe's Design system screen reads) ───────────────────
 // The layers merged into one DTCG file: the light tree as written, aliases kept, and where a
 // token's dark value differs, that value in $extensions.mode.dark (the repository docs/DESIGN-SYSTEM.md).
 // Platform overrides stay in $extensions["im.equipe"].platform; $value is the base (web) one.
@@ -252,7 +252,7 @@ function tokensJson() {
     }
   };
   walk(light, dark, []);
-  // Roles before the raw palette they're built from, so the screen's 색 opens on color.bg, not color.raw.
+  // Roles before the raw palette they're built from, so the screen's Colour section opens on color.bg, not color.raw.
   const { raw, ...roles } = light.color;
   light.color = { ...roles, raw };
   const { $description, ...groups } = light;
