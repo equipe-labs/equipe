@@ -116,7 +116,7 @@ time (the trigger rules are `equipe_core::quality::skill_checks`).
 ### Running it
 
 ```sh
-scripts/quality-gate.sh --baseline origin/main               # all ten tasks, 3 runs each on A and B
+scripts/quality-gate.sh --baseline origin/main               # all eleven tasks, 3 runs each on A and B
 scripts/quality-gate.sh --baseline origin/main --tasks pm-vague-ask,pm-plan-and-recall --runs 3
 scripts/quality-gate.sh --tasks backend-fix-failing-test --runs 1   # B only: a smoke run, no verdict
 ```

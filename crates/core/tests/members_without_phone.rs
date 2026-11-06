@@ -23,6 +23,23 @@ fn sha(text: &str) -> String {
     })
 }
 
+/// JSON with every object's keys in sorted order: the same text whether or
+/// not something in the build turns on serde_json's `preserve_order` (GPUI
+/// does, in a whole-workspace build).
+fn canonical(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let fields: Vec<String> = keys.iter().map(|k| format!("{}:{}", serde_json::to_string(k).unwrap(), canonical(&map[k.as_str()]))).collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        Value::Array(items) => format!("[{}]", items.iter().map(canonical).collect::<Vec<_>>().join(",")),
+        other => other.to_string(),
+    }
+}
+
 /// Every (role, squad, engine) a member is told something in, and what it is told.
 fn told_now() -> Vec<(String, String)> {
     let team = [
@@ -72,7 +89,7 @@ fn told_now() -> Vec<(String, String)> {
             out.push((format!("{tag}.skills"), text));
         }
         for helped in [false, true] {
-            let tools = serde_json::to_string(&equipe_core::helpers::with_board(role.id, helped)).unwrap();
+            let tools = canonical(&serde_json::Value::Array(equipe_core::helpers::with_board(role.id, helped)));
             out.push((format!("{}.tools{}", role.id, if helped { ".helped" } else { "" }), tools));
         }
     }
