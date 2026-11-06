@@ -903,6 +903,11 @@ pub enum Command {
     /// hears the command failed and goes on with its turn, reading at its
     /// next step what the person said meanwhile. Nothing when no command runs.
     StopCommand { session: SessionId },
+    /// Stop one of the member's subagents — one the daemon watches: an
+    /// equipe helper, or a subagent of Codex's own — and only it. The member
+    /// hears it stopped (a helper hands in what it had) and goes on with its
+    /// turn. Nothing when it isn't at work, or its engine can't stop it alone.
+    StopSubagent { session: SessionId, id: String },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -1921,6 +1926,15 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,
     },
+    /// A subagent the daemon watches hasn't been heard from for `quiet_secs`
+    /// and looks stuck; `None`: it has been heard from since. Only the
+    /// person stops it ([`Command::StopSubagent`]). See [`SubagentInfo::stuck_secs`].
+    SubagentStuck {
+        session: SessionId,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quiet_secs: Option<u64>,
+    },
     /// What follows in the conversation is about `project` (`None`: the whole
     /// squad) — a message of the person's sent looking at it, news of its
     /// ticket, or a ticket's work. See [`transcript::scope`].
@@ -2243,6 +2257,7 @@ impl Event {
             | Event::SubagentStep { session, .. }
             | Event::SubagentEntry { session, .. }
             | Event::SubagentEnded { session, .. }
+            | Event::SubagentStuck { session, .. }
             | Event::TurnEnded { session, .. }
             | Event::VisualsRendered { session, .. }
             | Event::BranchLanded { session, .. }
@@ -2555,6 +2570,10 @@ pub struct SubagentInfo {
     /// Its latest steps and words ([`Event::SubagentEntry`]), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<Entry>,
+    /// It looks stuck: unheard from for this many seconds when the snapshot
+    /// was taken ([`Event::SubagentStuck`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stuck_secs: Option<u64>,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -3366,6 +3385,20 @@ mod tests {
         assert_eq!(engines.iter().map(|e| (e.engine, e.state)).collect::<Vec<_>>(), [(Engine::Codex, EngineState::Unknown), (Engine::Claude, EngineState::SignedIn)]);
         let failed: SignInStep = serde_json::from_value(json!({ "kind": "failed", "why": "region_blocked" })).unwrap();
         assert_eq!(failed, SignInStep::Failed { why: SignInFailure::Failed, detail: String::new() });
+    }
+
+    #[test]
+    fn a_stuck_subagent_and_its_stop_travel_as_json_and_back() {
+        let stuck = Event::SubagentStuck { session: 3, id: "h1".into(), quiet_secs: Some(320) };
+        let text = serde_json::to_string(&stuck).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), stuck);
+        assert_eq!(stuck.session(), Some(3));
+        let moving = serde_json::to_string(&Event::SubagentStuck { session: 3, id: "h1".into(), quiet_secs: None }).unwrap();
+        assert!(!moving.contains("quiet_secs"), "{moving}");
+        let stop = Command::StopSubagent { session: 3, id: "thr-sub".into() };
+        assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&stop).unwrap()).unwrap(), stop);
+        let info: SubagentInfo = serde_json::from_value(json!({ "id": "h1", "what": "look" })).unwrap();
+        assert_eq!(info.stuck_secs, None, "an older daemon's says nothing of it");
     }
 
     #[test]

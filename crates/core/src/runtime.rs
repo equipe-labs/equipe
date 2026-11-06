@@ -83,6 +83,7 @@ mod controls;
 mod review;
 mod retro;
 mod watch;
+mod helping;
 mod providers;
 
 /// How many recent lines a snapshot carries per session.
@@ -560,6 +561,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         merging: std::collections::HashSet::new(),
         disk: Default::default(),
         commands: Default::default(),
+        helping: HashMap::new(),
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
@@ -699,6 +701,9 @@ struct Session {
     /// Stops the turn running now through its engine, which then winds it
     /// down (Codex's `turn/interrupt`). `None`: stopping kills it.
     stop: Option<oneshot::Sender<()>>,
+    /// Stops one subagent of the turn running now, by its thread, through
+    /// its engine (Codex's `turn/interrupt` on the subagent's own turn).
+    stop_subagent: Option<mpsc::UnboundedSender<String>>,
     /// For each of those, the project the person was looking at (`None`: the whole squad).
     steer_threads: Vec<Option<String>>,
     /// Steers taken back after they went into the turn: not shown when the
@@ -888,6 +893,16 @@ enum Internal {
     DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
     /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
     Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
+    /// A subagent of a turn's engine was heard from on its own thread.
+    SubagentHeard { session: SessionId, id: String },
+    /// A member's helper did something ([`crate::helpers`]).
+    Helper { session: SessionId, id: String, activity: Activity },
+    /// A member's helper's turn ended: what it wrote, or why it failed.
+    HelperEnded { session: SessionId, id: String, outcome: Result<equipe_providers::turn::TurnResult, String> },
+    /// A helper's time is up.
+    HelperTimeUp { session: SessionId, id: String },
+    /// A `helper_result` has waited as long as it does.
+    HelperWaitOver(u64),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -1030,6 +1045,8 @@ struct Runtime {
     disk: room::DiskWatch,
     /// Members' commands under way, as watched running (`watch.rs`).
     commands: watch::Commands,
+    /// Members' helpers, by the conversation they work for (`helping.rs`).
+    helping: HashMap<SessionId, helping::Helping>,
     /// The Mac held awake while members work or a screen is attached.
     awake: crate::awake::Awake,
     /// Sign-ins under way on this machine, by engine: which one, and its task.
@@ -1131,6 +1148,11 @@ impl Wake {
             Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
+            Wake::Internal(Internal::SubagentHeard { .. }) => Borrowed("a subagent heard from"),
+            Wake::Internal(Internal::Helper { .. }) => Borrowed("a helper's step"),
+            Wake::Internal(Internal::HelperEnded { .. }) => Borrowed("a helper's end"),
+            Wake::Internal(Internal::HelperTimeUp { .. }) => Borrowed("a helper's time up"),
+            Wake::Internal(Internal::HelperWaitOver(_)) => Borrowed("a wait for helpers over"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -1356,6 +1378,11 @@ impl Runtime {
                 Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
+                Internal::SubagentHeard { session, id } => self.subagent_heard(session, &id),
+                Internal::Helper { session, id, activity } => self.helper_did(session, &id, activity),
+                Internal::HelperEnded { session, id, outcome } => self.helper_ended(session, &id, outcome),
+                Internal::HelperTimeUp { session, id } => self.stop_helper(session, &id, crate::helpers::Ended::TimeLimit),
+                Internal::HelperWaitOver(key) => self.helper_wait_over(key),
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -1364,6 +1391,7 @@ impl Runtime {
                     self.publish_desktop();
                 }
                 self.look_at_commands();
+                self.watch_subagents();
             }
             Wake::Frames => self.take_frames(),
             Wake::DesignTick => self.design_tick(),
@@ -1423,6 +1451,8 @@ impl Runtime {
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
     fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
+        // A turn's end, a member gone, the person's word: its helpers follow.
+        self.follow_helpers(&mut event);
         // A command step starting or answered, a turn's end: its watch follows.
         self.follow_commands(&event);
         // A turn that ends mid-compaction cuts it short: said first.
@@ -1500,15 +1530,20 @@ impl Runtime {
                     step: None,
                     since: std::time::Instant::now(),
                     entries: std::collections::VecDeque::new(),
+                    heard: std::time::Instant::now(),
+                    watched: session.engine == Engine::Codex,
+                    stuck: false,
                 }),
                 Event::SubagentStep { id, step, .. } => {
                     if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
                         sub.step = Some(step.clone());
+                        sub.heard = std::time::Instant::now();
                     }
                 }
                 Event::SubagentEntry { id, entry, .. } => {
                     if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
                         sub.keep(entry.clone());
+                        sub.heard = std::time::Instant::now();
                     }
                 }
                 Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.id != *id),
@@ -1882,6 +1917,7 @@ impl Runtime {
             Command::Unqueue { session, text } => self.unqueue(session, &text),
             Command::SendNow { session, texts } => self.send_now(session, texts).await,
             Command::StopCommand { session } => self.stop_command(session),
+            Command::StopSubagent { session, id } => self.stop_subagent(session, &id),
             Command::SetEffort { session, effort } => {
                 let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
                 if let Some(s) = self.sessions.get_mut(&session) {
@@ -3065,6 +3101,7 @@ runbooks and reports live there, and work across the projects or on running them
                 steering: Vec::new(),
                 steer_threads: Vec::new(),
                 stop: None,
+                stop_subagent: None,
                 taken_back: Vec::new(),
                 send_now_prompt: None,
                 subagents: Vec::new(),
@@ -3852,6 +3889,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         // in the charter either way.
         let set_at_once = self.subagents_at_once(squad.as_deref());
         let subagents = session.member.as_ref().and_then(|_| subagents_of(session, set_at_once));
+        // With none, and the board's tools: equipe's helpers stand in.
+        let helped = board_tools && subagents.is_none() && self.helpers_offered(session);
         let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
@@ -3878,6 +3917,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 skills: skills::Delivery::Inline,
                 guard: guarded,
                 subagents,
+                helpers: helped,
             };
             let role = roles::role_or_custom(&m.role);
             let offered = skills::offered(role, &ctx);
@@ -3982,6 +4022,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // What the person says while this turn runs goes into it (Claude Code only).
         let mut steer = None;
         let mut stop = None;
+        let mut stop_subagent = None;
         let turn = match session.engine {
             // The person's own Codex CLI: an agent with tools, in the worktree.
             Engine::Codex if session.codex.is_none() => {
@@ -4019,6 +4060,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                             args
                         };
                         let mut servers = json!({ MCP_SERVER: codex_app::mcp_server(binary, &args(None), true) });
+                        // No subagents of its own: equipe's helpers, on the board's server.
+                        if helped {
+                            helping::offer(&mut servers[MCP_SERVER]);
+                        }
                         if let Some(port) = browser {
                             servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
@@ -4040,6 +4085,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 steer = Some(steer_tx);
                 let (stop_tx, stop_rx) = oneshot::channel::<()>();
                 stop = Some(stop_tx);
+                let (stop_sub_tx, stop_sub_rx) = mpsc::unbounded_channel::<String>();
+                stop_subagent = Some(stop_sub_tx);
                 // What Codex asks goes to the person as Claude Code's permission prompts do.
                 let (ask_tx, mut ask_rx) = mpsc::unbounded_channel::<codex_app::Ask>();
                 let asker = session_member(session);
@@ -4082,7 +4129,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let outcome = codex_app::run_turn(&binary, &cwd, request, Some(steer_rx), Some(ask_tx), Some(stop_rx), |activity| {
+                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx) };
+                    let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
@@ -4094,6 +4142,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                             }
                             Activity::Engine { pid } => {
                                 let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            }
+                            Activity::SubagentHeard { id: sub } => {
+                                let _ = internal.send(Internal::SubagentHeard { session: id, id: sub });
                             }
                             activity => {
                                 if let Some(event) = activity_event(id, activity) {
@@ -4267,6 +4318,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.turn = Some(turn);
             session.steer = steer;
             session.stop = stop;
+            session.stop_subagent = stop_subagent;
         }
     }
 
@@ -5646,6 +5698,12 @@ them with `propose_accept`. Then carry on with what else waits.]"
         }
         if call.name == board::SIGN_IN {
             return self.ask_sign_in(call, reply);
+        }
+        if call.name == crate::helpers::SPAWN_HELPER {
+            return self.spawn_helper(call, reply);
+        }
+        if call.name == crate::helpers::HELPER_RESULT {
+            return self.helper_result(call, reply);
         }
         if call.name == board::SHOW_BROWSER {
             let url = call.arguments["url"].as_str().map(str::to_owned);
@@ -7058,6 +7116,7 @@ it back there once they have done it.{again} End your turn now with a short line
                             secs: s.since.elapsed().as_secs(),
                             brief: s.brief.clone(),
                             entries: s.entries.iter().cloned().collect(),
+                            stuck_secs: s.stuck.then(|| s.heard.elapsed().as_secs()),
                         })
                         .collect(),
                     compacting: s.compacting.as_ref().map(|(info, ..)| info.clone()),
@@ -7258,6 +7317,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         steering: Vec::new(),
                         steer_threads: Vec::new(),
                         stop: None,
+                        stop_subagent: None,
                         taken_back: Vec::new(),
                         send_now_prompt: None,
                         subagents: Vec::new(),
@@ -7998,6 +8058,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         steering: Vec::new(),
         steer_threads: Vec::new(),
         stop: None,
+        stop_subagent: None,
         taken_back: Vec::new(),
         send_now_prompt: None,
         subagents: Vec::new(),
@@ -8143,6 +8204,13 @@ struct SubRun {
     step: Option<String>,
     since: std::time::Instant,
     entries: std::collections::VecDeque<Entry>,
+    /// When it was last heard from: a step, a word, its engine telling of it.
+    heard: std::time::Instant,
+    /// Watched for going quiet ([`crate::subagent_watch`]): Codex's own, and
+    /// equipe's helpers — those the person can stop alone.
+    watched: bool,
+    /// The screens were told it looks stuck, and not yet that it moves.
+    stuck: bool,
 }
 
 impl SubRun {
@@ -8207,7 +8275,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         }
         Activity::Limits(_) => return None,
         // The loop's to know, never a screen's: sent apart by the turn.
-        Activity::Engine { .. } => return None,
+        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } => return None,
     })
 }
 
