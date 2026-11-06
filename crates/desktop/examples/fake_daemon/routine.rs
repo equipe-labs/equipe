@@ -121,5 +121,5 @@ fn decide(id: u64, approve: bool, events: &broadcast::Sender<Event>) {
         format!("Declined the routine · {title}")
     };
     let _ = events.send(Event::RoutineProposalClosed { squad: squad(), id, approved: approve });
-    let _ = events.send(Event::Notice { session: PM, text });
+    let _ = events.send(Event::Notice { undo: None, session: PM, text });
 }

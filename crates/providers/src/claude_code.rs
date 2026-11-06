@@ -162,6 +162,14 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     // Continue the conversation Claude Code already holds, rather than resending it.
     if let Some(id) = request.resume {
         args.extend(["--resume".to_owned(), id.to_owned()]);
+        // A copy of it, under a new session id: the original stays as it was.
+        if request.fork {
+            args.push("--fork-session".to_owned());
+        }
+    }
+    // Only these of Claude Code's built-in tools exist for the turn.
+    if !request.tools.is_empty() {
+        args.extend(["--tools".to_owned(), request.tools.join(",")]);
     }
     // Added to Claude Code's own system prompt, never replacing it.
     if let Some(charter) = request.charter {
@@ -245,6 +253,11 @@ pub struct TurnRequest<'a> {
     pub access: Access,
     /// Claude Code's session id from an earlier turn, to continue that conversation.
     pub resume: Option<&'a str>,
+    /// Continue a copy of `resume`'s conversation under a new session id
+    /// (`--fork-session`), leaving the original as it was.
+    pub fork: bool,
+    /// The only built-in tools the turn has (`--tools`); empty, Claude Code's own set.
+    pub tools: &'a [String],
     /// Who the agent is on the team, appended to Claude Code's system prompt.
     pub charter: Option<&'a str>,
     /// Claude Code plugins to load for the turn (`--plugin-dir`): the member's skills.
@@ -660,6 +673,12 @@ fn runs_in_background(name: &str, input: Option<&Value>) -> bool {
 
 /// The thing a tool use acts on, in one line.
 pub(crate) fn tool_target(name: &str, input: Option<&Value>) -> Option<String> {
+    // A web search: the words it looked for.
+    if name == "WebSearch"
+        && let Some(query) = input.and_then(|i| i.get("query")).and_then(Value::as_str)
+    {
+        return Some(query.lines().next().unwrap_or("").chars().take(120).collect());
+    }
     board_target(name, input).or_else(|| {
         // `element` and `text`: what a browser step clicks or types into, in words;
         // `app`, `keys`, `window`: a desktop step's.
@@ -684,11 +703,56 @@ fn tool_done(pending: Pending, block: &Value, text: &str, structured: Option<&Va
         ms: u64::try_from(pending.since.elapsed().as_millis()).unwrap_or(u64::MAX),
         // What a command printed, and why anything failed. A file read or an
         // edit answers with the file, which the person doesn't need again.
-        output: if !ok || pending.name == "Bash" { output.to_owned() } else { String::new() },
+        // A web search answers with the pages it found: those, as links.
+        output: if !ok || pending.name == "Bash" {
+            output.to_owned()
+        } else if pending.name == "WebSearch" {
+            web_sources(text, structured)
+        } else {
+            String::new()
+        },
         diff: if failed { None } else { patch.or(pending.diff) },
         name: pending.name,
         target: pending.target,
     }
+}
+
+/// The most pages a web search's answer lists.
+const WEB_SOURCES: usize = 12;
+
+/// The pages a web search found, one Markdown link a line (`- [title](url)`):
+/// from Claude Code's structured answer (`results`' `content`), else from the
+/// `Links: [...]` line of its words.
+fn web_sources(text: &str, structured: Option<&Value>) -> String {
+    let from_structured: Vec<Value> = structured
+        .and_then(|s| s.get("results"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.get("content").and_then(Value::as_array))
+        .flatten()
+        .cloned()
+        .collect();
+    let links = if from_structured.is_empty() {
+        text.lines()
+            .find_map(|l| l.trim().strip_prefix("Links:"))
+            .and_then(|l| serde_json::from_str::<Vec<Value>>(l.trim()).ok())
+            .unwrap_or_default()
+    } else {
+        from_structured
+    };
+    let mut seen = std::collections::HashSet::new();
+    links
+        .iter()
+        .filter_map(|l| {
+            let url = l.get("url").and_then(Value::as_str).filter(|u| u.starts_with("http"))?;
+            let title = l.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).unwrap_or(url);
+            let title: String = title.chars().filter(|c| !matches!(c, '[' | ']' | '\n')).take(120).collect();
+            seen.insert(url.to_owned()).then(|| format!("- [{title}]({url})"))
+        })
+        .take(WEB_SOURCES)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `Exit code 2` heading a command's answer: the code, and the rest.
@@ -1371,6 +1435,42 @@ mod tests {
         assert_eq!(parse_suggestion(&result(&"x".repeat(300))), None, "a speech isn't a suggestion");
         assert_eq!(parse_suggestion(&json!({"is_error": true, "result": "Not logged in"}).to_string()), None);
         assert_eq!(parse_suggestion("not json"), None);
+    }
+
+    #[test]
+    fn a_fork_continues_a_copy_of_the_conversation_with_only_the_tools_named() {
+        let tools = ["Read".to_owned(), "WebSearch".to_owned()];
+        let args = turn_args(&TurnRequest { prompt: "x", resume: Some("sess-1"), fork: true, tools: &tools, ..Default::default() });
+        assert!(args.windows(2).any(|w| w[0] == "--resume" && w[1] == "sess-1"));
+        assert!(args.iter().any(|a| a == "--fork-session"), "a new session; the original's stays as it was: {args:?}");
+        assert!(args.windows(2).any(|w| w[0] == "--tools" && w[1] == "Read,WebSearch"), "no other tool exists for it: {args:?}");
+        // Nothing to fork from: a fresh conversation, still with only those tools.
+        let fresh = turn_args(&TurnRequest { prompt: "x", fork: true, tools: &tools, ..Default::default() });
+        assert!(!fresh.iter().any(|a| a == "--fork-session" || a == "--resume"), "{fresh:?}");
+        // A member's turn: its own conversation, Claude Code's whole tool set.
+        let member = turn_args(&TurnRequest { prompt: "x", resume: Some("sess-1"), ..Default::default() });
+        assert!(!member.iter().any(|a| a == "--fork-session" || a == "--tools"), "{member:?}");
+    }
+
+    #[test]
+    fn a_web_search_says_what_it_looked_for_and_the_pages_it_found() {
+        let mut collector = TurnCollector::new();
+        let started = collector.on_event(&json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "w1", "name": "WebSearch", "input": { "query": "rust 2027 edition" } },
+            { "type": "tool_use", "id": "w2", "name": "WebSearch", "input": { "query": "gpui text selection" } },
+        ] } }));
+        assert_eq!(started[0], Activity::Tool { name: "WebSearch".into(), target: Some("rust 2027 edition".into()), label: None, background: false });
+        // The pages, from Claude Code's structured answer…
+        let done = done_of(collector.on_event(&json!({ "type": "user",
+            "tool_use_result": { "query": "rust 2027 edition", "results": [
+                { "tool_use_id": "srv1", "content": [{ "title": "Rust Blog", "url": "https://blog.rust-lang.org/x" }, { "title": "The [edition] guide", "url": "https://doc.rust-lang.org/edition-guide/" }] },
+                "A summary the model reads." ] },
+            "message": { "content": [{ "type": "tool_result", "tool_use_id": "w1", "content": "Web search results for query: \"rust 2027 edition\"\n\nLinks: [...]" }] } })));
+        assert_eq!(done[0].output, "- [Rust Blog](https://blog.rust-lang.org/x)\n- [The edition guide](https://doc.rust-lang.org/edition-guide/)");
+        // …or from its words, when that is all there is.
+        let done = done_of(collector.on_event(&json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "w2",
+            "content": "Web search results for query: \"gpui text selection\"\n\nLinks: [{\"title\":\"gpui docs\",\"url\":\"https://gpui.rs\"}]\n\nMore words." }] } })));
+        assert_eq!(done[0].output, "- [gpui docs](https://gpui.rs)");
     }
 
     #[test]

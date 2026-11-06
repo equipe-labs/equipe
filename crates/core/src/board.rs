@@ -1350,6 +1350,55 @@ mod tests {
         assert!(arg_strs(&json!({}), "needs").is_empty());
     }
 
+    /// A member tool as members get it, by name.
+    fn tool_named(name: &str) -> Value {
+        tools(false).into_iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("no tool {name}"))
+    }
+
+    // What the charters stopped saying because the tools say it themselves
+    // (crates/core/charter-moved.txt names these tests).
+
+    #[test]
+    fn block_on_persons_needs_are_one_standalone_sentence_each_with_paths() {
+        let needs = tool_named(BLOCK_ON_PERSON)["inputSchema"]["properties"]["needs"]["description"].as_str().unwrap().to_owned();
+        for said in ["one per item — never several joined into one", "a complete sentence that stands on its own", "named by its path in backticks", "from the card they answer on"] {
+            assert!(needs.contains(said), "{said}: {needs}");
+        }
+        assert_eq!(tool_named(BLOCK_ON_PERSON)["inputSchema"]["properties"]["needs"]["type"], "array");
+    }
+
+    #[test]
+    fn estimates_description_says_when_to_call_it_again_and_when_work_goes_live() {
+        let estimate = tool_named(ESTIMATE);
+        let said = estimate["description"].as_str().unwrap();
+        for part in ["as you start anything that takes more than a couple of minutes", "again whenever your guess changes by much", "also say when it will be live", "Honest minutes"] {
+            assert!(said.contains(part), "{part}: {said}");
+        }
+        assert!(estimate["inputSchema"]["properties"]["live_in_minutes"].is_object() && estimate["inputSchema"]["properties"]["live_what"].is_object());
+    }
+
+    #[test]
+    fn ask_decisions_description_says_how_many_its_recommendation_and_that_it_doesnt_wait() {
+        let ask = tool_named(ASK_DECISION);
+        let said = ask["description"].as_str().unwrap();
+        for part in [
+            "1 to 4 at once",
+            "a question with 2 to 4 options",
+            "the one you recommend first, with `recommended` set",
+            "never write \"Recommended\" into a label",
+            "It doesn't wait",
+            "their answers come to you as their next message",
+            "Then end your turn, or carry on with work that doesn't depend on it",
+        ] {
+            assert!(said.contains(part), "{part}: {said}");
+        }
+        let questions = &ask["inputSchema"]["properties"]["questions"];
+        assert_eq!((questions["minItems"].as_u64(), questions["maxItems"].as_u64()), (Some(1), Some(4)));
+        let options = &questions["items"]["properties"]["options"];
+        assert_eq!((options["minItems"].as_u64(), options["maxItems"].as_u64()), (Some(2), Some(4)));
+        assert_eq!(options["items"]["properties"]["recommended"]["type"], "boolean");
+    }
+
     #[test]
     fn a_decision_asks_one_to_four_questions_of_two_to_four_options() {
         let q = |options: Value| json!({ "question": "Which database?", "header": "Database", "options": options });

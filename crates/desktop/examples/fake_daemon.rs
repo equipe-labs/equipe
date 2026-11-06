@@ -9,6 +9,7 @@
 //! would — and so do the person's own create, edit, move and comment (by
 //! `equipe_core::board`'s rules), each kept in the ticket's record.
 //! `FAKE_EMPTY=1` starts with nothing waiting for the person;
+//! `FAKE_PHONE_QA=<file>` ends the conversation on a phone test's report kept in that file;
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
@@ -17,6 +18,8 @@
 //! `FAKE_WORKING=<n>` has only the first n of frontend and backend at work (`0`: nobody).
 //! `FAKE_COMMAND=working|busy|nothing|asks|stuck|stuck_nothing`: a turn sits on a
 //! command, the daemon's look at it shown (`fake_daemon/command.rs`).
+//! A side chat searches the web and answers (`fake_daemon/side_chat.rs`);
+//! `FAKE_SIDE_SEARCH=off`: the member is on a provider without web search.
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -941,6 +944,24 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
 
 
 /// A command about a ticket, done as the daemon would: the ticket as it is now.
+/// Commands a decision sends — a card confirmed, words decided — run as the
+/// board's buttons run on the fake board.
+fn run_commands(commands: Vec<Command>, events: &broadcast::Sender<Event>) {
+    for command in commands {
+        if let Some(more) = accept::on_command(&command, events) {
+            run_commands(more, events);
+            continue;
+        }
+        if let Some(said) = on_board_command(&command) {
+            for event in said {
+                let _ = events.send(event);
+            }
+        } else if let Some(ticket) = on_ticket_command(&command) {
+            let _ = events.send(Event::TicketChanged { squad: "demo".into(), ticket });
+        }
+    }
+}
+
 fn on_ticket_command(command: &Command) -> Option<Ticket> {
     let mut all = tickets().lock().unwrap();
     let id = match command {
@@ -980,7 +1001,7 @@ fn on(mut info: SessionInfo, ticket: u32, project: &str, title: &str, working: b
     info.work = Some(WorkInfo { ticket, project: repo(project), workspace: None });
     info.state = if working { SessionState::Working } else { SessionState::Ready };
     info.recent = vec![
-        Entry::Note { text: format!("── T-{ticket} · {title} — on branch equipe/t-{ticket}") },
+        Entry::Note { undo: None, text: format!("── T-{ticket} · {title} — on branch equipe/t-{ticket}") },
         Entry::User { text: format!("Please start T-{ticket}.") },
         Entry::Reply { text: "Sure, I'll look at the structure first. I'll reuse the existing components and write the tests first.".into() },
         Entry::Tool { tool: tool.0.into(), target: Some(if tool.0 == "Bash" { tool.1.to_owned() } else { format!("{}/{}", repo(project).display(), tool.1) }), outcome: None, label: None, background: false },
@@ -1051,6 +1072,18 @@ mod signin;
 
 #[path = "fake_daemon/crowd.rs"]
 mod crowd;
+
+// Deciding in the person's own words, as the daemon reads them: `FAKE_WORDS`, `FAKE_WORDS_LANG`.
+#[path = "fake_daemon/words.rs"]
+mod words;
+
+// Side chats about a passage: `FAKE_SIDE_SEARCH=off` for a provider without web search.
+#[path = "fake_daemon/side_chat.rs"]
+mod side_chat;
+
+// A phone test's report, at the conversation's end: `FAKE_PHONE_QA=<file with its note>`.
+#[path = "fake_daemon/phone_qa.rs"]
+mod phone_qa;
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
@@ -1164,7 +1197,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: reading::REPLY.into() });
                         }
                         if pictures::on() {
-                            history.push(Entry::Note { text: pictures::NEWS.into() });
+                            history.push(Entry::Note { undo: None, text: pictures::NEWS.into() });
+                        }
+                        if let Some(text) = phone_qa::note() {
+                            history.push(Entry::Note { text, undo: None });
                         }
                         if replies::on() {
                             history.extend(replies::history());
@@ -1177,7 +1213,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         if browser::handover() {
                             history.push(Entry::User { text: "Change the EU DSA trader status in App Store Connect".into() });
                             history.push(Entry::Reply { text: "My browser isn't signed in to App Store Connect, so you'll need to sign in first.".into() });
-                            history.push(Entry::Note { text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
+                            history.push(Entry::Note { undo: None, text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
                         }
                         // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
                         // long gone, for the tickets' cards on the pointer.
@@ -1187,8 +1223,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: format!("T-42 is waiting for review. T-117 is your turn, and the old T-999 is gone.{pictures}") });
                         }
                         if let Some(how) = your_turn() {
-                            history.push(Entry::Note { text: "frontend handed in T-63 for your review · Competitor onboarding research.".into() });
-                            history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · App Store submission.".into() });
+                            history.push(Entry::Note { undo: None, text: "frontend handed in T-63 for your review · Competitor onboarding research.".into() });
+                            history.push(Entry::Note { undo: None, text: "T-117 waits for you — frontend needs something only you can do · App Store submission.".into() });
                             if how == "elsewhere" {
                                 let events = events.clone();
                                 tokio::spawn(async move {
@@ -1326,6 +1362,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                         }
                         switching::mix(&mut sessions);
+                        // Read apart: the board's lock is held while the snapshot is put together.
+                        let waiting_words = {
+                            let board = tickets().lock().unwrap().clone();
+                            words::on_hello(&board)
+                        };
                         for s in &mut sessions {
                             s.recent_at = said_at(&s.recent, unix());
                         }
@@ -1371,6 +1412,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             disk: disk::status(),
                             reviews: reviews(),
                             put_away: put_away().lock().unwrap().clone(),
+                            words: Some(waiting_words),
+                            words_all: words::all(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1443,7 +1486,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     // design system's, checked as the daemon checks it.
                     (Some(rpc::READ_IMAGE), Some(id)) => {
                         let ask: rpc::ReadImage = message.params_as().unwrap();
-                        let reply = match pictures::read(&ask).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)) {
+                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)) {
                             Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };
@@ -1480,6 +1523,32 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     (Some(rpc::COMMAND), None) => {
                         let command: Command = message.params_as().unwrap();
                         eprintln!("command: {command:?}");
+                        // The person's own message: read for a decision in words first, as the daemon does.
+                        let command = match command {
+                            Command::Say { text, later, pasted, session, about, .. } => {
+                                if !words::on_say(&text, pasted, &events) {
+                                    continue;
+                                }
+                                if later { Command::SubmitLater { session, text, about } } else { Command::Submit { session, text, about } }
+                            }
+                            Command::UndoWords { id, .. } => {
+                                words::on_undo(id, &events);
+                                continue;
+                            }
+                            Command::WordsLog { squad } => {
+                                let _ = events.send(Event::WordsLog { squad, entries: words::log() });
+                                continue;
+                            }
+                            Command::ClearWordsLog { squad } => {
+                                let _ = events.send(Event::WordsLog { squad, entries: Vec::new() });
+                                continue;
+                            }
+                            Command::SetWordsAll { on, .. } => {
+                                words::set_all(on, &events);
+                                continue;
+                            }
+                            other => other,
+                        };
                         match command {
                             Command::Submit { session, text, about } => {
                                 let working = |id: SessionId| {
@@ -1610,6 +1679,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 }
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
                             }
+                            Command::StartSideChat { session, side, .. } => side_chat::opened(session, side, &events),
+                            Command::SideChatSubmit { session, side, text, .. } => {
+                                tokio::spawn(side_chat::turn(session, side, text, events.clone()));
+                            }
+                            Command::CloseSideChat { side } => side_chat::closed(side, &events),
                             // Only that subagent: a helper hands back what it had.
                             Command::StopSubagent { session, id } => {
                                 tokio::spawn(helpers::stopped(session, id, events.clone()));
@@ -1621,7 +1695,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     tokio::spawn(command::stopped(session, events.clone()));
                                 }
                             }
-                            Command::Decide { squad, approval, decision, words } => {
+                            Command::Decide { squad, approval, decision, words, .. } => {
                                 eprintln!("decide {approval} {decision:?} {words:?}");
                                 asks().lock().unwrap().retain(|a| a.id != approval);
                                 let _ = events.send(Event::ApprovalResolved { squad, approval, decision });
@@ -1679,7 +1753,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     && browser::handover()
                                     && lane == browser::PM
                                 {
-                                    let _ = events.send(Event::Notice { session: 1, text: "🖐 Handed the browser back.".into() });
+                                    let _ = events.send(Event::Notice { undo: None, session: 1, text: "🖐 Handed the browser back.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
                                 // A card confirmed: what the board's buttons send, run as the board runs them.
@@ -1734,7 +1808,7 @@ fn scoped_history() -> Vec<Entry> {
         read("app", "src/onboarding.tsx"),
         reply("Sure — to match the **T-60** draft, I'll change the first screen's title to \"Where your team works\" and cut the buttons down to one, \"Get started\"."),
         about(Some("web")),
-        Entry::Note { text: "frontend handed in T-47 for your review · Product detail page image gallery.".into() },
+        Entry::Note { undo: None, text: "frontend handed in T-47 for your review · Product detail page image gallery.".into() },
         user("How far along is the product detail gallery?"),
         read("web", "src/gallery.tsx"),
         read("web", "src/gallery.test.tsx"),

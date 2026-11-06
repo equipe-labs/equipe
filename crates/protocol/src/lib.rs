@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 pub mod accept;
 pub mod asks;
 pub mod briefs;
+pub mod by_words;
 pub mod decide;
 pub mod disk;
 pub mod metrics;
@@ -24,6 +25,7 @@ pub mod design;
 pub mod look;
 pub mod routines;
 pub mod secrets;
+pub mod side_chat;
 pub mod signals;
 
 /// How many subagents Claude Code runs at once on its own
@@ -70,6 +72,7 @@ pub mod watch;
 pub mod words;
 
 pub use briefs::ProjectDoc;
+pub use side_chat::SideChatId;
 pub use transcript::Transcript;
 
 /// One conversation with one agent. Chosen by the screen that opens it — at
@@ -560,7 +563,7 @@ impl Mode {
             Mode::ReadOnly => "reads and plans — changes nothing, runs nothing but looking around",
             Mode::Ask => "asks you before every edit and every command",
             Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond (network, pushes, your accounts)",
-            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name",
+            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name. In full access a member runs anything your account can, so equipe can't fully stop a determined one from acting as you through a process it doesn't see — auto is the safer default.",
         }
     }
 
@@ -662,6 +665,12 @@ pub enum Command {
         #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
         about: Option<Option<String>>,
     },
+    /// `command`, sent from the person's phone: what they say there is read
+    /// there, so the member hears so with it. The daemon wraps what a phone
+    /// sends (a screen that said hello with `phone`) — `Submit`,
+    /// `SubmitLater`, `SendNow` and `AnswerQuestions`; anything else inside
+    /// runs as it would on its own.
+    OnPhone { command: Box<Command> },
     /// A message for after the turn running now (a memo): it doesn't steer
     /// the work under way. With no turn running, the same as `Submit`.
     SubmitLater {
@@ -735,6 +744,11 @@ pub enum Command {
         /// what to mind — the member reads it with the answer.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         words: Option<String>,
+        /// Decided in words on a device that made sure of them itself (a
+        /// phone's call mode): how, and the confirming words — kept in the
+        /// log, never what lets it through. Left out: a card's click.
+        #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+        said: Option<by_words::Said>,
     },
     /// The person's answers to a member's questions ([`Event::QuestionsAsked`]),
     /// one per question in order — an empty one skips it. They go to the member
@@ -775,9 +789,57 @@ pub enum Command {
     /// the board's buttons send — [`Command::Accept`], then [`Command::Merge`]
     /// when `merge` says so, or [`Command::Reopen`] with its note. Only ever
     /// the person's: no agent sends it. Answered by [`Event::AcceptClosed`].
-    ConfirmAccept { squad: SquadName, id: u64, tickets: Vec<accept::Confirmed> },
+    /// `said` as [`Command::Decide`]'s.
+    ConfirmAccept {
+        squad: SquadName,
+        id: u64,
+        tickets: Vec<accept::Confirmed>,
+        #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+        said: Option<by_words::Said>,
+    },
     /// The person says no to it: nothing changes, and the PM is told.
     DeclineAccept { squad: SquadName, id: u64 },
+    /// The person's own message, from a composer of equipe's — typed,
+    /// dictated or said: read by equipe for a decision in words
+    /// ([`by_words`]) before it goes on, as [`Command::Submit`] (or, `later`,
+    /// [`Command::SubmitLater`]), to the member. An answer to a words request
+    /// waiting ([`Event::WordsLive`]) is equipe's and goes no further.
+    /// `all`: ignored — whether high risk goes by words is the daemon's own
+    /// setting ([`Command::SetWordsAll`]); kept on the wire for screens that
+    /// send it. `pasted`: some of the text was pasted, so none of it decides.
+    /// `device`: the paired phone it came from — set by the daemon's phone
+    /// link, never by the phone.
+    Say {
+        squad: SquadName,
+        session: SessionId,
+        text: String,
+        #[serde(default)]
+        via: by_words::Via,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        later: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pasted: bool,
+        #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
+        about: Option<Option<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+    },
+    /// The undo (or, counting down, the cancel) on a words request: nothing
+    /// of it happens. Answered by [`Event::WordsClosed`].
+    UndoWords { squad: SquadName, id: u64 },
+    /// The log of decisions made in words, newest first: answered by
+    /// [`Event::WordsLog`].
+    WordsLog { squad: SquadName },
+    /// The log of decisions made in words, emptied: answered by an empty
+    /// [`Event::WordsLog`]. The Mac's screens only.
+    ClearWordsLog { squad: SquadName },
+    /// "All by words" for the squad: the person's words decide high-risk
+    /// requests too, read back and confirmed. Kept by the daemon; the Mac's
+    /// screens only — never a phone, never a message. Answered by
+    /// [`Event::WordsAllChanged`].
+    SetWordsAll { squad: SquadName, on: bool },
     /// How many extra members of a role equipe may bring in when several of
     /// its tickets are ready at once; 0 brings in none.
     Scale { squad: SquadName, extra: usize },
@@ -908,6 +970,19 @@ pub enum Command {
     /// hears it stopped (a helper hands in what it had) and goes on with its
     /// turn. Nothing when it isn't at work, or its engine can't stop it alone.
     StopSubagent { session: SessionId, id: String },
+    /// A side chat about `passage`, a stretch of `session`'s conversation the
+    /// person selected ([`side_chat`]): it knows the conversation so far and
+    /// the passage, reads the member's files and (where its engine can) the
+    /// web, changes nothing, and nothing said in it reaches the conversation.
+    /// `side` is the screen's own id for it. Answered by
+    /// [`Event::SideChatOpened`]; nothing runs until its first message.
+    StartSideChat { session: SessionId, side: SideChatId, passage: String },
+    /// The person's message in side chat `side`: its next turn. The
+    /// conversation and passage come again, so a side chat the daemon let go
+    /// (idle, or the daemon restarted) starts over from them.
+    SideChatSubmit { session: SessionId, side: SideChatId, passage: String, text: String },
+    /// The side chat is closed: its turn under way stops, and it is let go.
+    CloseSideChat { side: SideChatId },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -1054,6 +1129,12 @@ pub enum Command {
     /// The person takes back moves equipe made on its own: each member goes
     /// back to the engine and model it ran on, at its next ticket boundary.
     UndoEngineProposal { squad: SquadName, id: u64 },
+    /// The person takes back `change` to the squad's folder or memory — the
+    /// one an [`Event::Notice`]'s `undo` named — as `/home undo` does: as a
+    /// change of their own, so it can be taken back too. Told in `session`'s
+    /// conversation: a notice of what was taken back (its `undo` the new
+    /// change), or an error when later changes built on it.
+    UndoHomeChange { squad: SquadName, session: SessionId, change: String },
     /// Propose the squad's recommended setup for both engines again.
     ShowEngineSetup { squad: SquadName },
     /// The person moves `members` (none named: every member) to `engine`,
@@ -1780,6 +1861,22 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tickets: Vec<TicketId>,
     },
+    /// A decision in the person's words waits on them — new, or a step on
+    /// (read back, chosen, counting down): above every composer of the squad.
+    WordsLive { squad: SquadName, live: by_words::Live },
+    /// It no longer waits: how it ended, and equipe's line on it.
+    WordsClosed {
+        squad: SquadName,
+        id: u64,
+        outcome: by_words::Outcome,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        text: String,
+    },
+    /// The decisions made in words ([`Command::WordsLog`]), newest first,
+    /// each flagged where it may have gone wrong.
+    WordsLog { squad: SquadName, entries: Vec<by_words::Entry> },
+    /// "All by words" turned on or off for the squad ([`Command::SetWordsAll`]).
+    WordsAllChanged { squad: SquadName, on: bool },
     /// The squad's "always allow" rules changed (one added by an answer of
     /// [`Decision::Always`], one taken back): all of them, oldest first.
     Allowed { squad: SquadName, rules: Vec<String> },
@@ -1815,7 +1912,16 @@ pub enum Event {
     QueueSent { session: SessionId, texts: Vec<String> },
     /// A line from equipe for this session's conversation — e.g. the PM being
     /// told that the person spoke to a member directly.
-    Notice { session: SessionId, text: String },
+    ///
+    /// `undo`: the change to the squad's folder (or memory) this line tells
+    /// of, which [`Command::UndoHomeChange`] takes back — a screen may put a
+    /// button on the line. Absent for every other line.
+    Notice {
+        session: SessionId,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
     /// A fragment of the agent's answer.
     TextDelta { session: SessionId, text: String },
     /// The agent is using a tool, e.g. `Edit` on a file.
@@ -1928,6 +2034,35 @@ pub enum Event {
         result: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,
+    },
+    /// A side chat ([`Command::StartSideChat`]) is open, on `session`'s
+    /// engine and model; `search`: it searches the web (not on another
+    /// provider through Codex, which has no search of its own).
+    SideChatOpened {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        session: SessionId,
+        side: SideChatId,
+        search: bool,
+    },
+    /// What happened in side chat `side`, as a conversation's own events say
+    /// it — the person's message, the answer's words, a tool's use and
+    /// result, the turn's end with its usage, an error — each with
+    /// `session` = `side`. Never part of `session`'s conversation.
+    SideChat {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        /// The conversation it is about.
+        session: SessionId,
+        side: SideChatId,
+        event: Box<Event>,
+    },
+    /// Side chat `side` was let go: closed, its conversation closed, or idle
+    /// too long ([`side_chat::IDLE_SECS`]).
+    SideChatClosed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        side: SideChatId,
     },
     /// A subagent the daemon watches hasn't been heard from for `quiet_secs`
     /// and looks stuck; `None`: it has been heard from since. Only the
@@ -2205,6 +2340,10 @@ impl Event {
             | Event::TeamChangeClosed { squad, .. }
             | Event::AcceptProposed { squad, .. }
             | Event::AcceptClosed { squad, .. }
+            | Event::WordsLive { squad, .. }
+            | Event::WordsClosed { squad, .. }
+            | Event::WordsLog { squad, .. }
+            | Event::WordsAllChanged { squad, .. }
             | Event::Allowed { squad, .. }
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
@@ -2225,6 +2364,7 @@ impl Event {
             | Event::ProjectDocs { squad, .. }
             | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
+            Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
             _ => None,
         }
     }
@@ -2282,6 +2422,10 @@ impl Event {
             | Event::TeamChangeClosed { .. }
             | Event::AcceptProposed { .. }
             | Event::AcceptClosed { .. }
+            | Event::WordsLive { .. }
+            | Event::WordsClosed { .. }
+            | Event::WordsLog { .. }
+            | Event::WordsAllChanged { .. }
             | Event::Allowed { .. }
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
@@ -2320,6 +2464,10 @@ impl Event {
             | Event::DiskLevel { .. }
             | Event::DiskReport { .. }
             | Event::DiskCleaned { .. } => None,
+            // A side chat's own: never part of the conversation it is about.
+            Event::SideChatOpened { .. }
+            | Event::SideChat { .. }
+            | Event::SideChatClosed { .. } => None,
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
             | Event::Nebius { .. }
@@ -2443,8 +2591,12 @@ pub enum Entry {
         #[serde(default, skip_serializing_if = "is_false")]
         background: bool,
     },
-    /// A quiet line from equipe itself.
-    Note { text: String },
+    /// A quiet line from equipe itself; `undo` as its [`Event::Notice`] had it.
+    Note {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
     /// What follows is about `project` — or, with `None`, about the whole
@@ -2689,6 +2841,14 @@ pub struct Snapshot {
     /// Conversations with the PM put away, the latest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub put_away: Vec<PutAway>,
+    /// Decisions in words waiting on the person ([`Event::WordsLive`]).
+    /// `None` from a daemon that predates them: a screen sends it
+    /// [`Command::Submit`], not [`Command::Say`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<by_words::Live>>,
+    /// "All by words" is on for the squad ([`Command::SetWordsAll`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub words_all: bool,
 }
 
 #[cfg(test)]
@@ -2841,7 +3001,7 @@ mod tests {
         assert_eq!(Mode::parse("Ask"), Some(Mode::Ask));
         assert_eq!(Mode::parse("full-access"), Some(Mode::Full));
         assert_eq!(Mode::parse("yolo"), None);
-        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None };
+        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None, said: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "always" }));
         let event = Event::ApprovalRequested {
             squad: "acme".into(),
@@ -2912,7 +3072,7 @@ mod tests {
             Event::TicketChanged { squad: "acme".into(), ticket: ticket(3) },
             Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None },
             Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
-            Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
+            Event::Notice { undo: None, session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
             Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()), label: None, background: false },
             Event::TurnEnded {
@@ -2959,6 +3119,8 @@ mod tests {
             projects: vec!["/repo".into()],
             hq: Some("/repo".into()),
             put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000 }],
+            words: None,
+            words_all: false,
             routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
             reviews: vec![review::CodeReview {
@@ -3132,11 +3294,47 @@ mod tests {
     }
 
     #[test]
+    fn decisions_in_words_go_on_the_wire_beside_what_older_phones_and_daemons_send() {
+        use by_words::{Said, Via};
+        // An older phone's decide and confirm_accept: no `via`, read as a card's.
+        let old: Command = serde_json::from_value(json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "allow" })).unwrap();
+        assert_eq!(old, Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None, said: None });
+        let old: Command = serde_json::from_value(json!({ "type": "confirm_accept", "squad": "acme", "id": 7, "tickets": [{ "ticket": 1 }] })).unwrap();
+        assert!(matches!(old, Command::ConfirmAccept { said: None, .. }));
+        // Call mode's: how it was said, and the words, beside the same fields.
+        let voiced = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None, said: Some(Said { via: Via::Voice, utterance: "응 해".into() }) };
+        let wire = json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "allow", "via": "voice", "utterance": "응 해" });
+        assert_eq!(serde_json::to_value(&voiced).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), voiced);
+        let confirmed = Command::ConfirmAccept { squad: "acme".into(), id: 7, tickets: vec![accept::Confirmed::only(1)], said: Some(Said { via: Via::Voice, utterance: "yes".into() }) };
+        let wire = serde_json::to_value(&confirmed).unwrap();
+        assert_eq!((wire["via"].clone(), wire["utterance"].clone()), (json!("voice"), json!("yes")));
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), confirmed);
+        // A message said: only what it has.
+        let say: Command = serde_json::from_value(json!({ "type": "say", "squad": "acme", "session": 3, "text": "merge T-12" })).unwrap();
+        assert_eq!(say, Command::Say { squad: "acme".into(), session: 3, text: "merge T-12".into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None });
+        let all = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None };
+        assert_eq!(serde_json::to_value(&all).unwrap(), json!({ "type": "say", "squad": "acme", "session": 3, "text": "ㄱㄱ", "via": "dictated", "all": true, "about": null }));
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&all).unwrap()).unwrap(), all);
+        // A daemon from before has no words in its snapshot: the screen sends `submit`.
+        let before: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert_eq!(before.words, None);
+        let now = Snapshot { words: Some(vec![]), ..Snapshot::default() };
+        assert_eq!(serde_json::to_value(&now).unwrap()["words"], json!([]));
+        assert!(!before.words_all, "off unless the person turned it on");
+        let set = Command::SetWordsAll { squad: "acme".into(), on: true };
+        assert_eq!(serde_json::to_value(&set).unwrap(), json!({ "type": "set_words_all", "squad": "acme", "on": true }));
+        let closed = Event::WordsClosed { squad: "acme".into(), id: 4, outcome: by_words::Outcome::Undone, text: String::new() };
+        assert_eq!(serde_json::to_value(&closed).unwrap(), json!({ "type": "words_closed", "squad": "acme", "id": 4, "outcome": "undone" }));
+    }
+
+    #[test]
     fn acceptances_are_proposed_confirmed_or_declined_as_json_and_older_snapshots_have_none() {
         let confirm = Command::ConfirmAccept {
             squad: "acme".into(),
             id: 7,
             tickets: vec![accept::Confirmed { ticket: 1, merge: Some(accept::Land::Merge) }, accept::Confirmed::only(3)],
+            said: None,
         };
         assert_eq!(
             serde_json::to_value(&confirm).unwrap(),

@@ -257,6 +257,12 @@ async fn serve_client(
     stop: UnboundedSender<oneshot::Sender<()>>,
     metrics: std::sync::Arc<crate::metrics::Metrics>,
 ) {
+    // Who is on the other end: the person's own screen, a self-connection
+    // (phone relay, Telegram), or a member's process reaching in. Read once,
+    // before the stream is split, from the peer's credentials. Person-only
+    // commands from a member are refused below ([`crate::origin`]).
+    let peer = stream.peer_cred().ok().and_then(|cred| cred.pid()).and_then(|pid| u32::try_from(pid).ok());
+    let origin = crate::origin::of(peer);
     let (reader, writer) = stream.into_split();
     // Replies and events share the write half; a task owns it.
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Message>();
@@ -271,6 +277,8 @@ async fn serve_client(
     // Pairing a phone: this screen's line to the phone link, opened when it asks.
     let mut pairing: Option<crate::pairing::Bridge> = None;
     let mut lang: Option<crate::i18n::Lang> = None;
+    // A phone: what the person sends from it is read there.
+    let mut phone = false;
     // A screen with a browser panel, counted while it is attached.
     let mut panel_screen: Option<std::sync::Arc<crate::browser::Hub>> = None;
     loop {
@@ -294,6 +302,7 @@ async fn serve_client(
                     lang = crate::i18n::Lang::parse(&code);
                     core.send(Command::Language { lang: code });
                 }
+                phone = params.phone;
                 if params.browser_panel
                     && panel_screen.is_none()
                     && let Some(hub) = core.browser_hub().await
@@ -335,8 +344,20 @@ async fn serve_client(
                             bridge.lang = now;
                         }
                     }
+                    // The floor: a person-only command (an approval, an
+                    // acceptance, a settings change, pairing) is refused when it
+                    // comes from a member's own process rather than the person's
+                    // screen — an agent never decides its own approvals. Reads
+                    // and the person's own messages are untouched.
+                    if crate::permissions::person_only(&command) && !origin.person_may() {
+                        let squad = serde_json::to_value(&command).ok().and_then(|v| v["squad"].as_str().map(str::to_owned));
+                        core.refused_person_only(squad);
+                        continue;
+                    }
                     if crate::pairing::is_pairing(&command) {
                         pairing.get_or_insert_with(|| crate::pairing::Bridge::new(&home, lang)).send(&command, &out_tx).await;
+                    } else if phone && matches!(command, Command::Submit { .. } | Command::SubmitLater { .. } | Command::SendNow { .. } | Command::AnswerQuestions { .. }) {
+                        core.send(Command::OnPhone { command: Box::new(command) });
                     } else {
                         core.send(command);
                     }
@@ -466,6 +487,18 @@ async fn serve_client(
                 let out = out_tx.clone();
                 tokio::spawn(async move {
                     let result = core.desktop(call).await;
+                    let _ = out.send(Message::response(id, result));
+                });
+            }
+            (Some(rpc::PHONE), Some(id)) => {
+                let Some(call) = message.params_as::<ToolCall>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "phone needs { squad, member, name, arguments }"));
+                    continue;
+                };
+                let core = core.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let result = core.phone(call).await;
                     let _ = out.send(Message::response(id, result));
                 });
             }
@@ -878,9 +911,18 @@ impl Client {
     /// [`Client::connect`], saying the screen speaks `lang`: what the daemon
     /// says to the person is in it from now on.
     pub async fn connect_in(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>) -> io::Result<(Self, Hello)> {
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false, phone: false }).await
+    }
+
+    /// [`Client::connect`] for a phone, through the relay: what the person
+    /// sends from it reaches members marked as sent from a phone.
+    pub async fn connect_phone(socket: &Path, version: &str, squad: &str) -> io::Result<(Self, Hello)> {
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: None, browser_panel: false, phone: true }).await
+    }
+
+    async fn attach(socket: &Path, params: HelloParams) -> io::Result<(Self, Hello)> {
         let stream = UnixStream::connect(socket).await?;
         let (reader, mut writer) = stream.into_split();
-        let params = HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false };
         let hello = Message::request(1, rpc::HELLO, params);
         write_line(&mut writer, &hello).await?;
 
@@ -1025,6 +1067,11 @@ pub async fn call_tool(socket: &Path, call: &ToolCall) -> io::Result<ToolResult>
 /// Call a member's desktop tool through the daemon at `socket`.
 pub async fn call_desktop(socket: &Path, call: &ToolCall) -> io::Result<ToolResult> {
     call_on(socket, rpc::DESKTOP, call).await
+}
+
+/// Call a member's phone tool through the daemon at `socket`.
+pub async fn call_phone(socket: &Path, call: &ToolCall) -> io::Result<ToolResult> {
+    call_on(socket, rpc::PHONE, call).await
 }
 
 async fn call_on(socket: &Path, method: &str, call: &ToolCall) -> io::Result<ToolResult> {

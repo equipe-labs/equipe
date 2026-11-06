@@ -1,5 +1,23 @@
 {
+  "match.accept": "akzeptier|genehmig|annehm|freigeb|gib frei|abnehm",
+  "match.all_starts": "",
+  "match.all_words": "alle|alles",
+  "match.allow": "erlaub|genehmig|freigeb|gib frei|zulassen",
+  "match.always": "immer|ab jetzt|von nun an|jedes mal",
   "match.answers": "teile|nenne|sag mir|gib mir|entscheide|wähle|welche|wann|wer ",
+  "match.branch": "auf dem branch|im branch|auf seinem branch",
+  "match.cancel": "abbrechen|stopp|halt|warte",
   "match.confirms": "bestätig|prüf|passt",
-  "match.recommended": "empfohlen|empfehlung"
+  "match.idea": "idee",
+  "match.merge": "zusammenführ",
+  "match.no": "nein|nee|nö|nicht|kein|keine|nie|niemals|warte|warten|stopp|halt|abbrechen|später",
+  "match.number": "",
+  "match.push": "pushen",
+  "match.recommended": "empfohlen|empfehlung",
+  "match.run": "ausführ|führ|laufen lassen",
+  "match.take_on": "übernimm|übernehmen|fang an",
+  "match.undo": "rückgängig|zurücknehmen|widerruf",
+  "match.unsure": "nicht|kein|warte|später|falls|wenn |außer|sonst",
+  "match.yes": "ja|jawohl|jep|jo|klar|los|mach|machen|passt|genau|gut|einverstanden|bestätigt|weiter",
+  "match.yes_with": "bitte|es|das|mal|jetzt|dann|so|danke|alles|beide"
 }

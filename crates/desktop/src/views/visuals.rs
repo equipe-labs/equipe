@@ -506,6 +506,29 @@ pub fn strip(shots: &Shots, key: u64, ticket: TicketId, images: &[String], mut c
     )
 }
 
+/// A phone's frames in a row, standing up as a phone's screen does: `height`
+/// tall, each opening big (←/→ through them) on a click. Up to six.
+pub fn phone_strip(shots: &Shots, key: u64, ticket: TicketId, frames: &[String], height: f32, cx: &mut App) -> Option<AnyElement> {
+    if frames.is_empty() {
+        return None;
+    }
+    let p = shots.p;
+    // An iPhone's screen, 402 × 874 points; a frame of another shape is fitted inside.
+    let w = (height * 0.46).floor();
+    let tiles: Vec<AnyElement> = frames
+        .iter()
+        .take(6)
+        .map(|path| {
+            let id = key ^ rules_hash(path);
+            let look = shots.ask(path, Size::Thumb, cx);
+            let face = picture(shots, id, path, look, w, height, R_SM, false, 0.);
+            let tile = div().id(("phone-frame", id)).rounded(px(R_SM)).border_1().border_color(p.hair).cursor_pointer().child(face).on_click(opens(&shots.handle, Viewer::of_ticket(ticket, frames, path)));
+            tip(tile, p, rules::name_of(path).to_owned(), None).into_any_element()
+        })
+        .collect();
+    Some(h_flex().gap_2().items_center().children(tiles).into_any_element())
+}
+
 /// What was asked for without a context, loaded: `shots` is the window's.
 pub fn flush(shots: &Rc<RefCell<Visuals>>, shell: &WeakEntity<Shell>, cx: &mut App) {
     let mut held = shots.borrow_mut();

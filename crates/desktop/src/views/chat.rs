@@ -540,9 +540,23 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .child(div().flex_none().child(composer::render(shell, cx))),
         )
         .children(lightbox(shell, cx));
-    // A subagent looked into, else a ticket opened beside the conversation.
+    // A side chat, else a subagent looked into, else a ticket opened beside
+    // the conversation. A side chat in a window too narrow for both covers it.
+    let room = shell.side_chat.room.clone();
+    let measured = |row: Div| {
+        use gpui_kit::base::ElementExt as _;
+        row.on_prepaint(move |bounds, _, _| room.set(f32::from(bounds.size.width)))
+    };
+    if let Some((panel, covers)) = super::side_chat::panel(shell, cx) {
+        let row = measured(h_flex().flex_1().min_h_0().items_stretch().relative());
+        return if covers {
+            row.child(main).child(div().absolute().top_0().right_0().bottom_0().child(panel)).into_any_element()
+        } else {
+            row.child(main).child(panel).into_any_element()
+        };
+    }
     let beside = super::subagent::panel(shell, cx).or_else(|| side_panel(shell, cx).map(IntoElement::into_any_element));
-    h_flex().flex_1().min_h_0().items_stretch().child(main).children(beside)
+    measured(h_flex().flex_1().min_h_0().items_stretch()).child(main).children(beside).into_any_element()
 }
 
 /// The cards over the composer — a request, a member's questions, work to
@@ -551,6 +565,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 /// through the others. Answered, the next comes to the front.
 fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let cards: Vec<AnyElement> = [
+        // What the next message answers comes first.
+        super::words::docked(shell, cx),
         super::secrets::docked(shell, cx),
         approvals::approval(shell, cx),
         super::decide::docked(shell, cx),
@@ -684,6 +700,8 @@ struct Rows {
     /// wait in all (what "send now" sends).
     picked: Option<(String, u64)>,
     leaving: Rc<HashSet<String>>,
+    /// The reply whose passage has a side chat, closed: its mark opens it again.
+    side_mark: Option<usize>,
     waiting: usize,
     /// The row of a turn that lost its engine's sign-in, and its card.
     sign_in: Option<(usize, Rc<super::signin::Card>)>,
@@ -840,6 +858,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         squad: shell.model.squad.clone(),
         picked: shell.chat.picked.clone(),
         leaving: shell.chat.leaving.clone(),
+        side_mark: super::side_chat::marked_row(shell),
         waiting: shell.model.convo().map_or(0, |c| c.queue.items().len()),
         sign_in: super::signin::live(&shell.chat.blocks).map(|(ix, engine)| (ix, Rc::new(super::signin::Card::of(shell, &shell.chat.blocks, ix, engine)))),
         turns: shell
@@ -1076,7 +1095,88 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
         Block::HandOver { name, why, live } => handed_row(rows, key, name, why, *live),
         Block::DesignCheck(summary) => check_row(rows, key, summary, superseded(&rows.blocks, ix), window, cx),
         Block::SecondLook { screen, verdict } => look_row(rows, key, screen, verdict, superseded(&rows.blocks, ix), window, cx),
+        Block::QaReport(report) => qa_row(rows, key, report, cx),
     }
+}
+
+/// A flow tested on the ticket's phone: its verdict, each step with what was
+/// seen, the key frames (open big), and the recording to play — on the Mac
+/// that runs the squad, where it is kept.
+fn qa_row(rows: &Rows, key: u64, r: &crate::activity::QaReport, cx: &mut App) -> AnyElement {
+    use equipe_core::phone::report::Verdict;
+    let (p, tones) = (rows.p, rows.tones);
+    let tone = |v: Verdict| match v {
+        Verdict::Pass => tones.added,
+        Verdict::Fail => tones.danger,
+        Verdict::Blocked => tones.warning,
+    };
+    let verdict = r.verdict();
+    let word = match verdict {
+        Verdict::Pass => t!("qa.verdict_pass"),
+        Verdict::Fail => t!("qa.verdict_fail"),
+        Verdict::Blocked => t!("qa.verdict_blocked"),
+    };
+    let badge = div().px(px(7.)).py(px(1.)).rounded(px(R_SM)).border_1().border_color(tone(verdict)).text_size(px(META)).font_weight(FontWeight::SEMIBOLD).text_color(tone(verdict)).child(word);
+    let title = h_flex()
+        .gap(px(8.))
+        .items_center()
+        .text_size(px(SMALL))
+        .child(icon(Icon::Phone, 14., p.text2))
+        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("qa.kicker")))
+        .child(div().text_color(p.muted).child(format!("· {}", r.name)))
+        .child(div().flex_1())
+        .child(badge);
+    let flow = div()
+        .text_size(px(BODY))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.text)
+        .child(SelectableText::new(("qa-flow", key), format!("{} · T-{}", r.flow, r.ticket)));
+    let counted = div().text_size(px(SMALL)).text_color(p.muted).child(t!("qa.steps", passed = r.passed, steps = r.total));
+    let steps = v_flex().gap(px(4.)).children(r.steps.iter().map(|(v, n, step, seen)| {
+        let mark = match v {
+            Verdict::Pass => Icon::Check,
+            Verdict::Fail => Icon::X,
+            Verdict::Blocked => Icon::Minus,
+        };
+        h_flex()
+            .gap(px(8.))
+            .items_start()
+            .text_size(px(SMALL))
+            .line_height(px(SMALL_LINE))
+            .child(div().pt(px(3.)).flex_none().child(icon(mark, 13., tone(*v))))
+            .child(div().flex_none().text_color(p.muted).child(format!("{n}.")))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(p.text2)
+                    .child(SelectableText::new(("qa-step", key ^ ((*n as u64) << 32)), if seen.is_empty() { step.clone() } else { format!("{step} — {seen}") })),
+            )
+    }));
+    let frames = super::visuals::phone_strip(&rows.shots, key, r.ticket, &r.frames, 150., cx);
+    let here = std::path::Path::new(&r.video).is_file();
+    let video = r.video.clone();
+    let play = crate::ui::button(p, ("qa-play", key), crate::ui::Kind::Secondary, t!("qa.play")).icon(Icon::Play).on_click(move |_, _, _| {
+        let _ = std::process::Command::new("open").arg(&video).spawn();
+    });
+    let play: AnyElement = if here { play.into_any_element() } else { tip(div().id(("qa-play-far", key)).opacity(0.5).child(play), p, t!("qa.elsewhere"), None).into_any_element() };
+    let name = std::path::Path::new(&r.video).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    v_flex()
+        .w_full()
+        .max_w(px(MEASURE))
+        .px(px(14.))
+        .py(px(12.))
+        .gap(px(8.))
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(p.hair)
+        .child(title)
+        .child(flow)
+        .child(counted)
+        .child(steps)
+        .children(frames)
+        .child(h_flex().gap(px(8.)).items_center().child(play).child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(META)).text_color(p.muted).child(name)))
+        .into_any_element()
 }
 
 /// Whether the check or look at `ix` has been run again on its screen since:
@@ -1345,7 +1445,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::DesignCheck(_) | Block::SecondLook { .. });
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::DesignCheck(_) | Block::SecondLook { .. } | Block::QaReport(_));
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
@@ -1407,6 +1507,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
         // wide it is drawn is the room a picture in it has.
         .child(rows.shots.measured(div().w_full().max_w(px(MEASURE)).text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.prose).child(body).children(strips), crate::visuals::COLUMN_KEY))
         .children(actions)
+        .children((rows.side_mark == Some(ix)).then(|| super::side_chat::mark(p, key, rows.handle.clone())))
         .into_any_element()
 }
 
@@ -2447,6 +2548,8 @@ impl Shell {
     pub fn side_open(&mut self, ticket: u32, cx: &mut Context<Self>) {
         self.chat.side.retain(|t| *t != ticket);
         self.chat.sub.close();
+        // A side chat open makes way: it goes on, its mark opens it again.
+        self.side_chat.open = None;
         self.chat.side.push(ticket);
         cx.notify();
     }

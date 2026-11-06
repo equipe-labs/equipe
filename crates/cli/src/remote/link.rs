@@ -252,7 +252,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     let socket = socket.clone();
                     let version = version.clone();
                     let task = tokio::spawn(async move {
-                        match Client::connect(&socket, &version, &squad).await {
+                        match Client::connect_phone(&socket, &version, &squad).await {
                             Ok((client, hello)) => {
                                 let (commands, mut events) = client.split();
                                 let _ = tx.send(Input::Opened(device.clone(), squad.clone(), id, Ok((commands, Box::new(hello)))));

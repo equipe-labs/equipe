@@ -114,7 +114,7 @@ async fn propose(handle: &Handle, events: &mut UnboundedReceiver<Event>, args: s
     let mut seen = Vec::new();
     until(events, &mut seen, |s| s.iter().any(|e| matches!(e, Event::ApprovalRequested { .. }))).await;
     let approval = seen.iter().find_map(|e| if let Event::ApprovalRequested { approval, .. } = e { Some(approval.clone()) } else { None }).unwrap();
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision, words: None, said: None });
     let said = waiting.await.unwrap();
     assert!(!said.is_error, "{said:?}");
     (approval.action, said.text)

@@ -75,7 +75,7 @@ impl App {
             KeyCode::Char('y') => {
                 let tickets = proposal.tickets.iter().map(|t| self.landing(&proposal, *t)).collect();
                 self.flash = Some(t!("app.accept_confirmed", what = describe(&proposal)));
-                Command::ConfirmAccept { squad, id: proposal.id, tickets }
+                Command::ConfirmAccept { squad, id: proposal.id, tickets, said: None }
             }
             KeyCode::Char('n') => Command::DeclineAccept { squad, id: proposal.id },
             _ => return None,

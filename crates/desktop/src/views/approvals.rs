@@ -101,7 +101,7 @@ impl Queue {
         let id = approval.id;
         self.answered.push(id);
         let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
-        Some(Command::Decide { squad: squad.to_owned(), approval: id, decision, words })
+        Some(Command::Decide { squad: squad.to_owned(), approval: id, decision, words, said: None })
     }
 }
 
@@ -152,6 +152,7 @@ pub fn noun(tool: &str) -> &'static str {
         equipe_core::desktop_gate::SEND => t!("approvals.noun_send"),
         equipe_core::permissions::BROWSER_CODE => t!("approvals.noun_browser_code"),
         SIGN_IN => t!("approvals.noun_sign_in"),
+        equipe_core::phone::INSTALL => t!("approvals.noun_install"),
         _ => t!("approvals.noun_other"),
     }
 }
@@ -515,15 +516,23 @@ mod tests {
     fn the_oldest_request_is_the_one_answered() {
         let mut q = queue(vec![approval(1, 2, "Bash", "ls"), approval(2, 3, "Bash", "pwd")]);
         assert_eq!(q.len(), 2);
-        assert_eq!(q.answer("acme", Decision::Allow), Some(Command::Decide { squad: "acme".into(), approval: 1, decision: Decision::Allow, words: None }));
+        assert_eq!(q.answer("acme", Decision::Allow), Some(Command::Decide { squad: "acme".into(), approval: 1, decision: Decision::Allow, words: None, said: None }));
         // Answered: hidden at once, so the next key is for the next request.
         assert_eq!(q.first().map(|a| a.id), Some(2));
-        assert_eq!(q.answer("acme", Decision::Deny), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None }));
+        assert_eq!(q.answer("acme", Decision::Deny), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None, said: None }));
         assert_eq!(q.answer("acme", Decision::Allow), None);
         // The daemon's word clears them; a lost link shows the unresolved again.
         q.resolve(1);
         q.forget_answers();
         assert_eq!(q.ids(), vec![2]);
+    }
+
+    #[test]
+    fn installing_a_tool_is_named_and_never_allowed_always() {
+        let install = approval(1, 2, equipe_core::phone::INSTALL, "Install AXe 1.8.0 …");
+        let card = Card::of(&install);
+        assert_eq!(card.noun, equipe_core::t!("approvals.noun_install"));
+        assert_eq!(card.always, None, "asked each time it comes up, which is once");
     }
 
     #[test]
@@ -557,7 +566,7 @@ mod tests {
     #[test]
     fn a_request_is_answered_by_its_id_too() {
         let mut q = queue(vec![approval(1, 2, "Bash", "ls"), approval(2, 3, "Bash", "pwd")]);
-        assert_eq!(q.answer_id("acme", 2, Decision::Deny, None), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None }));
+        assert_eq!(q.answer_id("acme", 2, Decision::Deny, None), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None, said: None }));
         assert_eq!(q.open_items().map(|a| a.id).collect::<Vec<_>>(), vec![1]);
         assert!(q.get(2).is_none());
     }

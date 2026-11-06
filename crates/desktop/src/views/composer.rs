@@ -309,6 +309,10 @@ pub struct Composer {
     pub servers: bool,
     /// What is being said, while it is (shown dimmed under the box; Esc drops it).
     dictating: Option<String>,
+    /// The words in the box came, at least in part, from dictation, or from a
+    /// paste: how the person said them goes with them (`crate::words`).
+    pub dictated: bool,
+    pub pasted: bool,
     _speech: Subscription,
     /// Keeps the inbox folder watched for as long as the window lives.
     pub(crate) inbox_watch: Option<fs_notify::RecommendedWatcher>,
@@ -364,6 +368,8 @@ impl Composer {
             listening,
             servers,
             dictating: None,
+            dictated: false,
+            pasted: false,
             _speech: heard,
             inbox_watch: None,
         }
@@ -675,7 +681,13 @@ impl Shell {
         if pointed && plan.restore.is_none() && !plan.commands.is_empty() {
             self.composer.context.clear();
         }
-        for command in plan.commands {
+        // The person's own message: to a daemon that reads words, `say`, with how it came in.
+        let said = crate::words::Said { dictated: self.composer.dictated, pasted: self.composer.pasted };
+        if !plan.commands.is_empty() {
+            self.composer.dictated = false;
+            self.composer.pasted = false;
+        }
+        for command in crate::words::commands(plan.commands, &self.model.squad, self.model.words.read, said) {
             self.send_command(command);
         }
         self.composer.flash = plan.flash;
@@ -799,6 +811,7 @@ impl Shell {
                         now.push(' ');
                     }
                     now.push_str(said);
+                    self.composer.dictated = true;
                     self.composer.set_text(&now, window, cx);
                     self.composer.focus(window, cx);
                 }
@@ -1082,6 +1095,11 @@ impl Shell {
                 self.attach_sources(vec![Source::Text { name, text }], cx);
                 self.composer.flash = Some(t!("composer.pasted_as_file").into());
                 true
+            }
+            // The box pastes it: pasted words never decide anything (`crate::words`).
+            Some(_) => {
+                self.composer.pasted = true;
+                false
             }
             _ => false,
         }
@@ -2356,6 +2374,11 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     if mic.is_some() {
         wants.push((Slot::Fixed, CONTROL));
     }
+    // "All by words" on: said where the person types, always.
+    let words = super::words::badge(shell, cx);
+    if let Some(width) = super::words::badge_width(shell) {
+        wants.push((Slot::Fixed, width));
+    }
     let to_text = match &project {
         Some(project) => format!("{to_label} · {project}"),
         None => to_label.clone(),
@@ -2415,6 +2438,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             .items_center()
             .child(plus)
             .children(mic)
+            .children(words)
             .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().children(to).children(mode_pill.filter(|_| keep(Slot::Mode))))
             .child(
                 h_flex()
@@ -2458,7 +2482,7 @@ fn fit(width: f32, wants: &[(Slot, f32)]) -> Vec<Slot> {
 }
 
 /// About how wide `text` is at 12–13 points: Hangul and CJK wider than Latin.
-fn text_width(text: &str) -> f32 {
+pub(crate) fn text_width(text: &str) -> f32 {
     text.chars().map(|c| if c.is_ascii() { 7. } else { 13. }).sum()
 }
 

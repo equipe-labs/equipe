@@ -82,6 +82,17 @@ boxes or so — with short labels in the person's language. Every number in it c
 invent one. Every screen shows it as a picture — equipe draws it for a phone — and where it can't be drawn its source \
 shows instead, so it should still read as text.";
 
+/// Answers read on a phone: a message the person sends from the equipe app
+/// comes marked ([`PHONE_MARK`]), and the answer fits a small screen. The same
+/// for every member and squad.
+const PHONE: &str = "\n\nWhen a message comes marked as sent from the person's phone, they read your answer there, \
+on a small screen, often on the move. Put the answer and anything they must do in the first two or three lines. Use \
+short lists, never a wide table. Give a path or a command only when they need it to act. Detail goes after that, or \
+in a file you name. A message without the mark is read on a computer, as usual.";
+
+/// What opens a message the person sent from their phone, for the member.
+pub const PHONE_MARK: &str = "[equipe: sent from the person's phone — they read your answer there; answer for a phone screen]";
+
 pub const ROLES: [Role; 9] = [
     Role {
         id: PM,
@@ -406,6 +417,8 @@ pub struct Context<'a> {
     pub desktop: bool,
     /// equipe-design's `design` tools: a designer's, when it is installed.
     pub design: bool,
+    /// The squad's mobile app, on the ticket's own simulator or emulator (`mcp__phone__…`, [`crate::phone`]).
+    pub phone: bool,
     /// The squad's home, where the member sits between tickets.
     pub home: Option<&'a str>,
     /// The squad's memory: its index as the member is given it, and how many facts it holds.
@@ -726,6 +739,13 @@ anything else to someone in the person's name asks the person first with `ask_pe
     } else {
         ""
     };
+    // Only where the squad has a mobile app: everyone else is told nothing new.
+    let phone_tools = if ctx.phone {
+        "\n\nYou can test the squad's mobile app on the ticket's own simulator or emulator as a person would — see it, tap, \
+type, record a flow and check it frame by frame (the `phone` tools): open your `mobile-qa` skill before you test a flow."
+    } else {
+        ""
+    };
     let home = match ctx.home {
         Some(home) => format!(
             "\n\nThe squad's folder is {home} — your working directory between tickets, a folder the person can open \
@@ -764,6 +784,7 @@ absolute path ending in `/`, and its first pictures show as a strip.{}",
         }
     );
     let visuals = VISUALS;
+    let phone_reply = PHONE;
     let report_folder = match ctx.home {
         Some(home) => format!(" in the squad's folder, under `{home}/notes/reports/<date> <topic>/`"),
         None => " in a folder of its own".to_owned(),
@@ -846,7 +867,7 @@ with your engine's own wait or monitor tool."
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{pictures}{visuals}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{phone_tools}{pictures}{visuals}{phone_reply}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -1188,7 +1209,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, phone: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
     }
 
     /// A Claude Code member at Claude Code's own cap: what every charter said before the squad set it.
@@ -1223,16 +1244,127 @@ mod tests {
     /// `charter-coverage.txt`: every sentence the charters said before their
     /// situational parts moved into skills, by the (role, context) that said it.
     /// Each must still reach that member — in its charter or in a skill it is
-    /// offered — and an engine that can't read a file must get it inline. A
-    /// sentence dropped or reworded on purpose: `EQUIPE_BLESS_CHARTERS=1` writes
-    /// the file again from what members are told now, for review in the diff.
+    /// offered — and an engine that can't read a file must get it inline,
+    /// unless `charter-moved.txt` says where it went: moved to where equipe
+    /// enforces it (with the test that proves it), reworded, or retired.
+    /// `EQUIPE_BLESS_CHARTERS=1` adds what members are told now that the file
+    /// doesn't hold yet, for review in the diff; it never drops a line, and it
+    /// writes nothing while a sentence no longer reaches a member without a
+    /// ledger line.
     #[test]
     fn every_member_is_still_told_everything_its_charter_said_before_skills() {
+        let told_now = told_everywhere();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("charter-coverage.txt");
+        let ledger = Ledger::read();
+        let coverage = std::fs::read_to_string(&path).unwrap();
+        let mut missing = Vec::new();
+        for line in coverage.lines().filter(|l| !l.is_empty()) {
+            let (tags, sentence) = line.split_once('\t').unwrap();
+            for (tag, texts) in &told_now {
+                if tags != "*" && !tags.split(',').any(|t| t == tag) {
+                    continue;
+                }
+                for (how, text) in ["with skills", "inline"].iter().zip(texts) {
+                    if !text.contains(sentence) && !ledger.accounts_for(tag, sentence) {
+                        missing.push(format!("{tag} ({how}): {sentence}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "{} sentences no longer reach their member. If that is on purpose, add a line for each to crates/core/charter-moved.txt \
+(moved: where equipe enforces it now and the test that proves it; reworded: the new words; retired: why) — see docs/quality-gate.md:\n{}",
+            missing.len(),
+            missing.join("\n")
+        );
+        if std::env::var_os("EQUIPE_BLESS_CHARTERS").is_some() {
+            std::fs::write(&path, blessed(&coverage, &told_now)).unwrap();
+        }
+    }
+
+    /// Every line of `charter-moved.txt` holds: a moved sentence names where
+    /// it is enforced and a test that exists, is a test and runs; a reworded
+    /// one's new words reach the same members; and none still reaches the
+    /// members it says it left.
+    #[test]
+    fn every_sentence_taken_out_of_a_charter_says_where_it_went_and_what_proves_it() {
+        let told_now = told_everywhere();
+        let ledger = Ledger::read();
+        assert!(!ledger.entries.is_empty(), "the ledger was read");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut wrong = Vec::new();
+        for entry in &ledger.entries {
+            let tags: Vec<&(String, Vec<String>)> = told_now.iter().filter(|(tag, _)| entry.covers(tag)).collect();
+            if tags.is_empty() {
+                wrong.push(format!("line {}: `{}` names no member", entry.line, entry.members));
+            }
+            for (tag, texts) in &tags {
+                if texts.iter().all(|t| t.contains(&entry.sentence)) {
+                    wrong.push(format!("line {}: {tag} is still told it — drop the line, or take the sentence out: {}", entry.line, entry.sentence));
+                }
+            }
+            match &entry.went {
+                Went::Moved { place, test } => {
+                    if place.trim().is_empty() {
+                        wrong.push(format!("line {}: say where equipe enforces it now", entry.line));
+                    }
+                    if let Err(why) = test_exists(&root, test) {
+                        wrong.push(format!("line {}: {why}", entry.line));
+                    }
+                }
+                Went::Reworded(new) => {
+                    for (tag, texts) in &tags {
+                        for (how, text) in ["with skills", "inline"].iter().zip(texts.iter()) {
+                            if !text.contains(new.as_str()) {
+                                wrong.push(format!("line {}: {tag} ({how}) isn't told the new words either: {new}", entry.line));
+                            }
+                        }
+                    }
+                }
+                Went::Retired(why) if why.trim().is_empty() => wrong.push(format!("line {}: say why it was retired", entry.line)),
+                Went::Retired(_) => {}
+            }
+        }
+        assert!(wrong.is_empty(), "crates/core/charter-moved.txt:\n{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn the_ledger_reads_its_members_and_finds_only_tests_that_run() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert!(test_exists(&root, "crates/core/src/guard.rs::a_foreground_sleep_is_refused_with_what_to_do_instead").is_ok());
+        assert!(test_exists(&root, "crates/core/tests/runtime.rs::at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_all").is_ok(), "a tokio test");
+        assert!(test_exists(&root, "crates/core/src/guard.rs::no_such_test").is_err());
+        assert!(test_exists(&root, "crates/core/src/guard.rs::refusal").is_err(), "a function that isn't a test");
+        assert!(test_exists(&root, "crates/core/src/nowhere.rs::x").is_err());
+        assert!(test_exists(&root, "no separator").is_err());
+        assert!(test_exists(&root, "crates/core/tests/helpers_live.rs::real_a_helper_on_token_factory_reads_answers_with_evidence_and_changes_nothing").is_err(), "an ignored test proves nothing");
+        let sample = Ledger::parse("moved\t*.full\tA rule.\tthe guard\tx.rs::t\nreworded\tpm.*\tOld.\tNew.\n# a note\n\nretired\tqa.bare,pm.full\tGone.\tthe feature is gone\n");
+        assert_eq!(sample.entries.len(), 3);
+        assert!(sample.accounts_for("backend.full", "A rule.") && !sample.accounts_for("backend.bare", "A rule."));
+        assert!(sample.accounts_for("pm.bare", "Old.") && !sample.accounts_for("qa.bare", "Old."));
+        assert!(sample.accounts_for("qa.bare", "Gone.") && !sample.accounts_for("qa.full", "Gone."));
+        assert!(!sample.accounts_for("qa.bare", "A sentence nobody moved."));
+    }
+
+    #[test]
+    fn blessing_adds_what_members_are_told_now_and_never_drops_a_line() {
+        let told = vec![
+            ("pm.full".to_owned(), vec!["Plan it. Ship it. Only with skills.".to_owned(), "Plan it. Ship it.".to_owned()]),
+            ("qa.full".to_owned(), vec!["Ship it. Test it.".to_owned(), "Ship it. Test it.".to_owned()]),
+        ];
+        let file = blessed("pm.full\tA sentence moved out\n", &told);
+        assert_eq!(file, "pm.full\tA sentence moved out\npm.full\tPlan it\n*\tShip it\nqa.full\tTest it.\n", "kept, then added; a sentence only told with skills isn't");
+        assert_eq!(blessed(&file, &told), file, "blessing again changes nothing");
+    }
+
+    /// Every (role, context) the coverage file names, with everything it is
+    /// told: with its skills offered as files, and with them inline.
+    fn told_everywhere() -> Vec<(String, Vec<String>)> {
         let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }, Teammate { name: "backend", role: "backend" }, Teammate { name: "qa", role: "qa" }];
         let projects = ["web".to_owned(), "app".to_owned()];
         let profiles = [crate::browser::BrowserProfile { name: "jh".into(), label: "jh@x".into() }];
         let memory = "- [tax](tax.md) — a fact\n- [deploy](deploy.md) — another fact";
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("charter-coverage.txt");
         let mut told_now: Vec<(String, Vec<String>)> = Vec::new();
         for r in ROLES.iter().chain([&CUSTOM]) {
             let full = Context {
@@ -1248,6 +1380,7 @@ mod tests {
                 profiles: &profiles,
                 desktop: true,
                 design: r.id == "designer",
+                phone: false,
                 home: Some("/Users/x/.equipe/squads/acme/home"),
                 memory: Some(memory),
                 facts: 2,
@@ -1265,36 +1398,124 @@ mod tests {
                 told_now.push((tag, vec![with_skills, inline]));
             }
         }
-        if std::env::var_os("EQUIPE_BLESS_CHARTERS").is_some() {
-            let mut lines: Vec<(String, Vec<String>)> = Vec::new();
-            for (tag, texts) in &told_now {
-                for sentence in sentences(&texts[0]) {
-                    match lines.iter_mut().find(|(s, _)| *s == sentence) {
-                        Some((_, tags)) => tags.push(tag.clone()),
-                        None => lines.push((sentence, vec![tag.clone()])),
-                    }
-                }
-            }
-            let all = told_now.len();
-            let file: String = lines.iter().map(|(s, tags)| format!("{}\t{s}\n", if tags.len() == all { "*".to_owned() } else { tags.join(",") })).collect();
-            std::fs::write(&path, file).unwrap();
-        }
-        let coverage = std::fs::read_to_string(&path).unwrap();
-        let mut missing = Vec::new();
-        for line in coverage.lines().filter(|l| !l.is_empty()) {
-            let (tags, sentence) = line.split_once('\t').unwrap();
-            for (tag, texts) in &told_now {
-                if tags != "*" && !tags.split(',').any(|t| t == tag) {
+        told_now
+    }
+
+    /// The coverage file blessed: every line it has, as it is, then each
+    /// sentence members are told now that it doesn't hold yet — for the
+    /// members told it both with skills and inline (`*`: all of them).
+    fn blessed(coverage: &str, told_now: &[(String, Vec<String>)]) -> String {
+        let held: std::collections::HashSet<&str> = coverage.lines().filter_map(|l| l.split_once('\t')).map(|(_, s)| s).collect();
+        let mut added: Vec<(String, Vec<String>)> = Vec::new();
+        for (tag, texts) in told_now {
+            for sentence in sentences(&texts[0]) {
+                if held.contains(sentence.as_str()) || !texts.iter().all(|t| t.contains(&sentence)) {
                     continue;
                 }
-                for (how, text) in ["with skills", "inline"].iter().zip(texts) {
-                    if !text.contains(sentence) {
-                        missing.push(format!("{tag} ({how}): {sentence}"));
-                    }
+                match added.iter_mut().find(|(s, _)| *s == sentence) {
+                    Some((_, tags)) => tags.push(tag.clone()),
+                    None => added.push((sentence, vec![tag.clone()])),
                 }
             }
         }
-        assert!(missing.is_empty(), "{} sentences no longer reach their member:\n{}", missing.len(), missing.join("\n"));
+        let mut file: String = coverage.lines().filter(|l| !l.is_empty()).map(|l| format!("{l}\n")).collect();
+        for (sentence, mut tags) in added {
+            tags.sort();
+            let tags = if tags.len() == told_now.len() { "*".to_owned() } else { tags.join(",") };
+            file.push_str(&format!("{tags}\t{sentence}\n"));
+        }
+        file
+    }
+
+    /// Where a sentence taken out of what members are told went.
+    #[derive(Debug)]
+    enum Went {
+        Moved { place: String, test: String },
+        Reworded(String),
+        Retired(String),
+    }
+
+    /// A line of `charter-moved.txt`.
+    #[derive(Debug)]
+    struct LedgerEntry {
+        line: usize,
+        members: String,
+        sentence: String,
+        went: Went,
+    }
+
+    impl LedgerEntry {
+        /// Whether it speaks for the member `tag` (`pm.full`): `*`, the tag
+        /// itself, or a pattern on either half (`*.full`, `pm.*`).
+        fn covers(&self, tag: &str) -> bool {
+            let (role, variant) = tag.split_once('.').unwrap_or((tag, ""));
+            self.members.split(',').map(str::trim).any(|m| match m.split_once('.') {
+                _ if m == "*" || m == tag => true,
+                Some(("*", v)) => v == variant,
+                Some((r, "*")) => r == role,
+                _ => false,
+            })
+        }
+    }
+
+    /// `charter-moved.txt`, read.
+    struct Ledger {
+        entries: Vec<LedgerEntry>,
+    }
+
+    impl Ledger {
+        fn read() -> Self {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("charter-moved.txt");
+            Self::parse(&std::fs::read_to_string(path).expect("crates/core/charter-moved.txt"))
+        }
+
+        fn parse(text: &str) -> Self {
+            let mut entries = Vec::new();
+            for (n, line) in text.lines().enumerate() {
+                if line.trim().is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let fields: Vec<&str> = line.split('\t').collect();
+                let field = |i: usize| fields.get(i).map(|f| (*f).to_owned()).unwrap_or_else(|| panic!("charter-moved.txt line {}: too few fields: {line}", n + 1));
+                let went = match fields[0] {
+                    "moved" => Went::Moved { place: field(3), test: field(4) },
+                    "reworded" => Went::Reworded(field(3)),
+                    "retired" => Went::Retired(field(3)),
+                    other => panic!("charter-moved.txt line {}: `{other}` is not moved, reworded or retired", n + 1),
+                };
+                entries.push(LedgerEntry { line: n + 1, members: field(1), sentence: field(2), went });
+            }
+            Self { entries }
+        }
+
+        /// Whether a line says why `sentence` no longer reaches `tag`.
+        fn accounts_for(&self, tag: &str, sentence: &str) -> bool {
+            self.entries.iter().any(|e| e.sentence == sentence && e.covers(tag))
+        }
+    }
+
+    /// Whether `<path>::<name>` names a test in the repository that runs in
+    /// `cargo test`: a `fn name(` under `#[test]` or `#[tokio::test]`, not
+    /// `#[ignore]`d.
+    fn test_exists(root: &std::path::Path, test: &str) -> Result<(), String> {
+        let (file, name) = test.rsplit_once("::").ok_or_else(|| format!("`{test}` isn't <path>::<test fn>"))?;
+        let text = std::fs::read_to_string(root.join(file)).map_err(|_| format!("`{test}`: no file {file}"))?;
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| {
+                let l = l.trim_start();
+                ["fn ", "async fn "].iter().any(|p| l.strip_prefix(p).is_some_and(|rest| rest.starts_with(name) && rest[name.len()..].starts_with('(')))
+            })
+            .ok_or_else(|| format!("`{test}`: no fn {name} in {file}"))?;
+        let attributes: Vec<&str> = lines[..at].iter().rev().map(|l| l.trim()).take_while(|l| l.starts_with("#[") || l.starts_with("///")).collect();
+        if !attributes.iter().any(|a| a.starts_with("#[test]") || a.starts_with("#[tokio::test")) {
+            return Err(format!("`{test}`: fn {name} isn't a test"));
+        }
+        if attributes.iter().any(|a| a.starts_with("#[ignore")) {
+            return Err(format!("`{test}`: is ignored, so it proves nothing in `cargo test`"));
+        }
+        Ok(())
     }
 
     #[test]
@@ -1335,6 +1556,24 @@ mod tests {
                 assert!(text.contains(&format!("until they have written, in {screen}, the language of their screen")), "{}: {screen}", r.id);
             }
         }
+    }
+
+    #[test]
+    fn every_member_answers_a_message_from_the_phone_for_a_phone_screen() {
+        let team = [Teammate { name: "pm", role: PM }];
+        for role in ROLES.iter().chain([&CUSTOM]) {
+            let id = role.id;
+            for context in [ctx(&team, &[], true), ctx(&team, &[], false)] {
+                let text = charter(role, id, &context);
+                assert!(text.contains("When a message comes marked as sent from the person's phone"), "{id}: when");
+                assert!(text.contains("the answer and anything they must do in the first two or three lines"), "{id}: answer first");
+                assert!(text.contains("short lists, never a wide table"), "{id}: no wide tables");
+                assert!(text.contains("a path or a command only when they need it to act"), "{id}: few paths");
+                assert!(text.contains("Detail goes after that, or in a file you name"), "{id}: detail after");
+            }
+        }
+        // The mark names the phone in the charter's own words, and nothing of one squad's own.
+        assert!(PHONE_MARK.contains("sent from the person's phone") && !PHONE.contains('/') && !PHONE.contains("acme"));
     }
 
     #[test]

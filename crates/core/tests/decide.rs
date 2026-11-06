@@ -319,7 +319,7 @@ async fn skipped_questions_say_so_and_a_closed_set_tells_the_member_to_go_on() {
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let text = seen.iter().find_map(|e| if let Event::UserMessage { text, .. } = e { Some(text.clone()) } else { None }).unwrap();
     assert_eq!(text, "Answers to your questions:\n1) Which database should the API use? → skipped — your call\n2) Which features ship first? → skipped — your call");
-    assert!(!seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("asks you to decide"))), "the PM isn't told of its own");
+    assert!(!seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("asks you to decide"))), "the PM isn't told of its own");
 
     // Asked again, and closed unanswered: the PM goes on without it.
     tool(&handle, "pm", "ask_decision", json!({ "questions": [{ "question": "Ship today?", "options": ["Yes (Recommended)", "No"] }] })).await;

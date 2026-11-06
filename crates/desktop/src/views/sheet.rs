@@ -48,6 +48,11 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         Button::Copy(label, text) => button(p, "sheet-button", label, false).id(("sheet-button", ix)).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))),
         Button::Run(label, line) => button(p, "sheet-button", label, false).id(("sheet-button", ix)).on_click(cx.listener(move |this, _, window, cx| this.run_line(&line, window, cx))),
         Button::Open(label, path) => button(p, "sheet-button", label, false).id(("sheet-button", ix)).on_click(move |_, _, _| drop(std::process::Command::new("open").arg(&path).spawn())),
+        Button::Ask(label, ask) => button(p, "sheet-button", label, false).id(("sheet-button", ix)).on_click(cx.listener(move |this, _, _, cx| {
+            this.sheet = None;
+            this.confirm = Some((*ask).clone());
+            cx.notify();
+        })),
     });
     Some(modal_w(
         p,

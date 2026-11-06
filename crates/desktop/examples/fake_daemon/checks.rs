@@ -83,7 +83,7 @@ fn edit(file: &str) -> Entry {
 pub fn history() -> Vec<Entry> {
     let read = |f: &str| Entry::Tool { tool: "Read".into(), target: Some(format!("/tmp/fake/app/design/{f}")), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(30), ..ToolOutcome::default() })), label: None, background: false };
     let mut out = vec![
-        Entry::Note { text: "── T-61 · Notification settings screen draft — on branch equipe/t-61".into() },
+        Entry::Note { undo: None, text: "── T-61 · Notification settings screen draft — on branch equipe/t-61".into() },
         Entry::User { text: "Make a draft of the notification settings screen. The digest has to turn off in one go.".into() },
         Entry::Reply { text: "I'll read the brief and the design system first, then make the first screen and check it.".into() },
         read("brand.md"),

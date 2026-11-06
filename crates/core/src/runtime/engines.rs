@@ -523,7 +523,7 @@ impl Runtime {
         self.publish(Event::EngineProposed { squad: squad.to_owned(), proposal });
         let (shown, provider) = self.on_provider(&model).unwrap_or_default();
         let text = say!(self, "notice.provider_move", model = shown, provider = provider);
-        self.publish(Event::Notice { session, text });
+        self.publish(Event::Notice { undo: None, session, text });
         self.apply_engine_moves(squad).await;
     }
 
@@ -691,7 +691,7 @@ impl Runtime {
                 Box::pin(self.handle(Command::SetEffort { session: now_id, effort: mv.effort.clone() })).await;
             }
             let text = say!(self, "engines.notice_moved", from = engine_name(mv.from), to = engine_name(mv.to));
-            self.publish(Event::Notice { session: now_id, text });
+            self.publish(Event::Notice { undo: None, session: now_id, text });
             self.log_engines(squad, format!("{name}: {} → {} ({:?})", engine_name(mv.from), engine_name(mv.to), due.why));
         }
         if mode.is_some() {
@@ -777,7 +777,7 @@ fn brief_talk(entries: &[Entry]) -> String {
                 None => continue,
             },
             Entry::Reply { text } => format!("You: {}", clip(text, 1_800)),
-            Entry::Note { text } => format!("(equipe: {})", clip(text, 300)),
+            Entry::Note { text, .. } => format!("(equipe: {})", clip(text, 300)),
             _ => continue,
         };
         if size + line.len() > BRIEF_TALK && !lines.is_empty() {

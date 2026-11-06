@@ -618,6 +618,16 @@ impl Journal {
         self.set_meta("pm_accepts", if on { "on" } else { "off" })
     }
 
+    /// "All by words": the person's own words decide high-risk requests too,
+    /// read back and confirmed. Off unless they turned it on, at the Mac.
+    pub fn words_all(&self) -> bool {
+        self.meta("words_all").as_deref() == Some("on")
+    }
+
+    pub fn set_words_all(&self, on: bool) -> Result<()> {
+        self.set_meta("words_all", if on { "on" } else { "off" })
+    }
+
     /// How many subagents each member runs at once, where its engine has
     /// them, as the person set it; `None`: each engine's own.
     pub fn subagents_at_once(&self) -> Option<u32> {
@@ -1614,14 +1624,14 @@ mod tests {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
         for i in 0..10 {
-            j.append(1, &Entry::Note { text: i.to_string() }).unwrap();
+            j.append(1, &Entry::Note { undo: None, text: i.to_string() }).unwrap();
         }
         let texts: Vec<_> = j
             .recent(1, 3)
             .unwrap()
             .into_iter()
             .map(|e| match e {
-                Entry::Note { text } => text,
+                Entry::Note { text, .. } => text,
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -1669,11 +1679,11 @@ mod tests {
     fn recent_lines_survive_pruning() {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
-        j.append(1, &Entry::Note { text: "old".into() }).unwrap();
+        j.append(1, &Entry::Note { undo: None, text: "old".into() }).unwrap();
         j.backdate_entries(1, 1_000);
-        j.append(1, &Entry::Note { text: "new".into() }).unwrap();
+        j.append(1, &Entry::Note { undo: None, text: "new".into() }).unwrap();
         j.prune(now() - 86_400).unwrap();
-        assert_eq!(j.conversation(1).unwrap(), vec![Entry::Note { text: "new".into() }]);
+        assert_eq!(j.conversation(1).unwrap(), vec![Entry::Note { undo: None, text: "new".into() }]);
     }
 
     #[test]

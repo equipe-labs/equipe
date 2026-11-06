@@ -333,7 +333,7 @@ fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut S
     let folder = crate::squad_home::path(home, squad);
     let mut cwds: HashSet<PathBuf> = HashSet::new();
     for (cwd, entry) in journal.said_with_paths(SAID).unwrap_or_default() {
-        let (Entry::User { text } | Entry::Reply { text } | Entry::Note { text }) = &entry else { continue };
+        let (Entry::User { text } | Entry::Reply { text } | Entry::Note { text, .. }) = &entry else { continue };
         for image in markdown::local_images(text) {
             for base in [&cwd, &folder] {
                 if let Some(path) = markdown::lexical(&image.path, base) {

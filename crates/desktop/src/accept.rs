@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use equipe_core::accept::{all_of, starts_after, unfit};
+use equipe_core::accept::starts_after;
 use equipe_core::protocol::accept::{AcceptProposal, Confirmed, Land, Verdict};
 use equipe_core::protocol::{Command, SessionId, Ticket, TicketId};
 use equipe_core::t;
@@ -114,7 +114,7 @@ impl Cards {
             if kept.is_empty() {
                 return None;
             }
-            Command::ConfirmAccept { squad, id, tickets: kept.into_iter().map(|ticket| Confirmed { ticket, merge: land(ticket) }).collect() }
+            Command::ConfirmAccept { squad, id, tickets: kept.into_iter().map(|ticket| Confirmed { ticket, merge: land(ticket) }).collect(), said: None }
         } else {
             Command::DeclineAccept { squad, id }
         };
@@ -218,70 +218,17 @@ pub fn lands(card: &AcceptProposal, kept: &[TicketId], tickets: &[Ticket], proje
 
 // ── the person's own words ──
 
-/// The person's words, read as plainly accepting or merging handed-in work:
-/// the verdict, and the tickets — named (`T-1`), or all of them ("all of
-/// them", "everything"). Anything less plain — a question, a "not", an "if", no
-/// tickets, sending back (which needs what to change) — is left to the
-/// member they said it to.
-pub fn read_words(text: &str, tickets: &[Ticket]) -> Option<(Verdict, Vec<TicketId>)> {
-    let lower = text.trim().to_lowercase();
-    if lower.is_empty() || lower.chars().count() > 60 || lower.starts_with('/') || lower.starts_with('@') {
-        return None;
-    }
-    // Asking, not saying; a "not", a "wait", an "if": not plain.
-    let unsure = crate::i18n::every("match.accept_unsure");
-    if ["?", "？"].iter().chain(unsure).any(|w| lower.contains(w)) {
-        return None;
-    }
-    let merge = crate::i18n::every("match.accept_merge").iter().any(|w| lower.contains(w));
-    let accept = crate::i18n::every("match.accept_accept").iter().any(|w| lower.contains(w));
-    if !(merge || accept) {
-        return None;
-    }
-    let verdict = if merge { Verdict::Merge } else { Verdict::Accept };
-    let named = named_tickets(&lower);
-    let words: Vec<&str> = lower.split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | '!' | '~')).filter(|w| !w.is_empty()).collect();
-    // "all", "acceptall"; "everything" — all, and the verb after it (written with no space in Korean too).
-    let starts = crate::i18n::every("match.accept_all_starts");
-    let whole = crate::i18n::every("match.accept_all_words");
-    let all = words.iter().any(|w| starts.iter().any(|s| w.starts_with(s)) || *w == "all" || whole.contains(w));
-    let ids = match (named.is_empty(), all) {
-        (false, _) => named,
-        (true, true) => all_of(tickets, verdict),
-        (true, false) => return None,
-    };
-    // Only what can be put to the person: else the member answers.
-    let fit: Vec<TicketId> = ids.into_iter().filter(|id| tickets.iter().any(|t| t.id == *id && unfit(t, verdict).is_none())).collect();
-    (!fit.is_empty()).then_some((verdict, fit))
-}
-
-/// `T-1`, `t-42` in the text, in order, once each.
-fn named_tickets(lower: &str) -> Vec<TicketId> {
-    let mut out = Vec::new();
-    let chars: Vec<char> = lower.chars().collect();
-    let mut i = 0;
-    while i + 2 < chars.len() + 1 {
-        let boundary = i == 0 || !chars[i - 1].is_ascii_alphanumeric();
-        if boundary && chars[i] == 't' && chars.get(i + 1) == Some(&'-') {
-            let digits: String = chars[i + 2..].iter().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(id) = digits.parse::<TicketId>()
-                && !out.contains(&id)
-            {
-                out.push(id);
-            }
-            i += 2 + digits.len();
-            continue;
-        }
-        i += 1;
-    }
-    out
-}
-
-/// The command that raises the card for words read so, in conversation
-/// `session` — sent before the words themselves, so the member there, the
-/// PM included, finds it up and raises nothing twice.
+/// The command that raises the card for words plainly accepting or merging
+/// handed-in work, in conversation `session` — sent before the words
+/// themselves, so the member there, the PM included, finds it up and raises
+/// nothing twice. Only for a daemon that doesn't read the person's words
+/// itself (its snapshot has no `words`): one that does raises the card, or
+/// does what is low risk, from the message itself (`crate::words`). The
+/// reading is the daemon's (`equipe_core::by_words::read`), never a member's.
 pub fn raise(squad: &str, session: SessionId, text: &str, tickets: &[Ticket]) -> Option<Command> {
-    let (verdict, tickets) = read_words(text, tickets)?;
+    let waiting = equipe_core::by_words::Waiting { tickets, ..Default::default() };
+    let tongues = equipe_core::protocol::by_words::Tongues::of(&[crate::i18n::lang().code()]);
+    let (verdict, tickets) = equipe_core::by_words::card_for(&equipe_core::by_words::read(text, &waiting, &tongues))?;
     Some(Command::ProposeAccept { squad: squad.to_owned(), session, verdict, tickets, note: String::new() })
 }
 
@@ -316,7 +263,7 @@ mod tests {
         assert!(!cards.keeps(7, 3) && cards.keeps(7, 1));
         assert_eq!(cards.kept(7), [1]);
         let land = |t: TicketId| (t == 1).then_some(Land::Push);
-        assert_eq!(cards.decide("acme", 7, true, land), Some(Command::ConfirmAccept { squad: "acme".into(), id: 7, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Push) }] }));
+        assert_eq!(cards.decide("acme", 7, true, land), Some(Command::ConfirmAccept { squad: "acme".into(), id: 7, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Push) }], said: None }));
         assert_eq!(cards.decide("acme", 7, true, land), None, "hidden: no second answer");
         assert_eq!(cards.ids(), [8]);
         // Nothing ticked: nothing to confirm, and the card stays.
@@ -368,89 +315,12 @@ mod tests {
     }
 
     #[test]
-    fn plain_words_raise_the_card_and_anything_less_plain_is_left_to_the_member() {
+    fn plain_words_raise_the_card_for_a_daemon_that_doesnt_read_them() {
         let b = board();
-        let read = |text: &str| read_words(text, &b);
-        assert_eq!(read("전부다 수락할게."), Some((Verdict::Accept, vec![1, 3])));
-        assert_eq!(read("다 수락"), Some((Verdict::Accept, vec![1, 3])));
-        assert_eq!(read("다수락해줘"), Some((Verdict::Accept, vec![1, 3])));
-        assert_eq!(read("모두 승인합니다"), Some((Verdict::Accept, vec![1, 3])));
-        assert_eq!(read("Accept them all!"), Some((Verdict::Accept, vec![1, 3])));
-        assert_eq!(read("accept all"), Some((Verdict::Accept, vec![1, 3])));
-        assert_eq!(read("T-1 수락"), Some((Verdict::Accept, vec![1])));
-        assert_eq!(read("T-1이랑 T-3 수락해줘"), Some((Verdict::Accept, vec![1, 3])));
-        assert_eq!(read("t-3, t-1 accept"), Some((Verdict::Accept, vec![3, 1])));
-        assert_eq!(read("전부 머지까지 해줘"), Some((Verdict::Merge, vec![1, 3, 6])), "to merge, accepted work off main too");
-        assert_eq!(read("T-1 수락하고 머지"), Some((Verdict::Merge, vec![1])));
-        // Not handed in, or no such ticket: nothing to put up.
-        assert_eq!(read("T-2 수락"), None);
-        assert_eq!(read("T-1, T-2, T-99 수락"), Some((Verdict::Accept, vec![1])));
-        for unsure in [
-            "전부 수락할까?",
-            "T-1 수락하지 마",
-            "아직 수락하지 말아줘",
-            "테스트 통과하면 다 수락할게",
-            "수락할게",
-            "수락 버튼 어디 있어",
-            "T-1 수락 버튼이 안 눌려요",
-            "이건 반려",
-            "T-1 어때",
-            "don't accept T-1",
-            "accept all after the tests",
-            "/accept T-1",
-            "다 했어요",
-            "오늘 한 일 정리해서 내일 아침에 다시 보여줘. 그리고 T-1은 리뷰가 끝나면 수락할 생각이에요, 문제 없으면요",
-        ] {
-            assert_eq!(read(unsure), None, "{unsure}");
-        }
         assert_eq!(raise("acme", 1, "전부 수락", &b), Some(Command::ProposeAccept { squad: "acme".into(), session: 1, verdict: Verdict::Accept, tickets: vec![1, 3], note: String::new() }));
+        assert_eq!(raise("acme", 1, "T-1 수락하고 머지", &b), Some(Command::ProposeAccept { squad: "acme".into(), session: 1, verdict: Verdict::Merge, tickets: vec![1], note: String::new() }));
+        assert_eq!(raise("acme", 1, "T-1 수락하지 마", &b), None);
+        assert_eq!(raise("acme", 1, "> T-1 수락", &b), None, "quoted words are not the person's");
         assert!(b.iter().any(|t| t.status == TicketStatus::Review));
-    }
-
-    #[test]
-    fn plain_words_are_read_in_every_language() {
-        let b = board();
-        let read = |text: &str| read_words(text, &b);
-        let (one, all, merged) = (vec![1], vec![1, 3], vec![1, 3, 6]);
-        for (text, said) in [
-            ("T-1 accept", (Verdict::Accept, &one)),
-            ("accept everything", (Verdict::Accept, &all)),
-            ("T-1 수락", (Verdict::Accept, &one)),
-            ("T-1 承認して", (Verdict::Accept, &one)),
-            ("全部承認", (Verdict::Accept, &all)),
-            ("全部マージして", (Verdict::Merge, &merged)),
-            ("接受 T-1", (Verdict::Accept, &one)),
-            ("全部接受", (Verdict::Accept, &all)),
-            ("T-1 合并", (Verdict::Merge, &one)),
-            ("T-1 合併", (Verdict::Merge, &one)),
-            ("aprueba T-1", (Verdict::Accept, &one)),
-            ("acepta todo", (Verdict::Accept, &all)),
-            ("fusiona T-1", (Verdict::Merge, &one)),
-            ("T-1 validé", (Verdict::Accept, &one)),
-            ("accepte tout", (Verdict::Accept, &all)),
-            ("fusionne T-1", (Verdict::Merge, &one)),
-            ("T-1 genehmigen", (Verdict::Accept, &one)),
-            ("alles akzeptieren", (Verdict::Accept, &all)),
-            ("T-1 zusammenführen", (Verdict::Merge, &one)),
-        ] {
-            assert_eq!(read(text), Some((said.0, said.1.clone())), "{text}");
-        }
-        for unsure in [
-            "まだ承認しないで",
-            "不要接受 T-1",
-            "先别合并",
-            "no aceptes T-1",
-            "n'accepte pas T-1",
-            "T-1 nicht akzeptieren",
-            "wenn die Tests laufen, alles akzeptieren",
-        ] {
-            assert_eq!(read(unsure), None, "{unsure}");
-        }
-        // Every language has its words for accepting and for holding back.
-        for lang in equipe_core::i18n::Lang::ALL {
-            for key in ["match.accept_accept", "match.accept_merge", "match.accept_unsure"] {
-                assert!(!crate::i18n::of(lang).own(key).unwrap_or_default().is_empty(), "{lang:?}: {key}");
-            }
-        }
     }
 }

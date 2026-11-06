@@ -349,6 +349,8 @@ pub struct Model {
     pub routine_asks: crate::routine::Proposals,
     /// Handed-in work put to the person to confirm, oldest first.
     pub accepts: crate::accept::Cards,
+    /// What waits on the person in their own words, and whether the daemon reads them.
+    pub words: crate::words::Words,
     /// Both engines' plans, the squad's switching and its cards (`engines`).
     pub engines: crate::switching::Engines,
     /// Things that need the person and have not been announced yet: the shell
@@ -379,6 +381,8 @@ pub struct Model {
     /// Bumped whenever the selected conversation shows something new, so a
     /// screen can tell it must draw again.
     pub revision: u64,
+    /// The side chats opened from this window, by their id (`crate::side_chat`).
+    pub side_chats: HashMap<equipe_core::protocol::SideChatId, crate::side_chat::SideConvo>,
     /// Now, in unix seconds: set by the shell before each update (never read here).
     pub unix: u64,
     /// When each ticket came to the state it is in, as seen from here.
@@ -500,6 +504,7 @@ impl Model {
             team: Default::default(),
             routine_asks: Default::default(),
             accepts: Default::default(),
+            words: Default::default(),
             engines: Default::default(),
             alerts: Vec::new(),
             flash: None,
@@ -512,6 +517,7 @@ impl Model {
             focus: None,
             opened: None,
             revision: 0,
+            side_chats: HashMap::new(),
             unix: 0,
             since: HashMap::new(),
             acted: HashMap::new(),
@@ -909,8 +915,12 @@ impl Model {
             Update::Bridge(_) | Update::Leg(_) | Update::Door(_) => false,
             Update::Event(event) => {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
+                // What waits in words is drawn over the composer: always a redraw.
+                let words = matches!(event, Event::WordsLive { .. } | Event::WordsClosed { .. } | Event::WordsLog { .. } | Event::WordsAllChanged { .. });
+                // So is a side chat, beside the conversation.
+                let words = words || matches!(event, Event::SideChatOpened { .. } | Event::SideChat { .. } | Event::SideChatClosed { .. });
                 self.on_event(event, now);
-                let mut changed = before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
+                let mut changed = words || before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 // The footer's "last event" moves when the minute does.
                 if let Conn::Connected { last_event } = &mut self.conn {
                     let stamp = Some(now);
@@ -990,6 +1000,7 @@ impl Model {
         self.team.load(snapshot.team_changes.clone());
         self.routine_asks.load(snapshot.routine_proposals.clone());
         self.accepts.load(snapshot.accepts.clone());
+        self.words.load(snapshot.words.clone(), snapshot.words_all);
         // An older daemon: the banner over the conversation says so, with its button.
         self.daemon_version = version;
         self.member_modes = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.mode?))).collect();
@@ -1123,6 +1134,31 @@ impl Model {
                 self.projects = projects.clone();
                 self.order_projects();
             }
+            // A side chat's: its own words, and what it used counted as its member's.
+            Event::SideChatOpened { squad, side, search, .. } if squad.as_ref().is_none_or(|s| *s == self.squad) => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.search = Some(*search);
+                    chat.gone = false;
+                }
+            }
+            Event::SideChat { side, session, event: inner, .. } => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.on_event(inner);
+                }
+                if let Event::TurnEnded { usage: Some(u), .. } = &**inner {
+                    let member = self.lanes.iter().find(|l| l.session == *session).map_or(*session, |l| l.of);
+                    let spent = self.spent.entry(member).or_default();
+                    spent.tokens += u.total();
+                    spent.seen.0 += u.total();
+                    spent.seen.1 += u.cache_tokens.unwrap_or(0);
+                }
+            }
+            Event::SideChatClosed { side, .. } => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.gone = true;
+                    chat.working = false;
+                }
+            }
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
                 let spent = self.spent.entry(*session).or_default();
                 spent.tokens += u.total();
@@ -1231,6 +1267,16 @@ impl Model {
                 }
             }
             Event::AcceptClosed { squad, id, .. } if squad == self.squad => self.accepts.close(id),
+            Event::WordsLive { squad, live } if squad == self.squad => self.words.live(live),
+            // Its card goes; its line shows under the composer — never inside a member's reply.
+            Event::WordsClosed { squad, id, text, .. } if squad == self.squad => {
+                self.words.close(id);
+                if !text.is_empty() {
+                    self.flash = Some(text);
+                }
+            }
+            Event::WordsAllChanged { squad, on } if squad == self.squad => self.words.all = on,
+            Event::WordsLog { squad, entries } if squad == self.squad => self.words.got_log(entries),
             Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
                 None => self.mode = mode.unwrap_or_default(),
                 Some(name) => {
@@ -2029,6 +2075,24 @@ mod tests {
     }
 
     #[test]
+    fn a_side_chats_words_stay_in_it_and_what_it_used_counts_as_its_members() {
+        let mut model = Model::new("acme");
+        model.side_chats.insert(9, crate::side_chat::SideConvo::new(2, "the header"));
+        let inside = |event: Event| Update::Event(Event::SideChat { squad: Some("acme".into()), session: 2, side: 9, event: Box::new(event) });
+        assert!(model.apply(Update::Event(Event::SideChatOpened { squad: Some("acme".into()), session: 2, side: 9, search: false }), T0), "drawn again");
+        assert_eq!(model.side_chats[&9].search, Some(false));
+        model.apply(inside(Event::UserMessage { session: 9, text: "why?".into() }), T0);
+        model.apply(inside(Event::TextDelta { session: 9, text: "Because.".into() }), T0);
+        let usage = equipe_core::protocol::Usage { input_tokens: Some(10), output_tokens: Some(5), cache_tokens: Some(100), context_tokens: None, context_window: None };
+        model.apply(inside(Event::TurnEnded { session: 9, outcome: TurnOutcome::Completed, usage: Some(usage) }), T0);
+        assert_eq!(model.side_chats[&9].last_answer().as_deref(), Some("Because."));
+        assert!(model.convos.get(&2).is_none_or(|c| c.transcript.is_empty()), "nothing of it in the member's conversation");
+        assert_eq!(model.spent.get(&2).map(|s| (s.tokens, s.seen.1)), Some((115, 100)), "its usage counts as the member's");
+        model.apply(Update::Event(Event::SideChatClosed { squad: Some("acme".into()), side: 9 }), T0);
+        assert!(model.side_chats[&9].gone, "let go, its words kept");
+    }
+
+    #[test]
     fn projects_keep_the_order_they_were_dragged_into() {
         let mut model = Model::new("acme");
         model.projects = vec!["/c/mcp".into(), "/c/website".into(), "/c/hq".into()];
@@ -2496,7 +2560,7 @@ mod tests {
         };
         model.apply(tick("in_progress", None), T0);
         model.apply(tick("waiting", Some("Waiting on you:\n- [ ] 토큰을 알려 주세요.\n- [ ] 일정을 정해 주세요.")), T0);
-        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend이(가) 2가지를 물어요"), "no asks run together, no keys to learn");
+        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend가 2가지를 물어요"), "no asks run together, no keys to learn");
         // Answered on another screen: the card learns it as the ticket moves.
         let revision = model.revision;
         model.unix = 1_000;
@@ -2637,7 +2701,7 @@ mod tests {
         working.assignee = Some("frontend".into());
         model.tickets = vec![working, ticket(8, "todo", None)];
         model.members[1].ticket = Some(7);
-        model.apply(Update::Event(Event::Notice { session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
+        model.apply(Update::Event(Event::Notice { undo: None, session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
         model.apply(Update::Event(Event::UserMessage { session: 2, text: "hero work".into() }), T0);
         assert_eq!(model.team(), [1, 2], "the PM heads the team");
         // A ticket at work: its member's work on it, and what is typed steers it.

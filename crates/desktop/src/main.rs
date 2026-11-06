@@ -47,6 +47,7 @@ mod readonly;
 mod screen_look;
 mod setup;
 mod sheet;
+mod side_chat;
 mod side_split;
 mod sidecar;
 mod squad_form;
@@ -87,6 +88,7 @@ mod visuals;
 mod voiceover;
 mod windows;
 mod wire;
+mod words;
 mod yourturn;
 mod zoom;
 
@@ -238,6 +240,8 @@ pub struct Shell {
     pub asklist: views::asklist::AskListUi,
     /// Words selected in the conversation, asked about (`views/quote.rs`).
     pub quote: views::quote::QuoteUi,
+    /// A side chat about words selected, beside the conversation (`views/side_chat.rs`).
+    pub side_chat: views::side_chat::SideChatUi,
     pub settings: views::settings::SettingsUi,
     /// Design system's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
@@ -276,6 +280,8 @@ pub struct Shell {
     /// The person closed the banner: not again this launch.
     /// The daemon's update was asked for with the app's: the app restarts once it is in.
     relaunch_after_daemon: bool,
+    /// The redraw each half second while something waits in words (`views/words.rs`).
+    pub(crate) words_tick: Option<Task<()>>,
     /// The status page's releases, as last found.
     /// The banner's "restart now" asked once: the next click restarts.
     pub(crate) daemon_restart_armed: bool,
@@ -427,6 +433,7 @@ impl Shell {
             viewer_zoom: Default::default(),
             asklist: Default::default(),
             quote: Default::default(),
+            side_chat: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
             design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),
@@ -448,6 +455,7 @@ impl Shell {
             term_drag: None,
             daemon_update: None,
             relaunch_after_daemon: false,
+            words_tick: None,
             daemon_restart_armed: false,
             board_ticket: None,
             bell: Default::default(),
@@ -1138,6 +1146,12 @@ impl Shell {
                         this.composer.problem = Some(problem);
                         changed = true;
                     }
+                    // The log of decisions in words, asked for in settings: its sheet.
+                    if let Some(entries) = this.model.words.take_log() {
+                        this.sheet = Some(words::log_sheet(&entries, &this.model.squad));
+                        changed = true;
+                    }
+                    this.tick_words(cx);
                     if changed {
                         if this.log_renders {
                             eprintln!("daemon update -> redraw");

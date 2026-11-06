@@ -44,6 +44,11 @@ them, and note what they said on the ticket with `comment`, for the PM."
         let declined = self.declined_lately(squad);
         match rules::check(args, &tickets, &open, &declined, now_secs())? {
             Outcome::Already { tickets, dropped } => Ok(rules::already_reply(&tickets, &dropped)),
+            // The person's own words already do it: being done, or read back to them.
+            Outcome::Propose(checked) if self.words_cover(squad, &checked.tickets) => Ok(format!(
+                "The person's own words already do this ({}): equipe is doing it, or reading it back to them to confirm. Put nothing to them; carry on.",
+                crate::by_words::list(&checked.tickets)
+            )),
             Outcome::Propose(checked) => {
                 let reply = rules::proposed_reply(&checked, &tickets);
                 let proposal = checked.into_proposal(equipe_protocol::new_session_id(), member, id, now_secs());
@@ -105,7 +110,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
         if !accepted.is_empty() {
             let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
             let text = say!(self, "notice.pm_accepted", ids = ids, checked = checked);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
         }
         let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
         let mut reply = if accepted.is_empty() {
@@ -147,8 +152,13 @@ them, and note what they said on the ticket with `comment`, for the PM."
     /// The person's yes, for the tickets they kept on the card: each gets what
     /// the board's buttons send, the card closes everywhere. Decided already,
     /// elsewhere: nothing more.
-    pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>) {
+    pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>, said: Option<equipe_protocol::by_words::Said>) {
         let Some(proposal) = self.take_accept(squad, id) else { return };
+        // Confirmed in words on a device that made sure of them itself: logged as said.
+        if let Some(said) = &said {
+            let kind = if proposal.verdict == Verdict::Merge { equipe_protocol::by_words::Kind::Merge } else { equipe_protocol::by_words::Kind::AcceptCode };
+            self.words_said_elsewhere(squad, kind, proposal.tickets.clone(), said, equipe_protocol::by_words::Outcome::Done);
+        }
         let mut acted = Vec::new();
         for pick in picked.iter().filter(|p| proposal.tickets.contains(&p.ticket)) {
             let ticket = pick.ticket;

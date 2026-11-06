@@ -164,7 +164,7 @@ async fn propose_yes(handle: &Handle, events: &mut UnboundedReceiver<Event>, see
     let from = seen.len();
     until(events, seen, |s| s[from..].iter().any(|e| matches!(e, Event::ApprovalRequested { .. }))).await;
     let approval = seen[from..].iter().find_map(|e| if let Event::ApprovalRequested { approval, .. } = e { Some(approval.clone()) } else { None }).unwrap();
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
     let said = waiting.await.unwrap();
     assert!(!said.is_error, "{said:?}");
     approval.action
