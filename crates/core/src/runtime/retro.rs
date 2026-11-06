@@ -39,7 +39,13 @@ impl Runtime {
         waits.extend(open);
         let facts = rules::gather(&Week { from, to: now, tickets: &tickets, events: &events, turns: &turns, waits: &waits, briefs: rules::briefs(&crate::squad_home::path(&self.config.home, squad), &projects) });
         crate::daemon_log!("equipe: {squad}: weekly retro {} handed to the PM ({} shipped, {} troubles)", routine.id, facts.shipped.len(), facts.troubles.len());
-        rules::message(routine, &rules::facts_text(&facts, &routines::Local))
+        let mut facts = rules::facts_text(&facts, &routines::Local);
+        // Decisions made in the person's words this week, and where they went wrong — only when there were any.
+        if let Some(line) = self.words_week(squad, from) {
+            facts.push_str(&format!("
+{line}"));
+        }
+        rules::message(routine, &facts)
     }
 
     /// The retro's mark for the decision `id` puts now — the lesson behind

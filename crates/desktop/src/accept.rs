@@ -114,7 +114,7 @@ impl Cards {
             if kept.is_empty() {
                 return None;
             }
-            Command::ConfirmAccept { squad, id, tickets: kept.into_iter().map(|ticket| Confirmed { ticket, merge: land(ticket) }).collect() }
+            Command::ConfirmAccept { squad, id, tickets: kept.into_iter().map(|ticket| Confirmed { ticket, merge: land(ticket) }).collect(), said: None }
         } else {
             Command::DeclineAccept { squad, id }
         };
@@ -316,7 +316,7 @@ mod tests {
         assert!(!cards.keeps(7, 3) && cards.keeps(7, 1));
         assert_eq!(cards.kept(7), [1]);
         let land = |t: TicketId| (t == 1).then_some(Land::Push);
-        assert_eq!(cards.decide("acme", 7, true, land), Some(Command::ConfirmAccept { squad: "acme".into(), id: 7, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Push) }] }));
+        assert_eq!(cards.decide("acme", 7, true, land), Some(Command::ConfirmAccept { squad: "acme".into(), id: 7, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Push) }], said: None }));
         assert_eq!(cards.decide("acme", 7, true, land), None, "hidden: no second answer");
         assert_eq!(cards.ids(), [8]);
         // Nothing ticked: nothing to confirm, and the card stays.

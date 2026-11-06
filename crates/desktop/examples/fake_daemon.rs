@@ -1571,7 +1571,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     tokio::spawn(command::stopped(session, events.clone()));
                                 }
                             }
-                            Command::Decide { squad, approval, decision, words } => {
+                            Command::Decide { squad, approval, decision, words, .. } => {
                                 eprintln!("decide {approval} {decision:?} {words:?}");
                                 asks().lock().unwrap().retain(|a| a.id != approval);
                                 let _ = events.send(Event::ApprovalResolved { squad, approval, decision });

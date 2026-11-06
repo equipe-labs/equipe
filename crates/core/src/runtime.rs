@@ -83,6 +83,7 @@ mod controls;
 mod review;
 mod retro;
 mod watch;
+mod words;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -106,9 +107,9 @@ pub const DESKTOP_SERVER: &str = "desktop";
 /// equipe-design's extraction and remix tools, for designers (`equipe-design mcp`).
 pub const DESIGN_SERVER: &str = "design";
 /// The tool name a member's own question shows under, among approvals.
-const CONFIRM: &str = "Confirm";
+pub(crate) const CONFIRM: &str = "Confirm";
 /// An approval to sign a member in with a kept login (`vault`).
-const SIGN_IN_TOOL: &str = "Sign in";
+pub(crate) const SIGN_IN_TOOL: &str = "Sign in";
 
 /// How long `busy` waits for the loop before it answers with what the loop is on.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(3);
@@ -558,6 +559,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         merging: std::collections::HashSet::new(),
         disk: Default::default(),
         commands: Default::default(),
+        words: Default::default(),
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
@@ -817,6 +819,8 @@ enum Internal {
     Done(TurnDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
+    /// A decision in words: its undo or cancel window, or its read-back's wait, is over.
+    WordsDue(u64),
     /// What the person said yes to on a card, done as their screen would ask.
     Apply(Box<Command>),
     /// Codex asks before it acts, as Claude Code does through `approve`.
@@ -1008,6 +1012,8 @@ struct Runtime {
     approvals_asked: HashMap<u64, u64>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
+    /// Decisions in the person's words waiting on them (`words`).
+    words: words::Words,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
     accepts: HashMap<String, Vec<equipe_protocol::accept::AcceptProposal>>,
     /// Cards the person said no to lately, by squad: not put up again soon.
@@ -1091,6 +1097,7 @@ impl Wake {
             Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
+            Wake::Internal(Internal::WordsDue(_)) => Borrowed("a decision in words coming due"),
             Wake::Internal(Internal::Apply(_)) => Borrowed("a change the person said yes to"),
             Wake::Internal(Internal::Ask(..)) => Borrowed("codex asking for approval"),
             Wake::Internal(Internal::CodexLimits(_)) => Borrowed("codex's plan usage"),
@@ -1279,6 +1286,7 @@ impl Runtime {
                 Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
+                Internal::WordsDue(id) => self.words_due(id).await,
                 Internal::Apply(command) => Box::pin(self.handle(*command)).await,
                 Internal::Ask(call, reply) => self.ask_permission(call, reply),
                 Internal::CodexLimits(limits) => self.on_codex_limits(limits),
@@ -1922,7 +1930,8 @@ impl Runtime {
                     self.focus.remove(&squad);
                 }
             },
-            Command::Decide { squad, approval, decision, words } => {
+            Command::Decide { squad, approval, decision, words, said } => {
+                self.words_decide_said(&squad, approval, decision, said.as_ref());
                 let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
                 if let Some(pending) = self.pending.get(&approval).filter(|p| p.squad == squad) {
                     let (session, tool) = (pending.approval.session, pending.approval.tool.clone());
@@ -1944,8 +1953,11 @@ impl Runtime {
             Command::ApproveTeamChange { squad, id } => self.approve_team_change(&squad, id).await,
             Command::DeclineTeamChange { squad, id } => self.decline_team_change(&squad, id),
             Command::ProposeAccept { squad, session, verdict, tickets, note } => self.propose_accept_from_words(&squad, session, verdict, &tickets, &note),
-            Command::ConfirmAccept { squad, id, tickets } => self.confirm_accept(&squad, id, tickets).await,
+            Command::ConfirmAccept { squad, id, tickets, said } => self.confirm_accept(&squad, id, tickets, said).await,
             Command::DeclineAccept { squad, id } => self.decline_accept(&squad, id),
+            Command::Say { squad, session, text, via, all, later, pasted, about, device } => self.say(squad, session, text, via, all, later, pasted, about, device).await,
+            Command::UndoWords { squad, id } => self.undo_words(&squad, id),
+            Command::WordsLog { squad } => self.words_log(squad),
             Command::Disallow { squad, rule } => {
                 let taken = self.journals.get(&squad).and_then(|j| j.disallow(&rule).ok()).unwrap_or(false);
                 if taken {
@@ -7062,6 +7074,7 @@ it back there once they have done it.{again} End your turn now with a short line
             allowed,
             browsers_shown,
             disk: self.disk_for_snapshot(),
+            words: Some(self.words_live(squad)),
         }
     }
 
