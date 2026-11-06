@@ -171,6 +171,8 @@ pub fn allowed(command: Command) -> Option<Command> {
             Some(Command::ConfirmAccept { squad, id, tickets: tickets.into_iter().map(|c| equipe_core::protocol::accept::Confirmed::only(c.ticket)).collect(), said })
         }
         c @ (Command::Submit { .. }
+        | Command::Say { .. }
+        | Command::UndoWords { .. }
         | Command::Interrupt { .. }
         | Command::SendNow { .. }
         | Command::StopCommand { .. }
@@ -195,6 +197,18 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Design { .. }
         | Command::ProjectDocs { .. }) => Some(c),
         _ => None,
+    }
+}
+
+/// A device's command as the daemon takes it: a message said on a phone
+/// carries the device the link knows it came from — never the phone's own
+/// claim — and "all by words" off. From a phone, words decide only what is
+/// low risk; all by words for a phone is the person's to turn on at the Mac
+/// (not yet there: the security review comes first).
+pub fn from_device(device: &str, command: Command) -> Command {
+    match command {
+        Command::Say { squad, session, text, via, later, pasted, about, .. } => Command::Say { squad, session, text, via, all: false, later, pasted, about, device: Some(device.to_owned()) },
+        other => other,
     }
 }
 
@@ -227,6 +241,9 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::Focus { squad, .. }
         | Command::ShowBrowser { squad, .. }
         | Command::Design { squad }
+        | Command::Say { squad, .. }
+        | Command::UndoWords { squad, .. }
+        | Command::WordsLog { squad }
         | Command::ProjectDocs { squad } => Some(squad),
         _ => None,
     }
@@ -615,7 +632,7 @@ impl Core {
                     return vec![];
                 }
                 match allowed(command) {
-                    Some(command) => vec![Action::Command { device: device.to_owned(), squad, command }],
+                    Some(command) => vec![Action::Command { device: device.to_owned(), squad, command: from_device(device, command) }],
                     None => vec![],
                 }
             }
@@ -703,7 +720,7 @@ impl Core {
         // Pictures of a browser someone at the Mac watches stay on the Mac, and
         // so does the disk panel's look (the phone gets the disk's level), and a
         // sign-in's one-time code: it is for the person's screens.
-        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } | Event::SignIn { .. }) {
+        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } | Event::SignIn { .. } | Event::WordsLog { .. }) {
             return vec![];
         }
         self.frame_for(device, Some(squad), &Message::event(event)).into_iter().collect()
@@ -1143,6 +1160,23 @@ pub(crate) mod tests {
         assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ConfirmAccept { squad: "acme".into(), id: 8, tickets: vec![only(1), only(3)], said: None } }]);
         let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_accept", "squad": "acme", "id": 8 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineAccept { .. }, .. }]));
+        // A message said on a phone: the device the link knows, and all by words off, whatever the phone claims.
+        let said = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "say", "squad": "acme", "session": 1, "text": "ㄱㄱ", "via": "voice", "all": true, "device": "someone-else" } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), said, now), now);
+        let heard = Command::Say { squad: "acme".into(), session: 1, text: "ㄱㄱ".into(), via: equipe_core::protocol::by_words::Via::Voice, all: false, later: false, pasted: false, about: None, device: Some(phone.id.clone()) };
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: heard }]);
+        let undo = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "undo_words", "squad": "acme", "id": 4 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), undo, now), now)[..], [Action::Command { command: Command::UndoWords { id: 4, .. }, .. }]));
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "say", "squad": "zeta", "session": 1, "text": "yes" } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
+        // The log of decisions in words stays at the Mac.
+        let log = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "words_log", "squad": "acme" } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), log, now), now).is_empty());
+        // A call mode's own decide, by voice: on as it came, for the log.
+        let voiced = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decide", "squad": "acme", "approval": 3, "decision": "allow", "via": "voice", "utterance": "응 해" } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), voiced, now), now);
+        let said = Some(equipe_core::protocol::by_words::Said { via: equipe_core::protocol::by_words::Via::Voice, utterance: "응 해".into() });
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::Decide { squad: "acme".into(), approval: 3, decision: Decision::Allow, words: None, said } }]);
         // A phone doesn't raise cards itself: the person's words are read where they type them.
         let raise = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "propose_accept", "squad": "acme", "session": 1, "verdict": "accept", "tickets": [1] } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), raise, now), now).is_empty());

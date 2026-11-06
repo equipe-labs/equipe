@@ -207,8 +207,8 @@ own words — puts it to them on a card: an `accept_proposed` event whose `propo
 "verdict": "accept" | "merge" | "changes", "tickets": [<ticket>…], "note"? (to send back: what to
 change, in their words), "summary"?, "by" (the member that proposed it, or `"you"` when a screen
 raised it from the person's words), "session" (the conversation it shows in), "proposed_at" }`.
-The snapshot lists the ones still waiting in `accepts` (absent when none). Their words are never
-the acceptance, an agent's even less: only the person's own command is. The phone confirms with
+The snapshot lists the ones still waiting in `accepts` (absent when none). An agent's words are
+never the acceptance; the person's own are only as Deciding in words says — else their command is. The phone confirms with
 `confirm_accept` `{ "squad", "id", "tickets": [{ "ticket", "merge"?: "merge" | "push" }…] }` —
 the tickets they kept — and the daemon runs, for each, what the board's buttons send (`accept`,
 then `merge` when asked; or `reopen` with the note). From a phone `merge` is dropped: the work is
@@ -217,6 +217,41 @@ Every screen then gets `accept_closed` `{ "squad", "id", "confirmed", "tickets"?
 the ones acted on — also sent with `confirmed: false` when the card became moot (its tickets were
 decided otherwise). A phone doesn't raise cards (`propose_accept` is the screens' own). A push for
 a proposal carries the event with `summary` and `note` cut to 800 characters, category `accept`.
+
+### Deciding in words
+
+A screen that has the person's own message sends `say` instead of `submit` — when the snapshot
+carries `words` (a list, maybe empty; absent from a daemon that predates it, which takes `submit`):
+`{ "squad", "session", "text", "via": "typed" | "dictated" | "voice", "all"?, "later"?,
+"pasted"?, "about"? }`. The daemon reads it for a decision in words, then sends it on to the member
+as `submit` (or, `later`, as a memo) — unless it was only an answer to a decision waiting in words,
+which goes no further. `pasted: true` (some of the text was pasted) and anything quoted (`> …` lines,
+a reply's passage, a fenced block) never decide. From a phone the daemon sets `device` to the
+device it came from and `all` to `false`, whatever the phone sent.
+
+What every request waiting on the person risks is set in one place (`equipe_protocol::by_words::Kind::tier`):
+`low` (accepting research and writing, keeping an idea, taking on a proposal, running a saved routine
+once, leaving code on its branch) is done after a 5-second undo window; `high` (accepting code, a merge,
+a request for permission, turning a routine on, moving members to another engine) and `outward`
+(pushing, deploying or publishing, paying or acting in the person's name, sending from their apps, a kept
+login, widening a setting or a rule, a team change) keep their card — or, with `all` ("All by words",
+on that screen), are read back and wait for the person's next own message: a clear yes runs it (`outward`:
+after a 10-second cancel window), any no holds it on its card, anything unclear asks again (twice, then
+holds). A secret's value and pairing a phone never go by words; what equipe refuses stays refused.
+
+What waits is `words_live` `{ "squad", "live": { "id", "session", "stage": "undo" | "which" | "read_back" |
+"countdown", "tier", "kind", "read_back" (equipe's own words: the action and its target),
+"items"? (each thing it does — or, `which`, each that fits, for the person to say its number), "until"
+(unix ms), "said", "via", "asked_again"?, "device"? } }`; the snapshot lists those waiting in `words`.
+`undo_words` `{ "squad", "id" }` is the Undo (or Cancel) button. Every screen then gets `words_closed`
+`{ "squad", "id", "outcome": "done" | "undone" | "cancelled" | "held" | "lapsed" | "moot", "text"? }`, and
+the conversation a notice with the same line.
+
+A device that makes sure of the person's words itself — a phone's call mode reading the request back
+and checking the confirming words on the phone — says so on `decide` and `confirm_accept`: `"via"`
+and `"utterance"` beside their other fields. They go into the log; they never let anything through
+that the command alone wouldn't. Every decision made in words is kept in the squad's log on the Mac,
+which only the Mac's screens read (`words_log`, answered by `words_log` `{ "squad", "entries" }`).
 
 ### The disk
 
@@ -693,7 +728,8 @@ The daemon follows a device like one more screen, with less reach than the termi
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
   `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
   `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`, `focus`, `refresh`,
-  `design`, `engines` (where the engines stand; never signing one in or out).
+  `design`, `engines` (where the engines stand; never signing one in or out), `say` and
+  `undo_words` (see Deciding in words).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it
@@ -704,7 +740,7 @@ The daemon follows a device like one more screen, with less reach than the termi
   (`queue_sent`).
 - **may not:** any other `metrics.*` (`sources`, `connect`, `disconnect`, `refresh`, `query`:
   keys and connections stay at the Mac), `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
-  `set_engine_switching`, `show_engine_setup`, `propose_accept` — nor the person's
+  `set_engine_switching`, `show_engine_setup`, `propose_accept`, `words_log` — nor the person's
   own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a
   screen for now).

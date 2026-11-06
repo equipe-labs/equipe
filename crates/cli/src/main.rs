@@ -1613,6 +1613,9 @@ impl App {
                 | Event::TeamChangeClosed { .. }
                 | Event::AcceptProposed { .. }
                 | Event::AcceptClosed { .. }
+                | Event::WordsLive { .. }
+                | Event::WordsClosed { .. }
+                | Event::WordsLog { .. }
                 | Event::EngineProposed { .. }
                 | Event::EngineProposalClosed { .. }
                 | Event::EngineSwitchingChanged { .. }
