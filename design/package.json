@@ -3,7 +3,7 @@
     "style-dictionary": "^5.8.0"
   },
   "name": "equipe-design-system",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "equipe design tokens (DTCG) → CSS, Rust, Swift, Kotlin",

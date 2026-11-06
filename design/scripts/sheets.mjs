@@ -35,16 +35,17 @@ const heads = (hs) => `<div class="h"></div>${hs.map((h) => `<div class="h">${h}
 const STATES = ['', 'is-hover', 'is-pressed', 'is-focus', 'is-disabled'];
 const STATE_H = ['default', 'hover', 'pressed', 'focus', 'disabled'];
 
-const btn = (v, label, st, extra = '') => `<button class="eq-btn eq-btn--${v} eq-anim eq-focusable ${v === 'primary' ? '' : 'eq-overlay-hover'} ${st} ${extra}">${label}</button>`;
+const btn = (v, label, st, extra = '') => `<button class="eq-btn eq-btn--${v} eq-anim eq-focusable ${v === 'primary' || v === 'danger-soft' ? '' : 'eq-overlay-hover'} ${st} ${extra}">${label}</button>`;
 
 const sheets = {
   button: () => ({
-    title: 'Button', sub: 'Height `button.height` (web 44 · desktop 28 · iOS 44 · Android 48). The primary button is `color.action` (a text-coloured fill); a brand-blue fill is for web marketing only. Only the primary button has its own hover·pressed colours; the rest use the neutral overlay (`color.hover/pressed`). The danger button is only for what can\'t be undone.',
+    title: 'Button', sub: 'Height `button.height` (web 44 · desktop 28 · iOS 44 · Android 48). The primary button is `color.action` (a text-coloured fill); a brand-blue fill is for web marketing only. Only the primary and danger-soft buttons have their own hover·pressed colours (danger-soft is opaque `err-fill`, safe on translucent bars); the rest use the neutral overlay (`color.hover/pressed`). The danger button is only for what can\'t be undone.',
     body: `<div class="grid" style="${cols(5)}">${heads(STATE_H)}
       ${row('primary', STATES.map((s) => btn('primary', 'Allow', s)))}
       ${row('secondary', STATES.map((s) => btn('secondary', 'Decline', s)))}
       ${row('ghost', STATES.map((s) => btn('ghost', 'See details', s)))}
       ${row('danger', STATES.map((s) => btn('danger', 'Remove device', s)))}
+      ${row('danger-soft', STATES.map((s) => btn('danger-soft', 'Deny', s)))}
       ${row('brand<br>(web marketing)', STATES.map((s) => btn('brand', 'Get the macOS app', s)))}
     </div>
     <div class="grid" style="${cols(4)}">${heads(['size', '', '', ''])}

@@ -84,9 +84,11 @@ Source: the brand part (§0–§7) is carried over as is from the T-144 brand gu
 | `dot` | `#3F6FF5` | `#3F6FF5` | **the brand dot** (a logo-only graphic, not a text colour) |
 | `focus` | `#1D4ED8` | `#8FB0FF` | focus ring 2px (offset 3px) |
 | `ok` / `work` / `wait` / `err` | `#1F6B33` / `#825600` / `#A04610` / `#AD2E27` | `#7FCB8E` / `#E2B865` / `#EC9A62` / `#EE7B74` | done / in progress / your turn·waiting for permission / error |
+| `errFill` (hover · pressed) | `#EEE0DE` (`#EBD9D7` · `#E9D2CF`) | `#352728` (`#3C2A2B` · `#442E2E`) | opaque fill behind `err` text — the soft destructive button (Deny). err on it: light 5.12 / 4.83 / 4.56, dark 5.24 / 4.95 / 4.61 :1 |
 | `line` | `rgba(10,10,12,.14)` | `rgba(233,230,223,.14)` | hairline (decoration — not subject to text contrast) |
 
 - The semantic colours' light values (`work` `#825600`, `wait` `#A04610`, `err` `#AD2E27`) and dark values (amber `#E2B865`, orange `#EC9A62`, red `#EE7B74`) are **exactly the desktop `theme.rs`'s current values**. `ok` (done) isn't defined anywhere yet, so it's a **newly chosen value** (proposed): light `#1F6B33`, dark `#7FCB8E`. The meanings: amber = working, orange = waiting on the person (the intent of desktop `theme.rs:132-134`); neither is ever a project colour.
+- **`errFill` is opaque on purpose (T-492)**: a translucent tint (`err-bg`, 12%) over a translucent bar or sheet changes with whatever scrolls behind it, and at 8% over iOS's `.bar` the Deny label fell to 4.27:1 (T-491). The soft destructive button takes `errFill` with `err` text, and for hover·pressed its own opaque steps instead of the `hover`·`pressed` overlays (an overlay on it drops the label below 4.5:1). `err-bg` stays for badges·banners on solid surfaces.
 - **Filled primary button (proposed)**: the marketing web (the site) uses an `accent` fill + `onAccent` text. **Product UI (app·desktop) keeps a `text`-coloured fill as now** (black/bone), with blue only for links·selection·focus·the dot. Why: the app screens are mostly one colour now (audit C2), and with more blue buttons the one important action, like "approve", gets lost.
 - The 8 member avatar colours (`theme.rs:135,163`) aren't the brand palette but *a separate system for telling members apart* — not touched this time (contrast not recomputed).
 

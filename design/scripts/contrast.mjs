@@ -14,6 +14,7 @@ const P = [
   ['on-accent', ['accent'], TEXT, 'filled brand button text (web marketing)'],
   ['on-action', ['action'], TEXT, 'primary button text'], ['on-action', ['action-hover'], TEXT, 'primary button hover'], ['on-action', ['action-pressed'], TEXT, 'primary button pressed'],
   ['on-err', ['err'], TEXT, 'destructive button text'],
+  ['err', ['err-fill'], TEXT, 'soft destructive button text (Deny)'], ['err', ['err-fill-hover'], TEXT, 'soft destructive button hover'], ['err', ['err-fill-pressed'], TEXT, 'soft destructive button pressed'],
   ['text', ['bg', 'hover'], TEXT, 'text on row hover'], ['text', ['surface', 'hover'], TEXT, 'text on row hover inside a card'], ['muted', ['surface', 'hover'], TEXT, 'secondary text on row hover'], ['text', ['bg', 'pressed'], TEXT, 'text on pressed row'], ['accent', ['bg', 'pressed'], TEXT, 'pressed text button'],
   ['ok', ['bg'], TEXT, 'done text on page'], ['work', ['bg'], TEXT, 'in-progress text on page'], ['wait', ['bg'], TEXT, 'your-turn text on page'], ['err', ['bg'], TEXT, 'error text on page'],
   ['ok', ['surface'], TEXT, 'done text on card'], ['work', ['surface'], TEXT, 'in-progress text on card'], ['wait', ['surface'], TEXT, 'your-turn text on card'], ['err', ['surface'], TEXT, 'error text on card'],
