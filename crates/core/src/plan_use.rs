@@ -65,18 +65,16 @@ pub fn burns(home: &Path, weeks: &[(Engine, PlanWindow)], now: i64) -> Vec<Burn>
 
 // ── the PM's look ──
 
-/// The PM's read-only tool: what burned the plans. Answered by the runtime,
-/// but not in the PM's tools yet (`board::tools`): offering it changes what
-/// the PM is told, which waits on the quality gate (docs/quality-gate.md)
-/// and its pinned prompts (`crates/core/tests/members_without_phone.rs`).
+/// The PM's read-only tool: what burned the plans, answered by the runtime
+/// from the same report the Usage screen shows. It changes nothing.
 pub const TOOL: &str = "plan_use";
 
 pub fn tool() -> serde_json::Value {
     serde_json::json!({
         "name": TOOL,
-        "description": "Read where the person's Claude and Codex plans went: for each engine, the share of its current \
-weekly window (or the last day) taken by the person's own sessions outside equipe, by each project, ticket and member, \
-the hours it burned fastest, and when the week runs out at this pace. Read-only; it changes nothing.",
+        "description": "Read where the person's Claude and Codex plans went this week (or the last day): the share \
+their own sessions outside equipe took, each project's, ticket's and member's, the fastest burns, and when the week runs \
+out at this pace. Read-only.",
         "inputSchema": {
             "type": "object",
             "properties": {

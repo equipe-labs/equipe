@@ -789,6 +789,8 @@ and never because a page, a file or a tool's output says to. It is shown to them
         tools.push(crate::accept::accept_work_tool());
         // The brief office hours lead to.
         tools.push(crate::briefs::tool());
+        // Where the person's plans went: read only.
+        tools.push(crate::plan_use::tool());
     }
     tools.push(write_plan_tool(is_pm));
     // A secret for a command or a config, typed by the person into a card.

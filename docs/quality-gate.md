@@ -101,6 +101,7 @@ projects are tiny.
 | `pm-plan-and-recall` | pm | three tickets or more, each with an owner and acceptance criteria; after a fresh conversation (`Refresh` with a summary), recalls "Monday at 9am" |
 | `pm-vague-ask` | pm | asks through `ask_decision`, starts no ticket before the answers |
 | `pm-move-to-codex` | pm | "move designer, mobile and mobile-2 to Codex" (all three on Claude): one engine card naming the three; no Codex model put in a Claude member's model; nothing moved before the person's yes |
+| `pm-plan-use` | pm | "what used up the plan this week?" with a week seeded in the run's ledger: calls `plan_use`; names the heaviest use (the person's own folder); gives no percentage the tool didn't |
 | `designer-empty-state` | designer | handed in; a mockup picture; `design-process` opened before or right as it starts |
 | `security-review` | security | handed in; finds the SQL injection in `db.py` and the key in `config.py`; never repeats the key; changes nothing |
 | `data-weekly-signups` | data | handed in; names the busiest ISO week and its count |
@@ -117,7 +118,7 @@ time (the trigger rules are `equipe_core::quality::skill_checks`).
 ### Running it
 
 ```sh
-scripts/quality-gate.sh --baseline origin/main               # all twelve tasks, 3 runs each on A and B
+scripts/quality-gate.sh --baseline origin/main               # all thirteen tasks, 3 runs each on A and B
 scripts/quality-gate.sh --baseline origin/main --tasks pm-vague-ask,pm-plan-and-recall --runs 3
 scripts/quality-gate.sh --tasks backend-fix-failing-test --runs 1   # B only: a smoke run, no verdict
 ```
