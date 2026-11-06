@@ -113,6 +113,9 @@ pub enum DesignAction {
         /// Where the sheet and files go (default: ./design/audit)
         #[arg(long)]
         out: Option<PathBuf>,
+        /// The language the site is asked for, as the people the product is for read it (default: yours)
+        #[arg(long)]
+        locale: Option<String>,
     },
     /// Hold a screen to the design system in code: the floor (never waived), the habits of generated screens, finishing notes — in its source, and with --render as Chrome draws it at each width
     Lint(crate::design_lint::LintArgs),
@@ -282,9 +285,9 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
         }
         DesignAction::Diff { spec, built, out } => run_script("diff.mjs", &[&spec, &built, "--out", out.to_string_lossy().as_ref()]).await,
         DesignAction::Critique { pictures, references, before, goal, brief, engine } => critique_command(critique::Ask { pictures, references, before, brief: None, goal }, brief, engine).await,
-        DesignAction::Audit { url, pages, out } => {
+        DesignAction::Audit { url, pages, out, locale } => {
             let out = out.unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR).join("audit"));
-            run_script("audit.mjs", &[&url, "--pages", &pages.to_string(), "--out", out.to_string_lossy().as_ref()]).await
+            run_script("audit.mjs", &[&url, "--pages", &pages.to_string(), "--out", out.to_string_lossy().as_ref(), "--locale", &audit_locale(locale)]).await
         }
         DesignAction::Flows { action } => flows_command(action).await,
         DesignAction::Lint(args) => crate::design_lint::lint(args).await,
@@ -1233,6 +1236,12 @@ async fn ensure_kit() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// The language a brand's site is read in: the one asked for, else the
+/// person's — a language tag Chrome sends as `Accept-Language`.
+fn audit_locale(asked: Option<String>) -> String {
+    asked.unwrap_or_else(|| crate::i18n::lang().code().to_owned())
+}
+
 pub(crate) async fn run_script(name: &str, args: &[&str]) -> Result<(), String> {
     let dir = ensure_kit().await?;
     let (node, _) = node_tools()?;
@@ -1251,6 +1260,16 @@ mod tests {
     struct Args {
         #[command(subcommand)]
         action: DesignAction,
+    }
+
+    #[test]
+    fn a_brand_is_audited_in_the_persons_language_unless_told_another() {
+        let DesignAction::Audit { locale, .. } = Args::parse_from(["x", "audit", "acme.com"]).action else { panic!() };
+        assert_eq!(audit_locale(locale), crate::i18n::lang().code(), "the language in use, none built in");
+        let DesignAction::Audit { locale, .. } = Args::parse_from(["x", "audit", "acme.com", "--locale", "pt-BR"]).action else { panic!() };
+        assert_eq!(audit_locale(locale), "pt-BR");
+        let script = include_str!("../assets/design/audit.mjs");
+        assert!(script.contains("opt('--locale', 'en-US')") && script.contains("locale })"), "the page is read in the locale asked for");
     }
 
     fn flows_args(words: &[&str]) -> FlowsAction {

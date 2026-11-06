@@ -38,6 +38,8 @@ gpui-pre-reqwest-client = "=0.3.8"
 # Math in replies (diagrams: core's `visuals::diagram`): drawn to SVG, which GPUI rasterizes (resvg) at 2x.
 latex-rust = { version = "2.1", default-features = false, features = ["std"] }
 libc = "0.2"
+# Canonical decomposition, for a past tense marked inside a letter (`asklist`); already in the tree through `idna`.
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Drafts and recent attachments, kept on disk between launches.
 serde = { version = "1.0.229", features = ["derive"] }
 # Drafts and recent attachments on disk; a JSON reply pretty-printed.

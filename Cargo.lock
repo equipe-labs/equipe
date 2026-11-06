@@ -2262,6 +2262,7 @@ dependencies = [
  "equipe-providers",
  "gpui-kit",
  "gpui-pre-reqwest-client",
+ "icu_normalizer",
  "image",
  "latex-rust",
  "libc",

@@ -420,7 +420,7 @@ fn dictation_rows(shell: &Shell, language: Line, dictation: Line, appearance: Li
     let p = shell.palette;
     let on = shell.remembered.dictation_servers;
     let servers = Line::new(t!("settings.dictation_servers"), if on { t!("settings.dictation_servers_on") } else { t!("settings.dictation_servers_desc") })
-        .words("dictation voice speech apple server accuracy korean")
+        .words("dictation voice speech apple server accuracy mixed languages")
         .switch(shell, "dictation-servers", on || shell.settings.dictation_consent, true, |this, on, window, cx| {
             if on {
                 this.settings.dictation_consent = true;

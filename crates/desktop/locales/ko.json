@@ -2528,6 +2528,7 @@
   "match.same": "위와 같|위와 동일|위의 것|같은 걸|같은 것으로|같은 번호|같은 메일",
   "match.past_endings": "습니다|어요|다",
   "match.past_not": "있",
+  "match.past_marks": "ᆻ",
   "match.accept_unsure": "않|안 |안해|안 해|말고|말아|마세요|하지 마|하지마|지 마|아직|보류|잠깐|나중|하면|되면|이면|으면",
   "match.accept_merge": "머지|병합",
   "match.accept_accept": "수락|승인",
