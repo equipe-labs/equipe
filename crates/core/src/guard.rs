@@ -198,6 +198,17 @@ struct Simple {
 /// loops and subshells opened up, a `sh -c '…'` read too. A heredoc's lines
 /// are its text, never commands.
 fn parse(line: &str) -> Vec<Simple> {
+    parsed(line)
+}
+
+/// The words of each simple command a shell line runs, as the guard reads
+/// it, a wrapper (`env`, `timeout`…) taken off — for measuring what members
+/// ran ([`crate::quality`]).
+pub fn commands(line: &str) -> Vec<Vec<String>> {
+    parsed(line).into_iter().map(|c| unwrapped(c.words)).collect()
+}
+
+fn parsed(line: &str) -> Vec<Simple> {
     let mut out = Vec::new();
     let mut depth = 0usize;
     parse_into(&without_heredocs(line), &mut depth, &mut out);

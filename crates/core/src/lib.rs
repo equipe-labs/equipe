@@ -41,6 +41,7 @@ pub mod mcp;
 pub mod metrics;
 pub mod permissions;
 pub mod plan;
+pub mod quality;
 pub mod mock;
 pub mod models;
 pub mod model_providers;
