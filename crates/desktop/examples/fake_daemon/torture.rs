@@ -295,7 +295,7 @@ async fn activity(session: SessionId, events: &broadcast::Sender<Event>, seconds
         "designer proposed T-64: Empty-state illustration set",
         "frontend handed in T-42 for your review · Checkout page payment method choice.",
     ] {
-        send(Event::Notice { session, text: news.into() });
+        send(Event::Notice { undo: None, session, text: news.into() });
     }
     stream(session, ACTIVITY, events, seconds).await;
 }

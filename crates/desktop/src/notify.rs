@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn a_decision_says_who_asks_and_how_many_and_opens_their_conversation() {
         let t = toasts(&[Alert::Decision { session: 3, member: "backend".into(), count: 2 }], "acme", true);
-        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend이(가) 2가지 결정을 기다려요", "acme", Go::Member(3)));
+        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend가 2가지 결정을 기다려요", "acme", Go::Member(3)));
     }
 
     #[test]
@@ -652,11 +652,11 @@ mod tests {
         let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
         let handed = |check| Alert::Browser { page: 7, session: Some(1), member: "pm".into(), site: "idmsa.apple.com".into(), check, why: Some(why.into()) };
         let t = toasts(&[handed(Some(HumanCheck::SignIn))], "acme", true);
-        assert_eq!(t[0].title, "pm이(가) 브라우저에서 로그인을 기다려요");
+        assert_eq!(t[0].title, "pm이 브라우저에서 로그인을 기다려요");
         assert_eq!(t[0].body, "idmsa.apple.com · 눌러서 앱의 브라우저 패널에서 해 주세요 · acme");
         assert_eq!(t[0].go, Go::Browser(7), "a click opens the panel on that tab");
         let t = toasts(&[handed(None)], "acme", true);
-        assert_eq!(t[0].title, "pm이(가) 브라우저에서 기다려요");
+        assert_eq!(t[0].title, "pm이 브라우저에서 기다려요");
         assert!(!t[0].body.contains("Umbriles"));
     }
 

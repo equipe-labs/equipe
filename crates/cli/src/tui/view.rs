@@ -404,7 +404,7 @@ impl Layouts {
 fn layout_key(agent: &Agent, width: usize, turns: u64) -> LayoutKey {
     let entries = agent.drawn();
     let last = entries.last().map_or(0, |entry| match entry.as_ref() {
-        Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
+        Entry::User { text } | Entry::Reply { text } | Entry::Note { text, .. } => text.len(),
         Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
@@ -1970,14 +1970,14 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                 }
             }
             // Other projects' talk, folded: one quiet line saying how much.
-            Entry::Note { text } if text.starts_with(super::app::FOLDED) => {
+            Entry::Note { text, .. } if text.starts_with(super::app::FOLDED) => {
                 let said: usize = text[super::app::FOLDED.len_utf8()..].parse().unwrap_or(0);
                 begin(Block::Note, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.push(Line::from(Span::styled(format!("── {} ──", t!("view.elsewhere", count = said)), theme.dim())));
             }
             // A ticket still waiting for the person: its asks one under another.
-            Entry::Note { text } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
+            Entry::Note { text, .. } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
                 let id = equipe_core::i18n::waiting_ticket(text).unwrap_or_default();
                 if let Some((_, title, asks)) = turns.iter().find(|(t, ..)| *t == id) {
                     begin(Block::Note, &mut lines, &mut last);
@@ -1985,7 +1985,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                     lines.extend(your_turn_lines(id, title, asks, theme, width));
                 }
             }
-            Entry::Note { text } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
+            Entry::Note { text, .. } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
                 Some(news) => {
                     begin(Block::News, &mut lines, &mut last);
                     lines.extend(news);
@@ -3406,7 +3406,7 @@ mod tests {
         assert!(shot.contains("The app is fine.") && shot.contains("2 at once"), "{shot}");
         // Scrolling moves the conversation shown.
         for i in 0..60 {
-            app.on_event(Event::Notice { session: 77, text: format!("line {i}") });
+            app.on_event(Event::Notice { undo: None, session: 77, text: format!("line {i}") });
         }
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 24), &Layouts::default());
         app.set_extent(laid.page, laid.conversation_max, laid.board_max);
@@ -3766,8 +3766,8 @@ mod tests {
         });
         app.on_event(Event::TextDelta { session: id, text: "T-8 is ready for you.".into() });
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
-        app.on_event(Event::Notice { session: id, text: "designer handed in T-8 for your review · Translations.".into() });
-        app.on_event(Event::Notice { session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "designer handed in T-8 for your review · Translations.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
         let shot = screen(&app, 140, 30);
         let lines: Vec<&str> = shot.lines().collect();
         let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("no {text:?} in:\n{shot}"));
@@ -3889,7 +3889,7 @@ mod tests {
             "Check the shots in `outputs/T-117/shots/` and listing.json; if they're fine, just say OK.".into(),
         ];
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t.clone() });
-        app.on_event(Event::Notice { session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
         app.flash = None;
         let shot = screen(&app, 140, 40);
         let lines: Vec<&str> = shot.lines().collect();

@@ -2332,7 +2332,7 @@ mod tests {
         at_work.project = Some("/code/site".into());
         model.tickets = vec![at_work, ticket(4, "todo", "backend")];
         let ask = remove_ask(&model, "site", "/code/site".into());
-        assert_eq!(ask.title, "site을(를) 스쿼드에서 뺄까요?");
+        assert_eq!(ask.title, "site를 스쿼드에서 뺄까요?");
         assert_eq!(ask.body.len(), 2, "what stays, and the one ticket at work: {:?}", ask.body);
         assert!(ask.destructive(), "its yes is red, and Enter doesn't say it");
         assert!(matches!(&ask.then, crate::sheet::Then::Send(c) if matches!(c[..], [equipe_core::protocol::Command::RemoveProject { .. }])));

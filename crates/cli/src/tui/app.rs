@@ -417,7 +417,7 @@ impl Agent {
             match part {
                 Part::Here(range) => out.extend(lines[range].iter().map(|(entry, _)| entry.clone())),
                 Part::Elsewhere { said, kept, .. } => {
-                    out.push(Cow::Owned(Entry::Note { text: format!("{FOLDED}{said}") }));
+                    out.push(Cow::Owned(Entry::Note { undo: None, text: format!("{FOLDED}{said}") }));
                     // The project's own news within it, after the fold.
                     for range in kept {
                         out.extend(lines[range].iter().map(|(entry, _)| entry.clone()));
@@ -443,7 +443,7 @@ impl Agent {
                     on = None;
                     continue;
                 }
-                Entry::Note { text } if text.starts_with("── T-") => {
+                Entry::Note { text, .. } if text.starts_with("── T-") => {
                     on = text["── T-".len()..].split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok());
                 }
                 _ => {}
@@ -614,7 +614,7 @@ impl Agent {
             let took = since.elapsed();
             if took >= Duration::from_secs(1) {
                 let at = clock_time();
-                self.transcript.push_local(Entry::Note { text: t!("app.worked", took = elapsed(took), at = at) });
+                self.transcript.push_local(Entry::Note { undo: None, text: t!("app.worked", took = elapsed(took), at = at) });
             }
         }
     }
@@ -3522,7 +3522,7 @@ pub fn latest_images(entries: &[Entry], base: &std::path::Path) -> Vec<String> {
         .iter()
         .rev()
         .filter_map(|e| match e {
-            Entry::Reply { text } | Entry::Note { text } => Some(text),
+            Entry::Reply { text } | Entry::Note { text, .. } => Some(text),
             _ => None,
         })
         .map(|text| markdown::local_images(text).iter().filter_map(|i| markdown::lexical(&i.path, base)).map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>())
@@ -3539,7 +3539,7 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
             Entry::Tool { tool, target, .. } => {
                 out.push_str(&format!("- {} {}\n", super::view::verb_word(tool_verb(tool)), target.as_deref().unwrap_or("")));
             }
-            Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
+            Entry::Note { text, .. } => out.push_str(&format!("_{text}_\n\n")),
             Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or(t!("app.md_whole_squad")))),
             Entry::Error { message, next } => {
                 out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
@@ -4475,7 +4475,7 @@ mod tests {
             Event::Thread { session: pm, project: Some("app".into()) },
             Event::UserMessage { session: pm, text: "about the app".into() },
             Event::Thread { session: pm, project: Some("site".into()) },
-            Event::Notice { session: pm, text: "── T-1 · Research — on branch b".into() },
+            Event::Notice { undo: None, session: pm, text: "── T-1 · Research — on branch b".into() },
             Event::UserMessage { session: pm, text: "ticket work".into() },
             Event::Thread { session: pm, project: None },
             Event::UserMessage { session: pm, text: "after".into() },
@@ -4520,7 +4520,7 @@ mod tests {
         let drawn = |app: &App| -> Vec<String> {
             app.viewed().unwrap().drawn().iter().filter_map(|e| match e.as_ref() {
                 Entry::User { text } => Some(text.clone()),
-                Entry::Note { text } if text.starts_with(FOLDED) => Some(format!("folded {}", &text[FOLDED.len_utf8()..])),
+                Entry::Note { text, .. } if text.starts_with(FOLDED) => Some(format!("folded {}", &text[FOLDED.len_utf8()..])),
                 _ => None,
             }).collect()
         };
@@ -4796,7 +4796,7 @@ mod tests {
         let base = Path::new("/w/t2");
         let entries = [
             Entry::Reply { text: "![old](/w/old.png)".into() },
-            Entry::Note { text: "![배치도](images/site plan.png)\n![평면도](/w/T-2 갤러리/plan.png)".into() },
+            Entry::Note { undo: None, text: "![배치도](images/site plan.png)\n![평면도](/w/T-2 갤러리/plan.png)".into() },
             Entry::Reply { text: "no pictures here".into() },
             Entry::User { text: "![mine](/w/mine.png)".into() },
         ];
@@ -5249,7 +5249,7 @@ mod tests {
         app.agents[0].working_since = Some(Instant::now() - Duration::from_secs(125));
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
         assert!(app.agents[0].working_since.is_none());
-        assert!(matches!(app.agents[0].transcript.entries().last(), Some(Entry::Note { text }) if text.starts_with("─ worked 2m 05s")));
+        assert!(matches!(app.agents[0].transcript.entries().last(), Some(Entry::Note { text, .. }) if text.starts_with("─ worked 2m 05s")));
     }
 
     #[test]

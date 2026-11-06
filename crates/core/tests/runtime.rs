@@ -1045,6 +1045,34 @@ async fn at_its_desk_a_member_reads_every_project_and_gets_only_equipes_tools() 
 }
 
 #[tokio::test]
+async fn what_the_person_sends_from_their_phone_says_so_and_only_that() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let cwd = scratch("cwd");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+
+    // From the phone: the member is told it is read there…
+    let from_phone = Command::Submit { session: 1, text: "how is the site?".into(), about: None };
+    handle.send(Command::OnPhone { command: Box::new(from_phone) });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    // …the person sees only their words,
+    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "how is the site?")), "{seen:#?}");
+    let prompt = arg(&calls(&recorded)[0], "-p").unwrap().to_owned();
+    assert!(prompt.starts_with(equipe_core::roles::PHONE_MARK), "{prompt}");
+    assert!(prompt.ends_with("how is the site?"), "{prompt}");
+
+    // …and from the computer again, no mark: the screen that last spoke wins.
+    handle.send(Command::Submit { session: 1, text: "and the app?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let prompt = arg(&calls(&recorded)[1], "-p").unwrap().to_owned();
+    assert!(!prompt.contains(equipe_core::roles::PHONE_MARK), "{prompt}");
+    // The charter says what the mark asks of every member.
+    let first = &calls(&recorded)[0];
+    let charter = arg(first, "--append-system-prompt").unwrap();
+    assert!(charter.contains("When a message comes marked as sent from the person's phone"), "{charter}");
+}
+
+#[tokio::test]
 async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     let (claude, recorded) = recording_claude(&answering("Switching to Postgres."));
     let cwd = scratch("cwd");
@@ -1057,7 +1085,7 @@ async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     // …and every screen on the PM sees it happen,
     assert!(
-        seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text == "↪ You → backend: use Postgres")),
+        seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text == "↪ You → backend: use Postgres")),
         "{seen:#?}"
     );
     // without the PM spending a turn on it.
@@ -1777,7 +1805,7 @@ async fn a_restarted_runtime_resumes_a_member_on_its_ticket() {
     assert_eq!(snapshot.tickets[0].status, TicketStatus::InProgress);
     // It picks the ticket up again by itself: the squad keeps working through a restart.
     assert_eq!(frontend.state, SessionState::Working);
-    assert!(frontend.recent.iter().any(|e| matches!(e, Entry::Note { text } if text.contains("picking T-1 up again"))), "{:?}", frontend.recent);
+    assert!(frontend.recent.iter().any(|e| matches!(e, Entry::Note { text, .. } if text.contains("picking T-1 up again"))), "{:?}", frontend.recent);
 }
 
 #[tokio::test]
@@ -2535,7 +2563,7 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     assert_eq!(verdict["behavior"], "allow");
     assert_eq!(verdict["updatedInput"]["command"], "npm install react");
     let seen = until(&mut events, |e| matches!(e, Event::ApprovalResolved { .. })).await;
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 2, text } if text.starts_with("✓ You always allow Bash(npm install:*)"))));
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 2, text } if text.starts_with("✓ You always allow Bash(npm install:*)"))));
     assert_eq!(Journal::for_squad(&home, "acme").unwrap().allowed().unwrap(), ["Bash(npm install:*)"]);
 
     // The same kind of thing doesn't ask again; something else does.
@@ -2673,11 +2701,11 @@ async fn at_its_desk_a_member_writes_the_squads_home_each_change_saved_and_taken
     std::fs::write(folder.join("notes/mine.md"), "mine\n").unwrap();
     handle.send(Command::Submit { session: 1, text: "세금 마감일 메모해줘".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("✎"))).await;
-    assert!(
-        seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text }
-            if text == "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back")),
-        "{seen:#?}"
-    );
+    let undo = seen.iter().find_map(|e| match e {
+        Event::Notice { undo, session: 1, text } if text == "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back" => undo.clone(),
+        _ => None,
+    });
+    let Some(undo) = undo else { panic!("the line names the change it tells of: {seen:#?}") };
 
     let call = &calls(&recorded)[0];
     assert_eq!(arg(call, "--permission-mode"), Some("acceptEdits"), "in auto it writes its home on its own");
@@ -2691,9 +2719,25 @@ async fn at_its_desk_a_member_writes_the_squads_home_each_change_saved_and_taken
         ]
     );
 
-    // The person takes it back; their own note stays.
-    squad_home::undo(&folder, 1).unwrap();
+    assert_eq!(undo, changes[0].id);
+
+    // The person takes it back from the line — a phone's button; their own note stays.
+    handle.send(Command::UndoHomeChange { squad: "acme".into(), session: 1, change: undo.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("Taken back"))).await;
+    let Some(Event::Notice { undo: Some(again), text, .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(text, "Taken back: saved notes/tax-deadline.md · you can take this back too");
     assert!(!folder.join("notes/tax-deadline.md").exists() && folder.join("notes/mine.md").exists());
+    // The taking back is the person's own change, and can be taken back too.
+    assert_eq!(&squad_home::changes(&folder, 1).unwrap()[0].id, again);
+    handle.send(Command::UndoHomeChange { squad: "acme".into(), session: 1, change: again.clone() });
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("Taken back"))).await;
+    assert!(folder.join("notes/tax-deadline.md").exists());
+    // Never a revision equipe didn't tell of, nor another squad's.
+    handle.send(Command::UndoHomeChange { squad: "acme".into(), session: 1, change: "HEAD~1".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Error { message, .. }) if message.starts_with("The change couldn't be taken back")), "{seen:#?}");
+    handle.send(Command::UndoHomeChange { squad: "beta".into(), session: 1, change: undo });
+    assert!(folder.join("notes/tax-deadline.md").exists());
 }
 
 fn squads_home(home: &Path) -> PathBuf {
@@ -2997,7 +3041,7 @@ async fn what_one_member_learns_the_next_one_knows_and_the_person_has_the_last_w
     assert!(!saved.is_error, "{}", saved.text);
     let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("✎"))).await;
     assert!(
-        seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text }
+        seen.iter().any(|e| matches!(e, Event::Notice { undo: Some(_), session: 1, text }
             if text == "✎ pm remembered for the squad: 사람은 매년 5월에 종합소득세를 직접 신고한다 · /memory shows what the squad knows")),
         "{seen:#?}"
     );
@@ -3694,7 +3738,7 @@ async fn a_claude_member_set_to_a_providers_model_moves_to_codexs_agent_on_it_at
     handle.send(Command::SetModel { session: 1, model: model.clone() });
     let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { engine: Engine::Codex, .. } | Event::Error { .. })).await;
     // Told where it goes, on a card the person can undo.
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("qwen3-coder:30b") && text.contains("Ollama") && text.contains("next ticket"))), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("qwen3-coder:30b") && text.contains("Ollama") && text.contains("next ticket"))), "{seen:#?}");
     assert!(seen.iter().any(|e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.moves.iter().any(|m| m.member == "frontend" && m.to == Engine::Codex && m.model.as_deref() == Some(model.as_str())))), "{seen:#?}");
     let Some(Event::SessionStarted { session, engine: Engine::Codex, model: Some(on), member, .. }) = seen.last() else { panic!("{seen:#?}") };
     assert_ne!(*session, 1, "started again on the other engine");
@@ -3903,7 +3947,7 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
         seen.iter().any(|e| matches!(e, Event::BrowserControl { lane, by: Some(by), why: Some(w), .. } if lane == "acme/pm" && by == "person" && w == why)),
         "every screen is told: in the person's hands, and what for: {seen:?}"
     );
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains(why) && text.contains("browser panel"))), "{seen:?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains(why) && text.contains("browser panel"))), "{seen:?}");
     // Nothing comes up on the daemon's own screen.
     assert!(!Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
     let sent = || std::fs::read_to_string(&ops).unwrap_or_default();
@@ -3923,7 +3967,7 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert!(!seen.iter().any(|e| matches!(e, Event::UserMessage { .. })), "never the person's words: {seen:?}");
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("gave the browser back"))), "{seen:?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("gave the browser back"))), "{seen:?}");
     let all = calls(&recorded);
     assert_eq!(all.len(), before + 1, "one turn, without the person typing a word");
     let prompt = arg(all.last().unwrap(), "-p").unwrap();
@@ -3931,7 +3975,7 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
 
     // The person closes a tab of pm's: pm's conversation says so.
     handle.send(Command::BrowserCloseTab { page: 9_000_001 });
-    until(&mut events, |e| matches!(e, Event::Notice { session: 1, text } if text.contains("closed this browser tab") && text.contains("appstoreconnect"))).await;
+    until(&mut events, |e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("closed this browser tab") && text.contains("appstoreconnect"))).await;
 
     // That screen gone and none other attached: the window on this Mac, as before.
     handle.browser_hub().await.unwrap().screen(false);
@@ -3995,7 +4039,7 @@ fn notice_to(events: &[Event], session: u64) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::Notice { session: s, text } if *s == session => Some(text.clone()),
+            Event::Notice { undo: None, session: s, text } if *s == session => Some(text.clone()),
             _ => None,
         })
         .collect()
@@ -4077,7 +4121,7 @@ async fn the_persons_edits_are_checked_then_told_to_the_pm_and_the_members_conce
 
     // Several at once: each changed, the PM told once for all.
     handle.send(Command::EditTickets { squad: "acme".into(), tickets: vec![1, 2], changes: TicketEdit { priority: Some(Priority::Low), ..Default::default() } });
-    let batch = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text } if text.starts_with("You changed 2"))).await;
+    let batch = until(&mut events, |e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.starts_with("You changed 2"))).await;
     assert_eq!(notice_to(&batch, 1), ["You changed 2 tickets: priority 2"], "one line, not one a ticket: {batch:#?}");
     assert_eq!(ticket_changed(&batch).iter().filter(|t| t.priority == Priority::Low).count(), 2);
 
@@ -4802,7 +4846,7 @@ async fn a_review_that_cant_run_says_why_and_never_the_key() {
     let (base, _) = mock_token_factory(401, r#"{"error":"invalid key sk-mock-not-a-real-key"}"#.into()).await;
     let (handle, mut events, _home) = hand_in_reviewed_at(&base).await;
     let said = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("Nemotron"))).await;
-    let Some(Event::Notice { session, text }) = said.last() else { panic!() };
+    let Some(Event::Notice { undo: None, session, text }) = said.last() else { panic!() };
     assert_eq!(*session, 2, "in the conversation of the member who handed it in");
     assert_eq!(text, "Nemotron couldn't review T-1: Nebius Token Factory didn't accept the API key");
     assert!(!said.iter().any(|e| format!("{e:?}").contains("sk-mock")));

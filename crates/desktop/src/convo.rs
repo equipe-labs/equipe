@@ -311,7 +311,7 @@ impl Convo {
             }
             Event::Compacted { .. } => {
                 self.compact = Some(Compact::Done { at: now });
-                self.transcript.push_local(Entry::Note { text: COMPACTED.to_string() });
+                self.transcript.push_local(Entry::Note { undo: None, text: COMPACTED.to_string() });
             }
             Event::CompactFailed { .. } => self.compact = Some(Compact::Failed),
             Event::TurnEnded { outcome, .. } => {
@@ -369,7 +369,7 @@ impl Convo {
         let Some((since, text)) = self.thinking.take() else { return };
         let secs = now.saturating_duration_since(since).as_secs().max(1);
         self.thoughts.push(text);
-        self.transcript.push_local(Entry::Note { text: format!("{THOUGHT}{}:{secs}", self.thoughts.len() - 1) });
+        self.transcript.push_local(Entry::Note { undo: None, text: format!("{THOUGHT}{}:{secs}", self.thoughts.len() - 1) });
     }
 
     /// Since when the latest call has run, while it does.
@@ -403,7 +403,7 @@ impl Convo {
     /// Whether its conversation holds work on `ticket`, to show.
     pub fn has_work_on(&self, ticket: TicketId) -> bool {
         let header = format!("── T-{ticket} ");
-        self.transcript.entries().iter().any(|e| matches!(e, Entry::Note { text } if text.starts_with(&header)))
+        self.transcript.entries().iter().any(|e| matches!(e, Entry::Note { text, .. } if text.starts_with(&header)))
     }
 
     /// What the person said last in it, its first line.
@@ -437,7 +437,7 @@ impl Convo {
         if let Some(since) = self.working_since.take() {
             let took = now.saturating_duration_since(since);
             if took >= Duration::from_secs(1) {
-                self.transcript.push_local(Entry::Note { text: format!("{WORKED}{}:{}@{}", took.as_secs(), at.hm(), crate::state::now_unix()) });
+                self.transcript.push_local(Entry::Note { undo: None, text: format!("{WORKED}{}:{}@{}", took.as_secs(), at.hm(), crate::state::now_unix()) });
             }
         }
     }
@@ -469,7 +469,7 @@ impl Convo {
                     on = None;
                     continue;
                 }
-                Entry::Note { text } if text.starts_with("── T-") => {
+                Entry::Note { text, .. } if text.starts_with("── T-") => {
                     on = text["── T-".len()..].split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok());
                 }
                 _ => {}
@@ -966,8 +966,8 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
                 blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });
                 replied = true;
             }
-            Entry::Note { text } if text.starts_with(COMPACTED) => blocks.push(Block::Summarized),
-            Entry::Note { text } => match (thought_of(text), worked_of(text)) {
+            Entry::Note { text, .. } if text.starts_with(COMPACTED) => blocks.push(Block::Summarized),
+            Entry::Note { text, .. } => match (thought_of(text), worked_of(text)) {
                 (Some((n, secs)), _) => blocks.push(Block::Thought { n, secs, text: String::new() }),
                 (None, Some(worked)) => match blocks.last_mut() {
                     Some(Block::Reply { worked: slot, .. }) => *slot = Some(worked),
@@ -1375,10 +1375,10 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::Notice { session: 1, text: "backend handed in T-118 for your review · 주문 API.".into() },
-                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
-                Event::Notice { session: 1, text: "plain".into() },
-                Event::Notice { session: 1, text: "pm이(가) T-9을(를) 제안했습니다: 로그인".into() },
+                Event::Notice { undo: None, session: 1, text: "backend handed in T-118 for your review · 주문 API.".into() },
+                Event::Notice { undo: None, session: 1, text: "You accepted T-58 · 헤더.".into() },
+                Event::Notice { undo: None, session: 1, text: "plain".into() },
+                Event::Notice { undo: None, session: 1, text: "pm이(가) T-9을(를) 제안했습니다: 로그인".into() },
             ],
         );
         let blocks = c.blocks();
@@ -1396,10 +1396,10 @@ mod tests {
             &mut c,
             &[
                 // From a daemon that spoke English, popping the window on its own Mac.
-                Event::Notice { session: 1, text: format!("🖥 pm's browser comes up on this Mac's screen: {why}") },
-                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
+                Event::Notice { undo: None, session: 1, text: format!("🖥 pm's browser comes up on this Mac's screen: {why}") },
+                Event::Notice { undo: None, session: 1, text: "You accepted T-58 · 헤더.".into() },
                 // Into the panel, worded in Korean.
-                Event::Notice { session: 1, text: "🖥 pm의 브라우저가 브라우저 패널에 열립니다: 2단계 인증 코드를 입력해 주세요".into() },
+                Event::Notice { undo: None, session: 1, text: "🖥 pm의 브라우저가 브라우저 패널에 열립니다: 2단계 인증 코드를 입력해 주세요".into() },
             ],
         );
         let mut blocks = c.blocks();
@@ -1433,9 +1433,9 @@ mod tests {
         feed(
             &mut c,
             &[
-                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
-                Event::Notice { session: 1, text: "T-117 waits for you — ios needs something only you can do · 앱스토어 제출.".into() },
-                Event::Notice { session: 1, text: "You accepted T-59 · 푸터.".into() },
+                Event::Notice { undo: None, session: 1, text: "You accepted T-58 · 헤더.".into() },
+                Event::Notice { undo: None, session: 1, text: "T-117 waits for you — ios needs something only you can do · 앱스토어 제출.".into() },
+                Event::Notice { undo: None, session: 1, text: "You accepted T-59 · 푸터.".into() },
             ],
         );
         let blocks = c.blocks();
@@ -1475,7 +1475,7 @@ mod tests {
                 Event::UserMessage { session: 1, text: "whole squad".into() },
                 Event::Thread { session: 1, project: Some("site".into()) },
                 Event::UserMessage { session: 1, text: "about the site".into() },
-                Event::Notice { session: 1, text: "── T-4 · Research".into() },
+                Event::Notice { undo: None, session: 1, text: "── T-4 · Research".into() },
                 Event::UserMessage { session: 1, text: "ticket work".into() },
                 Event::Thread { session: 1, project: None },
                 Event::UserMessage { session: 1, text: "after".into() },
@@ -1501,7 +1501,7 @@ mod tests {
             &[
                 about(Some("app")), say("app one"), tool("Read", "/work/site/a.rs"), reply("app answer"), end.clone(),
                 about(Some("site")), say("site one"), reply("site answer"), end.clone(),
-                Event::Notice { session: 1, text: "frontend이(가) T-4을(를) 검토해 달라고 넘겼습니다 · 히어로.".into() },
+                Event::Notice { undo: None, session: 1, text: "frontend이(가) T-4을(를) 검토해 달라고 넘겼습니다 · 히어로.".into() },
                 about(None), say("everyone"), reply("squad answer"), end.clone(),
                 about(Some("app")), say("app two"), reply("app again"), end,
             ],
@@ -1660,10 +1660,10 @@ mod tests {
             &mut c,
             &[
                 Event::Thread { session: 1, project: Some("site".into()) },
-                Event::Notice { session: 1, text: "── T-1 · Hero".into() },
+                Event::Notice { undo: None, session: 1, text: "── T-1 · Hero".into() },
                 Event::Thread { session: 1, project: Some("app".into()) },
-                Event::Notice { session: 1, text: "── T-2 · Login".into() },
-                Event::Notice { session: 1, text: "plain".into() },
+                Event::Notice { undo: None, session: 1, text: "── T-2 · Login".into() },
+                Event::Notice { undo: None, session: 1, text: "plain".into() },
             ],
         );
         let notes: Vec<String> = c.blocks().into_iter().filter_map(|b| if let Block::Note(t) = b { Some(t) } else { None }).collect();

@@ -2496,7 +2496,7 @@ mod tests {
         };
         model.apply(tick("in_progress", None), T0);
         model.apply(tick("waiting", Some("Waiting on you:\n- [ ] 토큰을 알려 주세요.\n- [ ] 일정을 정해 주세요.")), T0);
-        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend이(가) 2가지를 물어요"), "no asks run together, no keys to learn");
+        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend가 2가지를 물어요"), "no asks run together, no keys to learn");
         // Answered on another screen: the card learns it as the ticket moves.
         let revision = model.revision;
         model.unix = 1_000;
@@ -2637,7 +2637,7 @@ mod tests {
         working.assignee = Some("frontend".into());
         model.tickets = vec![working, ticket(8, "todo", None)];
         model.members[1].ticket = Some(7);
-        model.apply(Update::Event(Event::Notice { session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
+        model.apply(Update::Event(Event::Notice { undo: None, session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
         model.apply(Update::Event(Event::UserMessage { session: 2, text: "hero work".into() }), T0);
         assert_eq!(model.team(), [1, 2], "the PM heads the team");
         // A ticket at work: its member's work on it, and what is typed steers it.

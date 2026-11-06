@@ -215,6 +215,23 @@ pub fn undo(dir: &Path, nth: usize) -> Result<Change, String> {
     let Some(target) = recent.get(nth.max(1) - 1).cloned() else {
         return Err("There is no such change to take back.".into());
     };
+    take_back(dir, &target)
+}
+
+/// How far back a change may be named to take it back.
+const UNDO_REACH: usize = 200;
+
+/// Take back the change `id` — one of the latest [`changes`] lists, never any
+/// other revision — as [`undo`] does. Returns the change taken back and the
+/// person's change that took it back.
+pub fn undo_change(dir: &Path, id: &str) -> Result<(Change, Change), String> {
+    save_persons(dir)?;
+    let target = changes(dir, UNDO_REACH)?.into_iter().find(|c| c.id == id).ok_or("There is no such change to take back.")?;
+    let undo = take_back(dir, &target)?;
+    Ok((target, undo))
+}
+
+fn take_back(dir: &Path, target: &Change) -> Result<Change, String> {
     if git(dir, &["revert", "--no-commit", &target.id]).is_err() {
         let _ = git(dir, &["revert", "--abort"]);
         let _ = git(dir, &["reset", "-q", "--hard", "HEAD"]);

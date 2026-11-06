@@ -105,7 +105,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
         if !accepted.is_empty() {
             let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
             let text = say!(self, "notice.pm_accepted", ids = ids, checked = checked);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
         }
         let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
         let mut reply = if accepted.is_empty() {

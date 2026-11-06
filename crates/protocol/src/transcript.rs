@@ -133,26 +133,27 @@ impl Transcript {
 
         let new = match event {
             Event::SessionStarted { workspace: Some(ws), .. } => {
-                Some(Entry::Note { text: format!("{}{}{}", notes::WORKING_ON, ws.branch, notes::WORKING_REST) })
+                Some(Entry::Note { undo: None, text: format!("{}{}{}", notes::WORKING_ON, ws.branch, notes::WORKING_REST) })
             }
             // A message sent while it worked, where it was read.
             Event::UserMessage { text, .. } | Event::Steered { text, .. } => Some(Entry::User { text: text.clone() }),
-            Event::Notice { text, .. } => Some(Entry::Note { text: text.clone() }),
+            Event::Notice { text, undo, .. } => Some(Entry::Note { text: text.clone(), undo: undo.clone() }),
             Event::Thread { project, .. } => Some(Entry::Thread { project: project.clone() }),
             Event::WorkStarted { ticket, title, workspace, .. } => Some(Entry::Note {
+                undo: None,
                 text: match workspace {
                     Some(ws) => format!("── T-{ticket} · {title}{}{}", notes::ON_BRANCH, ws.branch),
                     None => format!("── T-{ticket} · {title}"),
                 },
             }),
             Event::ToolUse { tool, target, label, background, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None, label: label.clone(), background: *background }),
-            Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { text: notes::STOPPED.into() }),
+            Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { undo: None, text: notes::STOPPED.into() }),
             Event::TurnEnded { outcome: TurnOutcome::Incomplete, .. } => {
-                Some(Entry::Note { text: notes::ENDED_EARLY.into() })
+                Some(Entry::Note { undo: None, text: notes::ENDED_EARLY.into() })
             }
             Event::Error { message, next, .. } => Some(Entry::Error { message: message.clone(), next: next.clone() }),
             Event::BranchLanded { branch, stat, .. } => Some(Entry::Landed { branch: branch.clone(), stat: stat.clone() }),
-            Event::NothingChanged { .. } => Some(Entry::Note { text: notes::NOTHING_CHANGED.into() }),
+            Event::NothingChanged { .. } => Some(Entry::Note { undo: None, text: notes::NOTHING_CHANGED.into() }),
             _ => None,
         };
         // The reply ends where a line comes after it, or the turn ends. What
@@ -290,7 +291,7 @@ pub mod scope {
             // The harness's turns (a background task ending) are not said by anyone.
             Entry::User { text } => !crate::harness::only_harness(text),
             Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
-            Entry::Note { text } => !text.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
+            Entry::Note { text, .. } => !text.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
             Entry::Tool { .. } | Entry::Thread { .. } => false,
         }
     }
@@ -372,7 +373,7 @@ pub fn markdown(entries: &[Entry], heading: &str) -> String {
             Entry::Tool { tool, target, .. } => {
                 out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
             }
-            Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
+            Entry::Note { text, .. } => out.push_str(&format!("_{text}_\n\n")),
             Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or("The whole squad"))),
             Entry::Error { message, next } => {
                 out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
@@ -445,7 +446,7 @@ mod tests {
 
         #[test]
         fn news_is_about_its_ticket_and_the_turn_goes_on_after_it() {
-            let news = Entry::Note { text: "frontend handed in T-4".into() };
+            let news = Entry::Note { undo: None, text: "frontend handed in T-4".into() };
             let lines = vec![about(Some("app")), user("go"), reply("on it"), about(Some("site")), news, about(Some("app")), reply("done")];
             let s = scope::of(&lines);
             assert_eq!(s[4].as_deref(), Some("site"));
@@ -490,7 +491,7 @@ mod tests {
 
         #[test]
         fn folds_with_only_the_projects_news_between_are_one() {
-            let news = |t: &str| Entry::Note { text: t.into() };
+            let news = |t: &str| Entry::Note { undo: None, text: t.into() };
             let lines = vec![
                 about(Some("app")), user("a1"), reply("a2"),
                 about(Some("site")), news("T-4 handed in"),
@@ -538,7 +539,7 @@ mod tests {
 
         #[test]
         fn a_fold_with_nothing_said_is_left_out() {
-            let lines = vec![about(Some("site")), tool(), Entry::Note { text: "\u{E001}3:10:00@1".into() }, about(Some("app")), user("a")];
+            let lines = vec![about(Some("site")), tool(), Entry::Note { undo: None, text: "\u{E001}3:10:00@1".into() }, about(Some("app")), user("a")];
             let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(scope::of(&lines)).collect();
             assert_eq!(scope::slice(&pairs, "app", false), vec![Part::Here(3..5)]);
         }
@@ -614,7 +615,7 @@ mod tests {
         // A line between ends it: a message read mid-turn, news.
         let mut t = Transcript::default();
         t.apply(&delta("first"));
-        t.apply(&Event::Notice { session: 1, text: "frontend handed in T-4".into() });
+        t.apply(&Event::Notice { undo: None, session: 1, text: "frontend handed in T-4".into() });
         t.apply(&delta("second"));
         assert_eq!(t.entries().len(), 3);
     }
@@ -700,7 +701,7 @@ mod tests {
         let mut t = Transcript::default();
         t.apply(&delta("partial"));
         let done = t.apply(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Interrupted, usage: None });
-        assert_eq!(done, vec![Entry::Reply { text: "partial".into() }, Entry::Note { text: "Stopped.".into() }]);
+        assert_eq!(done, vec![Entry::Reply { text: "partial".into() }, Entry::Note { undo: None, text: "Stopped.".into() }]);
     }
 
     #[test]
@@ -715,8 +716,8 @@ mod tests {
     #[test]
     fn a_notice_is_a_note() {
         let mut t = Transcript::default();
-        let done = t.apply(&Event::Notice { session: 1, text: "↪ You → qa: check it".into() });
-        assert_eq!(done, vec![Entry::Note { text: "↪ You → qa: check it".into() }]);
+        let done = t.apply(&Event::Notice { undo: None, session: 1, text: "↪ You → qa: check it".into() });
+        assert_eq!(done, vec![Entry::Note { undo: None, text: "↪ You → qa: check it".into() }]);
     }
 
     #[test]
@@ -770,7 +771,7 @@ mod tests {
         #[test]
         fn a_screens_own_line_can_carry_the_time_it_was_said() {
             let mut t = Transcript::default();
-            t.push_local(Entry::Note { text: "help".into() });
+            t.push_local(Entry::Note { undo: None, text: "help".into() });
             t.push_local_at(Entry::User { text: "taken back".into() }, Some(77));
             assert_eq!(t.times(), &[None, Some(77)]);
         }

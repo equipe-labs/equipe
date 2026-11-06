@@ -980,7 +980,7 @@ fn on(mut info: SessionInfo, ticket: u32, project: &str, title: &str, working: b
     info.work = Some(WorkInfo { ticket, project: repo(project), workspace: None });
     info.state = if working { SessionState::Working } else { SessionState::Ready };
     info.recent = vec![
-        Entry::Note { text: format!("── T-{ticket} · {title} — on branch equipe/t-{ticket}") },
+        Entry::Note { undo: None, text: format!("── T-{ticket} · {title} — on branch equipe/t-{ticket}") },
         Entry::User { text: format!("Please start T-{ticket}.") },
         Entry::Reply { text: "Sure, I'll look at the structure first. I'll reuse the existing components and write the tests first.".into() },
         Entry::Tool { tool: tool.0.into(), target: Some(if tool.0 == "Bash" { tool.1.to_owned() } else { format!("{}/{}", repo(project).display(), tool.1) }), outcome: None, label: None, background: false },
@@ -1164,7 +1164,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: reading::REPLY.into() });
                         }
                         if pictures::on() {
-                            history.push(Entry::Note { text: pictures::NEWS.into() });
+                            history.push(Entry::Note { undo: None, text: pictures::NEWS.into() });
                         }
                         if replies::on() {
                             history.extend(replies::history());
@@ -1177,7 +1177,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         if browser::handover() {
                             history.push(Entry::User { text: "Change the EU DSA trader status in App Store Connect".into() });
                             history.push(Entry::Reply { text: "My browser isn't signed in to App Store Connect, so you'll need to sign in first.".into() });
-                            history.push(Entry::Note { text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
+                            history.push(Entry::Note { undo: None, text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
                         }
                         // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
                         // long gone, for the tickets' cards on the pointer.
@@ -1187,8 +1187,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: format!("T-42 is waiting for review. T-117 is your turn, and the old T-999 is gone.{pictures}") });
                         }
                         if let Some(how) = your_turn() {
-                            history.push(Entry::Note { text: "frontend handed in T-63 for your review · Competitor onboarding research.".into() });
-                            history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · App Store submission.".into() });
+                            history.push(Entry::Note { undo: None, text: "frontend handed in T-63 for your review · Competitor onboarding research.".into() });
+                            history.push(Entry::Note { undo: None, text: "T-117 waits for you — frontend needs something only you can do · App Store submission.".into() });
                             if how == "elsewhere" {
                                 let events = events.clone();
                                 tokio::spawn(async move {
@@ -1679,7 +1679,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     && browser::handover()
                                     && lane == browser::PM
                                 {
-                                    let _ = events.send(Event::Notice { session: 1, text: "🖐 Handed the browser back.".into() });
+                                    let _ = events.send(Event::Notice { undo: None, session: 1, text: "🖐 Handed the browser back.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
                                 // A card confirmed: what the board's buttons send, run as the board runs them.
@@ -1734,7 +1734,7 @@ fn scoped_history() -> Vec<Entry> {
         read("app", "src/onboarding.tsx"),
         reply("Sure — to match the **T-60** draft, I'll change the first screen's title to \"Where your team works\" and cut the buttons down to one, \"Get started\"."),
         about(Some("web")),
-        Entry::Note { text: "frontend handed in T-47 for your review · Product detail page image gallery.".into() },
+        Entry::Note { undo: None, text: "frontend handed in T-47 for your review · Product detail page image gallery.".into() },
         user("How far along is the product detail gallery?"),
         read("web", "src/gallery.tsx"),
         read("web", "src/gallery.test.tsx"),

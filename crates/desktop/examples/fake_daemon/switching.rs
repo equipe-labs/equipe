@@ -185,7 +185,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         }
         Command::ApplyEngineProposal { id, .. } => {
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: true });
-            let _ = events.send(Event::Notice { session: 1, text: "Moving them — backend and frontend each switch from their next ticket".into() });
+            let _ = events.send(Event::Notice { undo: None, session: 1, text: "Moving them — backend and frontend each switch from their next ticket".into() });
         }
         Command::DismissEngineProposal { id, .. } | Command::UndoEngineProposal { id, .. } => {
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: false });

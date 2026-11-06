@@ -199,6 +199,20 @@ the routine. The snapshot's `idle_wake_hours` is how long an empty board waits b
 woken (0: never; absent from an older daemon); it changes with `idle_wake_changed` `{ "squad",
 "hours" }`. Setting it is the terminal's and the desktop's, not a device's.
 
+### Taking back a change to the squad's folder
+
+When a member saves a file in the squad's folder or a fact in its memory, its conversation gets a
+`notice` whose `undo` names that change: `{ "session", "text", "undo": "<change id>" }` — the
+line the terminal reads as "✎ pm saved notes/a.md in the squad's folder · /home undo takes it
+back". Every other notice has no `undo`. A screen may put a button on the line; it sends
+`undo_home_change` `{ "squad", "session", "change" }`, with the notice's `session` and `undo`.
+No Face ID: taking back is itself a change, and can be taken back the same way. The daemon
+takes it back as `/home undo` does and says so in that conversation: a `notice` "Taken back:
+<what> · you can take this back too", whose `undo` is the new change; or an `error` "The change
+couldn't be taken back: …" when later changes built on it, or it is not one of the folder's
+latest 200 changes (an arbitrary revision never is). A `session` not of that squad is ignored.
+The snapshot's and `conversation_back`'s `note` lines keep `undo` too.
+
 ### Accepting in words, confirmed on a card
 
 When the person says in words that they accept, merge or send back handed-in work ("accept them all",
@@ -450,7 +464,7 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
   after the compaction, or a memo after the turn): nothing is lost.
 
 The snapshot's sessions carry `recent`, the latest lines oldest first, each `{ "kind", … }`:
-`user` / `reply` `{ "text" }`, `tool` `{ "tool", "target", "outcome"? }`, `note` `{ "text" }`,
+`user` / `reply` `{ "text" }`, `tool` `{ "tool", "target", "outcome"? }`, `note` `{ "text", "undo"? }`,
 `error` `{ "message", "next" }`, `landed` `{ "branch", "stat" }` and `thread` `{ "project" }`
 (lines before any `thread` are about the whole squad). `recent_at`, one per line in the same
 order, says when each was said in unix seconds — a message when it came, a reply when it was
@@ -474,7 +488,7 @@ screen that watched saw:
   `suggestion`, `browser_frame`, `visuals_rendered` — leave it open: a steer sent while the member writes
   doesn't cut its answer; where it is read (`steered`) the reply so far ends and the steer
   follows it.
-- Lines: `user_message` and `steered` → `user`; `notice` → `note`; `thread` → `thread`;
+- Lines: `user_message` and `steered` → `user`; `notice` → `note` (with its `undo`); `thread` → `thread`;
   `tool_use` → `tool` (its `tool_result` sets `outcome` on the latest open call of the same
   `tool` and `target`); `error` → `error`; `branch_landed` → `landed`; `nothing_changed` → note
   `No files changed, so no branch was kept.`; `turn_ended` `interrupted` → note `Stopped.`,
@@ -696,7 +710,8 @@ The daemon follows a device like one more screen, with less reach than the termi
   `metrics.summary` (the project's numbers, of a squad it follows: see The project's numbers), and the commands `submit`, `interrupt`, `send_now`, `stop_command`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
   `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
-  `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`, `focus`, `refresh`,
+  `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`,
+  `undo_home_change` (see Taking back a change to the squad's folder), `focus`, `refresh`,
   `design`, `engines` (where the engines stand; never signing one in or out).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
@@ -713,6 +728,11 @@ The daemon follows a device like one more screen, with less reach than the termi
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a
   screen for now).
 - `decide` with `always` counts as `allow`: from a phone a request is allowed once.
+- What the person sends from a phone (`submit`, `send_now`, `answer_questions`) reaches the
+  member marked as sent from a phone, and every member's charter says to answer such a message
+  for a small screen: the answer and what the person must do first, short lists rather than
+  wide tables, paths and commands only when needed, detail after or in a file. Nothing changes
+  on the wire; the daemon's relay link says `"phone": true` in its own `hello` to the daemon.
 
 The app asks for Face ID / fingerprint before it sends a `decide`.
 
