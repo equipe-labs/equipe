@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use equipe_core::protocol::{Command, Engine, EngineState, NebiusKey};
+use equipe_core::protocol::{Command, Engine, EngineState, ProviderKey, ProviderStatus, ProviderTest};
 use equipe_core::t;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{h_flex, v_flex};
@@ -13,7 +13,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::board::dot;
-use super::settings::{Line, Section, command_chip, value};
+use super::settings::{Line, Pop, Section, command_chip, value};
 use crate::engines::{self, Card, PLATFORMS, Platform, SignsIn, Tone, Usage};
 use crate::icons::{Icon, icon};
 use crate::state::Conn;
@@ -81,10 +81,10 @@ fn button(shell: &Shell, at: usize, slot: usize, id: &'static str, kind: Kind, l
 pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let now = Instant::now();
     let mut sections: Vec<Section> = PLATFORMS.iter().enumerate().map(|(at, platform)| card(shell, at, platform, now, cx)).collect();
-    sections.push(nebius(shell, cx));
     if let Some(last) = sections.pop() {
         sections.push(last.foot(t!("engines.foot", host = host(shell))));
     }
+    sections.push(providers(shell, cx));
     sections
 }
 
@@ -216,115 +216,207 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
 /// NVIDIA's green, for Nebius Token Factory's tile.
 const NVIDIA_GREEN: u32 = 0x76b900;
 
-/// Nebius Token Factory: the person's own API key, pasted here once and kept
-/// on the daemon's machine — members run on Nemotron with it, and every
-/// handed-in ticket gets a Nemotron review. The key never comes back to a screen.
-fn nebius(shell: &Shell, cx: &mut Context<Shell>) -> Section {
-    let p = shell.palette;
-    let ui = &shell.settings;
-    let connected = matches!(shell.model.conn, Conn::Connected { .. });
-    let status = shell.engines.nebius.clone();
-    let words = "nebius token factory nvidia nemotron api key open model byok".to_owned();
-    let key = status.as_ref().map_or(NebiusKey::None, |s| s.key);
-    let (tone, said) = match (&status, key) {
-        (None, _) if connected => (None, t!("engines.checking").to_owned()),
-        (None, _) => (Some(Tone::Unknown), t!("engines.unknown").to_owned()),
-        (Some(_), NebiusKey::None) => (Some(Tone::Needs), t!("engines.nebius_none").to_owned()),
-        (Some(s), _) if !s.codex => (Some(Tone::Needs), t!("engines.nebius_needs_codex_short").to_owned()),
-        (Some(_), NebiusKey::Environment) => (Some(Tone::Ready), t!("engines.nebius_ready_env").to_owned()),
-        (Some(_), NebiusKey::Saved) => (Some(Tone::Ready), t!("engines.nebius_ready_saved", host = host(shell))),
-    };
-    let tile = div()
+/// A provider's tile colour, by its preset: its own colour where it has one.
+fn tint(preset: &str) -> u32 {
+    match preset {
+        "nebius" => NVIDIA_GREEN,
+        "openrouter" => 0x6467F2,
+        "together" => 0x0F6FFF,
+        "fireworks" => 0x6720FF,
+        "groq" => 0xF55036,
+        "deepseek" => 0x4D6BFE,
+        "mistral" => 0xFA520F,
+        "xai" => 0x1A1A1A,
+        "gemini" => 0x4285F4,
+        "ollama" | "lmstudio" => 0x3F4652,
+        _ => 0x6B7280,
+    }
+}
+
+/// A provider's mark: a tile in its colour.
+fn provider_tile(preset: &str) -> AnyElement {
+    let local = equipe_core::model_providers::preset(preset).is_some_and(|p| p.local);
+    div()
         .flex_none()
         .size(px(30.))
         .rounded(px(R_MD))
-        .bg(rgb(NVIDIA_GREEN))
+        .bg(rgb(tint(preset)))
         .border_1()
         .border_color(rgba(0xffffff1f))
         .flex()
         .items_center()
         .justify_center()
-        .child(icon(Icon::Brain, 18., rgb(0xffffff)));
-    let head = h_flex()
-        .gap_3()
-        .items_center()
-        .child(tile)
-        .child(h_flex().gap_2().items_center().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("Nebius Token Factory")).child(pill(p, tone, said)));
-    let get_key = ui::button(p, "nebius-get-key", Kind::Secondary, t!("engines.nebius_get_key")).icon(Icon::External).on_click(|_, _, cx| cx.open_url("https://tokenfactory.nebius.com"));
-    let mut lines = vec![Line::new("Nebius Token Factory", t!("engines.nebius_who")).label_el(head).words(words.clone()).control(get_key)];
+        .child(icon(if local { Icon::Server } else { Icon::Brain }, 18., rgb(0xffffff)))
+        .into_any_element()
+}
 
-    // The key: pasted, saved on the daemon's machine, never shown again.
-    let field = div()
-        .flex_1()
-        .h(px(CONTROL + 4.))
-        .px_3()
-        .flex()
-        .items_center()
-        .rounded(px(R_MD))
-        .border_1()
-        .border_color(p.hair)
-        .bg(p.code_bg)
-        .text_size(px(13.))
-        .child(Input::new(&ui.nebius_key).appearance(false).bordered(false));
-    let save = ui::button(p, "nebius-save", Kind::Primary, if key == NebiusKey::Saved { t!("engines.nebius_replace") } else { t!("engines.nebius_save") })
-        .disabled(!connected)
-        .on_click(cx.listener(|this, _, window, cx| this.save_nebius_key(window, cx)));
-    let mut row = h_flex().w_full().gap_2().items_center().child(field).child(save);
-    if key == NebiusKey::Saved {
-        let forgetting = ui.nebius_forgetting;
-        row = row.child(
-            ui::button(p, "nebius-forget", if forgetting { Kind::Danger } else { Kind::Ghost }, if forgetting { t!("engines.nebius_forget_sure") } else { t!("engines.nebius_forget") })
-                .disabled(!connected)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if this.settings.nebius_forgetting {
-                        this.settings.nebius_forgetting = false;
-                        this.send_command(Command::SetNebiusKey { key: None });
-                    } else {
-                        this.settings.nebius_forgetting = true;
-                    }
-                    cx.notify();
-                })),
-        );
+/// How a provider stands, as its pill says: listing, its models, why not, no key.
+fn provider_pill(status: &ProviderStatus) -> (Option<Tone>, String) {
+    match (&status.test, status.key) {
+        (ProviderTest::Testing, _) => (None, t!("engines.provider_testing").to_owned()),
+        (ProviderTest::Ok { count }, _) => (Some(Tone::Ready), t!("engines.provider_models", count = *count)),
+        (ProviderTest::Failed { .. }, _) => (Some(Tone::Needs), t!("engines.provider_failed").to_owned()),
+        (ProviderTest::Untested, ProviderKey::None) => (Some(Tone::Needs), t!("engines.provider_no_key").to_owned()),
+        (ProviderTest::Untested, _) => (Some(Tone::Unknown), t!("engines.provider_untested").to_owned()),
     }
-    let below = v_flex()
-        .w_full()
-        .gap_1p5()
-        .child(row)
-        .children(ui.nebius_problem.clone().map(|why| div().text_size(px(12.)).text_color(p.danger()).child(why)))
-        .child(div().text_size(px(12.)).text_color(p.muted).child(t!("engines.nebius_desc", host = host(shell))))
-        .when(key == NebiusKey::Environment, |v| v.child(div().text_size(px(12.)).text_color(p.muted).child(t!("engines.nebius_env_note"))));
-    lines.push(Line::new(t!("engines.nebius_key_label"), "").words(format!("{words} key paste save")).below(below));
+}
 
-    // Its agent: the Codex CLI, free and with no sign-in.
-    if status.as_ref().is_some_and(|s| !s.codex) {
+/// Settings › AI platforms' model providers: each one connected on the
+/// daemon's machine — Nebius among them — with its models, a test and a
+/// removal; then one more to connect, from a preset or any
+/// OpenAI-compatible address. Keys go to the daemon once and never come back.
+fn providers(shell: &Shell, cx: &mut Context<Shell>) -> Section {
+    let p = shell.palette;
+    let ui = &shell.settings;
+    let connected = matches!(shell.model.conn, Conn::Connected { .. });
+    let words = "model provider api key open model byok openrouter nebius together fireworks groq deepseek mistral xai grok gemini ollama lm studio openai compatible".to_owned();
+    let mut lines = vec![Line::new(t!("engines.providers_title"), t!("engines.providers_desc")).words(words.clone())];
+    let list = shell.engines.providers.clone();
+    match &list {
+        None if connected => lines.push(Line::new(t!("engines.checking"), "").words(words.clone())),
+        None => lines.push(Line::new(t!("engines.unknown"), "").words(words.clone())),
+        Some(list) if list.is_empty() => {}
+        Some(list) => {
+            for (at, status) in list.iter().enumerate() {
+                lines.push(provider_line(shell, at, status, &words, connected, cx));
+            }
+        }
+    }
+
+    // Their agent: the Codex CLI, free and with no sign-in.
+    if list.as_ref().is_some_and(|l| !l.is_empty()) && !shell.engines.providers_codex {
         let control: AnyElement = match shell.engines.installing(Engine::Codex) {
             Some(engines::Install::Running) => h_flex().gap_2().items_center().child(crate::motion::spinner(14., p.text2)).child(value(p, t!("engines.installing"))).into_any_element(),
-            _ => button(shell, 9, 0, "nebius-codex-install-button", Kind::Secondary, t!("engines.install"))
+            _ => ui::button(p, "providers-codex-install-button", Kind::Secondary, t!("engines.install"))
                 .icon(Icon::ArrowDown)
-                .disabled(!matches!(shell.model.conn, Conn::Connected { .. }))
+                .disabled(!connected)
                 .on_click(cx.listener(|this, _, _, cx| this.engine_install(Engine::Codex, cx)))
                 .into_any_element(),
-        };
-        let failed = match shell.engines.installing(Engine::Codex) {
-            Some(engines::Install::Failed(detail)) => Some(if detail.is_empty() { t!("engines.install_failed_desc", host = host(shell)).to_owned() } else { detail.clone() }),
-            _ => None,
         };
         lines.push(
             Line::new(t!("engines.nebius_needs_codex"), t!("engines.install_by_hand", host = host(shell)))
                 .words(format!("{words} codex install"))
                 .control(control)
-                .below(
-                    v_flex()
-                        .gap_1p5()
-                        .children(failed.map(|why| div().text_size(px(12.)).text_color(p.danger()).child(why)))
-                        .child(h_flex().child(command_chip(p, SharedString::from("nebius-codex-install"), equipe_core::engines::installer(Engine::Codex)))),
-                ),
+                .below(h_flex().child(command_chip(p, SharedString::from("providers-codex-install"), equipe_core::engines::installer(Engine::Codex)))),
         );
     }
-    if let Some(model) = status.as_ref().and_then(|s| s.model.clone()) {
-        lines.push(Line::new(t!("engines.nebius_model"), "").words(format!("{words} model")).control(value(p, model)));
+
+    // What the daemon said no to, by the preset the screen asked for.
+    if ui.adding.is_none()
+        && let Some((_, why)) = &shell.engines.add_failed
+    {
+        lines.push(Line::new(t!("engines.provider_add_failed"), why.clone()).warn(true).words(words.clone()));
     }
-    Section::new("", lines)
+
+    match ui.adding {
+        Some(preset) => lines.push(provider_form(shell, preset, &words, connected, cx)),
+        None => {
+            let pick = super::settings::picker(shell, Pop::AddProvider, t!("engines.provider_add"), t!("engines.provider_add").to_owned(), 160., cx);
+            lines.push(Line::new(t!("engines.provider_add"), t!("engines.provider_add_desc")).words(format!("{words} add connect")).control(if connected { pick } else { value(p, "—") }));
+        }
+    }
+    Section::new(t!("engines.providers_section"), lines).foot(t!("engines.providers_limits"))
+}
+
+/// One provider connected: where it stands, its models, its test and removal.
+fn provider_line(shell: &Shell, at: usize, status: &ProviderStatus, words: &str, connected: bool, cx: &mut Context<Shell>) -> Line {
+    let p = shell.palette;
+    let (tone, said) = provider_pill(status);
+    let head = h_flex()
+        .gap_3()
+        .items_center()
+        .child(provider_tile(&status.preset))
+        .child(h_flex().gap_2().items_center().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(status.name.clone())).child(pill(p, tone, said)));
+    let source = match status.key {
+        _ if status.preset == equipe_core::model_providers::CUSTOM => t!("engines.provider_from_env_url").to_owned(),
+        ProviderKey::Environment => t!("engines.provider_key_env").to_owned(),
+        ProviderKey::Saved => t!("engines.provider_key_saved", host = host(shell)),
+        ProviderKey::NotNeeded => t!("engines.provider_key_not_needed").to_owned(),
+        ProviderKey::None => t!("engines.provider_no_key").to_owned(),
+    };
+    let desc = format!("{} · {source}", status.base_url);
+    let id = status.id.clone();
+    let testing = status.test == ProviderTest::Testing;
+    let test = ui::button(p, ("provider-test", at), Kind::Ghost, t!("engines.provider_test")).icon(Icon::Retry).disabled(!connected || testing).on_click(cx.listener(move |this, _, _, cx| {
+        this.send_command(Command::TestProvider { id: id.clone() });
+        cx.notify();
+    }));
+    let mut controls = h_flex().gap_2().items_center().child(test);
+    if status.removable {
+        let removing = shell.settings.provider_removing.as_deref() == Some(status.id.as_str());
+        let id = status.id.clone();
+        controls = controls.child(
+            ui::button(p, ("provider-remove", at), if removing { Kind::Danger } else { Kind::Ghost }, if removing { t!("engines.provider_remove_sure") } else { t!("engines.provider_remove") })
+                .disabled(!connected)
+                .on_click(cx.listener(move |this, _, _, cx| this.remove_provider(&id, cx))),
+        );
+    }
+    let below = match &status.test {
+        ProviderTest::Failed { why } => Some(div().text_size(px(12.)).text_color(p.danger()).child(why.clone()).into_any_element()),
+        ProviderTest::Ok { .. } if !status.models.is_empty() => {
+            let names: Vec<String> = status.models.iter().take(4).map(|m| crate::models::label(&m.id, &[])).collect();
+            let more = if status.models.len() > names.len() { "…" } else { "" };
+            Some(div().text_size(px(12.)).text_color(p.muted).child(t!("engines.provider_examples", models = format!("{}{more}", names.join(", ")))).into_any_element())
+        }
+        _ => None,
+    };
+    let line = Line::new(status.name.clone(), desc).label_el(head).words(format!("{words} {} {}", status.name, status.base_url)).control(controls.into_any_element());
+    match below {
+        Some(below) => line.below(below),
+        None => line,
+    }
+}
+
+/// The form for the provider being connected: its address (another
+/// server's, or a local one's port), its key, and Connect.
+fn provider_form(shell: &Shell, preset: &'static str, words: &str, connected: bool, cx: &mut Context<Shell>) -> Line {
+    let p = shell.palette;
+    let ui = &shell.settings;
+    let Some(info) = equipe_core::model_providers::preset(preset) else { return Line::new("", "") };
+    let other = info.id == equipe_core::model_providers::OTHER;
+    let name = if other { t!("engines.provider_other").to_owned() } else { info.name.to_owned() };
+    let field = |input: &Entity<gpui_kit::component::input::InputState>| {
+        div()
+            .flex_1()
+            .h(px(CONTROL + 4.))
+            .px_3()
+            .flex()
+            .items_center()
+            .rounded(px(R_MD))
+            .border_1()
+            .border_color(p.hair)
+            .bg(p.code_bg)
+            .text_size(px(13.))
+            .child(Input::new(input).appearance(false).bordered(false))
+    };
+    let small = |text: String| div().w(px(92.)).flex_none().text_size(px(12.)).text_color(p.text2).child(text);
+    let mut form = v_flex().w_full().gap_2();
+    if other || info.local {
+        form = form.child(h_flex().w_full().gap_2().items_center().child(small(t!("engines.provider_url_label").to_owned())).child(field(&ui.provider_url)));
+    }
+    form = form.child(h_flex().w_full().gap_2().items_center().child(small(t!("engines.nebius_key_label").to_owned())).child(field(&ui.nebius_key)));
+    let connect = ui::button(p, "provider-connect", Kind::Primary, t!("engines.provider_connect")).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.connect_provider(window, cx)));
+    let cancel = ui::button(p, "provider-cancel", Kind::Ghost, t!("engines.cancel")).on_click(cx.listener(|this, _, _, cx| {
+        this.settings.adding = None;
+        this.settings.provider_problem = None;
+        cx.notify();
+    }));
+    let mut buttons = h_flex().gap_2().items_center().child(connect).child(cancel);
+    if let Some(page) = info.key_page {
+        buttons = buttons.child(ui::button(p, "provider-get-key", Kind::Secondary, t!("engines.nebius_get_key")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(page)));
+    }
+    form = form.child(buttons);
+    let problem = ui.provider_problem.clone().or_else(|| shell.engines.add_failed.as_ref().filter(|(p, _)| p == preset).map(|(_, why)| why.clone()));
+    form = form.children(problem.map(|why| div().text_size(px(12.)).text_color(p.danger()).child(why)));
+    let desc = if info.local {
+        t!("engines.provider_form_local", host = host(shell), provider = name.clone())
+    } else if other {
+        t!("engines.provider_form_other", host = host(shell))
+    } else {
+        t!("engines.provider_form_desc", host = host(shell))
+    };
+    let head = h_flex().gap_3().items_center().child(provider_tile(preset)).child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("engines.provider_form_title", provider = name.clone())));
+    Line::new(t!("engines.provider_form_title", provider = name), desc).label_el(head).words(format!("{words} key paste")).below(form)
 }
 
 /// The sign-in's row while it is on its way, failed, or asks to sign out.
@@ -465,22 +557,57 @@ impl LineExt for Line {
 // ── what the cards do ──
 
 impl Shell {
-    /// Where the engines stand, from the daemon; the page says so if it never answers.
-    /// The pasted key to the daemon, once it reads like one; the box is emptied at once.
-    pub fn save_nebius_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let input = self.settings.nebius_key.clone();
-        let key = input.read(cx).value().trim().to_owned();
-        if !equipe_core::nemotron::key_is_plausible(&key) {
-            self.settings.nebius_problem = Some(t!("engines.nebius_bad_key").to_owned());
-            return cx.notify();
-        }
-        self.settings.nebius_problem = None;
-        self.settings.nebius_forgetting = false;
-        input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
-        self.send_command(Command::SetNebiusKey { key: Some(key) });
+    /// "Add a provider" picked one: its form, its boxes emptied — a server
+    /// on the daemon's machine with its usual address in, to change if need be.
+    pub(crate) fn open_provider_form(&mut self, preset: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(info) = equipe_core::model_providers::preset(preset) else { return };
+        self.settings.adding = Some(preset);
+        self.settings.provider_problem = None;
+        self.engines.add_failed = None;
+        let name = if info.id == equipe_core::model_providers::OTHER { t!("engines.provider_other").to_owned() } else { info.name.to_owned() };
+        let placeholder = if info.needs_key { t!("engines.provider_key_placeholder", provider = name) } else { t!("engines.provider_key_optional").to_owned() };
+        self.settings.nebius_key.update(cx, |i, cx| {
+            i.set_value(String::new(), window, cx);
+            i.set_placeholder(placeholder, window, cx);
+        });
+        self.settings.provider_url.update(cx, |i, cx| i.set_value(info.base_url.to_owned(), window, cx));
         cx.notify();
     }
 
+    /// "Connect": what was typed to the daemon, once it reads right; the key's box is emptied at once.
+    pub fn connect_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(preset) = self.settings.adding else { return };
+        let Some(info) = equipe_core::model_providers::preset(preset) else { return };
+        let key = self.settings.nebius_key.read(cx).value().trim().to_owned();
+        let url = self.settings.provider_url.read(cx).value().trim().to_owned();
+        // Its own address unless it is another server, or a local one somewhere else.
+        let base_url = (info.id == equipe_core::model_providers::OTHER || (info.local && url != info.base_url)).then_some(url).filter(|u| !u.is_empty());
+        let key = (!key.is_empty()).then_some(key);
+        let name = if info.id == equipe_core::model_providers::OTHER { base_url.clone().unwrap_or_default() } else { info.name.to_owned() };
+        if let Err(err) = equipe_core::model_providers::check(preset, base_url.as_deref(), key.as_deref()) {
+            self.settings.provider_problem = Some(err.why(crate::i18n::lang(), &name));
+            return cx.notify();
+        }
+        self.settings.provider_problem = None;
+        self.settings.adding = None;
+        self.engines.add_failed = None;
+        self.settings.nebius_key.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+        self.send_command(Command::AddProvider { preset: preset.to_owned(), base_url, key: key.map(equipe_core::protocol::secrets::SecretValue) });
+        cx.notify();
+    }
+
+    /// "Remove", then "Remove for sure": the provider and its saved key forgotten.
+    pub fn remove_provider(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.settings.provider_removing.as_deref() == Some(id) {
+            self.settings.provider_removing = None;
+            self.send_command(Command::RemoveProvider { id: id.to_owned() });
+        } else {
+            self.settings.provider_removing = Some(id.to_owned());
+        }
+        cx.notify();
+    }
+
+    /// Where the engines stand, from the daemon; the page says so if it never answers.
     pub fn ask_engines(&mut self, cx: &mut Context<Self>) {
         if !matches!(self.model.conn, Conn::Connected { .. }) {
             return;

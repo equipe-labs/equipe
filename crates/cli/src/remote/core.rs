@@ -1405,6 +1405,11 @@ pub(crate) mod tests {
             Command::SignIn { engine: Engine::Codex, device: true },
             Command::SignInCancel { engine: Engine::Codex },
             Command::SignOut { engine: Engine::Codex },
+            // A provider's key is pasted at the person's own screens only.
+            Command::AddProvider { preset: "openrouter".into(), base_url: None, key: Some(equipe_core::protocol::secrets::SecretValue("sk-or-x".into())) },
+            Command::RemoveProvider { id: "openrouter".into() },
+            Command::TestProvider { id: "openrouter".into() },
+            Command::Providers,
         ] {
             assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens");
         }

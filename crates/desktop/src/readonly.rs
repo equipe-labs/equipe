@@ -75,6 +75,8 @@ pub fn reads(command: &Command) -> bool {
         | C::BrowserProfiles
         | C::Devices
         | C::Engines
+        // The providers and their models: listing them changes nothing.
+        | C::Providers
         | C::Models { .. }
         | C::Design { .. }
         | C::ProjectDocs { .. }
@@ -164,6 +166,9 @@ pub fn reads(command: &Command) -> bool {
         | C::MoveIntoLogin
         | C::InstallEngine { .. }
         | C::SetNebiusKey { .. }
+        | C::AddProvider { .. }
+        | C::TestProvider { .. }
+        | C::RemoveProvider { .. }
         | C::SignOut { .. }
         | C::SetEngineSwitching { .. }
         | C::SetPmAccepts { .. }
@@ -539,6 +544,10 @@ mod tests {
             Command::MoveIntoLogin,
             Command::InstallEngine { engine: Engine::Claude },
             Command::SetNebiusKey { key: None },
+            Command::Providers,
+            Command::AddProvider { preset: "ollama".into(), base_url: None, key: None },
+            Command::TestProvider { id: "ollama".into() },
+            Command::RemoveProvider { id: "ollama".into() },
             Command::SignOut { engine: Engine::Codex },
             Command::SetEngineSwitching { squad: s(), mode: engines::Switching::default() },
             Command::SetPmAccepts { squad: s(), on: false },
@@ -591,9 +600,9 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "engines", "models", "design", "project_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "engines", "providers", "models", "design", "project_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
-        for kept in ["submit", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "taste", "disk_clean"] {
+        for kept in ["submit", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");
         }
         // Outside the real view, everything goes, as ever.

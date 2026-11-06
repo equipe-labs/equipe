@@ -181,7 +181,7 @@ fn key_var(id: &str, preset: Option<&Preset>) -> String {
 /// Where `kept`'s key comes from, `var` reading the environment.
 fn key_source(home: &Path, kept: &Kept, var: &impl Fn(&str) -> Option<String>) -> ProviderKey {
     let preset = preset(&kept.preset);
-    let from_env = preset.and_then(|p| p.env_var).and_then(|v| var(v)).is_some_and(|k| !k.trim().is_empty());
+    let from_env = preset.and_then(|p| p.env_var).and_then(var).is_some_and(|k| !k.trim().is_empty());
     let base = kept.base_url.as_deref().or(preset.map(|p| p.base_url)).unwrap_or_default();
     if from_env {
         ProviderKey::Environment

@@ -265,3 +265,27 @@ async fn a_member_set_to_a_provider_that_isnt_connected_says_how_to_connect_it()
     let Some(Event::Error { message, .. }) = failed.last() else { panic!("{failed:#?}") };
     assert!(message.contains("Groq isn't connected") && message.contains("Settings"), "{message}");
 }
+
+/// LIVE, by hand only: Nebius Token Factory's models listed the way a
+/// screen's Test lists them, with the key in the file
+/// `EQUIPE_LIVE_NEBIUS_KEY_FILE` names — saved on a home of its own, never
+/// printed. `cargo test -p equipe-core --test providers -- --ignored live_`
+#[tokio::test]
+#[ignore = "reaches Nebius Token Factory with a real key"]
+async fn live_nebius_lists_its_models_through_the_provider_list() {
+    let Ok(file) = std::env::var("EQUIPE_LIVE_NEBIUS_KEY_FILE") else { return };
+    let home = scratch("live");
+    let text = std::fs::read_to_string(file).unwrap();
+    // The file may keep it as `NEBIUS_API_KEY=…`; only the key is saved.
+    let key = text
+        .lines()
+        .map(|l| l.trim().trim_start_matches("export ").trim_start_matches("NEBIUS_API_KEY=").trim_matches('"').to_owned())
+        .find(|k| !k.is_empty() && !k.starts_with('#'))
+        .unwrap_or_default();
+    assert!(equipe_core::model_providers::add(&home, "nebius", None, Some(&key)).is_ok(), "the key file holds a key");
+    let cfg = equipe_core::model_providers::config(&home, "nebius", |_| None).unwrap();
+    let models = equipe_core::model_providers::list(&cfg, "nebius").await.map_err(|e| e.kind()).unwrap();
+    println!("nebius: {} models, first: {:?}", models.len(), models.iter().take(3).collect::<Vec<_>>());
+    assert!(!models.is_empty());
+    let _ = std::fs::remove_dir_all(&home);
+}
