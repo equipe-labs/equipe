@@ -961,6 +961,7 @@ fn snapshot() -> Snapshot {
         team_changes: vec![team_change()],
         routine_proposals: vec![routine_proposal()],
         idle_wake_hours: Some(24),
+        subagents_at_once: None,
         signals: Vec::new(),
         accepts: vec![accept_proposal()],
         scale: Some(0),

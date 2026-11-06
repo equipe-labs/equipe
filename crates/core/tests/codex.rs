@@ -220,6 +220,10 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     assert_eq!(start["config"]["features"]["apps"], false);
     let instructions = start["developerInstructions"].as_str().unwrap();
     assert!(instructions.starts_with("You are qa, the QA engineer"));
+    // Its own subagents, by Codex's tool, as many at once as it is told and runs.
+    assert_eq!(start["config"]["agents"]["max_concurrent_threads_per_session"], equipe_core::protocol::SUBAGENTS_AT_ONCE);
+    let flat = instructions.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("(your `spawn_agent` tool)") && flat.contains("at most 20 subagents at once") && !flat.contains("Agent tool"), "{flat}");
     // Its skills: an index of absolute paths it reads by, never Codex's own skill folders.
     let review = home.join("skills").join("test");
     let path = instructions.split('`').find(|p| p.ends_with("/plan-review/SKILL.md")).unwrap_or_else(|| panic!("{instructions}"));

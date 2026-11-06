@@ -300,6 +300,11 @@ pub struct TurnRequest<'a> {
     /// Another provider to run the turn on ([`Provider`]); `None`: the
     /// person's own Codex, as they set it up.
     pub provider: Option<&'a Provider>,
+    /// How many subagents the thread runs at once
+    /// (`agents.max_concurrent_threads_per_session`; `agents.max_threads` in
+    /// older configs); `None`, Codex's own default. On another provider it
+    /// has none: `multi_agent` is off there.
+    pub subagents: Option<u32>,
 }
 
 /// `thread/start`'s parameters; `others`, the person's own MCP servers off.
@@ -317,6 +322,8 @@ pub fn start_params(request: &TurnRequest<'_>, cwd: &Path, others: Option<&Value
         for feature in PLAIN_FEATURES_OFF {
             params["config"]["features"][feature] = json!(false);
         }
+    } else if let Some(at_once) = request.subagents {
+        params["config"]["agents"]["max_concurrent_threads_per_session"] = json!(at_once);
     }
     if let Some(model) = request.model {
         params["model"] = json!(model);
@@ -1505,6 +1512,20 @@ mod tests {
         let plain = start_params(&TurnRequest { prompt: "hi", ..Default::default() }, Path::new("/r"), None);
         assert!(plain["config"].get("mcp_servers").is_none(), "without servers of equipe's, the person's own");
         assert!(plain.get("model").is_none() && plain.get("developerInstructions").is_none());
+    }
+
+    #[test]
+    fn a_thread_runs_as_many_subagents_at_once_as_it_is_told_and_none_on_another_provider() {
+        let request = TurnRequest { prompt: "hi", subagents: Some(8), ..Default::default() };
+        let params = start_params(&request, Path::new("/r"), None);
+        assert_eq!(params["config"]["agents"]["max_concurrent_threads_per_session"], 8, "{params}");
+        assert_eq!(resume_params(&request, Path::new("/r"), "thr-1", None)["config"]["agents"]["max_concurrent_threads_per_session"], 8);
+        // Not told: Codex's own default, the person's config left alone.
+        assert!(start_params(&TurnRequest { prompt: "hi", ..Default::default() }, Path::new("/r"), None)["config"].get("agents").is_none());
+        // Another provider has no subagents at all: nothing to cap.
+        let provider = Provider { id: "nebius".into(), name: "Nebius".into(), base_url: "http://127.0.0.1:9/v1".into(), env_key: "NEBIUS_API_KEY".into(), config: Vec::new(), wire: crate::relay::Wire::default() };
+        let plain = start_params(&TurnRequest { provider: Some(&provider), ..request }, Path::new("/r"), None);
+        assert!(plain["config"].get("agents").is_none() && plain["config"]["features"]["multi_agent"] == false, "{plain}");
     }
 
     #[test]

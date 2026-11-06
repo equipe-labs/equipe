@@ -26,6 +26,20 @@ pub mod routines;
 pub mod secrets;
 pub mod signals;
 
+/// How many subagents a member runs at once unless the person sets it
+/// ([`Command::SetSubagentsAtOnce`]): Claude Code's own cap, which every
+/// member was held to before the squad could set it.
+pub const SUBAGENTS_AT_ONCE: u32 = 20;
+/// The most the person can set: past it, a plan's limits run out long before
+/// the work is done.
+pub const MOST_SUBAGENTS_AT_ONCE: u32 = 50;
+
+/// `n` subagents at once, as an engine takes it: at least one (neither
+/// engine takes 0), at most [`MOST_SUBAGENTS_AT_ONCE`].
+pub fn subagents_at_once(n: u32) -> u32 {
+    n.clamp(1, MOST_SUBAGENTS_AT_ONCE)
+}
+
 /// How a ticket that couldn't start says why, in its note.
 pub const COULD_NOT_START: &str = "Couldn't start: ";
 /// How an idea the PM put to the person says why its time has come, in its note.
@@ -988,6 +1002,10 @@ pub enum Command {
     /// itself (`on`, the default), putting to them only what needs them — or
     /// keeps every acceptance for themselves.
     SetPmAccepts { squad: SquadName, on: bool },
+    /// How many subagents each member of the squad runs at once, where its
+    /// engine has them: given to the engine and said in its charter.
+    /// Answered by [`Event::SubagentsAtOnceChanged`].
+    SetSubagentsAtOnce { squad: SquadName, at_once: u32 },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
     /// each at its member's next ticket boundary. Only ever the person's.
     ApplyEngineProposal { squad: SquadName, id: u64 },
@@ -1963,6 +1981,8 @@ pub enum Event {
     /// How long an empty board waits before the PM is woken now
     /// ([`Command::SetIdleWake`]); 0: never.
     IdleWakeChanged { squad: SquadName, hours: u32 },
+    /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]).
+    SubagentsAtOnceChanged { squad: SquadName, at_once: u32 },
     /// The squad's signals now, each with its latest readings: on a new
     /// reading, one turned on or off, or paused.
     SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
@@ -2038,6 +2058,7 @@ impl Event {
             | Event::RoutineProposed { squad, .. }
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
+            | Event::SubagentsAtOnceChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
@@ -2114,6 +2135,7 @@ impl Event {
             | Event::RoutineProposed { .. }
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
+            | Event::SubagentsAtOnceChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
@@ -2436,6 +2458,10 @@ pub struct Snapshot {
     /// 0: never. `None` from a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_wake_hours: Option<u32>,
+    /// How many subagents a member runs at once ([`Command::SetSubagentsAtOnce`]).
+    /// `None` from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents_at_once: Option<u32>,
     /// The squad's signals, each with its latest readings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<signals::SignalView>,
@@ -2823,6 +2849,7 @@ mod tests {
                 proposed_at: 3,
             }],
             idle_wake_hours: Some(24),
+            subagents_at_once: Some(8),
             signals: Vec::new(),
             scale: Some(2),
             suggestions_off: false,

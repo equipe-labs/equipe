@@ -306,6 +306,56 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
+/// The steps "Subagents at once" moves through: one at a time near the
+/// bottom, where each makes a difference, wider above.
+const SUBAGENT_STEPS: [u32; 15] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+
+/// The next step from `now`, fewer or more; `now` itself at either end.
+fn subagents_step(now: u32, more: bool) -> u32 {
+    let next = if more { SUBAGENT_STEPS.iter().find(|&&n| n > now) } else { SUBAGENT_STEPS.iter().rev().find(|&&n| n < now) };
+    next.copied().unwrap_or(now)
+}
+
+/// How many subagents each member runs at once: − and + either side of the
+/// number, as the zoom's pill; each step goes to the daemon.
+fn subagents_stepper(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let now = shell.model.subagents_at_once;
+    let step = |id: &'static str, glyph: Icon, more: bool, tip: &'static str, cx: &mut Context<Shell>| {
+        let to = subagents_step(now, more);
+        let enabled = connected && to != now;
+        let seg = h_flex()
+            .id(id)
+            .h_full()
+            .w(px(CONTROL))
+            .justify_center()
+            .items_center()
+            .rounded(px(R_SM))
+            .when(!enabled, |s| s.opacity(0.4))
+            .when(enabled, |s| {
+                s.cursor_pointer().on_click(cx.listener(move |this, _, _, _| {
+                    let squad = this.model.squad.clone();
+                    this.send_command(Command::SetSubagentsAtOnce { squad, at_once: to });
+                }))
+            })
+            .tip(p, tip, None)
+            .child(icon(glyph, ICON_SM, p.text2));
+        motion::hover_fill(seg, SharedString::from(format!("{id}-fill")), p.wash, false).into_any_element()
+    };
+    h_flex()
+        .flex_none()
+        .h(px(CONTROL))
+        .p(px(2.))
+        .gap(px(2.))
+        .items_center()
+        .rounded(px(R_MD))
+        .bg(if p.is_dark() { p.wash } else { p.code_bg })
+        .child(step("subagents-fewer", Icon::Minus, false, t!("settings.subagents_fewer"), cx))
+        .child(div().min_w(px(36.)).text_center().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(now.to_string()))
+        .child(step("subagents-more", Icon::Plus, true, t!("settings.subagents_more"), cx))
+        .into_any_element()
+}
+
 /// A pop-up button: what is chosen and ⌄; a click opens the list under it.
 /// `name` is what it chooses, as a screen reader says it.
 fn picker(shell: &Shell, pop: Pop, name: &str, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
@@ -701,10 +751,15 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             let hours = if on { equipe_core::protocol::routines::IDLE_WAKE_HOURS } else { 0 };
             this.send_command(equipe_core::protocol::Command::SetIdleWake { squad, hours });
         }, cx);
+    // How many helpers each member starts at a time for big work, where its engine has them.
+    let subagents = Line::new(t!("settings.subagents_at_once"), t!("settings.subagents_at_once_desc"))
+        .words(t!("settings.subagents_words"))
+        .control(subagents_stepper(shell, connected, cx));
     vec![
         Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
         // Its own card, so the footnote above reads as the PM's accepting alone.
         Section::new("", vec![idle_wake]),
+        Section::new("", vec![subagents]).foot(t!("settings.subagents_at_once_foot")),
         signals::section(shell, connected, cx),
         role_models(shell, connected, cx),
         Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
@@ -1574,7 +1629,21 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, mode_label, mode_summary, rule_words, short_path};
+    use super::{Mode, mode_label, mode_summary, rule_words, short_path, subagents_step};
+
+    #[test]
+    fn subagents_at_once_steps_one_at_a_time_low_and_wider_high_within_what_engines_take() {
+        assert_eq!(subagents_step(20, true), 25);
+        assert_eq!(subagents_step(20, false), 15);
+        assert_eq!(subagents_step(3, false), 2);
+        // At either end it stays, so the button greys out.
+        assert_eq!(subagents_step(1, false), 1);
+        assert_eq!(subagents_step(equipe_core::protocol::MOST_SUBAGENTS_AT_ONCE, true), equipe_core::protocol::MOST_SUBAGENTS_AT_ONCE);
+        // A number set off the steps (by an older app, or the daemon's clamp) moves to the nearest one.
+        assert_eq!((subagents_step(7, true), subagents_step(7, false)), (8, 6));
+        // The default is a step.
+        assert_eq!(subagents_step(subagents_step(equipe_core::protocol::SUBAGENTS_AT_ONCE, true), false), equipe_core::protocol::SUBAGENTS_AT_ONCE);
+    }
 
     #[test]
     fn a_rule_reads_as_what_it_lets_through() {

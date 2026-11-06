@@ -915,6 +915,34 @@ async fn a_member_gets_its_charter_a_recommended_model_and_its_own_memory() {
 }
 
 #[tokio::test]
+async fn a_claude_member_runs_the_squads_number_of_subagents_at_once_and_is_told_that_number() {
+    let seen = scratch("subagents-env");
+    let (claude, recorded) = recording_claude(&format!("printf '%s' \"$CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS\" > '{}/at-once'\n{}", seen.display(), answering("ok")));
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&cwd, "backend")).await;
+    assert_eq!(handle.snapshot("acme").await.subagents_at_once, Some(equipe_core::protocol::SUBAGENTS_AT_ONCE));
+
+    // Unset: equipe's default, given to Claude Code and said in the charter alike.
+    handle.send(Command::Submit { session: 1, text: "survey it".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert_eq!(std::fs::read_to_string(seen.join("at-once")).unwrap(), "20");
+    let charter = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(charter.contains("Your engine runs at most 20 subagents at once") && charter.contains("(your Agent tool)"), "{charter}");
+
+    // The person sets it: every screen hears, and the next turn runs and is told the new number.
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: 6 });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: 6, .. })).await;
+    assert_eq!(handle.snapshot("acme").await.subagents_at_once, Some(6));
+    handle.send(Command::Submit { session: 1, text: "and again".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert_eq!(std::fs::read_to_string(seen.join("at-once")).unwrap(), "6");
+    let charter = arg(&calls(&recorded)[1], "--append-system-prompt").unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(charter.contains("Your engine runs at most 6 subagents at once: for more, start up to 6"), "{charter}");
+}
+
+#[tokio::test]
 async fn a_members_skills_load_as_a_plugin_and_its_charter_keeps_only_their_index() {
     let (claude, recorded) = recording_claude(&answering("on it"));
     let cwd = scratch("cwd");

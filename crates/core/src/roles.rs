@@ -421,6 +421,101 @@ pub struct Context<'a> {
     /// (`crate::guard`, Claude Code's hook): what it refuses — a long sleep
     /// in the foreground — needs no word in the charter.
     pub guard: bool,
+    /// The subagents its engine runs ([`Subagents::of`]); `None` where it has none.
+    pub subagents: Option<Subagents>,
+}
+
+/// The subagents a member's engine runs, and how many at once: the squad's
+/// setting, which equipe gives the engine itself (Claude Code's
+/// `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, Codex's
+/// `agents.max_concurrent_threads_per_session`), so the number a member is
+/// told is the one its engine holds to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Subagents {
+    pub engine: Engine,
+    pub at_once: u32,
+}
+
+impl Subagents {
+    /// What a member's engine runs. Claude Code has its Agent tool; Codex on
+    /// OpenAI its `spawn_agent`. Codex on another provider has none — its
+    /// `multi_agent` is off there (`codex_app::PLAIN_FEATURES_OFF`) — and
+    /// Codex over the API has no tools at all: `None`, and big work goes into
+    /// tickets through the PM. A helper tool of equipe's own, for an engine
+    /// without subagents, would be offered here.
+    pub fn of(engine: Engine, has_tools: bool, other_provider: bool, at_once: u32) -> Option<Self> {
+        match engine {
+            Engine::Claude => Some(Self { engine, at_once }),
+            Engine::Codex if has_tools && !other_provider => Some(Self { engine, at_once }),
+            Engine::Codex => None,
+        }
+    }
+
+    /// The tool that starts one, as a member is told it.
+    pub fn tool(self) -> &'static str {
+        match self.engine {
+            Engine::Claude => "Agent",
+            Engine::Codex => "`spawn_agent`",
+        }
+    }
+
+    /// Several started at once, and how they run meanwhile.
+    fn at_once_in_one_message(self) -> String {
+        let meanwhile = match self.engine {
+            Engine::Claude => "in the background when you have other work meanwhile",
+            Engine::Codex => "in the background: `wait_agent` takes what they hand back",
+        };
+        format!("several {} calls in one message so they run at once ({meanwhile})", self.tool())
+    }
+
+    /// How many run at once, and what to do for more.
+    fn cap(self) -> String {
+        match self.at_once {
+            1 => "Your engine runs one subagent at a time: for more, start the next as the last hands back, never past the \
+cap (a call past it is refused, not queued)."
+                .to_owned(),
+            n => format!(
+                "Your engine runs at most {n} subagents at once: for more, start up to {n} and start the rest as earlier \
+ones hand back, never past the cap (a call past it is refused, not queued)."
+            ),
+        }
+    }
+}
+
+/// How a member works through what is long or big, by the subagents its
+/// engine runs — or, with none, in order and through tickets.
+fn parallel(role: &Role, ctx: &Context<'_>) -> String {
+    match ctx.subagents {
+        Some(sub) => format!(
+            "Side work that is long or stands on its own — running a whole test suite, reading logs, surveying unfamiliar \
+code, researching — hand to subagents (your {tool} tool), several at once when the pieces don't depend on each other, and \
+keep only their summaries: your own context stays small. Working in parallel is the squad's strength: anything that \
+would take you alone more than about 20 minutes — a big ticket, learning a whole system, a broad survey or research — \
+you split into parts that don't depend on each other and give each a subagent of its own, {calls}, each told exactly \
+its part and to report back briefly; then you put their results together and check them. Parts that change files \
+never touch the same ones; when the change itself can't be split, subagents still take the reading, surveying and \
+testing around it. Work only alone what truly can't split. The person sees each subagent at work under your name, so \
+describe each in a few plain words. {cap}",
+            tool = sub.tool(),
+            calls = sub.at_once_in_one_message(),
+            cap = sub.cap(),
+        ),
+        None => {
+            let tickets = match (ctx.board_tools, role.id == PM) {
+                (true, true) => "put each on a ticket of its own with `create_ticket`, for teammates who work at once",
+                (true, false) => "propose each as a ticket of its own with `create_ticket`, for the PM to hand to teammates who work at once",
+                (false, _) => "suggest each as a ticket, for the PM to hand to teammates who work at once",
+            };
+            format!(
+                "Your engine has no subagents: side work that is long or stands on its own — running a whole test suite, \
+reading logs, surveying unfamiliar code, researching — you do yourself, one piece after another, keeping only what you \
+need of each: your own context stays small. Working in parallel is the squad's strength: anything that would take you \
+alone more than about 20 minutes — a big ticket, learning a whole system, a broad survey or research — you split into \
+parts that don't depend on each other and {tickets}, each told exactly its part; you work through your own part in \
+order. Parts that change files never touch the same ones. Work only alone what truly can't split."
+            )
+        }
+    }
 }
 
 /// What an engine is told about who it is on the team.
@@ -440,6 +535,10 @@ tell them in one line what waits and why it's theirs. When the person asked for 
 word for it: accept it with `push` and see it through. Whatever the person must decide or do — approve something, give a \
 password, sign in — goes in front of them as a card (`propose_accept`, `ask_person`, `ask_decision`, `block_on_person`, \
 `show_my_browser`), never only asked in words and waited on.";
+/// The PM's word on how a member's big ticket runs, and its own…
+const SPLITS_TOO: &str = "splits it across subagents running at once, and so do you with yours.";
+/// …where its own engine runs no subagents.
+const SPLITS_INTO_TICKETS: &str = "splits it across subagents running at once where its engine has them; yours has none, so you split your own into tickets.";
 /// A member's word on acceptance when the person accepts every piece of work.
 const PERSON_ACCEPTS_YOURS: &str = "Only the person accepts your work, with a click on a confirmation card or the board — never their words, nor yours.";
 /// …and when the PM accepts its team's work.
@@ -553,6 +652,8 @@ accepts it.",
     // Where the person lets the PM accept (the default), the PM checks and
     // accepts its team's work, and puts to the person only what needs them.
     let tools = if ctx.pm_accepts && ctx.board_tools { tools.replace(PERSON_ACCEPTS, PM_ACCEPTS).replace(PERSON_ACCEPTS_YOURS, PM_ACCEPTS_YOURS) } else { tools.to_owned() };
+    // A PM whose engine runs no subagents splits its own big work into tickets.
+    let tools = if ctx.subagents.is_none() { tools.replace(SPLITS_TOO, SPLITS_INTO_TICKETS) } else { tools };
     // The person sees when work will be done, and when what ships is live.
     let tools = if ctx.board_tools {
         format!(
@@ -760,20 +861,10 @@ machine; open each before you answer: `[image: <path>]` — look at it with Read
 (a long one a few pages at a time); `[file: <path> · N lines]` — Read it; `[video: <path> · 1:42 · 1920×1080 · \
 sheet: <s> · frames: <f>@0:03, …]` — you can't watch a video: Read the frame images (each taken at its time) or the \
 one sheet of them all, and say what you saw at which moment; `[audio: <path> · 0:31]` — you can't hear it: say so \
-and ask what it says unless a tool you have can transcribe it. Side work that \
-is long or stands on its own — running a whole test suite, reading logs, surveying unfamiliar code, researching — \
-hand to subagents (your Agent tool), several at once when the pieces don't depend on each other, and keep only \
-their summaries: your own context stays small. Working in parallel is the squad's strength: anything that would \
-take you alone more than about 20 minutes — a big ticket, learning a whole system, a broad survey or research — you \
-split into parts that don't depend on each other and give each a subagent of its own, several Agent calls in one message \
-so they run at once (in the background when you have other work meanwhile), each told exactly its part and to report \
-back briefly; then you put their results together and check them. Parts that change files never touch the same ones; \
-when the change itself can't be split, subagents still take the reading, surveying and testing around it. Work only \
-alone what truly can't split. The person sees each subagent at work under your name, so describe each in a few plain words. \
-Your engine runs at most 20 subagents at once: for more, start up to 20 and start the rest as earlier ones hand back, \
-never past the cap (a call past it is refused, not queued). When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
+and ask what it says unless a tool you have can transcribe it. {parallel} When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
 their preferences, and anything they asked for that isn't done. {PRIVATE} {language} Be concise.",
-        duties
+        duties,
+        parallel = parallel(role, ctx),
     )
 }
 
@@ -1091,8 +1182,11 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20) }
     }
+
+    /// A Claude Code member at Claude Code's own cap: what every charter said before the squad set it.
+    const CLAUDE_20: Subagents = Subagents { engine: Engine::Claude, at_once: 20 };
 
     use crate::skills::Delivery;
 
@@ -1154,6 +1248,7 @@ mod tests {
                 edits: r.edits,
                 skills: Delivery::Plugin(SKILLS_AT),
                 guard: true,
+                subagents: Some(CLAUDE_20),
             };
             let bare = Context { board_tools: false, browser: false, desktop: false, design: false, pm_accepts: false, profiles: &[], guard: false, ..full };
             for (variant, c) in [("full", full), ("bare", bare)] {
@@ -1434,6 +1529,57 @@ invent one."), "{id}: true numbers");
         let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(!pm.contains("decides for itself"));
         assert!(pm.contains("splits it across subagents"));
+    }
+
+    #[test]
+    fn a_charter_says_the_subagents_its_engine_runs_and_how_many_at_once() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "backend", role: "backend" }];
+        let told = |r: &str, name: &str, subagents: Option<Subagents>, board_tools: bool| {
+            charter(role(r).unwrap(), name, &Context { subagents, ..ctx(&team, &[], board_tools) }).split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        for (r, name) in [("backend", "backend"), (PM, "pm")] {
+            // Claude Code, at the squad's number: the number its engine was given.
+            let claude = told(r, name, Some(Subagents { engine: Engine::Claude, at_once: 8 }), true);
+            for part in [
+                "hand to subagents (your Agent tool)",
+                "several Agent calls in one message so they run at once (in the background when you have other work meanwhile)",
+                "Your engine runs at most 8 subagents at once: for more, start up to 8 and start the rest as earlier ones hand back, never past the cap",
+            ] {
+                assert!(claude.contains(part), "{name} on Claude: {part}");
+            }
+            assert!(!claude.contains("at most 20 subagents"), "{name}");
+            // Codex on OpenAI: its own tools, never Claude Code's.
+            let codex = told(r, name, Some(Subagents { engine: Engine::Codex, at_once: 8 }), true);
+            for part in [
+                "hand to subagents (your `spawn_agent` tool)",
+                "several `spawn_agent` calls in one message so they run at once (in the background: `wait_agent` takes what they hand back)",
+                "Your engine runs at most 8 subagents at once: for more, start up to 8 and start the rest as earlier ones hand back, never past the cap",
+            ] {
+                assert!(codex.contains(part), "{name} on Codex: {part}\n{codex}");
+            }
+            assert!(!codex.contains("Agent tool") && !codex.contains("Agent calls"), "{name}: {codex}");
+            // One at a time reads as one, not "at most 1 subagents".
+            let one = told(r, name, Some(Subagents { engine: Engine::Claude, at_once: 1 }), true);
+            assert!(one.contains("Your engine runs one subagent at a time: for more, start the next as the last hands back, never past the cap"), "{name}: {one}");
+            // An engine with none (Codex on another provider): no tool it doesn't have, work in order, big work into tickets.
+            let none = told(r, name, None, true);
+            for gone in ["Agent tool", "Agent calls", "spawn_agent", "give each a subagent", "subagents at once", "each subagent at work"] {
+                assert!(!none.contains(gone), "{name} without subagents: {gone}\n{none}");
+            }
+            for part in ["Your engine has no subagents", "one piece after another", "more than about 20 minutes", "`create_ticket`", "you work through your own part in order", "Work only alone what truly can't split"] {
+                assert!(none.contains(part), "{name} without subagents: {part}\n{none}");
+            }
+        }
+        // A member's tickets are proposals, the PM's to hand out; the PM's own are the team's work.
+        assert!(told("backend", "backend", None, true).contains("propose each as a ticket of its own with `create_ticket`, for the PM to hand to teammates who work at once"));
+        assert!(told(PM, "pm", None, true).contains("put each on a ticket of its own with `create_ticket`, for teammates who work at once"));
+        // Without board tools, the PM puts them on tickets.
+        let bare = told("backend", "backend", None, false);
+        assert!(bare.contains("suggest each as a ticket, for the PM to hand to teammates who work at once") && !bare.contains("`create_ticket`"), "{bare}");
+        // The PM is told its own engine has none, and splits its big work into tickets.
+        let pm = told(PM, "pm", None, true);
+        assert!(pm.contains("splits it across subagents running at once where its engine has them; yours has none, so you split your own into tickets"), "{pm}");
+        assert!(told(PM, "pm", Some(CLAUDE_20), true).contains("splits it across subagents running at once, and so do you with yours"));
     }
 
     #[test]
