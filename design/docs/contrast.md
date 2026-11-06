@@ -26,6 +26,9 @@ The disabled state (`opacity.disabled` 0.4) is a WCAG 1.4.3 exception and is lef
 | `on-action` #F6F5F1 | `action-hover` #2A2C33 | 12.78:1 | 4.5:1 | ✅ | primary button hover |
 | `on-action` #F6F5F1 | `action-pressed` #3A3C44 | 10.08:1 | 4.5:1 | ✅ | primary button pressed |
 | `on-err` #FFFFFF | `err` #AD2E27 | 6.57:1 | 4.5:1 | ✅ | destructive button text |
+| `err` #AD2E27 | `err-fill` #EEE0DE | 5.12:1 | 4.5:1 | ✅ | soft destructive button text (Deny) |
+| `err` #AD2E27 | `err-fill-hover` #EBD9D7 | 4.83:1 | 4.5:1 | ✅ | soft destructive button hover |
+| `err` #AD2E27 | `err-fill-pressed` #E9D2CF | 4.56:1 | 4.5:1 | ✅ | soft destructive button pressed |
 | `text` #15161A | `bg` + `hover` #EAE9E5 | 14.89:1 | 4.5:1 | ✅ | text on row hover |
 | `text` #15161A | `surface` + `hover` #F3F3F3 | 16.22:1 | 4.5:1 | ✅ | text on row hover inside a card |
 | `muted` #4F5159 | `surface` + `hover` #F3F3F3 | 7.10:1 | 4.5:1 | ✅ | secondary text on row hover |
@@ -89,6 +92,9 @@ The disabled state (`opacity.disabled` 0.4) is a WCAG 1.4.3 exception and is lef
 | `on-action` #0A0A0C | `action-hover` #DAD7CF | 13.75:1 | 4.5:1 | ✅ | primary button hover |
 | `on-action` #0A0A0C | `action-pressed` #C9C6BE | 11.59:1 | 4.5:1 | ✅ | primary button pressed |
 | `on-err` #0A0A0C | `err` #EE7B74 | 7.27:1 | 4.5:1 | ✅ | destructive button text |
+| `err` #EE7B74 | `err-fill` #352728 | 5.24:1 | 4.5:1 | ✅ | soft destructive button text (Deny) |
+| `err` #EE7B74 | `err-fill-hover` #3C2A2B | 4.95:1 | 4.5:1 | ✅ | soft destructive button hover |
+| `err` #EE7B74 | `err-fill-pressed` #442E2E | 4.61:1 | 4.5:1 | ✅ | soft destructive button pressed |
 | `text` #EFEDE7 | `bg` + `hover` #1A1A1B | 14.84:1 | 4.5:1 | ✅ | text on row hover |
 | `text` #EFEDE7 | `surface` + `hover` #252628 | 12.91:1 | 4.5:1 | ✅ | text on row hover inside a card |
 | `muted` #A3A5AB | `surface` + `hover` #252628 | 6.14:1 | 4.5:1 | ✅ | secondary text on row hover |
@@ -129,4 +135,4 @@ The disabled state (`opacity.disabled` 0.4) is a WCAG 1.4.3 exception and is lef
 | `dot` #3F6FF5 | `surface` #16171A | 4.10:1 | 3:1 | ✅ | brand dot on card |
 | `dot` #3F6FF5 | `raw.neutral.950` #0A0A0C | 4.52:1 | 3:1 | ✅ | brand dot on icon tile (void) |
 
-**Total: 0 of 116 pairs below threshold.**
+**Total: 0 of 122 pairs below threshold.**

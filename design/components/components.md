@@ -22,7 +22,7 @@ Nine: button · input · card · chip · badge · list row · sheet/modal · dec
 
 ## 1. Button — `components/button-*.png`
 - **Use**: starts one action. An area has *one primary button*.
-- **Variants**: `primary` (`color.action` fill — a text-coloured fill, the product UI's primary action) · `secondary` (border `border-strong`) · `ghost` (link-coloured text, no fill — third-rank actions) · `danger` (`err` fill — actions that can't be undone) · `brand` (`accent` blue fill — **web marketing only**, never in product UI. Why: so one action like approving isn't lost, T-144 guide §2.2).
+- **Variants**: `primary` (`color.action` fill — a text-coloured fill, the product UI's primary action) · `secondary` (border `border-strong`) · `ghost` (link-coloured text, no fill — third-rank actions) · `danger` (`err` fill — actions that can't be undone) · `danger-soft` (opaque `err-fill` + `err` text — a refusal next to a primary, like Deny beside Allow; hover·pressed use `err-fill-hover`·`err-fill-pressed`, not the overlays; safe on translucent bars) · `brand` (`accent` blue fill — **web marketing only**, never in product UI. Why: so one action like approving isn't lost, T-144 guide §2.2).
 - **Size**: md = `size.button`, sm = `button.height-sm`. Horizontal padding `button.padding-x`.
 - **Tokens**: `button.*` (`tokens/component.json`).
 
