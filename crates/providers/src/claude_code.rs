@@ -864,6 +864,9 @@ pub async fn run_turn(
             _ => err.into(),
         })?;
 
+    if let Some(pid) = child.id() {
+        on_activity(Activity::Engine { pid });
+    }
     let stdout = child.stdout.take().expect("stdout is piped");
     let mut stderr = child.stderr.take().expect("stderr is piped");
     let stderr_task = tokio::spawn(async move {

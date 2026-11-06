@@ -390,9 +390,13 @@ fn other_squads(model: &Model) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The models a member's engine takes, for `/model`'s completion: Claude
+/// Code's families' latest, then its models by id (`equipe_core::models`);
+/// for another engine, what it runs now. Any name its engine knows works.
 pub fn engine_models(engine: Option<Engine>, current: Option<&str>) -> Vec<String> {
+    use equipe_core::models::{CLAUDE_FAMILIES, CLAUDE_MODELS};
     let mut models: Vec<String> = match engine {
-        Some(Engine::Claude) => ["opus", "sonnet", "haiku"].iter().map(|m| (*m).to_owned()).collect(),
+        Some(Engine::Claude) => CLAUDE_FAMILIES.iter().map(|f| f.alias).chain(CLAUDE_MODELS.iter().map(|p| p.id)).map(str::to_owned).collect(),
         _ => Vec::new(),
     };
     if let Some(current) = current.filter(|m| !models.iter().any(|x| x == m)) {
@@ -1096,6 +1100,7 @@ mod tests {
             member: Some(Who { role: role.into(), name: role.into() }),
             engine: Engine::Claude,
             model: Some("opus".into()),
+            asked_model: None,
             access: Access::EditFiles,
             workspace: None,
             state,
@@ -1103,6 +1108,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             work: None,
             mode: None,
@@ -1603,7 +1609,9 @@ mod tests {
         assert_eq!(texts("@f"), ["@frontend "]);
         assert_eq!(texts("/proj"), ["/project "]);
         assert_eq!(texts("/project "), ["/project site", "/project app", "/project all"]);
-        assert_eq!(texts("/model "), ["/model pm ", "/model frontend ", "/model backend ", "/model opus", "/model sonnet", "/model haiku"]);
+        // Each family's latest, then the models by id, newest first.
+        let models = ["pm ", "frontend ", "backend ", "fable", "opus", "sonnet", "haiku", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"];
+        assert_eq!(texts("/model "), models.map(|m| format!("/model {m}")));
         assert!(texts("hello").is_empty());
         assert!(texts("/mode\nx").is_empty(), "a multi-line draft is never a command");
     }

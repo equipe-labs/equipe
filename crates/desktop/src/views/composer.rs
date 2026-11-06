@@ -98,6 +98,8 @@ enum Act {
     Refresh(bool),
     /// The member onto the other engine, at its next ticket.
     Engine(Engine),
+    /// The engine's tool updated on the daemon's machine (its own installer).
+    UpdateEngine(Engine),
 }
 
 impl MenuKind {
@@ -210,14 +212,6 @@ impl Menu {
                 return;
             }
         }
-    }
-}
-
-/// The efforts each engine takes.
-pub(crate) fn efforts(engine: Option<Engine>) -> &'static [&'static str] {
-    match engine {
-        Some(Engine::Codex) => &["minimal", "low", "medium", "high"],
-        _ => &["low", "medium", "high", "xhigh", "max"],
     }
 }
 
@@ -453,7 +447,7 @@ impl Composer {
         }
         self.suggestion = guess;
         let hint = match &self.suggestion {
-            Some(g) => format!("{g}  →"),
+            Some(g) => suggestion_hint(g),
             None => placeholder(model),
         };
         if hint != self.placeholder {
@@ -505,6 +499,19 @@ fn pm_about(model: &Model) -> Option<String> {
 }
 
 /// What the empty box says: who it is for.
+/// Whether `key` takes the greyed suggestion: only in an empty box showing
+/// one, with no list of choices open, and for Tab only when no cards wait
+/// over the box (Tab from an empty box reaches those).
+fn takes_suggestion(key: &str, text: &str, suggested: bool, choices_open: bool, cards: bool) -> bool {
+    text.is_empty() && suggested && !choices_open && (key == "right" || (key == "tab" && !cards))
+}
+
+/// The greyed suggestion in an empty box, and the key that takes it: Tab, as
+/// in a terminal or an editor (→ takes it too).
+fn suggestion_hint(guess: &str) -> String {
+    format!("{guess}  · Tab")
+}
+
 fn placeholder(model: &Model) -> String {
     let Some(member) = model.selected_member() else {
         return t!("composer.placeholder").to_owned();
@@ -1239,15 +1246,25 @@ impl Shell {
         cx.notify();
     }
 
-    /// Send now: the member's turn stops, as Esc stops it, and everything
-    /// waiting goes to it at once — in the order shown, as one message.
+    /// Send now: what waits is read now — never by stopping the work. At
+    /// work, the member reads it at its next step (a command running now is
+    /// stopped, just it, so that step comes at once) and decides what to do;
+    /// not at work, it all goes as one message, in the order shown.
     pub fn send_pending_now(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.model.viewed() else { return };
         let Some(texts) = self.model.convo().map(|c| c.queue.texts()).filter(|t| !t.is_empty()) else { return };
         let n = texts.len();
+        let working = self.model.viewed_presence() == Some(Presence::Working);
+        let member = self.model.selected_member();
+        let name = member.map(|m| m.name.clone()).unwrap_or_default();
+        let steers = member.is_some_and(|m| m.engine.is_some());
+        let commanding = working && steers && self.model.convo().and_then(|c| c.command_watch()).is_some_and(|w| w.process.is_some());
         self.send_command(Command::SendNow { session, texts });
+        if commanding && let Some(convo) = self.model.convo_mut() {
+            convo.stopping_command = true;
+        }
         self.chat.picked = None;
-        self.composer.flash = Some(if n > 1 { t!("composer.sent_now_many", count = n) } else { t!("composer.sent_now").to_owned() });
+        self.composer.flash = Some(crate::activity::read_now(&name, working, steers, commanding, n));
         self.chat.follow_tail(cx);
         cx.notify();
     }
@@ -1313,20 +1330,34 @@ impl Shell {
             MenuKind::Model => {
                 let Some(member) = member else { return };
                 title = Some(t!("composer.menu_model", name = member.name));
-                let mut models = compose::engine_models(member.engine, member.model.as_deref());
-                if models.is_empty() {
-                    models.extend(member.model.clone());
+                let listed = self.model.listed(member.engine);
+                let (asked, ran) = (member.asked.as_deref().or(member.model.as_deref()), member.model.as_deref());
+                let mut rows: Vec<Row> = Vec::new();
+                // What runs isn't what was asked for: said first, with the fix.
+                if let Some((line, update)) = crate::models::gap_line(member.engine, asked, ran, listed) {
+                    rows.push(Row::note(line));
+                    if update {
+                        rows.push(Row::new(t!("models.update"), "", Act::UpdateEngine(Engine::Claude)).icon(Icon::ArrowUp));
+                    }
                 }
-                let now = member.model.clone().unwrap_or_default();
-                let exact = models.contains(&now);
-                let mut rows: Vec<Row> = models
-                    .into_iter()
-                    .map(|m| {
-                        let short = short_model(&m);
-                        let hint = if short == m { String::new() } else { m.clone() };
-                        Row::new(short, hint, Act::Model(m.clone())).checked(now == m || (!exact && now.contains(&m)))
-                    })
-                    .collect();
+                rows.extend(crate::models::choices(member.engine, asked, ran, listed).into_iter().map(|c| Row::new(c.label, c.hint, Act::Model(c.model)).checked(c.on)));
+                // The providers connected on the daemon's machine, each under its name;
+                // from Claude Code, picking one moves the member at its next ticket.
+                let groups = crate::models::provider_groups(self.engines.providers.as_deref().unwrap_or_default(), asked);
+                if !groups.is_empty() && member.engine != Some(Engine::Codex) {
+                    rows.push(Row::note(t!("models.provider_moves")));
+                }
+                for group in &groups {
+                    rows.push(Row::note(group.provider.clone()));
+                    rows.extend(group.choices.iter().map(|c| Row::new(c.label.clone(), c.hint.clone(), Act::Model(c.model.clone())).checked(c.on)));
+                    if group.more > 0 {
+                        rows.push(Row::note(t!("models.provider_more", count = group.more, id = group.id.clone())));
+                    }
+                }
+                // What a member on one can't do yet, said before it is picked.
+                if !groups.is_empty() {
+                    rows.push(Row::note(t!("models.provider_limits")));
+                }
                 // Which engine it works on: the other one, at its next ticket.
                 let on = member.engine;
                 rows.push(Row::note(t!("composer.menu_engine")));
@@ -1341,7 +1372,15 @@ impl Shell {
                 title = Some(t!("composer.menu_effort", name = member.name));
                 let now = self.model.efforts.get(&member.session).cloned();
                 let mut rows = vec![Row::new(t!("composer.effort_default"), "", Act::Effort(None)).checked(now.is_none())];
-                rows.extend(efforts(member.engine).iter().map(|e| Row::new(*e, "", Act::Effort(Some((*e).to_owned()))).checked(now.as_deref() == Some(*e))));
+                // Only what its model takes — and the one set, though it doesn't.
+                let model = member.asked.as_deref().or(member.model.as_deref());
+                let mut levels = crate::models::efforts(member.engine, model, self.model.listed(member.engine));
+                let stray = now.clone().filter(|n| !levels.contains(n));
+                levels.extend(stray.clone());
+                rows.extend(levels.into_iter().map(|e| {
+                    let hint = if stray.as_ref() == Some(&e) { t!("models.effort_not_taken") } else { "" };
+                    Row::new(e.clone(), hint, Act::Effort(Some(e.clone()))).checked(now.as_deref() == Some(e.as_str()))
+                }));
                 rows
             }
             MenuKind::Mode => {
@@ -1401,10 +1440,23 @@ impl Shell {
                     self.composer.flash = Some(t!("compose.engine_moving", names = name, engine = crate::switching::engine_name(engine)));
                 }
             }
+            Act::UpdateEngine(engine) => {
+                for command in self.engines.install(engine) {
+                    self.send_command(command);
+                }
+                self.composer.flash = Some(t!("models.updating").to_owned());
+            }
             Act::Model(model) => {
                 if let Some((session, name)) = member {
                     self.send_command(Command::SetModel { session, model: model.clone() });
-                    self.composer.flash = Some(t!("compose.model_set", name = name, wanted = model));
+                    let engine = self.model.selected_member().and_then(|m| m.engine);
+                    let wanted = crate::models::label(&model, self.model.listed(engine));
+                    // A provider's model from Claude Code: it moves at its next ticket.
+                    let provider = equipe_core::model_providers::split_ref(&model).filter(|_| engine != Some(Engine::Codex)).map(|(id, _)| self.engines.provider(id).map_or_else(|| id.to_owned(), |p| p.name.clone()));
+                    self.composer.flash = Some(match provider {
+                        Some(provider) => t!("compose.provider_moving", name = name, wanted = wanted, provider = provider),
+                        None => t!("compose.model_set", name = name, wanted = wanted),
+                    });
                 }
             }
             Act::Effort(effort) => {
@@ -1621,8 +1673,9 @@ impl Shell {
                     None => false,
                 }
             }
-            // → on an empty box takes the greyed suggestion.
-            "right" if plain && text.is_empty() && self.composer.suggestion.is_some() => {
+            // Tab (or →) on an empty box takes the greyed suggestion; with
+            // cards over the box, Tab reaches them instead (below).
+            "tab" | "right" if plain && takes_suggestion(key, &text, self.composer.suggestion.is_some(), self.composer.open(), !self.composer.replies.is_empty()) => {
                 if let Some(guess) = self.composer.suggestion.clone() {
                     self.composer.set_text(&guess, window, cx);
                     cx.notify();
@@ -3008,7 +3061,19 @@ mod tests {
         assert!(!super::stop_on_escape(Some((7, t0)), 8, t0 + std::time::Duration::from_millis(300)), "another conversation's");
     }
 
-    use super::{Act, Engine, Menu, MenuKind, Row, efforts, pm_about, short_model, shows_recipient, takes};
+    use super::{Act, Engine, Menu, MenuKind, Row, pm_about, short_model, shows_recipient, suggestion_hint, takes, takes_suggestion};
+
+    #[test]
+    fn tab_takes_the_greyed_suggestion_as_the_arrow_does_and_the_box_says_so() {
+        assert!(takes_suggestion("tab", "", true, false, false), "Tab takes it");
+        assert!(takes_suggestion("right", "", true, false, false), "→ still does");
+        assert!(!takes_suggestion("tab", "", false, false, false), "no suggestion: Tab moves on as everywhere");
+        assert!(!takes_suggestion("tab", "fix the", true, false, false), "something written: it isn't taken over");
+        assert!(!takes_suggestion("tab", "", true, true, false), "a list of choices open: Tab takes the choice");
+        assert!(!takes_suggestion("tab", "", true, false, true), "cards over the box: Tab reaches them");
+        assert!(takes_suggestion("right", "", true, false, true));
+        assert!(suggestion_hint("Run the tests").ends_with("Tab"), "the box shows the key that takes it");
+    }
     use crate::state::Model;
 
     #[test]
@@ -3043,9 +3108,11 @@ mod tests {
     }
 
     #[test]
-    fn effort_choices_follow_the_engine() {
-        assert_eq!(efforts(Some(Engine::Claude)), ["low", "medium", "high", "xhigh", "max"]);
-        assert_eq!(efforts(Some(Engine::Codex))[0], "minimal");
+    fn effort_choices_follow_the_engine_and_its_model() {
+        let efforts = |engine, model| crate::models::efforts(Some(engine), model, &[]);
+        assert_eq!(efforts(Engine::Claude, None), ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(efforts(Engine::Claude, Some("claude-sonnet-4-6")), ["low", "medium", "high", "max"]);
+        assert_eq!(efforts(Engine::Codex, None)[0], "minimal");
     }
 
     #[test]

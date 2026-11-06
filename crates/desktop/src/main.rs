@@ -73,6 +73,7 @@ mod motion;
 mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
+mod models;
 mod roadmap;
 mod sent;
 mod releases;
@@ -1000,7 +1001,7 @@ impl Shell {
                             continue;
                         }
                         // The engines: settings' AI platforms, never the model's.
-                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. })) = &update {
+                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::Providers { .. } | Event::ProviderTested { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. })) = &update {
                             let effect = this.engines.on_event(event);
                             changed |= effect.changed;
                             // The first engine ready: a squad that had none starts its team now.
@@ -1040,6 +1041,10 @@ impl Shell {
                         }
                         if let daemon::Update::Attached(hello) = &update {
                             this.disk.attached(hello.snapshot.disk.clone());
+                            // The models Codex offers there, listed off the daemon's loop, for the menus.
+                            this.send_command(Command::Models { engine: equipe_core::protocol::Engine::Codex });
+                            // The model providers connected there, and their models, for the same menus.
+                            this.send_command(Command::Providers);
                         }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
@@ -2164,12 +2169,12 @@ fn app_menu(cx: &mut App) {
     // New Window: beside the window in front, on its machine and squad; with
     // none open, as the app was left.
     cx.on_action(|_: &NewWindow, cx| {
-        let front = cx.active_window().and_then(|active| windows::shells().into_iter().find(|(h, _)| h.window_id() == active.window_id())).and_then(|(_, s)| s.upgrade());
-        match front {
-            Some(shell) => shell.update(cx, |shell, cx| shell.new_window(None, cx)),
+        match windows::front(cx) {
+            Some((_, shell)) => shell.update(cx, |shell, cx| shell.new_window(None, cx)),
             None => views::elsewhere::open(windows::Opening::default(), cx),
         }
     });
+    answer_zoom(cx);
     cx.on_action(|_: &MinimizeWindow, cx| {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, _| window.minimize_window());
@@ -2226,22 +2231,21 @@ fn window_menu() -> Menu {
 }
 
 /// ⌘+ ⌘- ⌘0 and the View menu: the app's to answer, whatever has the focus
-/// — or nothing at all (a screen whose text box left the window).
-fn answer_zoom(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
-    let zoom = move |step: zoom::Step| {
-        let shell = shell.clone();
+/// — or nothing at all (a screen whose text box left the window) — and the
+/// window in front's to take, whichever of the open windows it is. Answered
+/// once for the app: GPUI runs only one app-wide answer to an action, so one
+/// per window would leave every window but that one unable to zoom.
+fn answer_zoom(cx: &mut App) {
+    fn zoom(step: zoom::Step, cx: &mut App) {
+        let Some((handle, shell)) = windows::front(cx) else { return };
         // Later: the window is in use while it dispatches the key.
-        move |cx: &mut App| {
-            let shell = shell.clone();
-            cx.defer(move |cx| {
-                let _ = handle.update(cx, |_, window, cx| shell.update(cx, |shell, cx| shell.zoom(step, window, cx)));
-            });
-        }
-    };
-    let (zoom_in, zoom_out, actual) = (zoom(zoom::Step::In), zoom(zoom::Step::Out), zoom(zoom::Step::Actual));
-    cx.on_action(move |_: &ZoomIn, cx| zoom_in(cx));
-    cx.on_action(move |_: &ZoomOut, cx| zoom_out(cx));
-    cx.on_action(move |_: &ActualSize, cx| actual(cx));
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| shell.update(cx, |shell, cx| shell.zoom(step, window, cx)));
+        });
+    }
+    cx.on_action(|_: &ZoomIn, cx| zoom(zoom::Step::In, cx));
+    cx.on_action(|_: &ZoomOut, cx| zoom(zoom::Step::Out, cx));
+    cx.on_action(|_: &ActualSize, cx| zoom(zoom::Step::Actual, cx));
 }
 
 /// The View menu: the window's size, as a browser zooms.
@@ -2517,7 +2521,6 @@ pub fn open_app_window(opening: windows::Opening, cx: &mut App) -> (AnyWindowHan
             ..Default::default()
         };
         let (handle, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(opening, window, cx))).expect("failed to open window");
-        answer_zoom(handle, shell.clone(), cx);
         (handle, shell)
     }
 }

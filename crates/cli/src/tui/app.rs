@@ -3601,11 +3601,13 @@ pub fn image_path(text: &str) -> Option<PathBuf> {
     (is_image(&path) && path.is_absolute() && path.is_file()).then_some(path)
 }
 
-/// The models a member's engine takes, for completion: Claude Code's aliases;
-/// for other engines, what it runs now (any name the engine knows works).
+/// The models a member's engine takes, for completion: Claude Code's
+/// families' latest, then its models by id (`equipe_core::models`); for
+/// other engines, what it runs now (any name the engine knows works).
 fn engine_models(agent: &Agent) -> Vec<String> {
+    use equipe_core::models::{CLAUDE_FAMILIES, CLAUDE_MODELS};
     let mut models: Vec<String> = match agent.engine {
-        Some(Engine::Claude) => ["opus", "sonnet", "haiku"].iter().map(|m| (*m).to_owned()).collect(),
+        Some(Engine::Claude) => CLAUDE_FAMILIES.iter().map(|f| f.alias).chain(CLAUDE_MODELS.iter().map(|p| p.id)).map(str::to_owned).collect(),
         _ => Vec::new(),
     };
     if let Some(current) = agent.model.as_ref().filter(|m| !models.contains(m)) {
@@ -3827,6 +3829,7 @@ mod tests {
             member,
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,
@@ -3834,6 +3837,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: Vec::new(),
+            recent_at: Vec::new(),
             queued: Vec::new(),
             queued_project: None,
             queued_in: Vec::new(),
@@ -4060,7 +4064,7 @@ mod tests {
     #[test]
     fn model_names_shorten_for_the_team_list() {
         let (mut app, id) = ready();
-        app.on_event(Event::ModelKnown { session: id, model: "claude-opus-5-5[1m]".into() });
+        app.on_event(Event::ModelKnown { session: id, model: "claude-opus-5-5[1m]".into(), asked: None });
         assert_eq!(app.agents[0].short_model().as_deref(), Some("opus-5-5"));
     }
 

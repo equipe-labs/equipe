@@ -96,7 +96,11 @@ pub struct Member {
     pub memos: usize,
     /// How full its context is, in percent, once known.
     pub context: Option<u8>,
+    /// The model it runs, as its engine named it — else what it is set to.
     pub model: Option<String>,
+    /// What it is set to, when that differs from `model`: an alias its
+    /// engine resolved (`opus`, running as `claude-opus-4-8`).
+    pub asked: Option<String>,
     pub engine: Option<Engine>,
     /// When it expects what it is doing done, as it said (or equipe guessed).
     pub estimate: Option<Estimate>,
@@ -305,8 +309,16 @@ pub struct Model {
     /// The PM accepts the team's handed-in work itself: the person's inbox
     /// keeps only what is theirs.
     pub pm_accepts: bool,
+    /// What new members of a role start with, where the person set it.
+    pub role_models: Vec<equipe_core::protocol::RoleModel>,
+    /// The models each engine offers on the daemon's machine, as last listed
+    /// ([`Event::Models`]); none yet: what this app knows of them.
+    pub catalogs: HashMap<Engine, Vec<equipe_core::protocol::ModelChoice>>,
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub idle_wake_hours: u32,
+    /// How many subagents each member runs at once, where its engine has
+    /// them, as the person set it; `None`: each engine's own.
+    pub subagents_at_once: Option<u32>,
     /// The squad's signals, each with its latest readings.
     pub signals: Vec<equipe_core::protocol::signals::SignalView>,
     /// Conversations with the PM the person put away, the latest first.
@@ -469,7 +481,10 @@ impl Model {
             routines: Vec::new(),
             logins: Vec::new(),
             pm_accepts: false,
+            role_models: Vec::new(),
+            catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
+            subagents_at_once: None,
             signals: Vec::new(),
             put_away: Vec::new(),
             secret_asks: Vec::new(),
@@ -518,6 +533,12 @@ impl Model {
             board_rev: 0,
             squad_errors: 0,
         }
+    }
+
+    /// The models `engine` offers, as the daemon last listed them (none yet:
+    /// the menus offer what this app knows).
+    pub fn listed(&self, engine: Option<Engine>) -> &[equipe_core::protocol::ModelChoice] {
+        engine.and_then(|e| self.catalogs.get(&e)).map_or(&[], Vec::as_slice)
     }
 
     /// The member on screen.
@@ -748,8 +769,8 @@ impl Model {
         match self.chat_slice(follow) {
             Some(slice) => convo.sliced(slice.as_deref()),
             None => {
-                let blocks = convo.blocks();
-                crate::convo::Sliced { about: vec![None; blocks.len()], blocks }
+                let (blocks, at) = convo.blocks_at();
+                crate::convo::Sliced { about: vec![None; blocks.len()], blocks, at }
             }
         }
     }
@@ -945,8 +966,10 @@ impl Model {
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
         self.pm_accepts = snapshot.pm_accepts;
+        self.role_models = snapshot.role_models.clone();
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
+        self.subagents_at_once = snapshot.subagents_at_once;
         self.signals = snapshot.signals.clone();
         self.put_away = snapshot.put_away.clone();
         self.secret_asks = snapshot.secret_asks.clone();
@@ -1011,6 +1034,7 @@ impl Model {
                     memos: s.queued.len(),
                     context: s.context.and_then(percent),
                     model: s.model.clone(),
+                    asked: s.asked_model.clone(),
                     engine: Some(s.engine),
                     estimate: s.estimate.clone(),
                     target: s.recent.iter().rev().find_map(|e| match e {
@@ -1063,8 +1087,20 @@ impl Model {
                 self.pm_accepts = *on;
                 self.revision += 1;
             }
+            Event::RoleModelsChanged { squad, defaults } if *squad == self.squad => {
+                self.role_models = defaults.clone();
+                self.revision += 1;
+            }
+            Event::Models { engine, models } => {
+                self.catalogs.insert(*engine, models.clone());
+                self.revision += 1;
+            }
             Event::IdleWakeChanged { squad, hours } if *squad == self.squad => {
                 self.idle_wake_hours = *hours;
+                self.revision += 1;
+            }
+            Event::SubagentsAtOnceChanged { squad, at_once } if *squad == self.squad => {
+                self.subagents_at_once = *at_once;
                 self.revision += 1;
             }
             Event::SignalsChanged { squad, signals } if *squad == self.squad => {
@@ -1213,12 +1249,12 @@ impl Model {
             }
             Event::LaneOpened { session, of, project, kept } => self.open_lane(session, of, project, kept),
             // Taken up again: its name and what was said, as it was left.
-            Event::ConversationBack { session, title, lines } => {
+            Event::ConversationBack { session, title, lines, lines_at } => {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
                     lane.title = title;
                 }
                 if let Some(convo) = self.convos.get_mut(&session) {
-                    convo.transcript = equipe_core::protocol::Transcript::from_entries(lines);
+                    convo.transcript = equipe_core::protocol::Transcript::with_times(lines, lines_at);
                 }
                 self.revision += 1;
             }
@@ -1261,6 +1297,7 @@ impl Model {
                     memos: 0,
                     context: None,
                     model,
+                    asked: None,
                     engine: Some(engine),
                     estimate: None,
                     target: None,
@@ -1320,7 +1357,11 @@ impl Model {
                         member.presence = Presence::Working;
                         member.verb = Verb::Writing;
                     }
-                    Event::ModelKnown { model, .. } => member.model = Some(model),
+                    Event::ModelKnown { model, asked, .. } => {
+                        // What it is set to, kept apart only while it differs.
+                        member.asked = asked.filter(|a| *a != model);
+                        member.model = Some(model);
+                    }
                     Event::TurnEnded { usage, outcome, .. } => {
                         member.failed = outcome == TurnOutcome::Failed;
                         if member.failed {
@@ -1867,6 +1908,74 @@ pub fn local_midnight(unix: u64) -> u64 {
     if midnight < 0 || midnight as u64 > unix { unix - unix % 86_400 } else { midnight as u64 }
 }
 
+/// What `unix` reads on the Mac's clock, in its time zone.
+pub fn local_time(unix: u64) -> crate::activity::Local {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let secs = unix as libc::time_t;
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    crate::activity::Local {
+        year: i64::from(tm.tm_year) + 1900,
+        month: (tm.tm_mon + 1) as u32,
+        day: tm.tm_mday as u32,
+        weekday: tm.tm_wday as u32,
+        hour: tm.tm_hour as u32,
+        minute: tm.tm_min as u32,
+    }
+}
+
+/// How this Mac's clock tells the hour — as its region does, or as the
+/// person set it (System Settings › General › Date & Time) — if it says.
+pub fn system_hours() -> Option<crate::activity::Hours> {
+    static HOURS: std::sync::OnceLock<Option<crate::activity::Hours>> = std::sync::OnceLock::new();
+    *HOURS.get_or_init(mac_hours)
+}
+
+/// The hour in the Mac's own short time format (`h:mm a`, `HH:mm`).
+#[cfg(target_os = "macos")]
+fn mac_hours() -> Option<crate::activity::Hours> {
+    use objc2_core_foundation::{CFRetained, CFString};
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFLocaleCopyCurrent() -> *const c_void;
+        fn CFDateFormatterCreateDateFormatFromTemplate(allocator: *const c_void, template: &CFString, options: usize, locale: *const c_void) -> Option<NonNull<CFString>>;
+        fn CFRelease(cf: *const c_void);
+    }
+    // `j`: the hour as the locale tells it, its 12- or 24-hour clock and all.
+    let template = CFString::from_str("j");
+    let format = unsafe {
+        let locale = CFLocaleCopyCurrent();
+        if locale.is_null() {
+            return None;
+        }
+        let format = CFDateFormatterCreateDateFormatFromTemplate(std::ptr::null(), &template, 0, locale);
+        CFRelease(locale);
+        CFRetained::from_raw(format?)
+    };
+    hours_of_format(&format.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_hours() -> Option<crate::activity::Hours> {
+    None
+}
+
+/// The clock a date format tells the hour on: `h` and `K` 12-hour, `H` and
+/// `k` 24-hour (words in quotes aside).
+fn hours_of_format(format: &str) -> Option<crate::activity::Hours> {
+    let mut quoted = false;
+    for c in format.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            'h' | 'K' if !quoted => return Some(crate::activity::Hours::Twelve),
+            'H' | 'k' if !quoted => return Some(crate::activity::Hours::TwentyFour),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Now, in unix seconds: for the shell to hand the model.
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
@@ -2032,6 +2141,7 @@ mod tests {
             member: Some(Who { role: role.into(), name: name.into() }),
             engine: Engine::Claude,
             model: Some("opus".into()),
+            asked_model: None,
             access: Access::EditFiles,
             workspace: None,
             state,
@@ -2039,6 +2149,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],
@@ -2107,6 +2218,26 @@ mod tests {
     }
 
     #[test]
+    fn when_each_message_was_said_comes_with_the_snapshot_and_with_a_conversation_taken_up_again() {
+        use crate::convo::Block;
+        let at = |sliced: &crate::convo::Sliced| -> Vec<Option<u64>> { sliced.blocks.iter().zip(&sliced.at).filter(|(b, _)| matches!(b, Block::User(_) | Block::Reply { .. })).map(|(_, at)| *at).collect() };
+        let mut model = pm_in_two_projects();
+        assert_eq!(at(&model.conversation(true)), [None; 4], "an older daemon's snapshot: no times");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        pm.recent = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "app q".into() }, Entry::Reply { text: "app a".into() }];
+        pm.recent_at = vec![None, Some(1_762_300_000), Some(1_762_300_090)];
+        model.apply(hello(vec![pm]), T0);
+        assert_eq!(at(&model.conversation(true)), [Some(1_762_300_000), Some(1_762_300_090)]);
+        assert_eq!(at(&model.conversation(false)), [Some(1_762_300_000), Some(1_762_300_090)], "the whole conversation too");
+        // A conversation put away, taken up again: as it was left, times and all.
+        model.apply(Update::Event(Event::SessionStarted { session: 51, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 51, of: 1, project: Some("app".into()), kept: true }), T0);
+        let lines = vec![Entry::User { text: "what next?".into() }, Entry::Reply { text: "this".into() }];
+        model.apply(Update::Event(Event::ConversationBack { session: 51, title: None, lines, lines_at: vec![Some(10), Some(20)] }), T0);
+        assert_eq!(model.convos[&51].transcript.times(), &[Some(10), Some(20)]);
+    }
+
+    #[test]
     fn what_was_said_to_the_whole_squad_shows_in_every_project() {
         let mut model = Model::new("acme");
         let mut pm = session(1, "pm", "pm", SessionState::Ready);
@@ -2138,6 +2269,29 @@ mod tests {
         model.set_focus(Some("app".into()));
         model.select(2);
         assert_eq!(model.chat_slice(true), None);
+    }
+
+    #[test]
+    fn a_member_keeps_what_it_is_set_to_apart_from_what_its_engine_runs() {
+        let mut model = Model::new("acme");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        pm.model = Some("claude-opus-4-8".into());
+        pm.asked_model = Some("opus".into());
+        let mut snapshot = Snapshot { squad: "acme".into(), sessions: vec![pm], ..Default::default() };
+        snapshot.role_models = vec![equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: Some("claude-opus-5-5".into()), effort: None }];
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        assert_eq!((model.members[0].model.as_deref(), model.members[0].asked.as_deref()), (Some("claude-opus-4-8"), Some("opus")));
+        assert_eq!(model.role_models.len(), 1);
+        // Set to the newest by its id: once it runs as that, nothing is kept apart.
+        model.apply(Update::Event(Event::ModelKnown { session: 1, model: "claude-opus-5-5".into(), asked: Some("claude-opus-5-5".into()) }), T0);
+        assert_eq!((model.members[0].model.as_deref(), model.members[0].asked.as_deref()), (Some("claude-opus-5-5"), None));
+        // The daemon's lists, for the menus; and what a role starts with, changed.
+        let listed = vec![equipe_core::protocol::ModelChoice { id: "gpt-6.1-sol".into(), ..Default::default() }];
+        model.apply(Update::Event(Event::Models { engine: Engine::Codex, models: listed.clone() }), T0);
+        assert_eq!(model.listed(Some(Engine::Codex)), listed.as_slice());
+        assert!(model.listed(Some(Engine::Claude)).is_empty() && model.listed(None).is_empty());
+        model.apply(Update::Event(Event::RoleModelsChanged { squad: "acme".into(), defaults: vec![] }), T0);
+        assert!(model.role_models.is_empty());
     }
 
     #[test]
@@ -2821,6 +2975,19 @@ mod tests {
     }
 
     #[test]
+    fn how_many_subagents_a_member_runs_at_once_shows_and_follows_the_daemon() {
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.subagents_at_once, None, "an older daemon says nothing: each engine's own");
+        assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: Some(4) }), T0));
+        assert_eq!(model.subagents_at_once, Some(4));
+        model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "other".into(), at_once: Some(40) }), T0);
+        assert_eq!(model.subagents_at_once, Some(4), "another squad's");
+        assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: None }), T0));
+        assert_eq!(model.subagents_at_once, None, "back to each engine's own");
+    }
+
+    #[test]
     fn the_squads_signals_come_with_the_snapshot_and_are_replaced_when_they_change() {
         use equipe_core::protocol::signals::{SignalReading, SignalSource, SignalView};
         let mut model = needs_model();
@@ -3055,4 +3222,21 @@ mod tests {
         assert!(screen_line(&stopped, "acme").is_some());
     }
 
+    #[test]
+    fn the_macs_clock_reads_as_its_time_format_says() {
+        use crate::activity::Hours;
+        assert_eq!(hours_of_format("h:mm a"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("a h:mm"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("K:mm a"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("HH:mm"), Some(Hours::TwentyFour));
+        assert_eq!(hours_of_format("H 'h' mm"), Some(Hours::TwentyFour), "the h in quotes is a word");
+        assert_eq!(hours_of_format("mm"), None);
+        // This Mac's own, whatever it is: a clock either way, and what it reads agrees with the rest.
+        let now = now_unix();
+        let local = local_time(now);
+        assert_eq!(format!("{:02}:{:02}", local.hour, local.minute), local_hm(now));
+        let midnight = local_midnight(now);
+        assert_eq!((local_time(midnight).hour, local_time(midnight).minute), (0, 0));
+        assert_eq!(local_time(midnight).day, local.day);
+    }
 }

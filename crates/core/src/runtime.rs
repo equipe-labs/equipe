@@ -22,7 +22,7 @@ use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
     Access, Approval, AuthState, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
-    Estimate, OffMain, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Estimate, ModelChoice, OffMain, RoleModel, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::codex_app;
@@ -82,6 +82,9 @@ mod compact;
 mod controls;
 mod review;
 mod retro;
+mod watch;
+mod helping;
+mod providers;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -541,6 +544,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_read: None,
         codex_reading: false,
         codex_models: None,
+        codex_listing: false,
+        providers: HashMap::new(),
         questions: HashMap::new(),
         team_changes: HashMap::new(),
         routine_proposals: HashMap::new(),
@@ -555,6 +560,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         disk: Default::default(),
+        commands: Default::default(),
+        helping: HashMap::new(),
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
@@ -646,7 +653,11 @@ struct Session {
     /// When it joined, for a stable team order (ids are random).
     joined: u64,
     engine: Engine,
+    /// The model it is set to, as its engine is asked for it: an alias
+    /// (`opus`) or an id.
     model: Option<String>,
+    /// The model its engine named when it last started a turn, if it did.
+    ran: Option<String>,
     access: Access,
     /// Where desk turns run — and, for a plain editing session, its worktree.
     cwd: PathBuf,
@@ -690,6 +701,9 @@ struct Session {
     /// Stops the turn running now through its engine, which then winds it
     /// down (Codex's `turn/interrupt`). `None`: stopping kills it.
     stop: Option<oneshot::Sender<()>>,
+    /// Stops one subagent of the turn running now, by its thread, through
+    /// its engine (Codex's `turn/interrupt` on the subagent's own turn).
+    stop_subagent: Option<mpsc::UnboundedSender<String>>,
     /// For each of those, the project the person was looking at (`None`: the whole squad).
     steer_threads: Vec<Option<String>>,
     /// Steers taken back after they went into the turn: not shown when the
@@ -803,6 +817,10 @@ type MergeResult = Result<(String, Option<Result<(), String>>), String>;
 
 enum Internal {
     Event(Box<Event>),
+    /// A turn's engine started, as this process.
+    EngineStarted { session: SessionId, pid: u32 },
+    /// Every process, as a look at members' commands found them (`None`: `ps` couldn't say).
+    Processes(Option<Vec<crate::command_watch::Proc>>),
     Done(TurnDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
@@ -851,6 +869,11 @@ enum Internal {
     SignInEnded(Engine, u64),
     /// Installing an engine's tool ended.
     InstallEnded(Engine),
+    /// The Codex CLI's models, as just listed off the loop for the screens;
+    /// `None`: they couldn't be.
+    CodexModels(Option<Vec<codex_app::ModelInfo>>),
+    /// A model provider's models, as just listed off the loop, or why not.
+    ProviderListed { id: String, result: Result<Vec<String>, crate::nemotron::ReviewError> },
     /// Whether Claude is signed in, as just looked at off the loop.
     ClaudeReady(bool),
     /// A squad's design systems looked at off the loop: their stamp, and —
@@ -870,6 +893,16 @@ enum Internal {
     DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
     /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
     Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
+    /// A subagent of a turn's engine was heard from on its own thread.
+    SubagentHeard { session: SessionId, id: String },
+    /// A member's helper did something ([`crate::helpers`]).
+    Helper { session: SessionId, id: String, activity: Activity },
+    /// A member's helper's turn ended: what it wrote, or why it failed.
+    HelperEnded { session: SessionId, id: String, outcome: Result<equipe_providers::turn::TurnResult, String> },
+    /// A helper's time is up.
+    HelperTimeUp { session: SessionId, id: String },
+    /// A `helper_result` has waited as long as it does.
+    HelperWaitOver(u64),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -972,7 +1005,11 @@ struct Runtime {
     codex_read: Option<std::time::Instant>,
     codex_reading: bool,
     /// The models the Codex CLI offers, as last listed.
-    codex_models: Option<(std::time::Instant, Vec<String>)>,
+    codex_models: Option<(std::time::Instant, Vec<codex_app::ModelInfo>)>,
+    /// A listing for the screens is under way.
+    codex_listing: bool,
+    /// What each model provider connected here listed, by its id.
+    providers: HashMap<String, providers::Listed>,
     /// The Mac's screen, one member at a time, across squads.
     desktop: desktop::Desktop,
     /// Members' questions waiting for the person, by squad (`decide`).
@@ -1006,6 +1043,10 @@ struct Runtime {
     merging: std::collections::HashSet<(String, TicketId)>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
+    /// Members' commands under way, as watched running (`watch.rs`).
+    commands: watch::Commands,
+    /// Members' helpers, by the conversation they work for (`helping.rs`).
+    helping: HashMap<SessionId, helping::Helping>,
     /// The Mac held awake while members work or a screen is attached.
     awake: crate::awake::Awake,
     /// Sign-ins under way on this machine, by engine: which one, and its task.
@@ -1069,6 +1110,8 @@ impl Wake {
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
+            Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
+            Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
             Wake::Internal(Internal::Apply(_)) => Borrowed("a change the person said yes to"),
@@ -1094,6 +1137,8 @@ impl Wake {
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
+            Wake::Internal(Internal::CodexModels(_)) => Borrowed("the Codex models listed"),
+            Wake::Internal(Internal::ProviderListed { .. }) => Borrowed("a provider's models listed"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
@@ -1103,6 +1148,11 @@ impl Wake {
             Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
+            Wake::Internal(Internal::SubagentHeard { .. }) => Borrowed("a subagent heard from"),
+            Wake::Internal(Internal::Helper { .. }) => Borrowed("a helper's step"),
+            Wake::Internal(Internal::HelperEnded { .. }) => Borrowed("a helper's end"),
+            Wake::Internal(Internal::HelperTimeUp { .. }) => Borrowed("a helper's time up"),
+            Wake::Internal(Internal::HelperWaitOver(_)) => Borrowed("a wait for helpers over"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -1235,19 +1285,27 @@ impl Runtime {
                 }
             },
             Wake::Internal(message) => match message {
-                Internal::Event(event) => match *event {
-                    // What the engine echoes as it reads the person's steers: each said as it was.
-                    Event::Steered { session, text } => self.steered(session, &text),
-                    event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
-                    event => {
-                        // A build that failed for want of room says so plainly.
-                        let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
-                        self.publish(event);
-                        if let Some(id) = no_room {
-                            self.member_out_of_room(id);
+                Internal::Event(event) => {
+                    // The engine said something: it isn't silent, whatever it runs.
+                    if let Some(id) = event.session() {
+                        self.engine_heard(id);
+                    }
+                    match *event {
+                        // What the engine echoes as it reads the person's steers: each said as it was.
+                        Event::Steered { session, text } => self.steered(session, &text),
+                        event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
+                        event => {
+                            // A build that failed for want of room says so plainly.
+                            let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
+                            self.publish(event);
+                            if let Some(id) = no_room {
+                                self.member_out_of_room(id);
+                            }
                         }
                     }
-                },
+                }
+                Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
+                Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
                 Internal::Apply(command) => Box::pin(self.handle(*command)).await,
@@ -1282,9 +1340,19 @@ impl Runtime {
                 Internal::AuthChecked(engine, state, detail) => self.auth_checked(engine, state, detail).await,
                 Internal::AuthRecheck(engine) => self.check_engine(engine),
                 Internal::ClaudeReady(ok) => self.claude_ready(ok),
+                Internal::CodexModels(listed) => {
+                    self.codex_listing = false;
+                    if let Some(models) = listed.filter(|m| !m.is_empty()) {
+                        let choices = models.iter().map(model_choice).collect();
+                        self.codex_models = Some((std::time::Instant::now(), models));
+                        self.publish(Event::Models { engine: Engine::Codex, models: choices });
+                    }
+                }
+                Internal::ProviderListed { id, result } => self.provider_listed(id, result),
                 Internal::InstallEnded(engine) => {
                     self.installs.remove(&engine);
                     self.publish_nebius();
+                    self.publish_providers();
                 }
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
@@ -1310,6 +1378,11 @@ impl Runtime {
                 Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
+                Internal::SubagentHeard { session, id } => self.subagent_heard(session, &id),
+                Internal::Helper { session, id, activity } => self.helper_did(session, &id, activity),
+                Internal::HelperEnded { session, id, outcome } => self.helper_ended(session, &id, outcome),
+                Internal::HelperTimeUp { session, id } => self.stop_helper(session, &id, crate::helpers::Ended::TimeLimit),
+                Internal::HelperWaitOver(key) => self.helper_wait_over(key),
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -1317,6 +1390,8 @@ impl Runtime {
                 if self.desktop.expire() {
                     self.publish_desktop();
                 }
+                self.look_at_commands();
+                self.watch_subagents();
             }
             Wake::Frames => self.take_frames(),
             Wake::DesignTick => self.design_tick(),
@@ -1376,6 +1451,10 @@ impl Runtime {
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
     fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
+        // A turn's end, a member gone, the person's word: its helpers follow.
+        self.follow_helpers(&mut event);
+        // A command step starting or answered, a turn's end: its watch follows.
+        self.follow_commands(&event);
         // A turn that ends mid-compaction cuts it short: said first.
         if let Event::TurnEnded { session, .. } = &event
             && self.sessions.get(session).is_some_and(|s| s.compacting.is_some())
@@ -1389,6 +1468,12 @@ impl Runtime {
             ticket.asks = ticket.asks();
             // It changed now: the screens know when it finished.
             ticket.updated_at = Some(now_secs());
+        }
+        // The model the engine named, beside the one the member is set to.
+        if let Event::ModelKnown { session, asked: asked @ None, .. } = &mut event
+            && let Some(s) = self.sessions.get(session)
+        {
+            asked.clone_from(&s.model);
         }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
@@ -1428,7 +1513,8 @@ impl Runtime {
                 Event::UserMessage { text, .. } if session.title.is_none() => {
                     session.title = text.lines().next().map(str::to_owned);
                 }
-                Event::ModelKnown { model, .. } => session.model = Some(model.clone()),
+                // What runs; what it is set to stays (an alias is asked for again each turn).
+                Event::ModelKnown { model, .. } => session.ran = Some(model.clone()),
                 Event::Steered { text, .. } => {
                     if let Some(at) = session.steering.iter().position(|t| t == text) {
                         session.steering.remove(at);
@@ -1444,15 +1530,20 @@ impl Runtime {
                     step: None,
                     since: std::time::Instant::now(),
                     entries: std::collections::VecDeque::new(),
+                    heard: std::time::Instant::now(),
+                    watched: session.engine == Engine::Codex,
+                    stuck: false,
                 }),
                 Event::SubagentStep { id, step, .. } => {
                     if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
                         sub.step = Some(step.clone());
+                        sub.heard = std::time::Instant::now();
                     }
                 }
                 Event::SubagentEntry { id, entry, .. } => {
                     if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
                         sub.keep(entry.clone());
+                        sub.heard = std::time::Instant::now();
                     }
                 }
                 Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.id != *id),
@@ -1574,17 +1665,56 @@ impl Runtime {
         if let Some((at, models)) = &self.codex_models
             && at.elapsed() < CODEX_MODELS_KEPT
         {
-            return Ok(models.clone());
+            return Ok(models.iter().map(|m| m.id.clone()).collect());
         }
         let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
-        let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_models(&self.config.codex_binary, &cwd)).await;
+        let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_model_infos(&self.config.codex_binary, &cwd)).await;
         let models = match listed {
             Ok(Ok(models)) => models,
             Ok(Err(err)) => return Err(err.to_string()),
             Err(_) => return Err(format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs())),
         };
-        self.codex_models = Some((std::time::Instant::now(), models.clone()));
-        Ok(models)
+        let ids = models.iter().map(|m| m.id.clone()).collect();
+        self.codex_models = Some((std::time::Instant::now(), models));
+        Ok(ids)
+    }
+
+    /// The models `engine` offers, for the screens ([`Command::Models`]):
+    /// Claude Code's from the catalog; the Codex CLI's as it lists them, off
+    /// the loop, kept a while. Nothing when the Codex CLI isn't here.
+    fn models_asked(&mut self, engine: Engine) {
+        match engine {
+            Engine::Claude => {
+                let aliases = crate::models::CLAUDE_FAMILIES.iter().map(|f| f.alias);
+                let ids = crate::models::CLAUDE_MODELS.iter().map(|p| p.id);
+                let models = aliases
+                    .chain(ids)
+                    .map(|id| {
+                        let efforts = crate::models::efforts(Engine::Claude, Some(id)).iter().map(|e| (*e).to_owned()).collect();
+                        ModelChoice { id: id.to_owned(), name: crate::models::name(id), efforts, default_effort: None }
+                    })
+                    .collect();
+                self.publish(Event::Models { engine, models });
+            }
+            Engine::Codex => {
+                if let Some((at, models)) = &self.codex_models
+                    && at.elapsed() < CODEX_MODELS_KEPT
+                {
+                    let models = models.iter().map(model_choice).collect();
+                    return self.publish(Event::Models { engine, models });
+                }
+                if self.codex_listing || codex_app::find(&self.config.codex_binary).is_none() {
+                    return;
+                }
+                self.codex_listing = true;
+                let (binary, internal) = (self.config.codex_binary.clone(), self.internal.clone());
+                let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
+                tokio::spawn(async move {
+                    let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_model_infos(&binary, &cwd)).await;
+                    let _ = internal.send(Internal::CodexModels(listed.ok().and_then(Result::ok)));
+                });
+            }
+        }
     }
 
     /// The squads screens follow now, and those with a journal open.
@@ -1744,19 +1874,50 @@ impl Runtime {
             }
             Command::SetModel { session, model } => {
                 let model = model.trim().to_owned();
+                // A provider's model runs on Codex's agent: a member on Claude Code moves there.
+                if crate::model_providers::split_ref(&model).is_some()
+                    && let Some(s) = self.sessions.get(&session).filter(|s| s.engine != Engine::Codex)
+                {
+                    match (s.squad.clone(), s.name().map(str::to_owned)) {
+                        (Some(squad), Some(name)) => self.move_to_model(&squad, name, session, model).await,
+                        _ => {
+                            let provider = self.on_provider(&model).map(|(_, p)| p).unwrap_or_default();
+                            self.error(Some(session), say!(self, "error.provider_model_codex", provider = provider), None);
+                        }
+                    }
+                    return;
+                }
                 if let Some(s) = self.sessions.get_mut(&session).filter(|_| !model.is_empty()) {
                     s.model = Some(model.clone());
+                    // Its engine names what this runs as at its next turn.
+                    s.ran = None;
                     let squad = s.squad.clone();
                     if let Some(journal) = squad.as_deref().and_then(|q| journal_for(&mut self.journals, &self.config.home, q)) {
                         let _ = journal.set_model(session, &model);
                     }
-                    self.publish(Event::ModelKnown { session, model: model.clone() });
+                    self.publish(Event::ModelKnown { session, model: model.clone(), asked: Some(model.clone()) });
                     let text = say!(self, "notice.model", model = model);
                     self.publish(Event::Notice { session, text });
                 }
             }
+            Command::Models { engine } => self.models_asked(engine),
+            Command::SetRoleModel { squad, default } => {
+                let default = RoleModel {
+                    model: default.model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()),
+                    effort: default.effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty()),
+                    ..default
+                };
+                if let Some(journal) = self.journal(&squad) {
+                    match journal.set_role_model(default) {
+                        Ok(defaults) => self.publish(Event::RoleModelsChanged { squad, defaults }),
+                        Err(err) => self.error(None, err.to_string(), None),
+                    }
+                }
+            }
             Command::Unqueue { session, text } => self.unqueue(session, &text),
             Command::SendNow { session, texts } => self.send_now(session, texts).await,
+            Command::StopCommand { session } => self.stop_command(session),
+            Command::StopSubagent { session, id } => self.stop_subagent(session, &id),
             Command::SetEffort { session, effort } => {
                 let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
                 if let Some(s) = self.sessions.get_mut(&session) {
@@ -1861,6 +2022,10 @@ impl Runtime {
                 self.publish_nebius();
             }
             Command::SetNebiusKey { key } => self.set_nebius_key(key),
+            Command::Providers => self.providers_asked(),
+            Command::AddProvider { preset, base_url, key } => self.add_provider(preset, base_url, key.map(|k| k.0)),
+            Command::TestProvider { id } => self.test_provider(id),
+            Command::RemoveProvider { id } => self.remove_provider(id),
             Command::SignIn { engine, device } => self.sign_in(engine, device),
             Command::SignInCancel { engine } => {
                 if let Some((_, task)) = self.sign_ins.remove(&engine) {
@@ -1889,6 +2054,14 @@ impl Runtime {
                     let _ = journal.set_pm_accepts(on);
                 }
                 self.publish(Event::PmAcceptsChanged { squad, on });
+            }
+            // Each member's next turn runs it and is told it.
+            Command::SetSubagentsAtOnce { squad, at_once } => {
+                let at_once = at_once.map(crate::protocol::subagents_at_once);
+                if let Some(Err(err)) = self.journal(&squad).map(|j| j.set_subagents_at_once(at_once)) {
+                    crate::daemon_log!("equipe: {squad}: subagents at once wasn't kept: {err}");
+                }
+                self.publish(Event::SubagentsAtOnceChanged { squad, at_once });
             }
             Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
@@ -1936,13 +2109,16 @@ impl Runtime {
         let done = match key {
             Some(key) if !crate::nemotron::key_is_plausible(&key) => Err(say!(self, "error.nebius_key_invalid")),
             Some(key) => crate::nemotron::save_key(&home, &key).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
-            None => crate::nemotron::forget_key(&home).map(|_| ()).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
+            // Off the providers' list too, where it is Nebius's entry.
+            None => crate::model_providers::remove(&home, crate::model_providers::NEBIUS).map(|_| ()).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
         };
         if let Err(why) = done {
             self.error(None, why, None);
         }
+        self.providers.remove(crate::model_providers::NEBIUS);
         self.config.nemotron = crate::nemotron::Config::from_env_or_saved(&home).ok();
         self.publish_nebius();
+        self.publish_providers();
     }
 
     /// The engines as just looked at, with who is on each and the sign-ins
@@ -2307,6 +2483,12 @@ impl Runtime {
         journal_for(&mut self.journals, &self.config.home, squad)
     }
 
+    /// How many subagents a member of `squad` runs at once, where the person
+    /// set it (`Journal::subagents_at_once`); `None`, each engine's own.
+    fn subagents_at_once(&self, squad: Option<&str>) -> Option<u32> {
+        squad.and_then(|s| self.journals.get(s)).and_then(Journal::subagents_at_once)
+    }
+
     /// An anonymous usage event of `squad`'s, with its team's size and engines;
     /// nothing goes out until the person said yes.
     fn tell(&self, squad: &str, happened: crate::telemetry::Happened) {
@@ -2661,8 +2843,16 @@ runbooks and reports live there, and work across the projects or on running them
             (None, None) => {}
         }
 
-        // NVIDIA's models on Nebius Token Factory run on Codex's agent (`nemotron`).
-        let mut on_nebius = spec.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+        // The role set to a provider's model (`@openrouter/…`): on it, whichever
+        // engine the screen set it for — it runs on Codex's agent either way.
+        let role_open = match (&squad, role, &spec.model, spec.engine) {
+            (Some(squad), Some(role), None, None) => self
+                .journal(squad)
+                .and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.model.as_deref().and_then(crate::model_providers::split_ref).is_some())),
+            _ => None,
+        };
+        // NVIDIA's models on Nebius Token Factory, and every provider's, run on Codex's agent (`nemotron`).
+        let mut on_nebius = spec.model.as_deref().or(role_open.as_ref().and_then(|d| d.model.as_deref())).is_some_and(crate::nemotron::is_agent_model);
         let engine = match spec.engine {
             // Named, but nothing at all is signed in: Nemotron, rather than failing.
             Some(_) if !on_nebius && self.nebius_ready() && self.nothing_signed_in().await => {
@@ -2699,13 +2889,24 @@ runbooks and reports live there, and work across the projects or on running them
         let codex_cli = engine == Engine::Codex && codex_app::find(&self.config.codex_binary).is_some();
         on_nebius &= engine == Engine::Codex;
         if on_nebius && !codex_cli {
-            return fail(self, say!(self, "error.nebius_needs_codex"), Some(crate::engines::installer(Engine::Codex)));
+            let message = match spec.model.as_deref().or(role_open.as_ref().and_then(|d| d.model.as_deref())).and_then(|m| self.on_provider(m)) {
+                Some((_, provider)) => say!(self, "error.provider_needs_codex", provider = provider),
+                None => say!(self, "error.nebius_needs_codex"),
+            };
+            return fail(self, message, Some(crate::engines::installer(Engine::Codex)));
         }
         if spec.access == Access::EditFiles && engine == Engine::Codex && !codex_cli {
             return fail(self, say!(self, "error.codex_edits"), Some("codex login"));
         }
 
-        let mut model = spec.model.clone();
+        // What the person set for the role on this engine, if anything.
+        let role_default = match (&squad, role) {
+            _ if role_open.is_some() && engine == Engine::Codex => role_open,
+            (Some(squad), Some(role)) => self.journal(squad).and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.engine == engine)),
+            _ => None,
+        };
+        let mut model = spec.model.clone().or_else(|| role_default.as_ref().and_then(|d| d.model.clone()));
+        let role_effort = role_default.and_then(|d| d.effort);
         let mut codex_cred = None;
         match engine {
             Engine::Codex if codex_cli => {
@@ -2719,8 +2920,10 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                 }
                 if on_nebius {
-                    let Some(cfg) = self.config.nemotron.clone() else {
-                        return fail(self, say!(self, "error.nebius_no_key"), Some("equipe login nebius"));
+                    let cfg = match self.open_config(model.as_deref()) {
+                        Ok(Some(cfg)) => cfg,
+                        Ok(None) => return fail(self, say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                        Err(message) => return fail(self, message, None),
                     };
                     if !model.as_deref().is_some_and(crate::nemotron::is_agent_model) {
                         let picked = match tokio::time::timeout(SERVER_WAIT, crate::nemotron::agent_model(&cfg)).await {
@@ -2874,6 +3077,7 @@ runbooks and reports live there, and work across the projects or on running them
                 joined,
                 engine,
                 model: model.clone(),
+                ran: None,
                 access,
                 cwd,
                 sandbox,
@@ -2897,12 +3101,13 @@ runbooks and reports live there, and work across the projects or on running them
                 steering: Vec::new(),
                 steer_threads: Vec::new(),
                 stop: None,
+                stop_subagent: None,
                 taken_back: Vec::new(),
                 send_now_prompt: None,
                 subagents: Vec::new(),
                 compacting: None,
                 answers_person: false,
-                effort: None,
+                effort: role_effort,
                 briefing: Vec::new(),
                 memory,
                 mode: None,
@@ -2917,12 +3122,23 @@ runbooks and reports live there, and work across the projects or on running them
         self.publish(Event::SessionStarted { session: id, project, engine, model: model.clone(), workspace, member, squad: squad.clone() });
         if on_nebius {
             let model = model.unwrap_or_default();
+            let named = self.on_provider(&model);
             let text = match &self.config.nemotron {
+                // A provider the person connected, by name.
+                _ if named.is_some() => {
+                    let (shown, provider) = named.clone().unwrap_or_default();
+                    let nemotron = crate::model_providers::split_ref(&model).is_some_and(|(p, m)| p == crate::model_providers::NEBIUS && m.to_ascii_lowercase().starts_with("nvidia/"));
+                    if nemotron { say!(self, "notice.on_nebius", model = shown) } else { say!(self, "notice.on_open_model", model = shown, provider = provider) }
+                }
                 // Token Factory and one of NVIDIA's: Nemotron, said as such.
                 Some(cfg) if cfg.provider == crate::nemotron::CODEX_PROVIDER && model.to_ascii_lowercase().starts_with("nvidia/") => say!(self, "notice.on_nebius", model = model),
                 Some(cfg) => say!(self, "notice.on_open_model", model = model, provider = cfg.provider_name.clone()),
                 None => say!(self, "notice.on_nebius", model = model),
             };
+            self.publish(Event::Notice { session: id, text });
+            // What it can't do there yet, so the person isn't surprised.
+            let provider = named.map(|(_, p)| p).or_else(|| self.config.nemotron.as_ref().map(|c| c.provider_name.clone())).unwrap_or_else(|| crate::nemotron::PROVIDER_NAME.to_owned());
+            let text = say!(self, "notice.provider_limits", provider = provider);
             self.publish(Event::Notice { session: id, text });
         }
         // A new member may be just who a waiting ticket needs.
@@ -3066,15 +3282,57 @@ runbooks and reports live there, and work across the projects or on running them
         }
     }
 
-    /// Send what waits for `id` now ([`Command::SendNow`]): its turn stops
-    /// and the steers not read and the memos — `first` in its order, then
-    /// the rest — go to it together, as one message about their project
-    /// (each part with its own, when they are about several).
+    /// Have what waits for `id` read now ([`Command::SendNow`]) — never by
+    /// stopping the work: a message is for the member to weigh, not the end
+    /// of what it does. At work, the memos go in as steers, read at its next
+    /// step with those already sent; a command it runs now is stopped (just
+    /// it), so that step comes at once. An engine that can't read mid-turn
+    /// keeps them for the turn's end, as memos are. With no turn under way,
+    /// what waits goes to it now as one message.
     async fn send_now(&mut self, id: SessionId, first: Vec<String>) {
         let waits = |s: &Session| !s.steering.is_empty() || !s.queued.is_empty();
         let Some(id) = self.holder(id, waits) else {
             return;
         };
+        if self.sessions.get(&id).is_some_and(Session::is_working) {
+            self.memos_to_steers(id, &first);
+            if self.command_running(id) {
+                self.stop_command(id);
+            }
+            return;
+        }
+        self.deliver_waiting(id, first).await;
+    }
+
+    /// The memos waiting for `id`, at work, sent into its turn as steers —
+    /// `first` in its order, then the rest — each with its project. Where the
+    /// engine can't take one, it stays a memo.
+    fn memos_to_steers(&mut self, id: SessionId, first: &[String]) {
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let Some(steer) = session.steer.clone() else { return };
+        let memos: Vec<(String, Option<String>)> =
+            std::mem::take(&mut session.queued).into_iter().zip(std::mem::take(&mut session.memo_threads).into_iter().chain(std::iter::repeat(None))).collect();
+        for (text, project) in steers::order(memos, first) {
+            let said = self.steer_words(id, &text, project.as_deref());
+            let Some(session) = self.sessions.get_mut(&id) else { return };
+            if steer.send(said).is_ok() {
+                session.steering.push(text.clone());
+                session.steer_threads.push(project.clone());
+                self.publish(Event::MemoWithdrawn { session: id, text: text.clone() });
+                self.publish(Event::SteerQueued { session: id, text, project });
+            } else {
+                session.queued.push(text);
+                session.memo_threads.push(project);
+            }
+        }
+        self.save_waiting(id);
+    }
+
+    /// What waits for `id`, with no turn under way: the steers not read and
+    /// the memos — `first` in its order, then the rest — go to it together,
+    /// as one message about their project (each part with its own, when they
+    /// are about several).
+    async fn deliver_waiting(&mut self, id: SessionId, first: Vec<String>) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -3102,7 +3360,6 @@ runbooks and reports live there, and work across the projects or on running them
         self.save_waiting(id);
         self.publish(Event::QueueSent { session: id, texts: texts.clone() });
         let project = if one { about[0].clone() } else { None };
-        let stopped = self.stop_turn(id);
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -3110,13 +3367,12 @@ runbooks and reports live there, and work across the projects or on running them
         session.memo_threads.insert(0, project);
         session.send_now_prompt = prompt;
         // A turn that finished already ends as it lands, delivering this first.
-        let landing = !stopped && session.turn.is_some();
+        let landing = session.turn.is_some();
         if !landing {
-            // The turn's end, as Esc's: its work handed in, what waits delivered —
-            // this message first.
+            // What waits delivered — this message first.
             self.after_turn(id).await;
         }
-        // What went into the stopped turn unread is in the message now: an
+        // What went into the finished turn unread is in the message now: an
         // echo of it still on its way is not shown twice.
         if let Some(session) = self.sessions.get_mut(&id) {
             session.taken_back.extend(texts);
@@ -3424,15 +3680,15 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad) else { return };
         let Ok(Some(c)) = journal.reopen_conversation(id) else { return };
-        let lines = journal.conversation(id).unwrap_or_default();
+        let (lines, lines_at) = journal.conversation_at(id).unwrap_or_default();
         let Some(m) = self.sessions.get(&pm) else { return };
         let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
         let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
         let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
         lane.title = title.clone();
-        lane.transcript = Transcript::from_entries(lines.clone());
+        lane.transcript = Transcript::with_times(lines.clone(), lines_at.clone());
         self.publish_lane(id, lane, pm, c.project, true);
-        self.publish(Event::ConversationBack { session: id, title, lines });
+        self.publish(Event::ConversationBack { session: id, title, lines, lines_at });
         self.publish_put_away(squad);
     }
 
@@ -3628,6 +3884,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A member on Claude Code has equipe's guard asked before each of its
         // calls (`guard`): what it refuses, the charter needn't ask for.
         let guarded = session.member.is_some() && session.engine == Engine::Claude && self.config.equipe_binary.is_some();
+        // The subagents its engine runs, as many at once as the squad says —
+        // given to the engine below — or as the engine runs on its own; said
+        // in the charter either way.
+        let set_at_once = self.subagents_at_once(squad.as_deref());
+        let subagents = session.member.as_ref().and_then(|_| subagents_of(session, set_at_once));
+        // With none, and the board's tools: equipe's helpers stand in.
+        let helped = board_tools && subagents.is_none() && self.helpers_offered(session);
         let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
@@ -3653,6 +3916,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 edits,
                 skills: skills::Delivery::Inline,
                 guard: guarded,
+                subagents,
+                helpers: helped,
             };
             let role = roles::role_or_custom(&m.role);
             let offered = skills::offered(role, &ctx);
@@ -3722,6 +3987,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(m) = &session.member {
             env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
         }
+        // Claude Code's cap on subagents at once, where the squad set it;
+        // Codex's goes in its thread's config (`codex_app::TurnRequest::subagents`).
+        if let (Some(sub), Some(at_once)) = (subagents.filter(|s| s.engine == Engine::Claude), set_at_once) {
+            debug_assert_eq!(sub.at_once, at_once);
+            env.push((CLAUDE_SUBAGENTS_ENV.to_owned(), at_once.to_string()));
+        }
         let writable: Vec<String> = builds.iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
@@ -3751,24 +4022,30 @@ for one project goes to it as tickets for its owners, with that project — and 
         // What the person says while this turn runs goes into it (Claude Code only).
         let mut steer = None;
         let mut stop = None;
+        let mut stop_subagent = None;
         let turn = match session.engine {
             // The person's own Codex CLI: an agent with tools, in the worktree.
             Engine::Codex if session.codex.is_none() => {
                 let binary = self.config.codex_binary.clone();
                 let lang = self.config.lang;
-                let model = session.model.clone();
                 let mut effort = effort_of(session);
-                // NVIDIA's models: Codex's agent with Token Factory as its provider.
-                let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
-                let provider = match (&self.config.nemotron, nebius) {
-                    (Some(cfg), true) => {
+                // NVIDIA's models, and every provider's: Codex's agent with
+                // Token Factory — or the provider the model names — as its provider.
+                let nebius = session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+                let open = if nebius { self.open_config(session.model.as_deref()) } else { Ok(None) };
+                // The provider is asked for the model by its own id.
+                let model = session.model.as_deref().map(|m| crate::model_providers::bare_model(m).to_owned());
+                let provider = match (open, nebius) {
+                    (Ok(Some(cfg)), true) => {
                         env.push(cfg.codex_env());
                         effort = crate::nemotron::agent_effort(effort.as_deref()).map(str::to_owned);
                         Some(cfg.codex_provider())
                     }
-                    (None, true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                    (Ok(None), true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                    (Err(message), true) => return self.error(Some(id), message, None),
                     (_, false) => None,
                 };
+                let provider_name = provider.as_ref().filter(|p| p.id != crate::nemotron::CODEX_PROVIDER).map(|p| p.name.clone());
                 // equipe's servers only, as Claude Code gets them: the board's tools
                 // never ask; the browser's and the desktop's ask unless the mode lets them.
                 let servers = match (&squad, &session.member, &self.config.equipe_binary) {
@@ -3783,6 +4060,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                             args
                         };
                         let mut servers = json!({ MCP_SERVER: codex_app::mcp_server(binary, &args(None), true) });
+                        // No subagents of its own: equipe's helpers, on the board's server.
+                        if helped {
+                            helping::offer(&mut servers[MCP_SERVER]);
+                        }
                         if let Some(port) = browser {
                             servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
@@ -3804,6 +4085,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 steer = Some(steer_tx);
                 let (stop_tx, stop_rx) = oneshot::channel::<()>();
                 stop = Some(stop_tx);
+                let (stop_sub_tx, stop_sub_rx) = mpsc::unbounded_channel::<String>();
+                stop_subagent = Some(stop_sub_tx);
                 // What Codex asks goes to the person as Claude Code's permission prompts do.
                 let (ask_tx, mut ask_rx) = mpsc::unbounded_channel::<codex_app::Ask>();
                 let asker = session_member(session);
@@ -3841,11 +4124,13 @@ for one project goes to it as tickets for its owners, with that project — and 
                         writable: &writable,
                         env: &env,
                         provider: provider.as_ref(),
+                        subagents: subagents.and(set_at_once),
                     };
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let outcome = codex_app::run_turn(&binary, &cwd, request, Some(steer_rx), Some(ask_tx), Some(stop_rx), |activity| {
+                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx) };
+                    let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
@@ -3854,6 +4139,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                             Activity::Limits(_) if nebius => {}
                             Activity::Limits(limits) => {
                                 let _ = internal.send(Internal::CodexLimits(Some(limits)));
+                            }
+                            Activity::Engine { pid } => {
+                                let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            }
+                            Activity::SubagentHeard { id: sub } => {
+                                let _ = internal.send(Internal::SubagentHeard { session: id, id: sub });
                             }
                             activity => {
                                 if let Some(event) = activity_event(id, activity) {
@@ -3872,7 +4163,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         return;
                     }
                     let thread = outcome.as_ref().ok().and_then(|turn| turn.thread_id.clone());
-                    let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, lang) } else { codex_cli_failure(err, lang) });
+                    let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, provider_name.as_deref(), lang) } else { codex_cli_failure(err, lang) });
                     let lost = !nebius && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Codex));
                     let reply = finish_turn(&emit, id, result, streamed);
                     if lost {
@@ -4002,6 +4293,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
+                        if let Activity::Engine { pid } = activity {
+                            let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            return;
+                        }
                         if let Some(event) = activity_event(id, activity) {
                             emit(event);
                         }
@@ -4023,6 +4318,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.turn = Some(turn);
             session.steer = steer;
             session.stop = stop;
+            session.stop_subagent = stop_subagent;
         }
     }
 
@@ -5403,6 +5699,12 @@ them with `propose_accept`. Then carry on with what else waits.]"
         if call.name == board::SIGN_IN {
             return self.ask_sign_in(call, reply);
         }
+        if call.name == crate::helpers::SPAWN_HELPER {
+            return self.spawn_helper(call, reply);
+        }
+        if call.name == crate::helpers::HELPER_RESULT {
+            return self.helper_result(call, reply);
+        }
         if call.name == board::SHOW_BROWSER {
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
@@ -6665,6 +6967,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         .find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && s.is_working())
                         .map_or(id, |(&lane, _)| lane)
                 };
+                let at_once = self.subagents_at_once(Some(&squad));
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let mut estimate = session.estimate.clone().unwrap_or_default();
                 if let Some(m) = done {
@@ -6679,7 +6982,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 }
                 let estimate = Some(estimate).filter(|e| !e.is_empty());
                 session.estimate = estimate.clone();
-                let reply = board::estimate_reply(done, !session.subagents.is_empty(), session.engine == Engine::Claude);
+                let reply = board::estimate_reply(done, !session.subagents.is_empty(), subagents_of(session, at_once));
                 // When it said a ticket would be done, on the ticket's record: the retro tells a miss.
                 let said = session.work.as_ref().map(|w| w.ticket).zip(done.and(estimate.as_ref().and_then(|e| e.done_at)));
                 if let (Some((ticket, at)), Some(journal)) = (said, self.journal(&squad)) {
@@ -6772,7 +7075,7 @@ it back there once they have done it.{again} End your turn now with a short line
             .filter(|(_, s)| s.squad.as_deref() == Some(squad))
             .map(|(&id, s)| {
                 let entries = s.transcript.entries();
-                let recent = scope::from(entries, entries.len().saturating_sub(SNAPSHOT_LINES));
+                let (recent, recent_at) = scope::from_at(entries, s.transcript.times(), entries.len().saturating_sub(SNAPSHOT_LINES));
                 let mut visuals = crate::visuals::diagram::kept(&self.config.home, squad, &recent);
                 visuals.extend(crate::visuals::card::kept(&self.config.home, squad, &recent));
                 SessionInfo {
@@ -6780,7 +7083,8 @@ it back there once they have done it.{again} End your turn now with a short line
                     project: s.project.clone(),
                     member: s.member.clone(),
                     engine: s.engine,
-                    model: s.model.clone(),
+                    model: s.ran.clone().or_else(|| s.model.clone()),
+                    asked_model: s.model.clone().filter(|m| s.ran.as_ref().is_some_and(|r| r != m)),
                     access: s.access,
                     workspace: s.sandbox.as_ref().map(workspace_of),
                     state: if s.is_working() { SessionState::Working } else { SessionState::Ready },
@@ -6788,6 +7092,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     tokens: s.tokens,
                     context: s.context,
                     recent,
+                    recent_at,
                     queued: s.queued.clone(),
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),
@@ -6812,6 +7117,7 @@ it back there once they have done it.{again} End your turn now with a short line
                             secs: s.since.elapsed().as_secs(),
                             brief: s.brief.clone(),
                             entries: s.entries.iter().cloned().collect(),
+                            stuck_secs: s.stuck.then(|| s.heard.elapsed().as_secs()),
                         })
                         .collect(),
                     compacting: s.compacting.as_ref().map(|(info, ..)| info.clone()),
@@ -6839,6 +7145,7 @@ it back there once they have done it.{again} End your turn now with a short line
         let routines = self.routines(squad);
         let routine_proposals = self.routine_proposals(squad).clone();
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
+        let subagents_at_once = self.subagents_at_once(Some(squad));
         let signals = self.signal_views(squad);
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
@@ -6851,6 +7158,7 @@ it back there once they have done it.{again} End your turn now with a short line
             routines,
             routine_proposals,
             idle_wake_hours,
+            subagents_at_once,
             team_changes,
             accepts,
             squad: squad.to_owned(),
@@ -6867,6 +7175,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
+            role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
             engine_proposals: self.engines.proposals(squad),
             desktop: self.desktop.state(),
@@ -6906,7 +7215,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     let _ = journal.close_session(record.id);
                     continue;
                 };
-                let conversation = journal.conversation(record.id).unwrap_or_default();
+                let (conversation, said_at) = journal.conversation_at(record.id).unwrap_or_default();
                 let history = conversation
                     .iter()
                     .filter_map(|entry| match entry {
@@ -6985,6 +7294,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         joined,
                         engine: record.engine,
                         model: record.model,
+                        ran: None,
                         access: record.access,
                         cwd: record.cwd,
                         sandbox: None,
@@ -6999,7 +7309,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         desk_context: None,
                         last_turn: None,
                         refresh,
-                        transcript: Transcript::from_entries(conversation),
+                        transcript: Transcript::with_times(conversation, said_at),
                         turn: None,
                         queued,
                         memo_threads,
@@ -7008,6 +7318,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         steering: Vec::new(),
                         steer_threads: Vec::new(),
                         stop: None,
+                        stop_subagent: None,
                         taken_back: Vec::new(),
                         send_now_prompt: None,
                         subagents: Vec::new(),
@@ -7032,9 +7343,9 @@ it back there once they have done it.{again} End your turn now with a short line
                 for c in journal.conversations().unwrap_or_default() {
                     let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
                     let mut lane = lane_of(pm, &self.sessions[&pm], c.project, thread, true);
-                    let lines = journal.conversation(c.id).unwrap_or_default();
+                    let (lines, lines_at) = journal.conversation_at(c.id).unwrap_or_default();
                     lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { first_said_line(text) } else { None }));
-                    lane.transcript = Transcript::from_entries(lines);
+                    lane.transcript = Transcript::with_times(lines, lines_at);
                     self.sessions.insert(c.id, lane);
                 }
             }
@@ -7724,6 +8035,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         joined: m.joined,
         engine: m.engine,
         model: m.model.clone(),
+        ran: m.ran.clone(),
         access: m.access,
         cwd: m.cwd.clone(),
         sandbox: None,
@@ -7747,6 +8059,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         steering: Vec::new(),
         steer_threads: Vec::new(),
         stop: None,
+        stop_subagent: None,
         taken_back: Vec::new(),
         send_now_prompt: None,
         subagents: Vec::new(),
@@ -7785,7 +8098,8 @@ fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], t
                 saw(journal.set_title_if_empty(id, title));
             }
         }
-        Event::ModelKnown { model, .. } => saw(journal.set_model(id, model)),
+        // What the member is set to, so an alias stays one; what runs when nothing was asked.
+        Event::ModelKnown { model, asked, .. } => saw(journal.set_model(id, asked.as_deref().unwrap_or(model))),
         Event::TurnEnded { usage: Some(u), .. } => saw(journal.add_tokens(id, u.total())),
         Event::BranchLanded { branch, .. } => saw(journal.set_outcome(id, &format!("landed {branch}"))),
         Event::NothingChanged { .. } => saw(journal.set_outcome(id, "no changes")),
@@ -7870,6 +8184,17 @@ fn has_tools(session: &Session) -> bool {
     session.engine == Engine::Claude || session.codex.is_none()
 }
 
+/// The environment variable Claude Code reads its cap on subagents running at once from.
+const CLAUDE_SUBAGENTS_ENV: &str = "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS";
+
+/// The subagents a session's engine runs, `set` at a time (`None`: as many
+/// as it runs on its own): none for Codex on Token Factory, whose turns go
+/// to another provider.
+fn subagents_of(session: &Session, set: Option<u32>) -> Option<roles::Subagents> {
+    let other_provider = session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+    roles::Subagents::of(session.engine, has_tools(session), other_provider, set)
+}
+
 /// A subagent at work for a member: what it was handed, its latest step,
 /// since when, and its latest steps and words, kept for a screen that
 /// attaches while it works.
@@ -7880,6 +8205,13 @@ struct SubRun {
     step: Option<String>,
     since: std::time::Instant,
     entries: std::collections::VecDeque<Entry>,
+    /// When it was last heard from: a step, a word, its engine telling of it.
+    heard: std::time::Instant,
+    /// Watched for going quiet ([`crate::subagent_watch`]): Codex's own, and
+    /// equipe's helpers — those the person can stop alone.
+    watched: bool,
+    /// The screens were told it looks stuck, and not yet that it moves.
+    stuck: bool,
 }
 
 impl SubRun {
@@ -7916,7 +8248,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
             Event::ToolResult { session: id, tool: done.name, target: done.target, outcome }
         }
         Activity::Thinking(text) => Event::Thinking { session: id, text },
-        Activity::Model(model) => Event::ModelKnown { session: id, model },
+        Activity::Model(model) => Event::ModelKnown { session: id, model, asked: None },
         Activity::Output(tokens) => Event::Output { session: id, tokens },
         Activity::SubagentStarted { id: sub, what, brief } => Event::SubagentStarted { session: id, id: sub, what, brief },
         Activity::SubagentStep { id: sub, step } => Event::SubagentStep { session: id, id: sub, step },
@@ -7943,6 +8275,8 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
             Event::PlanUsage { usage: equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) }, engine: Engine::Claude }
         }
         Activity::Limits(_) => return None,
+        // The loop's to know, never a screen's: sent apart by the turn.
+        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } => return None,
     })
 }
 
@@ -7989,14 +8323,17 @@ fn nebius_log(model: &str, turn: &codex_app::Turn) -> String {
     )
 }
 
-/// A turn on Token Factory that failed: a refused key is Token Factory's, not Codex's sign-in.
-fn nebius_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
+/// A turn on Token Factory — or another provider, by its name — that failed:
+/// a refused key is the provider's, not Codex's sign-in.
+fn nebius_failure(err: equipe_providers::Error, provider: Option<&str>, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
     let words = crate::i18n::core(lang);
     let message = err.to_string();
     let lower = message.to_ascii_lowercase();
     let refused = matches!(err, equipe_providers::Error::CodexSignedOut) || lower.contains("401") || lower.contains("403") || lower.contains("unauthorized");
-    if refused {
-        return (words.get("error.nebius_unauthorized").to_owned(), Some("https://tokenfactory.nebius.com"));
+    match provider {
+        Some(provider) if refused => return (words.fill("error.provider_unauthorized", &[("provider", provider.to_owned())]), None),
+        None if refused => return (words.get("error.nebius_unauthorized").to_owned(), Some("https://tokenfactory.nebius.com")),
+        _ => {}
     }
     codex_cli_failure(err, lang)
 }
@@ -8063,10 +8400,25 @@ fn claude_failure(err: equipe_providers::Error) -> (String, Option<&'static str>
         Some(crate::engine_auth::CLAUDE_HINT)
     } else if lower.contains("login") || lower.contains("logged in") {
         Some("equipe login claude")
+    } else if refuses_the_model(&lower) {
+        // A pinned model this Claude Code is older than.
+        Some("claude update")
     } else {
         None
     };
     (message, next)
+}
+
+/// Whether an engine's error says it can't run the model asked for (Claude
+/// Code: "There's an issue with the selected model … It may not exist").
+fn refuses_the_model(lower: &str) -> bool {
+    lower.contains("model")
+        && ["selected model", "not exist", "not found", "not_found", "invalid model", "unknown model", "not available", "not supported"].iter().any(|w| lower.contains(w))
+}
+
+/// A model the Codex CLI listed, as screens are told of it.
+fn model_choice(m: &codex_app::ModelInfo) -> ModelChoice {
+    ModelChoice { id: m.id.clone(), name: m.name.clone(), efforts: m.efforts.clone(), default_effort: m.default_effort.clone() }
 }
 
 /// How often a squad's stale work is looked at, and how long work sits
@@ -8218,13 +8570,17 @@ mod tests {
     fn a_turn_on_token_factory_with_its_key_refused_says_whose_key() {
         let lang = crate::i18n::Lang::En;
         // As codex 0.154 reports a 401 from the provider (mock-verified).
-        let refused = equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
-        let (said, next) = nebius_failure(refused, lang);
+        let refused = || equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
+        let (said, next) = nebius_failure(refused(), None, lang);
         assert!(said.contains("Nebius Token Factory refused the key"), "{said}");
         assert_eq!(next, Some("https://tokenfactory.nebius.com"));
-        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, lang).0.contains("NEBIUS_API_KEY"));
-        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), lang);
+        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, None, lang).0.contains("NEBIUS_API_KEY"));
+        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), None, lang);
         assert_eq!(other, ("stream ended".to_owned(), None));
+        // Another provider's key: its own name, and where to replace it.
+        let (said, next) = nebius_failure(refused(), Some("OpenRouter"), lang);
+        assert!(said.contains("OpenRouter refused the key") && said.contains("Settings") && !said.contains("NEBIUS"), "{said}");
+        assert_eq!(next, None);
     }
 
     #[cfg(debug_assertions)]

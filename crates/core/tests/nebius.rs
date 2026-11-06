@@ -255,6 +255,25 @@ async fn a_member_moved_to_an_nvidia_model_runs_its_next_turn_on_token_factory()
     assert!(runs.len() > before && runs[before..].iter().all(|(argv, _)| argv.is_empty()), "{runs:?}");
 }
 
+#[tokio::test]
+async fn a_member_on_token_factory_has_no_subagents_and_is_never_told_to_use_any() {
+    let (codex, log, _) = fake_codex("FAKE_CODEX_SIGNED_OUT=1");
+    let nemotron = token_factory("http://127.0.0.1:9/v1/", Some(MODEL));
+    let (cwd, home) = (scratch("site"), scratch("home"));
+    equipe_core::squads::create(&home, "acme", &cwd).unwrap();
+    let (handle, mut events) = runtime::start(config(&codex, &home, Some(nemotron)));
+    let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: cwd.clone(), role: Some("backend".into()), squad: Some("acme".into()) };
+    let started = add(&handle, &mut events, 1, spec).await;
+    assert!(matches!(started.last(), Some(Event::SessionStarted { engine: Engine::Codex, .. })), "{started:#?}");
+    turn(&handle, &mut events, 1, "survey it").await;
+    let start = lines(&log).into_iter().find(|m| m["method"] == "thread/start").expect("a thread");
+    assert!(start["params"]["config"].get("agents").is_none(), "{start}");
+    assert_eq!(start["params"]["config"]["features"]["multi_agent"], false);
+    let charter = start["params"]["developerInstructions"].as_str().unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(charter.contains("Your engine has no subagents") && charter.contains("you work through your own part in order"), "{charter}");
+    assert!(!charter.contains("Agent tool") && !charter.contains("spawn_agent") && !charter.contains("subagents at once"), "{charter}");
+}
+
 // ── the real codex, on a stand-in Token Factory ──
 
 /// A stand-in Responses API: the turn's first request gets a function call

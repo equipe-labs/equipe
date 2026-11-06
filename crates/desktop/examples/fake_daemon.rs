@@ -12,7 +12,11 @@
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
+//! `FAKE_HELPERS=1` puts backend on Nemotron with equipe's helpers at work, one looking
+//! stuck (`fake_daemon/helpers.rs`; `codex`: a quiet subagent of Codex's own instead);
 //! `FAKE_WORKING=<n>` has only the first n of frontend and backend at work (`0`: nobody).
+//! `FAKE_COMMAND=working|busy|nothing|asks|stuck|stuck_nothing`: a turn sits on a
+//! command, the daemon's look at it shown (`fake_daemon/command.rs`).
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -138,6 +142,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         member: Some(Member { role: role.into(), name: role.into() }),
         engine: Engine::Claude,
         model: Some("claude-opus-5-5".into()),
+        asked_model: None,
         access: Access::EditFiles,
         workspace: None,
         state: SessionState::Ready,
@@ -151,6 +156,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         lane: None,
         estimate: None,
         recent,
+        recent_at: Vec::new(),
         queued: vec![],
         work: None,
         mode: None,
@@ -754,6 +760,30 @@ fn unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// When each line was said, as a conversation spreads out over days: up to
+/// `latest`, the last exchange minutes before it, the ones before hours
+/// before, the day before, days back, then last year; in an exchange, the
+/// message, then its steps and reply a little after.
+fn said_at(lines: &[Entry], latest: u64) -> Vec<Option<u64>> {
+    const AGO: [u64; 8] = [4 * 60, 47 * 60, 5 * 3600 + 20 * 60, 26 * 3600, 3 * 86_400 + 2 * 3600, 6 * 86_400, 12 * 86_400, 400 * 86_400];
+    let mut out = vec![None; lines.len()];
+    let mut exchange = 0;
+    let mut after = 0;
+    for (ix, line) in lines.iter().enumerate().rev() {
+        let base = latest.saturating_sub(AGO[exchange.min(AGO.len() - 1)]);
+        out[ix] = Some(match line {
+            Entry::User { .. } => base.saturating_sub(after + 30),
+            _ => base.saturating_sub(after),
+        });
+        after += 15;
+        if matches!(line, Entry::User { .. }) {
+            exchange += 1;
+            after = 0;
+        }
+    }
+    out
+}
+
 /// Each ticket's record, as `ticket_history` answers it.
 fn records() -> &'static std::sync::Mutex<HashMap<u32, Vec<TicketEntry>>> {
     static RECORDS: std::sync::OnceLock<std::sync::Mutex<HashMap<u32, Vec<TicketEntry>>>> = std::sync::OnceLock::new();
@@ -982,6 +1012,10 @@ mod engines;
 
 #[path = "fake_daemon/disk.rs"]
 mod disk;
+#[path = "fake_daemon/command.rs"]
+mod command;
+#[path = "fake_daemon/helpers.rs"]
+mod helpers;
 
 #[path = "fake_daemon/switching.rs"]
 mod switching;
@@ -1212,6 +1246,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         let mut backend = backend;
                         backend.effort = Some("high".into());
+                        if let Some(mode) = helpers::mode() {
+                            helpers::dress(&mut backend, mode == "codex");
+                            static HELPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                            if mode != "codex" && !HELPING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                tokio::spawn(helpers::play(events.clone()));
+                            }
+                        }
                         let mut frontend = frontend;
                         frontend.recent.extend(disk::failed_build());
                         if subagents_on() {
@@ -1279,11 +1320,15 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                         }
                         switching::mix(&mut sessions);
+                        for s in &mut sessions {
+                            s.recent_at = said_at(&s.recent, unix());
+                        }
                         let snapshot = Snapshot {
                             plans: switching::plans(),
                             plan: switching::claude().or_else(engines::plan),
                             engine_switching: switching::switching(),
                             pm_accepts: true,
+                            role_models: switching::role_models(),
                             // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.
                             secret_asks: if std::env::var_os("FAKE_SECRET").is_some() {
                                 vec![equipe_core::protocol::secrets::SecretAsk {
@@ -1502,7 +1547,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::LaneOpened { session, of: 1, project: c.project.clone(), kept: true });
                                     let title = c.title.clone().unwrap_or_default();
                                     let lines = vec![Entry::User { text: title }, Entry::Reply { text: "지난번에 여기까지 했어요. 이어서 할까요?".into() }];
-                                    let _ = events.send(Event::ConversationBack { session, title: c.title, lines });
+                                    let lines_at = said_at(&lines, unix() - 2 * 86_400);
+                                    let _ = events.send(Event::ConversationBack { session, title: c.title, lines, lines_at });
                                     let _ = events.send(Event::PutAwayChanged { squad, list: left });
                                 }
                             }
@@ -1532,11 +1578,20 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 if order.is_empty() {
                                     continue;
                                 }
-                                let _ = events.send(Event::QueueSent { session, texts: order.clone() });
-                                if let Some(task) = turns.lock().await.remove(&session) {
-                                    task.abort();
+                                // Like the daemon: never the end of the work. At work, read at
+                                // its next step — at once when a command it sat on is stopped.
+                                if turns.lock().await.get(&session).is_some_and(|t| !t.is_finished()) {
+                                    if command::mode().is_some()
+                                        && let Some(task) = turns.lock().await.remove(&session)
+                                    {
+                                        task.abort();
+                                        tokio::spawn(command::stopped_and_read(session, events.clone(), order));
+                                    } else {
+                                        tokio::spawn(command::read_at_next_step(session, events.clone(), order));
+                                    }
+                                    continue;
                                 }
-                                let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
+                                let _ = events.send(Event::QueueSent { session, texts: order.clone() });
                                 let _ = events.send(Event::UserMessage { session, text: order.join("\n\n") });
                                 turns.lock().await.insert(session, tokio::spawn(turn(session, events.clone(), seconds)));
                             }
@@ -1548,6 +1603,17 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     task.abort();
                                 }
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
+                            }
+                            // Only that subagent: a helper hands back what it had.
+                            Command::StopSubagent { session, id } => {
+                                tokio::spawn(helpers::stopped(session, id, events.clone()));
+                            }
+                            // Only the command: its step fails, and the turn goes on to its end.
+                            Command::StopCommand { session } => {
+                                if let Some(task) = turns.lock().await.remove(&session) {
+                                    task.abort();
+                                    tokio::spawn(command::stopped(session, events.clone()));
+                                }
                             }
                             Command::Decide { squad, approval, decision, words } => {
                                 eprintln!("decide {approval} {decision:?} {words:?}");
@@ -1684,6 +1750,9 @@ async fn turn(session: SessionId, events: broadcast::Sender<Event>, seconds: f32
     for step in [tool("Read", "/tmp/fake/site/a.rs"), tool("Read", "/tmp/fake/site/b.rs"), tool("Edit", "/tmp/fake/site/a.rs")] {
         let _ = events.send(step);
         tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+    if let Some(mode) = command::mode() {
+        return command::run(session, &events, &mode).await;
     }
     let long = std::env::var("FAKE_LONG_REPLY").is_ok_and(|v| v == "1").then(history::long_reply);
     let chars: Vec<char> = long.as_deref().unwrap_or(REPLY).chars().collect();

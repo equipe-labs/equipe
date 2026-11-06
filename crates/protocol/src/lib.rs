@@ -26,6 +26,30 @@ pub mod routines;
 pub mod secrets;
 pub mod signals;
 
+/// How many subagents Claude Code runs at once on its own
+/// (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` unset): what a Claude Code member
+/// runs until the person sets it ([`Command::SetSubagentsAtOnce`]).
+pub const CLAUDE_SUBAGENTS_AT_ONCE: u32 = 20;
+/// …and Codex on its own (`agents.max_concurrent_threads_per_session` unset).
+pub const CODEX_SUBAGENTS_AT_ONCE: u32 = 6;
+
+/// How many subagents `engine` runs at once on its own.
+pub fn engine_subagents_at_once(engine: Engine) -> u32 {
+    match engine {
+        Engine::Claude => CLAUDE_SUBAGENTS_AT_ONCE,
+        Engine::Codex => CODEX_SUBAGENTS_AT_ONCE,
+    }
+}
+/// The most the person can set: past it, a plan's limits run out long before
+/// the work is done.
+pub const MOST_SUBAGENTS_AT_ONCE: u32 = 50;
+
+/// `n` subagents at once, as an engine takes it: at least one (neither
+/// engine takes 0), at most [`MOST_SUBAGENTS_AT_ONCE`].
+pub fn subagents_at_once(n: u32) -> u32 {
+    n.clamp(1, MOST_SUBAGENTS_AT_ONCE)
+}
+
 /// How a ticket that couldn't start says why, in its note.
 pub const COULD_NOT_START: &str = "Couldn't start: ";
 /// How an idea the PM put to the person says why its time has come, in its note.
@@ -42,6 +66,7 @@ pub mod team;
 pub mod transcript;
 pub mod vault;
 pub mod review;
+pub mod watch;
 pub mod words;
 
 pub use briefs::ProjectDoc;
@@ -834,6 +859,14 @@ pub enum Command {
     /// The model a member's turns run on from now — any its engine offers.
     /// Its conversation carries on.
     SetModel { session: SessionId, model: String },
+    /// The models `engine` offers on the daemon's machine, as its own tool
+    /// lists them: answered, to every screen, by [`Event::Models`]. A daemon
+    /// that predates it says nothing, and the screen offers what it knows.
+    Models { engine: Engine },
+    /// The model and effort a new member of a role starts with on an engine
+    /// (both `None`: equipe's recommendation again). Kept for the squad;
+    /// answered by [`Event::RoleModelsChanged`].
+    SetRoleModel { squad: SquadName, default: RoleModel },
     /// Members' browsers open on screen (`show`) or run hidden: one member's,
     /// or (`member: None`) everyone's. Kept for the squad.
     ShowBrowser { squad: SquadName, member: Option<String>, show: bool },
@@ -850,16 +883,31 @@ pub enum Command {
     /// read yet: the first one with this text. Answered by
     /// [`Event::MemoWithdrawn`]; nothing when it was delivered (or read) already.
     Unqueue { session: SessionId, text: String },
-    /// Send what waits for a member at work now: its turn stops (as
-    /// [`Command::Interrupt`]) and the steers it hasn't read and the memos
-    /// left — `texts` first, in that order, then any others — go to it at
-    /// once, together, as one message. Answered by [`Event::QueueSent`], then
-    /// the turn's end and the message.
+    /// Have what waits for a member read now — never by stopping its turn.
+    /// At work: its memos go in as steers (each [`Event::MemoWithdrawn`],
+    /// then [`Event::SteerQueued`]) — `texts` first, in that order, then any
+    /// others — read at its next step with the steers already sent, and a
+    /// command it runs now is stopped (as [`Command::StopCommand`]) so that
+    /// step comes at once; the member weighs what it reads and decides what
+    /// to do. An engine that can't read mid-turn keeps them for the turn's
+    /// end. With no turn under way, they go to it at once, together, as one
+    /// message: [`Event::QueueSent`], then the message.
     SendNow {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         texts: Vec<String>,
     },
+    /// Stop the command the member's engine runs now, as the daemon last
+    /// looked at it ([`Event::CommandWatch`]): its processes end, and only
+    /// those — never the engine, never anything not under it. The engine
+    /// hears the command failed and goes on with its turn, reading at its
+    /// next step what the person said meanwhile. Nothing when no command runs.
+    StopCommand { session: SessionId },
+    /// Stop one of the member's subagents — one the daemon watches: an
+    /// equipe helper, or a subagent of Codex's own — and only it. The member
+    /// hears it stopped (a helper hands in what it had) and goes on with its
+    /// turn. Nothing when it isn't at work, or its engine can't stop it alone.
+    StopSubagent { session: SessionId, id: String },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -958,6 +1006,29 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
     },
+    /// The model providers connected on the daemon's machine, each with the
+    /// models it lists: answered, to every screen, by [`Event::Providers`].
+    /// Each provider not looked at yet is asked for its models then.
+    Providers,
+    /// Connect a model provider on the daemon's machine: one of equipe's
+    /// presets (`openrouter`, `groq`, `ollama`…) or `other`, an
+    /// OpenAI-compatible server at `base_url`. Its key, when it needs one, is
+    /// kept in a file there only the person can read — never sent back,
+    /// never logged. Answered by [`Event::Providers`], then by
+    /// [`Event::ProviderTested`] once its models are listed.
+    AddProvider {
+        preset: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<secrets::SecretValue>,
+    },
+    /// List a connected provider's models again (`GET /models`): answered
+    /// by [`Event::ProviderTested`].
+    TestProvider { id: String },
+    /// Forget a provider and its saved key. Members set to one of its
+    /// models say so at their next turn.
+    RemoveProvider { id: String },
     /// Sign `engine` out with its own tool (`codex logout`). Claude Code's
     /// login is the person's own: equipe never touches it. Answered by
     /// [`Event::Engines`].
@@ -969,6 +1040,11 @@ pub enum Command {
     /// itself (`on`, the default), putting to them only what needs them — or
     /// keeps every acceptance for themselves.
     SetPmAccepts { squad: SquadName, on: bool },
+    /// How many subagents each member of the squad runs at once, where its
+    /// engine has them: given to the engine and said in its charter. `None`:
+    /// each engine's own ([`engine_subagents_at_once`]), nothing given to it.
+    /// Answered by [`Event::SubagentsAtOnceChanged`].
+    SetSubagentsAtOnce { squad: SquadName, at_once: Option<u32> },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
     /// each at its member's next ticket boundary. Only ever the person's.
     ApplyEngineProposal { squad: SquadName, id: u64 },
@@ -1053,6 +1129,131 @@ pub struct NebiusStatus {
     /// The provider's name: `Nebius Token Factory`, or another server's host.
     #[serde(default)]
     pub provider: String,
+}
+
+/// Where a model provider's key comes from ([`ProviderStatus`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKey {
+    /// None: it can't be used yet.
+    #[default]
+    None,
+    /// Its variable in the daemon's environment, which wins over a saved key.
+    Environment,
+    /// Saved on the daemon's machine from a screen (or `equipe login nebius`).
+    Saved,
+    /// A server on the daemon's machine (Ollama, LM Studio): it needs none.
+    NotNeeded,
+}
+
+/// What listing a provider's models found ([`Command::TestProvider`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProviderTest {
+    /// Not looked at yet.
+    #[default]
+    Untested,
+    /// Being listed now.
+    Testing,
+    /// It answered with `count` models members can be set to.
+    Ok { count: usize },
+    /// It couldn't be listed (or added): why, as a screen words it in its
+    /// own language (`problem`), and in the daemon's (`why`) for a screen
+    /// that doesn't know the problem.
+    Failed {
+        why: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<ProviderProblem>,
+    },
+}
+
+/// Why a provider couldn't be listed or added, for a screen to say in its
+/// own language ([`ProviderTest::Failed`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderProblem {
+    /// No key for it.
+    MissingKey,
+    /// It refused the key (401, 403).
+    Unauthorized,
+    /// Its rate limit, still there after trying again.
+    RateLimited,
+    /// No answer in time.
+    Timeout,
+    /// It lists no model a member can work with.
+    NoModels,
+    /// No model list at its address (404).
+    NotFound,
+    /// Another error, by its status.
+    Http { status: u16 },
+    /// Something answered, but not with a list of models.
+    BadOutput,
+    /// It couldn't be reached.
+    Network,
+    /// Not a provider equipe knows.
+    Unknown,
+    /// Not an address: `https://…/v1`.
+    BadUrl,
+    /// `http://` to another machine: the key would go unencrypted.
+    Insecure,
+    /// It needs a key and none was given.
+    NoKey,
+    /// What was pasted isn't a key.
+    BadKey,
+    /// Its key couldn't be saved: the system's words.
+    NotSaved { why: String },
+    /// One a newer daemon knows: the screen says `why`.
+    #[serde(other)]
+    Other,
+}
+
+/// A model provider connected on the daemon's machine ([`Event::Providers`]):
+/// never its key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderStatus {
+    /// Its id on that machine: a preset's (`openrouter`), or `other-<host>`.
+    /// A member's model on it reads `@<id>/<model>`.
+    pub id: String,
+    /// The preset it comes from (`openrouter`, `other`; `custom` for the
+    /// environment's `EQUIPE_MODEL_BASE_URL`).
+    pub preset: String,
+    pub name: String,
+    pub base_url: String,
+    pub key: ProviderKey,
+    /// Whether a screen can remove it: not one the environment sets.
+    #[serde(default)]
+    pub removable: bool,
+    /// The models members can be set to, by their `@<id>/<model>` ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelChoice>,
+    #[serde(default)]
+    pub test: ProviderTest,
+}
+
+/// A model an engine offers ([`Event::Models`]): its id, the name its tool
+/// gives it, and the efforts it takes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The efforts it takes, lowest first; empty: not said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+}
+
+/// What a new member of `role` starts with on `engine`, as the person set it
+/// for the squad; `None`: equipe's recommendation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleModel {
+    pub role: String,
+    pub engine: Engine,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// Where an engine stands on the daemon's machine ([`Event::Engines`]).
@@ -1509,6 +1710,9 @@ pub enum Event {
         title: Option<String>,
         #[serde(default)]
         lines: Vec<Entry>,
+        /// When each of `lines` was said, as [`SessionInfo::recent_at`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines_at: Vec<Option<u64>>,
     },
     /// The conversations put away, the latest first ([`Snapshot::put_away`]).
     PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
@@ -1641,8 +1845,15 @@ pub enum Event {
     /// of the conversation: a screen may show it while it comes.
     Thinking { session: SessionId, text: String },
     /// The engine named its model (Claude Code does on its first turn), or the
-    /// person changed it.
-    ModelKnown { session: SessionId, model: String },
+    /// person changed it. `model` is the one that runs; `asked`, what the
+    /// member is set to — an alias such as `opus` the engine resolved by its
+    /// own version, or the same id. `None` from a daemon that predates it.
+    ModelKnown {
+        session: SessionId,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asked: Option<String>,
+    },
     /// What a watched member's browser shows now: a picture (JPEG, or PNG from
     /// a browser of its own), base64, and the page.
     BrowserFrame { session: SessionId, image: String, url: Option<String> },
@@ -1718,6 +1929,15 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,
     },
+    /// A subagent the daemon watches hasn't been heard from for `quiet_secs`
+    /// and looks stuck; `None`: it has been heard from since. Only the
+    /// person stops it ([`Command::StopSubagent`]). See [`SubagentInfo::stuck_secs`].
+    SubagentStuck {
+        session: SessionId,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quiet_secs: Option<u64>,
+    },
     /// What follows in the conversation is about `project` (`None`: the whole
     /// squad) — a message of the person's sent looking at it, news of its
     /// ticket, or a ticket's work. See [`transcript::scope`].
@@ -1737,6 +1957,15 @@ pub enum Event {
     },
     /// The member read a steering message, at this point of its turn.
     Steered { session: SessionId, text: String },
+    /// What runs under the member's engine for its command under way, as the
+    /// daemon looked at it a moment ago — every few seconds while it runs —
+    /// or `None` once it no longer does. A screen that doesn't know this
+    /// event shows the step as before. See [`watch`].
+    CommandWatch {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        watch: Option<watch::CommandWatch>,
+    },
     /// The member's conversation is being compacted — summarized to make room
     /// — by its engine (mid-turn) or by equipe (a desk conversation starting
     /// afresh). It works on once [`Event::Compacted`] or
@@ -1860,9 +2089,21 @@ pub enum Event {
     },
     /// Installing `engine`'s tool moved on ([`Command::InstallEngine`]).
     EngineInstall { engine: Engine, step: InstallStep },
+    /// The models `engine` offers on the daemon's machine ([`Command::Models`]),
+    /// its default first.
+    Models { engine: Engine, models: Vec<ModelChoice> },
     /// Nebius Token Factory on the daemon's machine: sent with
     /// [`Event::Engines`], and when its key is saved or forgotten.
     Nebius { status: NebiusStatus },
+    /// The model providers connected on the daemon's machine
+    /// ([`Command::Providers`]), and whether the Codex CLI their members run on is there.
+    Providers {
+        providers: Vec<ProviderStatus>,
+        #[serde(default)]
+        codex: bool,
+    },
+    /// A provider's models were listed — or couldn't be ([`Command::TestProvider`]).
+    ProviderTested { id: String, test: ProviderTest },
     /// Moves between engines equipe proposes — or made on its own and tells
     /// of (`applied`), for the person to keep or undo.
     EngineProposed { squad: SquadName, proposal: engines::Proposal },
@@ -1878,6 +2119,8 @@ pub enum Event {
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
     /// Whether the PM accepts the team's work now ([`Command::SetPmAccepts`]).
     PmAcceptsChanged { squad: SquadName, on: bool },
+    /// What new members of each role start with now ([`Command::SetRoleModel`]).
+    RoleModelsChanged { squad: SquadName, defaults: Vec<RoleModel> },
     /// The squad's projects now ([`Command::AddProject`]): their folders.
     /// The logins kept, without their passwords: every screen's.
     Logins { logins: Vec<vault::Login> },
@@ -1897,6 +2140,9 @@ pub enum Event {
     /// How long an empty board waits before the PM is woken now
     /// ([`Command::SetIdleWake`]); 0: never.
     IdleWakeChanged { squad: SquadName, hours: u32 },
+    /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]);
+    /// `None`: each engine's own.
+    SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
     /// The squad's signals now, each with its latest readings: on a new
     /// reading, one turned on or off, or paused.
     SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
@@ -1964,6 +2210,7 @@ impl Event {
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
             | Event::PmAcceptsChanged { squad, .. }
+            | Event::RoleModelsChanged { squad, .. }
             | Event::SecretAsked { squad, .. }
             | Event::SecretClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
@@ -1971,6 +2218,7 @@ impl Event {
             | Event::RoutineProposed { squad, .. }
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
+            | Event::SubagentsAtOnceChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
@@ -2002,6 +2250,7 @@ impl Event {
             | Event::LaneMoved { session, .. }
             | Event::ConversationBack { session, .. }
             | Event::Steered { session, .. }
+            | Event::CommandWatch { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
             | Event::Compacting { session, .. }
@@ -2011,6 +2260,7 @@ impl Event {
             | Event::SubagentStep { session, .. }
             | Event::SubagentEntry { session, .. }
             | Event::SubagentEnded { session, .. }
+            | Event::SubagentStuck { session, .. }
             | Event::TurnEnded { session, .. }
             | Event::VisualsRendered { session, .. }
             | Event::BranchLanded { session, .. }
@@ -2037,6 +2287,7 @@ impl Event {
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
             | Event::PmAcceptsChanged { .. }
+            | Event::RoleModelsChanged { .. }
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
             | Event::ProjectsChanged { .. }
@@ -2045,6 +2296,7 @@ impl Event {
             | Event::RoutineProposed { .. }
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
+            | Event::SubagentsAtOnceChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
@@ -2071,9 +2323,12 @@ impl Event {
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
             | Event::Nebius { .. }
+            | Event::Providers { .. }
+            | Event::ProviderTested { .. }
             | Event::SignIn { .. }
             | Event::EngineAuth { .. }
-            | Event::EngineInstall { .. } => None,
+            | Event::EngineInstall { .. }
+            | Event::Models { .. } => None,
         }
     }
 
@@ -2088,9 +2343,12 @@ impl Event {
                 | Event::DiskCleaned { .. }
                 | Event::Engines { .. }
                 | Event::Nebius { .. }
+                | Event::Providers { .. }
+                | Event::ProviderTested { .. }
                 | Event::SignIn { .. }
                 | Event::EngineAuth { .. }
                 | Event::EngineInstall { .. }
+                | Event::Models { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
@@ -2210,7 +2468,12 @@ pub struct SessionInfo {
     #[serde(default)]
     pub member: Option<Member>,
     pub engine: Engine,
+    /// The model it runs — what its engine named, else what it is set to.
     pub model: Option<String>,
+    /// What it is set to, when that differs from `model`: an alias the engine
+    /// resolved (`opus` running as `claude-opus-4-8`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_model: Option<String>,
     pub access: Access,
     pub workspace: Option<Workspace>,
     pub state: SessionState,
@@ -2223,6 +2486,12 @@ pub struct SessionInfo {
     /// The latest part of the conversation, oldest first. A reply still
     /// streaming is its last `Reply`.
     pub recent: Vec<Entry>,
+    /// When each line of `recent` was said, in unix seconds, one per line in
+    /// the same order: a message when it came, a reply when it was done.
+    /// `None` where not known (kept before times were, or still streaming);
+    /// empty from a daemon that predates it — then no line has a time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_at: Vec<Option<u64>>,
     /// Memos waiting for the turn in progress to end.
     #[serde(default)]
     pub queued: Vec<String>,
@@ -2310,6 +2579,10 @@ pub struct SubagentInfo {
     /// Its latest steps and words ([`Event::SubagentEntry`]), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<Entry>,
+    /// It looks stuck: unheard from for this many seconds when the snapshot
+    /// was taken ([`Event::SubagentStuck`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stuck_secs: Option<u64>,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -2360,6 +2633,10 @@ pub struct Snapshot {
     /// 0: never. `None` from a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_wake_hours: Option<u32>,
+    /// How many subagents a member runs at once ([`Command::SetSubagentsAtOnce`]).
+    /// `None`: each engine's own — as on a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents_at_once: Option<u32>,
     /// The squad's signals, each with its latest readings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<signals::SignalView>,
@@ -2382,6 +2659,10 @@ pub struct Snapshot {
     /// `false` from a daemon that predates it, where the person accepts all.
     #[serde(default)]
     pub pm_accepts: bool,
+    /// What new members of a role start with, where the person set it
+    /// ([`Command::SetRoleModel`]); every other role, equipe's recommendation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub role_models: Vec<RoleModel>,
     /// Secrets members asked for that wait for the person.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_asks: Vec<secrets::SecretAsk>,
@@ -2743,6 +3024,7 @@ mod tests {
                 proposed_at: 3,
             }],
             idle_wake_hours: Some(24),
+            subagents_at_once: Some(8),
             signals: Vec::new(),
             scale: Some(2),
             suggestions_off: false,
@@ -2750,6 +3032,7 @@ mod tests {
             plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
             engine_switching: engines::Switching::Auto,
             pm_accepts: true,
+            role_models: vec![RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) }],
             secret_asks: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
@@ -2759,6 +3042,7 @@ mod tests {
                 member: Some(Member { role: "pm".into(), name: "pm".into() }),
                 engine: Engine::Codex,
                 model: Some("m".into()),
+                asked_model: None,
                 access: Access::ReadOnly,
                 workspace: None,
                 state: SessionState::Working,
@@ -2766,6 +3050,7 @@ mod tests {
                 tokens: 12,
                 context: None,
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+                recent_at: vec![Some(1_762_300_000), None],
                 queued: vec!["and the tests".into()],
                 queued_project: None,
                 queued_in: vec![None],
@@ -2786,6 +3071,37 @@ mod tests {
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn when_lines_were_said_travels_beside_them_and_older_peers_go_without() {
+        let info = |recent_at: Option<serde_json::Value>| {
+            let mut v = json!({
+                "session": 2, "project": "/repo", "engine": "claude", "model": null, "access": "read_only", "workspace": null,
+                "state": "ready", "title": null, "tokens": 0, "recent": [{ "kind": "user", "text": "hi" }, { "kind": "reply", "text": "hello" }],
+            });
+            if let Some(at) = recent_at {
+                v["recent_at"] = at;
+            }
+            v
+        };
+        // An older daemon's snapshot: no times, and none shown.
+        let old: SessionInfo = serde_json::from_value(info(None)).unwrap();
+        assert!(old.recent_at.is_empty());
+        // A newer one's: one per line, `null` where not known.
+        let new: SessionInfo = serde_json::from_value(info(Some(json!([1_762_300_000, null])))).unwrap();
+        assert_eq!(new.recent_at, vec![Some(1_762_300_000), None]);
+        let sent = serde_json::to_value(&new).unwrap();
+        assert_eq!(sent["recent_at"], json!([1_762_300_000, null]));
+        assert_eq!(sent["recent"], info(None)["recent"], "the lines themselves as before, for an older screen");
+        assert!(serde_json::to_value(&old).unwrap().get("recent_at").is_none(), "none known: not sent");
+
+        let back = json!({ "type": "conversation_back", "session": 5, "lines": [{ "kind": "user", "text": "hi" }] });
+        let Event::ConversationBack { lines_at, .. } = serde_json::from_value(back).unwrap() else { panic!("conversation back") };
+        assert!(lines_at.is_empty());
+        let back = Event::ConversationBack { session: 5, title: None, lines: vec![Entry::User { text: "hi".into() }], lines_at: vec![Some(9)] };
+        assert_eq!(serde_json::to_value(&back).unwrap()["lines_at"], json!([9]));
+        assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&back).unwrap()).unwrap(), back);
     }
 
     #[test]
@@ -3110,5 +3426,50 @@ mod tests {
         assert_eq!(engines.iter().map(|e| (e.engine, e.state)).collect::<Vec<_>>(), [(Engine::Codex, EngineState::Unknown), (Engine::Claude, EngineState::SignedIn)]);
         let failed: SignInStep = serde_json::from_value(json!({ "kind": "failed", "why": "region_blocked" })).unwrap();
         assert_eq!(failed, SignInStep::Failed { why: SignInFailure::Failed, detail: String::new() });
+    }
+
+    #[test]
+    fn a_stuck_subagent_and_its_stop_travel_as_json_and_back() {
+        let stuck = Event::SubagentStuck { session: 3, id: "h1".into(), quiet_secs: Some(320) };
+        let text = serde_json::to_string(&stuck).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), stuck);
+        assert_eq!(stuck.session(), Some(3));
+        let moving = serde_json::to_string(&Event::SubagentStuck { session: 3, id: "h1".into(), quiet_secs: None }).unwrap();
+        assert!(!moving.contains("quiet_secs"), "{moving}");
+        let stop = Command::StopSubagent { session: 3, id: "thr-sub".into() };
+        assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&stop).unwrap()).unwrap(), stop);
+        let info: SubagentInfo = serde_json::from_value(json!({ "id": "h1", "what": "look" })).unwrap();
+        assert_eq!(info.stuck_secs, None, "an older daemon's says nothing of it");
+    }
+
+    #[test]
+    fn a_providers_key_goes_on_the_wire_but_never_in_a_log_and_its_status_never_carries_one() {
+        let add = Command::AddProvider { preset: "openrouter".into(), base_url: None, key: Some(secrets::SecretValue("sk-or-hunter2".into())) };
+        let wire = serde_json::to_value(&add).unwrap();
+        assert_eq!(wire, json!({ "type": "add_provider", "preset": "openrouter", "key": "sk-or-hunter2" }));
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), add);
+        assert!(!format!("{add:?}").contains("hunter2"));
+        let local: Command = serde_json::from_value(json!({ "type": "add_provider", "preset": "other", "base_url": "http://localhost:8000/v1" })).unwrap();
+        assert_eq!(local, Command::AddProvider { preset: "other".into(), base_url: Some("http://localhost:8000/v1".into()), key: None });
+        let status = ProviderStatus { id: "groq".into(), preset: "groq".into(), name: "Groq".into(), base_url: "https://api.groq.com/openai/v1".into(), key: ProviderKey::Saved, removable: true, models: vec![ModelChoice { id: "@groq/qwen/qwen3-32b".into(), ..Default::default() }], test: ProviderTest::Ok { count: 1 } };
+        let event = Event::Providers { providers: vec![status.clone()], codex: true };
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(text.contains(r#""state":"ok""#) && text.contains(r#""key":"saved""#), "{text}");
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), event);
+        // An older screen's minimum: what a newer daemon adds is optional.
+        let bare: ProviderStatus = serde_json::from_value(json!({ "id": "x", "preset": "other", "name": "x", "base_url": "http://localhost:1/v1", "key": "not_needed" })).unwrap();
+        assert_eq!((bare.test, bare.removable, bare.models.len()), (ProviderTest::Untested, false, 0));
+        assert!(event.for_everyone() && event.squad().is_none());
+        assert_eq!(serde_json::to_value(Command::Providers).unwrap(), json!({ "type": "providers" }));
+        // Why it failed goes as a problem a screen words in its own language.
+        let failed = ProviderTest::Failed { why: "Groq didn't accept the key.".into(), problem: Some(ProviderProblem::Http { status: 502 }) };
+        let wire = serde_json::to_value(&failed).unwrap();
+        assert_eq!(wire, json!({ "state": "failed", "why": "Groq didn't accept the key.", "problem": { "kind": "http", "status": 502 } }));
+        assert_eq!(serde_json::from_value::<ProviderTest>(wire).unwrap(), failed);
+        // A problem a newer daemon knows: the screen says its words as they came.
+        let newer: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w", "problem": { "kind": "quota_gone" } })).unwrap();
+        assert_eq!(newer, ProviderTest::Failed { why: "w".into(), problem: Some(ProviderProblem::Other) });
+        let older: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w" })).unwrap();
+        assert_eq!(older, ProviderTest::Failed { why: "w".into(), problem: None });
     }
 }

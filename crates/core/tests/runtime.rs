@@ -10,7 +10,7 @@ use std::time::Duration;
 use equipe_core::journal::{self, Journal};
 use equipe_core::protocol::rpc::{ToolCall, ToolResult};
 use equipe_core::protocol::{
-    Access, Command, CompactTrigger, Engine, Entry, Event, OffMain, Priority, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
+    Access, Command, CompactTrigger, Engine, Entry, Event, OffMain, Priority, RoleModel, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
 };
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::{squad_home, squads};
@@ -18,6 +18,11 @@ use equipe_providers::CredentialStore;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Now, in unix seconds.
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
 
 /// A fresh directory. A counter, not the clock: two tests in the same
 /// microsecond (macOS clock resolution) must never share one.
@@ -518,6 +523,41 @@ else sleep 5; fi"#;
 }
 
 #[tokio::test]
+async fn a_command_under_the_engine_is_watched_and_stopping_it_lets_the_turn_carry_on() {
+    // The engine runs a command that would take half a minute; the screens
+    // hear what runs under it, and stopping the command (not the turn) hands
+    // the engine an error it goes on from.
+    let turn = r#"cat <<EOF
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 30; echo watched-by-equipe"}}]}}
+EOF
+sh -c 'sleep 30; echo watched-by-equipe' > /dev/null
+cat <<EOF
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"Exit code 143"}]}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"carried on"}}}
+{"type":"result","subtype":"success","is_error":false,"result":"carried on","usage":{"input_tokens":3,"output_tokens":1}}
+EOF"#;
+    let claude = fake_claude(true, turn);
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "count the rows".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::CommandWatch { watch: Some(w), .. } if w.process.as_ref().is_some_and(|p| p.name == "sleep"))).await;
+    let Some(Event::CommandWatch { watch: Some(watch), .. }) = seen.last() else { unreachable!() };
+    assert_eq!(watch.engine, Engine::Claude);
+    assert!(!watch.state.is_stuck(), "seconds in: {watch:?}");
+
+    let asked = std::time::Instant::now();
+    handle.send(Command::StopCommand { session: 1 });
+    let after = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(asked.elapsed() < Duration::from_secs(10), "stopped, not waited out");
+    assert!(after.iter().any(|e| matches!(e, Event::ToolResult { outcome, .. } if !outcome.ok)), "the engine heard it failed: {after:#?}");
+    assert!(after.iter().any(|e| matches!(e, Event::CommandWatch { watch: None, .. })), "and the screens that nothing runs any more");
+    assert!(after.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "carried on")), "the turn went on");
+    assert!(matches!(after.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "{after:#?}");
+}
+
+#[tokio::test]
 async fn esc_delivers_waiting_memos_at_once() {
     let claude = fake_claude(true, "case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\necho");
     let (handle, mut events) = start(&claude);
@@ -686,49 +726,88 @@ async fn steers_read_as_one_are_still_each_their_own() {
 }
 
 #[tokio::test]
-async fn send_now_stops_the_turn_and_sends_what_waits_as_one_message() {
-    let claude = fake_claude(true, &format!("case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\n{}", answering("ok")));
+async fn send_now_never_stops_the_turn_a_memo_waiting_is_read_at_the_next_step() {
+    // A message sent mid-work is never the end of the work: "Send now" has
+    // the member read what waits at its next step — a memo too — and it
+    // decides for itself what to do about it.
+    let dir = scratch("stdin");
+    let claude = fake_claude(true, &reading_two(&dir, false));
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
+    handle.send(Command::Submit { session: 1, text: "fix the page".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
     handle.send(Command::Submit { session: 1, text: "steer one".into(), about: None });
     handle.send(Command::SubmitLater { session: 1, text: "a memo".into(), about: None });
-    handle.send(Command::Submit { session: 1, text: "steer two".into(), about: None });
-    until(&mut events, |e| matches!(e, Event::SteerQueued { text, .. } if text == "steer two")).await;
-    // In the order the screen shows them.
-    handle.send(Command::SendNow { session: 1, texts: vec!["steer one".into(), "a memo".into(), "steer two".into()] });
-    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    let sent = seen.iter().position(|e| matches!(e, Event::QueueSent { texts, .. } if *texts == ["steer one", "a memo", "steer two"])).expect("said what went");
-    let stopped = seen.iter().position(|e| matches!(e, Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. })).expect("stopped");
-    assert!(sent < stopped);
-    assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "steer one\n\na memo\n\nsteer two"), "{seen:#?}");
-    assert!(!seen.iter().any(|e| matches!(e, Event::MessageQueued { .. })), "nothing waits again: {seen:#?}");
-    let after = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    assert!(!after.iter().any(|e| matches!(e, Event::UserMessage { .. } | Event::Steered { .. })), "once: {after:#?}");
-    // Nothing waits: nothing to send.
-    handle.send(Command::SendNow { session: 1, texts: vec![] });
+    until(&mut events, |e| matches!(e, Event::MessageQueued { text, .. } if text == "a memo")).await;
+    handle.send(Command::SendNow { session: 1, texts: vec!["steer one".into(), "a memo".into()] });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let withdrawn = seen.iter().position(|e| matches!(e, Event::MemoWithdrawn { text, .. } if text == "a memo")).expect("no longer a memo");
+    let steering = seen.iter().position(|e| matches!(e, Event::SteerQueued { text, .. } if text == "a memo")).expect("read at the next step instead");
+    assert!(withdrawn < steering);
+    assert_eq!(steered(&seen), ["steer one", "a memo"], "both read, in order, by the turn under way: {seen:#?}");
+    assert!(matches!(seen.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "never stopped: {seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::QueueSent { .. })), "{seen:#?}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(e) = events.try_recv() {
-        assert!(!matches!(e, Event::QueueSent { .. } | Event::TurnEnded { .. }), "{e:?}");
+        assert!(!matches!(e, Event::MessageQueued { .. } | Event::UserMessage { .. }), "none delivered again: {e:?}");
     }
 }
 
 #[tokio::test]
-async fn send_now_without_an_order_sends_the_steers_then_the_memos() {
+async fn send_now_with_only_steers_waiting_stops_nothing() {
     let claude = fake_claude(true, &format!("case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\n{}", answering("ok")));
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
     handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    handle.send(Command::SubmitLater { session: 1, text: "memo".into(), about: None });
     handle.send(Command::Submit { session: 1, text: "steer".into(), about: None });
     until(&mut events, |e| matches!(e, Event::SteerQueued { .. })).await;
     handle.send(Command::SendNow { session: 1, texts: vec![] });
-    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "steer\n\nmemo"), "{seen:#?}");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    while let Ok(e) = events.try_recv() {
+        assert!(!matches!(e, Event::TurnEnded { .. } | Event::QueueSent { .. } | Event::UserMessage { .. }), "the work goes on: {e:?}");
+    }
+    handle.send(Command::Interrupt { session: 1 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. })).await;
+}
+
+#[tokio::test]
+async fn send_now_while_a_command_runs_stops_only_the_command_and_the_message_is_read_next() {
+    // The step the message waits for never comes while the command hangs:
+    // the command ends, the engine hears it failed, and reads the message.
+    let turn = r#"cat <<EOF
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 30; echo hangs-for-equipe"}}]}}
+EOF
+sh -c 'sleep 30; echo hangs-for-equipe' > /dev/null
+cat <<EOF
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"Exit code 143"}]}}
+EOF
+IFS= read -r said
+text=$(printf '%s' "$said" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["message"]["content"]))')
+cat <<EOF
+{"type":"user","isReplay":true,"message":{"role":"user","content":"count the rows"}}
+{"type":"user","isReplay":true,"message":{"role":"user","content":$text}}
+{"type":"result","subtype":"success","is_error":false,"result":"read it","usage":{"input_tokens":3,"output_tokens":1}}
+EOF"#;
+    let claude = fake_claude(true, turn);
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "count the rows".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::ToolUse { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "is 28 minutes right?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::SteerQueued { .. })).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let asked = std::time::Instant::now();
+    handle.send(Command::SendNow { session: 1, texts: vec![] });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(asked.elapsed() < Duration::from_secs(10), "not waited out");
+    assert!(seen.iter().any(|e| matches!(e, Event::ToolResult { outcome, .. } if !outcome.ok)), "the command failed, as the engine heard: {seen:#?}");
+    assert_eq!(steered(&seen), ["is 28 minutes right?"]);
+    assert!(matches!(seen.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "the turn went on: {seen:#?}");
 }
 
 #[tokio::test]
@@ -838,6 +917,43 @@ async fn a_member_gets_its_charter_a_recommended_model_and_its_own_memory() {
     assert!(settings.contains(&*memory.to_string_lossy()), "{settings}");
     // Without equipe's binary, no board tools are offered.
     assert_eq!(arg(call, "--mcp-config"), None);
+}
+
+#[tokio::test]
+async fn a_claude_member_runs_the_squads_number_of_subagents_at_once_and_is_told_that_number() {
+    let seen = scratch("subagents-env");
+    let (claude, recorded) = recording_claude(&format!("printf '%s' \"$CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS\" > '{}/at-once'\n{}", seen.display(), answering("ok")));
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&cwd, "backend")).await;
+    assert_eq!(handle.snapshot("acme").await.subagents_at_once, None, "unset: each engine's own");
+    let turn = async |events: &mut UnboundedReceiver<Event>, n: usize| {
+        handle.send(Command::Submit { session: 1, text: format!("survey it {n}"), about: None });
+        until(events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        let charter = arg(&calls(&recorded)[n], "--append-system-prompt").unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        (std::fs::read_to_string(seen.join("at-once")).unwrap(), charter)
+    };
+
+    // Unset: Claude Code is given nothing and runs its own 20 — the number its charter says.
+    let (env, charter) = turn(&mut events, 0).await;
+    assert_eq!(env, "", "nothing given");
+    assert!(charter.contains("Your engine runs at most 20 subagents at once") && charter.contains("(your Agent tool)"), "{charter}");
+
+    // The person sets it: every screen hears, and the next turn runs and is told the new number.
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: Some(4) });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: Some(4), .. })).await;
+    assert_eq!(handle.snapshot("acme").await.subagents_at_once, Some(4));
+    let (env, charter) = turn(&mut events, 1).await;
+    assert_eq!(env, "4");
+    assert!(charter.contains("Your engine runs at most 4 subagents at once: for more, start up to 4"), "{charter}");
+
+    // Back to the engine's own: nothing given again.
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: None });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: None, .. })).await;
+    let (env, charter) = turn(&mut events, 2).await;
+    assert_eq!(env, "");
+    assert!(charter.contains("at most 20 subagents at once"), "{charter}");
 }
 
 #[tokio::test]
@@ -1603,6 +1719,7 @@ async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
     );
     let cwd = scratch("cwd");
     let home = squad_home(&[&cwd]);
+    let sent = now();
     {
         let (handle, mut events) = runtime::start(config(&claude, &home, true));
         // Session ids are random; the PM need not have the smallest.
@@ -1610,6 +1727,11 @@ async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
         add(&handle, &mut events, 5, member(&cwd, "pm")).await;
         handle.send(Command::Submit { session: 5, text: "remember me".into(), about: None });
         until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        // Each line of what a screen attaching gets says when it was said.
+        let live = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 5).unwrap();
+        let said: Vec<Option<u64>> = live.recent.iter().zip(&live.recent_at).filter(|(e, _)| matches!(e, Entry::User { .. } | Entry::Reply { .. })).map(|(_, at)| *at).collect();
+        assert_eq!(said.len(), 2, "{:?} {:?}", live.recent, live.recent_at);
+        assert!(said.iter().all(|at| at.is_some_and(|at| at >= sent && at <= now())), "{said:?}");
         handle.shutdown().await;
     }
 
@@ -1620,6 +1742,11 @@ async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
     let pm = &snapshot.sessions[0];
     assert_eq!(pm.title.as_deref(), Some("remember me"));
     assert_eq!(text_entries(&pm.recent), ["user: remember me", "reply: fresh"]);
+    // Brought back from the journal with the times they were kept at, not now's.
+    assert_eq!(pm.recent_at.len(), pm.recent.len());
+    let kept: Vec<u64> = pm.recent.iter().zip(&pm.recent_at).filter(|(e, _)| matches!(e, Entry::User { .. } | Entry::Reply { .. })).filter_map(|(_, at)| *at).collect();
+    assert_eq!(kept.len(), 2, "{:?}", pm.recent_at);
+    assert!(kept.iter().all(|&at| at >= sent && at <= now()), "{kept:?}");
     assert_eq!(snapshot.projects, [cwd]);
 
     // The next turn continues Claude Code's conversation.
@@ -3461,7 +3588,8 @@ async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through
     handle.send(Command::ReopenConversation { squad: "acme".into(), session: 51 });
     let seen = until(&mut events, |e| matches!(e, Event::PutAwayChanged { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { session: 51, of: 1, project: Some(p), kept: true } if p == "app")), "{seen:#?}");
-    let back = seen.iter().find_map(|e| if let Event::ConversationBack { session: 51, title, lines } = e { Some((title.clone(), text_entries(lines))) } else { None }).expect("its lines");
+    let back = seen.iter().find_map(|e| if let Event::ConversationBack { session: 51, title, lines, lines_at } = e { Some((title.clone(), text_entries(lines), lines.len() == lines_at.len() && lines.iter().zip(lines_at).all(|(e, at)| !matches!(e, Entry::User { .. }) || at.is_some()))) } else { None }).expect("its lines");
+    assert!(back.2, "taken up again, each message says when it was said");
     assert_eq!(back.0.as_deref(), Some("what next?"));
     assert!(back.1.contains(&"user: what next?".to_owned()), "{:?}", back.1);
     assert!(matches!(seen.last(), Some(Event::PutAwayChanged { list, .. }) if list.is_empty()));
@@ -3480,13 +3608,99 @@ async fn a_members_model_changes_between_turns_and_its_conversation_carries_on()
     handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.send(Command::SetModel { session: 1, model: "opus".into() });
-    until(&mut events, |e| matches!(e, Event::ModelKnown { session: 1, model } if model == "opus")).await;
+    until(&mut events, |e| matches!(e, Event::ModelKnown { session: 1, model, .. } if model == "opus")).await;
     handle.send(Command::Submit { session: 1, text: "two".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let all = calls(&recorded);
     assert_eq!(arg(&all[0], "--model"), Some("sonnet"));
     assert_eq!(arg(&all[1], "--model"), Some("opus"));
     assert_eq!(arg(&all[1], "--resume"), Some("sess-1"));
+}
+
+#[tokio::test]
+async fn an_alias_stays_what_is_asked_for_while_the_screens_hear_what_it_ran_as() {
+    let cwd = scratch("alias");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    // The engine named what `sonnet` is on this machine; the member is still set to `sonnet`.
+    assert!(seen.iter().any(|e| matches!(e, Event::ModelKnown { session: 1, model, asked: Some(asked) } if model == "claude-test" && asked == "sonnet")), "{seen:#?}");
+    let snapshot = handle.snapshot("acme").await;
+    let info = snapshot.sessions.iter().find(|s| s.session == 1).unwrap();
+    assert_eq!((info.model.as_deref(), info.asked_model.as_deref()), (Some("claude-test"), Some("sonnet")));
+    handle.send(Command::Submit { session: 1, text: "two".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    assert_eq!(arg(&all[1], "--model"), Some("sonnet"), "asked by its alias again, never pinned to what it ran as");
+}
+
+#[tokio::test]
+async fn a_new_member_starts_with_the_model_and_effort_the_person_set_for_its_role() {
+    let cwd = scratch("role-model");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    let default = RoleModel { role: "frontend".into(), engine: Engine::Claude, model: Some("claude-opus-5-5".into()), effort: Some("max".into()) };
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default: default.clone() });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.len() == 1)).await;
+    assert_eq!(handle.snapshot("acme").await.role_models, [default]);
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    assert_eq!((arg(&all[0], "--model"), arg(&all[0], "--effort")), (Some("claude-opus-5-5"), Some("max")));
+    // Cleared: the recommendation again for the next one.
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default: RoleModel { role: "frontend".into(), engine: Engine::Claude, model: None, effort: None } });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.is_empty())).await;
+}
+
+#[tokio::test]
+async fn a_role_set_to_a_providers_model_starts_its_new_members_on_it_on_codexs_agent() {
+    let cwd = scratch("role-provider");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    // A server on this machine: no key needed.
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    // Set where the screen shows the role, on Claude Code: the member runs on Codex's agent all the same.
+    let default = RoleModel { role: "frontend".into(), engine: Engine::Claude, model: Some(model.clone()), effort: None };
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.len() == 1)).await;
+    let started = |id: u64| move |e: &Event| matches!(e, Event::SessionStarted { session, .. } | Event::Error { session: Some(session), .. } if *session == id);
+    handle.send(Command::Start { session: 1, spec: member(&cwd, "frontend") });
+    let seen = until(&mut events, started(1)).await;
+    let Some(Event::SessionStarted { engine: Engine::Codex, model: Some(on), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(on, &model);
+    // Another role keeps Claude Code.
+    handle.send(Command::Start { session: 2, spec: member(&cwd, "backend") });
+    let seen = until(&mut events, started(2)).await;
+    assert!(matches!(seen.last(), Some(Event::SessionStarted { engine: Engine::Claude, .. })), "{seen:#?}");
+}
+
+#[tokio::test]
+async fn a_claude_member_set_to_a_providers_model_moves_to_codexs_agent_on_it_at_its_next_ticket() {
+    let cwd = scratch("move-provider");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    // Between tickets: the boundary is now.
+    handle.send(Command::SetModel { session: 1, model: model.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { engine: Engine::Codex, .. } | Event::Error { .. })).await;
+    // Told where it goes, on a card the person can undo.
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("qwen3-coder:30b") && text.contains("Ollama") && text.contains("next ticket"))), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.moves.iter().any(|m| m.member == "frontend" && m.to == Engine::Codex && m.model.as_deref() == Some(model.as_str())))), "{seen:#?}");
+    let Some(Event::SessionStarted { session, engine: Engine::Codex, model: Some(on), member, .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_ne!(*session, 1, "started again on the other engine");
+    assert_eq!((on.as_str(), member.as_ref().map(|m| m.name.as_str())), (model.as_str(), Some("frontend")), "under the same name, on the provider's model");
+    // Its old conversation is closed, and it isn't on Claude Code any more.
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "{seen:#?}");
 }
 
 #[tokio::test]

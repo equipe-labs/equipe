@@ -348,6 +348,8 @@ mod tests {
             edits: false,
             skills: Delivery::Inline,
             guard: false,
+            subagents: Some(crate::roles::Subagents { engine: equipe_protocol::Engine::Claude, at_once: 20 }),
+            helpers: false,
         }
     }
 

@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use equipe_core::protocol::SessionId;
-use gpui_kit::{AnyWindowHandle, App, WeakEntity};
+use gpui_kit::{AnyWindowHandle, App, Entity, WeakEntity, WindowId};
 
 use crate::Screen;
 use crate::board::Menu;
@@ -428,6 +428,18 @@ pub fn shells() -> Vec<(AnyWindowHandle, WeakEntity<crate::Shell>)> {
     with(|app| app.windows.ids().iter().filter_map(|id| app.handles.iter().find(|(i, ..)| i == id).map(|(_, h, s)| (*h, s.clone()))).collect())
 }
 
+/// The window in front and its shell, when it is one of ours: what the menu
+/// bar's and the app's keys act on.
+pub fn front(cx: &App) -> Option<(AnyWindowHandle, Entity<crate::Shell>)> {
+    let (handle, shell) = in_front(cx.active_window()?.window_id(), shells().into_iter().map(|(h, s)| (h.window_id(), (h, s))))?;
+    Some((handle, shell.upgrade()?))
+}
+
+/// Which of `windows` is the one in front.
+fn in_front<T>(active: WindowId, windows: impl IntoIterator<Item = (WindowId, T)>) -> Option<T> {
+    windows.into_iter().find(|(id, _)| *id == active).map(|(_, w)| w)
+}
+
 /// Make the menu bar's `index`th menu the Mac's Window menu, whatever its
 /// name in the language in use: macOS lists the open windows in it by their
 /// titles. (GPUI does so only for a menu named "Window".)
@@ -470,6 +482,15 @@ pub fn windows_menu_at(index: isize) {
 mod tests {
     use super::*;
     use crate::target::SshHost;
+
+    #[test]
+    fn the_keys_go_to_whichever_window_is_in_front_not_the_first_one_opened() {
+        let open = || [(WindowId::from(1), "first"), (WindowId::from(2), "second"), (WindowId::from(3), "third")];
+        assert_eq!(in_front(WindowId::from(2), open()), Some("second"), "⌘+ in the second window zooms the second window");
+        assert_eq!(in_front(WindowId::from(3), open()), Some("third"));
+        assert_eq!(in_front(WindowId::from(1), open()), Some("first"));
+        assert_eq!(in_front(WindowId::from(9), open()), None, "a window that isn't ours (settings' panel, a sheet) takes nothing");
+    }
 
     fn mini() -> Endpoint {
         Endpoint::Ssh(SshHost::parse("abel@mini").unwrap())

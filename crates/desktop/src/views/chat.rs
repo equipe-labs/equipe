@@ -90,6 +90,8 @@ pub struct Chat {
     shown: Option<Shown>,
     /// What each of `blocks` is about (`None`: the whole squad, or not said).
     about: Rc<Vec<Option<String>>>,
+    /// When each of `blocks` was said, in unix seconds, where known.
+    at: Rc<Vec<Option<u64>>>,
     /// The conversation follows the project in focus (settings ▸ General).
     pub follow: bool,
     /// The list was drawn anew for another slice: it fades in (by serial).
@@ -187,6 +189,7 @@ impl Chat {
             blocks: Rc::new(Vec::new()),
             shown: None,
             about: Rc::default(),
+            at: Rc::default(),
             compact_focus: (cx.focus_handle().tab_stop(true), cx.focus_handle().tab_stop(true)),
             follow: true,
             dock_at: 0,
@@ -221,6 +224,7 @@ impl Chat {
         crate::yourturn::mark(&mut view.blocks, looks);
         crate::convo::mark_handed(&mut view.blocks);
         self.about = Rc::new(view.about);
+        self.at = Rc::new(view.at);
         let old = std::mem::replace(&mut self.blocks, Rc::new(view.blocks));
         self.seen_revision = model.revision;
         let folds_changed = self.expanded != self.shown_expanded;
@@ -647,6 +651,8 @@ struct Rows {
     turn_ends: HashSet<usize>,
     /// Since when the call under way has run.
     step_since: Option<std::time::Instant>,
+    /// What runs for the command under way, as the daemon last looked.
+    watch: Option<Rc<super::watch::Shown>>,
     base: std::path::PathBuf,
     arrived: Rc<HashMap<u64, std::time::Instant>>,
     /// A hand-in's pictures, under the news of it: what they are drawn with, and whose.
@@ -662,6 +668,11 @@ struct Rows {
     about: Rc<Vec<Option<String>>>,
     projects: Rc<Vec<String>>,
     focus: Option<String>,
+    /// When each row was said, where known: under your messages and a
+    /// turn's last reply, quiet.
+    at: Rc<Vec<Option<u64>>>,
+    /// Now, in unix seconds, as the rows are drawn.
+    now: u64,
     /// The latest reply, when it asks the person things in a list: its row,
     /// the list, and the form it turns into.
     asking: Option<Rc<super::asklist::Shown>>,
@@ -733,6 +744,35 @@ fn turn_ends(blocks: &[Block]) -> HashSet<usize> {
     out
 }
 
+/// When a row says it was said: your messages and what waits, and a turn's
+/// last reply (else when this app saw its turn end).
+fn said_of(blocks: &[Block], at: &[Option<u64>], turn_ends: &HashSet<usize>, ix: usize) -> Option<u64> {
+    match blocks.get(ix)? {
+        Block::User(_) | Block::Pending { .. } => at.get(ix).copied().flatten(),
+        Block::Reply { worked, .. } if turn_ends.contains(&ix) => at.get(ix).copied().flatten().or_else(|| worked.as_ref().and_then(|w| w.unix)),
+        _ => None,
+    }
+}
+
+/// Longest the times rows say go unlooked at: a timer set for midnight
+/// waits longer than that while the Mac sleeps.
+const SAID_LOOKED_AT_LEAST: u64 = 5 * 60;
+
+/// When the times the rows say next read differently (`Just now` becoming
+/// `1 minute ago`, today's becoming `Yesterday`), in seconds from `now`.
+fn said_changes_in(blocks: &[Block], at: &[Option<u64>], turn_ends: &HashSet<usize>, now: u64) -> Option<u64> {
+    (0..blocks.len())
+        .filter_map(|ix| said_of(blocks, at, turn_ends, ix))
+        .map(|said| crate::activity::said_when_changes(said, now).saturating_sub(now).clamp(1, SAID_LOOKED_AT_LEAST))
+        .min()
+}
+
+/// When a message was said, quiet: `Yesterday` — on hover, the moment in full.
+fn said_stamp(p: Palette, id: (&'static str, u64), at: u64, now: u64) -> AnyElement {
+    let line = div().id(id).px_1().whitespace_nowrap().text_size(px(META)).text_color(p.muted).child(crate::activity::said_when(at, now));
+    tip(line, p, crate::activity::said_on(at), None).into_any_element()
+}
+
 /// The conversation with the member selected, in its pane.
 pub fn conversation_pane(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let Some(member) = shell.model.selected_member().filter(|_| !shell.chat.blocks.is_empty()) else {
@@ -750,6 +790,11 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     let retry_at = (!working).then(|| blocks.iter().rposition(|b| matches!(b, Block::Reply { .. }))).flatten().filter(|&ix| blocks[..ix].iter().any(|b| matches!(b, Block::User(_))));
     let latest_reply = blocks.iter().rposition(|b| matches!(b, Block::Reply { live: false, .. }));
     let turn_ends = turn_ends(&blocks);
+    // When it was said, under the rows: drawn again when one would read differently.
+    let now = crate::state::now_unix();
+    if let Some(secs) = said_changes_in(&blocks, &shell.chat.at, &turn_ends, now) {
+        shell.wake_at(std::time::Instant::now() + std::time::Duration::from_secs(secs), cx);
+    }
     let replying = blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. }));
     // The conversation sliced, of several projects: each message not of the
     // project in focus says which it was about.
@@ -757,6 +802,11 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     let slice = shell.model.chat_slice(shell.chat.follow);
     let every = slice.is_some() && names.len() > 1;
     let log_name = who.name.clone();
+    let watch = shell.model.convo().and_then(|c| {
+        let steers = c.queue.items().iter().any(|i| i.kind == crate::queue::Kind::Steer);
+        let watched = activity::watched(c.command_watch()?, &who.name, steers)?;
+        Some(Rc::new(super::watch::Shown { watched, stopping: c.stopping_command }))
+    });
     let rows = Rc::new(Rows {
         p,
         tones: render::tones(&p),
@@ -771,12 +821,15 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         latest_reply,
         turn_ends,
         step_since: shell.model.convo().and_then(|c| c.step_since()),
+        watch,
         base: render::base_dir(shell),
         arrived: shell.chat.arrived.clone(),
         attached: attached::Ctx::of(shell, cx.entity().downgrade(), COLUMN - 120.),
         shots: super::visuals::Shots::of(shell, cx.entity().downgrade(), cx),
         pictures: shell.model.tickets.iter().filter(|t| !t.images.is_empty() && matches!(t.status, equipe_core::protocol::TicketStatus::Review | equipe_core::protocol::TicketStatus::Done)).map(|t| (t.id, Rc::new(t.images.clone()))).collect(),
         about: shell.chat.about.clone(),
+        at: shell.chat.at.clone(),
+        now,
         projects: Rc::new(if every { names } else { Vec::new() }),
         focus: slice.flatten(),
         asking: super::asklist::shown(shell, cx),
@@ -1305,15 +1358,20 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
                 .into_any_element(),
             );
         }
-        let when = worked.map(|w| {
-            let ago = w.unix.map(|at| crate::activity::ago(crate::state::now_unix().saturating_sub(at)));
-            let words = match ago {
-                Some(ago) => format!("{} · {ago}", w.took()),
-                None => format!("{} · {}", w.took(), w.at),
-            };
-            let line = h_flex().id(("reply-when", key)).pl_1().gap(px(5.)).items_center().child(icon(Icon::Clock, 12., p.muted)).child(words);
-            tip(line, p, w.at.clone(), None).into_any_element()
-        });
+        // How long its turn worked, and when it was said: `Yesterday`, on hover in full.
+        let said = said_of(&rows.blocks, &rows.at, &rows.turn_ends, ix);
+        let when = match (worked, said) {
+            (Some(w), said) => {
+                let words = match said {
+                    Some(at) => format!("{} · {}", w.took(), crate::activity::said_when(at, rows.now)),
+                    None => format!("{} · {}", w.took(), w.at),
+                };
+                let line = h_flex().id(("reply-when", key)).pl_1().gap(px(5.)).items_center().child(icon(Icon::Clock, 12., p.muted)).child(words);
+                Some(tip(line, p, said.map_or_else(|| w.at.clone(), crate::activity::said_on), None).into_any_element())
+            }
+            (None, Some(at)) => Some(said_stamp(p, ("reply-when", key), at, rows.now)),
+            (None, None) => None,
+        };
         let latest = rows.latest_reply == Some(ix);
         h_flex()
             .mt(px(6.))
@@ -1584,7 +1642,16 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         };
         motion::Reveal::new(("group-body", key), progress, div().opacity(progress).pt_1().pb_1().child(inner).into_any_element())
     });
-    v_flex().child(head).children(body).into_any_element()
+    // A command that has run a while: what really runs for it, and — stuck —
+    // what to do about it.
+    let commanding = lines.iter().any(|l| l.status == Status::Running && l.verb == "run" && !l.background);
+    let watch = rows
+        .watch
+        .as_ref()
+        .filter(|_| status == Status::Running && commanding)
+        .filter(|_| rows.step_since.is_some_and(|since| since.elapsed() >= super::watch::AFTER))
+        .map(|shown| super::watch::under_step(shown, p, t, key, rows.handle.clone()));
+    v_flex().child(head).children(watch).children(body).into_any_element()
 }
 
 /// `+12 −3`, an edit's change counted.
@@ -1865,7 +1932,7 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
     let leaving = rows.leaving.contains(raw);
     let group: SharedString = format!("pending-{key}").into();
     let state = if steer { t!("chat.pending_steer") } else { t!("chat.pending_memo") };
-    let when = (at > 0).then(|| crate::activity::ago(crate::state::now_unix().saturating_sub(at)));
+    let when = (at > 0).then(|| crate::activity::said_when(at, rows.now));
     let copied = if parts.text.is_empty() { raw.to_owned() } else { parts.text.clone() };
     let copy = tool_button(p, ("pending-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone())));
     let (handle, text) = (rows.handle.clone(), raw.to_owned());
@@ -1905,7 +1972,7 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
         .items_center()
         .child(div().size(px(6.)).rounded_full().bg(if steer { p.accent } else { p.muted }))
         .child(state)
-        .children(when.map(|w| div().child(format!("· {w}"))));
+        .children(when.map(|w| tip(div().id(("pending-when", key)).child(format!("· {w}")), p, crate::activity::said_on(at), None)));
     let row = v_flex()
         .group(group.clone())
         .w_full()
@@ -2004,6 +2071,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     // What is copied is what is shown: the words (the tags only when there are none).
     let copied = if parts.text.is_empty() { raw.to_owned() } else { after.clone() };
     let copy = tool_button(p, ("user-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone())));
+    let said = rows.at.get(ix).copied().flatten().map(|at| said_stamp(p, ("user-when", key), at, rows.now));
     let handle = rows.handle.clone();
     let more = long.then(|| {
         div()
@@ -2045,15 +2113,15 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
         .children(files)
         .when(!shown_pictures.is_empty(), |c| c.child(v_flex().items_end().gap_1().children(shown_pictures)))
         .children(bubble)
-        // Beneath, flush right under the bubble: copy, shown on hover — its
-        // room kept so nothing moves — then the project it was about, while
-        // every project shows.
+        // Beneath, flush right under the bubble: when it was said and copy,
+        // shown on hover — their room kept so nothing moves — then the
+        // project it was about, while every project shows.
         .child(
             h_flex()
                 .h(px(24.))
                 .gap(px(6.))
                 .items_center()
-                .child(div().invisible().group_hover(group, |s| s.visible()).child(copy))
+                .child(h_flex().gap(px(2.)).items_center().invisible().group_hover(group, |s| s.visible()).children(said).child(copy))
                 .children(project.map(|name| project_chip(p, name))),
         )
         .into_any_element()
@@ -2658,5 +2726,23 @@ mod tests {
         let mut ends: Vec<usize> = turn_ends(&blocks).into_iter().collect();
         ends.sort();
         assert_eq!(ends, [3, 5]);
+    }
+
+    #[test]
+    fn your_messages_and_a_turns_last_reply_say_when_and_are_looked_at_again_when_that_reads_differently() {
+        use super::{said_changes_in, said_of};
+        let reply = |t: &str| Block::Reply { text: t.into(), first: false, live: false, worked: None };
+        let blocks = vec![Block::User("go".into()), reply("looking"), Block::Steps(vec![]), reply("done")];
+        let now = 1_000_000;
+        let ends = turn_ends(&blocks);
+        let at = vec![Some(now - 30), Some(now - 20), Some(now - 10), Some(now - 5)];
+        let said: Vec<Option<u64>> = (0..blocks.len()).map(|ix| said_of(&blocks, &at, &ends, ix)).collect();
+        assert_eq!(said, [Some(now - 30), None, None, Some(now - 5)], "a reply mid-turn and the steps say nothing");
+        assert_eq!(said_changes_in(&blocks, &at, &ends, now), Some(30), "`Just now` until the message is a minute old");
+        // Days old: looked at again within minutes all the same — a timer
+        // for midnight runs late across the Mac's sleep.
+        let old = vec![Some(now - 3 * 86_400); 4];
+        assert!(said_changes_in(&blocks, &old, &ends, now).is_some_and(|secs| (1..=300).contains(&secs)));
+        assert_eq!(said_changes_in(&blocks, &[None; 4], &ends, now), None, "no times known: never");
     }
 }

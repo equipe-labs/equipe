@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use equipe_core::i18n::{Front, Lang};
-use equipe_core::protocol::{Command, Mode, SessionId};
+use equipe_core::protocol::{Command, Engine, EngineState, Mode, RoleModel, SessionId};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{h_flex, v_flex};
@@ -50,6 +50,13 @@ pub enum Pop {
     Model(SessionId),
     Effort(SessionId),
     Mode(SessionId),
+    /// What new members of a role start with: its model, its effort.
+    RoleModel(&'static str),
+    RoleEffort(&'static str),
+    /// How many subagents each member runs at once.
+    Subagents,
+    /// The model providers to connect (Settings › AI platforms).
+    AddProvider,
 }
 
 /// What a pop-up's row does.
@@ -61,6 +68,13 @@ enum Act {
     Model(SessionId, String),
     Effort(SessionId, Option<String>),
     Mode(SessionId, Option<Mode>),
+    /// A role's default on an engine (`None`: the recommendation again).
+    RoleModel(&'static str, Engine, Option<String>),
+    RoleEffort(&'static str, Engine, Option<String>),
+    /// Subagents at once (`None`: each engine's own).
+    Subagents(Option<u32>),
+    /// A provider's form opened, by its preset.
+    AddProvider(&'static str),
 }
 
 pub struct SettingsUi {
@@ -78,11 +92,16 @@ pub struct SettingsUi {
     pub engine_keys: Vec<FocusHandle>,
     /// Accounts' form and second clicks.
     pub accounts: super::accounts::AccountsUi,
-    /// The Nebius card's key box (masked; emptied once sent), what's wrong
-    /// with what was pasted, and the second click to remove the key.
+    /// A provider's key box (masked; emptied once sent): Nebius's before
+    /// there was a list, its name kept for the snapshot's `nebiuskey:`.
     pub nebius_key: Entity<InputState>,
-    pub nebius_problem: Option<String>,
-    pub nebius_forgetting: bool,
+    /// The provider being connected (its preset), its form's base URL box
+    /// (the key's is `nebius_key`), what's wrong with what was typed, and
+    /// the provider a second click removes.
+    pub adding: Option<&'static str>,
+    pub provider_url: Entity<InputState>,
+    pub provider_problem: Option<String>,
+    pub provider_removing: Option<String>,
     /// Apple's servers for dictation, asked about: what goes where, and a yes.
     pub dictation_consent: bool,
 }
@@ -100,8 +119,10 @@ impl SettingsUi {
             engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             accounts: super::accounts::AccountsUi::new(window, cx),
             nebius_key: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("engines.nebius_key_placeholder"))),
-            nebius_problem: None,
-            nebius_forgetting: false,
+            adding: None,
+            provider_url: cx.new(|cx| InputState::new(window, cx).placeholder(t!("engines.provider_url_placeholder"))),
+            provider_problem: None,
+            provider_removing: None,
             dictation_consent: false,
         }
     }
@@ -300,9 +321,20 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
+/// The numbers "Subagents at once" offers besides each engine's own: one at
+/// a time near the bottom, where each makes a difference, wider above.
+const SUBAGENT_CHOICES: [u32; 15] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+
+/// "Engine default — Claude Code 20, Codex 6": what members run when the
+/// person hasn't set a number.
+fn subagents_engine_default() -> String {
+    use equipe_core::protocol::{CLAUDE_SUBAGENTS_AT_ONCE, CODEX_SUBAGENTS_AT_ONCE};
+    t!("settings.subagents_engine_default", claude = CLAUDE_SUBAGENTS_AT_ONCE, codex = CODEX_SUBAGENTS_AT_ONCE)
+}
+
 /// A pop-up button: what is chosen and ⌄; a click opens the list under it.
 /// `name` is what it chooses, as a screen reader says it.
-fn picker(shell: &Shell, pop: Pop, name: &str, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
+pub(super) fn picker(shell: &Shell, pop: Pop, name: &str, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
     use gpui_kit::base::ElementExt as _;
     let p = shell.palette;
     let open = shell.settings.pop == Some(pop);
@@ -659,7 +691,13 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             };
             let desc = [Some(m.role.clone()).filter(|r| !r.is_empty() && *r != m.name), Some(engine.to_owned()).filter(|e| !e.is_empty())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
             let label = h_flex().gap_2().items_center().child(crate::theme::avatar(p, &m.role, &m.name, 18.)).child(m.name.clone());
-            let model_name = m.model.as_deref().map(super::composer::short_model).unwrap_or_else(|| t!("settings.engine_default").to_owned());
+            let listed = model.listed(m.engine);
+            let asked = m.asked.as_deref().or(m.model.as_deref());
+            let model_name = asked.map(|a| crate::models::label(a, listed)).unwrap_or_else(|| t!("settings.engine_default").to_owned());
+            // What runs isn't what it is set to: said in its place, in the warning colour.
+            let gap = crate::models::gap_line(m.engine, asked, m.model.as_deref(), listed).map(|(line, _)| line);
+            let warned = gap.is_some();
+            let desc = gap.unwrap_or(desc);
             let effort = model.efforts.get(&m.session).cloned().unwrap_or_else(|| t!("settings.engine_default").to_owned());
             let mode = model.member_modes.get(&m.session).map(|m| mode_label(*m).to_owned()).unwrap_or_else(|| t!("settings.mode_follows").to_owned());
             let controls = h_flex()
@@ -670,7 +708,7 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
                         .child(with_tip(picker(shell, Pop::Effort(s), t!("composer.tip_effort"), effort.clone(), 96., cx), format!("tip-effort-{s}"), p, t!("composer.tip_effort")))
                         .child(with_tip(picker(shell, Pop::Mode(s), t!("composer.tip_mode"), mode.clone(), 124., cx), format!("tip-mode-{s}"), p, t!("composer.tip_mode")))
                 });
-            Line::new(m.name.clone(), desc).label_el(label).words(format!("{} {model_name} {effort} {mode}", m.role)).control(controls)
+            Line::new(m.name.clone(), desc).warn(warned).label_el(label).words(format!("{} {model_name} {effort} {mode}", m.role)).control(controls)
         })
         .collect();
     let lines = if lines.is_empty() { vec![Line::new(t!("settings.no_members"), t!("settings.no_members_desc"))] } else { lines };
@@ -689,13 +727,95 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             let hours = if on { equipe_core::protocol::routines::IDLE_WAKE_HOURS } else { 0 };
             this.send_command(equipe_core::protocol::Command::SetIdleWake { squad, hours });
         }, cx);
+    // How many helpers each member starts at a time for big work, where its
+    // engine has them: each engine's own, said plainly, or the person's number.
+    let set = model.subagents_at_once;
+    let (desc, now) = match set {
+        None => (subagents_engine_default(), t!("settings.engine_default").to_owned()),
+        Some(n) => (t!("settings.subagents_at_once_desc").to_owned(), n.to_string()),
+    };
+    let subagents = Line::new(t!("settings.subagents_at_once"), desc)
+        .words(t!("settings.subagents_words"))
+        .control(if connected { picker(shell, Pop::Subagents, t!("settings.subagents_at_once"), now, 96., cx) } else { value(p, now) });
     vec![
         Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
         // Its own card, so the footnote above reads as the PM's accepting alone.
         Section::new("", vec![idle_wake]),
+        Section::new("", vec![subagents]).foot(t!("settings.subagents_at_once_foot")),
         signals::section(shell, connected, cx),
+        role_models(shell, connected, cx),
         Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
     ]
+}
+
+/// The roles a squad's new members are given models for, in the order a
+/// squad is put together.
+const ROLE_ORDER: [&str; 9] = [equipe_core::roles::PM, "designer", "frontend", "backend", "mobile", "qa", "security", "marketing", "data"];
+
+/// A role as the page names it.
+fn role_name(id: &str) -> &'static str {
+    match id {
+        "pm" => t!("welcome.role_pm"),
+        "designer" => t!("welcome.role_designer"),
+        "frontend" => t!("welcome.role_frontend"),
+        "backend" => t!("welcome.role_backend"),
+        "mobile" => t!("settings.role_mobile"),
+        "qa" => t!("welcome.role_qa"),
+        "security" => t!("welcome.role_security"),
+        "marketing" => t!("welcome.role_marketing"),
+        _ => t!("welcome.role_data"),
+    }
+}
+
+/// The engine a new member of `role` starts on: its first, unless only the
+/// other is signed in.
+fn role_engine(shell: &Shell, role: &str) -> Engine {
+    let ready = |e: Engine| shell.engines.statuses.iter().flatten().any(|s| s.engine == e && s.state == EngineState::SignedIn);
+    let [first, second] = equipe_core::roles::engine_preference(equipe_core::roles::role_or_custom(role));
+    if !ready(first) && ready(second) { second } else { first }
+}
+
+/// What the person set for `role` on `engine`, if anything.
+fn role_default<'a>(shell: &'a Shell, role: &str, engine: Engine) -> Option<&'a RoleModel> {
+    shell.model.role_models.iter().find(|d| d.role == role && d.engine == engine)
+}
+
+/// The model equipe recommends a new member of `role` on `engine`, when it
+/// can say without the engine's list.
+fn recommended(shell: &Shell, role: &str, engine: Engine) -> Option<String> {
+    let ids: Vec<String> = shell.model.listed(Some(engine)).iter().map(|m| m.id.clone()).collect();
+    equipe_core::roles::recommended_model_for(equipe_core::roles::role_or_custom(role), engine, &ids)
+}
+
+/// New members: the model and effort each role starts with, the
+/// recommendation until the person picks.
+fn role_models(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
+    let p = shell.palette;
+    let lines = ROLE_ORDER
+        .iter()
+        .map(|&role| {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine);
+            let listed = shell.model.listed(Some(engine));
+            // Unset, the recommendation shows in the control and is said so beside the engine.
+            let chosen = set.is_some_and(|d| d.model.is_some() || d.effort.is_some());
+            let model_name = match set.and_then(|d| d.model.as_deref()) {
+                Some(m) => crate::models::label(m, listed),
+                None => recommended(shell, role, engine).map_or_else(|| t!("settings.engine_default").to_owned(), |m| crate::models::label(&m, listed)),
+            };
+            let effort = set.and_then(|d| d.effort.clone()).unwrap_or_else(|| equipe_core::roles::default_effort(role).map_or_else(|| t!("settings.engine_default").to_owned(), str::to_owned));
+            let controls = h_flex().gap_2().when(connected, |c| {
+                c.child(with_tip(picker(shell, Pop::RoleModel(role), t!("composer.tip_model"), model_name.clone(), 150., cx), format!("tip-role-model-{role}"), p, t!("composer.tip_model")))
+                    .child(with_tip(picker(shell, Pop::RoleEffort(role), t!("composer.tip_effort"), effort.clone(), 96., cx), format!("tip-role-effort-{role}"), p, t!("composer.tip_effort")))
+            });
+            let name = role_name(role);
+            let label = h_flex().gap_2().items_center().child(crate::theme::avatar(p, role, role, 18.)).child(name);
+            let platform = crate::engines::platform(engine).name;
+            let desc = if chosen { platform.to_owned() } else { format!("{platform} · {}", t!("settings.role_recommended")) };
+            Line::new(name, desc).label_el(label).words(format!("{role} {model_name} {effort}")).control(controls)
+        })
+        .collect();
+    Section::new(t!("settings.section_role_models"), lines).foot(t!("settings.role_models_foot"))
 }
 
 /// `el` with a tooltip, in a box of its own that can be hovered.
@@ -1122,20 +1242,61 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
         Pop::Squad => (240., shell.squads.iter().map(|s| (s.clone(), String::new(), *s == model.squad, Act::Squad(s.clone()))).collect()),
         Pop::Model(session) => {
             let Some(m) = member(session) else { return (0., Vec::new()) };
-            let mut models = crate::compose::engine_models(m.engine, m.model.as_deref());
-            if models.is_empty() {
-                models.extend(m.model.clone());
-            }
-            let now = m.model.clone().unwrap_or_default();
-            let exact = models.contains(&now);
-            (260., models.into_iter().map(|x| (super::composer::short_model(&x), x.clone(), now == x || (!exact && now.contains(&x)), Act::Model(session, x))).collect())
+            let asked = m.asked.as_deref().or(m.model.as_deref());
+            let choices = crate::models::choices(m.engine, asked, m.model.as_deref(), model.listed(m.engine));
+            let mut rows: Vec<_> = choices.into_iter().map(|c| (c.label, c.hint, c.on, Act::Model(session, c.model))).collect();
+            rows.extend(provider_rows(shell, asked, |m| Act::Model(session, m)));
+            (280., rows)
         }
         Pop::Effort(session) => {
             let Some(m) = member(session) else { return (0., Vec::new()) };
             let now = model.efforts.get(&session).cloned();
             let mut rows = vec![(t!("settings.engine_default").to_owned(), String::new(), now.is_none(), Act::Effort(session, None))];
-            rows.extend(super::composer::efforts(m.engine).iter().map(|e| ((*e).to_owned(), String::new(), now.as_deref() == Some(*e), Act::Effort(session, Some((*e).to_owned())))));
+            let levels = crate::models::efforts(m.engine, m.asked.as_deref().or(m.model.as_deref()), model.listed(m.engine));
+            rows.extend(effort_rows(levels, now.as_deref(), |e| Act::Effort(session, e)));
             (200., rows)
+        }
+        Pop::RoleModel(role) => {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine).and_then(|d| d.model.clone());
+            let listed = model.listed(Some(engine));
+            let recommended = recommended(shell, role, engine).map_or_else(|| t!("settings.engine_default").to_owned(), |m| crate::models::label(&m, listed));
+            let mut rows = vec![(t!("models.recommended", model = recommended), String::new(), set.is_none(), Act::RoleModel(role, engine, None))];
+            // Codex's own list, once the daemon has sent it; else only what is set.
+            let choices = crate::models::choices(Some(engine), set.as_deref(), None, listed);
+            rows.extend(choices.into_iter().map(|c| (c.label, c.hint, c.on && set.is_some(), Act::RoleModel(role, engine, Some(c.model)))));
+            rows.extend(provider_rows(shell, set.as_deref(), |m| Act::RoleModel(role, engine, Some(m))));
+            (280., rows)
+        }
+        Pop::RoleEffort(role) => {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine);
+            let now = set.and_then(|d| d.effort.clone());
+            let recommended = equipe_core::roles::default_effort(role).map_or_else(|| t!("settings.engine_default").to_owned(), |e| t!("models.recommended", model = e));
+            let mut rows = vec![(recommended, String::new(), now.is_none(), Act::RoleEffort(role, engine, None))];
+            let model_now = set.and_then(|d| d.model.clone()).or_else(|| self::recommended(shell, role, engine));
+            let levels = crate::models::efforts(Some(engine), model_now.as_deref(), model.listed(Some(engine)));
+            rows.extend(effort_rows(levels, now.as_deref(), |e| Act::RoleEffort(role, engine, e)));
+            (200., rows)
+        }
+        Pop::Subagents => {
+            let now = model.subagents_at_once;
+            let mut rows = vec![(subagents_engine_default(), String::new(), now.is_none(), Act::Subagents(None))];
+            rows.extend(SUBAGENT_CHOICES.into_iter().map(|n| (n.to_string(), String::new(), now == Some(n), Act::Subagents(Some(n)))));
+            (420., rows)
+        }
+        Pop::AddProvider => {
+            let connected: Vec<&str> = shell.engines.providers.iter().flatten().map(|p| p.id.as_str()).collect();
+            let rows = equipe_core::model_providers::PRESETS
+                .iter()
+                .filter(|p| p.id == equipe_core::model_providers::OTHER || !connected.contains(&p.id))
+                .map(|p| {
+                    let name = if p.id == equipe_core::model_providers::OTHER { t!("engines.provider_other").to_owned() } else { p.name.to_owned() };
+                    let hint = if p.local { t!("engines.provider_local").to_owned() } else { String::new() };
+                    (name, hint, false, Act::AddProvider(p.id))
+                })
+                .collect();
+            (280., rows)
         }
         Pop::Mode(session) => {
             let now = model.member_modes.get(&session).copied();
@@ -1144,6 +1305,30 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             (240., rows)
         }
     }
+}
+
+/// The providers' models as pop-up rows, each beside its provider's name
+/// (the first few of each; `/model` reaches the rest), `asked` checked.
+fn provider_rows(shell: &Shell, asked: Option<&str>, act: impl Fn(String) -> Act) -> Vec<(String, String, bool, Act)> {
+    crate::models::provider_groups(shell.engines.providers.as_deref().unwrap_or_default(), asked)
+        .into_iter()
+        .flat_map(|g| g.choices.into_iter().map(move |c| (c.label, g.provider.clone(), c.on, c.model)))
+        .map(|(label, provider, on, model)| (label, provider, on, act(model)))
+        .collect()
+}
+
+/// The efforts a model takes as pop-up rows, `now` checked — and listed,
+/// though the model doesn't take it, so what is set is never hidden.
+fn effort_rows(mut levels: Vec<String>, now: Option<&str>, act: impl Fn(Option<String>) -> Act) -> Vec<(String, String, bool, Act)> {
+    let stray = now.filter(|n| !levels.iter().any(|l| l == n)).map(str::to_owned);
+    levels.extend(stray.clone());
+    levels
+        .into_iter()
+        .map(|e| {
+            let hint = if stray.as_ref() == Some(&e) { t!("models.effort_not_taken").to_owned() } else { String::new() };
+            (e.clone(), hint, now == Some(e.as_str()), act(Some(e)))
+        })
+        .collect()
 }
 
 fn pop_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
@@ -1201,9 +1386,15 @@ fn pop_number(pop: Pop) -> u64 {
         Pop::Language => 1,
         Pop::Squad => 2,
         Pop::Dictation => 6,
+        Pop::Subagents => 0,
         Pop::Model(s) => 3 + s * 8,
         Pop::Effort(s) => 4 + s * 8,
         Pop::Mode(s) => 5 + s * 8,
+        // Between the members' numbers: theirs are 3 to 5 apart from a multiple of 8.
+        Pop::RoleModel(role) => 7 + 8 * ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0) as u64,
+        Pop::RoleEffort(role) => 8 * (ROLE_ORDER.len() + ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0)) as u64,
+        // Past every role's.
+        Pop::AddProvider => 8 * (2 * ROLE_ORDER.len() as u64 + 1),
     }
 }
 
@@ -1313,17 +1504,33 @@ impl Shell {
             Act::Dictation(lang) => self.set_dictation(lang, window, cx),
             Act::Squad(name) => self.select_squad(&name, window, cx),
             Act::Model(session, model) => {
-                if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session) {
+                // A provider's model on Claude Code: it moves at its next ticket, and shows then.
+                let moves = equipe_core::model_providers::split_ref(&model).is_some();
+                if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session).filter(|m| !moves || m.engine == Some(Engine::Codex)) {
                     m.model = Some(model.clone());
+                    m.asked = None;
                 }
                 self.send_command(Command::SetModel { session, model });
             }
+            Act::RoleModel(role, engine, model) => {
+                let effort = self.model.role_models.iter().find(|d| d.role == role && d.engine == engine).and_then(|d| d.effort.clone());
+                self.set_role_model(RoleModel { role: role.to_owned(), engine, model, effort });
+            }
+            Act::RoleEffort(role, engine, effort) => {
+                let model = self.model.role_models.iter().find(|d| d.role == role && d.engine == engine).and_then(|d| d.model.clone());
+                self.set_role_model(RoleModel { role: role.to_owned(), engine, model, effort });
+            }
+            Act::AddProvider(preset) => self.open_provider_form(preset, window, cx),
             Act::Effort(session, effort) => {
                 self.send_command(Command::SetEffort { session, effort: effort.clone() });
                 match effort {
                     Some(effort) => self.model.efforts.insert(session, effort),
                     None => self.model.efforts.remove(&session),
                 };
+            }
+            Act::Subagents(at_once) => {
+                let squad = self.model.squad.clone();
+                self.send_command(Command::SetSubagentsAtOnce { squad, at_once });
             }
             Act::Mode(session, mode) => {
                 if let Some(name) = self.model.members.iter().find(|m| m.session == session).map(|m| m.name.clone()) {
@@ -1332,6 +1539,17 @@ impl Shell {
             }
         }
         cx.notify();
+    }
+
+    /// What new members of a role start with, kept for the squad; shown at
+    /// once, as the daemon will tell every screen.
+    fn set_role_model(&mut self, default: RoleModel) {
+        let squad = self.model.squad.clone();
+        self.model.role_models.retain(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine));
+        if default.model.is_some() || default.effort.is_some() {
+            self.model.role_models.push(default.clone());
+        }
+        self.send_command(Command::SetRoleModel { squad, default });
     }
 
     /// The language picked in settings (`None`: System, the Mac's — the
@@ -1435,7 +1653,18 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, mode_label, mode_summary, rule_words, short_path};
+    use super::{Mode, SUBAGENT_CHOICES, mode_label, mode_summary, rule_words, short_path, subagents_engine_default};
+
+    #[test]
+    fn subagents_at_once_offers_each_engines_own_said_plainly_and_numbers_engines_take() {
+        use equipe_core::protocol::{CLAUDE_SUBAGENTS_AT_ONCE, CODEX_SUBAGENTS_AT_ONCE, MOST_SUBAGENTS_AT_ONCE, subagents_at_once};
+        let default = subagents_engine_default();
+        assert!(default.contains(&format!("Claude Code {CLAUDE_SUBAGENTS_AT_ONCE}")) && default.contains(&format!("Codex {CODEX_SUBAGENTS_AT_ONCE}")), "{default}");
+        // Each engine's own number can be picked too, and every number is one the daemon keeps as it is.
+        assert!(SUBAGENT_CHOICES.contains(&CLAUDE_SUBAGENTS_AT_ONCE) && SUBAGENT_CHOICES.contains(&CODEX_SUBAGENTS_AT_ONCE));
+        assert!(SUBAGENT_CHOICES.iter().all(|&n| subagents_at_once(n) == n) && SUBAGENT_CHOICES.last() == Some(&MOST_SUBAGENTS_AT_ONCE));
+        assert!(SUBAGENT_CHOICES.windows(2).all(|w| w[0] < w[1]));
+    }
 
     #[test]
     fn a_rule_reads_as_what_it_lets_through() {

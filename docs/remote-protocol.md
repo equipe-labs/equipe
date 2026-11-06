@@ -406,6 +406,21 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
   turn. A steer not read before the turn ends becomes a memo (`message_queued`) and is
   delivered after it.
   `memo_withdrawn` `{ "session", "text" }` takes back a memo or a steer not read yet.
+- `command_watch` `{ "session", "watch"? }` — what runs under the member's engine for its
+  command under way (a `tool_use` of `Bash`, not in the background), as the daemon looked at it
+  on the member's machine a moment ago: every five seconds or so while the command runs, and
+  once without `watch` when it no longer does. `watch` is `{ "engine", "process"?, "quiet_secs",
+  "state" }`: `process` `{ "name", "cpu_percent", "secs" }` is the program shown (its busiest,
+  else its deepest that isn't a shell around it; `cpu_percent` is the whole command's since the
+  last look, of one core — a build on six cores reads 600), absent when nothing runs for it;
+  `quiet_secs`, how long the engine has said nothing; `state` `{ "kind" }` one of `working`,
+  `busy` (a good deal of CPU: at work, however long), `nothing` (nothing runs under the engine
+  for it), `awaiting_you` (a request of the member's waits for the person), `stuck`
+  (`"idle_secs"`: next to no CPU — or nothing running — that long, and the engine silent for
+  minutes). Never `stuck` while the command uses the CPU. Not a line.
+  `stop_command` `{ "session" }` stops that command, and only it — never the engine nor
+  anything not under it: the engine hears it failed (`tool_result`) and goes on with its turn,
+  reading what the person sent meanwhile.
 - `thread` `{ "session", "project" }` — what follows is about `project` (`null`: the whole
   squad): a message sent looking at it, news of its ticket, a ticket's work. Never shown itself;
   a screen shows one project's slice.
@@ -437,7 +452,11 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
 The snapshot's sessions carry `recent`, the latest lines oldest first, each `{ "kind", … }`:
 `user` / `reply` `{ "text" }`, `tool` `{ "tool", "target", "outcome"? }`, `note` `{ "text" }`,
 `error` `{ "message", "next" }`, `landed` `{ "branch", "stat" }` and `thread` `{ "project" }`
-(lines before any `thread` are about the whole squad). Beside `queued` (memos, and `queued_in`:
+(lines before any `thread` are about the whole squad). `recent_at`, one per line in the same
+order, says when each was said in unix seconds — a message when it came, a reply when it was
+done — `null` where not known (still streaming, or kept before times were); absent from a daemon
+that predates it, when no line has a time. A screen watching live takes a line's time as it
+comes. `conversation_back` carries `lines_at` beside its `lines` the same way. Beside `queued` (memos, and `queued_in`:
 the project each was left about), `steering` lists the steers not read yet, and `steering_in`
 the project each was said about (`null`: the whole squad; absent when there are none). A
 session whose conversation is being compacted carries `compacting`
@@ -674,7 +693,7 @@ The daemon follows a device like one more screen, with less reach than the termi
 
 - **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` and
   `list_images` (a member's pictures, of a squad it follows: see A member's pictures),
-  `metrics.summary` (the project's numbers, of a squad it follows: see The project's numbers), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
+  `metrics.summary` (the project's numbers, of a squad it follows: see The project's numbers), and the commands `submit`, `interrupt`, `send_now`, `stop_command`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
   `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
   `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`, `focus`, `refresh`,
@@ -682,8 +701,11 @@ The daemon follows a device like one more screen, with less reach than the termi
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it
-  (`steer_queued`, with its `project`); `send_now` stops the turn and sends what waits — the
-  `texts` first, in that order — as one message (`queue_sent`, then the turn's end).
+  (`steer_queued`, with its `project`); `send_now` has what waits read now, never stopping the
+  turn: memos become steers (`memo_withdrawn`, then `steer_queued`) — the `texts` first, in that
+  order — read at the member's next step, and a command it runs is stopped (as `stop_command`)
+  so that step comes at once. With no turn under way it sends what waits as one message
+  (`queue_sent`).
 - **may not:** any other `metrics.*` (`sources`, `connect`, `disconnect`, `refresh`, `query`:
   keys and connections stay at the Mac), `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
   `set_engine_switching`, `show_engine_setup`, `propose_accept` — nor the person's

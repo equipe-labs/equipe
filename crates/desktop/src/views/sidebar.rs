@@ -1374,13 +1374,13 @@ pub fn subs_cap(members: usize, counts: &[usize]) -> usize {
 fn sub_row(shell: &Shell, member: SessionId, session: SessionId, sub: &Sub, arrives: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let id = sub.id.clone();
-    let step = sub.step.clone().unwrap_or_else(|| t!("sidebar.subagent_starting").to_owned());
+    let step = sub_step(shell, sub, cx);
     let row = sub_shell(p, SharedString::from(format!("sub-{}", sub.id)))
         .cursor_pointer()
         .hover(move |s| s.bg(p.side_hover))
         .tip_at(p, sub.what.clone(), Some(&step), gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.open_subagent(member, session, &id, window, cx)))
-        .child(sub_mark(p, shell.spin(cx)))
+        .child(sub_mark_of(shell, sub, cx))
         .child(row_title(p, sub.what.clone(), false, false).text_size(px(12.)))
         .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child(shell.counting(sub.since.elapsed(), cx)));
     if arrives {
@@ -1406,6 +1406,25 @@ fn sub_shell(p: Palette, id: SharedString) -> Stateful<Div> {
         .rounded(px(6.))
         .overflow_hidden()
         .text_color(p.text2)
+}
+
+/// What a subagent's row says under it: that it looks stuck, else its latest step.
+fn sub_step(shell: &Shell, sub: &Sub, cx: &mut Context<Shell>) -> String {
+    match sub.stuck {
+        Some(quiet) => t!("sidebar.subagent_stuck", time = shell.counting(quiet.elapsed(), cx)),
+        None => sub.step.clone().unwrap_or_else(|| t!("sidebar.subagent_starting").to_owned()),
+    }
+}
+
+/// A subagent's mark: its spinner — amber warning once it looks stuck.
+fn sub_mark_of(shell: &Shell, sub: &Sub, cx: &mut Context<Shell>) -> AnyElement {
+    match sub.stuck {
+        Some(_) => {
+            let warning = crate::render::tones(&shell.palette).warning;
+            div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Warning, 10., warning)).into_any_element()
+        }
+        None => sub_mark(shell.palette, shell.spin(cx)),
+    }
 }
 
 /// A subagent's mark: a small spinner, quieter than its member's.
@@ -1932,7 +1951,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
     }
     let rows = subs.iter().map(|(session, sub)| {
         let (session, id) = (*session, sub.id.clone());
-        let step = sub.step.clone().unwrap_or_else(|| t!("sidebar.subagent_starting").to_owned());
+        let step = sub_step(shell, sub, cx);
         h_flex()
             .id(SharedString::from(format!("sub-pop-{}", sub.id)))
             .px_2()
@@ -1943,7 +1962,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
             .cursor_pointer()
             .hover(move |s| s.bg(p.side_hover))
             .on_click(cx.listener(move |this, _, window, cx| this.open_subagent(member, session, &id, window, cx)))
-            .child(div().pt(px(3.)).child(sub_mark(p, shell.spin(cx))))
+            .child(div().pt(px(3.)).child(sub_mark_of(shell, sub, cx)))
             .child(
                 v_flex()
                     .flex_1()
@@ -2334,7 +2353,7 @@ mod tests {
     }
 
     fn member(session: u64, name: &str, presence: Presence, ticket: Option<u32>) -> Member {
-        Member { session, name: name.into(), role: name.into(), presence, verb: Verb::Working, ticket, memos: 0, context: None, model: None, engine: None, estimate: None, target: None, last_seen: 0, failed: false }
+        Member { session, name: name.into(), role: name.into(), presence, verb: Verb::Working, ticket, memos: 0, context: None, model: None, asked: None, engine: None, estimate: None, target: None, last_seen: 0, failed: false }
     }
 
     #[test]

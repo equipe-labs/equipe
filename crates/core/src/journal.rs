@@ -618,6 +618,35 @@ impl Journal {
         self.set_meta("pm_accepts", if on { "on" } else { "off" })
     }
 
+    /// How many subagents each member runs at once, where its engine has
+    /// them, as the person set it; `None`: each engine's own.
+    pub fn subagents_at_once(&self) -> Option<u32> {
+        self.meta("subagents_at_once").and_then(|n| n.parse().ok()).map(equipe_protocol::subagents_at_once)
+    }
+
+    pub fn set_subagents_at_once(&self, at_once: Option<u32>) -> Result<()> {
+        self.set_meta("subagents_at_once", &at_once.map(|n| equipe_protocol::subagents_at_once(n).to_string()).unwrap_or_default())
+    }
+
+    /// What new members of a role start with on an engine, where the person
+    /// set it; every other role takes equipe's recommendation.
+    pub fn role_models(&self) -> Vec<equipe_protocol::RoleModel> {
+        self.meta("role_models").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    /// Keep `default` for its role and engine: one with neither a model nor
+    /// an effort goes back to the recommendation.
+    pub fn set_role_model(&self, default: equipe_protocol::RoleModel) -> Result<Vec<equipe_protocol::RoleModel>> {
+        let mut all = self.role_models();
+        all.retain(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine));
+        if default.model.is_some() || default.effort.is_some() {
+            all.push(default);
+        }
+        all.sort_by(|a, b| (a.role.as_str(), a.engine as u8).cmp(&(b.role.as_str(), b.engine as u8)));
+        self.set_meta("role_models", &serde_json::to_string(&all).unwrap_or_default())?;
+        Ok(all)
+    }
+
     /// What engine switching keeps for the squad (`runtime/engines.rs`), as JSON.
     pub fn engines_record(&self) -> Option<String> {
         self.meta("engines")
@@ -1276,13 +1305,21 @@ impl Journal {
     }
 
     fn entries(&self, id: SessionId, limit: Option<u64>) -> Result<Vec<Entry>> {
+        Ok(self.timed_entries(id, limit)?.0)
+    }
+
+    /// The lines, and when each was kept (unix seconds; a time that can't be
+    /// one, `None`) — a message when it came, a reply when it was done.
+    fn timed_entries(&self, id: SessionId, limit: Option<u64>) -> Result<(Vec<Entry>, Vec<Option<u64>>)> {
         let mut stmt = self.conn.prepare(
-            "SELECT body FROM (SELECT seq, body FROM entries WHERE session = ?1 ORDER BY seq DESC LIMIT ?2)
+            "SELECT body, at FROM (SELECT seq, body, at FROM entries WHERE session = ?1 ORDER BY seq DESC LIMIT ?2)
              ORDER BY seq ASC",
         )?;
         let limit = limit.map_or(-1, |l| l as i64);
-        let rows = stmt.query_map(params![id as i64, limit], |r| r.get::<_, String>(0))?;
-        Ok(rows.filter_map(|b| b.ok().and_then(|b| serde_json::from_str(&b).ok())).collect())
+        let rows = stmt.query_map(params![id as i64, limit], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        Ok(rows
+            .filter_map(|row| row.ok().and_then(|(body, at)| Some((serde_json::from_str::<Entry>(&body).ok()?, u64::try_from(at).ok().filter(|&at| at > 0)))))
+            .unzip())
     }
 
     /// The last `limit` lines of a session's conversation, oldest first.
@@ -1293,6 +1330,11 @@ impl Journal {
     /// Every kept line of a session's conversation, oldest first.
     pub fn conversation(&self, id: SessionId) -> Result<Vec<Entry>> {
         self.entries(id, None)
+    }
+
+    /// The same, with when each line was said, one per line.
+    pub fn conversation_at(&self, id: SessionId) -> Result<(Vec<Entry>, Vec<Option<u64>>)> {
+        self.timed_entries(id, None)
     }
 
     /// The latest `limit` lines of the squad's conversations that name a path
@@ -1432,6 +1474,22 @@ mod tests {
     }
 
     #[test]
+    fn a_squad_keeps_how_many_subagents_a_member_runs_at_once_within_what_engines_take() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        assert_eq!(j.subagents_at_once(), None, "unset: each engine's own");
+        j.set_subagents_at_once(Some(4)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(4));
+        // Never none (both engines refuse 0), never past what equipe offers.
+        j.set_subagents_at_once(Some(0)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(1));
+        j.set_subagents_at_once(Some(500)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(equipe_protocol::MOST_SUBAGENTS_AT_ONCE));
+        // Back to each engine's own.
+        j.set_subagents_at_once(None).unwrap();
+        assert_eq!(j.subagents_at_once(), None);
+    }
+
+    #[test]
     fn what_a_conversation_with_the_pm_says_is_read_from_where_the_pm_works() {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         let pm = SessionRecord { cwd: "/squad/pm".into(), member: Some(Member { role: "pm".into(), name: "pm".into() }), ..record(1) };
@@ -1499,6 +1557,25 @@ mod tests {
             vec![Entry::User { text: "add a docstring".into() }, Entry::Reply { text: "done".into() }]
         );
         assert_eq!(j.squad().as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn each_line_comes_back_with_when_it_was_said() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        j.record_session(&record(7)).unwrap();
+        let before = now() as u64;
+        j.append(7, &Entry::User { text: "add a docstring".into() }).unwrap();
+        j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
+        let (lines, times) = j.conversation_at(7).unwrap();
+        assert_eq!(lines, j.conversation(7).unwrap());
+        assert_eq!(times.len(), 2);
+        assert!(times.iter().all(|at| at.is_some_and(|at| at >= before && at <= now() as u64)), "{times:?}");
+        // Kept a while ago: that time, not now.
+        j.backdate_entries(7, 1_762_300_000);
+        assert_eq!(j.conversation_at(7).unwrap().1, vec![Some(1_762_300_000); 2]);
+        // A time that can't be one (a row written wrong): not known.
+        j.backdate_entries(7, 0);
+        assert_eq!(j.conversation_at(7).unwrap().1, vec![None, None]);
     }
 
     #[test]
@@ -1854,6 +1931,30 @@ mod tests {
         assert!(!j.browsers_all_shown());
         j.show_browser(None, true, &[]).unwrap();
         assert!(j.browsers_all_shown());
+    }
+
+    #[test]
+    fn what_a_role_starts_with_is_kept_per_engine_and_cleared_back_to_the_recommendation() {
+        use equipe_protocol::{Engine, RoleModel};
+        let home = temp_home();
+        let set = |role: &str, engine, model: Option<&str>, effort: Option<&str>| RoleModel { role: role.into(), engine, model: model.map(Into::into), effort: effort.map(Into::into) };
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            assert!(j.role_models().is_empty(), "the recommendation until the person sets one");
+            j.set_role_model(set("frontend", Engine::Claude, Some("claude-opus-5-5"), None)).unwrap();
+            j.set_role_model(set("frontend", Engine::Codex, None, Some("high"))).unwrap();
+            j.set_role_model(set("designer", Engine::Claude, Some("fable"), Some("max"))).unwrap();
+            // Set again: the newer replaces it.
+            j.set_role_model(set("frontend", Engine::Claude, Some("sonnet"), None)).unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(
+            j.role_models(),
+            [set("designer", Engine::Claude, Some("fable"), Some("max")), set("frontend", Engine::Codex, None, Some("high")), set("frontend", Engine::Claude, Some("sonnet"), None)]
+        );
+        let left = j.set_role_model(set("frontend", Engine::Codex, None, None)).unwrap();
+        assert_eq!(left.len(), 2, "nothing set is the recommendation again");
+        assert_eq!(j.role_models(), left);
     }
 
     #[test]
