@@ -57,5 +57,5 @@ first, or year first) and a 12- or 24-hour clock. Money and markets: the colour 
 and red down in most, red up in much of East Asia (Korea, China, Taiwan, Japan) with blue or green down — so give change
 its own tokens (`color.change.up`, `color.change.down`), apart from danger and info; always pair the colour with ▲▼
 and a sign; units in the column head ("(in $M)", "(unit: 100M KRW)", "(in € thousands)"), never a currency sign and
-the written unit together; changes of a rate in percentage points (%p); and the date the numbers stand at on every
+the written unit together; changes of a rate in percentage points (pp, or %p where the market writes it so); and the date the numbers stand at on every
 screen of figures.
