@@ -156,6 +156,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         lane: None,
         estimate: None,
         recent,
+        recent_at: Vec::new(),
         queued: vec![],
         work: None,
         mode: None,
@@ -759,6 +760,30 @@ fn unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// When each line was said, as a conversation spreads out over days: up to
+/// `latest`, the last exchange minutes before it, the ones before hours
+/// before, the day before, days back, then last year; in an exchange, the
+/// message, then its steps and reply a little after.
+fn said_at(lines: &[Entry], latest: u64) -> Vec<Option<u64>> {
+    const AGO: [u64; 8] = [4 * 60, 47 * 60, 5 * 3600 + 20 * 60, 26 * 3600, 3 * 86_400 + 2 * 3600, 6 * 86_400, 12 * 86_400, 400 * 86_400];
+    let mut out = vec![None; lines.len()];
+    let mut exchange = 0;
+    let mut after = 0;
+    for (ix, line) in lines.iter().enumerate().rev() {
+        let base = latest.saturating_sub(AGO[exchange.min(AGO.len() - 1)]);
+        out[ix] = Some(match line {
+            Entry::User { .. } => base.saturating_sub(after + 30),
+            _ => base.saturating_sub(after),
+        });
+        after += 15;
+        if matches!(line, Entry::User { .. }) {
+            exchange += 1;
+            after = 0;
+        }
+    }
+    out
+}
+
 /// Each ticket's record, as `ticket_history` answers it.
 fn records() -> &'static std::sync::Mutex<HashMap<u32, Vec<TicketEntry>>> {
     static RECORDS: std::sync::OnceLock<std::sync::Mutex<HashMap<u32, Vec<TicketEntry>>>> = std::sync::OnceLock::new();
@@ -1295,6 +1320,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                         }
                         switching::mix(&mut sessions);
+                        for s in &mut sessions {
+                            s.recent_at = said_at(&s.recent, unix());
+                        }
                         let snapshot = Snapshot {
                             plans: switching::plans(),
                             plan: switching::claude().or_else(engines::plan),
@@ -1519,7 +1547,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::LaneOpened { session, of: 1, project: c.project.clone(), kept: true });
                                     let title = c.title.clone().unwrap_or_default();
                                     let lines = vec![Entry::User { text: title }, Entry::Reply { text: "지난번에 여기까지 했어요. 이어서 할까요?".into() }];
-                                    let _ = events.send(Event::ConversationBack { session, title: c.title, lines });
+                                    let lines_at = said_at(&lines, unix() - 2 * 86_400);
+                                    let _ = events.send(Event::ConversationBack { session, title: c.title, lines, lines_at });
                                     let _ = events.send(Event::PutAwayChanged { squad, list: left });
                                 }
                             }

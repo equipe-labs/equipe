@@ -161,6 +161,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: Vec::new(),
+            recent_at: Vec::new(),
             queued: Vec::new(),
             queued_project: None,
             queued_in: Vec::new(),
