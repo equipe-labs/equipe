@@ -176,6 +176,33 @@ pub fn what_of(what: Option<&str>, brief: &str) -> String {
     words.chars().take(80).collect()
 }
 
+/// A helper's turn: read-only, its own instructions, the member's model on
+/// the member's provider, and no MCP server — not equipe's, not the person's.
+pub fn request<'a>(
+    brief: &'a str,
+    model: Option<&'a str>,
+    effort: Option<&'a str>,
+    instructions: &'a str,
+    env: &'a [(String, String)],
+    provider: &'a equipe_providers::codex_app::Provider,
+) -> equipe_providers::codex_app::TurnRequest<'a> {
+    equipe_providers::codex_app::TurnRequest {
+        prompt: brief,
+        model,
+        effort,
+        access: equipe_providers::claude_code::Access::ReadOnly,
+        resume: None,
+        instructions: Some(instructions),
+        mcp_servers: Some(&NO_SERVERS),
+        writable: &[],
+        env,
+        provider: Some(provider),
+    }
+}
+
+/// No MCP server at all: given none of its own, a thread has the person's switched off.
+static NO_SERVERS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| json!({}));
+
 // ── the queue ──
 
 /// Whether a helper starts now, or waits behind `ahead` others.
@@ -212,7 +239,7 @@ impl Pool {
     /// A running helper ended with `answer`, kept to be collected; the
     /// helper waiting longest starts in its place, if one does.
     pub fn ended(&mut self, answer: Answer) -> Option<String> {
-        let Some(at) = self.running.iter().position(|r| *r == answer.id) else { return None };
+        let at = self.running.iter().position(|r| *r == answer.id)?;
         self.running.remove(at);
         self.answered.push(answer);
         let next = self.queued.pop_front()?;

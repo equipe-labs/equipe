@@ -132,7 +132,7 @@ impl Runtime {
         let (session_id, helper_id) = (id, helper.to_owned());
         let asked = brief.clone();
         let task = tokio::spawn(async move {
-            let request = request(&brief, model.as_deref(), effort.as_deref(), &instructions, &env, &provider);
+            let request = helpers::request(&brief, model.as_deref(), effort.as_deref(), &instructions, &env, &provider);
             let forward = internal.clone();
             let (s, h) = (session_id, helper_id.clone());
             let outcome = codex_app::run_turn(&binary, &cwd, request, None, None, Some(stop_rx), move |activity| {
@@ -393,30 +393,3 @@ fn still_out(helping: &Helping) -> String {
     waiting.sort_by(|a, b| a.0.cmp(&b.0));
     helpers::still_out(&running, &waiting)
 }
-
-/// A helper's turn: read-only, its own instructions, the member's model on
-/// the member's provider, and no MCP server — not equipe's, not the person's.
-pub(super) fn request<'a>(
-    brief: &'a str,
-    model: Option<&'a str>,
-    effort: Option<&'a str>,
-    instructions: &'a str,
-    env: &'a [(String, String)],
-    provider: &'a codex_app::Provider,
-) -> codex_app::TurnRequest<'a> {
-    codex_app::TurnRequest {
-        prompt: brief,
-        model,
-        effort,
-        access: claude_code::Access::ReadOnly,
-        resume: None,
-        instructions: Some(instructions),
-        mcp_servers: Some(&NO_SERVERS),
-        writable: &[],
-        env,
-        provider: Some(provider),
-    }
-}
-
-/// No MCP server at all: given none of its own, a thread has the person's switched off.
-static NO_SERVERS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| json!({}));
