@@ -17,7 +17,8 @@ What a turn does depends on its prompt:
 FAKE_CODEX_LOG: a file each message received is appended to, one JSON a line.
 FAKE_CODEX_SIGNED_OUT: set, it is signed out.
 FAKE_CODEX_ARGS: a file each run's command line is appended to, one JSON a
-line, with whether NEBIUS_API_KEY was in its environment (never its value).
+line, with whether NEBIUS_API_KEY was in its environment, and the names of
+the `*_API_KEY` variables there (never their values).
 
 Run with `-c model_provider=…` (another provider, as a member on Token
 Factory is), it needs no ChatGPT sign-in, as the real one doesn't.
@@ -33,7 +34,7 @@ SIGNED_OUT = bool(os.environ.get("FAKE_CODEX_SIGNED_OUT"))
 OTHER_PROVIDER = any(a.startswith("model_provider=") for a in sys.argv[1:])
 if os.environ.get("FAKE_CODEX_ARGS"):
     with open(os.environ["FAKE_CODEX_ARGS"], "a") as f:
-        f.write(json.dumps({"args": sys.argv[1:], "nebius_key": bool(os.environ.get("NEBIUS_API_KEY"))}) + "\n")
+        f.write(json.dumps({"args": sys.argv[1:], "nebius_key": bool(os.environ.get("NEBIUS_API_KEY")), "keys": sorted(k for k, v in os.environ.items() if k.endswith("_API_KEY") and v)}) + "\n")
 
 LIMITS = {
     "limitId": "codex", "limitName": None, "normalModelSlug": None,

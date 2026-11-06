@@ -58,7 +58,8 @@ pub const CODEX_EFFORTS: [&str; 4] = ["minimal", "low", "medium", "high"];
 /// A model's id without what Claude Code adds to it: a context window
 /// (`[1m]`) or a release date (`-20250929`).
 pub fn bare(model: &str) -> String {
-    let model = model.trim();
+    // A provider's model (`@openrouter/…`) by its own id, as its engine names it.
+    let model = crate::model_providers::bare_model(model);
     let model = model.split_once('[').map_or(model, |(m, _)| m);
     match model.rsplit_once('-') {
         Some((head, date)) if date.len() == 8 && date.chars().all(|c| c.is_ascii_digit()) => head.to_owned(),
@@ -240,6 +241,9 @@ mod tests {
             Some(Gap::Elsewhere { asked: "claude-opus-5-5".into(), ran: "claude-opus-4-8".into() })
         );
         assert_eq!(gap(Engine::Codex, Some("gpt-6.1-sol"), Some("gpt-6.1-sol")), None);
+        // A provider's model runs as its own id: nothing to say.
+        assert_eq!(gap(Engine::Codex, Some("@openrouter/qwen/qwen3-coder"), Some("qwen/qwen3-coder")), None);
+        assert_eq!(bare("@ollama/qwen3-coder:30b"), "qwen3-coder:30b");
         assert!(matches!(gap(Engine::Codex, Some("gpt-6.1-sol"), Some("gpt-6-luna")), Some(Gap::Elsewhere { .. })));
         assert_eq!(gap(Engine::Claude, Some("some-proxy-model"), None), None);
     }

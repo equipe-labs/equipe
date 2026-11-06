@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{AuthState, Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, SessionId, SignInFailure, SignInStep};
+use equipe_core::protocol::{AuthState, Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, ProviderProblem, ProviderStatus, ProviderTest, SessionId, SignInFailure, SignInStep};
 use equipe_core::t;
 
 use crate::icons::Icon;
@@ -164,6 +164,15 @@ pub struct Engines {
     pub turn: u64,
     /// Nebius Token Factory on the daemon's machine, as it last said.
     pub nebius: Option<equipe_core::protocol::NebiusStatus>,
+    /// The model providers connected on the daemon's machine, as it last said;
+    /// `None`: not said yet.
+    pub providers: Option<Vec<ProviderStatus>>,
+    /// Whether the Codex CLI their members run on is there.
+    pub providers_codex: bool,
+    /// What the daemon said of a provider this screen asked to add, by its
+    /// preset, when it couldn't be ([`Event::ProviderTested`]): its words,
+    /// and the problem to say in this screen's language.
+    pub add_failed: Option<(String, String, Option<ProviderProblem>)>,
     /// Engines whose tool is being installed, or whose install failed.
     installs: HashMap<Engine, Install>,
     /// Whether some engine was ready when last told.
@@ -218,7 +227,12 @@ impl Engines {
         if self.statuses.is_none() && self.asked.is_none() {
             self.asked = Some(now);
         }
-        vec![Command::Engines]
+        vec![Command::Engines, Command::Providers]
+    }
+
+    /// The provider `id`, as the daemon last said.
+    pub fn provider(&self, id: &str) -> Option<&ProviderStatus> {
+        self.providers.iter().flatten().find(|p| p.id == id)
     }
 
     /// The daemon never said: the page explains rather than waiting on.
@@ -378,6 +392,25 @@ impl Engines {
                 self.turn += 1;
                 Effect { changed: true, ..Effect::default() }
             }
+            Event::Providers { providers, codex } => {
+                self.providers = Some(providers.clone());
+                self.providers_codex = *codex;
+                self.turn += 1;
+                Effect { changed: true, ..Effect::default() }
+            }
+            Event::ProviderTested { id, test } => {
+                match self.providers.iter_mut().flatten().find(|p| p.id == *id) {
+                    Some(provider) => provider.test = test.clone(),
+                    // Not one connected: an add that failed, by its preset.
+                    None => {
+                        if let ProviderTest::Failed { why, problem } = test {
+                            self.add_failed = Some((id.clone(), why.clone(), problem.clone()));
+                        }
+                    }
+                }
+                self.turn += 1;
+                Effect { changed: true, ..Effect::default() }
+            }
             Event::SignIn { engine, step } => {
                 let engine = *engine;
                 let asked = matches!(self.card(engine), Card::Starting { .. });
@@ -444,6 +477,8 @@ impl Engines {
     pub fn attached(&mut self) {
         self.statuses = None;
         self.asked = None;
+        self.providers = None;
+        self.add_failed = None;
         // The daemon tells what it knows as the screen attaches; what isn't told is asked again.
         self.auth.clear();
         self.auth_asked.clear();
@@ -663,7 +698,7 @@ mod tests {
     fn the_list_is_asked_once_and_a_silent_daemon_is_said() {
         let mut e = Engines::default();
         let now = Instant::now();
-        assert_eq!(e.open(now), vec![Command::Engines]);
+        assert_eq!(e.open(now), vec![Command::Engines, Command::Providers]);
         assert!(!e.no_answer(now + Duration::from_secs(1)) && e.no_answer(now + NO_ANSWER));
         e.on_event(&Event::Engines { engines: vec![] });
         assert!(!e.no_answer(now + NO_ANSWER));
@@ -702,6 +737,27 @@ mod tests {
         let status = NebiusStatus { key: NebiusKey::Saved, codex: true, model: None, provider: "Nebius Token Factory".into() };
         assert!(e.on_event(&Event::Nebius { status: status.clone() }).changed);
         assert_eq!(e.nebius, Some(status));
+    }
+
+    #[test]
+    fn providers_as_the_daemon_says_them_and_an_add_that_failed() {
+        use equipe_core::protocol::{ProviderKey, ProviderStatus, ProviderTest};
+        let mut e = Engines::default();
+        assert!(e.providers.is_none(), "nothing said yet");
+        let groq = ProviderStatus { id: "groq".into(), preset: "groq".into(), name: "Groq".into(), key: ProviderKey::Saved, removable: true, ..Default::default() };
+        assert!(e.on_event(&Event::Providers { providers: vec![groq.clone()], codex: true }).changed);
+        assert!(e.providers_codex && e.provider("groq").is_some());
+        e.on_event(&Event::ProviderTested { id: "groq".into(), test: ProviderTest::Testing });
+        assert_eq!(e.provider("groq").map(|p| &p.test), Some(&ProviderTest::Testing));
+        e.on_event(&Event::ProviderTested { id: "groq".into(), test: ProviderTest::Ok { count: 3 } });
+        assert_eq!(e.provider("groq").map(|p| &p.test), Some(&ProviderTest::Ok { count: 3 }));
+        assert!(e.add_failed.is_none());
+        // Refused before it was kept: said by its preset.
+        let problem = Some(equipe_core::protocol::ProviderProblem::NoKey);
+        e.on_event(&Event::ProviderTested { id: "mistral".into(), test: ProviderTest::Failed { why: "Mistral AI needs an API key.".into(), problem: problem.clone() } });
+        assert_eq!(e.add_failed, Some(("mistral".to_owned(), "Mistral AI needs an API key.".to_owned(), problem)));
+        e.attached();
+        assert!(e.providers.is_none() && e.add_failed.is_none(), "another daemon: asked again");
     }
 
 }

@@ -1341,6 +1341,23 @@ impl Shell {
                     }
                 }
                 rows.extend(crate::models::choices(member.engine, asked, ran, listed).into_iter().map(|c| Row::new(c.label, c.hint, Act::Model(c.model)).checked(c.on)));
+                // The providers connected on the daemon's machine, each under its name;
+                // from Claude Code, picking one moves the member at its next ticket.
+                let groups = crate::models::provider_groups(self.engines.providers.as_deref().unwrap_or_default(), asked);
+                if !groups.is_empty() && member.engine != Some(Engine::Codex) {
+                    rows.push(Row::note(t!("models.provider_moves")));
+                }
+                for group in &groups {
+                    rows.push(Row::note(group.provider.clone()));
+                    rows.extend(group.choices.iter().map(|c| Row::new(c.label.clone(), c.hint.clone(), Act::Model(c.model.clone())).checked(c.on)));
+                    if group.more > 0 {
+                        rows.push(Row::note(t!("models.provider_more", count = group.more, id = group.id.clone())));
+                    }
+                }
+                // What a member on one can't do yet, said before it is picked.
+                if !groups.is_empty() {
+                    rows.push(Row::note(t!("models.provider_limits")));
+                }
                 // Which engine it works on: the other one, at its next ticket.
                 let on = member.engine;
                 rows.push(Row::note(t!("composer.menu_engine")));
@@ -1432,7 +1449,14 @@ impl Shell {
             Act::Model(model) => {
                 if let Some((session, name)) = member {
                     self.send_command(Command::SetModel { session, model: model.clone() });
-                    self.composer.flash = Some(t!("compose.model_set", name = name, wanted = crate::models::label(&model, self.model.listed(self.model.selected_member().and_then(|m| m.engine)))));
+                    let engine = self.model.selected_member().and_then(|m| m.engine);
+                    let wanted = crate::models::label(&model, self.model.listed(engine));
+                    // A provider's model from Claude Code: it moves at its next ticket.
+                    let provider = equipe_core::model_providers::split_ref(&model).filter(|_| engine != Some(Engine::Codex)).map(|(id, _)| self.engines.provider(id).map_or_else(|| id.to_owned(), |p| p.name.clone()));
+                    self.composer.flash = Some(match provider {
+                        Some(provider) => t!("compose.provider_moving", name = name, wanted = wanted, provider = provider),
+                        None => t!("compose.model_set", name = name, wanted = wanted),
+                    });
                 }
             }
             Act::Effort(effort) => {
