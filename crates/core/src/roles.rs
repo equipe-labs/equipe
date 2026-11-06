@@ -423,6 +423,8 @@ pub struct Context<'a> {
     pub guard: bool,
     /// The subagents its engine runs ([`Subagents::of`]); `None` where it has none.
     pub subagents: Option<Subagents>,
+    /// With none, whether equipe's helpers stand in for them ([`crate::helpers`]).
+    pub helpers: bool,
 }
 
 /// The subagents a member's engine runs, and how many at once: the engine's
@@ -502,6 +504,8 @@ describe each in a few plain words. {cap}",
             calls = sub.at_once_in_one_message(),
             cap = sub.cap(),
         ),
+        // No subagents of its own, and equipe's helpers in their place.
+        None if ctx.helpers => crate::helpers::charter_paragraph(role.id == PM),
         None => {
             let tickets = match (ctx.board_tools, role.id == PM) {
                 (true, true) => "put each on a ticket of its own with `create_ticket`, for teammates who work at once",
@@ -1184,7 +1188,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20) }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
     }
 
     /// A Claude Code member at Claude Code's own cap: what every charter said before the squad set it.
@@ -1251,6 +1255,7 @@ mod tests {
                 skills: Delivery::Plugin(SKILLS_AT),
                 guard: true,
                 subagents: Some(CLAUDE_20),
+                helpers: false,
             };
             let bare = Context { board_tools: false, browser: false, desktop: false, design: false, pm_accepts: false, profiles: &[], guard: false, ..full };
             for (variant, c) in [("full", full), ("bare", bare)] {
@@ -1904,6 +1909,38 @@ invent one."), "{id}: true numbers");
         let doc = tool["description"].as_str().unwrap();
         for part in ["more than a couple of minutes", "a ticket, research, subagents' work", "again whenever your guess changes by much", "when it will be live", "what goes live", "Honest minutes"] {
             assert!(doc.contains(part), "{part}: {doc}");
+        }
+    }
+
+    #[test]
+    fn a_member_with_no_subagents_of_its_own_is_told_of_its_helpers_and_keeps_its_edits() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "backend", role: "backend" }];
+        let flat = |text: String| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let codex = Subagents { engine: Engine::Codex, at_once: 6 };
+        for r in ROLES.iter().chain([&CUSTOM]) {
+            let helped = flat(charter(r, r.id, &Context { subagents: None, helpers: true, ..ctx(&team, &[], true) }));
+            for part in [
+                "Your engine has no subagents of its own; equipe gives you helpers instead (`spawn_helper`, `helper_result`)",
+                "Hand reading, surveying and checking to helpers",
+                "several at once when the parts don't depend on each other (up to 3 run at once; more wait their turn)",
+                "Keep every edit yourself: helpers never change files",
+                "collect every answer with `helper_result` before you end your turn",
+                "more than about 20 minutes and changes many files",
+                if r.id == PM { "put each on a ticket of its own with `create_ticket`" } else { "propose each as a ticket of its own with `create_ticket`, for the PM to hand to teammates who work at once" },
+            ] {
+                assert!(helped.contains(part), "{}: {part}", r.id);
+            }
+            for gone in ["your Agent tool", "`spawn_agent`", "subagents at once", "Your engine has no subagents:", "one piece after another"] {
+                assert!(!helped.contains(gone), "{}: helpers in place of the words for no subagents: {gone}", r.id);
+            }
+            // With no helpers either (no board tools), the words for no subagents, as main has them.
+            let alone = flat(charter(r, r.id, &Context { subagents: None, helpers: false, ..ctx(&team, &[], false) }));
+            assert!(alone.contains("Your engine has no subagents:") && !alone.contains("spawn_helper"), "{}", r.id);
+            // Claude Code's and Codex's own: their engine's subagents, never a helper.
+            for own in [CLAUDE_20, codex] {
+                let own = flat(charter(r, r.id, &Context { subagents: Some(own), ..ctx(&team, &[], true) }));
+                assert!(own.contains("Side work that is long or stands on its own") && !own.contains("spawn_helper") && !own.contains("helper"), "{}", r.id);
+            }
         }
     }
 }

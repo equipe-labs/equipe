@@ -1,6 +1,6 @@
 //! What typing into the conversation does, without a window: the history that
-//! ↑↓ walks, a draft kept per member and project, the guard that keeps a Korean
-//! composition's Enter from sending, completion from the squad's state, and what
+//! ↑↓ walks, a draft kept per member and project, the guard that keeps the Enter
+//! ending an input source's composition from sending, completion from the squad's state, and what
 //! a sent line turns into — a message to a member, or one of the person's
 //! commands. The same rules as the terminal console (`tui/app.rs` `submit`,
 //! `slash`); the daemon commands are the ones it sends.
@@ -221,11 +221,12 @@ pub fn write_private(path: &Path, text: &str) {
     }
 }
 
-// ── Korean composition ──
+// ── Input source composition ──
 
-/// Keeps the Enter that ends a Korean composition from also sending.
+/// Keeps the Enter that ends a composition (Korean, Japanese, Chinese input
+/// sources) from also sending.
 ///
-/// macOS's Korean input source, asked to finish a syllable with Enter, commits
+/// An input source such as macOS's Korean one, asked to finish with Enter, commits
 /// it and — depending on the app — hands the Enter on as well. Two rules
 /// (T-54 §3.5): while text is being composed an Enter only commits; and an
 /// Enter arriving in the same breath as the composition ending is that same
@@ -1108,6 +1109,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             work: None,
             mode: None,

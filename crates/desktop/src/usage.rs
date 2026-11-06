@@ -119,6 +119,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],

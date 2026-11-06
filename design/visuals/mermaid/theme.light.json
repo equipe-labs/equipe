@@ -1,7 +1,7 @@
 {
   "base": "light",
   "fields": {
-    "font_family": "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif",
+    "font_family": "\"Helvetica Neue\", \"Hiragino Sans\", \"PingFang SC\", \"Apple SD Gothic Neo\", sans-serif",
     "font_size": 14,
     "background": "transparent",
     "primary_color": "#FFFFFF",
@@ -41,6 +41,11 @@
     "pie_stroke_color": "#FFFFFF",
     "pie_outer_stroke_color": "#FFFFFF",
     "pie_opacity": 1
+  },
+  "font_family_by_language": {
+    "Korean": "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif",
+    "Japanese": "\"Helvetica Neue\", \"Hiragino Sans\", sans-serif",
+    "Chinese": "\"Helvetica Neue\", \"PingFang SC\", sans-serif"
   },
   "layout": {
     "nodeSpacing": 28,

@@ -424,7 +424,7 @@ signed in once, so the person sees exactly what the members see.
   connection). Credit-paced: the app gives credit back after drawing, so a
   slow line gets fewer, newer frames. Frames never go on the event connection.
 - **The hand.** Mouse, wheel and keys go back through the same stream, mapped
-  through the frame's CSS size; Korean composition goes as
+  through the frame's CSS size; an input source's composition goes as
   `Input.imeSetComposition`, commits as `insertText`, editing keys carry the
   Mac's editing commands. Touching a member's page takes it (its browser tools
   answer "The person is using this browser…" meanwhile); Give back, Esc or two
@@ -506,7 +506,7 @@ signed in once, so the person sees exactly what the members see.
   so in place of the picture.
 
 Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `btake`, `bgive`,
-`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한` (Korean IME steps), `bclose:<n>`, `bwheel`. The fake
+`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:k|か` (IME composition steps), `bclose:<n>`, `bwheel`. The fake
 daemon has a browser with `FAKE_BROWSER=1` (frontend on an App Store
 Connect–like page, backend paused at a "Just a moment…" wall that a click
 passes, a tab of the person's own; `FAKE_BROWSER=empty` for none;

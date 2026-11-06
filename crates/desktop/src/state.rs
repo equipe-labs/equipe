@@ -772,8 +772,8 @@ impl Model {
         match self.chat_slice(follow) {
             Some(slice) => convo.sliced(slice.as_deref()),
             None => {
-                let blocks = convo.blocks();
-                crate::convo::Sliced { about: vec![None; blocks.len()], blocks }
+                let (blocks, at) = convo.blocks_at();
+                crate::convo::Sliced { about: vec![None; blocks.len()], blocks, at }
             }
         }
     }
@@ -1265,12 +1265,12 @@ impl Model {
             }
             Event::LaneOpened { session, of, project, kept } => self.open_lane(session, of, project, kept),
             // Taken up again: its name and what was said, as it was left.
-            Event::ConversationBack { session, title, lines } => {
+            Event::ConversationBack { session, title, lines, lines_at } => {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
                     lane.title = title;
                 }
                 if let Some(convo) = self.convos.get_mut(&session) {
-                    convo.transcript = equipe_core::protocol::Transcript::from_entries(lines);
+                    convo.transcript = equipe_core::protocol::Transcript::with_times(lines, lines_at);
                 }
                 self.revision += 1;
             }
@@ -1924,6 +1924,74 @@ pub fn local_midnight(unix: u64) -> u64 {
     if midnight < 0 || midnight as u64 > unix { unix - unix % 86_400 } else { midnight as u64 }
 }
 
+/// What `unix` reads on the Mac's clock, in its time zone.
+pub fn local_time(unix: u64) -> crate::activity::Local {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let secs = unix as libc::time_t;
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    crate::activity::Local {
+        year: i64::from(tm.tm_year) + 1900,
+        month: (tm.tm_mon + 1) as u32,
+        day: tm.tm_mday as u32,
+        weekday: tm.tm_wday as u32,
+        hour: tm.tm_hour as u32,
+        minute: tm.tm_min as u32,
+    }
+}
+
+/// How this Mac's clock tells the hour — as its region does, or as the
+/// person set it (System Settings › General › Date & Time) — if it says.
+pub fn system_hours() -> Option<crate::activity::Hours> {
+    static HOURS: std::sync::OnceLock<Option<crate::activity::Hours>> = std::sync::OnceLock::new();
+    *HOURS.get_or_init(mac_hours)
+}
+
+/// The hour in the Mac's own short time format (`h:mm a`, `HH:mm`).
+#[cfg(target_os = "macos")]
+fn mac_hours() -> Option<crate::activity::Hours> {
+    use objc2_core_foundation::{CFRetained, CFString};
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFLocaleCopyCurrent() -> *const c_void;
+        fn CFDateFormatterCreateDateFormatFromTemplate(allocator: *const c_void, template: &CFString, options: usize, locale: *const c_void) -> Option<NonNull<CFString>>;
+        fn CFRelease(cf: *const c_void);
+    }
+    // `j`: the hour as the locale tells it, its 12- or 24-hour clock and all.
+    let template = CFString::from_str("j");
+    let format = unsafe {
+        let locale = CFLocaleCopyCurrent();
+        if locale.is_null() {
+            return None;
+        }
+        let format = CFDateFormatterCreateDateFormatFromTemplate(std::ptr::null(), &template, 0, locale);
+        CFRelease(locale);
+        CFRetained::from_raw(format?)
+    };
+    hours_of_format(&format.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_hours() -> Option<crate::activity::Hours> {
+    None
+}
+
+/// The clock a date format tells the hour on: `h` and `K` 12-hour, `H` and
+/// `k` 24-hour (words in quotes aside).
+fn hours_of_format(format: &str) -> Option<crate::activity::Hours> {
+    let mut quoted = false;
+    for c in format.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            'h' | 'K' if !quoted => return Some(crate::activity::Hours::Twelve),
+            'H' | 'k' if !quoted => return Some(crate::activity::Hours::TwentyFour),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Now, in unix seconds: for the shell to hand the model.
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
@@ -2097,6 +2165,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],
@@ -2162,6 +2231,26 @@ mod tests {
         assert!(matches!(site.blocks.last(), Some(crate::convo::Block::Reply { text, .. }) if text == "site a"), "its latest line last");
         // Following the project off in settings: the whole conversation.
         assert_eq!(said(&model.conversation(false)), ["app q", "site q"]);
+    }
+
+    #[test]
+    fn when_each_message_was_said_comes_with_the_snapshot_and_with_a_conversation_taken_up_again() {
+        use crate::convo::Block;
+        let at = |sliced: &crate::convo::Sliced| -> Vec<Option<u64>> { sliced.blocks.iter().zip(&sliced.at).filter(|(b, _)| matches!(b, Block::User(_) | Block::Reply { .. })).map(|(_, at)| *at).collect() };
+        let mut model = pm_in_two_projects();
+        assert_eq!(at(&model.conversation(true)), [None; 4], "an older daemon's snapshot: no times");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        pm.recent = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "app q".into() }, Entry::Reply { text: "app a".into() }];
+        pm.recent_at = vec![None, Some(1_762_300_000), Some(1_762_300_090)];
+        model.apply(hello(vec![pm]), T0);
+        assert_eq!(at(&model.conversation(true)), [Some(1_762_300_000), Some(1_762_300_090)]);
+        assert_eq!(at(&model.conversation(false)), [Some(1_762_300_000), Some(1_762_300_090)], "the whole conversation too");
+        // A conversation put away, taken up again: as it was left, times and all.
+        model.apply(Update::Event(Event::SessionStarted { session: 51, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 51, of: 1, project: Some("app".into()), kept: true }), T0);
+        let lines = vec![Entry::User { text: "what next?".into() }, Entry::Reply { text: "this".into() }];
+        model.apply(Update::Event(Event::ConversationBack { session: 51, title: None, lines, lines_at: vec![Some(10), Some(20)] }), T0);
+        assert_eq!(model.convos[&51].transcript.times(), &[Some(10), Some(20)]);
     }
 
     #[test]
@@ -3149,4 +3238,21 @@ mod tests {
         assert!(screen_line(&stopped, "acme").is_some());
     }
 
+    #[test]
+    fn the_macs_clock_reads_as_its_time_format_says() {
+        use crate::activity::Hours;
+        assert_eq!(hours_of_format("h:mm a"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("a h:mm"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("K:mm a"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("HH:mm"), Some(Hours::TwentyFour));
+        assert_eq!(hours_of_format("H 'h' mm"), Some(Hours::TwentyFour), "the h in quotes is a word");
+        assert_eq!(hours_of_format("mm"), None);
+        // This Mac's own, whatever it is: a clock either way, and what it reads agrees with the rest.
+        let now = now_unix();
+        let local = local_time(now);
+        assert_eq!(format!("{:02}:{:02}", local.hour, local.minute), local_hm(now));
+        let midnight = local_midnight(now);
+        assert_eq!((local_time(midnight).hour, local_time(midnight).minute), (0, 0));
+        assert_eq!(local_time(midnight).day, local.day);
+    }
 }

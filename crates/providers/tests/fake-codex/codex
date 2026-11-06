@@ -10,6 +10,10 @@ What a turn does depends on its prompt:
 - "steer": waits for `turn/steer`, echoes it, and answers with what it read;
 - "fail": fails the way an exhausted plan does;
 - "compact": compacts its thread (a `contextCompaction` item), then answers;
+- "subagent": spawns a subagent that says a word on its own thread, then
+  waits for its turn to be interrupted, and answers with what became of it;
+- "spend": reports a large token usage, then waits for `turn/interrupt`;
+- "findings": reads a file, then answers in a few lines of Markdown;
 - anything else: the recorded turn — a read, a new file written for real, an
   edit, a failing `cargo test`, a board tool, a web search, a plan, token
   usage and the plan's limits — ending "DONE".
@@ -17,7 +21,8 @@ What a turn does depends on its prompt:
 FAKE_CODEX_LOG: a file each message received is appended to, one JSON a line.
 FAKE_CODEX_SIGNED_OUT: set, it is signed out.
 FAKE_CODEX_ARGS: a file each run's command line is appended to, one JSON a
-line, with whether NEBIUS_API_KEY was in its environment (never its value).
+line, with whether NEBIUS_API_KEY was in its environment, and the names of
+the `*_API_KEY` variables there (never their values).
 
 Run with `-c model_provider=…` (another provider, as a member on Token
 Factory is), it needs no ChatGPT sign-in, as the real one doesn't.
@@ -33,7 +38,7 @@ SIGNED_OUT = bool(os.environ.get("FAKE_CODEX_SIGNED_OUT"))
 OTHER_PROVIDER = any(a.startswith("model_provider=") for a in sys.argv[1:])
 if os.environ.get("FAKE_CODEX_ARGS"):
     with open(os.environ["FAKE_CODEX_ARGS"], "a") as f:
-        f.write(json.dumps({"args": sys.argv[1:], "nebius_key": bool(os.environ.get("NEBIUS_API_KEY"))}) + "\n")
+        f.write(json.dumps({"args": sys.argv[1:], "nebius_key": bool(os.environ.get("NEBIUS_API_KEY")), "keys": sorted(k for k, v in os.environ.items() if k.endswith("_API_KEY") and v)}) + "\n")
 
 LIMITS = {
     "limitId": "codex", "limitName": None, "normalModelSlug": None,
@@ -163,6 +168,41 @@ def recorded_turn(prompt):
     turn_completed()
 
 
+def subagent_turn():
+    sub, sub_turn = "thr-sub", "turn-sub"
+    collab = dict(id="s1", tool="spawnAgent", status="completed", senderThreadId=state["thread"], receiverThreadIds=[sub], prompt="Read the logs", model=None, reasoningEffort=None, agentsStates={})
+    completed("collabAgentToolCall", **collab)
+    notify("turn/started", {"threadId": sub, "turn": {"id": sub_turn, "items": [], "status": "inProgress"}})
+    notify("item/agentMessage/delta", {"threadId": sub, "turnId": sub_turn, "itemId": "x1", "delta": "reading"})
+    while True:
+        request = wait_for("turn/interrupt")
+        send({"id": request["id"], "result": {}})
+        if request["params"].get("threadId") == sub and request["params"].get("turnId") == sub_turn:
+            break
+    waited = dict(id="s2", tool="wait", status="completed", senderThreadId=state["thread"], receiverThreadIds=[sub], prompt=None, model=None, reasoningEffort=None, agentsStates={sub: {"status": "interrupted", "message": None}})
+    completed("collabAgentToolCall", **waited)
+    say("m1", "The subagent was interrupted. DONE")
+    turn_completed()
+
+
+FINDINGS = "Sessions expire in `src/auth.rs:42` (`TTL = 3600`).\n\n- Refreshed by `src/auth.rs:57`.\n- Not checked: the mobile client, which isn't in this repository."
+
+
+def findings_turn():
+    readme = os.path.join(state["cwd"], "README.md")
+    command("c1", "/bin/zsh -lc 'cat README.md'", [{"type": "read", "command": "cat README.md", "name": "README.md", "path": readme}], "completed", 0, "hello\n")
+    say("m1", FINDINGS)
+    turn_completed()
+
+
+def spending_turn():
+    say("m1", "Reading", phase="commentary")
+    notify("thread/tokenUsage/updated", {"threadId": state["thread"], "turnId": TURN, "tokenUsage": {
+        "last": {"totalTokens": 90000, "inputTokens": 90000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 500, "reasoningOutputTokens": 0},
+        "modelContextWindow": 131072}})
+    interrupt_turn()
+
+
 def approval_turn():
     request_id = "srv-1"
     send({"id": request_id, "method": "item/commandExecution/requestApproval", "params": {
@@ -252,6 +292,12 @@ def handle(message):
             failing_turn()
         elif "compact" in prompt:
             compacting_turn()
+        elif "subagent" in prompt:
+            subagent_turn()
+        elif "spend" in prompt:
+            spending_turn()
+        elif "findings" in prompt:
+            findings_turn()
         else:
             recorded_turn(prompt)
     elif method == "turn/interrupt":

@@ -144,6 +144,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         tokens: 0,
         context: None,
         recent,
+        recent_at: Vec::new(),
         queued: vec![],
         queued_project: None,
         queued_in: vec![],

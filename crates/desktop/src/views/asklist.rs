@@ -203,7 +203,7 @@ impl Shell {
         if key != "enter" || m.shift || m.platform || !self.composer.is_focused(window, cx) {
             return Took::Pass;
         }
-        // The Enter that ends a Korean syllable is only that.
+        // The Enter that ends a composition is only that.
         let state = self.composer.state.clone();
         if state.update(cx, |s, cx| gpui_kit::EntityInputHandler::marked_text_range(s, window, cx).is_some()) {
             return Took::Pass;

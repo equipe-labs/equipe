@@ -34,18 +34,23 @@ fn trim_marks(word: &str) -> &str {
         .trim_end_matches([')', ']', '"', '\'', '”', '’', '」', '』', '>', ',', ';', ':', '!', '?', '、', '，', '。', '：'])
 }
 
-/// A sentence's end after a file's name (`listing.json.`), and Korean's
-/// particles on it (Korean `listing.json을`), off.
+/// A sentence's end after a file's name (`listing.json.`), and words written
+/// onto its kind in another script, as a particle or a noun is in Korean,
+/// Japanese or Chinese (`listing.jsonを`, `listing.json文件`), off.
 fn trim_tail(word: &str) -> &str {
     let mut w = trim_marks(word);
-    while let Some(c) = w.chars().last() {
-        let hangul = ('\u{AC00}'..='\u{D7A3}').contains(&c);
-        let after_name = w[..w.len() - c.len_utf8()].rsplit_once('.').is_some_and(|(_, ext)| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()));
-        if (hangul && after_name) || (c == '.' && !w.ends_with("/.")) {
-            w = &w[..w.len() - c.len_utf8()];
-        } else {
-            break;
+    loop {
+        if w.ends_with('.') && !w.ends_with("/.") {
+            w = &w[..w.len() - 1];
+            continue;
         }
+        let name = w.trim_end_matches(|c: char| c.is_alphabetic() && !c.is_ascii());
+        let after_name = name.rsplit_once('.').is_some_and(|(_, ext)| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()));
+        if name.len() < w.len() && after_name {
+            w = name;
+            continue;
+        }
+        break;
     }
     w
 }
@@ -324,6 +329,11 @@ mod tests {
         assert!(named(ASKS[0], &[]).is_empty(), "no path in it");
         assert_eq!(named("Put it in `.env.local` and `src/app.ts`.", &[]).iter().map(|n| n.written.as_str()).collect::<Vec<_>>(), [".env.local", "src/app.ts"]);
         assert_eq!(named("listing.json을 봐 주세요", &[])[0].written, "listing.json");
+        // Whatever language writes its particle onto the name.
+        for said in ["listing.jsonを見てください", "请看 listing.json文件。", "see listing.json에서 it"] {
+            assert_eq!(named(said, &[]).iter().map(|n| n.written.as_str()).collect::<Vec<_>>(), ["listing.json"], "{said}");
+        }
+        assert_eq!(named("Open café.json", &[])[0].written, "café.json", "a letter before the name's kind is the name's");
         assert!(named("T-117 and 3/4 of it, e.g. this", &[]).is_empty());
     }
 

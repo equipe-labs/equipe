@@ -39,7 +39,7 @@ and working over SSH (Tailscale) and Jump Desktop. 2026-10-13/14.
 | **First full run: click + type** | ⚠️ the click went to where TextEdit's window was, but the person's **Ghostty terminal** was on top: the text was typed into their shell prompt (no Enter). Clicking at a window's coordinates is not clicking that window |
 | Bring the app forward | ✅ through Accessibility: `AXFrontmost = true` on the app, `AXRaise` on the window |
 | What a click at (x, y) will reach | Window list (`CGWindowListCopyWindowInfo`) is **wrong** here: BetterDisplay's click-through overlay covers the whole screen. ✅ AX hit test (`AXUIElementCopyElementAtPosition`) answers TextEdit's `AXTextArea` |
-| **Click at a point, type text incl. Korean, read it back** | ✅ pointer moved to (503, 299), keyboard focus on TextEdit (`AXFocusedApplication`), typed `hello from equipe probe 안녕하세요` as Unicode events; AX read back `Hello from equipe probe 안녕하세요` (TextEdit auto-capitalised the first letter). Seen on the capture too |
+| **Click at a point, type text incl. Korean, read it back** | ✅ pointer moved to (503, 299), keyboard focus on TextEdit (`AXFocusedApplication`), typed `hello from equipe probe` and a Korean greeting (*annyeonghaseyo*, in Hangul) as Unicode events; AX read back the same text, `Hello …` (TextEdit auto-capitalised the first letter). Seen on the capture too |
 | macOS's "bypass the private window picker" dialog | ⚠️ stays up until the person answers; capture, click and type all worked while it was showing |
 | macOS notifications seen during the runs | "Privacy & Security blocked 'equipe' from modifying apps" — **App Management**: a process charged to `equipe` (the squad running under the daemon) rewriting a signed bundle in `~/Applications`. "'equipe' can run in the background" — the login service |
 
@@ -299,11 +299,11 @@ headless `claude` given exactly the MCP config a member gets.
 | Accessibility after that | ✅ listed; on after the person's toggle and password |
 | Screen Recording | ⚠️ tccd logged `kTCCServiceScreenCapture … Auth Right: Allowed (System Set)` for the helper while `CGPreflightScreenCaptureAccess()` stayed **false**. The helper now asks ScreenCaptureKit (`SCShareableContent`) when the preflight says no |
 | Rebuilt and re-signed helper, three times | ✅ every grant kept (same self-signed certificate) |
-| Member: `open_app`, `key cmd+n`, `type_text` in Korean, "equipe 데스크톱 테스트: 안녕하세요, 반갑습니다!" | ✅ typed into a new TextEdit document; nothing refused |
-| Read back with `elements` | ✅ `AXTextArea = "Equipe 데스크톱 테스트: 안녕하세요, 반갑습니다!"` (TextEdit capitalised the first letter; the Korean typed as written) |
-| `screenshot` (1430×804 JPEG, 1 px = 1.03 pt) | ✅ the member described the window — "무제 — 편집됨", Korean for "Untitled — Edited" — and the same line |
-| `app: "TextEdit"` on a Korean Mac | ❌ at first "no app called TextEdit": its name there is "텍스트 편집기". Apps now also match the last part of their bundle id |
-| macOS's "bypass the private window picker" dialogs left up (in Korean on this Mac), focus moved to Chrome | ✅ `type_text` refused ("Keyboard focus is in no app, not 텍스트 편집기: nothing typed"); `click` into TextEdit refused: "At (735, 450) is UserNotificationCenter (AXButton "허용"), not 텍스트 편집기: nothing done" — it would have pressed the dialog's Allow |
+| Member: `open_app`, `key cmd+n`, `type_text` in Korean, "equipe desktop test: hello, nice to meet you!" written in Hangul | ✅ typed into a new TextEdit document; nothing refused |
+| Read back with `elements` | ✅ `AXTextArea` held the same line, `"Equipe …"` (TextEdit capitalised the first letter; the Korean typed as written) |
+| `screenshot` (1430×804 JPEG, 1 px = 1.03 pt) | ✅ the member described the window — its title in Korean, "Untitled — Edited" — and the same line |
+| `app: "TextEdit"` on a Korean Mac | ❌ at first "no app called TextEdit": its name there is the Korean for "text editor". Apps now also match the last part of their bundle id |
+| macOS's "bypass the private window picker" dialogs left up (in Korean on this Mac), focus moved to Chrome | ✅ `type_text` refused ("Keyboard focus is in no app, not <TextEdit's Korean name>: nothing typed"); `click` into TextEdit refused: "At (735, 450) is UserNotificationCenter (AXButton "Allow", in Korean), not <TextEdit's Korean name>: nothing done" — it would have pressed the dialog's Allow |
 
 Also seen: each capture attempt before the person answers adds another
 "bypass the private window picker" dialog (they stack), and "Privacy & Security

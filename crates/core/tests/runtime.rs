@@ -19,6 +19,11 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Now, in unix seconds.
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
 /// A fresh directory. A counter, not the clock: two tests in the same
 /// microsecond (macOS clock resolution) must never share one.
 fn scratch(name: &str) -> PathBuf {
@@ -1714,6 +1719,7 @@ async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
     );
     let cwd = scratch("cwd");
     let home = squad_home(&[&cwd]);
+    let sent = now();
     {
         let (handle, mut events) = runtime::start(config(&claude, &home, true));
         // Session ids are random; the PM need not have the smallest.
@@ -1721,6 +1727,11 @@ async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
         add(&handle, &mut events, 5, member(&cwd, "pm")).await;
         handle.send(Command::Submit { session: 5, text: "remember me".into(), about: None });
         until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        // Each line of what a screen attaching gets says when it was said.
+        let live = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 5).unwrap();
+        let said: Vec<Option<u64>> = live.recent.iter().zip(&live.recent_at).filter(|(e, _)| matches!(e, Entry::User { .. } | Entry::Reply { .. })).map(|(_, at)| *at).collect();
+        assert_eq!(said.len(), 2, "{:?} {:?}", live.recent, live.recent_at);
+        assert!(said.iter().all(|at| at.is_some_and(|at| at >= sent && at <= now())), "{said:?}");
         handle.shutdown().await;
     }
 
@@ -1731,6 +1742,11 @@ async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
     let pm = &snapshot.sessions[0];
     assert_eq!(pm.title.as_deref(), Some("remember me"));
     assert_eq!(text_entries(&pm.recent), ["user: remember me", "reply: fresh"]);
+    // Brought back from the journal with the times they were kept at, not now's.
+    assert_eq!(pm.recent_at.len(), pm.recent.len());
+    let kept: Vec<u64> = pm.recent.iter().zip(&pm.recent_at).filter(|(e, _)| matches!(e, Entry::User { .. } | Entry::Reply { .. })).filter_map(|(_, at)| *at).collect();
+    assert_eq!(kept.len(), 2, "{:?}", pm.recent_at);
+    assert!(kept.iter().all(|&at| at >= sent && at <= now()), "{kept:?}");
     assert_eq!(snapshot.projects, [cwd]);
 
     // The next turn continues Claude Code's conversation.
@@ -3572,7 +3588,8 @@ async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through
     handle.send(Command::ReopenConversation { squad: "acme".into(), session: 51 });
     let seen = until(&mut events, |e| matches!(e, Event::PutAwayChanged { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { session: 51, of: 1, project: Some(p), kept: true } if p == "app")), "{seen:#?}");
-    let back = seen.iter().find_map(|e| if let Event::ConversationBack { session: 51, title, lines } = e { Some((title.clone(), text_entries(lines))) } else { None }).expect("its lines");
+    let back = seen.iter().find_map(|e| if let Event::ConversationBack { session: 51, title, lines, lines_at } = e { Some((title.clone(), text_entries(lines), lines.len() == lines_at.len() && lines.iter().zip(lines_at).all(|(e, at)| !matches!(e, Entry::User { .. }) || at.is_some()))) } else { None }).expect("its lines");
+    assert!(back.2, "taken up again, each message says when it was said");
     assert_eq!(back.0.as_deref(), Some("what next?"));
     assert!(back.1.contains(&"user: what next?".to_owned()), "{:?}", back.1);
     assert!(matches!(seen.last(), Some(Event::PutAwayChanged { list, .. }) if list.is_empty()));
@@ -3636,6 +3653,54 @@ async fn a_new_member_starts_with_the_model_and_effort_the_person_set_for_its_ro
     // Cleared: the recommendation again for the next one.
     handle.send(Command::SetRoleModel { squad: "acme".into(), default: RoleModel { role: "frontend".into(), engine: Engine::Claude, model: None, effort: None } });
     until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.is_empty())).await;
+}
+
+#[tokio::test]
+async fn a_role_set_to_a_providers_model_starts_its_new_members_on_it_on_codexs_agent() {
+    let cwd = scratch("role-provider");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    // A server on this machine: no key needed.
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    // Set where the screen shows the role, on Claude Code: the member runs on Codex's agent all the same.
+    let default = RoleModel { role: "frontend".into(), engine: Engine::Claude, model: Some(model.clone()), effort: None };
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.len() == 1)).await;
+    let started = |id: u64| move |e: &Event| matches!(e, Event::SessionStarted { session, .. } | Event::Error { session: Some(session), .. } if *session == id);
+    handle.send(Command::Start { session: 1, spec: member(&cwd, "frontend") });
+    let seen = until(&mut events, started(1)).await;
+    let Some(Event::SessionStarted { engine: Engine::Codex, model: Some(on), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(on, &model);
+    // Another role keeps Claude Code.
+    handle.send(Command::Start { session: 2, spec: member(&cwd, "backend") });
+    let seen = until(&mut events, started(2)).await;
+    assert!(matches!(seen.last(), Some(Event::SessionStarted { engine: Engine::Claude, .. })), "{seen:#?}");
+}
+
+#[tokio::test]
+async fn a_claude_member_set_to_a_providers_model_moves_to_codexs_agent_on_it_at_its_next_ticket() {
+    let cwd = scratch("move-provider");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    // Between tickets: the boundary is now.
+    handle.send(Command::SetModel { session: 1, model: model.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { engine: Engine::Codex, .. } | Event::Error { .. })).await;
+    // Told where it goes, on a card the person can undo.
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("qwen3-coder:30b") && text.contains("Ollama") && text.contains("next ticket"))), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.moves.iter().any(|m| m.member == "frontend" && m.to == Engine::Codex && m.model.as_deref() == Some(model.as_str())))), "{seen:#?}");
+    let Some(Event::SessionStarted { session, engine: Engine::Codex, model: Some(on), member, .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_ne!(*session, 1, "started again on the other engine");
+    assert_eq!((on.as_str(), member.as_ref().map(|m| m.name.as_str())), (model.as_str(), Some("frontend")), "under the same name, on the provider's model");
+    // Its old conversation is closed, and it isn't on Claude Code any more.
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "{seen:#?}");
 }
 
 #[tokio::test]

@@ -48,14 +48,14 @@ fn waiting() -> &'static std::sync::Mutex<Vec<RoutineProposal>> {
             id: 8001,
             routine: Routine {
                 id: 0,
-                title: "주간 진행 보고".into(),
-                prompt: "지난 한 주 동안 끝난 티켓과 아직 진행 중인 티켓을 프로젝트별로 정리하고, 막혀 있는 것과 다음 주에 먼저 할 일을 세 가지만 골라서 알려 주세요. 사람에게 결정을 받아야 하는 게 있으면 맨 위에 적어 주세요.".into(),
+                title: "Weekly progress report".into(),
+                prompt: "Sum up, by project, the tickets finished this past week and those still in progress, then tell me what is stuck and pick just three things to do first next week. Anything that needs my decision goes at the top.".into(),
                 when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 },
                 on: true,
                 last_run: None,
                 next_run: None,
             },
-            reason: "월요일마다 지난주 정리를 물어보셔서, 정해진 시간에 먼저 정리해 드리면 좋을 것 같아요.".into(),
+            reason: "You ask for last week's summary every Monday, so it may help to have it ready at a set time.".into(),
             by: "pm".into(),
             session: PM,
             proposed_at: now,
@@ -66,7 +66,7 @@ fn waiting() -> &'static std::sync::Mutex<Vec<RoutineProposal>> {
                 weekly.clone(),
                 RoutineProposal {
                     id: 8002,
-                    routine: Routine { title: "하루 마무리 점검".into(), prompt: "오늘 끝난 일과 내일로 넘어가는 일을 짧게 정리해 주세요.".into(), when: Schedule::Daily { hour: 18, minute: 30 }, ..weekly.routine.clone() },
+                    routine: Routine { title: "End-of-day check".into(), prompt: "Briefly sum up what finished today and what carries over to tomorrow.".into(), when: Schedule::Daily { hour: 18, minute: 30 }, ..weekly.routine.clone() },
                     reason: String::new(),
                     ..weekly
                 },
@@ -74,8 +74,8 @@ fn waiting() -> &'static std::sync::Mutex<Vec<RoutineProposal>> {
             // A title and a prompt long enough to wrap and clamp.
             Some("long") => vec![RoutineProposal {
                 routine: Routine {
-                    title: "매주 월요일 아침 지표·피드백·다음 할 일 한 번에 정리하는 주간 점검".into(),
-                    prompt: format!("{} 스토어 리뷰와 GitHub 이슈, PostHog 대시보드의 지난주 숫자도 함께 보고, 달라진 점이 있으면 원인을 짧게 적어 주세요. 다음 할 일은 목표(North Star·OKR)에 맞춰 많아야 세 개만 제안 티켓으로 올리고, 제가 정해야 할 것은 카드 하나로 묶어 주세요.", weekly.routine.prompt),
+                    title: "A weekly check every Monday morning that rounds up metrics, feedback and what to do next in one go".into(),
+                    prompt: format!("{} Look at the store reviews, GitHub issues and last week's numbers on the PostHog dashboard too, and note briefly why anything changed. Propose at most three next steps as tickets, in line with the goals (North Star, OKRs), and put whatever I have to decide on one card.", weekly.routine.prompt),
                     ..weekly.routine.clone()
                 },
                 ..weekly
@@ -116,9 +116,9 @@ fn decide(id: u64, approve: bool, events: &broadcast::Sender<Event>) {
             saved.clone()
         };
         let _ = events.send(Event::RoutinesChanged { squad: squad(), routines });
-        format!("정기 업무 '{title}'을(를) 켰어요")
+        format!("Turned on the routine '{title}'")
     } else {
-        format!("정기 업무 제안을 거절했어요 · {title}")
+        format!("Declined the routine · {title}")
     };
     let _ = events.send(Event::RoutineProposalClosed { squad: squad(), id, approved: approve });
     let _ = events.send(Event::Notice { session: PM, text });

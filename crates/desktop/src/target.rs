@@ -204,7 +204,7 @@ pub struct Remembered {
     /// else the first this Mac can hear (`dictation.rs`).
     pub dictation: Option<String>,
     /// The person agreed that dictation may use Apple's servers (better in
-    /// Korean and mixed speech; the sound leaves this Mac). Off until then.
+    /// mixed-language speech and languages this Mac has no model for; the sound leaves this Mac). Off until then.
     pub dictation_servers: bool,
     /// Light or dark, or as the Mac is.
     pub appearance: Appearance,

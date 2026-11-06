@@ -46,6 +46,8 @@ const ANSWER_WAIT: Duration = Duration::from_secs(30);
 const THREAD_WAIT: Duration = Duration::from_secs(120);
 /// After an interrupt, how long the turn has to wind down before it is cut.
 const INTERRUPT_WAIT: Duration = Duration::from_secs(5);
+/// A subagent heard is said at most this often: enough for a watch counting minutes.
+const HEARD_EVERY: Duration = Duration::from_secs(5);
 
 // ── the binary and its sign-in ──
 
@@ -543,6 +545,10 @@ pub struct TurnCollector {
     /// The plan last shown, so an unchanged one isn't shown again.
     plan: Option<String>,
     subagents: HashSet<String>,
+    /// When each subagent was last said to be heard ([`Activity::SubagentHeard`]).
+    heard: HashMap<String, Instant>,
+    /// Each subagent's turn under way, by its thread: what stopping it interrupts.
+    sub_turns: HashMap<String, String>,
     /// An error the app-server reported on the way.
     error: Option<String>,
     result: Option<Result<TurnResult>>,
@@ -567,6 +573,38 @@ impl TurnCollector {
         self.turn.as_deref()
     }
 
+    /// The turn a subagent of this one runs now, by its thread, once it was heard starting.
+    pub fn subagent_turn(&self, thread: &str) -> Option<&str> {
+        self.sub_turns.get(thread).map(String::as_str)
+    }
+
+    /// Something said on a subagent's own thread: never the member's, only
+    /// a sign it is alive — and its turn, to stop it by.
+    fn on_subagent(&mut self, method: &str, thread: &str, params: &Value) -> Vec<Activity> {
+        if !self.subagents.contains(thread) {
+            return Vec::new();
+        }
+        if method == "turn/started"
+            && let Some(turn) = params.get("turn").and_then(|t| t.get("id")).and_then(Value::as_str)
+        {
+            self.sub_turns.insert(thread.to_owned(), turn.to_owned());
+        }
+        self.heard_from(thread)
+    }
+
+    /// A subagent heard: said, unless it was a moment ago.
+    fn heard_from(&mut self, thread: &str) -> Vec<Activity> {
+        if !self.subagents.contains(thread) {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        if self.heard.get(thread).is_some_and(|at| now.duration_since(*at) < HEARD_EVERY) {
+            return Vec::new();
+        }
+        self.heard.insert(thread.to_owned(), now);
+        vec![Activity::SubagentHeard { id: thread.to_owned() }]
+    }
+
     /// Whether the turn has ended.
     pub fn done(&self) -> bool {
         self.result.is_some()
@@ -588,7 +626,7 @@ impl TurnCollector {
         if let (Some(ours), Some(thread)) = (&self.thread, thread)
             && ours != thread
         {
-            return Vec::new();
+            return self.on_subagent(method, thread, params);
         }
         let out = match method {
             "turn/started" => {
@@ -627,7 +665,7 @@ impl TurnCollector {
                 if let Some(window) = usage.and_then(|u| u.get("modelContextWindow")).and_then(Value::as_u64) {
                     self.window = Some(window);
                 }
-                vec![Activity::Output(self.output)]
+                vec![Activity::Output(self.output), Activity::Spent(self.input + self.cached + self.output)]
             }
             "model/rerouted" => match params.get("toModel").and_then(Value::as_str) {
                 Some(model) => vec![Activity::Model(model.to_owned())],
@@ -650,7 +688,7 @@ impl TurnCollector {
             }
             _ => Vec::new(),
         };
-        if out.iter().any(|a| !matches!(a, Activity::Text(_) | Activity::Thinking(_) | Activity::Output(_) | Activity::Limits(_))) {
+        if out.iter().any(|a| !matches!(a, Activity::Text(_) | Activity::Thinking(_) | Activity::Output(_) | Activity::Spent(_) | Activity::Limits(_) | Activity::SubagentHeard { .. })) {
             self.text_open = false;
         }
         out
@@ -703,6 +741,11 @@ impl TurnCollector {
                 out
             }
             "contextCompaction" => vec![Activity::Compacted],
+            // A subagent at work, as the member's thread tells of it.
+            "subAgentActivity" => match item.get("agentThreadId").and_then(Value::as_str) {
+                Some(thread) => self.heard_from(thread),
+                None => Vec::new(),
+            },
             // The person's words, read: the prompt, then what they said while it worked.
             "userMessage" => {
                 self.read += 1;
@@ -793,7 +836,11 @@ impl TurnCollector {
                                     || item.get("tool").and_then(Value::as_str) == Some("closeAgent")
                             })
                             .filter(|r| self.subagents.remove(r))
-                            .map(|id| Activity::SubagentEnded { id, result: None, failed: false })
+                            .map(|id| {
+                                self.heard.remove(&id);
+                                self.sub_turns.remove(&id);
+                                Activity::SubagentEnded { id, result: None, failed: false }
+                            })
                             .collect()
                     }
                     None => Vec::new(),
@@ -1277,11 +1324,31 @@ pub async fn run_turn(
     binary: &str,
     cwd: &Path,
     request: TurnRequest<'_>,
-    mut steering: Option<mpsc::UnboundedReceiver<String>>,
+    steering: Option<mpsc::UnboundedReceiver<String>>,
     asks: Option<mpsc::UnboundedSender<Ask>>,
     stop: Option<oneshot::Receiver<()>>,
-    mut on_activity: impl FnMut(Activity),
+    on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
+    run_turn_with(binary, cwd, request, Controls { steering, asks, stop, stop_subagent: None }, on_activity).await
+}
+
+/// What the caller has a say in while a turn runs ([`run_turn_with`]).
+#[derive(Default)]
+pub struct Controls {
+    /// What the person says meanwhile, read at the turn's next step.
+    pub steering: Option<mpsc::UnboundedReceiver<String>>,
+    /// Where Codex's requests for approval go (none: declined).
+    pub asks: Option<mpsc::UnboundedSender<Ask>>,
+    /// A word here interrupts the turn, which then winds down.
+    pub stop: Option<oneshot::Receiver<()>>,
+    /// A subagent of the turn's to stop, by its thread: its own turn is
+    /// interrupted, once it was heard starting; the member's goes on.
+    pub stop_subagent: Option<mpsc::UnboundedReceiver<String>>,
+}
+
+/// [`run_turn`], with [`Controls`] beyond it.
+pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, controls: Controls, mut on_activity: impl FnMut(Activity)) -> Result<Turn> {
+    let Controls { mut steering, asks, stop, mut stop_subagent } = controls;
     // On another provider, through a relay on the loopback that keeps its tools plain.
     let relay = match request.provider {
         Some(provider) => Some(crate::relay::start(&provider.base_url, provider.wire).await?),
@@ -1361,6 +1428,12 @@ pub async fn run_turn(
                     None => std::future::pending().await,
                 }
             };
+            let stop_sub = async {
+                match &mut stop_subagent {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 message = server.next() => {
                     let Some(message) = message? else { break };
@@ -1407,6 +1480,14 @@ pub async fn run_turn(
                     stopping = Some(tokio::time::Instant::now() + INTERRUPT_WAIT);
                 }
                 () = deadline => break,
+                sub = stop_sub => match sub {
+                    Some(sub) => {
+                        if let Some(turn) = collector.subagent_turn(&sub).map(str::to_owned) {
+                            server.request("turn/interrupt", json!({ "threadId": sub, "turnId": turn })).await?;
+                        }
+                    }
+                    None => stop_subagent = None,
+                },
             }
             // Into the turn, once it has an id to aim at: steers, or the interrupt.
             if let Some(turn) = collector.turn().map(str::to_owned) {
@@ -1711,6 +1792,42 @@ mod tests {
     fn a_change_reads_as_a_git_diff_whatever_codex_sent() {
         assert!(change_diff("/w/a", "delete", "x\ny\n").contains("--- a//w/a\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n"));
         assert_eq!(change_diff("/w/a", "update", "--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y"), "diff --git a//w/a b//w/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n");
+    }
+
+    #[test]
+    fn what_a_turn_spends_is_said_whole_as_it_goes() {
+        let mut c = TurnCollector::new();
+        c.set_thread("t");
+        let usage = |input: u64, cached: u64, output: u64| {
+            note("thread/tokenUsage/updated", json!({ "threadId": "t", "tokenUsage": { "last": { "totalTokens": input + output, "inputTokens": input, "cachedInputTokens": cached, "outputTokens": output } } }))
+        };
+        let out = feed(&mut c, &[usage(1000, 600, 50), usage(1200, 1000, 80)]);
+        // Input not cached, cached input and output: 400 + 600 + 50, then 200 + 1000 + 80 more.
+        let spent: Vec<u64> = out.iter().filter_map(|a| if let Activity::Spent(n) = a { Some(*n) } else { None }).collect();
+        assert_eq!(spent, vec![1050, 2330]);
+        assert!(out.contains(&Activity::Output(130)), "the output alone still goes as before: {out:?}");
+    }
+
+    #[test]
+    fn a_subagent_heard_on_its_own_thread_is_said_now_and_then_and_its_turn_is_kept() {
+        let mut c = TurnCollector::new();
+        c.set_thread("t");
+        let spawn = item("collabAgentToolCall", json!({ "id": "s1", "tool": "spawnAgent", "status": "completed", "senderThreadId": "t", "receiverThreadIds": ["sub"], "prompt": "Read the logs", "agentsStates": {} }));
+        assert!(matches!(&feed(&mut c, &[note("item/completed", spawn)])[..], [Activity::SubagentStarted { id, .. }] if id == "sub"));
+        assert!(c.subagent_turn("sub").is_none(), "no turn of its own heard yet");
+        let out = feed(&mut c, &[
+            note("turn/started", json!({ "threadId": "sub", "turn": { "id": "sub-turn", "status": "inProgress" } })),
+            note("item/agentMessage/delta", json!({ "threadId": "sub", "itemId": "x", "delta": "reading" })),
+            note("item/reasoning/textDelta", json!({ "threadId": "sub", "itemId": "y", "delta": "hmm" })),
+        ]);
+        assert_eq!(out, vec![Activity::SubagentHeard { id: "sub".into() }], "heard once, not once a delta; and none of it is the member's own text");
+        assert_eq!(c.subagent_turn("sub"), Some("sub-turn"));
+        // A thread nobody spawned in this turn says nothing.
+        assert!(feed(&mut c, &[note("item/agentMessage/delta", json!({ "threadId": "stranger", "itemId": "z", "delta": "x" }))]).is_empty());
+        // What the member's thread says about it counts too.
+        c.heard.clear();
+        let activity = item("subAgentActivity", json!({ "id": "a1", "kind": "interacted", "agentThreadId": "sub", "agentPath": "/root/sub" }));
+        assert_eq!(feed(&mut c, &[note("item/completed", activity)]), vec![Activity::SubagentHeard { id: "sub".into() }]);
     }
 
     #[test]

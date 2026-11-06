@@ -1051,6 +1051,7 @@ pub(crate) mod tests {
             tokens: 0,
             context: None,
             recent: (0..200).map(|_| Entry::Reply { text: line.clone() }).collect(),
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],
@@ -1443,6 +1444,11 @@ pub(crate) mod tests {
             Command::SignIn { engine: Engine::Codex, device: true },
             Command::SignInCancel { engine: Engine::Codex },
             Command::SignOut { engine: Engine::Codex },
+            // A provider's key is pasted at the person's own screens only.
+            Command::AddProvider { preset: "openrouter".into(), base_url: None, key: Some(equipe_core::protocol::secrets::SecretValue("sk-or-x".into())) },
+            Command::RemoveProvider { id: "openrouter".into() },
+            Command::TestProvider { id: "openrouter".into() },
+            Command::Providers,
         ] {
             assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens");
         }

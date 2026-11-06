@@ -55,6 +55,8 @@ pub enum Pop {
     RoleEffort(&'static str),
     /// How many subagents each member runs at once.
     Subagents,
+    /// The model providers to connect (Settings › AI platforms).
+    AddProvider,
 }
 
 /// What a pop-up's row does.
@@ -71,6 +73,8 @@ enum Act {
     RoleEffort(&'static str, Engine, Option<String>),
     /// Subagents at once (`None`: each engine's own).
     Subagents(Option<u32>),
+    /// A provider's form opened, by its preset.
+    AddProvider(&'static str),
 }
 
 pub struct SettingsUi {
@@ -88,11 +92,16 @@ pub struct SettingsUi {
     pub engine_keys: Vec<FocusHandle>,
     /// Accounts' form and second clicks.
     pub accounts: super::accounts::AccountsUi,
-    /// The Nebius card's key box (masked; emptied once sent), what's wrong
-    /// with what was pasted, and the second click to remove the key.
+    /// A provider's key box (masked; emptied once sent): Nebius's before
+    /// there was a list, its name kept for the snapshot's `nebiuskey:`.
     pub nebius_key: Entity<InputState>,
-    pub nebius_problem: Option<String>,
-    pub nebius_forgetting: bool,
+    /// The provider being connected (its preset), its form's base URL box
+    /// (the key's is `nebius_key`), what's wrong with what was typed, and
+    /// the provider a second click removes.
+    pub adding: Option<&'static str>,
+    pub provider_url: Entity<InputState>,
+    pub provider_problem: Option<String>,
+    pub provider_removing: Option<String>,
     /// Apple's servers for dictation, asked about: what goes where, and a yes.
     pub dictation_consent: bool,
     /// "All by words", asked about before it is on: what changes, and a yes.
@@ -112,8 +121,10 @@ impl SettingsUi {
             engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             accounts: super::accounts::AccountsUi::new(window, cx),
             nebius_key: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("engines.nebius_key_placeholder"))),
-            nebius_problem: None,
-            nebius_forgetting: false,
+            adding: None,
+            provider_url: cx.new(|cx| InputState::new(window, cx).placeholder(t!("engines.provider_url_placeholder"))),
+            provider_problem: None,
+            provider_removing: None,
             dictation_consent: false,
             words_consent: false,
         }
@@ -326,7 +337,7 @@ fn subagents_engine_default() -> String {
 
 /// A pop-up button: what is chosen and ⌄; a click opens the list under it.
 /// `name` is what it chooses, as a screen reader says it.
-fn picker(shell: &Shell, pop: Pop, name: &str, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
+pub(super) fn picker(shell: &Shell, pop: Pop, name: &str, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
     use gpui_kit::base::ElementExt as _;
     let p = shell.palette;
     let open = shell.settings.pop == Some(pop);
@@ -423,7 +434,7 @@ fn dictation_rows(shell: &Shell, language: Line, dictation: Line, appearance: Li
     let p = shell.palette;
     let on = shell.remembered.dictation_servers;
     let servers = Line::new(t!("settings.dictation_servers"), if on { t!("settings.dictation_servers_on") } else { t!("settings.dictation_servers_desc") })
-        .words("dictation voice speech apple server accuracy korean")
+        .words("dictation voice speech apple server accuracy mixed languages")
         .switch(shell, "dictation-servers", on || shell.settings.dictation_consent, true, |this, on, window, cx| {
             if on {
                 this.settings.dictation_consent = true;
@@ -1273,7 +1284,9 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             let Some(m) = member(session) else { return (0., Vec::new()) };
             let asked = m.asked.as_deref().or(m.model.as_deref());
             let choices = crate::models::choices(m.engine, asked, m.model.as_deref(), model.listed(m.engine));
-            (280., choices.into_iter().map(|c| (c.label, c.hint, c.on, Act::Model(session, c.model))).collect())
+            let mut rows: Vec<_> = choices.into_iter().map(|c| (c.label, c.hint, c.on, Act::Model(session, c.model))).collect();
+            rows.extend(provider_rows(shell, asked, |m| Act::Model(session, m)));
+            (280., rows)
         }
         Pop::Effort(session) => {
             let Some(m) = member(session) else { return (0., Vec::new()) };
@@ -1292,6 +1305,7 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             // Codex's own list, once the daemon has sent it; else only what is set.
             let choices = crate::models::choices(Some(engine), set.as_deref(), None, listed);
             rows.extend(choices.into_iter().map(|c| (c.label, c.hint, c.on && set.is_some(), Act::RoleModel(role, engine, Some(c.model)))));
+            rows.extend(provider_rows(shell, set.as_deref(), |m| Act::RoleModel(role, engine, Some(m))));
             (280., rows)
         }
         Pop::RoleEffort(role) => {
@@ -1311,6 +1325,19 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             rows.extend(SUBAGENT_CHOICES.into_iter().map(|n| (n.to_string(), String::new(), now == Some(n), Act::Subagents(Some(n)))));
             (420., rows)
         }
+        Pop::AddProvider => {
+            let connected: Vec<&str> = shell.engines.providers.iter().flatten().map(|p| p.id.as_str()).collect();
+            let rows = equipe_core::model_providers::PRESETS
+                .iter()
+                .filter(|p| p.id == equipe_core::model_providers::OTHER || !connected.contains(&p.id))
+                .map(|p| {
+                    let name = if p.id == equipe_core::model_providers::OTHER { t!("engines.provider_other").to_owned() } else { p.name.to_owned() };
+                    let hint = if p.local { t!("engines.provider_local").to_owned() } else { String::new() };
+                    (name, hint, false, Act::AddProvider(p.id))
+                })
+                .collect();
+            (280., rows)
+        }
         Pop::Mode(session) => {
             let now = model.member_modes.get(&session).copied();
             let mut rows = vec![(t!("settings.mode_follows").to_owned(), mode_label(model.mode).to_owned(), now.is_none(), Act::Mode(session, None))];
@@ -1318,6 +1345,16 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             (240., rows)
         }
     }
+}
+
+/// The providers' models as pop-up rows, each beside its provider's name
+/// (the first few of each; `/model` reaches the rest), `asked` checked.
+fn provider_rows(shell: &Shell, asked: Option<&str>, act: impl Fn(String) -> Act) -> Vec<(String, String, bool, Act)> {
+    crate::models::provider_groups(shell.engines.providers.as_deref().unwrap_or_default(), asked)
+        .into_iter()
+        .flat_map(|g| g.choices.into_iter().map(move |c| (c.label, g.provider.clone(), c.on, c.model)))
+        .map(|(label, provider, on, model)| (label, provider, on, act(model)))
+        .collect()
 }
 
 /// The efforts a model takes as pop-up rows, `now` checked — and listed,
@@ -1396,6 +1433,8 @@ fn pop_number(pop: Pop) -> u64 {
         // Between the members' numbers: theirs are 3 to 5 apart from a multiple of 8.
         Pop::RoleModel(role) => 7 + 8 * ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0) as u64,
         Pop::RoleEffort(role) => 8 * (ROLE_ORDER.len() + ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0)) as u64,
+        // Past every role's.
+        Pop::AddProvider => 8 * (2 * ROLE_ORDER.len() as u64 + 1),
     }
 }
 
@@ -1505,7 +1544,9 @@ impl Shell {
             Act::Dictation(lang) => self.set_dictation(lang, window, cx),
             Act::Squad(name) => self.select_squad(&name, window, cx),
             Act::Model(session, model) => {
-                if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session) {
+                // A provider's model on Claude Code: it moves at its next ticket, and shows then.
+                let moves = equipe_core::model_providers::split_ref(&model).is_some();
+                if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session).filter(|m| !moves || m.engine == Some(Engine::Codex)) {
                     m.model = Some(model.clone());
                     m.asked = None;
                 }
@@ -1519,6 +1560,7 @@ impl Shell {
                 let model = self.model.role_models.iter().find(|d| d.role == role && d.engine == engine).and_then(|d| d.model.clone());
                 self.set_role_model(RoleModel { role: role.to_owned(), engine, model, effort });
             }
+            Act::AddProvider(preset) => self.open_provider_form(preset, window, cx),
             Act::Effort(session, effort) => {
                 self.send_command(Command::SetEffort { session, effort: effort.clone() });
                 match effort {

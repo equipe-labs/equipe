@@ -36,28 +36,28 @@ FLOWS = {
     "first-run": [
         # A Mac with no squad has no daemon: each step is held by `setup:`.
         {"daemon": False, "beats": [
-            ("git", "1 · AI 연결 — git이 없는 Mac이면 맨 위에 개발자 도구 카드가 있어요", "setup:nogit", 4, 250, 2200),
-            (None, "1 · AI 연결 — git 설치는 macOS 창에서 하고, 여기선 기다려요", "setup:gitasked", 6, 250, 1800),
-            ("ai", "2 · AI 연결 — ChatGPT로 로그인하거나 Claude Code를 설치해요", "setup:missing", 4, 250, 2400),
-            (None, "2 · AI 연결 — 설치 전에 실행할 명령을 보여 주고 확인받아요", "setup:confirm", 4, 250, 2400),
-            (None, "2 · AI 연결 — Claude Code 설치 중 (1~2분)", "setup:installing", 8, 250, 1500),
-            (None, "2 · AI 연결 — 설치됐어요. Claude로 로그인", "setup:signedout", 4, 250, 2200),
-            (None, "2 · AI 연결 — 브라우저에서 로그인을 기다려요", "setup:waiting", 8, 250, 1500),
-            (None, "2 · AI 연결 — 둘 다 연결됨, 다음으로", "setup:ready", 4, 250, 2200),
-            ("squad", "3 · 첫 스쿼드 — 이름, 팀, 얼마나 알아서 일할지, 폴더", "setup:squad", 4, 250, 3000),
-            (None, "3 · 첫 스쿼드 — 만드는 중", "setup:creating;wait:300;scroll:20,-80", 8, 250, 1800),
+            ("git", "1 · Connect AI — a Mac without git has the developer tools card on top", "setup:nogit", 4, 250, 2200),
+            (None, "1 · Connect AI — git installs in macOS's own window; here it waits", "setup:gitasked", 6, 250, 1800),
+            ("ai", "2 · Connect AI — sign in with ChatGPT or install Claude Code", "setup:missing", 4, 250, 2400),
+            (None, "2 · Connect AI — before installing, it shows the command to run and asks", "setup:confirm", 4, 250, 2400),
+            (None, "2 · Connect AI — installing Claude Code (1–2 min)", "setup:installing", 8, 250, 1500),
+            (None, "2 · Connect AI — installed. Sign in with Claude", "setup:signedout", 4, 250, 2200),
+            (None, "2 · Connect AI — waiting for the sign-in in the browser", "setup:waiting", 8, 250, 1500),
+            (None, "2 · Connect AI — both connected, on to the next", "setup:ready", 4, 250, 2200),
+            ("squad", "3 · First squad — name, team, how much it works on its own, folder", "setup:squad", 4, 250, 3000),
+            (None, "3 · First squad — being made", "setup:creating;wait:300;scroll:20,-80", 8, 250, 1800),
         ]},
         # Once the squad is made the app attaches to its daemon (the fake one
         # here) and asks the usage question, once.
         {"daemon": True, "ask_telemetry": True, "beats": [
-            ("usage-data", "4 · 익명 사용 데이터 — 스쿼드를 만든 뒤 한 번만 물어요. 두 버튼은 같은 무게예요", "", 6, 250, 3000),
+            ("usage-data", "4 · Anonymous usage data — asked once, after the squad is made. Both buttons weigh the same", "", 6, 250, 3000),
         ]},
     ],
 }
 
 
 def font(size):
-    for path in ("/System/Library/Fonts/AppleSDGothicNeo.ttc", "/System/Library/Fonts/Supplemental/AppleGothic.ttf"):
+    for path in ("/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc"):
         if os.path.exists(path):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
@@ -81,7 +81,7 @@ def run(bin_dir, run_spec, frames_dir, prefix, mode, width):
     env = dict(os.environ)
     env["PATH"] = os.path.join(HERE, "fixtures", "bin") + os.pathsep + env.get("PATH", "")
     env.update({"HOME": user, "EQUIPE_HOME": home, "EQUIPE_SQUAD": "demo", "EQUIPE_TELEMETRY": "off",
-                "EQUIPE_LANG": "ko", "TMPDIR": tmp + "/", "EQUIPE_SNAPSHOT_SCALE": "1"})
+                "EQUIPE_LANG": "en", "TMPDIR": tmp + "/", "EQUIPE_SNAPSHOT_SCALE": "1"})
     daemon = None
     if run_spec.get("daemon"):
         daemon = subprocess.Popen([os.path.join(bin_dir, "examples", "fake_daemon")], env=env,

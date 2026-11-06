@@ -1315,13 +1315,21 @@ impl Journal {
     }
 
     fn entries(&self, id: SessionId, limit: Option<u64>) -> Result<Vec<Entry>> {
+        Ok(self.timed_entries(id, limit)?.0)
+    }
+
+    /// The lines, and when each was kept (unix seconds; a time that can't be
+    /// one, `None`) — a message when it came, a reply when it was done.
+    fn timed_entries(&self, id: SessionId, limit: Option<u64>) -> Result<(Vec<Entry>, Vec<Option<u64>>)> {
         let mut stmt = self.conn.prepare(
-            "SELECT body FROM (SELECT seq, body FROM entries WHERE session = ?1 ORDER BY seq DESC LIMIT ?2)
+            "SELECT body, at FROM (SELECT seq, body, at FROM entries WHERE session = ?1 ORDER BY seq DESC LIMIT ?2)
              ORDER BY seq ASC",
         )?;
         let limit = limit.map_or(-1, |l| l as i64);
-        let rows = stmt.query_map(params![id as i64, limit], |r| r.get::<_, String>(0))?;
-        Ok(rows.filter_map(|b| b.ok().and_then(|b| serde_json::from_str(&b).ok())).collect())
+        let rows = stmt.query_map(params![id as i64, limit], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        Ok(rows
+            .filter_map(|row| row.ok().and_then(|(body, at)| Some((serde_json::from_str::<Entry>(&body).ok()?, u64::try_from(at).ok().filter(|&at| at > 0)))))
+            .unzip())
     }
 
     /// The last `limit` lines of a session's conversation, oldest first.
@@ -1332,6 +1340,11 @@ impl Journal {
     /// Every kept line of a session's conversation, oldest first.
     pub fn conversation(&self, id: SessionId) -> Result<Vec<Entry>> {
         self.entries(id, None)
+    }
+
+    /// The same, with when each line was said, one per line.
+    pub fn conversation_at(&self, id: SessionId) -> Result<(Vec<Entry>, Vec<Option<u64>>)> {
+        self.timed_entries(id, None)
     }
 
     /// The latest `limit` lines of the squad's conversations that name a path
@@ -1554,6 +1567,25 @@ mod tests {
             vec![Entry::User { text: "add a docstring".into() }, Entry::Reply { text: "done".into() }]
         );
         assert_eq!(j.squad().as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn each_line_comes_back_with_when_it_was_said() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        j.record_session(&record(7)).unwrap();
+        let before = now() as u64;
+        j.append(7, &Entry::User { text: "add a docstring".into() }).unwrap();
+        j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
+        let (lines, times) = j.conversation_at(7).unwrap();
+        assert_eq!(lines, j.conversation(7).unwrap());
+        assert_eq!(times.len(), 2);
+        assert!(times.iter().all(|at| at.is_some_and(|at| at >= before && at <= now() as u64)), "{times:?}");
+        // Kept a while ago: that time, not now.
+        j.backdate_entries(7, 1_762_300_000);
+        assert_eq!(j.conversation_at(7).unwrap().1, vec![Some(1_762_300_000); 2]);
+        // A time that can't be one (a row written wrong): not known.
+        j.backdate_entries(7, 0);
+        assert_eq!(j.conversation_at(7).unwrap().1, vec![None, None]);
     }
 
     #[test]

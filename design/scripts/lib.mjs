@@ -84,6 +84,8 @@ export async function resolve(platform, mode) {
     return {
       path: t.path, name: t.path.join('.'), type: t.$type, desc: t.$description || t.description || '',
       value: parse(t.$type, t.$value, t.$extensions?.[EXT]?.native), ref: refm ? refm[1] : null,
+      // A font stack per document language (BCP 47 tag → families), where the token has one.
+      lang: t.$extensions?.[EXT]?.lang,
     };
   });
 }

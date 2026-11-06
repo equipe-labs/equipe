@@ -314,11 +314,36 @@ pub fn page(fragment: &str, dark: Option<bool>) -> String {
         Some(false) => " data-theme=\"light\"",
         None => "",
     };
+    let lang = lang_of(fragment);
     format!(
-        "<!doctype html><html lang=\"ko\"{theme}><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
+        "<!doctype html><html lang=\"{lang}\"{theme}><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
 <meta name=\"viewport\" content=\"width={WIDTH}\"><style>{TOKENS_CSS}\n{CARD_CSS}\n{FRAME_CSS}</style></head>\
 <body><main class=\"vc\"><article class=\"vc-card\">{fragment}</article></main></body></html>"
     )
+}
+
+/// The language a card is written in, as its page says (`lang`) so its type
+/// is set for that script ([`TOKENS_CSS`]'s `:lang()` faces): what its words
+/// are in, else English.
+fn lang_of(fragment: &str) -> &'static str {
+    let mut words = String::new();
+    let mut in_tag = false;
+    for c in fragment.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                words.push(' ');
+            }
+            _ if !in_tag => words.push(c),
+            _ => {}
+        }
+    }
+    match crate::language::detect(&words) {
+        Some("Chinese") => "zh",
+        Some(name) => crate::i18n::Lang::ALL.iter().find(|l| l.english_name() == name).map_or("en", |l| l.code()),
+        None => "en",
+    }
 }
 
 /// The Chrome that draws: `EQUIPE_CHROME`, or Google Chrome, Chrome for

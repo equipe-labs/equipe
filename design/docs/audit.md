@@ -1,42 +1,42 @@
-# 감사 — 4개 코드베이스의 흩어진 값 (2026-10-16, designer)
+# Audit — values scattered across 4 codebases (2026-10-16, designer)
 
-방법: 각 저장소의 토큰·테마 파일을 읽고 `grep`으로 리터럴 사용 횟수를 셌다(정규식 집계 — 경향 파악용, 주석·테스트 포함 가능). 색 현황은 T-144 `audit.md` §2를 이어받았다. **미확인**은 코드 전체를 읽지 못한 부분.
-출처: `equipe-site/src/styles/global.css`·`design/tokens.md` · `equipe/crates/desktop/src/theme.rs`·`motion.rs` · `equipe-app/design/tokens.json`·`android/features/.../Theme.kt`·`ios/Packages/Sources/**.swift`.
+Method: read each repository's token·theme files and counted literal uses with `grep` (a regex count — for spotting tendencies, may include comments·tests). The colour picture carries on from T-144's `audit.md` §2. **Unconfirmed** marks code that couldn't be read in full.
+Sources: `equipe-site/src/styles/global.css`·`design/tokens.md` · `equipe/crates/desktop/src/theme.rs`·`motion.rs` · `equipe-app/design/tokens.json`·`android/features/.../Theme.kt`·`ios/Packages/Sources/**.swift`.
 
-## 1. 한눈에
+## 1. At a glance
 
-| 축 | 사이트 | 데스크톱 | iOS | Android | v1 결정 |
+| Axis | Site | Desktop | iOS | Android | v1 decision |
 |---|---|---|---|---|---|
-| 색 | 8 변수(라이트·다크) | 팔레트 24 필드 + 멤버 8색 | `tokens.json` 12색×2 — 코드는 시스템 색(`.secondary`, `systemBackground`) 위주(**C6 미확인**) | `Theme.kt` M3 스킴 14색×2 | 의미 색 토큰 32개(§`tokens/semantic.color.*.json`) |
-| 간격 | `--s-1..9`: 4·8·12·16·24·32·48·72·112 | 4·8·12·16·24(+`S3`·`S6`) | 4·8·12·16·20·24·32 + 2·3·6·14(리터럴) | `dp` 4·8·12·16·24·32 + 6·10·20·48·56·64 | 사이트 스케일 채택(`space.1..9`) |
-| 모서리 | 8 · 14(+6·7·12·34 리터럴, `50%`) | 6·8·12·16 | 8·12·16·18 | 8·12·16(+2) | 6·8·12·16·24·full |
-| 글자 | 12·14·15·16·18·22·32·36·56 | 15/25·14/20·13/20·12/18 | 시스템 스타일(footnote 11, subheadline 10, caption 6…) | M3 슬롯(bodyMedium 19, labelMedium 12, bodyLarge 9…) | 역할 10개 × 플랫폼 값 |
-| 모션 | 150ms 3곳, `prefers-reduced-motion` 2곳 | 120·160·200·180ms, 큐빅 ease-out, `reduce_motion` 검사 | `.easeOut(0.15)` 1곳, `accessibilityReduceMotion` 1곳 | `tween` 코드 검색에서 **0건**(기본 M3) | 120·160·200·(180)ms, `out-cubic` |
-| 그림자 | 2종(카드 `0 24 60 .14`, 배너 `0 4 16 .15`) | 팝오버 2겹(`motion.rs`) | 없음 | 없음(M3 기본) | `float`·`overlay` 2종 |
-| 터치 | 44px | 28 컨트롤·36 필드·32 행 | 44(`minTouchTarget`) | 48·56 | 플랫폼별 `size.*` |
+| Colour | 8 variables (light·dark) | palette of 24 fields + 8 member colours | `tokens.json` 12 colours×2 — code mostly uses system colours (`.secondary`, `systemBackground`) (**C6 unconfirmed**) | `Theme.kt` M3 scheme 14 colours×2 | 32 semantic colour tokens (§`tokens/semantic.color.*.json`) |
+| Spacing | `--s-1..9`: 4·8·12·16·24·32·48·72·112 | 4·8·12·16·24 (+`S3`·`S6`) | 4·8·12·16·20·24·32 + 2·3·6·14 (literals) | `dp` 4·8·12·16·24·32 + 6·10·20·48·56·64 | the site's scale adopted (`space.1..9`) |
+| Corners | 8 · 14 (+6·7·12·34 literals, `50%`) | 6·8·12·16 | 8·12·16·18 | 8·12·16 (+2) | 6·8·12·16·24·full |
+| Type | 12·14·15·16·18·22·32·36·56 | 15/25·14/20·13/20·12/18 | system styles (footnote 11, subheadline 10, caption 6…) | M3 slots (bodyMedium 19, labelMedium 12, bodyLarge 9…) | 10 roles × per-platform values |
+| Motion | 150ms in 3 places, `prefers-reduced-motion` in 2 | 120·160·200·180ms, cubic ease-out, a `reduce_motion` check | `.easeOut(0.15)` in 1 place, `accessibilityReduceMotion` in 1 | `tween` **0 hits** in a code search (M3 defaults) | 120·160·200·(180)ms, `out-cubic` |
+| Shadow | 2 kinds (card `0 24 60 .14`, banner `0 4 16 .15`) | popover, 2 layers (`motion.rs`) | none | none (M3 default) | 2 kinds, `float`·`overlay` |
+| Touch | 44px | 28 controls·36 fields·32 rows | 44 (`minTouchTarget`) | 48·56 | per-platform `size.*` |
 
-## 2. 겹치는 것 — 합치기
+## 2. What overlaps — merged
 
-| 같은 것 | 현재 값들 | 합친 값 | 이유 |
+| The same thing | Current values | Merged value | Why |
 |---|---|---|---|
-| 본문 글자(라이트) | `#1A1A17` · `#15161A` · `#0A0A0C` | `#15161A` | T-144 가이드 §6, 대비 18:1 |
-| 다크 바탕 | `#121211` · `#0A0A0C` | `#0A0A0C`(void) | 앱·데스크톱·아이콘과 일치 |
-| 강조(링크) | `#1D4ED8` · `#2E5C8A` · 없음 | `#1D4ED8` / 다크 `#8FB0FF` | T-144 결정 D2 A |
-| 위험(err) | 데스크톱 `#AD2E27`·`danger()` `#B3261E`, 앱 `#A32A24` | `#AD2E27` / `#EE7B74` | 한 의미에 값 셋이었음 |
-| 보조 글자 | `#57544C` · `#5E6068` · `#3F4148`/`#5B5E66` | `#4F5159` / `#A3A5AB` | 대비 4.5:1 이상 중 가장 중립 |
-| 카드 모서리 | 사이트 14 · 데스크톱 12 · 앱 16 | 웹·데스크톱 12, 모바일 16 | 플랫폼 관례(모바일은 큰 모서리) 유지하되 *이름*은 하나(`radius.card`) |
-| 컨트롤 모서리 | 8 · 8 · 12 | 웹·데스크톱 8, 모바일 12 | 위와 같음 |
-| 모션 시간 | 150 · (120/160/200) · 150/250 | 120·160·200 | 데스크톱 값이 가장 세밀하게 검증됨 |
-| 아이콘 | 데스크톱 14·16 | 16·20·24 | 14는 16으로 통합 |
-| 터치 영역 | 44 · 28 · 44 · 48 | 플랫폼별 | 포인터 앱은 28 허용 |
+| Body text (light) | `#1A1A17` · `#15161A` · `#0A0A0C` | `#15161A` | T-144 guide §6, contrast 18:1 |
+| Dark background | `#121211` · `#0A0A0C` | `#0A0A0C` (void) | matches the app·desktop·icons |
+| Accent (links) | `#1D4ED8` · `#2E5C8A` · none | `#1D4ED8` / dark `#8FB0FF` | T-144 decision D2 A |
+| Danger (err) | desktop `#AD2E27`·`danger()` `#B3261E`, app `#A32A24` | `#AD2E27` / `#EE7B74` | one meaning had three values |
+| Secondary text | `#57544C` · `#5E6068` · `#3F4148`/`#5B5E66` | `#4F5159` / `#A3A5AB` | the most neutral of those at 4.5:1 or more |
+| Card corners | site 14 · desktop 12 · app 16 | web·desktop 12, mobile 16 | keeps platform conventions (larger corners on mobile) but *one name* (`radius.card`) |
+| Control corners | 8 · 8 · 12 | web·desktop 8, mobile 12 | as above |
+| Motion durations | 150 · (120/160/200) · 150/250 | 120·160·200 | the desktop's values were checked most finely |
+| Icons | desktop 14·16 | 16·20·24 | 14 merged into 16 |
+| Touch areas | 44 · 28 · 44 · 48 | per platform | pointer apps may use 28 |
 
-## 3. 지울 것 · 새로 필요한 것
+## 3. What goes · what's newly needed
 
-- **지울 것**: 사이트 `.phone`·`.pc`·`.pb`의 하드코딩 색(`#1a1a17`, `#0a0a0c`, `#efede7`, `#b4cde6`, `#9a9ca3`…, `global.css:118-124`) — 폰 목업 안의 *그림*이라 토큰이 아니라 SVG/이미지로 옮기는 게 맞다. `equipe-app/design/tokens.json`은 v1 생성 파일로 대체(코드가 읽지 않는 문서였다 — C6 미확인). 사이트 `design/tokens.md`의 색·간격 표는 `tokens/`로 대체.
-- **새로 필요한 것**: ① 의미색 `ok`(완료) — 어디에도 정의 없었음 ② 상태색 틴트(`*-bg`) ③ `border-strong`(필드·보조 버튼 테두리 3:1 — 헤어라인만 있었음) ④ `inverse`(토스트·툴팁) ⑤ `scrim` ⑥ `elevation.overlay`(시트·대화상자) ⑦ 동작 줄이기 규칙(`motion.*.reduced`)의 통일 ⑧ `action-hover/pressed`(데스크톱 `primary_hover()`(`theme.rs:300`·`primary_press()` L305) 계열을 의미 토큰으로).
-- **v1에서 건드리지 않은 것**: 멤버 아바타 8색(`theme.rs members`, 식별용 별도 체계, 대비 미계산 — T-144와 같음), 데스크톱 사이드바 3색(`side*`)·`prose`·`text2`·툴팁색은 데스크톱 로컬 값으로 남긴다(다른 플랫폼에 대응물 없음) — 토큰화는 필요해지면 v1.x에서.
+- **Goes**: the hard-coded colours of the site's `.phone`·`.pc`·`.pb` (`#1a1a17`, `#0a0a0c`, `#efede7`, `#b4cde6`, `#9a9ca3`…, `global.css:118-124`) — they're a *picture* inside the phone mock-up, so they belong in an SVG/image, not tokens. `equipe-app/design/tokens.json` is replaced by the v1 generated file (it was a document no code read — C6 unconfirmed). The colour·spacing tables in the site's `design/tokens.md` are replaced by `tokens/`.
+- **Newly needed**: ① the semantic colour `ok` (done) — defined nowhere before ② status colour tints (`*-bg`) ③ `border-strong` (3:1 for field·secondary button borders — there was only the hairline) ④ `inverse` (toasts·tooltips) ⑤ `scrim` ⑥ `elevation.overlay` (sheets·dialogs) ⑦ one reduce-motion rule (`motion.*.reduced`) ⑧ `action-hover/pressed` (the desktop's `primary_hover()` (`theme.rs:300`)·`primary_press()` (L305) family as semantic tokens).
+- **Not touched in v1**: the 8 member avatar colours (`theme.rs members`, a separate system for telling members apart, contrast not computed — as in T-144); the desktop sidebar's 3 colours (`side*`)·`prose`·`text2`·tooltip colours stay desktop-local values (no counterpart on other platforms) — tokens for them in v1.x if needed.
 
-## 4. 이번에 확인하지 못한 것
-- iOS `tokens.json`이 실제 코드에 연결돼 있는지(C6) — SwiftUI 코드에서 `Color(…tokens…)` 사용을 찾지 못했다. Android는 `Theme.kt`에 값을 *복사*해 쓴다(`tokens.json` 참조 주석만).
-- 사이트의 `:lang()` 글자 규칙(`global.css:197-204`)은 v1 토큰 범위 밖(서체 폴백은 T-144 §3.3).
-- 데스크톱 GPUI 화면에서 새 값을 직접 렌더해 보지 않았다 — 웹 시트 렌더만. 모든 화면 변경은 디자인 QA(squad 결정).
+## 4. Not confirmed this time
+- Whether iOS's `tokens.json` is actually wired into code (C6) — no `Color(…tokens…)` use was found in the SwiftUI code. Android *copies* the values into `Theme.kt` (only a comment refers to `tokens.json`).
+- The site's `:lang()` type rules (`global.css:197-204`) are outside the v1 tokens' scope (font fallbacks are T-144 §3.3).
+- The new values weren't rendered directly on the desktop's GPUI screens — only web sheet renders. Every screen change goes through design QA (a squad decision).

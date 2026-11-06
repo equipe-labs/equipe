@@ -33,32 +33,32 @@ pub fn seed() {
         Kind::Brief,
         "one-tap-checkout",
         "2026-11-02",
-        &f(&[("title", "한 번에 끝나는 결제"), ("date", "2026-11-02"), ("status", "settled"), ("ticket", "42"), ("mode", "startup")]),
-        "## 목표\n\n장바구니에서 결제까지 한 화면으로 — 첫 구매 이탈을 줄입니다.\n\n## 누구를 위한 것인가\n\n모바일로 처음 사는 사람. 지금은 세 화면을 거치다 38%가 떠납니다(지난 30일 분석).\n\n## 수요\n\n- 고객센터 문의의 1/4이 \"결제가 어디서 끝나요?\"\n- 경쟁 두 곳이 이미 한 화면 결제\n\n## 고른 안\n\n**B. 한 화면 결제 + 저장된 수단** (추천) — 2주, 결제 API는 그대로.\n\n## 범위\n\n- 넣음: 카드·간편결제, 저장된 수단\n- 뺌: 해외 결제, 할부 선택\n\n## 끝났다는 건\n\n첫 구매 전환 +5%p, 4주 안에.\n",
+        &f(&[("title", "One-tap checkout"), ("date", "2026-11-02"), ("status", "settled"), ("ticket", "42"), ("mode", "startup")]),
+        "## Goal\n\nFrom cart to paid on one screen — fewer people dropping out of their first purchase.\n\n## Who it is for\n\nSomeone buying for the first time on a phone. Today 38% leave somewhere in the three screens (last 30 days of analytics).\n\n## Demand\n\n- A quarter of support questions are \"Where does checkout end?\"\n- Two competitors already check out on one screen\n\n## The option picked\n\n**B. One-screen checkout + saved methods** (Recommended) — 2 weeks, the payment API unchanged.\n\n## Scope\n\n- In: cards and wallets, saved methods\n- Out: international payments, instalment choice\n\n## Done means\n\nFirst-purchase conversion +5 pp, within 4 weeks.\n",
     );
     write(
         "web",
         Kind::Plan,
         "one-tap-checkout",
         "2026-11-03",
-        &f(&[("title", "한 번에 끝나는 결제 — 계획"), ("date", "2026-11-03"), ("status", "in_review"), ("brief", brief_path.as_str()), ("scope", "selective"), ("tickets", "[42, 51]")]),
-        "## 단계\n\n1. 결제 수단 선택을 한 화면으로 (T-42)\n2. 저장된 수단 불러오기\n3. 하단 요약 고정 (T-51)\n\n## 테스트\n\n- 카드 / 간편결제 각각 끝까지\n- 저장된 수단이 없을 때\n",
+        &f(&[("title", "One-tap checkout — plan"), ("date", "2026-11-03"), ("status", "in_review"), ("brief", brief_path.as_str()), ("scope", "selective"), ("tickets", "[42, 51]")]),
+        "## Steps\n\n1. Payment method choice on one screen (T-42)\n2. Load saved methods\n3. Pin the summary to the bottom (T-51)\n\n## Tests\n\n- Card and wallet, each all the way through\n- With no saved method\n",
     );
     write(
         "web",
         Kind::Brief,
         "gift-cards",
         "2026-10-20",
-        &f(&[("title", "선물 카드"), ("date", "2026-10-20"), ("status", "dropped"), ("mode", "startup")]),
-        "## 왜 접었나\n\n원하는 사람을 한 명도 찾지 못했어요. 지금 쓰는 방법(계좌이체)으로 충분하다는 답이 대부분이었어요.\n",
+        &f(&[("title", "Gift cards"), ("date", "2026-10-20"), ("status", "dropped"), ("mode", "startup")]),
+        "## Why we dropped it\n\nWe couldn't find a single person who wanted it. Most said what they use now (bank transfer) is enough.\n",
     );
     write(
         "api",
         Kind::Brief,
         "rate-limits",
         "2026-11-04",
-        &f(&[("title", "요청 한도"), ("date", "2026-11-04"), ("status", "draft"), ("mode", "builder")]),
-        "## 목표\n\n파트너 한 곳이 몰아 보내도 다른 곳이 느려지지 않게.\n\n## 아직 모르는 것\n\n- 파트너별 한도를 어디서 정할지\n",
+        &f(&[("title", "Rate limits"), ("date", "2026-11-04"), ("status", "draft"), ("mode", "builder")]),
+        "## Goal\n\nOne partner sending a burst never slows the others down.\n\n## Not known yet\n\n- Where each partner's limit is set\n",
     );
 }
 
@@ -96,12 +96,12 @@ pub fn office_hours_set(now: u64) -> QuestionSet {
         member: "pm".into(),
         ticket: Some(57),
         questions: vec![Question {
-            question: "\"다들 불편해한다\"고 하셨는데, 누가 지금 무엇으로 버티고 있나요? 가장 가까운 것을 골라 주세요 — 숫자나 실제 예가 있으면 덧붙여 주세요.".into(),
-            header: "현재 방식 2/6".into(),
+            question: "You said \"everyone finds it painful\" — who is getting by today, and with what? Pick the closest — and add a number or a real example if you have one.".into(),
+            header: "Today 2/6".into(),
             options: vec![
-                choice("엑셀로 정리해 메일로 보냄 (추천)", "고객센터 문의 기록에 매주 3~4건 — 가장 많이 보인 방식이에요"),
-                choice("카카오톡 단체방에서 직접 조율", "작은 매장 두 곳이 그렇다고 했어요 — 몇 곳인지는 아직 모릅니다"),
-                choice("그냥 포기하고 전화로 처리", "증거가 없어요: 이걸 고르면 다음 질문에서 확인해요"),
+                choice("A spreadsheet sent by email (Recommended)", "3–4 a week in the support log — the way seen most"),
+                choice("Sorted out by hand in a group chat", "Two small shops said so — how many more, we don't know yet"),
+                choice("They give up and phone instead", "No evidence yet: pick this and the next question checks it"),
             ],
             multi_select: false,
             ..Question::default()

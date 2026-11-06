@@ -1,13 +1,13 @@
-# 취향 기록 (design/taste.md)
+# Taste record (design/taste.md)
 
-## 2026-10-30 · 대화 요약 중 표시 (T-164)
-- **고른 것**: B — 흐르는 막대(%없음) + 실제 경과 시간, 입력창 위 띠.
-- **넘긴 것**: A(추정 막대 + %, Claude 앱 모양), C(대화 속 한 줄).
-- **이유**: 사람이 "왜 A가 아니라 B를 추천하느냐"고 물었고, 추정 %는 지어낸 값이라는 설명을 듣고 B를 골랐다.
-- **읽을 것**: 익숙한 모양보다 **정직한 값**을 택한다. 없는 정보(진행률 등)는 만들어 보여 주지 않는다. 조용하고 사실만 보여 주는 쪽.
+## 2026-10-30 · Showing a conversation being summarized (T-164)
+- **Chosen**: B — a flowing bar (no %) + the real elapsed time, a band above the composer.
+- **Passed over**: A (an estimated bar + %, the Claude app's look), C (a line in the conversation).
+- **Why**: the person asked "why recommend B and not A", heard that an estimated % is a made-up value, and chose B.
+- **To read from it**: **honest values** over a familiar look. Information that isn't there (progress and the like) is never made up for show. The quiet side that shows only facts.
 
-## 2026-11-03 · 대화 속 Mermaid 도표 모양 (T-336)
-- **고른 것**: A 카드형 — 둥근 카드 노드, 상태별 색(진행 중·사람 차례·완료·막힘) + 기호(● ◆ ✓ ✕ ○), 둘째 줄에 역할. 위쪽 코드 블록 머리는 없애고 원문·복사는 마우스를 올릴 때만.
-- **넘긴 것**: B 레인형(역할별 칸 — 가로로 넓어져 좁은 폭에서 글씨가 작아짐), C 알약형(핵심 줄기만 진하게 — 설명이 줄어듦).
-- **이유**: 사람이 "못생겼다, 예뻤으면 좋겠다"고 했고 지금 모양의 문제는 '같은 회색 상자·위계 없음·코드 머리'였다. 세 안을 보고 A를 골랐다(말로 남긴 이유는 없음).
-- **읽을 것**: 지금 화면과 가장 가까우면서 위계가 생기는 쪽을 택했다. 극적인 변화보다 정돈된 카드. 상태는 색만이 아니라 기호와 함께.
+## 2026-11-03 · The look of Mermaid diagrams in the conversation (T-336)
+- **Chosen**: A, cards — rounded card nodes, a colour per status (in progress·your turn·done·blocked) + a symbol (● ◆ ✓ ✕ ○), the role on the second line. The code-block header above is gone; source and copy show only on hover.
+- **Passed over**: B, lanes (a lane per role — it widens sideways, so the text gets small on a narrow width), C, pills (only the main path bold — less explanation).
+- **Why**: the person said "it's ugly, I'd like it to be pretty", and the trouble with the look then was 'the same grey boxes·no hierarchy·the code header'. They looked at three options and chose A (no reason given in words).
+- **To read from it**: chose what is closest to the current screen while gaining hierarchy. Tidy cards over a dramatic change. Status by symbol as well as colour.

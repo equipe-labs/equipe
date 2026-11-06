@@ -19,7 +19,7 @@ use equipe_core::protocol::{Entry, Ticket};
 use image::{Rgb, RgbImage};
 
 /// Where the drafts are on the studio's Mac, as the reply names them.
-pub const THERE: &str = "/Users/studio/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images";
+pub const THERE: &str = "/Users/studio/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 Gallery design/images";
 /// T-4's worktree there.
 const T4: &str = "/Users/studio/.equipe/worktrees/gallery-y/t4-6ad33ac5";
 
@@ -134,7 +134,7 @@ fn dimension(img: &mut RgbImage, a: (f32, f32), b: (f32, f32)) {
     }
 }
 
-/// 평면도: a studio, a gallery hall, a lounge and a washroom, with doors and dimensions.
+/// The floor plan: a studio, a gallery hall, a lounge and a washroom, with doors and dimensions.
 fn floor_plan() -> RgbImage {
     let mut img = sheet(1600, 1100);
     let (x0, y0, x1, y1) = (180, 160, 1420, 940);
@@ -169,7 +169,7 @@ fn floor_plan() -> RgbImage {
     img
 }
 
-/// 배치도: the plot, the building's footprint hatched, the road, trees and parking.
+/// The site plan: the plot, the building's footprint hatched, the road, trees and parking.
 fn site_plan() -> RgbImage {
     let mut img = sheet(1600, 1100);
     // The road along the bottom.
@@ -201,7 +201,7 @@ fn site_plan() -> RgbImage {
     img
 }
 
-/// 단면·입면: the elevation on the left, the section on the right, on one ground line.
+/// Section·elevation: the elevation on the left, the section on the right, on one ground line.
 fn section() -> RgbImage {
     let mut img = sheet(1600, 900);
     let ground = 720;
@@ -253,7 +253,7 @@ fn poly(img: &mut RgbImage, corners: &[(f32, f32)], c: Rgb<u8>) {
     }
 }
 
-/// 조감도 and 자재 보드: in the folder, not in the reply.
+/// The aerial view and the material board: in the folder, not in the reply.
 fn bird_eye() -> RgbImage {
     let mut img = sheet(1400, 1000);
     let (cx, cy, a, b, tall) = (700., 420., 360., 190., 230.);
@@ -304,14 +304,14 @@ pub fn make() {
         }
     };
     if broken() {
-        let _ = std::fs::remove_file(drafts.join("평면도.png"));
+        let _ = std::fs::remove_file(drafts.join("floor-plan.png"));
     } else {
-        save(floor_plan(), drafts.join("평면도.png"));
+        save(floor_plan(), drafts.join("floor-plan.png"));
     }
-    save(site_plan(), drafts.join("배치도.png"));
-    save(section(), drafts.join("단면·입면.png"));
-    save(bird_eye(), drafts.join("조감도.png"));
-    save(material_board(), drafts.join("자재 보드.png"));
+    save(site_plan(), drafts.join("site-plan.png"));
+    save(section(), drafts.join("section·elevation.png"));
+    save(bird_eye(), drafts.join("aerial.png"));
+    save(material_board(), drafts.join("material board.png"));
     let t4 = t4();
     let _ = std::fs::create_dir_all(t4.join("outputs"));
     let _ = std::fs::create_dir_all(t4.join("public/textures/earth"));
@@ -329,18 +329,18 @@ pub fn make() {
 /// The PM's answer, embedding the drafts by where they are on the studio's Mac.
 pub fn history() -> Vec<Entry> {
     let reply = format!(
-        "디자이너가 **T-2** 갤러리 시안 세 장을 올렸어요. 전시 동선을 먼저 잡고, 촬영 스튜디오와 갤러리를 한 층에 나눴습니다.\n\n\
-### 평면도\n갤러리 긴 벽(파란 선)에 작품을 걸고, 스튜디오는 북쪽 창을 씁니다.\n\n![평면도]({THERE}/평면도.png)\n\n\
-### 배치도\n입구 캐노피를 도로 쪽으로 내고, 주차는 동쪽에 여섯 면입니다.\n\n![배치도]({THERE}/배치도.png \"배치도 A안\")\n\n\
-### 단면·입면\n갤러리는 두 층 높이로 트고 천창으로 빛을 들입니다.\n\n![단면·입면]({THERE}/단면·입면.png)\n\n\
-조감도와 자재 보드도 같은 폴더에 있어요: {THERE}/"
+        "The designer put up three drafts for the **T-2** gallery. The visitors' route came first, then the photo studio and the gallery split across one floor.\n\n\
+### Floor plan\nWork hangs on the gallery's long wall (the blue line); the studio takes the north windows.\n\n![Floor plan]({THERE}/floor-plan.png)\n\n\
+### Site plan\nThe entrance canopy faces the road, with six parking spaces to the east.\n\n![Site plan]({THERE}/site-plan.png \"Site plan, option A\")\n\n\
+### Section·elevation\nThe gallery opens up two storeys high, with skylights bringing in the light.\n\n![Section·elevation]({THERE}/section·elevation.png)\n\n\
+The aerial view and the material board are in the same folder: {THERE}/"
     );
-    vec![Entry::User { text: "T-2 디자이너 시안 나왔어? 보여 줘".into() }, Entry::Reply { text: reply }]
+    vec![Entry::User { text: "Are the designer's T-2 drafts in? Show me".into() }, Entry::Reply { text: reply }]
 }
 
 /// T-4 as the user saw it, and T-6 whose pictures are all gone.
 pub fn tickets(ticket: impl Fn(u32, &str, &str) -> Ticket) -> Vec<Ticket> {
-    let mut t4 = ticket(4, "지구본 3D 갤러리", "외부 브랜치 equipe/frontend-t4-6ad33ac5에 남아 있습니다.");
+    let mut t4 = ticket(4, "3D globe gallery", "Still on the outside branch equipe/frontend-t4-6ad33ac5.");
     let at = |rel: &str| format!("{T4}/{rel}");
     t4.images = ["outputs/T-4-globe.png", "outputs/T-4-flying.png", "outputs/T-4-arrived.png"].map(at).to_vec();
     for name in ["earth_day", "earth_night", "earth_bump_roughness_clouds"] {
@@ -348,7 +348,7 @@ pub fn tickets(ticket: impl Fn(u32, &str, &str) -> Ticket) -> Vec<Ticket> {
             t4.images.push(at(&format!("public/textures/earth/{name}_{size}.jpg")));
         }
     }
-    let mut t6 = ticket(6, "랜딩 히어로 이미지", "히어로 이미지 세 장을 바꿨습니다.");
+    let mut t6 = ticket(6, "Landing hero images", "Replaced three hero images.");
     t6.images = ["hero-a.png", "hero-b.png", "hero-c.png", "hero-d.png"].map(|n| format!("/Users/studio/.equipe/worktrees/gallery-y/t6-1a2b3c4d/outputs/{n}")).to_vec();
     vec![t4, t6]
 }
