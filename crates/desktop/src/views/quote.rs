@@ -1,8 +1,9 @@
 //! Asking about — and replying to — words in the conversation, as Claude's
 //! apps do: select a stretch of a reply (a call's output, a message of your
 //! own) and, the moment the button lets go, a small bar floats over the
-//! selection — "Reply", "Ask about this" and "Copy", each acting on the
-//! press.
+//! selection — "Reply", "Ask about this", "Side chat" and "Copy", each
+//! acting on the press. A side chat opens beside the conversation
+//! (`views/side_chat.rs`).
 //!
 //! Replying opens a small box by the selection: what the person says to that
 //! passage, ⏎ making it a card in a row over the composer (Esc: nothing).
@@ -50,7 +51,7 @@ const SETTLE_TRIES: usize = 12;
 const FLASH: Duration = Duration::from_millis(900);
 const FADE: Duration = Duration::from_millis(500);
 /// The bar's size, for keeping it inside the window.
-const BAR: (f32, f32) = (340., 30.);
+const BAR: (f32, f32) = (440., 30.);
 /// A card over the composer: this wide, its words this many lines at most.
 const CARD_W: f32 = 180.;
 const CARD_LINES: usize = 4;
@@ -71,6 +72,21 @@ pub struct QuoteUi {
     pub writing: Option<Writing>,
     _settle: Option<Task<()>>,
     _flash: Option<Task<()>>,
+}
+
+impl QuoteUi {
+    /// The words offered, taken: their conversation, and the words.
+    pub fn take_offer(&mut self) -> Option<(SessionId, String)> {
+        self.offer.take().map(|o| (o.session, o.text))
+    }
+
+    /// Dev tool (`snapshot.rs`): `words` offered in `session`, as if selected.
+    #[cfg(feature = "snapshot")]
+    pub fn offer_words(&mut self, session: Option<SessionId>, words: &str) {
+        let (Some(session), Some(text)) = (session, rules::trim(words)) else { return };
+        let at = Rect { x: 200., y: 200., w: 1., h: 1. };
+        self.offer = Some(Offer { session, text, ends: Cell::new(Some((at, at))), released: at, copied: false });
+    }
 }
 
 pub struct Offer {
@@ -347,7 +363,7 @@ impl Shell {
     /// Light the quote where it shows: in row `ix` (or, `None`, the latest
     /// row drawn that holds it), strongly or softly, scrolled into view when
     /// strong. The row lit.
-    fn quote_light(&mut self, quote: &str, ix: Option<usize>, strong: bool, cx: &mut Context<Self>) -> Option<usize> {
+    pub(crate) fn quote_light(&mut self, quote: &str, ix: Option<usize>, strong: bool, cx: &mut Context<Self>) -> Option<usize> {
         // ⌘F's marks are in the same views; they win.
         if self.chat.find.open {
             return None;
@@ -382,7 +398,7 @@ impl Shell {
         None
     }
 
-    fn quote_unlight(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn quote_unlight(&mut self, cx: &mut Context<Self>) {
         let Some(ix) = self.quote.lit.take() else { return };
         if self.chat.find.open {
             return;
@@ -396,6 +412,11 @@ impl Shell {
     /// and Esc closes it (⇧⏎ is a new line); with words offered, ⏎ or ⌘⇧R
     /// quotes them over the composer and Esc puts the bar away.
     pub fn on_quote_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> Took {
+        // The side chat's own box comes first: its ⏎ sends, its Esc closes it.
+        match self.on_side_chat_key(key, m, window, cx) {
+            Took::Pass => {}
+            took => return took,
+        }
         if let Some(w) = &self.quote.writing {
             if !w.input.read(cx).focus_handle(cx).is_focused(window) {
                 return Took::Pass;
@@ -423,6 +444,10 @@ impl Shell {
         match key {
             "r" if m.platform && m.shift && !m.control && !m.alt => {
                 self.quote_open(window, cx);
+                Took::Taken
+            }
+            "j" if m.platform && m.shift && !m.control && !m.alt => {
+                self.side_chat_start(window, cx);
                 Took::Taken
             }
             "enter" if plain && !self.composer.is_focused(window, cx) => {
@@ -520,6 +545,13 @@ fn bar(p: Palette, copied: bool, cx: &mut Context<Shell>) -> impl IntoElement + 
             shell.quote_open(window, cx);
         }),
     );
+    let side = tip(item("quote-side-chat", Icon::AppWindow, t!("quote.side_chat")), p, t!("quote.side_chat_tip"), Some("⌘⇧J")).on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|shell, _, window, cx| {
+            cx.stop_propagation();
+            shell.side_chat_start(window, cx);
+        }),
+    );
     let copy = if copied { item("quote-copy", Icon::Check, t!("quote.copied")) } else { item("quote-copy", Icon::Copy, t!("chat.copy")) }.on_mouse_down(
         MouseButton::Left,
         cx.listener(|shell, _, _, cx| {
@@ -547,11 +579,13 @@ fn bar(p: Palette, copied: bool, cx: &mut Context<Shell>) -> impl IntoElement + 
         .child(div().w(px(1.)).h(px(14.)).bg(p.hair))
         .child(ask)
         .child(div().w(px(1.)).h(px(14.)).bg(p.hair))
+        .child(side)
+        .child(div().w(px(1.)).h(px(14.)).bg(p.hair))
         .child(copy)
 }
 
 /// A passage as a quote: a thin bar at its left, its first lines muted.
-fn passage(p: Palette, quote: &str, lines: usize) -> Div {
+pub(crate) fn passage(p: Palette, quote: &str, lines: usize) -> Div {
     h_flex()
         .gap(px(9.))
         .items_stretch()

@@ -148,6 +148,33 @@ pub fn answer(call: &Value, work: &Path, read_only: &[PathBuf]) -> Option<Value>
     Some(json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": why } }))
 }
 
+/// Why a side chat's call is refused ([`crate::side_chat`]): every tool but
+/// reading and searching files and the web — whatever its engine's flags let
+/// through by mistake, the guard doesn't.
+pub fn side_chat_refusal(tool: &str) -> Option<String> {
+    if crate::side_chat::CLAUDE_TOOLS.contains(&tool) {
+        return None;
+    }
+    Some(format!(
+        "Blocked: `{tool}` isn't available in a side chat. A side chat only reads files and the web, and changes \
+nothing; say what you'd do instead, and the person can take it to the main conversation."
+    ))
+}
+
+/// The hook's answer for a side chat's call ([`side_chat_refusal`]).
+pub fn side_chat_answer(call: &Value) -> Option<Value> {
+    let tool = call.get("tool_name").and_then(Value::as_str)?;
+    let why = side_chat_refusal(tool)?;
+    Some(json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": why } }))
+}
+
+/// The guard for a side chat, as Claude Code's settings take it: asked
+/// before every call (`equipe hook --side-chat`).
+pub fn side_chat_hooks(binary: &Path) -> Value {
+    let command = format!("{} hook --side-chat", quote(&binary.to_string_lossy()));
+    json!({ "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS }] }] })
+}
+
 /// A word for a shell, in single quotes when it needs them.
 fn quote(word: &str) -> String {
     if !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+:@%=".contains(c)) {
@@ -629,6 +656,23 @@ mod tests {
         assert_eq!(entry["matcher"], MATCHER);
         assert_eq!(entry["hooks"][0]["type"], "command");
         assert_eq!(entry["hooks"][0]["command"], "/Applications/equipe.app/Contents/MacOS/equipe hook --work /w/backend-t3 --read-only '/Users/me/My Site'");
+    }
+
+    #[test]
+    fn in_a_side_chat_the_guard_lets_only_reading_and_the_web_through() {
+        for tool in crate::side_chat::CLAUDE_TOOLS {
+            assert_eq!(side_chat_refusal(tool), None, "{tool}");
+        }
+        for tool in ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Agent", "Task", "TodoWrite", "mcp__equipe__create_ticket", "mcp__equipe__approve", "mcp__browser__browser_click", "SomethingNew"] {
+            assert!(side_chat_refusal(tool).is_some_and(|why| why.starts_with("Blocked: ")), "{tool}");
+        }
+        let call = json!({ "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": { "file_path": "/w/x" } });
+        assert_eq!(side_chat_answer(&call).unwrap()["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(side_chat_answer(&json!({ "tool_name": "WebSearch", "tool_input": { "query": "q" } })), None, "the engine's own rules decide the rest");
+        // Asked about every call, not only commands and files.
+        let hooks = side_chat_hooks(Path::new("/Applications/equipe.app/Contents/MacOS/equipe"));
+        assert_eq!(hooks["PreToolUse"][0]["matcher"], "*");
+        assert_eq!(hooks["PreToolUse"][0]["hooks"][0]["command"], "/Applications/equipe.app/Contents/MacOS/equipe hook --side-chat");
     }
 
     #[test]

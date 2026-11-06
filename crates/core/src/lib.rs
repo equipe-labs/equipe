@@ -52,6 +52,7 @@ pub mod retro;
 pub mod roles;
 pub mod routines;
 pub mod secrets;
+pub mod side_chat;
 pub mod signal_sources;
 pub mod signals;
 pub mod skills;

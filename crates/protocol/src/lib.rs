@@ -25,6 +25,7 @@ pub mod design;
 pub mod look;
 pub mod routines;
 pub mod secrets;
+pub mod side_chat;
 pub mod signals;
 
 /// How many subagents Claude Code runs at once on its own
@@ -71,6 +72,7 @@ pub mod watch;
 pub mod words;
 
 pub use briefs::ProjectDoc;
+pub use side_chat::SideChatId;
 pub use transcript::Transcript;
 
 /// One conversation with one agent. Chosen by the screen that opens it — at
@@ -962,6 +964,19 @@ pub enum Command {
     /// hears it stopped (a helper hands in what it had) and goes on with its
     /// turn. Nothing when it isn't at work, or its engine can't stop it alone.
     StopSubagent { session: SessionId, id: String },
+    /// A side chat about `passage`, a stretch of `session`'s conversation the
+    /// person selected ([`side_chat`]): it knows the conversation so far and
+    /// the passage, reads the member's files and (where its engine can) the
+    /// web, changes nothing, and nothing said in it reaches the conversation.
+    /// `side` is the screen's own id for it. Answered by
+    /// [`Event::SideChatOpened`]; nothing runs until its first message.
+    StartSideChat { session: SessionId, side: SideChatId, passage: String },
+    /// The person's message in side chat `side`: its next turn. The
+    /// conversation and passage come again, so a side chat the daemon let go
+    /// (idle, or the daemon restarted) starts over from them.
+    SideChatSubmit { session: SessionId, side: SideChatId, passage: String, text: String },
+    /// The side chat is closed: its turn under way stops, and it is let go.
+    CloseSideChat { side: SideChatId },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -1999,6 +2014,35 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,
     },
+    /// A side chat ([`Command::StartSideChat`]) is open, on `session`'s
+    /// engine and model; `search`: it searches the web (not on another
+    /// provider through Codex, which has no search of its own).
+    SideChatOpened {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        session: SessionId,
+        side: SideChatId,
+        search: bool,
+    },
+    /// What happened in side chat `side`, as a conversation's own events say
+    /// it — the person's message, the answer's words, a tool's use and
+    /// result, the turn's end with its usage, an error — each with
+    /// `session` = `side`. Never part of `session`'s conversation.
+    SideChat {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        /// The conversation it is about.
+        session: SessionId,
+        side: SideChatId,
+        event: Box<Event>,
+    },
+    /// Side chat `side` was let go: closed, its conversation closed, or idle
+    /// too long ([`side_chat::IDLE_SECS`]).
+    SideChatClosed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        side: SideChatId,
+    },
     /// A subagent the daemon watches hasn't been heard from for `quiet_secs`
     /// and looks stuck; `None`: it has been heard from since. Only the
     /// person stops it ([`Command::StopSubagent`]). See [`SubagentInfo::stuck_secs`].
@@ -2299,6 +2343,7 @@ impl Event {
             | Event::ProjectDocs { squad, .. }
             | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
+            Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
             _ => None,
         }
     }
@@ -2398,6 +2443,10 @@ impl Event {
             | Event::DiskLevel { .. }
             | Event::DiskReport { .. }
             | Event::DiskCleaned { .. } => None,
+            // A side chat's own: never part of the conversation it is about.
+            Event::SideChatOpened { .. }
+            | Event::SideChat { .. }
+            | Event::SideChatClosed { .. } => None,
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
             | Event::Nebius { .. }

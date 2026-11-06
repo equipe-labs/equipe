@@ -344,6 +344,7 @@ impl Shell {
     /// A subagent's row clicked: a look inside it, beside its member's conversation.
     pub fn open_subagent_panel(&mut self, member: SessionId, session: SessionId, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.chat.side.clear();
+        self.side_chat.open = None;
         self.chat.sub.show(Open { member, session, id: id.to_owned() });
         let focus = self.chat.sub.focus.get_or_insert_with(|| cx.focus_handle()).clone();
         window.focus(&focus, cx);

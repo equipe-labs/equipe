@@ -529,5 +529,6 @@
   "notice.provider_limits": "{provider}에서 이 멤버는 파일, 명령, 보드로 일하지만 아직 서브에이전트와 웹 검색이 없고 이미지를 볼 수 없어요. 도구를 호출할 수 있는 모델을 골라 주세요.",
   "notice.provider_move": "다음 티켓부터 {provider}의 {model}로 옮겨 Codex CLI 에이전트에서 일해요.",
   "error.provider_needs_codex": "{provider}의 멤버는 Codex CLI 에이전트에서 일해요 (무료 오픈소스, ChatGPT 로그인 불필요). 먼저 codex CLI를 설치해 주세요.",
+  "error.side_chat_busy": "사이드 채팅이 아직 답하고 있어요. 기다리거나 닫아 주세요.",
   "security.member_refused": "멤버 자신의 프로세스가 equipe 소켓을 통해 나 대신 승인·수락·병합·설정 변경을 하려 했어요. equipe가 막았어요. 그건 나만 결정해요."
 }

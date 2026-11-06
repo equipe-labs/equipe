@@ -174,11 +174,14 @@ enum Command {
     #[command(hide = true)]
     Hook {
         /// The member's working directory: never refused
-        #[arg(long)]
-        work: std::path::PathBuf,
+        #[arg(long, required_unless_present = "side_chat")]
+        work: Option<std::path::PathBuf>,
         /// A folder the member only reads in this work
         #[arg(long = "read-only")]
         read_only: Vec<std::path::PathBuf>,
+        /// A side chat's call: refused unless it only reads files or the web
+        #[arg(long = "side-chat")]
+        side_chat: bool,
     },
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
@@ -423,8 +426,8 @@ fn install_tls() {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     // Asked before each of a member's calls: answered at once, nothing else started.
-    if let Some(Command::Hook { work, read_only }) = &cli.command {
-        return hook(work, read_only);
+    if let Some(Command::Hook { work, read_only, side_chat }) = &cli.command {
+        return hook(work.as_deref(), read_only, *side_chat);
     }
     // Before any thread: opened from Finder, the app's equipe (and the daemon
     // it starts) has launchd's bare PATH, where no member's tool is found.
@@ -435,7 +438,7 @@ fn main() -> ExitCode {
 /// Claude Code's `PreToolUse` hook for a member: equipe's guard's answer to
 /// the call on stdin — a refusal, or nothing for the engine's own rules to
 /// decide. A call it can't read is let through: the guard only refuses.
-fn hook(work: &std::path::Path, read_only: &[std::path::PathBuf]) -> ExitCode {
+fn hook(work: Option<&std::path::Path>, read_only: &[std::path::PathBuf], side_chat: bool) -> ExitCode {
     let mut input = String::new();
     if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
         return ExitCode::SUCCESS;
@@ -443,7 +446,12 @@ fn hook(work: &std::path::Path, read_only: &[std::path::PathBuf]) -> ExitCode {
     let Ok(call) = serde_json::from_str::<serde_json::Value>(&input) else {
         return ExitCode::SUCCESS;
     };
-    if let Some(answer) = equipe_core::guard::answer(&call, work, read_only) {
+    let answer = match work {
+        _ if side_chat => equipe_core::guard::side_chat_answer(&call),
+        Some(work) => equipe_core::guard::answer(&call, work, read_only),
+        None => None,
+    };
+    if let Some(answer) = answer {
         println!("{answer}");
     }
     ExitCode::SUCCESS
@@ -1580,6 +1588,7 @@ impl App {
                 | Event::BrowserWants { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
                 | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::Nebius { .. } | Event::Providers { .. } | Event::ProviderTested { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. } => {}
+                Event::SideChatOpened { .. } | Event::SideChat { .. } | Event::SideChatClosed { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });

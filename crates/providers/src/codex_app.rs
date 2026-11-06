@@ -290,6 +290,13 @@ pub struct TurnRequest<'a> {
     pub access: Access,
     /// The thread an earlier turn ran in, to continue it.
     pub resume: Option<&'a str>,
+    /// Continue a copy of `resume` (`thread/fork`), never `resume` itself.
+    pub fork: bool,
+    /// What to say instead of `prompt` when no earlier thread could be
+    /// continued (or forked) and a fresh one starts; `None`: `prompt`.
+    pub fresh_prompt: Option<&'a str>,
+    /// Codex's own web search, live (`web_search = "live"`); not on another provider.
+    pub web_search: bool,
     /// Who the agent is on the team: Codex's developer instructions, beside
     /// its own and the project's `AGENTS.md`.
     pub instructions: Option<&'a str>,
@@ -327,11 +334,27 @@ pub fn start_params(request: &TurnRequest<'_>, cwd: &Path, others: Option<&Value
     } else if let Some(at_once) = request.subagents {
         params["config"]["agents"]["max_concurrent_threads_per_session"] = json!(at_once);
     }
+    // Searching the web as it goes: Codex's own tool, OpenAI's only.
+    if request.web_search && request.provider.is_none() {
+        params["config"]["web_search"] = json!("live");
+    }
     if let Some(model) = request.model {
         params["model"] = json!(model);
     }
     if let Some(instructions) = request.instructions {
         params["developerInstructions"] = json!(instructions);
+    }
+    params
+}
+
+/// `thread/fork`'s: a copy of thread `id` with the turn's settings — its
+/// sandbox, its servers — the original left as it was.
+pub fn fork_params(request: &TurnRequest<'_>, cwd: &Path, id: &str, others: Option<&Value>) -> Value {
+    let mut params = start_params(request, cwd, others);
+    if let Some(map) = params.as_object_mut() {
+        map.remove("serviceName");
+        map.insert("threadId".into(), json!(id));
+        map.insert("excludeTurns".into(), json!(true));
     }
     params
 }
@@ -1378,14 +1401,19 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
             .map(|listing| others_off(&listing, ours)),
         None => None,
     };
-    // The member's thread, continued; a fresh one when there is none, or it is gone.
-    let resumed = match request.resume {
-        Some(id) => server.call("thread/resume", resume_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
-        None => None,
+    // The member's thread, continued — or a copy of it, forked; a fresh one
+    // when there is none, it is gone, or this Codex can't fork.
+    let resumed = match (request.resume, request.fork) {
+        (Some(id), false) => server.call("thread/resume", resume_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
+        (Some(id), true) => server.call("thread/fork", fork_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
+        (None, _) => None,
     };
-    let opened = match resumed {
-        Some(opened) => opened,
-        None => server.call("thread/start", start_params(&request, cwd, others.as_ref()), THREAD_WAIT).await?,
+    let (opened, request) = match resumed {
+        Some(opened) => (opened, request),
+        None => {
+            let opened = server.call("thread/start", start_params(&request, cwd, others.as_ref()), THREAD_WAIT).await?;
+            (opened, TurnRequest { prompt: request.fresh_prompt.unwrap_or(request.prompt), ..request })
+        }
     };
     let Some(thread) = opened.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned) else {
         return Err(Error::Protocol("codex app-server started no thread".into()));

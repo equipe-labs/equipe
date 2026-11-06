@@ -47,6 +47,7 @@ mod readonly;
 mod screen_look;
 mod setup;
 mod sheet;
+mod side_chat;
 mod side_split;
 mod sidecar;
 mod squad_form;
@@ -239,6 +240,8 @@ pub struct Shell {
     pub asklist: views::asklist::AskListUi,
     /// Words selected in the conversation, asked about (`views/quote.rs`).
     pub quote: views::quote::QuoteUi,
+    /// A side chat about words selected, beside the conversation (`views/side_chat.rs`).
+    pub side_chat: views::side_chat::SideChatUi,
     pub settings: views::settings::SettingsUi,
     /// Design system's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
@@ -430,6 +433,7 @@ impl Shell {
             viewer_zoom: Default::default(),
             asklist: Default::default(),
             quote: Default::default(),
+            side_chat: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
             design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),

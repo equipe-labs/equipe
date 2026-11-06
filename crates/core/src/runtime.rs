@@ -85,6 +85,7 @@ mod retro;
 mod watch;
 mod words;
 mod helping;
+mod side_chat;
 mod providers;
 
 /// How many recent lines a snapshot carries per session.
@@ -575,6 +576,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         commands: Default::default(),
         words: Default::default(),
         helping: HashMap::new(),
+        side_chats: HashMap::new(),
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
@@ -920,6 +922,10 @@ enum Internal {
     HelperTimeUp { session: SessionId, id: String },
     /// A `helper_result` has waited as long as it does.
     HelperWaitOver(u64),
+    /// Something happened in a side chat ([`crate::side_chat`]).
+    SideChat { side: equipe_protocol::SideChatId, event: Box<Event> },
+    /// A side chat's turn ended.
+    SideDone(side_chat::SideDone),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -1066,6 +1072,8 @@ struct Runtime {
     commands: watch::Commands,
     /// Members' helpers, by the conversation they work for (`helping.rs`).
     helping: HashMap<SessionId, helping::Helping>,
+    /// Side chats the person opened, by their id (`side_chat.rs`).
+    side_chats: HashMap<equipe_protocol::SideChatId, side_chat::SideChat>,
     /// The Mac held awake while members work or a screen is attached.
     awake: crate::awake::Awake,
     /// Sign-ins under way on this machine, by engine: which one, and its task.
@@ -1174,6 +1182,8 @@ impl Wake {
             Wake::Internal(Internal::HelperEnded { .. }) => Borrowed("a helper's end"),
             Wake::Internal(Internal::HelperTimeUp { .. }) => Borrowed("a helper's time up"),
             Wake::Internal(Internal::HelperWaitOver(_)) => Borrowed("a wait for helpers over"),
+            Wake::Internal(Internal::SideChat { .. }) => Borrowed("a side chat's step"),
+            Wake::Internal(Internal::SideDone(_)) => Borrowed("a side chat's turn ended"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -1406,6 +1416,8 @@ impl Runtime {
                 Internal::HelperEnded { session, id, outcome } => self.helper_ended(session, &id, outcome),
                 Internal::HelperTimeUp { session, id } => self.stop_helper(session, &id, crate::helpers::Ended::TimeLimit),
                 Internal::HelperWaitOver(key) => self.helper_wait_over(key),
+                Internal::SideChat { side, event } => self.side_event(side, *event),
+                Internal::SideDone(done) => self.side_done(done),
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -1428,6 +1440,7 @@ impl Runtime {
                 self.close_idle_browsers();
                 pulse.step("minute tick: helpers");
                 self.let_helpers_go().await;
+                self.let_side_chats_go();
                 pulse.step("minute tick: stale tickets");
                 self.tidy_check();
                 pulse.step("minute tick: routines");
@@ -1953,6 +1966,9 @@ impl Runtime {
             Command::SendNow { session, texts } => self.send_now(session, texts).await,
             Command::StopCommand { session } => self.stop_command(session),
             Command::StopSubagent { session, id } => self.stop_subagent(session, &id),
+            Command::StartSideChat { session, side, passage } => self.start_side_chat(session, side, passage),
+            Command::SideChatSubmit { session, side, passage, text } => self.side_chat_submit(session, side, passage, text),
+            Command::CloseSideChat { side } => self.close_side_chat(side),
             Command::SetEffort { session, effort } => {
                 let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
                 if let Some(s) = self.sessions.get_mut(&session) {
@@ -4160,6 +4176,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         effort: effort.as_deref(),
                         access,
                         resume: resume.as_deref(),
+                        fork: false,
+                        fresh_prompt: None,
+                        web_search: false,
                         instructions: charter.as_deref(),
                         mcp_servers: servers.as_ref(),
                         writable: &writable,
@@ -4305,6 +4324,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                         model: model.as_deref(),
                         access,
                         resume: resume.as_deref(),
+                        fork: false,
+                        tools: &[],
                         charter: charter.as_deref(),
                         plugin_dirs: &plugin_dirs,
                         memory: memory.as_deref(),
@@ -4696,6 +4717,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(sandbox) = self.sessions.get(&id).and_then(|s| s.sandbox.clone()) {
             self.land_plain_session(id, &sandbox);
         }
+        self.close_side_chats_of(id);
         self.publish(Event::SessionClosed { session: id });
         if let Some(who) = self.sessions.remove(&id).as_ref().and_then(session_member)
             && self.desktop.leave(&who)

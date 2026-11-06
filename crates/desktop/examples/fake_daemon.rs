@@ -17,6 +17,8 @@
 //! `FAKE_WORKING=<n>` has only the first n of frontend and backend at work (`0`: nobody).
 //! `FAKE_COMMAND=working|busy|nothing|asks|stuck|stuck_nothing`: a turn sits on a
 //! command, the daemon's look at it shown (`fake_daemon/command.rs`).
+//! A side chat searches the web and answers (`fake_daemon/side_chat.rs`);
+//! `FAKE_SIDE_SEARCH=off`: the member is on a provider without web search.
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -1074,6 +1076,10 @@ mod crowd;
 #[path = "fake_daemon/words.rs"]
 mod words;
 
+// Side chats about a passage: `FAKE_SIDE_SEARCH=off` for a provider without web search.
+#[path = "fake_daemon/side_chat.rs"]
+mod side_chat;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -1665,6 +1671,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 }
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
                             }
+                            Command::StartSideChat { session, side, .. } => side_chat::opened(session, side, &events),
+                            Command::SideChatSubmit { session, side, text, .. } => {
+                                tokio::spawn(side_chat::turn(session, side, text, events.clone()));
+                            }
+                            Command::CloseSideChat { side } => side_chat::closed(side, &events),
                             // Only that subagent: a helper hands back what it had.
                             Command::StopSubagent { session, id } => {
                                 tokio::spawn(helpers::stopped(session, id, events.clone()));

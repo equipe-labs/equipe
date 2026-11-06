@@ -540,9 +540,23 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .child(div().flex_none().child(composer::render(shell, cx))),
         )
         .children(lightbox(shell, cx));
-    // A subagent looked into, else a ticket opened beside the conversation.
+    // A side chat, else a subagent looked into, else a ticket opened beside
+    // the conversation. A side chat in a window too narrow for both covers it.
+    let room = shell.side_chat.room.clone();
+    let measured = |row: Div| {
+        use gpui_kit::base::ElementExt as _;
+        row.on_prepaint(move |bounds, _, _| room.set(f32::from(bounds.size.width)))
+    };
+    if let Some((panel, covers)) = super::side_chat::panel(shell, cx) {
+        let row = measured(h_flex().flex_1().min_h_0().items_stretch().relative());
+        return if covers {
+            row.child(main).child(div().absolute().top_0().right_0().bottom_0().child(panel)).into_any_element()
+        } else {
+            row.child(main).child(panel).into_any_element()
+        };
+    }
     let beside = super::subagent::panel(shell, cx).or_else(|| side_panel(shell, cx).map(IntoElement::into_any_element));
-    h_flex().flex_1().min_h_0().items_stretch().child(main).children(beside)
+    measured(h_flex().flex_1().min_h_0().items_stretch()).child(main).children(beside).into_any_element()
 }
 
 /// The cards over the composer — a request, a member's questions, work to
@@ -686,6 +700,8 @@ struct Rows {
     /// wait in all (what "send now" sends).
     picked: Option<(String, u64)>,
     leaving: Rc<HashSet<String>>,
+    /// The reply whose passage has a side chat, closed: its mark opens it again.
+    side_mark: Option<usize>,
     waiting: usize,
     /// The row of a turn that lost its engine's sign-in, and its card.
     sign_in: Option<(usize, Rc<super::signin::Card>)>,
@@ -842,6 +858,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         squad: shell.model.squad.clone(),
         picked: shell.chat.picked.clone(),
         leaving: shell.chat.leaving.clone(),
+        side_mark: super::side_chat::marked_row(shell),
         waiting: shell.model.convo().map_or(0, |c| c.queue.items().len()),
         sign_in: super::signin::live(&shell.chat.blocks).map(|(ix, engine)| (ix, Rc::new(super::signin::Card::of(shell, &shell.chat.blocks, ix, engine)))),
         turns: shell
@@ -1409,6 +1426,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
         // wide it is drawn is the room a picture in it has.
         .child(rows.shots.measured(div().w_full().max_w(px(MEASURE)).text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.prose).child(body).children(strips), crate::visuals::COLUMN_KEY))
         .children(actions)
+        .children((rows.side_mark == Some(ix)).then(|| super::side_chat::mark(p, key, rows.handle.clone())))
         .into_any_element()
 }
 
@@ -2449,6 +2467,8 @@ impl Shell {
     pub fn side_open(&mut self, ticket: u32, cx: &mut Context<Self>) {
         self.chat.side.retain(|t| *t != ticket);
         self.chat.sub.close();
+        // A side chat open makes way: it goes on, its mark opens it again.
+        self.side_chat.open = None;
         self.chat.side.push(ticket);
         cx.notify();
     }
