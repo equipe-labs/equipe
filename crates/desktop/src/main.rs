@@ -75,6 +75,7 @@ mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
 mod models;
+mod picker;
 mod roadmap;
 mod sent;
 mod releases;
@@ -1058,6 +1059,7 @@ impl Shell {
                             this.disk.attached(hello.snapshot.disk.clone());
                             // The models Codex offers there, listed off the daemon's loop, for the menus.
                             this.send_command(Command::Models { engine: equipe_core::protocol::Engine::Codex });
+                            this.composer.codex_asked = Some(std::time::Instant::now());
                             // The model providers connected there, and their models, for the same menus.
                             this.send_command(Command::Providers);
                         }

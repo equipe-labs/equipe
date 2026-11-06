@@ -1756,7 +1756,7 @@ impl Runtime {
                     .chain(ids)
                     .map(|id| {
                         let efforts = crate::models::efforts(Engine::Claude, Some(id)).iter().map(|e| (*e).to_owned()).collect();
-                        ModelChoice { id: id.to_owned(), name: crate::models::name(id), efforts, default_effort: None }
+                        ModelChoice { id: id.to_owned(), name: crate::models::name(id), efforts, ..Default::default() }
                     })
                     .collect();
                 self.publish(Event::Models { engine, models });
@@ -2165,7 +2165,7 @@ impl Runtime {
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
             Command::UndoHomeChange { squad, session, change } => self.undo_home_change(&squad, session, &change),
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
-            Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
+            Command::MoveEngine { squad, members, engine, model } => self.move_engine(&squad, members, engine, model).await,
             Command::Design { squad } => self.design_asked(squad),
             Command::ProjectDocs { squad } => self.docs_asked(squad),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
@@ -8590,7 +8590,7 @@ fn refuses_the_model(lower: &str) -> bool {
 
 /// A model the Codex CLI listed, as screens are told of it.
 fn model_choice(m: &codex_app::ModelInfo) -> ModelChoice {
-    ModelChoice { id: m.id.clone(), name: m.name.clone(), efforts: m.efforts.clone(), default_effort: m.default_effort.clone() }
+    ModelChoice { id: m.id.clone(), name: m.name.clone(), efforts: m.efforts.clone(), default_effort: m.default_effort.clone(), description: m.description.clone(), default: m.default }
 }
 
 /// How often a squad's stale work is looked at, and how long work sits
