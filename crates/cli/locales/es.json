@@ -645,6 +645,7 @@
   "remote.push_accept_merge": "Confirma que aceptas y fusionas {tickets}",
   "remote.push_asks_confirm": "{member} te pide que confirmes algo",
   "remote.push_asks_edit": "{member} pide editar un archivo",
+  "remote.push_asks_engine": "{member} pide pasar miembros a otro motor",
   "remote.push_asks_fetch": "{member} pide abrir una página",
   "remote.push_asks_permission": "{member} pide permiso",
   "remote.push_asks_run": "{member} pide ejecutar un comando",

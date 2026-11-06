@@ -488,14 +488,15 @@ impl Runtime {
     /// The person's own move: `members` (none: all) to `engine`, each at its
     /// next boundary, told on a card that offers to undo it — on `model`
     /// when the person picked one, else the engine's recommendation.
-    pub(super) async fn move_engine(&mut self, squad: &str, members: Vec<String>, engine: Engine, model: Option<String>) {
+    pub(super) async fn move_engine(&mut self, squad: &str, members: Vec<String>, engine: Engine, model: Option<String>, effort: Option<String>) {
         let model = model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+        let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
         let moves: Vec<Move> = self
             .mates(squad)
             .into_iter()
             .filter(|m| members.is_empty() || members.iter().any(|n| n == &m.name))
             .filter(|m| m.engine != engine)
-            .map(|m| Move { member: m.name, role: m.role, from: m.engine, to: engine, model: model.clone(), effort: None, was_model: m.model, done: false })
+            .map(|m| Move { member: m.name, role: m.role, from: m.engine, to: engine, model: model.clone(), effort: effort.clone(), was_model: m.model, done: false })
             .collect();
         if moves.is_empty() {
             let text = say!(self, "engines.move_none", engine = engine_word(engine));

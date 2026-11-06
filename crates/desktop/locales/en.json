@@ -83,6 +83,7 @@
   "approvals.noun_bash": "running a command",
   "approvals.noun_browser_code": "running browser code",
   "approvals.noun_edit": "editing files",
+  "approvals.noun_engine": "moving members to another engine",
   "approvals.noun_other": "an action",
   "approvals.noun_send": "sending a message",
   "approvals.noun_sign_in": "signing in with a kept account",

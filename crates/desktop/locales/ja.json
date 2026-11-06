@@ -80,6 +80,7 @@
   "approvals.noun_bash": "コマンドの実行",
   "approvals.noun_browser_code": "ブラウザでのコード実行",
   "approvals.noun_edit": "ファイルの編集",
+  "approvals.noun_engine": "別のエンジンへの移動",
   "approvals.noun_other": "操作",
   "approvals.noun_send": "メッセージの送信",
   "approvals.noun_sign_in": "保存したアカウントでのログイン",

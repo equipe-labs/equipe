@@ -156,6 +156,18 @@ async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool)
     seen
 }
 
+/// Every event in the next `ms` milliseconds.
+async fn within(rx: &mut UnboundedReceiver<Event>, ms: u64) -> Vec<Event> {
+    let mut seen = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_millis(ms), async {
+        while let Some(event) = rx.recv().await {
+            seen.push(event);
+        }
+    })
+    .await;
+    seen
+}
+
 fn spec(cwd: &Path, access: Access) -> SessionSpec {
     SessionSpec { engine: None, model: None, access, cwd: cwd.to_owned(), role: None, squad: None }
 }
@@ -2178,6 +2190,77 @@ async fn the_pm_changes_what_the_person_asks_and_only_their_tap_widens_what_the_
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
     assert!(asking.await.unwrap().text.starts_with("The person said no"));
+}
+
+#[tokio::test]
+async fn the_pm_moves_members_to_another_engine_only_on_the_persons_tap_and_never_through_their_model() {
+    use equipe_core::protocol::Engine;
+    use equipe_core::protocol::engines::Why;
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "designer")).await;
+    add(&handle, &mut events, 3, member(&repo, "mobile")).await;
+    add(&handle, &mut events, 4, member(&repo, "mobile")).await;
+    let change = |args: serde_json::Value| {
+        let handle = handle.clone();
+        tokio::spawn(async move { tool(&handle, "pm", "change_setting", args).await })
+    };
+
+    // What went wrong: a Codex model put in a Claude member's model. Refused, pointing at `engine`; nothing changes.
+    let refused = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "model", "member": "designer", "value": "gpt-6.1-sol" })).await;
+    assert!(refused.is_error && refused.text.contains("setting `engine`") && refused.text.contains("Nothing changed"), "{}", refused.text);
+    let unknown = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "model", "member": "designer", "value": "llama-4" })).await;
+    assert!(unknown.is_error && unknown.text.contains("claude-opus-5-5"), "Claude's models listed: {}", unknown.text);
+    let effort = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "effort", "member": "designer", "value": "minimal" })).await;
+    assert!(effort.is_error && effort.text.contains("low | medium | high | xhigh | max"), "{}", effort.text);
+    assert!(!within(&mut events, 300).await.iter().any(|e| matches!(e, Event::ModelKnown { .. } | Event::ApprovalRequested { .. })));
+    // Within its own engine: at once, as before.
+    let own = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "model", "member": "designer", "value": "sonnet" })).await;
+    assert!(!own.is_error && own.text.starts_with("Done:"), "{}", own.text);
+
+    // A move names a model of the engine it goes to, and only members not there yet.
+    let wrong = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "engine", "members": ["designer"], "value": "codex", "model": "opus" })).await;
+    assert!(wrong.is_error && wrong.text.contains("Claude model") && wrong.text.contains("Nothing was asked"), "{}", wrong.text);
+    let there = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "engine", "members": ["designer"], "value": "claude" })).await;
+    assert!(there.is_error && there.text.contains("already on Claude"), "{}", there.text);
+    let nobody = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "engine", "members": ["designer", "android"], "value": "codex" })).await;
+    assert!(nobody.is_error && nobody.text.contains("No member called android"), "{}", nobody.text);
+    // A member moves nobody.
+    let member = tool(&handle, "designer", "change_setting", serde_json::json!({ "setting": "engine", "members": ["designer"], "value": "codex" })).await;
+    assert!(member.is_error && member.text.contains("Only the PM"), "{}", member.text);
+
+    // Three members, one card the daemon writes: who moves where, and when each one does. Said no: nothing moves.
+    let args = serde_json::json!({ "setting": "engine", "members": ["designer", "mobile", "mobile-2"], "value": "codex", "why": "they said to go with Codex" });
+    let asking = change(args.clone());
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.tool, "Move engine");
+    let lines: Vec<&str> = approval.action.lines().collect();
+    assert_eq!(lines[0], "Move designer, mobile, mobile-2 to Codex");
+    for name in ["designer", "mobile", "mobile-2"] {
+        assert!(lines.contains(&format!("{name} switches to Codex as soon as it's free, its conversation handed over.").as_str()), "{lines:#?}");
+    }
+    assert_eq!(approval.reason.as_deref(), Some("they said to go with Codex"));
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
+    assert!(asking.await.unwrap().text.starts_with("The person said no"));
+    assert!(!within(&mut events, 300).await.iter().any(|e| matches!(e, Event::EngineProposed { .. })), "nothing moves on a no");
+
+    // Said yes: the person's own move, as their model picker makes it.
+    let asking = change(args);
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    assert!(!asked.iter().any(|e| matches!(e, Event::EngineProposed { .. })), "not before the tap");
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
+    let moved = until(&mut events, |e| matches!(e, Event::EngineProposed { .. })).await;
+    let Some(Event::EngineProposed { proposal, .. }) = moved.last() else { unreachable!() };
+    assert_eq!((proposal.why, proposal.applied), (Why::Person, true));
+    let names: Vec<(&str, Engine, Engine)> = proposal.moves.iter().map(|m| (m.member.as_str(), m.from, m.to)).collect();
+    assert_eq!(names, [("designer", Engine::Claude, Engine::Codex), ("mobile", Engine::Claude, Engine::Codex), ("mobile-2", Engine::Claude, Engine::Codex)]);
+    let said = asking.await.unwrap();
+    assert!(said.text.starts_with("The person said yes: Move designer, mobile, mobile-2 to Codex."), "{}", said.text);
 }
 
 #[tokio::test]

@@ -2165,7 +2165,7 @@ impl Runtime {
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
             Command::UndoHomeChange { squad, session, change } => self.undo_home_change(&squad, session, &change),
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
-            Command::MoveEngine { squad, members, engine, model } => self.move_engine(&squad, members, engine, model).await,
+            Command::MoveEngine { squad, members, engine, model, effort } => self.move_engine(&squad, members, engine, model, effort).await,
             Command::Design { squad } => self.design_asked(squad),
             Command::ProjectDocs { squad } => self.docs_asked(squad),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
@@ -6160,7 +6160,7 @@ there, end your turn, and carry on when they say they're done."
             self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
             return self.sign_in_answered(squad, approval, input, decision, reply);
         }
-        if approval.tool == crate::controls::SETTING_TOOL {
+        if approval.tool == crate::controls::SETTING_TOOL || approval.tool == crate::controls::ENGINE_TOOL {
             self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
             return self.setting_answered(squad, approval, input, decision, reply);
         }

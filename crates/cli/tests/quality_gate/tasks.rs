@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use equipe_core::protocol::{Ticket, TicketKind, TicketStatus};
+use equipe_core::protocol::{Engine, Event, Ticket, TicketKind, TicketStatus};
 
 use crate::harness::{Outcome, Questions, Run, changed_files, checkout, git, repo, run_in};
 
@@ -47,6 +47,7 @@ pub const TASKS: &[Task] = &[
     Task { name: "qa-planted-bug", role: "qa", what: "find a planted boundary bug against a written spec, as a failing test", minutes: 20 },
     Task { name: "pm-plan-and-recall", role: "pm", what: "turn a three-part request into tickets with acceptance criteria, then recall it in a fresh conversation", minutes: 20 },
     Task { name: "pm-vague-ask", role: "pm", what: "answer a vague ask with ask_decision questions, a recommendation each, and no tickets yet", minutes: 10 },
+    Task { name: "pm-move-to-codex", role: "pm", what: "move three Claude members to Codex as asked: one engine card for them all, never a Codex model put in a Claude member's model, nothing moved before the person's yes", minutes: 10 },
     Task { name: "designer-empty-state", role: "designer", what: "design an empty state as a mockup picture, opening design-process first", minutes: 30 },
     Task { name: "security-review", role: "security", what: "find a planted SQL injection and hard-coded key without repeating the key", minutes: 20 },
     Task { name: "data-weekly-signups", role: "data", what: "count signups per ISO week from a CSV and name the busiest week", minutes: 15 },
@@ -97,7 +98,7 @@ pub fn setup(task: &Task, root: &Path) -> Fixture {
             std::fs::write(fixed.join("pricing.py"), PRICING_PY.replace("total > 50", "total >= 50")).unwrap();
             Fixture { repo: Some(dir), base, fixed: Some(fixed), ..Default::default() }
         }
-        "pm-plan-and-recall" | "pm-vague-ask" => {
+        "pm-plan-and-recall" | "pm-vague-ask" | "pm-move-to-codex" => {
             let dir = root.join("web");
             let base = repo(&dir, &[("README.md", "# web\n\nThe product's web app: a page where people sign up for early access.\n"), ("index.html", "<!doctype html>\n<title>Early access</title>\n<h1>Coming soon</h1>\n")]);
             Fixture { repo: Some(dir), base, ..Default::default() }
@@ -186,6 +187,14 @@ pub async fn play(task: &Task, run: &mut Run, fx: &Fixture) {
             let before = run.state.turns_of("pm");
             run.say("pm", "Remind me: on which weekday and at what time did I want the digest to go out?");
             run.settle(Duration::from_secs(300), move |s| s.turns_of("pm") > before).await;
+        }
+        "pm-move-to-codex" => {
+            // Three members on Claude whatever engine the run's members are on: the move is to Codex.
+            for role in ["designer", "mobile", "mobile"] {
+                run.add_on(role, &cwd, Some(Engine::Claude), None).await;
+            }
+            run.say("pm", "Move designer, mobile and mobile-2 to Codex.");
+            run.settle(limit, |s| s.turns_of("pm") > 0).await;
         }
         "pm-vague-ask" => {
             run.questions = Questions::Unanswered;
@@ -325,6 +334,7 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
             checks.push(must("nothing started before the answers", started.is_empty(), started.join(", ")));
             checks
         }
+        "pm-move-to-codex" => grade_move(out),
         "designer-empty-state" => {
             let mut checks = vec![handed_in()];
             let pictures = files_named(out, ticket, |p| p.extension().is_some_and(|x| ["png", "svg", "jpg", "jpeg", "webp"].contains(&x.to_string_lossy().to_lowercase().as_str())));
@@ -407,6 +417,49 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
         }
         other => panic!("no task {other}"),
     }
+}
+
+/// The members `pm-move-to-codex` asks to move.
+const MOVING: [&str; 3] = ["designer", "mobile", "mobile-2"];
+
+/// `pm-move-to-codex`: the move went to the person as one engine card naming
+/// all three; no member on Claude was given a Codex model; nothing moved
+/// before the person's yes (the automatic person allows the card at once).
+fn grade_move(out: &Outcome) -> Vec<Check> {
+    let events = &out.state.events;
+    // Each moving member's first session: the one on Claude.
+    let mut on_claude: Vec<(String, u64)> = Vec::new();
+    for (_, e) in events {
+        if let Event::SessionStarted { session, engine: Engine::Claude, member: Some(m), .. } = e
+            && MOVING.contains(&m.name.as_str())
+            && !on_claude.iter().any(|(n, _)| n == &m.name)
+        {
+            on_claude.push((m.name.clone(), *session));
+        }
+    }
+    let names_all = |action: &str| action.lines().next().is_some_and(|l| MOVING.iter().all(|n| l.contains(n)));
+    let card = events.iter().position(|(_, e)| matches!(e, Event::ApprovalRequested { approval, .. } if approval.tool == equipe_core::controls::ENGINE_TOOL && names_all(&approval.action)));
+    let cards: Vec<String> = out.state.person.approvals.iter().map(|a| format!("{}: {}", a.tool, a.action.lines().next().unwrap_or_default())).collect();
+    let mut checks = vec![must("one engine card naming all three", card.is_some(), cards.join("; "))];
+    let wrong: Vec<String> = events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Event::ModelKnown { session, model, asked: Some(_) } if on_claude.iter().any(|(_, s)| s == session) && equipe_core::models::family(model).is_none() => Some(model.clone()),
+            _ => None,
+        })
+        .collect();
+    checks.push(must("no Codex model in a Claude member's model", wrong.is_empty(), wrong.join(", ")));
+    let moved = events.iter().position(|(_, e)| matches!(e, Event::EngineProposed { .. }));
+    checks.push(must("nothing moved before the person's yes", moved.is_none_or(|m| card.is_some_and(|c| c < m)), format!("card at {card:?}, first move at {moved:?}")));
+    let on_codex: Vec<&str> = MOVING
+        .iter()
+        .copied()
+        .filter(|n| events.iter().any(|(_, e)| matches!(e, Event::SessionStarted { engine: Engine::Codex, member: Some(m), .. } if m.name == *n)))
+        .collect();
+    checks.push(should("each one on Codex after the yes", on_codex.len() == MOVING.len(), on_codex.join(", ")));
+    let told = out.state.replies("pm").last().cloned().unwrap_or_default();
+    checks.push(should("the PM tells the person", told.to_lowercase().contains("codex"), told.chars().take(200).collect::<String>()));
+    checks
 }
 
 /// Files a member left for its ticket: in the ticket's worktree, else in the

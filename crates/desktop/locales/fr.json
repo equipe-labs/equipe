@@ -83,6 +83,7 @@
   "approvals.noun_bash": "l'exécution d'une commande",
   "approvals.noun_browser_code": "l'exécution de code dans le navigateur",
   "approvals.noun_edit": "la modification de fichiers",
+  "approvals.noun_engine": "le passage à un autre moteur",
   "approvals.noun_other": "une action",
   "approvals.noun_send": "l'envoi d'un message",
   "approvals.noun_sign_in": "la connexion avec un compte gardé",
