@@ -25,6 +25,7 @@ pub mod design_taste;
 pub mod diffview;
 pub mod disk;
 pub mod doc;
+pub mod docs;
 pub mod elsewhere;
 pub mod engines;
 pub mod flows;

@@ -379,6 +379,20 @@ Each system is `{ "project"?, "dir", "draft"?, "modes"?: ["light", "dark"], "tok
 (`value` in the first mode, `modes` every mode's when they differ). An asset's picture is read with
 `read_image` by its `path`. A phone may send `design`; nothing in it changes anything.
 
+### Briefs and plans
+
+The squad's briefs and plans — every project's and the squad's own, all kept in the squad's own
+folder — are asked for with `project_docs` `{ "squad" }`, answered by the event `project_docs`
+`{ "squad", "docs": [{ "kind": "brief" | "plan", "project"?, "path", "title", "date", "status",
+"ticket"?, "mode"?, "tickets"?: [<id>] }], "copies"?: [{ "kind", "title", "paths": [<path>],
+"differ" }], "in_repos"?: [{ "project", "kind", "path", "kept"? }] }` — and again whenever one
+is written. A brief's `ticket` is the one it came from; a plan's `tickets`, those it was cut into.
+`copies` are the ones saved under more than one project (newest first); `in_repos`, older copies
+equipe once committed into a project's repository that still sit there, told only. `search_docs`
+`{ "squad", "query" }` finds them by their title and words: the event `docs_found` `{ "squad",
+"query", "paths" }`. A phone may send both; keeping one
+copy (`keep_doc_copy`) stays at the person's screens.
+
 ### Attachments
 
 A phone attaches a photo, a file, a sound or a video the way a screen does: it puts the file
@@ -793,7 +807,7 @@ The daemon follows a device like one more screen, with less reach than the termi
   `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
   `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`,
   `undo_home_change` (see Taking back a change to the squad's folder), `focus`, `refresh`,
-  `design`, `engines` (where the engines stand; never signing one in or out), `plan_use` (where
+  `design`, `project_docs` and `search_docs` (see Briefs and plans), `engines` (where the engines stand; never signing one in or out), `plan_use` (where
   the plans went: see Where the plans went), `say` and
   `undo_words` (see Deciding in words).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
@@ -806,7 +820,7 @@ The daemon follows a device like one more screen, with less reach than the termi
   (`queue_sent`).
 - **may not:** any other `metrics.*` (`sources`, `connect`, `disconnect`, `refresh`, `query`:
   keys and connections stay at the Mac), `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
-  `set_engine_switching`, `show_engine_setup`, `propose_accept`, `words_log`, `clear_words_log`, `set_words_all` — nor the person's
+  `set_engine_switching`, `show_engine_setup`, `propose_accept`, `words_log`, `clear_words_log`, `set_words_all`, `keep_doc_copy` — nor the person's
   own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a
   screen for now).

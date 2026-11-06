@@ -1,7 +1,8 @@
 //! The document panel at the right: a Markdown file a member wrote, drawn
 //! as the conversation draws Markdown, beside the conversation it came up in
 //! (`doc.rs` reads it). Its bar names it and where it is, reads it again,
-//! opens it in its app, copies its path, closes.
+//! opens it in its app, copies its path, closes. A brief or plan shows the
+//! tickets it names under the bar, each opening its ticket.
 
 use equipe_core::t;
 use gpui_kit::component::*;
@@ -112,6 +113,34 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
         }))
         .child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx))))
         .child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close"), None).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx))));
+    let named = crate::docs::doc_at(&shell.docs, &doc.path.to_string_lossy()).map(|d| d.ticket_ids()).unwrap_or_default();
+    let tickets = (!named.is_empty()).then(|| {
+        h_flex()
+            .flex_none()
+            .px_3()
+            .py_1p5()
+            .gap_1()
+            .flex_wrap()
+            .items_center()
+            .border_b_1()
+            .border_color(p.hair)
+            .child(div().pr_1().text_size(px(META)).text_color(p.muted).child(t!("doc.tickets")))
+            .children(named.iter().map(|&id| {
+                let title = shell.model.tickets.iter().find(|t| t.id == id).map(|t| t.title.clone());
+                super::ticket_card::hover_link(h_flex().id(("doc-ticket", id as usize)), id, super::ticket_card::Side::Below)
+                    .h(px(24.))
+                    .px(px(6.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.wash))
+                    .aria_label(format!("T-{id}"))
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_ticket_row(id, window, cx)))
+                    .child(div().flex_none().font_family(crate::theme::MONO).text_size(px(META)).text_color(p.text2).child(format!("T-{id}")))
+                    .children(title.map(|t| div().max_w(px(220.)).truncate().text_size(px(META)).text_color(p.muted).child(t)))
+            }))
+    });
     let body: AnyElement = match &doc.text {
         None => div().p_4().flex().items_center().gap_2().text_size(px(SMALL)).text_color(p.muted).child(crate::motion::spinner(13., p.muted)).child(t!("doc.reading")).into_any_element(),
         Some(Err(why)) => v_flex()
@@ -159,6 +188,7 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             .border_color(p.hair)
             .bg(p.bg)
             .child(bar)
+            .children(tickets)
             .child(div().id("doc-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&doc.scroll).child(body))
             .child(edge(shell, cx))
             .into_any_element(),

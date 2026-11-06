@@ -199,7 +199,9 @@ pub fn allowed(command: Command) -> Option<Command> {
         // Where the plans went: a look, which changes nothing.
         | Command::PlanUse { .. }
         | Command::Design { .. }
-        | Command::ProjectDocs { .. }) => Some(c),
+        | Command::ProjectDocs { .. }
+        // Finding a brief or plan by its words: a look. Keeping one copy stays at the console.
+        | Command::SearchDocs { .. }) => Some(c),
         _ => None,
     }
 }
@@ -251,7 +253,9 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::WordsLog { squad }
         | Command::ClearWordsLog { squad }
         | Command::SetWordsAll { squad, .. }
-        | Command::ProjectDocs { squad } => Some(squad),
+        | Command::ProjectDocs { squad }
+        | Command::SearchDocs { squad, .. }
+        | Command::KeepDocCopy { squad, .. } => Some(squad),
         _ => None,
     }
 }
@@ -1474,6 +1478,15 @@ pub(crate) mod tests {
         // The mark is the daemon's to put on what the relay link brings, not the phone's to send.
         let submit = Command::Submit { session: 1, text: "hi".into(), about: None };
         assert_eq!(allowed(Command::OnPhone { command: Box::new(submit) }), None);
+    }
+
+    #[test]
+    fn a_phone_reads_and_searches_the_briefs_and_plans_but_keeps_no_copy() {
+        for look in [Command::ProjectDocs { squad: "acme".into() }, Command::SearchDocs { squad: "acme".into(), query: "checkout".into() }] {
+            assert_eq!(allowed(look.clone()), Some(look));
+        }
+        let keep = Command::KeepDocCopy { squad: "acme".into(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() };
+        assert_eq!(allowed(keep), None, "removing a copy stays at the person's screens");
     }
 
     #[test]

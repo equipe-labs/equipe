@@ -5019,6 +5019,69 @@ async fn a_brief_is_kept_in_the_squads_folder_and_never_written_or_committed_int
     assert_eq!((docs[0].project.as_deref(), docs[0].path.as_str()), (Some(project.as_str()), kept.join(&name).to_str().unwrap()));
 }
 
+/// A git repository called `name`, with one commit.
+fn named_repo(name: &str) -> PathBuf {
+    let dir = named(name);
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["config", "user.name", "Test"]);
+    git(&dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("README.md"), "hello\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "init"]);
+    dir
+}
+
+#[tokio::test]
+async fn every_brief_and_plan_is_listed_found_and_one_of_two_copies_kept_in_the_squads_folder_only() {
+    use equipe_core::briefs::{self, Kind, Target};
+    let (sf, block) = (named_repo("sf"), named_repo("block"));
+    let heads = [git(&sf, &["rev-parse", "HEAD"]), git(&block, &["rev-parse", "HEAD"])];
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&sf, &block]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&sf, "pm")).await;
+    let folder = squad_home::path(&home, "acme");
+    let plan = |words: &str| format!("---\ntitle: Your block, unfiltered\ndate: 2026-11-04\nstatus: in_review\ntickets: [4]\n---\n\n{words}\n");
+    let kept = briefs::save(&Target::project(&folder, "sf").unwrap(), Kind::Plan, "your-block", &plan("Steps."), "2026-11-04", "pm").unwrap();
+    let other = briefs::save(&Target::project(&folder, "block").unwrap(), Kind::Plan, "your-block", &plan("Steps, and one more."), "2026-11-04", "pm").unwrap();
+    briefs::save(&Target::squad(&folder), Kind::Brief, "offsite", "---\ntitle: Offsite\ndate: 2026-11-02\nstatus: draft\nticket: 9\n---\n\nWhere we go.\n", "2026-11-02", "pm").unwrap();
+    let (kept, other) = (kept.to_string_lossy().into_owned(), other.to_string_lossy().into_owned());
+    // All of them, the squad's own too, and the two copies told apart.
+    handle.send(Command::ProjectDocs { squad: "acme".into() });
+    let got = until(&mut events, |e| matches!(e, Event::ProjectDocs { docs, .. } if docs.len() == 3)).await;
+    let Some(Event::ProjectDocs { docs, copies, in_repos, .. }) = got.last() else { panic!() };
+    assert_eq!(docs.iter().map(|d| (d.project.as_deref(), d.ticket_ids())).collect::<Vec<_>>(), [(Some("sf"), vec![4]), (Some("block"), vec![4]), (None, vec![9])]);
+    assert_eq!(copies.len(), 1);
+    assert!(copies[0].differ && copies[0].paths.contains(&kept) && copies[0].paths.contains(&other));
+    assert!(in_repos.is_empty(), "equipe wrote nothing into the repositories");
+    // Found by their words, in the squad's folder.
+    handle.send(Command::SearchDocs { squad: "acme".into(), query: "ONE MORE".into() });
+    let got = until(&mut events, |e| matches!(e, Event::DocsFound { .. })).await;
+    let Some(Event::DocsFound { query, paths, .. }) = got.last() else { panic!() };
+    assert_eq!((query.as_str(), paths.clone()), ("ONE MORE", vec![other.clone()]));
+    // One kept: the other gone from the squad's folder, as the person's change.
+    handle.send(Command::KeepDocCopy { squad: "acme".into(), session: 1, keep: kept.clone() });
+    let got = until(&mut events, |e| matches!(e, Event::ProjectDocs { copies, docs, .. } if copies.is_empty() && docs.len() == 2)).await;
+    let undo = got.iter().find_map(|e| match e {
+        Event::DocCopyKept { kept: k, removed, undo, .. } if *k == kept && *removed == [other.clone()] => undo.clone(),
+        _ => None,
+    });
+    let undo = undo.expect("told, with its change");
+    assert!(got.iter().any(|e| matches!(e, Event::Notice { session: 1, undo: Some(u), .. } if *u == undo)), "{got:#?}");
+    assert!(Path::new(&kept).is_file() && !Path::new(&other).exists());
+    assert_eq!(squad_home::changes(&folder, 1).unwrap()[0].by, squad_home::PERSON);
+    for (repo, head) in [(&sf, &heads[0]), (&block, &heads[1])] {
+        untouched(repo, head);
+    }
+    // Taken back as any change to the folder: both again, and the lists follow.
+    handle.send(Command::UndoHomeChange { squad: "acme".into(), session: 1, change: undo });
+    until(&mut events, |e| matches!(e, Event::ProjectDocs { copies, .. } if copies.len() == 1)).await;
+    assert!(std::fs::read_to_string(&other).unwrap().contains("one more"));
+    for (repo, head) in [(&sf, &heads[0]), (&block, &heads[1])] {
+        untouched(repo, head);
+    }
+}
+
 #[tokio::test]
 async fn a_plan_is_kept_in_the_squads_folder_reviewed_at_once_and_cut_into_tickets_carrying_their_cases() {
     let repo = repo();

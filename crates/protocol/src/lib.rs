@@ -1165,6 +1165,17 @@ pub enum Command {
     /// project's and its own folder's: answered by [`Event::ProjectDocs`],
     /// and sent again whenever the PM writes one.
     ProjectDocs { squad: SquadName },
+    /// Find the squad's briefs and plans whose title or words hold `query`
+    /// (any case), read from the squad's folder as [`Command::ProjectDocs`]
+    /// lists them: answered by [`Event::DocsFound`]. Only reads.
+    SearchDocs { squad: SquadName, query: String },
+    /// The person keeps the copy at `keep` of a brief or plan saved under more
+    /// than one project ([`briefs::DocCopies`]): the other copies are removed
+    /// from the squad's folder — never from a repository — as one change of
+    /// theirs, which [`Command::UndoHomeChange`] takes back. Told in
+    /// `session`'s conversation (a notice whose `undo` is that change) and by
+    /// [`Event::DocCopyKept`]; the docs are sent again.
+    KeepDocCopy { squad: SquadName, session: SessionId, keep: String },
     /// The accepted versions of a design system's folder — the squad's own
     /// (`project: None`) or a project's — newest first, the last 30: answered
     /// by [`Event::DesignVersions`]. Read from git when asked, not with
@@ -2360,6 +2371,32 @@ pub enum Event {
         squad: SquadName,
         #[serde(default)]
         docs: Vec<briefs::ProjectDoc>,
+        /// The ones saved under more than one project, each set once.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copies: Vec<briefs::DocCopies>,
+        /// Older copies equipe once committed into the projects' repositories,
+        /// still there — for the person to know of; nothing is done to them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        in_repos: Vec<briefs::InRepo>,
+    },
+    /// The briefs and plans [`Command::SearchDocs`] found for `query`: their
+    /// paths ([`briefs::ProjectDoc::path`]), in the order the docs are listed.
+    DocsFound {
+        squad: SquadName,
+        query: String,
+        #[serde(default)]
+        paths: Vec<String>,
+    },
+    /// One copy kept ([`Command::KeepDocCopy`]): `removed` went from the
+    /// squad's folder as the change `undo`, which [`Command::UndoHomeChange`]
+    /// takes back; `None` when nothing needed saving.
+    DocCopyKept {
+        squad: SquadName,
+        kept: String,
+        #[serde(default)]
+        removed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
     },
     /// A design system's accepted versions ([`Command::DesignVersions`]),
     /// newest first; none when its folder has no history yet.
@@ -2410,6 +2447,8 @@ impl Event {
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
             | Event::ProjectDocs { squad, .. }
+            | Event::DocsFound { squad, .. }
+            | Event::DocCopyKept { squad, .. }
             | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
@@ -2494,6 +2533,8 @@ impl Event {
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::ProjectDocs { .. }
+            | Event::DocsFound { .. }
+            | Event::DocCopyKept { .. }
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
