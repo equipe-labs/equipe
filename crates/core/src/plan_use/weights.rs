@@ -82,6 +82,17 @@ pub fn prices(engine: Engine, model: &str) -> Prices {
     table.iter().find(|(name, _)| model.contains(name)).map_or(fallback, |(_, p)| *p)
 }
 
+/// Whether the table names `model` on `engine`, rather than weighing it as
+/// the engine's fallback: only then do its prices say anything of it.
+pub fn known(engine: Engine, model: &str) -> bool {
+    let model = model.to_ascii_lowercase().replace('.', "-");
+    let table = match engine {
+        Engine::Claude => CLAUDE,
+        Engine::Codex => OPENAI,
+    };
+    table.iter().any(|(name, _)| model.contains(name))
+}
+
 /// The load of `tokens` on `model`, `long` of its cache writes kept an hour:
 /// millionths of a dollar at the model's API prices.
 pub fn load(engine: Engine, model: &str, tokens: Tokens, long: u64) -> u64 {
@@ -141,6 +152,8 @@ mod tests {
         assert_eq!(prices(Engine::Codex, "gpt-5.6-sol").input, 1.25);
         assert_eq!(prices(Engine::Codex, "gpt-5-mini").input, 0.25);
         assert_eq!(prices(Engine::Codex, "gpt-5.6-sol").cache_write, 1.25, "OpenAI charges no more to cache");
+        assert!(known(Engine::Claude, "claude-opus-5-5") && known(Engine::Codex, "gpt-5-mini"));
+        assert!(!known(Engine::Codex, "gpt-5.6-sol"), "weighed as the fallback: not named");
     }
 
     #[test]

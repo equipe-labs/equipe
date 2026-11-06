@@ -39,6 +39,7 @@ pub mod project;
 pub mod quote;
 pub mod settings;
 pub mod metrics;
+pub mod model_picker;
 pub mod roadmap;
 pub mod secrets;
 pub mod routine;

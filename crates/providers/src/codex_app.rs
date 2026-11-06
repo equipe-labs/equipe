@@ -1084,14 +1084,17 @@ pub fn parse_limits(snapshot: &Value) -> Option<Limits> {
     })
 }
 
-/// A model `model/list` offers: its id, the name Codex gives it, and the
-/// reasoning efforts it takes (empty: not said).
+/// A model `model/list` offers: its id, the name Codex gives it, the
+/// reasoning efforts it takes (empty: not said), what Codex says it is for,
+/// and whether it is the account's default.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelInfo {
     pub id: String,
     pub name: Option<String>,
     pub efforts: Vec<String>,
     pub default_effort: Option<String>,
+    pub description: Option<String>,
+    pub default: bool,
 }
 
 /// Usable models from `model/list`, the account's default first; hidden ones left out.
@@ -1114,7 +1117,8 @@ pub fn model_infos(listing: &Value) -> Vec<ModelInfo> {
             .flatten()
             .filter_map(|e| e.as_str().or_else(|| e.get("reasoningEffort").and_then(Value::as_str)).map(str::to_owned))
             .collect();
-        Some(ModelInfo { name: text("displayName").filter(|n| *n != id), id, efforts, default_effort: text("defaultReasoningEffort") })
+        let default = m.get("isDefault").and_then(Value::as_bool) == Some(true);
+        Some(ModelInfo { name: text("displayName").filter(|n| *n != id), id, efforts, default_effort: text("defaultReasoningEffort"), description: text("description"), default })
     };
     let is_default = |m: &&&Value| m.get("isDefault").and_then(Value::as_bool) == Some(true);
     let default = models.iter().filter(is_default).filter_map(info);
@@ -1784,13 +1788,24 @@ mod tests {
     #[test]
     fn each_model_in_the_catalog_brings_its_name_and_the_efforts_it_takes() {
         let listing = json!({ "data": [
-            { "id": "gpt-6.1-sol", "displayName": "GPT-6.1 Sol", "isDefault": true, "defaultReasoningEffort": "medium",
+            { "id": "gpt-6.1-sol", "displayName": "GPT-6.1 Sol", "isDefault": true, "defaultReasoningEffort": "medium", "description": "Frontier agentic coding.",
               "supportedReasoningEfforts": [{ "reasoningEffort": "low", "description": "fast" }, { "reasoningEffort": "medium" }, { "reasoningEffort": "xhigh" }] },
             { "id": "gpt-6-luna", "displayName": "gpt-6-luna", "supportedReasoningEfforts": ["minimal", "low"] },
             { "id": "gpt-6-astra" },
         ] });
         let infos = model_infos(&listing);
-        assert_eq!(infos[0], ModelInfo { id: "gpt-6.1-sol".into(), name: Some("GPT-6.1 Sol".into()), efforts: vec!["low".into(), "medium".into(), "xhigh".into()], default_effort: Some("medium".into()) });
+        assert_eq!(
+            infos[0],
+            ModelInfo {
+                id: "gpt-6.1-sol".into(),
+                name: Some("GPT-6.1 Sol".into()),
+                efforts: vec!["low".into(), "medium".into(), "xhigh".into()],
+                default_effort: Some("medium".into()),
+                description: Some("Frontier agentic coding.".into()),
+                default: true,
+            }
+        );
+        assert!(!infos[1].default && infos[1].description.is_none(), "only the account's default says so; no description: none");
         assert_eq!((infos[1].name.as_deref(), infos[1].efforts.as_slice()), (None, &["minimal".to_owned(), "low".to_owned()][..]), "a name that is only the id says nothing");
         assert!(infos[2].efforts.is_empty() && infos[2].default_effort.is_none());
     }

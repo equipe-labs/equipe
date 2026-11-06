@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use equipe_core::i18n::label;
-use equipe_core::protocol::{Command, Engine, Mode, SessionId};
+use equipe_core::protocol::{Command, Mode, SessionId};
 use gpui_kit::component::input::{InlineToken, InputEvent, Paste, Textarea, TextareaState};
 use gpui_kit::component::speech::{SpeechError, SpeechEvent, SpeechState, SystemRecognizer};
 use gpui_kit::component::*;
@@ -92,14 +92,8 @@ enum Act {
     Screenshot,
     Commands,
     Select(SessionId),
-    Model(String),
-    Effort(Option<String>),
     Mode(Mode),
     Refresh(bool),
-    /// The member onto the other engine, at its next ticket.
-    Engine(Engine),
-    /// The engine's tool updated on the daemon's machine (its own installer).
-    UpdateEngine(Engine),
 }
 
 impl MenuKind {
@@ -264,7 +258,7 @@ pub struct Composer {
     /// ⏎ while attachments still upload: sent the moment they're up (as a
     /// memo when `true`), the person typing on meanwhile; Esc takes it back.
     pub send_when_ready: Option<bool>,
-    choices: Vec<Choice>,
+    pub(crate) choices: Vec<Choice>,
     pick: usize,
     /// The text completion was dismissed for (Esc), until it changes.
     dismissed: Option<String>,
@@ -280,12 +274,18 @@ pub struct Composer {
     /// The attachment ← reached from the start of the box (Backspace removes it).
     chip: Option<usize>,
     /// A menu of the bar, open.
-    menu: Option<Menu>,
+    pub(crate) menu: Option<Menu>,
     /// The menu just closed, fading out (its number keys the fade).
-    leaving: Option<(Menu, u64)>,
+    pub(crate) leaving: Option<(Menu, u64)>,
     menus_closed: u64,
+    /// The model picker (`views/model_picker.rs`), open from the model's
+    /// control or the effort's.
+    pub(crate) picker: Option<super::model_picker::Open>,
+    /// When Codex was last asked for its models: the picker says so when no
+    /// answer came.
+    pub(crate) codex_asked: Option<Instant>,
     /// Where each control that opens a menu was last drawn: menus open from there.
-    anchors: Rc<std::cell::RefCell<std::collections::HashMap<MenuKind, Bounds<Pixels>>>>,
+    pub(crate) anchors: Rc<std::cell::RefCell<std::collections::HashMap<MenuKind, Bounds<Pixels>>>>,
     /// What a drag over the window would attach, said before the drop.
     drag: Option<(Vec<PathBuf>, attach::Preview)>,
     /// The drop frame shown without a drag (for the snapshot tool).
@@ -350,6 +350,8 @@ impl Composer {
             menu: None,
             leaving: None,
             menus_closed: 0,
+            picker: None,
+            codex_asked: None,
             anchors: Rc::default(),
             drag: None,
             drag_shown: false,
@@ -1296,6 +1298,7 @@ impl Shell {
 
     /// Close the bar's menu; it fades out where it was.
     pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.close_picker(cx);
         let Some(menu) = self.composer.menu.take() else { return };
         self.composer.menus_closed += 1;
         let n = self.composer.menus_closed;
@@ -1316,6 +1319,11 @@ impl Shell {
 
     pub(crate) fn open_menu(&mut self, kind: MenuKind, window: &mut Window, cx: &mut Context<Self>) {
         crate::tips::hide(cx);
+        // The model and the effort are one picker, engines and all.
+        if matches!(kind, MenuKind::Model | MenuKind::Effort) {
+            return self.open_picker(kind, window, cx);
+        }
+        self.close_picker(cx);
         if self.composer.menu.as_ref().is_some_and(|m| m.kind == kind) {
             self.close_menu(cx);
             return;
@@ -1345,62 +1353,8 @@ impl Shell {
                     })
                     .collect()
             }
-            MenuKind::Model => {
-                let Some(member) = member else { return };
-                title = Some(t!("composer.menu_model", name = member.name));
-                let listed = self.model.listed(member.engine);
-                let (asked, ran) = (member.asked.as_deref().or(member.model.as_deref()), member.model.as_deref());
-                let mut rows: Vec<Row> = Vec::new();
-                // What runs isn't what was asked for: said first, with the fix.
-                if let Some((line, update)) = crate::models::gap_line(member.engine, asked, ran, listed) {
-                    rows.push(Row::note(line));
-                    if update {
-                        rows.push(Row::new(t!("models.update"), "", Act::UpdateEngine(Engine::Claude)).icon(Icon::ArrowUp));
-                    }
-                }
-                rows.extend(crate::models::choices(member.engine, asked, ran, listed).into_iter().map(|c| Row::new(c.label, c.hint, Act::Model(c.model)).checked(c.on)));
-                // The providers connected on the daemon's machine, each under its name;
-                // from Claude Code, picking one moves the member at its next ticket.
-                let groups = crate::models::provider_groups(self.engines.providers.as_deref().unwrap_or_default(), asked);
-                if !groups.is_empty() && member.engine != Some(Engine::Codex) {
-                    rows.push(Row::note(t!("models.provider_moves")));
-                }
-                for group in &groups {
-                    rows.push(Row::note(group.provider.clone()));
-                    rows.extend(group.choices.iter().map(|c| Row::new(c.label.clone(), c.hint.clone(), Act::Model(c.model.clone())).checked(c.on)));
-                    if group.more > 0 {
-                        rows.push(Row::note(t!("models.provider_more", count = group.more, id = group.id.clone())));
-                    }
-                }
-                // What a member on one can't do yet, said before it is picked.
-                if !groups.is_empty() {
-                    rows.push(Row::note(t!("models.provider_limits")));
-                }
-                // Which engine it works on: the other one, at its next ticket.
-                let on = member.engine;
-                rows.push(Row::note(t!("composer.menu_engine")));
-                for (engine, mark) in [(Engine::Claude, Icon::ClaudeMark), (Engine::Codex, Icon::OpenAiMark)] {
-                    let hint = if on == Some(engine) { String::new() } else { t!("composer.engine_next").to_owned() };
-                    rows.push(Row::new(crate::switching::engine_name(engine), hint, Act::Engine(engine)).icon(mark).checked(on == Some(engine)));
-                }
-                rows
-            }
-            MenuKind::Effort => {
-                let Some(member) = member else { return };
-                title = Some(t!("composer.menu_effort", name = member.name));
-                let now = self.model.efforts.get(&member.session).cloned();
-                let mut rows = vec![Row::new(t!("composer.effort_default"), "", Act::Effort(None)).checked(now.is_none())];
-                // Only what its model takes — and the one set, though it doesn't.
-                let model = member.asked.as_deref().or(member.model.as_deref());
-                let mut levels = crate::models::efforts(member.engine, model, self.model.listed(member.engine));
-                let stray = now.clone().filter(|n| !levels.contains(n));
-                levels.extend(stray.clone());
-                rows.extend(levels.into_iter().map(|e| {
-                    let hint = if stray.as_ref() == Some(&e) { t!("models.effort_not_taken") } else { "" };
-                    Row::new(e.clone(), hint, Act::Effort(Some(e.clone()))).checked(now.as_deref() == Some(e.as_str()))
-                }));
-                rows
-            }
+            // Opened above, as the picker.
+            MenuKind::Model | MenuKind::Effort => return,
             MenuKind::Mode => {
                 title = Some(t!("composer.menu_mode").to_owned());
                 let lang = crate::i18n::lang();
@@ -1450,46 +1404,6 @@ impl Shell {
                 }
             }
             Act::Select(session) => self.select_member(session, window, cx),
-            Act::Engine(engine) => {
-                if let Some((_, name)) = member
-                    && self.model.selected_member().is_some_and(|m| m.engine != Some(engine))
-                {
-                    self.send_command(Command::MoveEngine { squad: self.model.squad.clone(), members: vec![name.clone()], engine });
-                    self.composer.flash = Some(t!("compose.engine_moving", names = name, engine = crate::switching::engine_name(engine)));
-                }
-            }
-            Act::UpdateEngine(engine) => {
-                for command in self.engines.install(engine) {
-                    self.send_command(command);
-                }
-                self.composer.flash = Some(t!("models.updating").to_owned());
-            }
-            Act::Model(model) => {
-                if let Some((session, name)) = member {
-                    self.send_command(Command::SetModel { session, model: model.clone() });
-                    let engine = self.model.selected_member().and_then(|m| m.engine);
-                    let wanted = crate::models::label(&model, self.model.listed(engine));
-                    // A provider's model from Claude Code: it moves at its next ticket.
-                    let provider = equipe_core::model_providers::split_ref(&model).filter(|_| engine != Some(Engine::Codex)).map(|(id, _)| self.engines.provider(id).map_or_else(|| id.to_owned(), |p| p.name.clone()));
-                    self.composer.flash = Some(match provider {
-                        Some(provider) => t!("compose.provider_moving", name = name, wanted = wanted, provider = provider),
-                        None => t!("compose.model_set", name = name, wanted = wanted),
-                    });
-                }
-            }
-            Act::Effort(effort) => {
-                if let Some((session, name)) = member {
-                    self.send_command(Command::SetEffort { session, effort: effort.clone() });
-                    self.composer.flash = Some(match &effort {
-                        Some(e) => t!("composer.effort_set", name = name, effort = e),
-                        None => t!("composer.effort_reset", name = name),
-                    });
-                    match effort {
-                        Some(effort) => self.model.efforts.insert(session, effort),
-                        None => self.model.efforts.remove(&session),
-                    };
-                }
-            }
             Act::Mode(mode) => self.send_command(Command::SetMode { squad: self.model.squad.clone(), member: None, mode: Some(mode) }),
             Act::Refresh(summary) => {
                 if let Some((session, _)) = member {
@@ -1528,6 +1442,10 @@ impl Shell {
             self.composer.speech.update(cx, |s, cx| s.cancel(cx));
             self.composer.dictating = None;
             cx.notify();
+            return true;
+        }
+        // The model picker is open: it has the keys it takes.
+        if self.picker_key(key, modifiers, window, cx) {
             return true;
         }
         // A menu of the bar is open: it has the keys.
@@ -2012,7 +1930,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
 fn completion(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let p = shell.palette;
     let composer = &shell.composer;
-    if !composer.open() || composer.menu.is_some() {
+    if !composer.open() || composer.menu.is_some() || composer.picker.is_some() {
         return None;
     }
     let mut rows: Vec<AnyElement> = Vec::new();
@@ -2089,6 +2007,7 @@ fn menu_layer(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     if let Some(menu) = &shell.composer.menu {
         layers.extend(menu_popup(shell, menu, None, cx));
     }
+    layers.extend(super::model_picker::layer(shell, cx));
     layers
 }
 
@@ -2235,7 +2154,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let (to_label, to_color) = recipient(p, model, &text);
     let project = pm_about(model).filter(|_| member.is_some_and(Model::is_pm));
     let anchors = composer.anchors.clone();
-    let open = |kind: MenuKind| composer.menu.as_ref().is_some_and(|m| m.kind.trigger() == kind);
+    let open = |kind: MenuKind| composer.menu.as_ref().is_some_and(|m| m.kind.trigger() == kind) || composer.picker.as_ref().is_some_and(|o| o.from == kind);
 
     // "+" wears a hairline, as Claude's does: its edge is where the text above starts.
     let plus_open = open(MenuKind::Attach);
@@ -3085,7 +3004,7 @@ mod tests {
         assert!(!super::stop_on_escape(Some((7, t0)), 8, t0 + std::time::Duration::from_millis(300)), "another conversation's");
     }
 
-    use super::{Act, Engine, Menu, MenuKind, Row, pm_about, short_model, shows_recipient, suggestion_hint, takes, takes_suggestion};
+    use super::{Act, Menu, MenuKind, Row, pm_about, short_model, shows_recipient, suggestion_hint, takes, takes_suggestion};
 
     #[test]
     fn tab_takes_the_greyed_suggestion_as_the_arrow_does_and_the_box_says_so() {
@@ -3134,9 +3053,9 @@ mod tests {
     #[test]
     fn effort_choices_follow_the_engine_and_its_model() {
         let efforts = |engine, model| crate::models::efforts(Some(engine), model, &[]);
-        assert_eq!(efforts(Engine::Claude, None), ["low", "medium", "high", "xhigh", "max"]);
-        assert_eq!(efforts(Engine::Claude, Some("claude-sonnet-4-6")), ["low", "medium", "high", "max"]);
-        assert_eq!(efforts(Engine::Codex, None)[0], "minimal");
+        assert_eq!(efforts(equipe_core::protocol::Engine::Claude, None), ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(efforts(equipe_core::protocol::Engine::Claude, Some("claude-sonnet-4-6")), ["low", "medium", "high", "max"]);
+        assert_eq!(efforts(equipe_core::protocol::Engine::Codex, None)[0], "minimal");
     }
 
     #[test]

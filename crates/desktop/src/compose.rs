@@ -722,7 +722,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             };
             let who = if members.is_empty() { t!("compose.engine_everyone").to_owned() } else { members.join("·") };
             Plan {
-                commands: vec![Command::MoveEngine { squad, members, engine }],
+                commands: vec![Command::MoveEngine { squad, members, engine, model: None }],
                 flash: Some(t!("compose.engine_moving", names = who, engine = crate::switching::engine_name(engine))),
                 ..Plan::default()
             }

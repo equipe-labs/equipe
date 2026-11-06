@@ -1143,12 +1143,16 @@ pub enum Command {
     ShowEngineSetup { squad: SquadName },
     /// The person moves `members` (none named: every member) to `engine`,
     /// each at its next ticket boundary, its work handed over. Only ever the
-    /// person's; where they belong from then on.
+    /// person's; where they belong from then on. `model`: the one they run
+    /// there, as the person picked it (`None`: what the engine recommends for
+    /// each one's role); a daemon that predates it moves them all the same.
     MoveEngine {
         squad: SquadName,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         members: Vec<String>,
         engine: Engine,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// Show the squad's design systems (`design::DesignSystem`): answered by
     /// [`Event::Design`], and again whenever one of them changes while a
@@ -1327,6 +1331,12 @@ pub struct ModelChoice {
     pub efforts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_effort: Option<String>,
+    /// What its tool says it is for, in the tool's own words; `None`: not said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Its tool's default for the account.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
 }
 
 /// What a new member of `role` starts with on `engine`, as the person set it
@@ -3695,5 +3705,17 @@ mod tests {
         assert_eq!(newer, ProviderTest::Failed { why: "w".into(), problem: Some(ProviderProblem::Other) });
         let older: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w" })).unwrap();
         assert_eq!(older, ProviderTest::Failed { why: "w".into(), problem: None });
+    }
+
+    #[test]
+    fn a_move_carries_the_model_picked_and_a_listed_model_what_its_tool_says_of_it() {
+        let plain = Command::MoveEngine { squad: "acme".into(), members: vec!["pm".into()], engine: Engine::Codex, model: None };
+        assert_eq!(serde_json::to_value(&plain).unwrap(), json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex" }), "as an older daemon reads it");
+        let picked: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "model": "gpt-6.1-sol" })).unwrap();
+        assert!(matches!(picked, Command::MoveEngine { model: Some(ref m), .. } if m == "gpt-6.1-sol"));
+        let older: ModelChoice = serde_json::from_value(json!({ "id": "gpt-6-luna" })).unwrap();
+        assert_eq!((older.description, older.default), (None, false), "from a daemon that predates them");
+        let said = ModelChoice { id: "gpt-6.1-sol".into(), description: Some("Frontier.".into()), default: true, ..Default::default() };
+        assert_eq!(serde_json::to_value(&said).unwrap(), json!({ "id": "gpt-6.1-sol", "description": "Frontier.", "default": true }));
     }
 }
