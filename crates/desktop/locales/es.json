@@ -1896,7 +1896,7 @@
   "settings.mode_ask": "Preguntarme",
   "settings.mode_ask_desc": "Te pregunta antes de cada edición y cada comando",
   "settings.mode_auto": "Automático",
-  "settings.mode_auto_desc": "Edita, instala y prueba solo dentro de su worktree; pregunta antes de red, push o tus cuentas",
+  "settings.mode_auto_desc": "Edita, instala, compila y prueba por su cuenta, en el sandbox de su worktree; pregunta antes de todo lo demás (red, pushes, tus cuentas)",
   "settings.mode_follows": "La de la escuadra",
   "settings.mode_foot": "⌘⇧M también lo cambia desde el cuadro de texto.",
   "settings.mode_full": "Acceso total",

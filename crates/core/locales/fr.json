@@ -205,7 +205,7 @@
   "mode.ask.summary": "vous demande avant chaque modification et chaque commande",
   "mode.auto": "auto",
   "mode.auto.short": "travaille seul, dans le bac à sable ; demande pour le reste",
-  "mode.auto.summary": "modifie, installe, compile et teste seul, dans le bac à sable de son worktree ; demande avant tout le reste : réseau, push, vos comptes",
+  "mode.auto.summary": "modifie, installe, compile et teste seul, dans le bac à sable de son worktree ; demande avant tout le reste (réseau, push, vos comptes)",
   "mode.full": "accès complet",
   "mode.full.short": "ne demande rien, sauf pour agir en votre nom",
   "mode.full.summary": "fait sans demander tout ce que votre compte permet, sauf ce qu'equipe bloque toujours ; demande encore avant d'agir en votre nom En accès total, un membre exécute tout ce que ton compte peut faire ; equipe ne peut donc pas empêcher complètement un membre déterminé d'agir en ton nom via un processus qu'il ne voit pas — auto est le réglage par défaut le plus sûr.",
