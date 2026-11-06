@@ -188,7 +188,7 @@ impl Runtime {
             let _ = journal.ticket_event(report.ticket, &call.member, "qa report", &text);
         }
         if let Some(id) = self.member_id(&call.squad, &call.member) {
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { session: id, text, undo: None });
         }
     }
 }

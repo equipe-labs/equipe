@@ -1200,7 +1200,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Note { undo: None, text: pictures::NEWS.into() });
                         }
                         if let Some(text) = phone_qa::note() {
-                            history.push(Entry::Note { text });
+                            history.push(Entry::Note { text, undo: None });
                         }
                         if replies::on() {
                             history.extend(replies::history());
