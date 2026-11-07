@@ -173,10 +173,16 @@ shown only on dark, `…-light` only on light, any other on both.
   `Studio` (`crates/protocol/src/studio.rs`) every 2 s while it is open: what
   the ticket's worktree design folder holds — each screen's latest check and
   second look, the edits not checked yet, the directions' log, the critiques,
-  the reference board and other pictures. Read-only, from inside that folder
-  only (links out are not followed), every file and list capped
-  (`crates/core/src/design/studio.rs`); its pictures through `read_image`.
-  The read-only real view may ask it; phones are not routed it.
+  the reference board — and every other picture of the work, each with where
+  it came from: the phone's recordings (`<squad home>/recordings/T-<n>/`), the
+  ticket's hand-in folder (`outputs/T-<n>…/`) and its reports, the pictures
+  the member opened or wrote while working on the ticket (read from its
+  conversation's lines, `Journal::ticket_lines`) and those beside them, what
+  is new in its worktree since the work began, what its hand-in names.
+  Read-only, every file and list capped (`crates/core/src/design/studio.rs`);
+  its pictures through `read_image`, which gives what a studio answer named
+  for the squad for 15 minutes after. The read-only real view may ask it;
+  phones are not routed it.
 
 See `docs/remote-protocol.md` for the phone's side.
 
@@ -185,11 +191,18 @@ See `docs/remote-protocol.md` for the phone's side.
 Watch a ticket's design work as it happens (`crates/desktop/src/views/studio.rs`;
 from a ticket's card, the member's lane in Orchestration, or the conversation's
 header when the member is on a design ticket). Under the title, an honest status
-line ("Working · 12m", "Waiting for you: pick a direction", "Checks failing:
-Contrast — …", "Handed in"); the steps — brief, references, directions, build,
-checks, hand-in — each lit from what the member did, with how much and when; the
-latest picture it drew, with the seven widths a check drew it at (or the
-directions side by side while a pick waits); and a timeline of what it left —
+line — where the member is, weighed as the sidebar weighs it (an OK asked, a
+waiting ticket, a question of its own, on this ticket or another: "Waiting for
+you on T-60: …"), else handed in, working or idle — and what holds the work up
+("Checks failing: Contrast — …"); what it is doing now, its last ten steps in
+plain words with the latest lit and how long it has run; the steps of its kind
+of work — a design's brief, references, directions, build, checks, hand-in; a
+design QA's brief, the change, the screens seen, measured, findings, verdict;
+building screens' brief, build, checks, hand-in — each lit from what the member
+did, with how much and when; the newest picture of the work (a check's at each
+of seven widths, a phone recording, a screenshot it opened, its hand-in folder's
+sheets — never "nothing drawn" while one exists), with the recent ones to pick
+from; its report's findings; and a timeline of what it left —
 references with what to learn from them, directions and the pick, critiques,
 each check and second look, each hand-in and why it was refused — any of them
 opened big. The member's conversation is docked at the right, as on the design

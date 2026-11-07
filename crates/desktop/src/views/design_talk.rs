@@ -311,17 +311,26 @@ impl Shell {
 
     /// Whether the panel is open now (not its rail).
     pub fn design_talk_open(&self, window: &Window, cx: &App) -> bool {
+        // The studio keeps its own: folding it on the design screen leaves the studio's open.
+        if self.screen == Screen::Studio {
+            return rules::shown_from(self.remembered.studio_talk, self.design.talk.opened_narrow, self.design_talk_room(window, cx), rules::STUDIO_NARROW);
+        }
         rules::shown(self.remembered.design_talk, self.design.talk.opened_narrow, self.design_talk_room(window, cx))
     }
 
     /// Folded to its rail, or open again: kept on this Mac where there is
     /// room; this launch only where the window is narrow.
     pub fn design_talk_fold(&mut self, folded: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.design_talk_room(window, cx) < rules::NARROW {
+        let narrow = if self.screen == Screen::Studio { rules::STUDIO_NARROW } else { rules::NARROW };
+        if self.design_talk_room(window, cx) < narrow {
             self.design.talk.opened_narrow = !folded;
         } else {
             self.design.talk.opened_narrow = false;
-            self.remembered.design_talk = Some(!folded);
+            if self.screen == Screen::Studio {
+                self.remembered.studio_talk = Some(!folded);
+            } else {
+                self.remembered.design_talk = Some(!folded);
+            }
             self.remembered.save(&equipe_providers::credentials::equipe_home());
         }
         if !folded {

@@ -43,9 +43,14 @@ pub struct Studio {
     /// The reference board: each reference kept, newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<StudioReference>,
-    /// Other pictures it made (mockups, renders, comparison sheets), newest first.
+    /// Every other picture of the work, newest first: the design folder's
+    /// mockups and sheets, the phone's recordings, the hand-in folder, what
+    /// it opened to look at or made beside it, what its hand-in names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pictures: Vec<StudioPicture>,
+    /// The reports it wrote for the ticket (`outputs/T-<n>…/*.md`), cut short.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reports: Vec<StudioReport>,
     /// Changes whenever anything read here does.
     #[serde(default)]
     pub stamp: u64,
@@ -61,6 +66,34 @@ pub struct StudioPicture {
     pub modified: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
+    /// Where it came from: what the person reads beside it.
+    #[serde(default, skip_serializing_if = "PictureFrom::is_design")]
+    pub from: PictureFrom,
+}
+
+/// Where a picture of the work came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PictureFrom {
+    /// The design folder (a mockup, a comparison sheet).
+    #[default]
+    Design,
+    /// The phone's recordings and frames for the ticket.
+    Recording,
+    /// The ticket's hand-in folder (`outputs/`).
+    Output,
+    /// A picture the member opened to look at while it worked.
+    Opened,
+    /// Made while it worked: beside what it opened, or new in its worktree.
+    Made,
+    /// The pictures its hand-in names.
+    HandIn,
+}
+
+impl PictureFrom {
+    pub fn is_design(&self) -> bool {
+        *self == PictureFrom::Design
+    }
 }
 
 /// A screen's latest check (`design/checks/<screen>.json`).
@@ -174,6 +207,17 @@ pub struct StudioReference {
     pub pictures: Vec<StudioPicture>,
 }
 
+/// A report the member wrote for the ticket: where, its title, its words.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StudioReport {
+    pub path: String,
+    #[serde(default)]
+    pub at: u64,
+    #[serde(default)]
+    pub title: String,
+    pub text: String,
+}
+
 impl Studio {
     /// Every picture it names, once each.
     pub fn picture_paths(&self) -> Vec<&str> {
@@ -200,7 +244,7 @@ mod tests {
 
     #[test]
     fn a_studio_travels_and_names_each_picture_once() {
-        let pic = |path: &str| StudioPicture { path: path.into(), modified: 1, width: None };
+        let pic = |path: &str| StudioPicture { path: path.into(), modified: 1, width: None, from: PictureFrom::Design };
         let studio = Studio {
             ticket: 7,
             dir: Some("/w/design".into()),
@@ -210,7 +254,9 @@ mod tests {
             ..Studio::default()
         };
         let line = serde_json::to_string(&studio).unwrap();
-        assert!(!line.contains("critiques"), "empty lists stay off the wire: {line}");
+        assert!(!line.contains("critiques") && !line.contains("\"from\""), "empty lists and the usual source stay off the wire: {line}");
+        let opened = StudioPicture { from: PictureFrom::Opened, ..pic("/tmp/a.png") };
+        assert!(serde_json::to_string(&opened).unwrap().contains(r#""from":"opened""#));
         assert_eq!(serde_json::from_str::<Studio>(&line).unwrap(), studio);
         assert_eq!(studio.picture_paths(), ["/w/design/checks/a/360.png", "/w/design/directions/calm/home.png", "/w/design/mock.png"]);
         let fix = StudioFix { place: "the CTA".into(), what: "darker".into(), why: String::new() };

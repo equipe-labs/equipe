@@ -235,6 +235,10 @@ pub struct Remembered {
     pub design_talk: Option<bool>,
     /// How wide it was dragged (px).
     pub design_talk_width: Option<f32>,
+    /// The member's conversation beside the designer studio, open or folded
+    /// as the person left it there (apart from the design screen's); none:
+    /// open where there is room.
+    pub studio_talk: Option<bool>,
     /// The window's size as the person left it, in points: what it opens at.
     pub window: Option<(f32, f32)>,
 }
@@ -483,6 +487,12 @@ impl Remembered {
                     "folded" => Some(false),
                     _ => None,
                 };
+            } else if let Some(rest) = line.strip_prefix("studio-talk ") {
+                out.studio_talk = match rest.trim() {
+                    "open" => Some(true),
+                    "folded" => Some(false),
+                    _ => None,
+                };
             } else if let Some(rest) = line.strip_prefix("design-tab ") {
                 out.design_tab = Some(rest.trim().to_owned()).filter(|t| !t.is_empty());
             } else if let Some((on, rest)) = line.strip_prefix("quiet ").map(|r| (false, r)).or_else(|| line.strip_prefix("ping ").map(|r| (true, r))) {
@@ -618,6 +628,9 @@ impl Remembered {
         }
         if let Some(width) = self.design_talk_width {
             text.push_str(&format!("design-talk-width {width:.0}\n"));
+        }
+        if let Some(open) = self.studio_talk {
+            text.push_str(if open { "studio-talk open\n" } else { "studio-talk folded\n" });
         }
         // Only what differs from the default: off as `quiet`, on as `ping`.
         for ping in Ping::ALL.into_iter().filter(|p| self.pings.get(*p) != p.default_on()) {
@@ -897,7 +910,7 @@ mod tests {
         assert!(!fresh.whole_conversation, "the conversation follows the project by default");
         assert!(!fresh.tickets_board, "티켓 opens as a list");
         assert_eq!(fresh.zoom, Zoom(100), "actual size");
-        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), design_tab: Some("system".into()), design_talk: Some(false), design_talk_width: Some(432.), ..Remembered::default() };
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), design_tab: Some("system".into()), design_talk: Some(false), design_talk_width: Some(432.), studio_talk: Some(true), ..Remembered::default() };
         prefs.pings.set(Ping::Failed, false);
         prefs.pings.set(Ping::Sound, false);
         prefs.set_merge_way("app", "push");
@@ -913,6 +926,7 @@ mod tests {
         assert_eq!(loaded.design_tab.as_deref(), Some("system"), "the design screen's tab, as last picked");
         assert_eq!((loaded.design_talk, loaded.design_talk_width), (Some(false), Some(432.)), "the conversation beside the design screen, folded as left, as wide");
         assert_eq!(fresh.design_talk, None, "open where there is room until the person says");
+        assert_eq!(loaded.studio_talk, Some(true), "the studio's own, apart from the design screen's");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 

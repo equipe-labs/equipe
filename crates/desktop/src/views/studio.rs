@@ -28,7 +28,7 @@ use super::visuals::{Shots, picture};
 use crate::design_talk::DesignContext;
 use crate::icons::{Icon, icon};
 use crate::state::Member;
-use crate::studio::{self as rules, Centre, Item, ItemKind, Mark, Step, Tone, Watch};
+use crate::studio::{self as rules, Centre, Flow, Item, ItemKind, Mark, Step, Tone, Watch};
 use crate::theme::{META, MONO, Palette, R_LG, R_MD, SMALL, SMALL_LINE};
 use crate::tips::TipExt as _;
 use crate::visuals::{Size, Viewer};
@@ -80,10 +80,11 @@ pub fn step_label(s: &Step) -> String {
 /// the picture's name and when it was made.
 pub fn caption(c: &Centre, now: u64) -> String {
     let when = crate::activity::ago(now.saturating_sub(c.at));
-    match (&c.screen, &c.direction) {
-        (Some(screen), _) => t!("studio.centre_check", screen = screen, when = when),
-        (None, Some(name)) => t!("studio.centre_made", name = name, when = when),
-        (None, None) => t!("studio.centre_made", name = crate::visuals::name_of(&c.shown), when = when),
+    match (&c.screen, &c.direction, c.from) {
+        (Some(screen), _, _) => t!("studio.centre_check", screen = screen, when = when),
+        (None, Some(name), _) => t!("studio.centre_made", name = name, when = when),
+        (None, None, Some(from)) if from != equipe_core::protocol::studio::PictureFrom::Design => t!("studio.centre_from", name = crate::visuals::name_of(&c.shown), from = rules::from_words(from), when = when),
+        (None, None, _) => t!("studio.centre_made", name = crate::visuals::name_of(&c.shown), when = when),
     }
 }
 
@@ -95,6 +96,7 @@ fn kind_icon(kind: ItemKind) -> Icon {
         ItemKind::Check => Icon::Check,
         ItemKind::Look => Icon::Eye,
         ItemKind::HandIn => Icon::Inbox,
+        ItemKind::Report => Icon::FileText,
     }
 }
 
@@ -106,6 +108,7 @@ fn kind_words(kind: ItemKind) -> &'static str {
         ItemKind::Check => t!("check.title"),
         ItemKind::Look => t!("look.name"),
         ItemKind::HandIn => t!("studio.item_handin"),
+        ItemKind::Report => t!("studio.item_report"),
     }
 }
 
@@ -118,16 +121,32 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     };
     let now = crate::state::now_unix();
     let member = shell.studio_member();
-    let files = shell.studio.files();
-    let happenings = shell.studio_happenings();
+    let convo = member.and_then(|m| shell.model.convos.get(&m.session));
+    let work = convo.map(|c| rules::work_of(&c.transcript, id)).unwrap_or_default();
+    let happenings = rules::happenings(&work);
+    let (first, last) = rules::span_of(&work);
+    // Only what this ticket's work made: a shared design folder keeps every ticket's.
+    let scoped = shell.studio.files().map(|f| rules::scoped(f, first));
+    let files = scoped.as_ref();
     let working = member.is_some_and(|m| m.presence == crate::state::Presence::Working && m.ticket == Some(id));
-    let question = shell.model.asked.open().find(|s| s.ticket == Some(id)).and_then(|s| s.questions.first()).map(|q| if q.header.trim().is_empty() { q.question.clone() } else { q.header.clone() });
-    let waiting = rules::waiting_for(ticket, question.as_deref(), files, &happenings);
+    // Waiting for the person exactly as the sidebar weighs it (`Model::status`).
+    let permission = member.and_then(|m| shell.model.approvals.first_for(m.session)).map(|a| format!("{} · {}", a.tool, rules::command_words(&a.action)));
+    let question = member.and_then(|m| shell.model.asked.from(&m.name)).map(|s| {
+        let q = s.questions.first();
+        (q.map(|q| if q.header.trim().is_empty() { q.question.clone() } else { q.header.clone() }).unwrap_or_default(), s.ticket)
+    });
+    let waiting_ticket = member.and_then(|m| shell.model.tickets.iter().find(|t| t.status == TicketStatus::Waiting && t.owner.as_deref() == Some(m.name.as_str()))).map(|t| t.id);
+    let waiting = member.filter(|m| m.presence != crate::state::Presence::Closed).and_then(|_| rules::waiting_for(id, ticket, permission, question, waiting_ticket, files, &happenings));
     let browsing = rules::browsing(&happenings, working);
-    let w = Watch { ticket, happenings, files, working, waiting };
+    let reviews = shell.model.tickets.iter().any(|t| t.design_qa == Some(id));
+    let flow = rules::flow_of(ticket, reviews, &happenings);
+    let w = Watch { ticket, happenings, files, working, waiting, flow };
     let steps = rules::steps(&w);
-    let status = rules::status(&w);
+    let status = rules::status(&w, first, last);
     let items = rules::items(&w.happenings, files);
+    let feed = rules::feed(&work, FEED_MOST);
+    let found = files.map(rules::findings).unwrap_or_default();
+    let notes = if found.is_empty() && flow == Flow::Qa { rules::said_so_far(&work, 4) } else { Vec::new() };
     let narrow = shell.studio_room() < NARROW;
 
     // The title bar: what is watched, who is at it, and the ways out.
@@ -142,6 +161,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .border_color(p.hair)
         .child(icon(Icon::Eye, 15., p.text2))
         .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("studio.title")))
+        .child(div().flex_none().px_1p5().h(px(20.)).flex().items_center().rounded(px(crate::theme::R_SM)).bg(p.wash).text_size(px(11.)).text_color(p.text2).child(flow.label()))
         .child(div().flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
         .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).text_color(p.text2).child(ticket.title.clone()))
         .children(member.map(|m| who(p, m)))
@@ -158,9 +178,22 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             ui::icon_button(p, "studio-chat", Icon::Message, t!("studio.conversation"), None).on_click(cx.listener(move |this, _, window, cx| this.select_member(session, window, cx)))
         }));
 
-    // The line that says how it is going.
-    let tone = rules::status_tone(&status);
+    // The line that says how it is going: where it is, then what holds it up.
+    let tone = rules::status_tone(&status.presence);
     let pending = files.map_or(0, |f| f.pending.len());
+    let issue = status.issue.as_ref().map(|i| {
+        h_flex()
+            .flex_shrink(1.)
+            .min_w_0()
+            .px_2()
+            .py(px(2.))
+            .gap_1()
+            .items_center()
+            .rounded(px(crate::theme::R_SM))
+            .bg(p.danger_bg())
+            .child(icon(Icon::Alert, 12., p.danger()))
+            .child(div().min_w_0().truncate().text_size(px(META)).text_color(p.text).child(rules::issue_words(i)))
+    });
     let status_line = h_flex()
         .id("studio-status")
         .flex_none()
@@ -173,16 +206,157 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .border_b_1()
         .border_color(p.hair)
         .role(Role::Status)
+        .aria_label(rules::status_words(&status, now))
         .child(div().flex_none().size(px(8.)).rounded_full().bg(tone_color(p, tone)))
-        .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(SMALL_LINE)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(rules::status_words(&status, now)))
+        .child(div().flex_none().max_w(relative(0.55)).truncate().text_size(px(SMALL)).line_height(px(SMALL_LINE)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(rules::presence_words(&status.presence, now)))
+        .children(issue)
+        .child(div().flex_1())
         .when(pending > 0, |row| row.child(div().flex_none().text_size(px(META)).text_color(p.muted).child(t!("studio.pending", count = pending))))
         .children(member.and_then(|m| m.engine).map(|e| super::switching::label(p, e)));
 
     let mut body = v_flex().id("studio-body").flex_1().min_h_0().w_full().overflow_y_scroll().track_scroll(&shell.studio.scroll).px(px(PAD)).pt_4().pb_10().gap_5();
+    body = body.child(feed_card(p, &feed, now));
     body = body.child(rail(p, &steps, narrow, now));
     body = body.child(stage(shell, id, files, &items, now, cx));
+    if let Some(f) = files {
+        body = body.children(recent_strip(shell, id, f, now, cx));
+    }
+    if !found.is_empty() || !notes.is_empty() {
+        body = body.child(findings_part(p, files, &found, &notes, now));
+    }
     body = body.child(timeline(shell, &items, now, cx));
     v_flex().id("studio-page").flex_1().min_w_0().min_h_0().bg(p.bg).child(header).child(status_line).child(body).into_any_element()
+}
+
+/// How many lines of what it is doing show.
+const FEED_MOST: usize = 10;
+
+/// What it is doing now: its latest step big, with how long; the ones
+/// before it under, quieter.
+fn feed_card(p: Palette, feed: &[rules::FeedLine], now: u64) -> AnyElement {
+    let head = div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t!("studio.feed"));
+    let mut card = v_flex().id("studio-feed").w_full().gap_1().p_3().rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).role(Role::Group).aria_label(t!("studio.feed")).child(head);
+    let Some((latest, earlier)) = feed.split_last() else {
+        return card.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("studio.feed_empty"))).into_any_element();
+    };
+    let when = |l: &rules::FeedLine| l.at.map(|at| if l.running { t!("studio.now_for", span = crate::state::short_span(now.saturating_sub(at))) } else { crate::activity::ago(now.saturating_sub(at)) });
+    let glyph = |l: &rules::FeedLine| match l.kind {
+        rules::FeedKind::Said => Icon::Message,
+        rules::FeedKind::You => Icon::Reply,
+        rules::FeedKind::Note => Icon::Info,
+        rules::FeedKind::Step if l.tone == Tone::Bad => Icon::Alert,
+        rules::FeedKind::Step => Icon::ChevronRight,
+    };
+    for (n, l) in earlier.iter().enumerate().rev().take(FEED_MOST - 1).collect::<Vec<_>>().into_iter().rev() {
+        card = card.child(
+            h_flex()
+                .id(("studio-feed-line", n))
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(icon(glyph(l), 12., if l.tone == Tone::Bad { p.danger() } else { p.muted }))
+                .child(div().flex_1().min_w_0().truncate().text_size(px(META)).text_color(if l.kind == rules::FeedKind::Said { p.text } else { p.text2 }).child(l.words.clone()))
+                .children(when(l).map(|w| div().flex_none().text_size(px(11.)).text_color(p.muted).child(w))),
+        );
+    }
+    let accent = if latest.tone == Tone::Bad { p.danger() } else { p.accent };
+    card = card.child(
+        h_flex()
+            .id("studio-feed-latest")
+            .mt_1()
+            .w_full()
+            .px_2p5()
+            .py_2()
+            .gap_2()
+            .items_center()
+            .rounded(px(R_MD))
+            .bg(p.accent_bg)
+            .border_1()
+            .border_color(accent)
+            .child(if latest.running { div().flex_none().child(crate::motion::spinner(12., accent)).into_any_element() } else { icon(glyph(latest), 13., accent).into_any_element() })
+            .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(SMALL_LINE)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(latest.words.clone()))
+            .children(when(latest).map(|w| div().flex_none().text_size(px(META)).font_weight(FontWeight::MEDIUM).text_color(p.text2).child(w))),
+    );
+    card.into_any_element()
+}
+
+/// The pictures of the work, newest first, small: any of them shown big in the middle.
+fn recent_strip(shell: &Shell, id: TicketId, files: &Studio, now: u64, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let recent = rules::recent(files, RECENT_MOST);
+    if recent.len() < 2 {
+        return None;
+    }
+    let p = shell.palette;
+    let shots = Shots::of(shell, cx.entity().downgrade(), cx);
+    let shown = rules::centre_of(files, shell.studio.width, shell.studio.picked.as_deref()).map(|c| c.shown);
+    let mut row = h_flex().id("studio-recent").w_full().gap_2().flex_wrap().items_start().role(Role::List).aria_label(t!("studio.recent"));
+    for (n, pic) in recent.iter().enumerate() {
+        let look = shots.ask(&pic.path, Size::Thumb, cx);
+        let on = shown.as_deref() == Some(pic.path.as_str());
+        let path = pic.path.clone();
+        let label = match pic.width {
+            Some(w) => format!("{w}px"),
+            None => rules::from_words(pic.from).to_owned(),
+        };
+        let _ = id;
+        row = row.child(
+            v_flex()
+                .id(("studio-recent-pic", n))
+                .flex_none()
+                .w(px(RECENT_W))
+                .gap(px(3.))
+                .cursor_pointer()
+                .role(Role::ListItem)
+                .aria_label(format!("{} · {}", crate::visuals::name_of(&pic.path), label))
+                .child(div().rounded(px(R_MD)).border_2().border_color(if on { p.accent } else { rgba(0x00000000) }).child(picture(&shots, crate::render::hash_of(("studio-recent", &pic.path)), &pic.path, look, RECENT_W - 4., RECENT_H, R_MD, false, 2.)))
+                .child(div().min_w_0().truncate().text_size(px(11.)).text_color(if on { p.text } else { p.muted }).child(format!("{label} · {}", crate::activity::ago(now.saturating_sub(pic.modified)))))
+                .on_click(cx.listener(move |this, _, _, cx| this.studio_pick(Some(path.clone()), cx))),
+        );
+    }
+    let head = div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t!("studio.recent"));
+    Some(v_flex().w_full().gap_2().child(head).child(row).into_any_element())
+}
+
+/// How many recent pictures show, and how big.
+const RECENT_MOST: usize = 16;
+const RECENT_W: f32 = 112.;
+const RECENT_H: f32 = 76.;
+
+/// What it found: its report's lead and items — or, before a report, what it
+/// said along the way.
+fn findings_part(p: Palette, files: Option<&Studio>, found: &[String], notes: &[(Option<u64>, String)], now: u64) -> AnyElement {
+    let report = files.and_then(|f| f.reports.first());
+    let head = h_flex()
+        .gap_2()
+        .items_baseline()
+        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(if found.is_empty() { t!("studio.notes_so_far") } else { t!("studio.findings") }))
+        .children(report.map(|r| div().min_w_0().truncate().text_size(px(META)).text_color(p.muted).child(t!("studio.findings_from", name = r.title.clone()))));
+    let mut col = v_flex().id("studio-findings").w_full().gap_1p5().p_3().rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).child(head);
+    if let Some(lead) = report.and_then(|r| rules::report_lead(&r.text)).filter(|_| !found.is_empty()) {
+        col = col.child(div().text_size(px(SMALL)).line_height(px(SMALL_LINE)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(lead));
+    }
+    for (n, f) in found.iter().enumerate() {
+        col = col.child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_start()
+                .child(div().flex_none().w(px(18.)).text_size(px(META)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(format!("{}.", n + 1)))
+                .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.text).child(f.clone())),
+        );
+    }
+    for (at, words) in notes {
+        col = col.child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_start()
+                .child(icon(Icon::Message, 12., p.muted))
+                .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.text).child(words.clone()))
+                .children(at.map(|at| div().flex_none().text_size(px(11.)).text_color(p.muted).child(crate::activity::ago(now.saturating_sub(at))))),
+        );
+    }
+    col.into_any_element()
 }
 
 /// Nothing to watch: why, quietly.
@@ -287,7 +461,7 @@ fn stage(shell: &Shell, id: TicketId, files: Option<&Studio>, items: &[Item], no
         let words = if shell.studio.asking || shell.studio.asked_at.is_none() { t!("studio.reading") } else { t!("studio.centre_none") };
         return frame().child(div().py_10().w_full().text_center().text_size(px(SMALL)).text_color(p.muted).child(words)).into_any_element();
     };
-    let Some(centre) = rules::centre(files, shell.studio.width) else {
+    let Some(centre) = rules::centre_of(files, shell.studio.width, shell.studio.picked.as_deref()) else {
         let words = if files.dir.is_none() { t!("studio.no_folder") } else { t!("studio.centre_none") };
         return frame().child(div().py_10().w_full().text_center().text_size(px(SMALL)).text_color(p.muted).child(words)).into_any_element();
     };
@@ -566,6 +740,14 @@ impl Shell {
         }
     }
 
+    /// A picture of the strip shown big in the middle; `None`: the newest, as it lands.
+    pub fn studio_pick(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        self.studio.picked = if self.studio.picked == path { None } else { path };
+        self.studio.open = None;
+        self.studio.width = None;
+        cx.notify();
+    }
+
     pub fn studio_width(&mut self, width: Option<u32>, cx: &mut Context<Self>) {
         self.studio.width = width;
         cx.notify();
@@ -641,10 +823,30 @@ mod tests {
 
     #[test]
     fn the_centre_says_what_it_shows_and_how_fresh_it_is() {
-        let check = Centre { screen: Some("onboarding/welcome".into()), widths: vec![], shown: "/w/design/checks/onboarding/welcome/1280.png".into(), width: Some(1280), at: 1_000, direction: None, choices: vec![] };
+        let check = Centre { screen: Some("onboarding/welcome".into()), widths: vec![], shown: "/w/design/checks/onboarding/welcome/1280.png".into(), width: Some(1280), at: 1_000, direction: None, choices: vec![], from: None };
         assert_eq!(caption(&check, 1_000 + 180), "onboarding/welcome · 3분 전 점검");
-        let made = Centre { screen: None, widths: vec![], shown: "/w/design/mockups/welcome-v2.png".into(), width: None, at: 1_000, direction: None, choices: vec![] };
+        let made = Centre { screen: None, widths: vec![], shown: "/w/design/mockups/welcome-v2.png".into(), width: None, at: 1_000, direction: None, choices: vec![], from: None };
         assert_eq!(caption(&made, 1_000), "welcome-v2.png · 방금");
+    }
+
+    #[test]
+    fn a_picture_found_elsewhere_says_where_it_came_from() {
+        let c = Centre { screen: None, widths: vec![], shown: "/tmp/t/ax5.png".into(), width: None, at: 1_000, direction: None, choices: vec![], from: Some(equipe_core::protocol::studio::PictureFrom::Opened) };
+        assert_eq!(caption(&c, 1_000), "ax5.png · 본 것 · 방금");
+        let rec = Centre { from: Some(equipe_core::protocol::studio::PictureFrom::Recording), ..c };
+        assert_eq!(caption(&rec, 1_060), "ax5.png · 폰 녹화 · 1분 전");
+    }
+
+    /// Waiting for the person is read from what the sidebar reads
+    /// (`Model::status`): the member's permission asks, its questions, its
+    /// tickets waiting — never from the ticket alone.
+    #[test]
+    fn its_wait_is_read_from_what_the_sidebar_reads() {
+        let source = include_str!("studio.rs");
+        let code = &source[..source.find("#[cfg(test)]").unwrap()];
+        for read in ["approvals.first_for(", "asked.from(", "TicketStatus::Waiting && t.owner"] {
+            assert!(code.contains(read), "the studio reads {read}");
+        }
     }
 
     /// Nothing here changes anything: the studio only reads.
