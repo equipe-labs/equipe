@@ -90,7 +90,9 @@
 //!
 //! `FAKE_STUDIO=1`: the designer at T-205 with references, two directions, a failing then
 //! passing check, a refused hand-in and a second look's fixes then pass, for the designer
-//! studio (`fake_daemon/studio.rs`; `waiting`, `failing`, `handed`, `codex`).
+//! studio (`fake_daemon/studio.rs`; `waiting`, `failing`, `handed`, `codex`; `qa`: a design QA
+//! of T-42 on the phone, with screenshots, recordings and a report; `qa_ask`: the same while
+//! the designer asks the person something on T-60).
 //! `FAKE_CHECKS=1`: the designer's conversation checks a screen in code and has a
 //! second look at it (`fake_daemon/checks.rs`); `FAKE_CHECKS=fail` stops at a failing check.
 //! `FAKE_NOISE=1`: the designer's conversation holds the engine's own turns —
@@ -466,6 +468,12 @@ fn board() -> Vec<Ticket> {
     }
     // `FAKE_STUDIO`: the designer's T-205, its worktree's design folder filled.
     out.extend(studio::ticket(|id, status, project, who, title, body| ticket(id, status, project, who, title, body, &[], None, None)));
+    // `FAKE_STUDIO=qa`: frontend's T-42 waits on that design QA.
+    if studio::qa() {
+        for t in out.iter_mut().filter(|t| t.id == 42) {
+            t.design_qa = Some(studio::TICKET);
+        }
+    }
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
@@ -1341,7 +1349,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_STUDIO`: the designer at T-205, watched in the designer studio.
                         if studio::on() {
                             let lines = studio::history();
-                            designer = on(designer, studio::TICKET, "app", studio::TITLE, studio::working(), ("Read", "design/brand.md"), None);
+                            designer = on(designer, studio::TICKET, "app", studio::title(), studio::working(), ("Read", "design/brand.md"), None);
                             designer.recent = lines;
                             if studio::codex() {
                                 designer.engine = Engine::Codex;
