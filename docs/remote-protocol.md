@@ -593,6 +593,47 @@ screen that watched saw:
 - A memo is not a line until it is delivered, as a `user_message` (memos left meanwhile arrive
   together). At most 500 lines are kept.
 
+### A call (voice radio)
+
+The person talks to the squad as on a radio: the phone hears English on the device, sends each
+finished utterance, and the daemon splits it by who it is for and sends each part on to that
+member as an ordinary `submit`. Commands (phone → daemon), all inside `command`:
+
+- `call_start` `{ "squad" }` — answered by `call_started`.
+- `call_utterance` `{ "squad", "call", "text", "via": "voice" | "typed" }` — one finished utterance.
+- `call_end` `{ "squad", "call" }` — the person pressed hang up; answered by `call_summary`
+  with `ended: "hangup"`.
+
+Events (daemon → phone), each with `squad` set:
+
+- `call_started` `{ "squad", "call" }` — `call` is a string id, used by every later frame of
+  the call (the phone keeps it across a reconnect).
+- `call_say` `{ "squad", "call", "text", "kind": "reply" | "ask" | "bye" }` — what the phone
+  says aloud: `reply` after work was sent ("Sent to Designer and Backend. Anything else?"),
+  `ask` to ask once when it couldn't tell, `bye` as the call ends.
+- `call_route` `{ "squad", "call", "routes": [{ "to": { "kind": "member" | "squad" | "pm",
+  "session"?, "name"?, "role"? }, "text" }], "by": "llm" | "rules" | "fallback" }` — where the
+  utterance went: one route a recipient, `text` what that one was sent. `by`: a fast model read
+  it (`llm`); it timed out or failed and words matched (`rules`, shown small); nothing matched,
+  so it went to the PM (`fallback`). `kind: "squad"` is everyone (`about` null).
+- `call_summary` `{ "squad", "call", "dispatched": [{ "to", "text", "at" }], "ended":
+  "person" | "idle" | "hangup" }` — the call ended: everything sent in it (`to` as in
+  `call_route`, `at` unix ms). `person`: they said they were done ("No, that's all.");
+  `idle`: two minutes of silence brought "Anything else?" and one more minute none;
+  `hangup`: `call_end`.
+
+The daemon keeps the last 8 turns of a call and folds older ones into a running summary, so what
+the judge reads stays the same size however long the call runs. The judge is a fast model
+(`claude-haiku-5-5`, `ANTHROPIC_API_KEY` in the daemon's environment) with 2.5 seconds; past
+that, or on any failure, word rules (designer, backend, frontend, qa, everyone, all, 디자이너,
+백엔드, 프론트, 다들, 전체), and failing those the PM. A question goes to the PM ("I'll ask the PM").
+
+A call never decides anything: what is said in it reaches members only as `submit`, never
+through decisions in words (`say`), so nothing is approved, accepted or merged by voice.
+A device may send the three call commands as it may send `submit`.
+
+`equipe call-sim` runs the same loop in a terminal, one line an utterance, printing the events.
+
 ### Conformance vectors
 
 `docs/remote-vectors/` holds frames sealed with fixed keys and fixed ephemeral keys, QR codes
@@ -809,7 +850,7 @@ The daemon follows a device like one more screen, with less reach than the termi
   `undo_home_change` (see Taking back a change to the squad's folder), `focus`, `refresh`,
   `design`, `project_docs` and `search_docs` (see Briefs and plans), `engines` (where the engines stand; never signing one in or out), `plan_use` (where
   the plans went: see Where the plans went), `say` and
-  `undo_words` (see Deciding in words).
+  `undo_words` (see Deciding in words), `call_start`, `call_utterance` and `call_end` (see A call).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it
