@@ -1162,7 +1162,6 @@
   "design.refs.gap_aspect": "{id}：観点がありません。",
   "design.refs.gap_shot": "{id}：画像がありません。",
   "design.refs.board_ready": "ボードの準備ができました：リファレンス {count}、ソース {sources}。",
-  "design.palette.how_many": "一度に2〜{most} 個のパレット。選ぶには2つ以上必要。",
   "design.palette.bad": "「{spec}」はパレットではありません：Name=text-bg-primary-secondary-accent（16進5色）か Name=<Realtime Colors のアドレス>。ダークは /<5色> を足す。",
   "design.palette.bad_fonts": "「{fonts}」はペアではありません：見出し/本文。",
   "design.palette.live_missed": "Realtime Colors は撮れませんでした（{why}）。自前のページで各パレットを示します。",
@@ -1181,5 +1180,7 @@
   "design.component.not_item": "{url} はファイルのあるレジストリ項目ではありません（{status}）。",
   "design.component.wrote": "書き出したファイル：{count}、{path} に、SOURCE.md（出どころとライセンス）付き。",
   "design.component.restyle": "私たちのトークンに直すもの：{count}。SOURCE.md に一覧。",
-  "design.component.closed": "{site} はレジストリをツールに閉じている（robots.txt）ため、ソースは取得しません。ページ・ライセンス・依存関係は {path} にあります。私たちのトークンでパターンを作り直すか、公開レジストリのコンポーネントを使う。"
+  "design.component.closed": "{site} はレジストリをツールに閉じている（robots.txt）ため、ソースは取得しません。ページ・ライセンス・依存関係は {path} にあります。私たちのトークンでパターンを作り直すか、公開レジストリのコンポーネントを使う。",
+  "design.taste.sandboxed": "これはウェブを読み Chrome で描画しますが、サンドボックスでは許されていません。同じコマンドをサンドボックスの外で実行し（一度だけ確認。本人が許可または拒否）、ほかの `equipe design refs`・`palette`・`type`・`component` もそこで実行する。",
+  "design.palette.how_many": "一度に1〜{most} 個のパレット。1つなら出荷する色の確認、複数なら方向性の比較。"
 }

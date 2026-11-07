@@ -1162,7 +1162,6 @@
   "design.refs.gap_aspect": "{id}：沒有標註面向。",
   "design.refs.gap_shot": "{id}：缺少圖片。",
   "design.refs.board_ready": "參考板已就緒：參考 {count}，來源 {sources}。",
-  "design.palette.how_many": "一次 2 到 {most} 個配色：選擇需要不只一個。",
   "design.palette.bad": "「{spec}」不是配色：Name=text-bg-primary-secondary-accent（五個十六進位顏色）或 Name=<Realtime Colors 位址>；加 /<五個深色> 指定深色。",
   "design.palette.bad_fonts": "「{fonts}」不是搭配：標題/內文。",
   "design.palette.live_missed": "未擷取 Realtime Colors（{why}）：我們自己的頁面展示每個配色。",
@@ -1181,5 +1180,7 @@
   "design.component.not_item": "{url} 不是帶檔案的註冊表項目（{status}）。",
   "design.component.wrote": "已寫入檔案：{count}，位於 {path}，附 SOURCE.md（來源和授權）。",
   "design.component.restyle": "需改用我們 token 的地方：{count}，列在 SOURCE.md。",
-  "design.component.closed": "{site} 的註冊表不對工具開放（robots.txt），因此不拉取原始碼：頁面、授權和相依套件都在 {path}。用我們的 token 重建該模式，或從公開註冊表取元件。"
+  "design.component.closed": "{site} 的註冊表不對工具開放（robots.txt），因此不拉取原始碼：頁面、授權和相依套件都在 {path}。用我們的 token 重建該模式，或從公開註冊表取元件。",
+  "design.taste.sandboxed": "這會讀取網頁並在 Chrome 中繪製，而你的沙盒不允許：在沙盒外執行同一命令（只問一次，由本人允許或拒絕），其他 `equipe design refs`、`palette`、`type` 和 `component` 命令也在那裡執行。",
+  "design.palette.how_many": "一次 1 到 {most} 個配色：一個用於檢查要上線的顏色，多個用於比較方向。"
 }

@@ -1233,6 +1233,8 @@ fn node_tools() -> Result<(PathBuf, PathBuf), String> {
 async fn ensure_kit() -> Result<PathBuf, String> {
     let dir = kit_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // Two first runs at once (a member's parallel commands) installed over each other.
+    let _installing = crate::design_taste::Lock::take(dir.join(".install.lock"), Duration::from_secs(300)).await;
     if !dir.join("node_modules").join("playwright").join("package.json").is_file() {
         let (_, npm) = node_tools()?;
         eprintln!("Setting up the design tools once (Playwright, using this Mac's Chrome)…");

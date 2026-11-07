@@ -1185,7 +1185,6 @@
   "design.refs.gap_aspect": "{id} : aucun aspect.",
   "design.refs.gap_shot": "{id} : son image manque.",
   "design.refs.board_ready": "La planche est prête : références {count}, sources {sources}.",
-  "design.palette.how_many": "De deux à {most} palettes à la fois : un choix en demande plus d’une.",
   "design.palette.bad": "« {spec} » n’est pas une palette : Nom=text-bg-primary-secondary-accent (cinq couleurs hex) ou Nom=<une adresse Realtime Colors> ; ajoutez /<cinq sombres> pour le mode sombre.",
   "design.palette.bad_fonts": "« {fonts} » n’est pas une paire : Titre/Texte.",
   "design.palette.live_missed": "Realtime Colors non capturé ({why}) : notre propre page montre chaque palette.",
@@ -1204,5 +1203,7 @@
   "design.component.not_item": "{url} n’est pas un élément de registre avec des fichiers ({status}).",
   "design.component.wrote": "Fichiers écrits : {count}, dans {path}, avec SOURCE.md (origine, licence).",
   "design.component.restyle": "À reprendre avec nos tokens avant qu’il soit à nous : {count}, listés dans SOURCE.md.",
-  "design.component.closed": "{site} ferme son registre aux outils (robots.txt), le code n’est donc pas récupéré : sa page, sa licence et ses dépendances sont dans {path}. Refaites le motif avec nos tokens, ou prenez un composant d’un registre public."
+  "design.component.closed": "{site} ferme son registre aux outils (robots.txt), le code n’est donc pas récupéré : sa page, sa licence et ses dépendances sont dans {path}. Refaites le motif avec nos tokens, ou prenez un composant d’un registre public.",
+  "design.taste.sandboxed": "Ceci lit le web et dessine dans Chrome, ce que votre bac à sable n’autorise pas : lancez la même commande hors du bac à sable (demandez une fois ; la personne accepte ou refuse), et les autres commandes `equipe design refs`, `palette`, `type` et `component` aussi.",
+  "design.palette.how_many": "D’une à {most} palettes à la fois : une vérifie les couleurs livrées, plusieurs comparent des directions."
 }

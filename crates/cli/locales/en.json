@@ -1185,7 +1185,6 @@
   "design.refs.gap_aspect": "{id}: no aspect.",
   "design.refs.gap_shot": "{id}: its picture is missing.",
   "design.refs.board_ready": "The board is ready: references {count}, sources {sources}.",
-  "design.palette.how_many": "Two to {most} palettes at a time: a choice needs more than one.",
   "design.palette.bad": "“{spec}” isn’t a palette: Name=text-bg-primary-secondary-accent (five hex colours) or Name=<a Realtime Colors address>; add /<five dark ones> to give the dark.",
   "design.palette.bad_fonts": "“{fonts}” isn’t a pair: Heading/Body.",
   "design.palette.live_missed": "Realtime Colors wasn’t shot ({why}): our own page shows each palette.",
@@ -1204,5 +1203,7 @@
   "design.component.not_item": "{url} isn’t a registry item with files ({status}).",
   "design.component.wrote": "Files written: {count}, into {path}, with SOURCE.md (where it came from, its licence).",
   "design.component.restyle": "To restyle to our tokens before it is ours: {count}, listed in SOURCE.md.",
-  "design.component.closed": "{site} keeps its registry closed to tools (robots.txt), so its source isn’t fetched: its page, licence and dependencies are in {path}. Rebuild the pattern from our tokens, or take a component from a public registry."
+  "design.component.closed": "{site} keeps its registry closed to tools (robots.txt), so its source isn’t fetched: its page, licence and dependencies are in {path}. Rebuild the pattern from our tokens, or take a component from a public registry.",
+  "design.taste.sandboxed": "This reads the web and draws in Chrome, which your sandbox doesn’t allow: run the same command outside the sandbox (ask once; the person allows or refuses), and run the other `equipe design refs`, `palette`, `type` and `component` commands there too.",
+  "design.palette.how_many": "One to {most} palettes at a time: one checks the colours that ship, more compare directions."
 }

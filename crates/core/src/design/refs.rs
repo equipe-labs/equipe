@@ -225,12 +225,27 @@ pub fn slug(text: &str) -> String {
     out.trim_end_matches('-').to_owned()
 }
 
-/// Where a query goes on a source: each of its searches, filled in.
+/// Where a query goes on a source: each of its searches, filled in — the
+/// whole query first, then (a category being one word) each of its first
+/// three words of three letters or more.
 pub fn search_urls(source: &Source, query: &str) -> Vec<String> {
-    let lower = slug(query);
     // Google Fonts names a family with its capitals and `+` for spaces.
     let named = query.split_whitespace().collect::<Vec<_>>().join("+");
-    source.searches.iter().map(|s| s.replace("{q}", &lower).replace("{Q}", &named)).collect()
+    let mut terms = vec![slug(query)];
+    terms.extend(query.split_whitespace().map(slug).filter(|w| w.chars().count() >= 3).take(3));
+    let mut out: Vec<String> = Vec::new();
+    for (i, term) in terms.iter().enumerate() {
+        for s in source.searches {
+            if i > 0 && !s.contains("{q}") {
+                continue;
+            }
+            let url = s.replace("{q}", term).replace("{Q}", &named);
+            if !out.contains(&url) {
+                out.push(url);
+            }
+        }
+    }
+    out
 }
 
 /// The entries of a markdown list page (21st's category twin): each
@@ -538,7 +553,18 @@ mod tests {
         assert_eq!(site("https://user@WWW.Example.com:8080/a?b"), "example.com");
         let lapa = source_of("https://lapa.ninja").unwrap();
         assert_eq!(search_urls(lapa, "SaaS"), ["https://www.lapa.ninja/category/saas/"]);
-        assert_eq!(search_urls(&SOURCES[5], "Space Grotesk"), ["https://fonts.google.com/specimen/Space+Grotesk"]);
+        assert_eq!(search_urls(&SOURCES[5], "Space Grotesk"), ["https://fonts.google.com/specimen/Space+Grotesk"], "a family is its whole name");
+        let twenty_first = SOURCES.iter().find(|s| s.id == "21st").unwrap();
+        assert_eq!(
+            search_urls(twenty_first, "SaaS pricing hero form"),
+            [
+                "https://21st.dev/community/components/s/saas-pricing-hero-form.md",
+                "https://21st.dev/community/components/s/saas.md",
+                "https://21st.dev/community/components/s/pricing.md",
+                "https://21st.dev/community/components/s/hero.md",
+            ],
+            "a category is a word: the whole query, then its words"
+        );
         assert_eq!(slug("  Pricing page / Plans "), "pricing-page-plans");
         assert_eq!(lapa.via, Via::Browser, "its pages ask automated readers to prove they're human: browsed by the designer");
         assert!(SOURCES.iter().find(|s| s.id == "mobbin").is_some_and(|s| s.needs_sign_in && s.via == Via::Browser));

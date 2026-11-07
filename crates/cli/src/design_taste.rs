@@ -149,6 +149,46 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// These tools read the web and draw in Chrome, neither of which an
+/// engine's sandbox allows: said at once, rather than after a failed read.
+fn outside_sandbox(env: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
+    let set = |name: &str| env(name).is_some_and(|v| !v.trim().is_empty());
+    if set("CODEX_SANDBOX") || set("CODEX_SANDBOX_NETWORK_DISABLED") { Err(t!("design.taste.sandboxed").to_owned()) } else { Ok(()) }
+}
+
+fn not_sandboxed() -> Result<(), String> {
+    outside_sandbox(&|name| std::env::var(name).ok())
+}
+
+/// A lock on a folder while it is changed: another call of these tools on
+/// it waits its turn (two `refs shoot` at once wrote the same reference id,
+/// two first runs installed the drawing kit over each other). One left
+/// behind by a call that was stopped is taken over after the wait.
+pub(crate) struct Lock(PathBuf);
+
+impl Lock {
+    pub(crate) async fn take(path: PathBuf, wait: Duration) -> Lock {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let until = std::time::Instant::now() + wait;
+        while std::fs::OpenOptions::new().write(true).create_new(true).open(&path).is_err() && std::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        Lock(path)
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn board_lock(design: &Path) -> PathBuf {
+    design.join(refs::DIR).join(".lock")
+}
+
 async fn get(client: &reqwest::Client, url: &str) -> Result<(u16, String), String> {
     let response = client.get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
     let status = response.status().as_u16();
@@ -333,22 +373,36 @@ pub async fn refs_command(action: RefsAction) -> Result<(), String> {
                 urls.iter().for_each(|u| println!("  {u}"));
                 return Ok(());
             }
+            not_sandboxed()?;
             let client = client()?;
             let mut found = 0;
+            let mut refused: Vec<String> = Vec::new();
             for url in urls {
+                if found >= 3 {
+                    break;
+                }
+                if refused.contains(&refs::site(&url)) {
+                    continue;
+                }
                 match robots(&client, &url).await {
                     Robots::Allowed => {}
+                    Robots::Unread(why) if why.contains("error sending request") => {
+                        // The web isn't there at all: one line, not one per page.
+                        return Err(t!("design.refs.robots_unread", url = url, status = why));
+                    }
                     Robots::Refused => {
                         eprintln!("{}", t!("design.refs.robots_no", url = url));
                         continue;
                     }
                     Robots::Unread(why) => {
                         eprintln!("{}", t!("design.refs.robots_unread", url = url, status = why));
+                        refused.push(refs::site(&url));
                         continue;
                     }
                 }
                 let (status, body) = get(&client, &url).await?;
                 if status != 200 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
                 let links = refs::markdown_links(&body);
@@ -373,6 +427,7 @@ pub async fn refs_command(action: RefsAction) -> Result<(), String> {
             if !picture.is_file() {
                 return Err(t!("design.refs.no_picture", path = picture.display()));
             }
+            let _lock = Lock::take(board_lock(&design), Duration::from_secs(600)).await;
             let mut board = refs::read(&design);
             let mut r = refs::new_reference(&board, &url, &learn, aspects, &today(), refs::Via::Browser);
             r.ticket = ticket;
@@ -390,6 +445,9 @@ pub async fn refs_command(action: RefsAction) -> Result<(), String> {
             let board = refs::read(&design);
             if board.is_empty() {
                 return Err(t!("design.refs.empty").to_owned());
+            }
+            if !no_png {
+                not_sandboxed()?;
             }
             let html = design.join(refs::DIR).join("board.html");
             std::fs::write(&html, refs::board_html(&board, brief.as_deref(), crate::i18n::lang())).map_err(|e| format!("{}: {e}", html.display()))?;
@@ -433,8 +491,11 @@ fn gap_says(gap: &refs::BoardGap) -> String {
 
 async fn shoot(args: ShootArgs) -> Result<(), String> {
     let (widths, aspects) = plan_shoot(&args)?;
+    not_sandboxed()?;
     let design = design_dir(args.dir.clone());
     let client = client()?;
+    // One shoot at a time per design folder: each numbers its references from the board.
+    let _lock = Lock::take(board_lock(&design), Duration::from_secs(600)).await;
     let mut board = refs::read(&design);
     let mut planned: Vec<(refs::Reference, Vec<serde_json::Value>)> = Vec::new();
     for ((url, learn), aspects) in args.urls.iter().zip(&args.learn).zip(aspects) {
@@ -499,11 +560,14 @@ fn fonts_of(text: Option<&str>) -> Result<Option<fonts::Pair>, String> {
 }
 
 pub async fn palette_command(args: PaletteArgs) -> Result<(), String> {
-    if !(2..=palette::MOST).contains(&args.palettes.len()) {
+    if !(1..=palette::MOST).contains(&args.palettes.len()) {
         return Err(t!("design.palette.how_many", most = palette::MOST));
     }
     let palettes: Vec<palette::Palette> = args.palettes.iter().map(|p| palette::parse(p).map_err(|_| t!("design.palette.bad", spec = p))).collect::<Result<_, _>>()?;
     let pair = fonts_of(args.fonts.as_deref())?;
+    if args.live || !args.no_png {
+        not_sandboxed()?;
+    }
     let fonts = pair.as_ref().map(|p| (p.heading.as_str(), p.body.as_str()));
     let out = design_dir(args.dir).join("palettes");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -592,6 +656,7 @@ pub async fn type_command(args: TypeArgs) -> Result<(), String> {
     let pairs: Vec<fonts::Pair> = args.pairs.iter().map(|p| fonts::Pair::parse(p).ok_or_else(|| t!("design.type.bad_pair", pair = p))).collect::<Result<_, _>>()?;
     let design = design_dir(args.dir);
     let langs = locales(args.locales.as_deref(), &design)?;
+    not_sandboxed()?;
     let lang = crate::i18n::lang();
     let out = design.join("type");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -656,6 +721,7 @@ pub async fn component_command(args: ComponentArgs) -> Result<(), String> {
     let origin = component::origin(&args.source).map_err(origin_says)?;
     let design = design_dir(args.dir);
     let out = args.out.unwrap_or_else(|| design.join("vendor").join(refs::slug(&origin.name())));
+    not_sandboxed()?;
     let client = client()?;
     let registry = origin.registry();
     // Its page's twin: where it came from, its licence and what it needs.
@@ -782,7 +848,8 @@ mod tests {
             let crate::design::DesignAction::Palette(p) = parse(&[&["palette"], words].concat()).unwrap() else { panic!() };
             tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(palette_command(p))
         };
-        assert!(run(&["One=050315-fbfbfe-2f27ce-dedcff-433bff"]).is_err(), "two at least: a choice");
+        let one = "One=050315-fbfbfe-2f27ce-dedcff-433bff";
+        assert!(run(&[one, one, one, one, one]).unwrap_err().contains('4'), "four at most");
         assert!(run(&["A=050315-fbfbfe-2f27ce-dedcff-433bff", "B=nope"]).unwrap_err().contains("B=nope"));
         assert!(run(&["A=050315-fbfbfe-2f27ce-dedcff-433bff", "B=050315-fbfbfe-2f27ce-dedcff-433bff", "--fonts", "A/B/C"]).unwrap_err().contains("A/B/C"));
     }
@@ -795,5 +862,37 @@ mod tests {
         assert!(script.contains("lastAt") && script.contains("pace"), "pages of one site are paced");
         assert!(script.contains("stopped.has(host)"), "a site that asked for a check isn't opened again");
         assert!(!script.contains("userAgent") && !script.contains("AutomationControlled"), "it never hides that it is automated");
+        let lint = include_str!("../assets/design/lint.mjs");
+        assert!(lint.contains("open(browser, width, 'dark')") && lint.contains("(dark)"), "the floor reads text contrast in a page's dark scheme too");
+    }
+
+    #[test]
+    fn inside_an_engines_sandbox_it_says_so_before_reading_anything() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |n: &str| pairs.iter().find(|(k, _)| *k == n).map(|(_, v)| (*v).to_owned());
+        assert!(outside_sandbox(&env(&[])).is_ok());
+        assert!(outside_sandbox(&env(&[("CODEX_SANDBOX", "")])).is_ok(), "set but empty: not in one");
+        let said = outside_sandbox(&env(&[("CODEX_SANDBOX", "seatbelt")])).unwrap_err();
+        assert!(said.contains("outside the sandbox") && said.contains("palette"), "{said}");
+        assert!(outside_sandbox(&env(&[("CODEX_SANDBOX_NETWORK_DISABLED", "1")])).is_err());
+    }
+
+    #[tokio::test]
+    async fn one_call_at_a_time_holds_the_board() {
+        let dir = std::env::temp_dir().join(format!("equipe-lock-{}", std::process::id()));
+        let lock = dir.join(".lock");
+        let first = Lock::take(lock.clone(), Duration::from_secs(5)).await;
+        assert!(lock.is_file());
+        let started = std::time::Instant::now();
+        let waiter = tokio::spawn({
+            let lock = lock.clone();
+            async move { Lock::take(lock, Duration::from_secs(5)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        drop(first);
+        let second = waiter.await.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(600), "the second waited for the first");
+        drop(second);
+        assert!(!lock.exists(), "let go when done");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
