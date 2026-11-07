@@ -173,6 +173,15 @@ impl PlanUseUi {
         vec![Command::PlanUse { engine: self.engine, span: self.span }]
     }
 
+    /// A look at another engine or stretch than the one shown, for a screen
+    /// that reads it beside (Orchestration's lanes), leaving what is shown as it is.
+    pub fn ask_for(&mut self, engine: Engine, span: Span) -> Vec<Command> {
+        if !self.asked.insert((engine, span)) {
+            return Vec::new();
+        }
+        vec![Command::PlanUse { engine, span }]
+    }
+
     pub fn pick_engine(&mut self, engine: Engine) -> Vec<Command> {
         if self.engine != engine {
             self.engine = engine;

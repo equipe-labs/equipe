@@ -35,6 +35,7 @@ pub mod header;
 pub mod icons;
 pub mod pair;
 pub mod peek;
+pub mod orchestra;
 pub mod progress;
 pub mod project;
 pub mod quote;
