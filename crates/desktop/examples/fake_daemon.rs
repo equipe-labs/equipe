@@ -88,6 +88,9 @@
 //! routine's message and the review in the designer's conversation, its
 //! proposal waiting in the inbox as a visual question (`fake_daemon/review.rs`).
 //!
+//! `FAKE_STUDIO=1`: the designer at T-205 with references, two directions, a failing then
+//! passing check, a refused hand-in and a second look's fixes then pass, for the designer
+//! studio (`fake_daemon/studio.rs`; `waiting`, `failing`, `handed`, `codex`).
 //! `FAKE_CHECKS=1`: the designer's conversation checks a screen in code and has a
 //! second look at it (`fake_daemon/checks.rs`); `FAKE_CHECKS=fail` stops at a failing check.
 //! `FAKE_NOISE=1`: the designer's conversation holds the engine's own turns —
@@ -461,6 +464,8 @@ fn board() -> Vec<Ticket> {
     if orchestra::on() {
         out.extend(orchestra::tickets(|id, status, project, who, title, deps| ticket(id, status, project, who, title, "", deps, None, None)));
     }
+    // `FAKE_STUDIO`: the designer's T-205, its worktree's design folder filled.
+    out.extend(studio::ticket(|id, status, project, who, title, body| ticket(id, status, project, who, title, body, &[], None, None)));
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
@@ -557,6 +562,8 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
         if retro::on() {
             waiting.insert(0, retro::set(now));
         }
+        // `FAKE_STUDIO=waiting`: the designer's pick of a direction.
+        waiting.extend(studio::question_set(now));
         std::sync::Mutex::new(waiting)
     })
 }
@@ -1097,6 +1104,8 @@ mod signin;
 #[path = "fake_daemon/crowd.rs"]
 mod crowd;
 
+#[path = "fake_daemon/studio.rs"]
+mod studio;
 #[path = "fake_daemon/orchestra.rs"]
 mod orchestra;
 
@@ -1145,6 +1154,7 @@ async fn main() {
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
     design::seed();
+    studio::seed();
     briefs::seed();
     if pictures::on() || review::on() {
         pictures::make();
@@ -1328,6 +1338,16 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             designer.state = SessionState::Ready;
                             designer.recent = checks::history();
                         }
+                        // `FAKE_STUDIO`: the designer at T-205, watched in the designer studio.
+                        if studio::on() {
+                            let lines = studio::history();
+                            designer = on(designer, studio::TICKET, "app", studio::TITLE, studio::working(), ("Read", "design/brand.md"), None);
+                            designer.recent = lines;
+                            if studio::codex() {
+                                designer.engine = Engine::Codex;
+                                designer.model = Some("gpt-5.5-codex".into());
+                            }
+                        }
                         let mut backend = backend;
                         backend.effort = Some("high".into());
                         if let Some(mode) = helpers::mode() {
@@ -1417,7 +1437,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             words::on_hello(&board)
                         };
                         for s in &mut sessions {
-                            s.recent_at = said_at(&s.recent, unix());
+                            s.recent_at = if studio::on() && s.session == 4 { studio::times(&s.recent) } else { said_at(&s.recent, unix()) };
                         }
                         let snapshot = Snapshot {
                             plans: switching::plans(),
@@ -1535,8 +1555,18 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     // design system's, checked as the daemon checks it.
                     (Some(rpc::READ_IMAGE), Some(id)) => {
                         let ask: rpc::ReadImage = message.params_as().unwrap();
-                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)) {
+                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)).or_else(|why| studio::read_image(&ask).map_err(|_| why)) {
                             Ok(read) => Message::response(id, read),
+                            Err(why) => Message::failure(id, -32000, why),
+                        };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    // A ticket's design work, as the daemon reads its worktree's design folder.
+                    (Some(rpc::DESIGN_STUDIO), Some(id)) => {
+                        let reply = match message.params_as::<equipe_core::protocol::studio::StudioAsk>().ok_or("design_studio needs { squad, ticket }".to_owned()).and_then(|ask| studio::answer(&ask)) {
+                            Ok(found) => Message::response(id, found),
                             Err(why) => Message::failure(id, -32000, why),
                         };
                         if writer.write_all(reply.to_line().as_bytes()).await.is_err() {

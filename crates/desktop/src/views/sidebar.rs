@@ -2236,7 +2236,7 @@ impl Shell {
 
     /// Where the window is now, for back and forward.
     pub fn place(&self) -> Place {
-        Place { screen: self.screen, menu: self.board.view.menu, member: self.model.selected, ticket: self.model.opened }
+        Place { screen: self.screen, menu: self.board.view.menu, member: self.model.selected, ticket: if self.screen == Screen::Studio { self.studio.ticket } else { self.model.opened } }
     }
 
     /// Called from each draw: a new place goes on the history.
@@ -2287,6 +2287,10 @@ impl Shell {
             Screen::Usage => self.open_usage(cx),
             Screen::Orchestration => self.open_orchestra(cx),
             Screen::Docs => self.open_docs(cx),
+            Screen::Studio => match place.ticket.or(self.studio.ticket) {
+                Some(id) => self.open_studio(id, window, cx),
+                None => self.open_side(Side::Pm, window, cx),
+            },
             Screen::Project => match self.board.project_page.clone() {
                 Some(name) => self.open_project_page(name, window, cx),
                 None => self.open_side(Side::Pm, window, cx),

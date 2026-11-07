@@ -169,8 +169,34 @@ shown only on dark, `…-light` only on light, any other on both.
   1.5 s — their files' sizes and times only — and sends the event again when
   one changed, so the screen follows what the designer saves.
 - `read_image` `{ squad, path, max? }` for each asset.
+- The designer studio (below) asks `design_studio` `{ squad, ticket }` →
+  `Studio` (`crates/protocol/src/studio.rs`) every 2 s while it is open: what
+  the ticket's worktree design folder holds — each screen's latest check and
+  second look, the edits not checked yet, the directions' log, the critiques,
+  the reference board and other pictures. Read-only, from inside that folder
+  only (links out are not followed), every file and list capped
+  (`crates/core/src/design/studio.rs`); its pictures through `read_image`.
+  The read-only real view may ask it; phones are not routed it.
 
 See `docs/remote-protocol.md` for the phone's side.
+
+### The designer studio (desktop)
+
+Watch a ticket's design work as it happens (`crates/desktop/src/views/studio.rs`;
+from a ticket's card, the member's lane in Orchestration, or the conversation's
+header when the member is on a design ticket). Under the title, an honest status
+line ("Working · 12m", "Waiting for you: pick a direction", "Checks failing:
+Contrast — …", "Handed in"); the steps — brief, references, directions, build,
+checks, hand-in — each lit from what the member did, with how much and when; the
+latest picture it drew, with the seven widths a check drew it at (or the
+directions side by side while a pick waits); and a timeline of what it left —
+references with what to learn from them, directions and the pick, critiques,
+each check and second look, each hand-in and why it was refused — any of them
+opened big. The member's conversation is docked at the right, as on the design
+screen. The rules (`crates/desktop/src/studio.rs`) read only the member's own
+lines on the ticket (Claude's and Codex's steps alike) and the folder above —
+never guessed. `studio:<ticket>` in the snapshot script; `FAKE_STUDIO=1|waiting|
+failing|handed|codex` in the fake daemon.
 
 ## The designer's tools — `equipe design`
 

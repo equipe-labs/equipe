@@ -63,6 +63,7 @@ pub const WHY_NOW: &str = "Why now: ";
 pub const OFFICE_HOURS_FIRST: &str = "Office hours first: the PM releases it.";
 pub mod rpc;
 pub mod stream;
+pub mod studio;
 pub mod tags;
 pub mod telemetry;
 pub mod team;

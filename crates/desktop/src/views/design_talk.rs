@@ -53,7 +53,7 @@ pub fn say(p: Palette, id: impl Into<ElementId>, group: impl Into<SharedString>,
 
 /// The panel at the right of the design screen, or its rail.
 pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<AnyElement> {
-    if shell.screen != Screen::Design {
+    if !matches!(shell.screen, Screen::Design | Screen::Studio) {
         return None;
     }
     let p = shell.palette;
@@ -99,6 +99,7 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     let viewing = to.is_some_and(|(m, _)| shell.model.shows_own(m.session));
     let body: AnyElement = match to {
         None => hint(p, t!("design.talk_nobody").into()),
+        Some((m, _)) if shell.screen == Screen::Studio && (!viewing || shell.chat.blocks.is_empty()) => hint(p, t!("studio.talk_empty", name = m.name)),
         Some(_) if !viewing || shell.chat.blocks.is_empty() => hint(p, t!("design.talk_empty").into()),
         Some(_) => shell.panes.conversation.clone().cached(StyleRefinement::default().flex_1().min_h_0().w_full()).into_any_element(),
     };
@@ -296,6 +297,10 @@ pub fn in_bubble(p: Palette, labels: &[String]) -> AnyElement {
 impl Shell {
     /// Whom the panel talks to: the designer, else the PM (`true`).
     pub fn design_talk_to(&self) -> Option<(&Member, bool)> {
+        // The studio talks to whoever is at the ticket watched.
+        if self.screen == Screen::Studio {
+            return self.studio_member().map(|m| (m, false));
+        }
         self.model.design_talker()
     }
 
@@ -384,7 +389,8 @@ impl Shell {
     /// right, and its composer has the chip.
     pub fn design_point_at(&mut self, ctx: DesignContext, window: &mut Window, cx: &mut Context<Self>) {
         rules::add(&mut self.composer.context, ctx);
-        if self.screen != Screen::Design {
+        // The studio docks the same conversation: pointing there stays there.
+        if !matches!(self.screen, Screen::Design | Screen::Studio) {
             self.open_design(cx);
         }
         if !self.design_talk_open(window, cx) {

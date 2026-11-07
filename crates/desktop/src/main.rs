@@ -58,6 +58,7 @@ mod sshkey;
 mod snapshot;
 mod state;
 mod stream;
+mod studio;
 mod target;
 mod theme;
 mod routine;
@@ -213,6 +214,8 @@ pub enum Screen {
     Orchestration,
     /// Briefs and plans: every project's and the squad's own, in one place (`views/docs.rs`).
     Docs,
+    /// The designer studio: a ticket's design work, watched as it happens (`views/studio.rs`).
+    Studio,
 }
 
 pub struct Shell {
@@ -256,6 +259,8 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// Design system's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
+    /// The designer studio: a ticket's design work, watched (`views/studio.rs`).
+    pub studio: studio::StudioUi,
     /// Compare and review's box for what to change, a draft sent back with it.
     pub design_redo: Entity<InputState>,
     /// The routines' list on Progress: which is being edited or deleted.
@@ -451,6 +456,7 @@ impl Shell {
             side_chat: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
+            studio: Default::default(),
             design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
@@ -1706,6 +1712,7 @@ impl Shell {
                     Screen::Usage => views::usage::render(self, cx),
                     Screen::Orchestration => views::orchestra::render(self, cx),
                     Screen::Docs => views::docs::render(self, cx),
+                    Screen::Studio => views::studio::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
@@ -2020,6 +2027,7 @@ impl Render for Shell {
         self.board.relocalize(window, cx);
         self.board_prepare(window, cx);
         self.design_prepare(window, cx);
+        self.studio_prepare(window, cx);
         // What the person did here (accepted, answered, a project in focus) changes Needs you too.
         self.sync_badge();
         self.sync_window(window);

@@ -213,6 +213,7 @@ pub const READ_METHODS: &[&str] = &[
     rpc::READ_UPLOAD,
     rpc::READ_IMAGE,
     rpc::LIST_IMAGES,
+    rpc::DESIGN_STUDIO,
     rpc::TELEMETRY,
     rpc::PERSON_LOOK,
     metrics::SOURCES,
@@ -643,7 +644,7 @@ mod tests {
 
     #[test]
     fn only_requests_that_read_go() {
-        for method in [rpc::HELLO, rpc::SQUADS, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::READ_UPLOAD, rpc::PERSON_LOOK, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
+        for method in [rpc::HELLO, rpc::SQUADS, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::DESIGN_STUDIO, rpc::READ_UPLOAD, rpc::PERSON_LOOK, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
             assert!(reads_method(method), "{method}");
         }
         // The real view tells no look of its own: it isn't the person's screen.

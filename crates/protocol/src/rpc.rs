@@ -26,6 +26,10 @@
 //!   whole or as a thumbnail; only after `hello`, for the squad followed
 //! - `list_images` (request): [`ListImages`] → [`ImageList`], the pictures in a
 //!   folder a reply points at; only after `hello`, for the squad followed
+//! - `design_studio` (request): [`crate::studio::StudioAsk`] →
+//!   [`crate::studio::Studio`], what a ticket's worktree holds of its design
+//!   work (checks, directions, critiques, references), read from inside its
+//!   design folder only; only after `hello`, for the squad followed
 //! - `browser_stream` (request): the connection becomes the browser panel's
 //!   picture stream ([`crate::stream`])
 //! - `telemetry` (request): → [`crate::telemetry::TelemetryStatus`], whether
@@ -63,6 +67,7 @@ pub const UPLOAD: &str = "upload";
 pub const READ_UPLOAD: &str = "read_upload";
 pub const READ_IMAGE: &str = "read_image";
 pub const LIST_IMAGES: &str = "list_images";
+pub const DESIGN_STUDIO: &str = "design_studio";
 pub const TELEMETRY: &str = "telemetry";
 pub const TELEMETRY_SET: &str = "telemetry_set";
 pub const SCREEN_LOOK: &str = "screen_look";

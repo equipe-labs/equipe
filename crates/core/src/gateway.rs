@@ -478,6 +478,27 @@ async fn serve_client(
                     });
                 });
             }
+            (Some(rpc::DESIGN_STUDIO), Some(id)) => {
+                // A ticket's design work, of the squad this screen follows: read from its design folder only.
+                let Some(ask) = message.params_as::<equipe_protocol::studio::StudioAsk>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "design_studio needs { squad, ticket }"));
+                    continue;
+                };
+                if followed.as_deref() != Some(ask.squad.as_str()) {
+                    let _ = out_tx.send(Message::failure(id, -32002, "say hello to that squad first"));
+                    continue;
+                }
+                let home = home.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let read = tokio::task::spawn_blocking(move || crate::design::studio::of_ticket(&home, &ask.squad, ask.ticket)).await;
+                    let _ = out.send(match read {
+                        Ok(Ok(studio)) => Message::response(id, studio),
+                        Ok(Err(why)) => Message::failure(id, -32000, why),
+                        Err(_) => Message::failure(id, -32000, "the design folder couldn't be read"),
+                    });
+                });
+            }
             (Some(rpc::DESKTOP), Some(id)) => {
                 let Some(call) = message.params_as::<ToolCall>() else {
                     let _ = out_tx.send(Message::failure(id, -32602, "desktop needs { squad, member, name, arguments }"));
