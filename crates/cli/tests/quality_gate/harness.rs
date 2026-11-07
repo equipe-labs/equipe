@@ -169,7 +169,11 @@ impl Daemon {
         let path = variant_path(binary, &bin, std::env::var_os("PATH").as_deref());
         let own = std::env::var_os("ZDOTDIR").filter(|d| !d.is_empty()).or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default();
         let zdot = variant_zdotdir(&bin, &home.parent().unwrap_or(home).join("zdot"), &own);
+        // Run from the run's own folder: a member's command that loses its
+        // way (a relative path, outside its sandbox) lands there, never in
+        // the checkout the eval was started from.
         let child = Process::new(binary)
+            .current_dir(home.parent().unwrap_or(home))
             .args(["daemon", "run"])
             .env("PATH", path)
             .env("ZDOTDIR", zdot)
