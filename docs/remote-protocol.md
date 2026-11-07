@@ -625,8 +625,8 @@ Events (daemon → phone), each with `squad` set:
 The daemon keeps the last 8 turns of a call and folds older ones into a running summary, so what
 the judge reads stays the same size however long the call runs. The judge is a fast model
 (`claude-haiku-5-5`, `ANTHROPIC_API_KEY` in the daemon's environment) with 2.5 seconds; past
-that, or on any failure, word rules (designer, backend, frontend, qa, everyone, all, 디자이너,
-백엔드, 프론트, 다들, 전체), and failing those the PM. A question goes to the PM ("I'll ask the PM").
+that, or on any failure, word rules (role names and "everyone" in every language equipe speaks,
+kept in core's `locales/` as `match.call_*`), and failing those the PM. A question goes to the PM ("I'll ask the PM").
 
 A call never decides anything: what is said in it reaches members only as `submit`, never
 through decisions in words (`say`), so nothing is approved, accepted or merged by voice.

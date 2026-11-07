@@ -123,6 +123,8 @@ pub fn person_only(command: &Command) -> bool {
         // member's, that reads its files and the web. The person's to open,
         // write in and close — a member must not start one of its own.
         C::StartSideChat { .. } | C::SideChatSubmit { .. } | C::CloseSideChat { .. } => true,
+        // A call is the person's own voice: what it routes is sent as theirs.
+        C::CallStart { .. } | C::CallUtterance { .. } | C::CallEnd { .. } => true,
 
         // Not the person's alone. Session plumbing and the person's own
         // messages; screen, conversation and panel state; reads and lists;

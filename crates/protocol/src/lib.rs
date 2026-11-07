@@ -16,6 +16,7 @@ pub mod accept;
 pub mod asks;
 pub mod briefs;
 pub mod by_words;
+pub mod call;
 pub mod decide;
 pub mod disk;
 pub mod metrics;
@@ -1170,6 +1171,19 @@ pub enum Command {
     /// (any case), read from the squad's folder as [`Command::ProjectDocs`]
     /// lists them: answered by [`Event::DocsFound`]. Only reads.
     SearchDocs { squad: SquadName, query: String },
+    /// A call begins ([`call`]): answered by [`Event::CallStarted`].
+    CallStart { squad: SquadName },
+    /// One finished utterance of call `call`. Never read for a decision in
+    /// words: what it says reaches members only as a submit.
+    CallUtterance {
+        squad: SquadName,
+        call: String,
+        text: String,
+        #[serde(default)]
+        via: call::CallVia,
+    },
+    /// The person hung up: answered by [`Event::CallSummary`] (`hangup`).
+    CallEnd { squad: SquadName, call: String },
     /// The person keeps the copy at `keep` of a brief or plan saved under more
     /// than one project ([`briefs::DocCopies`]): the other copies are removed
     /// from the squad's folder — never from a repository — as one change of
@@ -2388,6 +2402,14 @@ pub enum Event {
         #[serde(default)]
         paths: Vec<String>,
     },
+    /// A call began: `call` is its id.
+    CallStarted { squad: SquadName, call: String },
+    /// What the phone says aloud.
+    CallSay { squad: SquadName, call: String, text: String, kind: call::SayKind },
+    /// Where an utterance went.
+    CallRoute { squad: SquadName, call: String, routes: Vec<call::CallRoute>, by: call::RouteBy },
+    /// The call ended: everything sent in it.
+    CallSummary { squad: SquadName, call: String, dispatched: Vec<call::Dispatched>, ended: call::CallEnded },
     /// One copy kept ([`Command::KeepDocCopy`]): `removed` went from the
     /// squad's folder as the change `undo`, which [`Command::UndoHomeChange`]
     /// takes back; `None` when nothing needed saving.
@@ -2449,6 +2471,10 @@ impl Event {
             | Event::Design { squad, .. }
             | Event::ProjectDocs { squad, .. }
             | Event::DocsFound { squad, .. }
+            | Event::CallStarted { squad, .. }
+            | Event::CallSay { squad, .. }
+            | Event::CallRoute { squad, .. }
+            | Event::CallSummary { squad, .. }
             | Event::DocCopyKept { squad, .. }
             | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
@@ -2535,6 +2561,10 @@ impl Event {
             | Event::Design { .. }
             | Event::ProjectDocs { .. }
             | Event::DocsFound { .. }
+            | Event::CallStarted { .. }
+            | Event::CallSay { .. }
+            | Event::CallRoute { .. }
+            | Event::CallSummary { .. }
             | Event::DocCopyKept { .. }
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }

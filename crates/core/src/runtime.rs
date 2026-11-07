@@ -90,6 +90,7 @@ mod helping;
 mod side_chat;
 mod providers;
 mod phone;
+mod call;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -526,6 +527,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
         secret_asks: HashMap::new(),
+        calls: HashMap::new(),
+        call_llm: crate::call::judge::LlmConfig::from_env(),
         desktop: desktop::Desktop::new(mac),
         config,
         // A server that never answers a connection must not hold anything up.
@@ -949,6 +952,8 @@ enum Internal {
     SideChat { side: equipe_protocol::SideChatId, event: Box<Event> },
     /// A side chat's turn ended.
     SideDone(side_chat::SideDone),
+    /// The judge read an utterance of call `call` (`call.rs`).
+    CallJudged { call: String, judged: Box<crate::call::judge::Judged> },
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -1129,6 +1134,10 @@ struct Runtime {
     /// Secrets members asked the person for (`ask_secret`), by squad — read
     /// from its journal when first wanted.
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
+    /// Calls under way, by id (`call.rs`).
+    calls: HashMap<String, crate::call::Call>,
+    /// The model a call's judge asks.
+    call_llm: crate::call::judge::LlmConfig,
 }
 
 /// What woke the loop.
@@ -1215,6 +1224,7 @@ impl Wake {
             Wake::Internal(Internal::HelperWaitOver(_)) => Borrowed("a wait for helpers over"),
             Wake::Internal(Internal::SideChat { .. }) => Borrowed("a side chat's step"),
             Wake::Internal(Internal::SideDone(_)) => Borrowed("a side chat's turn ended"),
+            Wake::Internal(Internal::CallJudged { .. }) => Borrowed("a call's utterance judged"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -1457,6 +1467,7 @@ impl Runtime {
                 Internal::HelperWaitOver(key) => self.helper_wait_over(key),
                 Internal::SideChat { side, event } => self.side_event(side, *event),
                 Internal::SideDone(done) => self.side_done(done),
+                Internal::CallJudged { call, judged } => self.call_judged(call, *judged).await,
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -1491,6 +1502,7 @@ impl Runtime {
                 self.run_due_signals();
                 pulse.step("minute tick: engines");
                 self.engines_tick().await;
+                self.calls_tick().await;
                 // Work that reached main outside equipe: every ten minutes is soon
                 // enough (a merge or an accept looks at once), and off the loop.
                 if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
@@ -1888,6 +1900,9 @@ impl Runtime {
                 Box::pin(self.handle(*command)).await;
                 self.on_phone = false;
             }
+            Command::CallStart { squad } => self.call_start(squad).await,
+            Command::CallUtterance { squad, call, text, via: _ } => self.call_utterance(squad, call, text).await,
+            Command::CallEnd { squad, call } => self.call_end(squad, call).await,
             Command::Submit { session, text, about } => {
                 // A conversation the person opened is about its own project, whatever the screen shows.
                 self.said_about = self.conversation_about(session).or(about);

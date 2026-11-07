@@ -201,7 +201,11 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Design { .. }
         | Command::ProjectDocs { .. }
         // Finding a brief or plan by its words: a look. Keeping one copy stays at the console.
-        | Command::SearchDocs { .. }) => Some(c),
+        | Command::SearchDocs { .. }
+        // A call: what it says reaches members only as a submit.
+        | Command::CallStart { .. }
+        | Command::CallUtterance { .. }
+        | Command::CallEnd { .. }) => Some(c),
         _ => None,
     }
 }
@@ -255,7 +259,10 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::SetWordsAll { squad, .. }
         | Command::ProjectDocs { squad }
         | Command::SearchDocs { squad, .. }
-        | Command::KeepDocCopy { squad, .. } => Some(squad),
+        | Command::KeepDocCopy { squad, .. }
+        | Command::CallStart { squad }
+        | Command::CallUtterance { squad, .. }
+        | Command::CallEnd { squad, .. } => Some(squad),
         _ => None,
     }
 }
