@@ -183,7 +183,12 @@ pub fn work_seconds(events: &[(f64, Event)], session: SessionId) -> f64 {
 
 /// The rules and skills a run of `task` shows of its member.
 pub fn compliance(task: &Task, out: &Outcome) -> (BTreeMap<String, Option<bool>>, Vec<quality::SkillCheck>, Rules) {
-    let transcripts = out.transcripts_of(task.role);
+    // A Codex member's own work is in the daemon's events; Claude Code
+    // transcripts beside it are a critic's it ran (`equipe design
+    // critique`), which never estimate or hand in — read alone, they
+    // counted every Codex designer that used the critic as breaking both.
+    let codex = tasks::on_codex(out, task.role);
+    let transcripts: Vec<_> = if codex { Vec::new() } else { out.transcripts_of(task.role) };
     let mut rules = Rules::default();
     let mut skills = Vec::new();
     if transcripts.is_empty()
@@ -864,6 +869,26 @@ fn a_codex_members_tokens_count_beside_a_claude_critics_transcript() {
     let rec = record(&task("designer-empty-state"), &Variant { name: "B".into(), binary: PathBuf::new() }, 1, &[], &out, None);
     assert_eq!(rec.tokens_all.total, 1500 + 35, "the member on Codex and the critic on Claude");
     assert_eq!(rec.tokens.total, 1500);
+}
+
+#[test]
+fn a_codex_members_rules_are_read_from_its_own_steps_not_its_critics_transcript() {
+    use equipe_core::protocol::Ticket;
+    let ticket: Ticket = serde_json::from_value(json!({
+        "id": 1, "title": "x", "body": "", "status": "review", "kind": "task", "owner": null, "assignee": "designer",
+        "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": null,
+    }))
+    .unwrap();
+    let mut out = outcome_with(&scratch("codex-rules"), ticket);
+    out.state.sessions.insert("designer".into(), 7);
+    let started: Event = serde_json::from_value(json!({ "type": "session_started", "session": 7, "engine": "codex", "project": "/p", "model": null, "workspace": null })).unwrap();
+    let tool = |at: f64, name: &str| (at, Event::ToolUse { session: 7, tool: name.into(), target: None, label: None, background: false });
+    out.state.events = vec![(0.0, started), tool(1.0, "mcp__equipe__estimate"), tool(2.0, "exec_command"), tool(900.0, "mcp__equipe__submit_for_review")];
+    // The critic it ran on Claude: a transcript of its own, with no hand-in.
+    out.transcripts.push(quality::Transcript { role: Some("designer".into()), ..Default::default() });
+    let (rules, _, counted) = compliance(&task("designer-empty-state"), &out);
+    assert_eq!(rules.get("hand-in through the board"), Some(&Some(true)), "{rules:?}");
+    assert!(counted.estimates > 0 && counted.submits > 0, "from the member's own steps");
 }
 
 #[test]
