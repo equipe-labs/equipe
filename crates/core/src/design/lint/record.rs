@@ -361,10 +361,11 @@ fn records_in(design: &Path) -> Vec<Record> {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if p.extension().is_some_and(|x| x == "json") && p.file_name().is_some_and(|n| n != PENDING) {
-                if let Some(r) = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Record>(&t).ok()).filter(|r| !r.screen.is_empty()) {
-                    out.push(r);
-                }
+            } else if p.extension().is_some_and(|x| x == "json")
+                && p.file_name().is_some_and(|n| n != PENDING)
+                && let Some(r) = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Record>(&t).ok()).filter(|r| !r.screen.is_empty())
+            {
+                out.push(r);
             }
         }
     }

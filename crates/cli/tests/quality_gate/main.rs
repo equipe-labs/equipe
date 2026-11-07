@@ -639,8 +639,8 @@ fn task(name: &str) -> Task {
 }
 
 #[test]
-fn there_are_thirteen_tasks_across_the_roles_with_names_of_their_own() {
-    assert_eq!(TASKS.len(), 13);
+fn there_are_fourteen_tasks_across_the_roles_with_names_of_their_own() {
+    assert_eq!(TASKS.len(), 14);
     let mut names: Vec<&str> = TASKS.iter().map(|t| t.name).collect();
     names.sort();
     names.dedup();
@@ -827,7 +827,7 @@ fn the_report_shows_the_reviewers_scores_and_they_never_fail_a_run() {
     let md = report(&records, 10.0, "");
     assert!(md.contains("## The reviewer's scores") && md.contains("| `t` | 50% (15/30) | 70% (24/30, 18/30) |"), "{md}");
     assert!(md.contains("The reviewer besides: 0.1M tokens, $0.60."), "{md}");
-    assert!(design_grade::review_check(&Err("no pictures".into())).required == false, "a review informs, never fails a run");
+    assert!(!design_grade::review_check(&Err("no pictures".into())).required, "a review informs, never fails a run");
     let line = serde_json::to_string(&records[0]).unwrap();
     assert_eq!(serde_json::from_str::<Record>(&line).unwrap(), records[0]);
     let older = line.replace(&format!(",\"review\":{}", serde_json::to_string(records[0].review.as_ref().unwrap()).unwrap()), "");
