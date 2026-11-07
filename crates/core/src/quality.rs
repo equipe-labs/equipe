@@ -359,7 +359,10 @@ pub fn skill_checks(t: &Transcript, role: Option<&str>) -> Vec<SkillCheck> {
             return;
         }
         let Some(since) = offered_at(skill) else { return };
-        if at < since {
+        // Claude Code lists the skills just after the first message, before
+        // its reply: listed before the member said or did anything, it was
+        // offered for that message too.
+        if at < since && steps[at + 1..since].iter().any(|s| matches!(s, Step::Reply(_) | Step::Tool { .. })) {
             return;
         }
         seen.push(skill.to_owned());
@@ -613,6 +616,17 @@ mod tests {
         assert_eq!(skill_checks(&designer, Some("designer"))[0].opened, Opened::RightAfter);
         let not_offered = Transcript { steps: plan.steps.clone(), ..Default::default() };
         assert!(skill_checks(&not_offered, Some("pm")).is_empty(), "a skill it wasn't offered isn't counted");
+    }
+
+    #[test]
+    fn a_skill_listed_just_after_the_first_message_was_offered_for_it() {
+        // Claude Code writes the skill listing after the first message it
+        // answers, before its reply: offered for that message all the same.
+        let open = Step::Tool { id: "1".into(), name: "Skill".into(), input: json!({ "skill": "equipe:design-process" }) };
+        let designer = Transcript { offered: vec![("design-process".into(), 1)], steps: vec![Step::User("Design the empty state.".into()), open.clone()], ..Default::default() };
+        assert_eq!(skill_checks(&designer, Some("designer"))[0].opened, Opened::RightAfter);
+        let listed_later = Transcript { offered: vec![("design-process".into(), 2)], steps: vec![Step::User("Design the empty state.".into()), Step::Reply("On it.".into()), open], ..Default::default() };
+        assert!(skill_checks(&listed_later, Some("designer")).is_empty(), "offered only once it had answered: not for that message");
     }
 
     #[test]

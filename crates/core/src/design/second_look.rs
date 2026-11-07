@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use equipe_protocol::Engine;
 
-use super::lint::record::{Fix, Verdict};
+use super::lint::record::{Fix, Question, Verdict};
 
 /// The line a second look ends with, for screens that show it.
 pub const MARK: &str = "equipe-second-look:";
@@ -60,7 +60,11 @@ thing the eye lands on the thing that matters most? Is the hierarchy clear at ea
 crowd, stack badly or bury the primary action? Is the spacing on one rhythm, are things aligned to a grid, does the \
 type read as one system? Does it use the system's components and roles, or invent its own? Is every word real \
 copy — no placeholder, no invented figures, customers or quotes? Does it look like this product, or like any \
-generated template?";
+generated template?\n\
+\n\
+Ask only for facts the brief, the project's files or the design system give. When the screen needs a fact none of \
+them has — a name, a label, a number, a date — that is not a fix and not a reason to withhold a pass: put it in \
+\"questions\", with neutral wording the screen can use until someone answers.";
 
 const FIRST: &str = "These pictures are only the first screenful of a new screen, before the rest of it is built. Judge \
 whether this opening is right to build on: what it leads with, its hierarchy, its density and its tone. Don't ask \
@@ -68,7 +72,8 @@ for what is below the fold.";
 
 const ANSWER: &str = "Answer with one JSON object and nothing after it:\n\
 {\"verdict\": \"pass\" | \"fix\", \"summary\": \"two sentences on the whole\", \"fixes\": [{\"where\": \"the region \
-(top bar, second card, the form at 360)\", \"what\": \"what to change\", \"why\": \"what it costs the person now\"}]}\n\
+(top bar, second card, the form at 360)\", \"what\": \"what to change\", \"why\": \"what it costs the person now\"}], \
+\"questions\": [{\"what\": \"the fact that is missing\", \"wording\": \"what the screen can say without it\"}]}\n\
 Say \"pass\" only when nothing needs fixing before a person sees it; polish you'd merely like is not a fix. Worst \
 fix first, at most eight, each tied to a region and, where it differs, a width. Write in the brief's language.";
 
@@ -136,8 +141,12 @@ pub fn verdict_of(answer: &str) -> Option<Verdict> {
             && let Some(v) = value.get("verdict").and_then(serde_json::Value::as_str)
         {
             let fixes: Vec<Fix> = value.get("fixes").and_then(|f| serde_json::from_value(f.clone()).ok()).unwrap_or_default();
-            let pass = v.trim().eq_ignore_ascii_case("pass") && fixes.is_empty();
-            found = Some(Verdict { pass, fixes, summary: value.get("summary").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(), ..Verdict::default() });
+            let questions: Vec<Question> = value.get("questions").and_then(|q| serde_json::from_value(q.clone()).ok()).unwrap_or_default();
+            let questions: Vec<Question> = questions.into_iter().filter(|q| !q.what.trim().is_empty()).collect();
+            // A missing fact is asked, never a fix: a "fix" answer that lists
+            // nothing to fix but questions passes.
+            let pass = (v.trim().eq_ignore_ascii_case("pass") || !questions.is_empty()) && fixes.is_empty();
+            found = Some(Verdict { pass, fixes, questions, summary: value.get("summary").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(), ..Verdict::default() });
         }
     }
     found
@@ -148,6 +157,12 @@ pub fn text(v: &Verdict) -> String {
     let mut out = format!("{}{}\n", if v.pass { "Pass" } else { "Fix" }, if v.summary.is_empty() { String::new() } else { format!(" — {}", v.summary) });
     for f in &v.fixes {
         out.push_str(&format!("- {}: {}{}\n", f.place, f.what, if f.why.is_empty() { String::new() } else { format!(" ({})", f.why) }));
+    }
+    if !v.questions.is_empty() {
+        out.push_str("Open questions — facts nothing you were given has; not fixes. Use the wording, or ask the person with ask_decision while you carry on:\n");
+        for q in &v.questions {
+            out.push_str(&format!("- {}{}\n", q.what, if q.wording.is_empty() { String::new() } else { format!(" — meanwhile: \"{}\"", q.wording) }));
+        }
     }
     out
 }
@@ -215,5 +230,23 @@ mod tests {
         let line = mark_line("a/b", &v);
         assert_eq!(in_output(&format!("…\n{line}\n")), Some(("a/b".to_owned(), v.clone())));
         assert!(text(&v).starts_with("Fix — Crowded at 360.\n- form at 360: stack the buttons (Save is cut off)"));
+    }
+
+    #[test]
+    fn a_fact_nothing_gives_is_asked_as_a_question_and_never_holds_a_pass() {
+        let p = prompt(&ask());
+        assert!(p.contains("Ask only for facts the brief, the project's files or the design system give") && p.contains("not a fix and not a reason to withhold a pass") && p.contains("\"questions\": [{\"what\""), "{p}");
+        let v = verdict_of("{\"verdict\": \"fix\", \"summary\": \"Good, but the save control isn't named.\", \"fixes\": [], \"questions\": [{\"what\": \"what the save control is called\", \"wording\": \"Articles you save appear here.\"}]}").unwrap();
+        assert!(v.pass, "only a question: a pass");
+        assert_eq!(v.questions, [Question { what: "what the save control is called".into(), wording: "Articles you save appear here.".into() }]);
+        let said = text(&v);
+        assert!(said.contains("Open questions") && said.contains("not fixes") && said.contains("ask_decision") && said.contains("meanwhile: \"Articles you save appear here.\""), "{said}");
+        let both = verdict_of("{\"verdict\": \"fix\", \"fixes\": [{\"where\": \"hero\", \"what\": \"x\"}], \"questions\": [{\"what\": \"y\"}]}").unwrap();
+        assert!(!both.pass && both.questions.len() == 1, "a real fix still holds it");
+        assert!(verdict_of("{\"verdict\": \"pass\", \"fixes\": []}").unwrap().questions.is_empty());
+        let line = mark_line("a/b", &v);
+        assert_eq!(in_output(&line).unwrap().1, v, "questions travel with the verdict");
+        let older: Verdict = serde_json::from_str("{\"pass\": true, \"fixes\": []}").unwrap();
+        assert!(older.questions.is_empty(), "a verdict kept before questions reads back");
     }
 }

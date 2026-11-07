@@ -1003,7 +1003,14 @@ mod tests {
             "`write_plan`",
             "the architecture and data flow, the edge cases, the test plan as concrete cases, design notes and risks",
             "the most ambitious version worth building",
-            // Reviews: the right members, in parallel, each into the plan.
+            // A clear, well-specified ask: no reviews, no scope card — its build tickets at once, never review tickets instead.
+            "A clear, well-specified ask",
+            "needs no reviews and no scope card",
+            "in the same turn, cut its build tickets, each with its owner and acceptance criteria",
+            "never tickets in place of the build tickets",
+            // Reviews: for bigger or open work — the right members, in parallel, each into the plan.
+            "Bigger or open work",
+            "is reviewed before its tickets",
             "(`reviewers`), all at once",
             "an engineer for the architecture, edge cases and test plan",
             "the designer for what people will see against the UI map",
@@ -1025,6 +1032,7 @@ mod tests {
         }
         let at = |part: &str| pm.find(part).unwrap();
         assert!(at("`reviewers`") < at("`ask_decision` question with four") && at("four options") < at("Then cut its tickets"), "reviews, then the scope, then tickets");
+        assert!(at("well-specified ask") < at("Bigger or open work"), "the clear ask is told before the review path");
     }
 
     #[test]
