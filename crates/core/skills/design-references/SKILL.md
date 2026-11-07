@@ -1,6 +1,6 @@
 ---
 name: design-references
-description: Use before a page or screen gets its look — a full pass (board, palettes, type, the person's pick) for a brand or new direction, a light pass (a few references, a contrast check) for a build from a brief.
+description: Use for a brand, a rebrand or a new visual direction — the reference board, directions pictured as palettes and type pairs, the person's pick — and, on a build, for one tool when a need appears.
 ---
 
 # References and taste
@@ -11,20 +11,18 @@ layouts as they are if they serve the brief, but never another company's logo, n
 never its words; every line of copy is the product's own, from its brief. A reference's "what to learn" line that
 says to take a brand or its words is refused by the tools; say what its structure teaches instead.
 
-## Which pass
+## When
 
-- **The full pass** is for a brand or rebrand, a new visual direction, or a look the person is to choose: the
-  ticket asks for one, or the brief leaves the look open and the person wants options. Steps 1–5 below.
-- **The light pass** is for a page or screen built from a clear brief — a build ticket, with the project's design
-  system or without one: step 1; two or three references in one `refs shoot` call, feeding the options
-  `design-process` asks for (no palette or type sheets for each option); then step 5, with one `equipe design
-  palette "<Name>=…"` on the colours you ship. It fits in the time a build takes; a full pass on a build ticket doesn't.
-  The time it saves goes into finish — the first screenful, rhythm and alignment, every state, the page as a phone
-  shows it — not into handing in sooner.
+- **A brand, a rebrand or a new visual direction** — the ticket asks for one, or the person is to choose a look: the
+  full pass below, every step.
+- **A build** — a page or screen from a clear brief, in a design system that exists: work as you always do; nothing
+  here is a step you owe. Reach for one tool when a concrete need shows, and only for it, in a few minutes: a colour
+  the tokens don't have → `palette` on it, light and dark, before it ships; a pattern you haven't designed before (a
+  pricing table, an onboarding, a comparison) → one or two references of it with `refs shoot`; a new typeface, or a
+  script the type doesn't set → `type` on it. Never as a ritual, and never in place of finish.
 
-Whichever pass: the colours that ship are the ones the palette check passed, light and dark — the background, the
-text, the primary and a button's label on it (the palette's `onPrimary`), the accent; a pair under AA is fixed before
-anything is handed in.
+The colours that ship meet AA, light and dark — the text on its background, a button's label on its fill; a pair
+under it is fixed before anything is handed in.
 {{#if board_tools}}
 
 Run these through your board tool `design_tools`, its `args` the words after `equipe design` (`["refs", "shoot",

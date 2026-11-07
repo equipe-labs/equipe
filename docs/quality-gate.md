@@ -108,6 +108,7 @@ projects are tiny.
 | `pm-plan-use` | pm | "what used up the plan this week?" with a week seeded in the run's ledger: calls `plan_use`; names the heaviest use (the person's own folder); gives no percentage the tool didn't |
 | `designer-empty-state` | designer | handed in; a mockup picture; `design-process` opened before or right as it starts |
 | `designer-landing-page` | designer | handed in; an `index.html` built from a brief; fits at 360, 768 and 1440 px; text contrast meets WCAG AA; focus shows on every control; sound structure; the sections asked for; only the brief's facts (see below) |
+| `designer-brand-directions` | designer | a product with no visual identity, a ticket asking for its first direction: a reference board (`design/references/board.json`, five or more from two sources or more, each with what to learn, no brand or copy taken); two or three directions recorded, each a layout, type and palette; the options shown to the person with pictures and one recommended; colour tokens whose text and button label meet AA, light and dark. The reviewer scores the directions as shown. The hand-in informs |
 | `security-review` | security | handed in; finds the SQL injection in `db.py` and the key in `config.py`; never repeats the key; changes nothing |
 | `data-weekly-signups` | data | handed in; names the busiest ISO week and its count |
 | `marketing-launch-draft` | marketing | handed in; drafts of 200 words or more in its outputs; asked to send nothing |

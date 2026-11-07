@@ -644,8 +644,8 @@ fn task(name: &str) -> Task {
 }
 
 #[test]
-fn there_are_fourteen_tasks_across_the_roles_with_names_of_their_own() {
-    assert_eq!(TASKS.len(), 14);
+fn there_are_fifteen_tasks_across_the_roles_with_names_of_their_own() {
+    assert_eq!(TASKS.len(), 15);
     let mut names: Vec<&str> = TASKS.iter().map(|t| t.name).collect();
     names.sort();
     names.dedup();
@@ -869,6 +869,57 @@ fn a_codex_members_tokens_count_beside_a_claude_critics_transcript() {
     let rec = record(&task("designer-empty-state"), &Variant { name: "B".into(), binary: PathBuf::new() }, 1, &[], &out, None);
     assert_eq!(rec.tokens_all.total, 1500 + 35, "the member on Codex and the critic on Claude");
     assert_eq!(rec.tokens.total, 1500);
+}
+
+#[test]
+fn a_brand_direction_needs_its_board_its_directions_pictured_checked_tokens_and_a_recommended_pick() {
+    use equipe_core::design::{directions, refs};
+    use equipe_core::protocol::Ticket;
+    let ticket: Ticket = serde_json::from_value(json!({
+        "id": 1, "title": "Kettle", "body": "", "status": "review", "kind": "task", "owner": null, "assignee": "designer",
+        "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": null,
+    }))
+    .unwrap();
+    let root = scratch("brand");
+    let mut out = outcome_with(&root, ticket);
+    let t = task("designer-brand-directions");
+    let failed = |out: &Outcome| tasks::grade(&t, &tasks::Fixture::default(), out).into_iter().filter(|c| c.required && !c.ok).map(|c| c.name).collect::<Vec<_>>();
+    assert_eq!(failed(&out).len(), 5, "nothing done: {:?}", failed(&out));
+    let design = out.squad_home().join("design");
+    // The board: five references from three sources, each pictured.
+    let mut board = Vec::new();
+    for url in ["https://fontpair.co/for/saas", "https://fontpair.co/vibe/minimal", "https://21st.dev/@a/components/hero", "https://www.realtimecolors.com/", "https://fonts.google.com/specimen/Fraunces"] {
+        let mut r = refs::new_reference(&board, url, "A calm two-column first screen with one action", vec![refs::Aspect::Layout], "2026-11-08", refs::Via::Shoot);
+        let shot = refs::shot_path(&r.id, 1280);
+        std::fs::create_dir_all(design.join(&shot).parent().unwrap()).unwrap();
+        std::fs::write(design.join(&shot), b"png").unwrap();
+        r.shots.push(shot);
+        board.push(r);
+    }
+    refs::write(&design, &board).unwrap();
+    let d = |name: &str, layout: &str| directions::Direction { name: name.into(), layout: layout.into(), type_: "Fraunces/Inter".into(), palette: "warm".into(), density: "airy".into(), motion: "none".into(), ..Default::default() };
+    directions::write(&design, &[d("Hearth", "split"), d("Counter", "one column")]).unwrap();
+    std::fs::write(design.join("tokens.json"), r##"{"color":{"$type":"color","bg":{"$value":"#FBF7F2","$extensions":{"mode":{"dark":"#16120F"}}},"text":{"$value":"#2B1D14","$extensions":{"mode":{"dark":"#F3ECE4"}}},"primary":{"$value":"#B4532A","$extensions":{"mode":{"dark":"#E9926A"}}},"onPrimary":{"$value":"#FFFFFF","$extensions":{"mode":{"dark":"#16120F"}}}}}"##).unwrap();
+    let pic = design.join("directions/hearth.png");
+    std::fs::write(&pic, b"png").unwrap();
+    let set: equipe_core::protocol::decide::QuestionSet = serde_json::from_value(json!({
+        "id": 1, "session": 7, "member": "designer",
+        "questions": [{ "question": "Which direction?", "options": [
+            { "label": "Hearth", "images": [pic], "recommended": true },
+            { "label": "Counter", "images": [pic] },
+        ]}],
+    }))
+    .unwrap();
+    out.state.person.questions.push(set);
+    assert!(failed(&out).is_empty(), "all there: {:?}", failed(&out));
+    // A board line that takes a brand, and a dark label under AA, fail it.
+    board[0].learn = "Use their logo in our header".into();
+    refs::write(&design, &board).unwrap();
+    std::fs::write(design.join("tokens.json"), r##"{"color":{"$type":"color","bg":{"$value":"#FBF7F2","$extensions":{"mode":{"dark":"#16120F"}}},"text":{"$value":"#2B1D14","$extensions":{"mode":{"dark":"#F3ECE4"}}},"primary":{"$value":"#B4532A","$extensions":{"mode":{"dark":"#FF805D"}}},"onPrimary":{"$value":"#FFFFFF"}}}"##).unwrap();
+    let now = failed(&out);
+    assert!(now.contains(&"no brand or copy taken from a reference") && now.contains(&"colour tokens meet AA for text, light and dark"), "{now:?}");
+    assert!(tasks::token_contrast(&design.join("tokens.json")).unwrap().unwrap_err().contains("(dark)"), "the dark button label is the failing pair");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

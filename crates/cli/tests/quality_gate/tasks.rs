@@ -51,6 +51,7 @@ pub const TASKS: &[Task] = &[
     Task { name: "pm-move-to-codex", role: "pm", what: "move three Claude members to Codex as asked: one engine card for them all, never a Codex model put in a Claude member's model, nothing moved before the person's yes", minutes: 10 },
     Task { name: "designer-empty-state", role: "designer", what: "design an empty state as a mockup picture, opening design-process first", minutes: 30 },
     Task { name: "designer-landing-page", role: "designer", what: "design and build a product's landing page from a brief: it fits phone to desktop, reads, shows focus, and invents nothing", minutes: 45 },
+    Task { name: "designer-brand-directions", role: "designer", what: "give a product with no visual identity its first direction: a reference board, two or three directions pictured, contrast-checked tokens, and the person's pick asked with a recommendation", minutes: 60 },
     Task { name: "security-review", role: "security", what: "find a planted SQL injection and hard-coded key without repeating the key", minutes: 20 },
     Task { name: "data-weekly-signups", role: "data", what: "count signups per ISO week from a CSV and name the busiest week", minutes: 15 },
     Task { name: "marketing-launch-draft", role: "marketing", what: "draft a launch post and a social post, publishing nothing", minutes: 20 },
@@ -119,6 +120,11 @@ pub fn setup(task: &Task, root: &Path) -> Fixture {
             let dir = root.join("site");
             let base = repo(&dir, &[("README.md", QUILLO_README)]);
             Fixture { repo: Some(dir), base, expected: vec![format!("{QUILLO_README}\n{QUILLO_TICKET}")], ..Default::default() }
+        }
+        "designer-brand-directions" => {
+            let dir = root.join("kettle");
+            let base = repo(&dir, &[("README.md", KETTLE_README)]);
+            Fixture { repo: Some(dir), base, ..Default::default() }
         }
         "security-review" => {
             let dir = root.join("api");
@@ -223,6 +229,10 @@ pub async fn play(task: &Task, run: &mut Run, fx: &Fixture) {
         }
         "designer-landing-page" => {
             run.ticket("designer", repo, TicketKind::Code, "Design and build Quillo's landing page", QUILLO_TICKET);
+            run.settle(limit, settled).await;
+        }
+        "designer-brand-directions" => {
+            run.ticket("designer", repo, TicketKind::Task, "Kettle's first visual direction", KETTLE_TICKET);
             run.settle(limit, settled).await;
         }
         "security-review" => {
@@ -392,6 +402,12 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
             }
             checks
         }
+        "designer-brand-directions" => {
+            let mut checks = vec![handed_in()];
+            checks[0].required = false;
+            checks.extend(brand_checks(out, ticket));
+            checks
+        }
         "security-review" => {
             let words = out.words_of("security");
             let lower = words.to_lowercase();
@@ -526,6 +542,36 @@ pub fn review(task: &Task, out: &Outcome, dir: &Path) -> Option<Result<design_gr
                 }
             }
             Some(design_grade::review(&shots, design_grade::LANDING_RUBRIC, dir))
+        }
+        "designer-brand-directions" => {
+            // Each direction as the person was shown it: the first picture of each option.
+            let picture = |p: &Path| p.extension().is_some_and(|x| ["png", "jpg", "jpeg", "webp", "svg"].contains(&x.to_string_lossy().to_lowercase().as_str()));
+            let options: Vec<PathBuf> = out
+                .state
+                .person
+                .questions
+                .iter()
+                .filter(|q| q.member == "designer")
+                .flat_map(|q| q.questions.iter())
+                .max_by_key(|q| q.options.iter().filter(|o| !o.images.is_empty()).count())
+                .map(|q| q.options.iter().filter_map(|o| o.images.first()).map(|i| resolve_picture(out, ticket, i)).filter(|p| p.is_file() && picture(p)).collect())
+                .unwrap_or_default();
+            let mut shots = Vec::new();
+            for (i, p) in options.iter().take(3).enumerate() {
+                if p.extension().is_some_and(|x| x == "svg") {
+                    match design_grade::shoot(p, &out.root.join("shots").join(i.to_string())) {
+                        Ok(png) => shots.extend(png.into_iter().take(1).map(|f| (format!("direction-{}.png", i + 1), f))),
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    let ext = p.extension().unwrap().to_string_lossy().to_lowercase();
+                    shots.push((format!("direction-{}.{ext}", i + 1), p.clone()));
+                }
+            }
+            if shots.is_empty() {
+                return Some(Err("no direction was shown with a picture".into()));
+            }
+            Some(design_grade::review(&shots, design_grade::BRAND_RUBRIC, dir))
         }
         "designer-empty-state" => {
             let picture = |p: &Path| p.extension().is_some_and(|x| ["png", "svg", "jpg", "jpeg", "webp"].contains(&x.to_string_lossy().to_lowercase().as_str()));
@@ -1039,3 +1085,93 @@ fn grade_plan_use(fx: &Fixture, out: &Outcome) -> Vec<Check> {
 pub const QUILLO_README: &str = "# Quillo\n\nQuillo turns a recorded meeting into a one-page summary: what was decided, who does what, and by when.\n\n- Works with any recording: upload an audio or video file up to 2 hours long.\n- Decisions and to-dos are pulled out, each with its owner.\n- Share the summary as a link or a PDF.\n\nPricing: Free for 3 meetings a month. Team: $8 per person per month.\n\nThe public beta opens on 3 March. Quillo is new: nobody outside the team has used it yet.\n";
 
 pub const QUILLO_TICKET: &str = "Design and build the landing page for Quillo from the brief in `README.md`: one static page, `index.html` (with its CSS and any script beside it), that works from 360 px phones to wide desktop screens.\n\nIt needs a hero with the product's name, what it does and a \"Join the beta\" button; the three features; pricing (both plans); a sign-up form for the beta with an email field (there is no backend yet: the form needn't send anything); and a footer.\n\nAcceptance criteria:\n- `index.html` opens in a browser and reads well at phone, tablet and desktop widths\n- every part above is there\n- it states only what the brief says";
+
+pub const KETTLE_README: &str = "# Kettle\n\nKettle lets a small neighbourhood café take pre-orders: a customer picks a drink and a pickup time on their phone, and the café sees the queue on a tablet behind the counter.\n\n- For cafés with one to three people behind the counter.\n- Customers order without an account; the café confirms each order with one tap.\n- No loyalty points, no ads.\n\nKettle has no logo, colours or typefaces yet. It should feel warm and calm, never like a chain's app.\n";
+
+pub const KETTLE_TICKET: &str = "Kettle (see `README.md`) has no visual identity yet. Give it its first visual direction.\n\nStudy references first, then bring me two or three genuinely different directions to choose from — each with its palette, its type pair and the layout of the home page's first screen, as pictures — with your recommendation. Once I've chosen, write the chosen direction's tokens into the design system.\n\nAcceptance criteria:\n- the references you learned from, each with what you took from it\n- two or three directions, each pictured: palette, type, first screen\n- the chosen direction's colour tokens meet WCAG AA for text, light and dark\n- my choice asked with your recommendation";
+
+/// What a brand-direction ticket leaves: a reference board (`equipe design
+/// refs`: five references or more from two sources or more, each with a line
+/// to learn and nothing of another's brand taken), two or three directions
+/// recorded, each option shown to the person with pictures, colour tokens
+/// whose text pairs meet AA in light and dark, and the person's pick asked
+/// with a recommendation.
+fn brand_checks(out: &Outcome, ticket: Option<&Ticket>) -> Vec<Check> {
+    use equipe_core::design::{directions, refs};
+    let mut checks = Vec::new();
+    let boards = files_named(out, ticket, |p| p.ends_with("references/board.json"));
+    let board = boards.iter().find_map(|b| {
+        let design = b.parent()?.parent()?.to_owned();
+        let read = refs::read(&design);
+        (!read.is_empty()).then_some((design, read))
+    });
+    let board_check = "a reference board: five or more, two sources or more, each with what to learn";
+    match &board {
+        Some((design, read)) => {
+            let gaps = refs::board_gaps(design, read);
+            let brand: Vec<String> = read.iter().filter(|r| !refs::learn_problems(&r.learn).is_empty()).map(|r| format!("{}: {}", r.id, r.learn)).collect();
+            let said = format!("{} references from {} sources", read.len(), refs::source_count(read));
+            checks.push(must(board_check, gaps.is_empty(), if gaps.is_empty() { said } else { format!("{said}; gaps: {gaps:?}") }));
+            checks.push(must("no brand or copy taken from a reference", brand.is_empty(), brand.join(" · ")));
+        }
+        None => checks.push(must(board_check, false, "no design/references/board.json")),
+    }
+    let logs: Vec<directions::Direction> = files_named(out, ticket, |p| p.ends_with("directions/log.json")).iter().filter_map(|f| f.parent()?.parent().map(directions::read)).flatten().collect();
+    let complete = logs.iter().filter(|d| d.missing().is_empty()).count();
+    checks.push(must("two or three directions, each a layout, type and palette", (2..=4).contains(&complete), format!("{complete} recorded")));
+    let asked: Vec<_> = out.state.person.questions.iter().filter(|q| q.member == "designer").collect();
+    let pictured = asked.iter().flat_map(|q| q.questions.iter()).map(|q| q.options.iter().filter(|o| !o.images.is_empty()).count()).max().unwrap_or(0);
+    checks.push(must("each direction shown to the person with pictures", pictured >= 2, format!("{pictured} options with pictures")));
+    let recommended = asked.iter().flat_map(|q| q.questions.iter()).any(|q| q.options.len() >= 2 && q.options.iter().any(|o| o.shown().1));
+    checks.push(must("the pick asked with a recommendation", recommended, format!("{} question set(s)", asked.len())));
+    let tokens = files_named(out, ticket, |p| p.file_name().is_some_and(|n| n == "tokens.json" || n.to_string_lossy().ends_with(".tokens.json")) && !p.components().any(|c| c.as_os_str() == "node_modules"));
+    let measured: Vec<(PathBuf, Result<(), String>)> = tokens.iter().filter_map(|t| token_contrast(t).map(|r| (t.clone(), r))).collect();
+    let failing: Vec<String> = measured.iter().filter_map(|(t, r)| r.as_ref().err().map(|e| format!("{}: {e}", t.display()))).collect();
+    let said = if measured.is_empty() { "no colour tokens with a background and text".to_owned() } else { failing.join(" · ") };
+    checks.push(must("colour tokens meet AA for text, light and dark", !measured.is_empty() && failing.is_empty(), said));
+    checks
+}
+
+/// A picture an option named: as given when absolute, else in the ticket's
+/// worktree or the squad's folder.
+fn resolve_picture(out: &Outcome, ticket: Option<&Ticket>, image: &str) -> PathBuf {
+    let p = PathBuf::from(image);
+    if p.is_absolute() {
+        return p;
+    }
+    ticket.and_then(|t| out.work_dir(t)).into_iter().chain([out.squad_home()]).map(|d| d.join(&p)).find(|c| c.is_file()).unwrap_or(p)
+}
+
+/// A tokens file's text pairs, light and dark: the text on the background,
+/// and a primary's label on it, each at 4.5:1. `None` when it names no
+/// background and text colour to measure.
+pub fn token_contrast(file: &Path) -> Option<Result<(), String>> {
+    use equipe_core::design::contrast::{self, Grade, background, grade, text};
+    use equipe_core::design::values::{Color, color};
+    let parsed = equipe_core::design::tokens::parse(&std::fs::read_to_string(file).ok()?);
+    let leaf = |names: &[&str]| parsed.tokens.iter().find(|t| t.kind == "color" && names.iter().any(|n| t.leaf().eq_ignore_ascii_case(n)));
+    leaf(&["bg", "background", "canvas", "page"])?;
+    leaf(&["text", "fg", "foreground", "ink"])?;
+    let primary = leaf(&["primary", "action", "accent"]);
+    let on = leaf(&["onPrimary", "on-primary", "on_primary", "onAction", "onAccent"]);
+    let mut modes: Vec<Option<&str>> = vec![None];
+    modes.extend(parsed.modes.iter().filter(|m| m.to_ascii_lowercase().contains("dark")).map(|m| Some(m.as_str())));
+    let mut failing = Vec::new();
+    for mode in modes {
+        let dark = if mode.is_some() { " (dark)" } else { "" };
+        let base = if mode.is_some() { Color::rgb(0x0A0A0C) } else { Color::WHITE };
+        let b = background(&parsed.tokens, mode, base);
+        let t = text(&parsed.tokens, mode, if mode.is_some() { Color::rgb(0xEFEDE7) } else { Color::rgb(0x15161A) });
+        let r = contrast::ratio(t, b);
+        if grade(r) < Grade::Aa {
+            failing.push(format!("text on background {r:.2}:1{dark}"));
+        }
+        if let (Some(p), Some(o)) = (primary.and_then(|p| color(p.value_in(mode))), on.and_then(|o| color(o.value_in(mode)))) {
+            let r = contrast::ratio(o, p);
+            if grade(r) < Grade::Aa {
+                failing.push(format!("label on primary {r:.2}:1{dark}"));
+            }
+        }
+    }
+    Some(if failing.is_empty() { Ok(()) } else { Err(failing.join(", ")) })
+}

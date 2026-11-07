@@ -295,6 +295,17 @@ Score each criterion from 1 (poor) to 5 (excellent), judging only what you see:
 
 Open every image with the Read tool first. Then answer with only one JSON object and nothing else: {\"clarity\": n, \"guidance\": n, \"fit\": n, \"specificity\": n, \"finish\": n, \"worst\": \"the single biggest problem, in one sentence\"}";
 
+pub const BRAND_RUBRIC: &str = "You are reviewing visual directions proposed for a product with no visual identity yet, one image per direction (files named direction-*), as they were shown to the person choosing. The product: Kettle lets a small neighbourhood café take pre-orders — customers pick a drink and a pickup time on their phone, the café sees the queue on a tablet; for cafés of one to three people; it should feel warm and calm, never like a chain's app. You know nothing else about who made them or how.
+
+Score each criterion from 1 (poor) to 5 (excellent), judging only what you see:
+1. distinct — the directions differ in structure (layout, type, density), not only in colour.
+2. fit — each feels warm, calm and independent, right for small cafés, not a chain's or a generic app's.
+3. type — the type pairing has character and hierarchy, and reads well at its sizes.
+4. colour — the palette is coherent and text on it reads clearly.
+5. original — nothing looks lifted from another company's brand: no recognisable logo, wordmark, mascot or tagline.
+
+Open every image with the Read tool first. Then answer with only one JSON object and nothing else: {\"distinct\": n, \"fit\": n, \"type\": n, \"colour\": n, \"original\": n, \"worst\": \"the single biggest problem, in one sentence\"}";
+
 /// What the reviewer said.
 #[derive(Debug, Clone)]
 pub struct Review {
