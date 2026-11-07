@@ -12,6 +12,7 @@ impl Runtime {
         let projects = self.projects(squad);
         let Some(journal) = self.journal(squad) else { return format!("No squad {squad}.") };
         let (mode, pm_accepts, idle, switching, hq) = (journal.mode(), journal.pm_accepts(), journal.idle_wake_hours(), journal.engine_switching(), journal.hq());
+        let reviewer = journal.design_reviewer();
         let (routines, signals, allowed) = (journal.routines(), journal.signals(), journal.allowed().unwrap_or_default());
         let on = |b: bool| if b { "on" } else { "off" };
         let mut out = vec![format!("Squad {squad}.")];
@@ -32,6 +33,14 @@ impl Runtime {
         out.push(format!("You accept the team's handed-in work yourself (pm_accepts): {}.", on(pm_accepts)));
         out.push(format!("An empty board wakes you after (idle_wake_hours): {}.", if idle == 0 { "off".to_owned() } else { format!("{idle} h") }));
         out.push(format!("Engine switching: {}.", format!("{switching:?}").to_lowercase()));
+        out.push(format!(
+            "Who reviews the designer's work (design_reviewer): {}.",
+            match reviewer {
+                crate::protocol::engines::Reviewer::Auto => "auto — the other engine when it is signed in with room, else the member's own in a fresh session",
+                crate::protocol::engines::Reviewer::Same => "same — the member's own engine, in a fresh session",
+                crate::protocol::engines::Reviewer::Other => "other — always the other engine, the member's own only when it can't run",
+            }
+        ));
         if routines.is_empty() {
             out.push("Routines: none.".into());
         }
@@ -154,6 +163,7 @@ impl Runtime {
             }
             Change::Effort { member, effort } => Command::SetEffort { session: session(&member)?, effort },
             Change::EngineSwitching(mode) => Command::SetEngineSwitching { squad: squad_name, mode },
+            Change::DesignReviewer(reviewer) => Command::SetDesignReviewer { squad: squad_name, reviewer },
             Change::RemoveProject(name) => Command::RemoveProject { squad: squad_name, path: project(&name)? },
             Change::Hq(name) => Command::SetHq { squad: squad_name, path: name.as_deref().map(project).transpose()? },
             Change::RunRoutine(id) | Change::DeleteRoutine(id) => {
@@ -327,6 +337,9 @@ impl Runtime {
             }
             Change::Effort { member, effort } => say!(self, "control.effort", member = member, effort = effort.as_deref().unwrap_or("default")),
             Change::EngineSwitching(m) => say!(self, "control.engine_switching", mode = format!("{m:?}").to_lowercase()),
+            Change::DesignReviewer(crate::protocol::engines::Reviewer::Auto) => say!(self, "control.design_reviewer_auto"),
+            Change::DesignReviewer(crate::protocol::engines::Reviewer::Same) => say!(self, "control.design_reviewer_same"),
+            Change::DesignReviewer(crate::protocol::engines::Reviewer::Other) => say!(self, "control.design_reviewer_other"),
             Change::RemoveProject(name) => say!(self, "control.remove_project", project = name),
             Change::Hq(Some(name)) => say!(self, "control.hq", project = name),
             Change::Hq(None) => say!(self, "control.hq_none"),

@@ -4,6 +4,8 @@
 //! printed, never guessed. The words here; the cards in `views/chat.rs`.
 
 use equipe_core::design::lint::record::{Fix, Verdict};
+use equipe_core::protocol::Engine;
+use equipe_core::protocol::engines::{ReviewWhy, Reviewed, Window};
 use equipe_core::design::lint::{self, Summary};
 use equipe_core::design::second_look;
 use equipe_core::t;
@@ -110,10 +112,45 @@ pub fn fix(f: &Fix) -> String {
     if f.why.is_empty() { format!("{} — {}", f.place, f.what) } else { format!("{} — {} ({})", f.place, f.what, f.why) }
 }
 
-/// Who looked, in a line: fresh eyes, and what they were given.
+/// Who looked, in a line: fresh eyes, and what they were given — and the
+/// engine that looked, and why that one, when it says.
 pub fn who(v: &Verdict) -> String {
     let saw = if v.first { t!("look.saw_first") } else { t!("look.saw") };
-    if v.by == "subagent" { format!("{saw} · {}", t!("look.by_subagent")) } else { saw.to_owned() }
+    match &v.reviewer {
+        _ if v.by == "subagent" => format!("{saw} · {}", t!("look.by_subagent")),
+        Some(r) => format!("{saw} · {}", reviewed(r)),
+        None => saw.to_owned(),
+    }
+}
+
+/// Which engine reviewed a designer's work and why that one, in the
+/// person's words: "Codex reviewed · Codex has room — its week is 40% used".
+pub fn reviewed(r: &Reviewed) -> String {
+    let engine = engine_name(r.engine);
+    let other = engine_name(r.other());
+    let who = if r.fresh() { t!("review.by_fresh", engine = engine) } else { t!("review.by", engine = engine) };
+    let why = match r.why {
+        ReviewWhy::Named => t!("review.why_named").to_owned(),
+        ReviewWhy::Setting => t!("review.why_setting").to_owned(),
+        ReviewWhy::Room { used: Some(used) } => t!("review.why_room", engine = other, used = used),
+        ReviewWhy::Room { used: None } => t!("review.why_room_unread", engine = other),
+        ReviewWhy::NotInstalled => t!("review.why_not_installed", engine = other),
+        ReviewWhy::SignedOut => t!("review.why_signed_out", engine = other),
+        ReviewWhy::UsedUp { window: Window::Weekly } => t!("review.why_used_up_week", engine = other),
+        ReviewWhy::UsedUp { window: Window::FiveHour } => t!("review.why_used_up_five", engine = other),
+        ReviewWhy::NearLimit { window: Window::Weekly, used } => t!("review.why_near_week", engine = other, used = used),
+        ReviewWhy::NearLimit { window: Window::FiveHour, used } => t!("review.why_near_five", engine = other, used = used),
+        ReviewWhy::RunsOut { .. } => t!("review.why_runs_out", engine = other),
+        ReviewWhy::Failed => t!("review.why_failed", engine = other),
+    };
+    format!("{who} · {why}")
+}
+
+fn engine_name(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Claude => "Claude",
+        Engine::Codex => "Codex",
+    }
 }
 
 /// Where a screen's latest check leaves it.
@@ -153,6 +190,20 @@ pub fn screen_line(c: &equipe_core::protocol::design::ScreenCheck) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_look_says_which_engine_looked_and_why_that_one() {
+        let r = |engine, why| Reviewed { engine, member: Some(Engine::Claude), why };
+        assert_eq!(reviewed(&r(Engine::Codex, ReviewWhy::Room { used: Some(40) })), "Codex 검토 · Codex 여유 있음 — 주간 40% 사용");
+        assert_eq!(reviewed(&r(Engine::Claude, ReviewWhy::NearLimit { window: Window::Weekly, used: 93 })), "Claude 새 세션 검토 · Codex 주간 93% 사용");
+        assert_eq!(reviewed(&r(Engine::Claude, ReviewWhy::NotInstalled)), "Claude 새 세션 검토 · Codex 설치 안 됨");
+        assert_eq!(reviewed(&r(Engine::Claude, ReviewWhy::UsedUp { window: Window::FiveHour })), "Claude 새 세션 검토 · Codex 5시간 한도 소진");
+        assert_eq!(reviewed(&r(Engine::Claude, ReviewWhy::Setting)), "Claude 새 세션 검토 · 스쿼드 설정");
+        let v = Verdict { pass: true, by: "codex".into(), reviewer: Some(r(Engine::Codex, ReviewWhy::Room { used: None })), ..Verdict::default() };
+        assert!(who(&v).ends_with(" · Codex 검토 · Codex 사용 가능"), "{}", who(&v));
+        assert!(!who(&Verdict { reviewer: None, ..v.clone() }).contains("Codex"), "a verdict kept before it: as it was");
+        assert!(who(&Verdict { by: "subagent".into(), ..v }).ends_with(t!("look.by_subagent")));
+    }
 
     fn summary() -> Summary {
         Summary {

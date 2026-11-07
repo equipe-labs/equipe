@@ -1,7 +1,8 @@
 //! `equipe design …`: the designer's tools (`equipe_core::design::{check,
 //! kit}`, and two scripts run in the Mac's own Chrome through Playwright —
-//! `assets/design/{audit,render}.mjs`), and the critic on the other engine
-//! (`equipe_core::design::critique`). A member runs them in its worktree;
+//! `assets/design/{audit,render}.mjs`), and a fresh critic — the other engine
+//! when it can take it (`equipe_core::design::{critique, reviewer}`). A
+//! member runs them in its worktree;
 //! so can the person. `equipe design flows …` keeps the UI map
 //! (`equipe_core::design::flows`): every flow, its screens, each in every
 //! state, pictured light and dark at each width — a web page's states shot
@@ -13,9 +14,10 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use clap::Subcommand;
-use equipe_core::design::{check, critique, flows, kit, tokens};
+use equipe_core::design::{check, critique, flows, kit, reviewer, tokens};
 use equipe_core::protocol::Engine;
 use equipe_core::protocol::design::{FlowMap, ScreenState};
+use equipe_core::protocol::engines::Reviewed;
 use equipe_core::t;
 
 #[derive(Subcommand)]
@@ -83,7 +85,7 @@ pub enum DesignAction {
         #[arg(long, default_value = "diff.png")]
         out: PathBuf,
     },
-    /// Have the other engine critique pictures — the whole first, then each region — kept in design/critiques/
+    /// Have a fresh reviewer — the other engine when it's available — critique pictures: the whole first, then each region; kept in design/critiques/
     Critique {
         /// The pictures: mockups, shots of what was built
         #[arg(required = true)]
@@ -100,7 +102,7 @@ pub enum DesignAction {
         /// The brief (default: design/brand.md, if there is one)
         #[arg(long)]
         brief: Option<PathBuf>,
-        /// Who critiques (default: the engine this isn't run on)
+        /// Who critiques (default: as the squad sets it — the other engine when it has room, else a fresh session of this one)
         #[arg(long, value_parser = ["codex", "claude"])]
         engine: Option<String>,
     },
@@ -1157,46 +1159,110 @@ async fn critique_command(mut ask: critique::Ask, brief: Option<PathBuf>, engine
     if let Some(file) = &brief {
         ask.brief = Some(std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?);
     }
-    let engine = match engine.as_deref() {
-        Some("claude") => Engine::Claude,
-        Some(_) => Engine::Codex,
-        None => {
-            let caller = critique::caller_engine(|name| std::env::var(name).ok());
-            let critic = critique::critic_engine(caller);
-            if caller.is_none() {
-                eprintln!("{}", critique::unknown_caller(critic, "critique"));
-            }
-            critic
-        }
-    };
+    let first = reviewer_for(engine.as_deref(), "critique");
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default().to_string();
     let kept = critique::kept_at(&design, &stamp);
     if let Some(parent) = kept.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    let (program, args) = critique::command(engine, &ask, &kept);
-    eprintln!("{} is critiquing {} picture(s)…", engine.label(), ask.pictures.len());
-    let run = tokio::process::Command::new(&program).args(&args).stdin(Stdio::null()).stderr(Stdio::piped()).output().await.map_err(|e| format!("{program}: {e} — is {} installed and signed in?", engine.label()))?;
-    if !run.status.success() {
-        // Claude says why on stdout, Codex on stderr.
-        let said = [String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout)].join("\n");
-        if let Some(next) = critique::no_network(&said, &|n| std::env::var(n).ok()) {
-            return Err(format!("{} couldn't critique: {next}", engine.label()));
-        }
-        let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
-        return Err(format!("{} couldn't critique ({}): {}", engine.label(), run.status, tail.into_iter().rev().collect::<Vec<_>>().join("\n")));
-    }
-    // Codex wrote its answer to the file; Claude printed it.
-    if engine == Engine::Claude {
-        std::fs::write(&kept, &run.stdout).map_err(|e| format!("{}: {e}", kept.display()))?;
-    }
-    let answer = std::fs::read_to_string(&kept).unwrap_or_default();
-    if answer.trim().is_empty() {
-        return Err(format!("{} answered nothing", engine.label()));
-    }
+    let (answer, by) = reviewed(first, |engine| critique_once(engine, &ask, &kept)).await?;
+    // Kept with who wrote it and why that engine, for the person's screens.
+    std::fs::write(&kept, format!("{}\n{}\n", reviewer::mark(&by), answer.trim_end())).map_err(|e| format!("{}: {e}", kept.display()))?;
+    println!("{}\n", reviewer::said(&by));
     println!("{}", answer.trim_end());
     println!("\nkept {}", kept.display());
     Ok(())
+}
+
+/// One critique by `engine`: its answer.
+async fn critique_once(engine: Engine, ask: &critique::Ask, kept: &Path) -> Result<String, NoReview> {
+    let (program, args) = critique::command(engine, ask, kept);
+    eprintln!("{} is critiquing {} picture(s)…", engine.label(), ask.pictures.len());
+    let run = tokio::process::Command::new(&program).args(&args).stdin(Stdio::null()).stderr(Stdio::piped()).output().await.map_err(|e| NoReview::spawn(&program, engine, &e, ""))?;
+    if !run.status.success() {
+        return Err(NoReview::failed(engine, "critique", &run, ""));
+    }
+    // Codex wrote its answer to the file; Claude printed it.
+    let answer = if engine == Engine::Claude { String::from_utf8_lossy(&run.stdout).into_owned() } else { std::fs::read_to_string(kept).unwrap_or_default() };
+    if answer.trim().is_empty() {
+        return Err(NoReview::Failed { told: format!("{} answered nothing", engine.label()), said: String::new() });
+    }
+    Ok(answer)
+}
+
+/// Why a reviewer gave no answer.
+pub(crate) enum NoReview {
+    /// Its program isn't here.
+    Missing(String),
+    /// It ran and failed: what to tell, and what it printed.
+    Failed { told: String, said: String },
+}
+
+impl NoReview {
+    /// Its program couldn't start (`then`: what to add to the words).
+    pub(crate) fn spawn(program: &str, engine: Engine, err: &std::io::Error, then: &str) -> Self {
+        let told = format!("{program}: {err} — is {} installed and signed in?{then}", engine.label());
+        if err.kind() == std::io::ErrorKind::NotFound { NoReview::Missing(told) } else { NoReview::Failed { told, said: String::new() } }
+    }
+
+    /// It ran and failed: what it said, the end of it (`what`: the review it was asked for).
+    pub(crate) fn failed(engine: Engine, what: &str, run: &std::process::Output, then: &str) -> Self {
+        // Claude says why on stdout, Codex on stderr.
+        let said = [String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout)].join("\n");
+        if let Some(next) = critique::no_network(&said, &|n| std::env::var(n).ok()) {
+            return NoReview::Failed { told: format!("{} couldn't {what}: {next}", engine.label()), said };
+        }
+        let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
+        let told = format!("{} couldn't {what} ({}): {}{then}", engine.label(), run.status, tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
+        NoReview::Failed { told, said }
+    }
+
+    fn told(self) -> String {
+        match self {
+            NoReview::Missing(told) | NoReview::Failed { told, .. } => told,
+        }
+    }
+}
+
+/// Whether `engine`'s program is on this machine.
+pub(crate) fn installed(engine: Engine) -> bool {
+    let binary = match engine {
+        Engine::Codex => equipe_core::engines::codex_binary(),
+        Engine::Claude => equipe_providers::claude_code::DEFAULT_BINARY.to_owned(),
+    };
+    equipe_providers::codex_app::find(&binary).is_some()
+}
+
+/// Who reviews this command's design work (`what`): the engine named, the
+/// daemon's word for this turn, or — nobody's word — decided here.
+pub(crate) fn reviewer_for(named: Option<&str>, what: &str) -> Reviewed {
+    let named = named.map(|n| if n == "claude" { Engine::Claude } else { Engine::Codex });
+    let env = |name: &str| std::env::var(name).ok();
+    let first = reviewer::resolve(named, env, installed);
+    if named.is_none() && env(reviewer::REVIEWER_ENV).is_none() && critique::caller_engine(env).is_none() {
+        eprintln!("{}", critique::unknown_caller(first.engine, what));
+    }
+    first
+}
+
+/// The review `run` gives on `first`'s engine; when that engine can't run
+/// and the member's own may take over, on its own, fresh. The answer, and
+/// who gave it.
+pub(crate) async fn reviewed<F, Fut>(first: Reviewed, run: F) -> Result<(String, Reviewed), String>
+where
+    F: Fn(Engine) -> Fut,
+    Fut: std::future::Future<Output = Result<String, NoReview>>,
+{
+    let failed = match run(first.engine).await {
+        Ok(answer) => return Ok((answer, first)),
+        Err(failed) => failed,
+    };
+    let missing = matches!(failed, NoReview::Missing(_));
+    // A sandbox with no network stops every engine alike: said as it is.
+    let sandboxed = matches!(&failed, NoReview::Failed { said, .. } if critique::no_network(said, &|n| std::env::var(n).ok()).is_some());
+    let Some(next) = reviewer::fall_back(&first, missing).filter(|_| !sandboxed) else { return Err(failed.told()) };
+    eprintln!("{}\n{} takes it instead, in a fresh session.", failed.told(), next.engine.label());
+    run(next.engine).await.map(|answer| (answer, next)).map_err(NoReview::told)
 }
 
 /// Where the scripts and the Playwright they import live: the person's own,

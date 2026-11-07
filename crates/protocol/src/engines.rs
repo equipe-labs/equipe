@@ -138,10 +138,133 @@ impl Proposal {
     }
 }
 
+/// Which engine reviews a designer's work — `equipe design critique` and
+/// `second-look`. What matters is a reviewer that saw none of the work being
+/// made; the other engine adds a second model's eyes when it can take it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reviewer {
+    /// The other engine when it is installed, signed in and its plan has
+    /// room; else the member's own engine, in a fresh session.
+    #[default]
+    Auto,
+    /// Always the member's own engine, in a fresh session.
+    Same,
+    /// Always the other engine — the member's own only when the other can't run.
+    Other,
+}
+
+impl Reviewer {
+    pub const ALL: [Reviewer; 3] = [Reviewer::Auto, Reviewer::Same, Reviewer::Other];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Reviewer::Auto => "auto",
+            Reviewer::Same => "same",
+            Reviewer::Other => "other",
+        }
+    }
+
+    /// `auto`, `same`, `other` — as typed in a command or kept in a journal.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            "auto" | "default" => Some(Reviewer::Auto),
+            "same" | "same_engine" | "same_as_member" | "own" => Some(Reviewer::Same),
+            "other" | "other_engine" | "cross" => Some(Reviewer::Other),
+            _ => None,
+        }
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Reviewer::default()
+    }
+}
+
+/// Who reviewed a designer's work, and why that engine: kept with the
+/// critique and on the second look's verdict, so the person can see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reviewed {
+    pub engine: Engine,
+    /// The engine the designer works on, when known: the same one means a
+    /// fresh session of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<Engine>,
+    pub why: ReviewWhy,
+}
+
+/// Why the reviewer is the engine it is. The reasons about the other engine
+/// speak of the one the member isn't on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReviewWhy {
+    /// Named on the command (`--engine`).
+    Named,
+    /// The squad's setting ([`Reviewer::Same`] or [`Reviewer::Other`]).
+    Setting,
+    /// The other engine is signed in with room: its week this used, when read.
+    Room {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        used: Option<u8>,
+    },
+    /// The other engine isn't installed.
+    NotInstalled,
+    /// The other engine isn't signed in.
+    SignedOut,
+    /// The other engine's limit is used up.
+    UsedUp { window: Window },
+    /// The other engine's limit is nearly used.
+    NearLimit { window: Window, used: u8 },
+    /// At its pace, the other engine's limit runs out before it starts over.
+    RunsOut { window: Window, used: u8 },
+    /// The other engine was tried and couldn't run (signed out, out of usage).
+    Failed,
+}
+
+/// The engine `engine` isn't.
+fn across(engine: Engine) -> Engine {
+    match engine {
+        Engine::Claude => Engine::Codex,
+        Engine::Codex => Engine::Claude,
+    }
+}
+
+impl Reviewed {
+    /// The member's own engine, in a fresh session.
+    pub fn fresh(&self) -> bool {
+        self.member == Some(self.engine)
+    }
+
+    /// The engine the reasons speak of: the one the member isn't on.
+    pub fn other(&self) -> Engine {
+        across(self.member.unwrap_or_else(|| across(self.engine)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn who_reviewed_and_why_travel_as_plain_words() {
+        for r in Reviewer::ALL {
+            assert_eq!(Reviewer::parse(r.code()), Some(r));
+        }
+        assert_eq!(Reviewer::parse("Same as member"), Some(Reviewer::Same));
+        assert_eq!(Reviewer::parse("other-engine"), Some(Reviewer::Other));
+        assert_eq!(Reviewer::parse("codex"), None);
+        assert!(Reviewer::default().is_default() && Reviewer::default() == Reviewer::Auto);
+        let near = Reviewed { engine: Engine::Claude, member: Some(Engine::Claude), why: ReviewWhy::NearLimit { window: Window::Weekly, used: 93 } };
+        let wire = serde_json::to_value(near).unwrap();
+        assert_eq!(wire, json!({ "engine": "claude", "member": "claude", "why": { "kind": "near_limit", "window": "weekly", "used": 93 } }));
+        assert_eq!(serde_json::from_value::<Reviewed>(wire).unwrap(), near);
+        assert!(near.fresh() && near.other() == Engine::Codex);
+        let room = Reviewed { engine: Engine::Codex, member: Some(Engine::Claude), why: ReviewWhy::Room { used: None } };
+        assert!(!room.fresh() && room.other() == Engine::Codex);
+        assert_eq!(serde_json::to_value(room).unwrap()["why"], json!({ "kind": "room" }));
+        let named = Reviewed { engine: Engine::Claude, member: None, why: ReviewWhy::Named };
+        assert_eq!(named.other(), Engine::Claude, "nobody's engine known: the reviewer is taken for the other one");
+    }
 
     fn shift() -> Proposal {
         Proposal {

@@ -277,6 +277,21 @@ has no network for the engine, the member is told to run the command again
 outside it, or, if that isn't allowed, to say so in its hand-in rather than
 try again.
 
+Who reviews is the squad's setting (Settings → Engines → Design reviews, or the
+PM's `change_setting` `design_reviewer`): **auto** (the default) takes the
+other engine when it is installed, signed in and its plan has room — its week
+under 90% and not on course to run out before it resets, its five hours under
+95% — and otherwise a fresh session of the member's own engine; **same** is
+always the member's own, fresh; **other** always the other one. What matters is
+a reviewer that saw none of the work being made, not the vendor, so a person on
+only Claude or only Codex always gets that engine, and when the other engine is
+tried and can't run, the member's own takes over. The daemon decides at each of
+a member's turns and passes it in `EQUIPE_DESIGN_REVIEWER`, which stays outside
+the sandbox too; from a person's own terminal the command decides by what is
+installed. A critique is kept with the engine that wrote it and why
+(`<!-- equipe-reviewer: … -->`, its first line), a second look's verdict with
+`reviewer`, and the designer studio shows both.
+
 ## Remixing references — the `design` tools (equipe-design)
 
 [equipe-design](https://github.com/equipe-labs/equipe-design) extracts a design

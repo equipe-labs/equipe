@@ -244,6 +244,20 @@ fn window_level(kind: Window, w: PlanWindow, now: i64, rate: Option<f64>) -> (Le
     (level, runs_out)
 }
 
+/// Each of `r`'s windows that hasn't started over by `now`: how used, and
+/// whether at the burn so far it runs out before it does (a stale reading's
+/// burn is unknown: never).
+pub fn windows_at(r: &Reading, memory: &Memory, now: i64) -> Vec<(Window, u8, bool)> {
+    let stale = now - r.at > STALE_AFTER;
+    r.live(now)
+        .map(|(kind, w)| {
+            let rate = if stale { None } else { memory.rate(r.engine, kind, w) };
+            let (_, runs_out) = window_level(kind, w, now, rate);
+            (kind, w.used_percent.min(100), runs_out.is_some())
+        })
+        .collect()
+}
+
 /// Where `r`'s engine stands at `now`.
 pub fn assess(r: &Reading, memory: &Memory, now: i64) -> Assessment {
     let stale = now - r.at > STALE_AFTER;

@@ -211,6 +211,9 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         Command::SetEngineSwitching { mode, .. } => {
             let _ = events.send(Event::EngineSwitchingChanged { squad: squad(), mode: *mode });
         }
+        Command::SetDesignReviewer { reviewer, .. } => {
+            let _ = events.send(Event::DesignReviewerChanged { squad: squad(), reviewer: *reviewer });
+        }
         Command::ApplyEngineProposal { id, .. } => {
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: true });
             let _ = events.send(Event::Notice { undo: None, session: 1, text: "Moving them — backend and frontend each switch from their next ticket".into() });

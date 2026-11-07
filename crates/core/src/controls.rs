@@ -9,7 +9,7 @@
 use serde_json::{Value, json};
 
 use crate::i18n::{Lang, core};
-use crate::protocol::engines::Switching;
+use crate::protocol::engines::{Reviewer, Switching};
 use crate::protocol::{Engine, Mode};
 
 pub const SETTINGS: &str = "settings";
@@ -43,6 +43,8 @@ pub enum Change {
     Effort { member: String, effort: Option<String> },
     /// How members move between engines as plans run low.
     EngineSwitching(Switching),
+    /// Which engine reviews the designer's work.
+    DesignReviewer(Reviewer),
     /// Take a project off the squad (its folder stays).
     RemoveProject(String),
     /// The squad's HQ project, or none.
@@ -77,6 +79,9 @@ impl Change {
             Change::Mode { mode, .. } => mode.is_none_or(|m| reach(m) > reach(now)),
             Change::PmAccepts(on) => *on,
             Change::EngineSwitching(mode) => *mode == Switching::Auto,
+            // Always the other engine draws on its plan however low it runs:
+            // the person's. Auto and the member's own only narrow it.
+            Change::DesignReviewer(reviewer) => *reviewer == Reviewer::Other,
             Change::Signal { on, .. } => *on,
             // Another plan, another bill, another way of working: the person's, always.
             Change::Merge { .. } | Change::Engine { .. } => true,
@@ -140,6 +145,7 @@ impl Change {
                 "auto" => Switching::Auto,
                 v => return Err(format!("Engine switching is off, suggest or auto, not {v:?}.")),
             }),
+            "design_reviewer" => Change::DesignReviewer(Reviewer::parse(&value()?).ok_or("The design reviewer is auto, same (the member's own engine, in a fresh session) or other (always the other engine).")?),
             "remove_project" => Change::RemoveProject(s("project").ok_or("Which project? Give `project`.")?),
             "hq" => Change::Hq(s("project").filter(|p| p != "none")),
             "run_routine" => Change::RunRoutine(id()?),
@@ -243,7 +249,7 @@ pub fn tools() -> Vec<Value> {
             "description": "Read the squad's settings, as the person sees them on their screen: its projects and HQ, \
 how much members may do on their own (the squad's mode and each member's), each member's engine, model and effort, \
 whether you accept the team's work yourself, how long an empty board waits before you are woken, engine switching, \
-routines, signals, and the \"always allow\" rules. Read it before you change one, and to answer what is set.",
+who reviews the designer's work, routines, signals, and the \"always allow\" rules. Read it before you change one, and to answer what is set.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
@@ -255,7 +261,9 @@ to the person as an approval card saying exactly what changes; it happens only i
 their answer. Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default \
 with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), model (member, value: a model of the engine \
 the member runs on), effort (member, value, or default), engine (members — every one in one call — value claude | \
-codex, and optionally model and effort there), engine_switching (off | suggest | auto), remove_project (project), \
+codex, and optionally model and effort there), engine_switching (off | suggest | auto), design_reviewer (who reviews \
+the designer's work: auto — the other engine when it is signed in with room, else the member's own in a fresh session — | \
+same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
 the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket). Never set another engine's model \
 through `model`: moving a member to it is `engine`. Adding a project is `add_project`; adding a routine, \
@@ -263,7 +271,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "model", "effort", "engine", "engine_switching", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "model", "effort", "engine", "engine_switching", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort and engine." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -304,8 +312,11 @@ mod tests {
         assert!(change(json!({ "setting": "signal", "project": "site", "name": "posthog", "value": "on" })).needs_yes(Mode::Auto));
         assert!(!change(json!({ "setting": "signal", "project": "site", "name": "posthog", "value": "off" })).needs_yes(Mode::Auto));
         assert!(change(json!({ "setting": "engine_switching", "value": "auto" })).needs_yes(Mode::Auto));
+        assert!(change(json!({ "setting": "design_reviewer", "value": "other" })).needs_yes(Mode::Auto), "always the other plan: the person's");
         for args in [
             json!({ "setting": "idle_wake_hours", "value": "6" }),
+            json!({ "setting": "design_reviewer", "value": "same" }),
+            json!({ "setting": "design_reviewer", "value": "auto" }),
             json!({ "setting": "model", "member": "pm", "value": "opus" }),
             json!({ "setting": "effort", "member": "backend", "value": "high" }),
             json!({ "setting": "remove_project", "project": "old-site" }),
@@ -324,12 +335,14 @@ mod tests {
         assert_eq!(change(json!({ "setting": "mode", "value": "ask" })), Change::Mode { member: None, mode: Some(Mode::Ask) });
         assert_eq!(change(json!({ "setting": "effort", "member": "qa", "value": "default" })), Change::Effort { member: "qa".into(), effort: None });
         assert_eq!(change(json!({ "setting": "hq", "project": "site" })), Change::Hq(Some("site".into())));
+        assert_eq!(change(json!({ "setting": "design_reviewer", "value": "same" })), Change::DesignReviewer(Reviewer::Same));
         assert_eq!(change(json!({ "setting": "merge", "ticket": 4, "push": false })), Change::Merge { ticket: 4, push: false });
         let err = |args: Value| Change::parse(&args).unwrap_err();
         assert!(err(json!({ "setting": "mode", "value": "default" })).contains("default puts a member"), "the squad has no default but its own");
         assert!(err(json!({ "setting": "idle_wake_hours", "value": "soon" })).contains("hours"));
         assert!(err(json!({ "setting": "model", "value": "opus" })).contains("member"));
         assert!(err(json!({ "setting": "colour" })).contains("`settings`"));
+        assert!(err(json!({ "setting": "design_reviewer", "value": "gemini" })).contains("auto, same"));
         let tools = tools();
         let names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, [SETTINGS, CHANGE_SETTING]);

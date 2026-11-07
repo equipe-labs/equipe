@@ -2197,6 +2197,13 @@ impl Runtime {
                 }
                 self.publish(Event::SubagentsAtOnceChanged { squad, at_once });
             }
+            // Each member's next turn is told the reviewer it gets (`design_reviewer_env`).
+            Command::SetDesignReviewer { squad, reviewer } => {
+                if let Some(Err(err)) = self.journal(&squad).map(|j| j.set_design_reviewer(reviewer)) {
+                    crate::daemon_log!("equipe: {squad}: the design reviewer wasn't kept: {err}");
+                }
+                self.publish(Event::DesignReviewerChanged { squad, reviewer });
+            }
             Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
@@ -2261,6 +2268,7 @@ impl Runtime {
     /// The engines as just looked at, with who is on each and the sign-ins
     /// under way, for every screen.
     fn publish_engines(&mut self, mut engines: Vec<equipe_protocol::EngineStatus>) {
+        self.engines.saw(&engines);
         for status in &mut engines {
             let mut members: Vec<MemberRef> = self.sessions.values().filter(|s| s.engine == status.engine).filter_map(session_member).collect();
             members.sort_by(|a, b| (&a.squad, &a.member).cmp(&(&b.squad, &b.member)));
@@ -4151,6 +4159,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
             // And on which engine, for what they run outside its sandbox (`equipe design second-look`).
             env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(session.engine).to_owned()));
+            // And who reviews its design work this turn, and why (`equipe design critique`, `second-look`).
+            if let Some(squad) = squad.as_deref() {
+                let reviewer = self.design_reviewer(squad, session.engine);
+                env.push((crate::design::reviewer::REVIEWER_ENV.to_owned(), serde_json::to_string(&reviewer).unwrap_or_default()));
+            }
         }
         // Claude Code's cap on subagents at once, where the squad set it;
         // Codex's goes in its thread's config (`codex_app::TurnRequest::subagents`).
@@ -7383,6 +7396,7 @@ it back there once they have done it.{again} End your turn now with a short line
             routine_proposals,
             idle_wake_hours,
             subagents_at_once,
+            design_reviewer: self.journals.get(squad).map(Journal::design_reviewer).unwrap_or_default(),
             team_changes,
             accepts,
             squad: squad.to_owned(),

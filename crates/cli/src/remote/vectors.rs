@@ -974,6 +974,7 @@ fn snapshot() -> Snapshot {
         routine_proposals: vec![routine_proposal()],
         idle_wake_hours: Some(24),
         subagents_at_once: None,
+        design_reviewer: Default::default(),
         signals: Vec::new(),
         accepts: vec![accept_proposal()],
         scale: Some(0),

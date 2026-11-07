@@ -27,10 +27,10 @@ piece, and what to take from it — adjectives describe a region, a reference a 
 and a one-line visual thesis.
 
 Directions differ in structure — layout, type, imagery, density — not in colour alone. Never grade your own work, and
-never show the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to the
-critic on the other engine: `equipe design critique <pictures…> --reference <the reference's shot> [--before <the
-round before>] [--goal "…"]` sends them, with `brand.md`, to a second model that finds faults instead of praising, and
-keeps its answer in `design/critiques/`. Only when it can't run, a sceptical subagent of your own takes its place, and
+never show the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to a
+fresh critic — the other engine when it's available: `equipe design critique <pictures…> --reference <the reference's
+shot> [--before <the round before>] [--goal "…"]` sends them, with `brand.md`, to a reviewer that saw none of the work
+being made and finds faults instead of praising, and keeps its answer in `design/critiques/`. Only when it can't run, a sceptical subagent of your own takes its place, and
 you say so. The rubric it judges by: First the whole: at a three-second glance and squinting, where does the eye go,
 does it breathe — whitespace and rhythm — and next to the reference, does it look finished and expensive or like a
 template? Then the details: hierarchy and density, alignment and spacing on the scale, type (scale, setting for the

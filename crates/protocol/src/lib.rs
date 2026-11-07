@@ -1125,6 +1125,9 @@ pub enum Command {
     /// each engine's own ([`engine_subagents_at_once`]), nothing given to it.
     /// Answered by [`Event::SubagentsAtOnceChanged`].
     SetSubagentsAtOnce { squad: SquadName, at_once: Option<u32> },
+    /// Which engine reviews the designer's work ([`engines::Reviewer`]).
+    /// Answered by [`Event::DesignReviewerChanged`].
+    SetDesignReviewer { squad: SquadName, reviewer: engines::Reviewer },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
     /// each at its member's next ticket boundary. Only ever the person's.
     ApplyEngineProposal { squad: SquadName, id: u64 },
@@ -2338,6 +2341,8 @@ pub enum Event {
     /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]);
     /// `None`: each engine's own.
     SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
+    /// Which engine reviews the designer's work now ([`Command::SetDesignReviewer`]).
+    DesignReviewerChanged { squad: SquadName, reviewer: engines::Reviewer },
     /// The squad's signals now, each with its latest readings: on a new
     /// reading, one turned on or off, or paused.
     SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
@@ -2444,6 +2449,7 @@ impl Event {
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
             | Event::SubagentsAtOnceChanged { squad, .. }
+            | Event::DesignReviewerChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
@@ -2529,6 +2535,7 @@ impl Event {
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
             | Event::SubagentsAtOnceChanged { .. }
+            | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
             | Event::BrowserProfiles { .. }
@@ -2889,6 +2896,10 @@ pub struct Snapshot {
     /// `None`: each engine's own — as on a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagents_at_once: Option<u32>,
+    /// Which engine reviews the designer's work ([`Command::SetDesignReviewer`]);
+    /// auto from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "engines::Reviewer::is_default")]
+    pub design_reviewer: engines::Reviewer,
     /// The squad's signals, each with its latest readings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<signals::SignalView>,
@@ -3287,6 +3298,7 @@ mod tests {
             }],
             idle_wake_hours: Some(24),
             subagents_at_once: Some(8),
+            design_reviewer: engines::Reviewer::Same,
             signals: Vec::new(),
             scale: Some(2),
             suggestions_off: false,
