@@ -10,18 +10,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use equipe_core::protocol::SessionId;
 use equipe_core::protocol::decide::{self, Answer, Question, QuestionSet, Reaction};
 use equipe_core::t;
 
 // ── the sets waiting ──
 
-/// Question sets waiting for the person, oldest first. One answered (or
-/// closed) here hides at once, so a second key press can't send it twice;
-/// the daemon's `QuestionsClosed` takes it for good.
+/// Question sets waiting for the person, in the order they were (last)
+/// asked, oldest first. One answered (or closed) here hides at once, so a
+/// second key press can't send it twice; the daemon's `QuestionsClosed`
+/// takes it for good.
 #[derive(Debug, Clone, Default)]
 pub struct Asked {
     sets: Vec<QuestionSet>,
     sent: Vec<u64>,
+    /// The set asked (or asked again) last, not yet looked at by the window.
+    fresh: Option<u64>,
 }
 
 impl Asked {
@@ -29,12 +33,23 @@ impl Asked {
     pub fn load(&mut self, sets: Vec<QuestionSet>) {
         self.sets = sets;
         self.sent.clear();
+        self.fresh = None;
     }
 
-    pub fn push(&mut self, set: QuestionSet) {
-        if !self.sets.iter().any(|s| s.id == set.id) {
-            self.sets.push(set);
-        }
+    /// A set asked — or asked again under its id (the daemon keeps one card
+    /// for one decision): its new words and time, moved to the end. Whether
+    /// it is new here.
+    pub fn push(&mut self, set: QuestionSet) -> bool {
+        let had = self.sets.iter().position(|s| s.id == set.id).map(|at| self.sets.remove(at)).is_some();
+        self.fresh = Some(set.id);
+        self.sets.push(set);
+        !had
+    }
+
+    /// The set asked last, once: the window brings it forward if it is the
+    /// conversation's on screen.
+    pub fn take_fresh(&mut self) -> Option<u64> {
+        self.fresh.take().filter(|id| self.get(*id).is_some())
     }
 
     /// No longer waiting, whoever answered. Whether it was here.
@@ -75,11 +90,107 @@ impl Asked {
         self.open().find(|s| s.member == member)
     }
 
-    /// The sets a conversation shows, oldest first: the member's own — and,
-    /// in the PM's, everyone's (the person lives there).
+    /// The sets a conversation shows, as asked: the member's own — and, in
+    /// the PM's, everyone's (the person lives there). [`order`] puts them in
+    /// the order they are offered.
     pub fn in_conversation(&self, member: &str, is_pm: bool) -> Vec<&QuestionSet> {
         self.open().filter(|s| is_pm || s.member == member).collect()
     }
+}
+
+// ── which comes first ──
+
+/// The conversation on screen, as the order of its questions sees it.
+#[derive(Debug, Clone, Default)]
+pub struct Here<'a> {
+    /// Whose conversation it is.
+    pub member: &'a str,
+    /// The conversations that are this one: the member's own, and the one
+    /// beside its work on screen.
+    pub sessions: Vec<SessionId>,
+    /// When the person last said something here, in unix seconds, if this
+    /// window saw it.
+    pub said_at: Option<u64>,
+}
+
+/// Where a set stands in the order, first to last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rank {
+    /// Asked here in answer to what the person said last: what they wait for.
+    Reply,
+    /// The member on screen's other questions.
+    Own,
+    /// Everyone else's (in the PM's conversation, and in Needs you).
+    Others,
+    /// Waiting [`decide::STALE_DAYS`] or more: grouped as older, out of the way.
+    Older,
+}
+
+/// The order sets are offered in: in a member's conversation, the question
+/// it asked here since the person last spoke on top (with nothing heard
+/// from them in this window, its newest asked here), then its others, then
+/// everyone else's; the older ones last. Within each, questions that hold
+/// work up (`blocks`: on a ticket still open) before the rest, then the
+/// newest first. Stable: the same sets come out in the same order however
+/// often it is asked, so browsing them never reshuffles.
+pub fn order<'a>(sets: Vec<&'a QuestionSet>, here: Option<&Here>, now: u64, blocks: impl Fn(&QuestionSet) -> bool) -> Vec<(&'a QuestionSet, Rank)> {
+    let asked_here = |s: &QuestionSet| here.is_some_and(|h| s.member == h.member && h.sessions.contains(&s.session));
+    // Not heard from the person: the newest asked here stands for the reply.
+    let newest_here = sets.iter().filter(|s| asked_here(s)).max_by_key(|s| (s.asked_at, s.id)).map(|s| s.id);
+    let rank = |s: &QuestionSet| match here {
+        Some(h) if asked_here(s) && h.said_at.map_or(newest_here == Some(s.id), |said| s.asked_at >= said) => Rank::Reply,
+        _ if decide::is_stale(s, now) => Rank::Older,
+        Some(h) if s.member == h.member => Rank::Own,
+        _ => Rank::Others,
+    };
+    let mut ranked: Vec<(&QuestionSet, Rank, bool)> = sets.into_iter().map(|s| (s, rank(s), blocks(s))).collect();
+    ranked.sort_by_key(|(s, rank, blocks)| (*rank, *rank != Rank::Reply && !*blocks, std::cmp::Reverse(s.asked_at), std::cmp::Reverse(s.id)));
+    ranked.into_iter().map(|(s, rank, _)| (s, rank)).collect()
+}
+
+/// What the line under a card says of the others: how many more wait, and
+/// how many of them are older.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Rest {
+    pub more: usize,
+    pub older: usize,
+}
+
+/// The rest beside set `shown`, of those in `order`.
+pub fn rest(order: &[(&QuestionSet, Rank)], shown: u64) -> Rest {
+    let others = || order.iter().filter(|(s, _)| s.id != shown);
+    Rest { more: others().count(), older: others().filter(|(_, r)| *r == Rank::Older).count() }
+}
+
+// ── going through them ──
+
+/// The card the person went to (← →, or the list), and where it stood then:
+/// it stays in front however the others move, and once answered the one
+/// that stood after it comes, not the top one again.
+pub type Browsing = Option<(u64, usize)>;
+
+/// The set in front, of those in `order` (ids, first to last), and where.
+pub fn in_front(order: &[u64], browsing: Browsing) -> Option<(u64, usize)> {
+    let Some((id, at)) = browsing else { return order.first().map(|id| (*id, 0)) };
+    if let Some(now_at) = order.iter().position(|o| *o == id) {
+        return Some((id, now_at));
+    }
+    // Gone (answered, closed): the one that stood after it, or the last.
+    let at = at.min(order.len().checked_sub(1)?);
+    Some((order[at], at))
+}
+
+/// `by` cards on (or back) from the one in front, round the ends: nothing
+/// answered, nothing moved — the card left waits where it stood.
+pub fn browse(order: &[u64], browsing: Browsing, by: isize) -> Browsing {
+    let (_, at) = in_front(order, browsing)?;
+    let to = (at as isize + by).rem_euclid(order.len() as isize) as usize;
+    Some((order[to], to))
+}
+
+/// Straight to set `id`, from the list of them.
+pub fn jump(order: &[u64], id: u64) -> Browsing {
+    order.iter().position(|o| *o == id).map(|at| (id, at))
 }
 
 /// What a set is called where it waits — Needs you's row, the card's line —
@@ -127,8 +238,11 @@ pub enum Key {
     Next,
     /// Into the box for their own words, and out of it.
     Tab,
-    /// ←: the question before.
+    /// ⇧←: the question before, in a set of several.
     Back,
+    /// ← / →: the card before or after, nothing answered — this one waits
+    /// where it stands.
+    Card(isize),
     Esc,
 }
 
@@ -146,6 +260,8 @@ pub enum Effect {
     Collapse,
     /// Every question answered or skipped: send these.
     Send(Vec<Answer>),
+    /// To the card before (-1) or after (1).
+    Browse(isize),
 }
 
 impl Draft {
@@ -367,23 +483,33 @@ impl Draft {
                     Effect::Nothing
                 }
             }
+            Key::Card(by) => Effect::Browse(by),
             Key::Esc => {
                 self.collapsed = true;
                 Effect::Collapse
             }
         }
     }
+
+    /// Whether anything is picked, skipped or reacted to yet: a card the
+    /// person is in the middle of isn't moved from under them.
+    pub fn begun(&self) -> bool {
+        self.step > 0 || !self.skipped.is_empty() || !self.reactions.is_empty() || self.picks.iter().any(|p| !p.is_empty())
+    }
 }
 
-/// The key a keystroke is, while the card has the keys: digits pick, arrows
-/// move, Space, ⏎, ⌘⏎, Tab, ←, Esc. `None` for any other.
+/// The key a keystroke is, while the card has the keys: digits pick, ↑↓
+/// move, Space, ⏎, ⌘⏎, Tab, ← → to the other cards, ⇧← the question
+/// before, Esc. `None` for any other.
 pub fn key_of(key: &str, cmd: bool, shift: bool) -> Option<Key> {
     match key {
         "enter" if cmd => Some(Key::Next),
         "enter" if !shift => Some(Key::Enter),
         "up" => Some(Key::Up),
         "down" => Some(Key::Down),
-        "left" => Some(Key::Back),
+        "left" if shift => Some(Key::Back),
+        "left" if !cmd => Some(Key::Card(-1)),
+        "right" if !cmd && !shift => Some(Key::Card(1)),
         "space" => Some(Key::Space),
         "tab" => Some(Key::Tab),
         "escape" => Some(Key::Esc),
@@ -703,8 +829,8 @@ mod tests {
         let mut b = set();
         b.id = 8;
         asked.load(vec![a.clone(), b.clone()]);
-        asked.push(a.clone());
-        assert_eq!(asked.ids(), [7, 8], "not twice");
+        assert_eq!(asked.take_fresh(), None, "what the snapshot holds isn't news");
+        assert_eq!(asked.ids(), [7, 8]);
         assert_eq!(asked.in_conversation("backend", false).iter().map(|s| s.id).collect::<Vec<_>>(), [7]);
         assert_eq!(asked.in_conversation("pm", true).iter().map(|s| s.id).collect::<Vec<_>>(), [7, 8], "the PM's shows everyone's");
         assert!(asked.from("backend").is_some() && asked.from("qa").is_none());
@@ -714,6 +840,156 @@ mod tests {
         assert_eq!(asked.ids(), [7, 8], "a dead link: shown again");
         assert!(asked.close(7) && !asked.close(7));
         assert_eq!(asked.ids(), [8]);
+    }
+
+    #[test]
+    fn a_set_asked_again_under_its_id_takes_the_new_words_and_moves_to_the_end_once() {
+        let mut asked = Asked::default();
+        let mut a = set();
+        a.member = "backend".into();
+        let b = QuestionSet { id: 8, ..set() };
+        asked.load(vec![a.clone(), b.clone()]);
+        let mut again = a.clone();
+        again.questions[0].question = "Which database, then?".into();
+        again.asked_at = 500;
+        assert!(!asked.push(again), "not new: the same card");
+        assert_eq!(asked.ids(), [8, 7], "not twice, and the newest last");
+        assert_eq!(asked.get(7).unwrap().questions[0].question, "Which database, then?");
+        assert_eq!(asked.take_fresh(), Some(7), "asked again: noticed as if new");
+        assert_eq!(asked.take_fresh(), None, "once");
+        assert!(asked.push(QuestionSet { id: 9, ..set() }));
+        asked.close(9);
+        assert_eq!(asked.take_fresh(), None, "gone before it was looked at");
+    }
+
+    const DAY: u64 = 86_400;
+    const NOW: u64 = 30 * DAY;
+
+    fn one(id: u64, member: &str, session: SessionId, ticket: Option<u32>, ago: u64) -> QuestionSet {
+        QuestionSet { id, member: member.into(), session, ticket, asked_at: NOW - ago, ..set() }
+    }
+
+    /// The queue of the morning the PM's question was lost: backend's two at
+    /// the front, the PM's going back days, the one just asked last.
+    fn queue() -> Vec<QuestionSet> {
+        vec![
+            one(1, "backend", 3, Some(318), 5 * DAY),
+            one(2, "backend", 3, Some(343), 4 * DAY + 3600),
+            one(3, "pm", 1, None, 4 * DAY),
+            one(4, "pm", 1, None, 2 * DAY),
+            one(5, "designer", 4, Some(434), DAY),
+            one(6, "pm", 1, None, 3600),
+            one(7, "pm", 1, None, 60),
+        ]
+    }
+
+    fn ids(order: &[(&QuestionSet, Rank)]) -> Vec<u64> {
+        order.iter().map(|(s, _)| s.id).collect()
+    }
+
+    #[test]
+    fn in_a_members_conversation_its_reply_comes_first_then_its_own_then_the_teams_and_the_older_last() {
+        let sets = queue();
+        // In the PM's conversation, nothing heard from the person in this
+        // window: the PM's newest asked here on top, then its own, then the
+        // team's — the one holding open work first — and the older ones last.
+        let pm = Here { member: "pm", sessions: vec![1], said_at: None };
+        let open = |s: &QuestionSet| s.ticket == Some(434);
+        let first = order(sets.iter().collect(), Some(&pm), NOW, open);
+        assert_eq!(ids(&first), [7, 6, 4, 5, 3, 2, 1]);
+        assert_eq!(first.iter().map(|(_, r)| *r).collect::<Vec<_>>(), [Rank::Reply, Rank::Own, Rank::Own, Rank::Others, Rank::Older, Rank::Older, Rank::Older]);
+        // The person spoke two hours ago: both the PM asked since are its reply, the newest on top.
+        let said = Here { said_at: Some(NOW - 2 * 3600), ..pm.clone() };
+        assert_eq!(ids(&order(sets.iter().collect(), Some(&said), NOW, open))[..3], [7, 6, 4]);
+        assert_eq!(order(sets.iter().collect(), Some(&said), NOW, open)[1].1, Rank::Reply);
+        // Spoken just now: nothing asked since — the PM's own newest first still.
+        let just = Here { said_at: Some(NOW), ..pm.clone() };
+        let after = order(sets.iter().collect(), Some(&just), NOW, open);
+        assert_eq!(ids(&after)[..2], [7, 6]);
+        assert!(after.iter().all(|(_, r)| *r != Rank::Reply));
+        // Asked in a conversation beside it (another session): its own, not the reply.
+        let beside = Here { sessions: vec![99], ..pm.clone() };
+        assert!(order(sets.iter().collect(), Some(&beside), NOW, open).iter().all(|(_, r)| *r != Rank::Reply));
+    }
+
+    #[test]
+    fn away_from_a_conversation_work_held_up_comes_first_then_the_newest_and_the_older_last() {
+        let sets = queue();
+        // Needs you: tickets 318 and 434 open — 434's first among the fresh ones.
+        let open = |s: &QuestionSet| matches!(s.ticket, Some(318 | 434));
+        let away = order(sets.iter().collect(), None, NOW, open);
+        assert_eq!(ids(&away), [5, 7, 6, 4, 1, 3, 2], "held-up work first within each group, then the newest");
+        assert_eq!(rest(&away, 5), Rest { more: 6, older: 3 });
+        // Asked again: the same sets give the same order, however often.
+        assert_eq!(ids(&order(sets.iter().rev().collect(), None, NOW, open)), ids(&away));
+        // A set without a time is never called old.
+        let timeless = QuestionSet { asked_at: 0, ..one(9, "qa", 5, None, 0) };
+        assert_eq!(order(vec![&timeless], None, NOW, |_| false)[0].1, Rank::Others);
+    }
+
+    #[test]
+    fn browsing_goes_round_the_cards_and_the_one_left_keeps_its_place() {
+        let order = [7, 6, 4, 5, 3];
+        assert_eq!(in_front(&order, None), Some((7, 0)), "nothing browsed: the first");
+        let at = browse(&order, None, 1);
+        assert_eq!(at, Some((6, 1)));
+        let at = browse(&order, at, 1);
+        assert_eq!(at, Some((4, 2)));
+        assert_eq!(browse(&order, at, -1), Some((6, 1)));
+        assert_eq!(browse(&order, None, -1), Some((3, 4)), "back from the first: round to the last");
+        assert_eq!(browse(&order, Some((3, 4)), 1), Some((7, 0)));
+        // Going through them all visits each once, and comes back.
+        let mut seen = Vec::new();
+        let mut at = None;
+        for _ in 0..order.len() {
+            seen.push(in_front(&order, at).unwrap().0);
+            at = browse(&order, at, 1);
+        }
+        assert_eq!(seen, order);
+        assert_eq!(in_front(&order, at), Some((7, 0)));
+        // A new one asked meanwhile moves the others: the card in front stays.
+        assert_eq!(in_front(&[8, 7, 6, 4, 5, 3], Some((4, 2))), Some((4, 3)));
+        // The card in front answered: the one that stood after it comes, not the top.
+        assert_eq!(in_front(&[7, 6, 5, 3], Some((4, 2))), Some((5, 2)));
+        assert_eq!(in_front(&[7, 6], Some((3, 4))), Some((6, 1)), "the last answered: the one before");
+        assert_eq!(in_front(&[], Some((3, 4))), None);
+        assert_eq!(jump(&order, 5), Some((5, 3)));
+        assert_eq!(jump(&order, 99), None);
+    }
+
+    #[test]
+    fn left_and_right_go_to_the_other_cards_but_not_while_typing_and_shift_left_is_the_question_before() {
+        assert_eq!(key_of("left", false, false), Some(Key::Card(-1)));
+        assert_eq!(key_of("right", false, false), Some(Key::Card(1)));
+        assert_eq!(key_of("left", false, true), Some(Key::Back), "⇧←: the question before");
+        assert_eq!(key_of("right", false, true), None);
+        assert_eq!((key_of("left", true, false), key_of("right", true, false)), (None, None), "⌘← ⌘→ are the text's");
+        let s = set();
+        let none = others(2);
+        let mut d = Draft::new(&s);
+        d.key(&s, Key::Pick(1), &none, false);
+        assert_eq!(d.key(&s, Key::Card(1), &none, false), Effect::Browse(1));
+        assert_eq!(d.key(&s, Key::Card(-1), &none, false), Effect::Browse(-1));
+        assert!(d.picked(1) && d.step == 0, "nothing answered, nothing lost: the pick waits with the card");
+        // In the box for their own words, arrows move the caret: not the card's.
+        assert_eq!(d.key(&s, Key::Card(1), &none, true), Effect::Nothing);
+        assert_eq!(d.key(&s, Key::Card(-1), &none, true), Effect::Nothing);
+        // Folded: nothing.
+        d.collapsed = true;
+        assert_eq!(d.key(&s, Key::Card(1), &none, false), Effect::Nothing);
+    }
+
+    #[test]
+    fn a_card_begun_is_one_the_person_is_in_the_middle_of() {
+        let s = set();
+        let none = others(2);
+        let mut d = Draft::new(&s);
+        assert!(!d.begun());
+        d.key(&s, Key::Pick(0), &none, false);
+        assert!(d.begun());
+        let mut d = Draft::new(&s);
+        d.skip(&s, &none);
+        assert!(d.begun());
     }
 
     #[test]

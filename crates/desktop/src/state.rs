@@ -383,10 +383,13 @@ pub struct Model {
     pub revision: u64,
     /// The side chats opened from this window, by their id (`crate::side_chat`).
     pub side_chats: HashMap<equipe_core::protocol::SideChatId, crate::side_chat::SideConvo>,
-    /// Now, in unix seconds: set by the shell before each update (never read here).
+    /// Now, in unix seconds: set by the shell before each update.
     pub unix: u64,
     /// When each ticket came to the state it is in, as seen from here.
     pub since: HashMap<TicketId, u64>,
+    /// When the person last said something in each conversation, as seen
+    /// from here (unix seconds): what a member asked since is its reply.
+    pub said_at: HashMap<SessionId, u64>,
     /// Tickets the person just acted on, as they looked then: out of what
     /// waits for them until the daemon says they changed.
     pub acted: HashMap<TicketId, Look>,
@@ -520,6 +523,7 @@ impl Model {
             side_chats: HashMap::new(),
             unix: 0,
             since: HashMap::new(),
+            said_at: HashMap::new(),
             acted: HashMap::new(),
             news: Default::default(),
             daemon_version: String::new(),
@@ -1354,6 +1358,9 @@ impl Model {
             other => {
                 let Some(id) = other.session() else { return };
                 let unix = self.unix;
+                if matches!(other, Event::UserMessage { .. }) {
+                    self.said_at.insert(id, unix);
+                }
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == id) {
                     if matches!(other, Event::UserMessage { .. } | Event::TurnEnded { .. }) {
                         lane.active = unix;
@@ -1697,7 +1704,7 @@ impl Model {
     /// and leave once the person acted on them; requests always show.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
-        out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
+        out.extend(self.questions_waiting().into_iter().map(|(s, _)| (Section::Decide, Need::Questions(s.id))));
         out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
         out.extend(self.routine_asks.open().map(|r| (Section::Decide, Need::Routine(r.id))));
         out.extend(self.accepts.open().map(|c| (Section::Decide, Need::Accept(c.id))));
@@ -1716,6 +1723,30 @@ impl Model {
             out.extend(tickets.into_iter().map(|t| (*section, Need::Ticket(t.id))));
         }
         out
+    }
+
+    /// Whether a question set holds work up: it is about a ticket still open.
+    pub fn question_blocks(&self, set: &equipe_core::protocol::decide::QuestionSet) -> bool {
+        set.ticket.is_some_and(|id| self.tickets.iter().any(|t| t.id == id && !t.status.is_closed()))
+    }
+
+    /// Every question set waiting, in the order they are offered away from
+    /// any one conversation (Needs you): those that hold work up first, then
+    /// the newest; the older ones last.
+    pub fn questions_waiting(&self) -> Vec<(&equipe_core::protocol::decide::QuestionSet, crate::decide::Rank)> {
+        crate::decide::order(self.asked.open().collect(), None, self.unix, |s| self.question_blocks(s))
+    }
+
+    /// The question sets the conversation on screen offers, in order: what
+    /// its member asked since the person last spoke there first
+    /// ([`crate::decide::order`]). None with no member on screen.
+    pub fn questions_here(&self) -> Vec<(&equipe_core::protocol::decide::QuestionSet, crate::decide::Rank)> {
+        let Some(member) = self.selected_member() else { return Vec::new() };
+        let mut sessions = vec![member.session];
+        sessions.extend(self.viewed().filter(|v| *v != member.session));
+        let said_at = sessions.iter().filter_map(|s| self.said_at.get(s)).max().copied();
+        let here = crate::decide::Here { member: &member.name, sessions, said_at };
+        crate::decide::order(self.asked.in_conversation(&member.name, Self::is_pm(member)), Some(&here), self.unix, |s| self.question_blocks(s))
     }
 
     /// How many things wait for the person.
@@ -2960,6 +2991,36 @@ mod tests {
         assert!(model.apply(Update::Event(Event::QuestionsClosed { squad: "acme".into(), id: 40, answers: None }), T0), "answered on another screen: it goes, live");
         assert!(model.asked.ids().is_empty());
         assert!(matches!(model.status(&model.members[1]), Status::Working { .. }));
+    }
+
+    #[test]
+    fn the_question_the_pm_just_asked_in_reply_comes_first_in_its_conversation_and_needs_you_puts_blocked_work_first() {
+        use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
+        // The PM and backend at work; ticket 2 in progress, ticket 1 done.
+        let mut model = needs_model();
+        let day = 86_400;
+        let now = 40 * day;
+        model.unix = now;
+        let q = Question { question: "Which?".into(), options: vec![Choice { label: "a".into(), ..Choice::default() }, Choice { label: "b".into(), ..Choice::default() }], ..Question::default() };
+        let set = |id: u64, member: &str, session: SessionId, ticket: Option<u32>, ago: u64| QuestionSet { id, session, member: member.into(), ticket, questions: vec![q.clone()], asked_at: now - ago, review: false, retro: None };
+        // backend's two first, as asked: one on ticket 2 (in progress), one on 1 (done) — then the PM's, nine days back to now.
+        model.asked.load(vec![set(50, "backend", 2, Some(1), 5 * day), set(51, "backend", 2, Some(2), 2 * day), set(52, "pm", 1, None, 9 * day), set(53, "pm", 1, None, day), set(54, "backend", 2, Some(1), 3600)]);
+        // The person speaks to the PM; the PM asks in reply.
+        model.select(1);
+        model.unix = now + 10;
+        model.apply(Update::Event(Event::UserMessage { session: 1, text: "Let's do office hours".into(), kept: Vec::new() }), T0);
+        model.unix = now + 20;
+        model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: QuestionSet { asked_at: now + 20, ..set(55, "pm", 1, None, 0) } }), T0);
+        let here: Vec<u64> = model.questions_here().iter().map(|(s, _)| s.id).collect();
+        assert_eq!(here, [55, 53, 51, 54, 50, 52], "the reply on top, the PM's own, the team's (work held up first), the older ones last");
+        assert_eq!(model.questions_here()[0].1, crate::decide::Rank::Reply);
+        // In backend's conversation, only its own: the newest it asked there first.
+        model.select(2);
+        let here: Vec<u64> = model.questions_here().iter().map(|(s, _)| s.id).collect();
+        assert_eq!(here, [54, 51, 50], "its newest there stands for the reply: nothing heard from the person here");
+        // Needs you: the one holding work up (ticket 2 in progress) first, then the newest; the older last.
+        let decide: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Decide).map(|(_, n)| n).collect();
+        assert_eq!(decide, [51, 55, 54, 53, 50, 52].map(Need::Questions));
     }
 
     #[test]

@@ -555,7 +555,15 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
         let sets = if deciding().as_deref() == Some("scope") { std::iter::once(scope_set(now)).chain(sets).collect() } else { sets };
-        let mut waiting = if briefs::office() { vec![briefs::office_hours_set(now)] } else if deciding().is_some() { sets } else { Vec::new() };
+        let mut waiting = if queue::on() {
+            queue::sets(now)
+        } else if briefs::office() {
+            vec![briefs::office_hours_set(now)]
+        } else if deciding().is_some() {
+            sets
+        } else {
+            Vec::new()
+        };
         if review::on() {
             waiting.insert(0, review::set(now));
         }
@@ -1083,6 +1091,8 @@ mod design;
 
 #[path = "fake_daemon/briefs.rs"]
 mod briefs;
+#[path = "fake_daemon/queue.rs"]
+mod queue;
 
 #[path = "fake_daemon/flows.rs"]
 mod flows;
@@ -1300,6 +1310,22 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                 });
                             }
+                        }
+                        // `FAKE_DECIDE=queue` with `FAKE_DECIDE_AFTER`: the PM asks one more, live.
+                        if queue::on()
+                            && let Some(after) = std::env::var("FAKE_DECIDE_AFTER").ok().and_then(|v| v.parse::<u64>().ok())
+                        {
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(after)).await;
+                                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                                let set = queue::later(now);
+                                {
+                                    let mut all = questions().lock().unwrap();
+                                    equipe_core::protocol::decide::add(&mut all, set.clone());
+                                }
+                                let _ = events.send(Event::QuestionsAsked { squad: "demo".into(), questions: set });
+                            });
                         }
                         if deciding().as_deref() == Some("elsewhere") {
                             let events = events.clone();
