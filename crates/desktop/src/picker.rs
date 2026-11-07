@@ -509,7 +509,13 @@ pub fn build(member: &Member, world: &World, ui: &Ui) -> View {
                     let ids: Vec<&str> = listed.iter().map(|m| m.id.as_str()).collect();
                     let weights = weights_of(Engine::Codex, &ids);
                     let start = world.role_start(Engine::Codex);
-                    for (m, weight) in listed.iter().zip(weights) {
+                    // equipe's pick for the role first (the latest Sol, near the
+                    // top model's quality at a fraction of its cost), then the
+                    // catalog's order: the account's default is often the
+                    // costliest, and the first row is the one Enter takes.
+                    let mut rows_in: Vec<_> = listed.iter().zip(weights).collect();
+                    rows_in.sort_by_key(|(m, _)| start != Some(m.id.as_str()));
+                    for (m, weight) in rows_in {
                         let detail = if !here && start == Some(m.id.as_str()) {
                             t!("models.role_pick").to_owned()
                         } else if m.default {
@@ -774,6 +780,21 @@ mod tests {
         let view = build(&pm(), &world, &ui(Engine::Codex));
         assert_eq!([model(&view, "gpt-6.1-sol").weight, model(&view, "gpt-6-luna").weight, model(&view, "gpt-6-mini").weight], [None, None, None]);
         assert_eq!(weights_of(Engine::Codex, &["gpt-6-mini", "gpt-6-nano", "gpt-6.1-sol"]), [Some(4), Some(2), None], "nano: a fifth of mini");
+    }
+
+    #[test]
+    fn equipes_pick_for_the_role_comes_before_a_costlier_account_default() {
+        // The account's default is the top model; equipe starts the role on Sol.
+        let list = vec![
+            ModelChoice { id: "gpt-6-astra".into(), name: Some("GPT-6 Astra".into()), default: true, ..Default::default() },
+            ModelChoice { id: "gpt-5.6-sol".into(), name: Some("GPT-5.6 Sol".into()), ..Default::default() },
+            ModelChoice { id: "gpt-5.6-luna".into(), name: Some("GPT-5.6 Luna".into()), ..Default::default() },
+        ];
+        let world = World { codex: Some(&list), codex_state: Some(EngineState::SignedIn), role_start: [None, Some("gpt-5.6-sol".into())], ..Default::default() };
+        let view = build(&pm(), &world, &ui(Engine::Codex));
+        assert_eq!(models(&view).iter().map(|(l, ..)| *l).collect::<Vec<_>>(), ["GPT-5.6 Sol", "GPT-6 Astra", "GPT-5.6 Luna"]);
+        assert_eq!(model(&view, "gpt-5.6-sol").detail, t!("models.role_pick"));
+        assert_eq!(model(&view, "gpt-6-astra").detail, t!("models.codex_default"));
     }
 
     #[test]
