@@ -881,6 +881,17 @@ fn without_a_transcript_a_skill_read_among_the_first_steps_counts_as_opened_firs
     assert!(tasks::opened_early(&out, "designer", "design-process").is_some());
     out.state.events = (0..tasks::EARLY).map(|_| used("ls")).chain([used("cat /h/skills/design-process/SKILL.md")]).collect();
     assert!(tasks::opened_early(&out, "designer", "design-process").is_none(), "read too late");
+    // On Codex the events cut commands short, so it informs and never fails a run.
+    assert!(!tasks::on_codex(&out, "designer"));
+    let started: Event = serde_json::from_value(json!({ "type": "session_started", "session": 7, "engine": "codex", "project": "/p", "model": null, "workspace": null })).unwrap();
+    out.state.events.insert(0, (0.0, started));
+    assert!(tasks::on_codex(&out, "designer"));
+    let root = scratch("codex-grade");
+    let fx = tasks::setup(&task("designer-empty-state"), &root);
+    let checks = tasks::grade(&task("designer-empty-state"), &fx, &out);
+    let opened = checks.iter().find(|c| c.name == "design-process opened first").unwrap();
+    assert!(!opened.ok && !opened.required, "{opened:?}");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

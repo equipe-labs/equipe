@@ -351,10 +351,13 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
             let pictures = files_named(out, ticket, |p| p.extension().is_some_and(|x| ["png", "svg", "jpg", "jpeg", "webp"].contains(&x.to_string_lossy().to_lowercase().as_str())));
             checks.push(must("a mockup picture", !pictures.is_empty(), pictures.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
             let transcripts = out.transcripts_of("designer");
-            if transcripts.is_empty() {
-                // No Claude Code transcript (Codex): the skill is a file it reads, seen in the daemon's events.
+            if on_codex(out, "designer") {
+                // No Claude Code transcript of its own (a critic's on Claude may be there):
+                // the skill is a file it reads, seen only in the daemon's events, whose
+                // commands are cut short — several skills read at once may not show.
+                // So it informs, and never fails a run.
                 let first = opened_early(out, "designer", "design-process");
-                checks.push(must("design-process opened first", first.is_some(), first.unwrap_or_else(|| format!("not among its first {EARLY} tool uses"))));
+                checks.push(should("design-process opened first", first.is_some(), first.unwrap_or_else(|| format!("not seen among its first {EARLY} tool uses (on Codex, commands are cut short)"))));
             } else {
                 let opened = transcripts.iter().flat_map(|t| equipe_core::quality::skill_checks(t, Some("designer"))).find(|c| c.skill == "design-process");
                 checks.push(must("design-process opened first", opened.as_ref().is_some_and(|c| c.opened.in_time()), opened.map(|c| format!("{:?}", c.opened)).unwrap_or_else(|| "not offered, or no transcript".into())));
@@ -453,6 +456,12 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
         }
         other => panic!("no task {other}"),
     }
+}
+
+/// Whether `role`'s session ran on Codex.
+pub fn on_codex(out: &Outcome, role: &str) -> bool {
+    let Some(session) = out.state.session(role) else { return false };
+    out.state.events.iter().any(|(_, e)| matches!(e, equipe_core::protocol::Event::SessionStarted { session: s, engine: equipe_core::protocol::Engine::Codex, .. } if *s == session))
 }
 
 /// How many of a member's first tool uses count as "first" for a skill read

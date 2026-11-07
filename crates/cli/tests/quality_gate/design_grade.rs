@@ -131,7 +131,11 @@ pub fn landing_checks(m: &Value, brief: &str, html: &str) -> Vec<Check> {
     let plain = spaced(s["text"].as_str().unwrap_or(""));
     let text = plain.to_lowercase();
     let actions: Vec<String> = s["actions"].as_array().into_iter().flatten().filter_map(|a| a["text"].as_str()).map(|a| spaced(a).to_lowercase()).collect();
-    let has = |any: &[&str]| any.iter().any(|w| text.contains(w));
+    // A page sets a figure apart from its words (`$` `8`, `3` `meetings a month` in boxes of
+    // their own): the words read across line breaks, and with no spaces at all.
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let has = |any: &[&str]| any.iter().any(|w| flat.contains(w) || compact.contains(&w.replace(" ", "")));
     let mut missing = Vec::new();
     for (what, ok) in [
         ("the product's name", has(&["quillo"])),
