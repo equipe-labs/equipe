@@ -16,6 +16,8 @@
 //! `FAKE_HELPERS=1` puts backend on Nemotron with equipe's helpers at work, one looking
 //! stuck (`fake_daemon/helpers.rs`; `codex`: a quiet subagent of Codex's own instead);
 //! `FAKE_WORKING=<n>` has only the first n of frontend and backend at work (`0`: nobody).
+//! `FAKE_ORCHESTRA=1`: waits between members (a chain to the person, a loop), subagents
+//! at work (one long, one quiet) and a stalled ticket, for Orchestration (`fake_daemon/orchestra.rs`).
 //! `FAKE_COMMAND=working|busy|nothing|asks|stuck|stuck_nothing`: a turn sits on a
 //! command, the daemon's look at it shown (`fake_daemon/command.rs`).
 //! A side chat searches the web and answers (`fake_daemon/side_chat.rs`);
@@ -273,6 +275,10 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
                 ask(7, 3, "backend", "Bash", "cargo test -p equipe-core -- --nocapture\ncat > /tmp/out.txt <<EOF\nx\nEOF", Some("Permission needed before running the tests")),
                 ask(8, 2, "frontend", "Send", "press return in Slack · #general\nMoving tomorrow's meeting to 3pm", None),
             ]
+            .into_iter()
+            // Orchestration's squad: only backend held on a permission, frontend at work.
+            .filter(|a| !orchestra::on() || a.member == "backend")
+            .collect::<Vec<_>>()
         } else {
             vec![]
         })
@@ -451,6 +457,9 @@ fn board() -> Vec<Ticket> {
     if pictures::on() {
         let note = "I put the brand guide in order — the name and logo stay as they are, and how they're used is now consistent.\n\n- Logo sheet: on white and on dark\n- App icon at 1024px\n- Five colours (`brand/palette.md`)";
         out.push(pictures::hand_in(ticket(144, "review", "app", "designer", "equipe brand clean-up and system (name and logo kept)", "- [ ] The logo reads at small sizes\n- [ ] Colour contrast is enough", &[], None, Some(note))));
+    }
+    if orchestra::on() {
+        out.extend(orchestra::tickets(|id, status, project, who, title, deps| ticket(id, status, project, who, title, "", deps, None, None)));
     }
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
@@ -1088,6 +1097,9 @@ mod signin;
 #[path = "fake_daemon/crowd.rs"]
 mod crowd;
 
+#[path = "fake_daemon/orchestra.rs"]
+mod orchestra;
+
 // Deciding in the person's own words, as the daemon reads them: `FAKE_WORDS`, `FAKE_WORDS_LANG`.
 #[path = "fake_daemon/words.rs"]
 mod words;
@@ -1389,6 +1401,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 let mut member = on(info(session, role, vec![]), ticket, "web", title, true, ("Edit", "src/search.tsx"), None);
                                 member.member = Some(Member { role: role.into(), name: name.into() });
                                 sessions.push(member);
+                            }
+                        }
+                        if orchestra::on() {
+                            orchestra::dress(&mut sessions, |session, role| info(session, role, vec![]), |member, ticket, project, title| on(member, ticket, project, title, false, ("Read", "README.md"), None));
+                            static PLAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                            if !PLAYING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                tokio::spawn(orchestra::play(events.clone()));
                             }
                         }
                         switching::mix(&mut sessions);
