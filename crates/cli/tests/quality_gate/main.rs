@@ -1011,6 +1011,31 @@ fn members_find_their_own_variants_equipe_first_on_path() {
 }
 
 #[test]
+fn a_login_shell_whose_profile_puts_another_equipe_first_still_finds_the_variants() {
+    // Codex runs a member's commands as `zsh -lc`: a profile that puts an
+    // installed equipe's folder first used to win over the variant's.
+    let dir = scratch("zdot");
+    let (bin, installed, home) = (dir.join("bin"), dir.join("installed"), dir.join("home"));
+    for d in [&bin, &installed, &home] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    for b in [&bin, &installed] {
+        std::fs::write(b.join("equipe"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(b.join("equipe"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(home.join(".zprofile"), format!("export PATH='{}':\"$PATH\"\nexport FROM_PROFILE=1\n", installed.display())).unwrap();
+    let zdot = harness::variant_zdotdir(&bin, &dir.join("zdot"), &home);
+    let Ok(out) = std::process::Command::new("zsh").args(["-lc", "command -v equipe; echo $FROM_PROFILE"]).env("ZDOTDIR", &zdot).env("HOME", &home).env("PATH", format!("{}:/usr/bin:/bin", bin.display())).output() else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return; // no zsh here: nothing runs commands through it
+    };
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(said.lines().next(), Some(bin.join("equipe").to_string_lossy().as_ref()), "{said}");
+    assert_eq!(said.lines().nth(1), Some("1"), "the person's own profile still ran");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bytecode_python_leaves_is_not_counted_as_changed() {
     // Running the tests writes `__pycache__/` beside the code wherever Python
     // isn't told to keep it elsewhere (CI's runners do): the grader's trace,

@@ -167,9 +167,12 @@ impl Daemon {
         let out = std::fs::File::create(log).unwrap();
         let bin = home.parent().unwrap_or(home).join("bin");
         let path = variant_path(binary, &bin, std::env::var_os("PATH").as_deref());
+        let own = std::env::var_os("ZDOTDIR").filter(|d| !d.is_empty()).or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default();
+        let zdot = variant_zdotdir(&bin, &home.parent().unwrap_or(home).join("zdot"), &own);
         let child = Process::new(binary)
             .args(["daemon", "run"])
             .env("PATH", path)
+            .env("ZDOTDIR", zdot)
             .env("EQUIPE_HOME", home)
             .env("EQUIPE_LANG", "en")
             .env("EQUIPE_TELEMETRY", "off")
@@ -218,6 +221,22 @@ pub fn variant_path(binary: &Path, bin: &Path, path: Option<&std::ffi::OsStr>) -
     std::os::unix::fs::symlink(&target, &link).unwrap();
     let rest: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
     std::env::join_paths(std::iter::once(bin.to_owned()).chain(rest)).unwrap()
+}
+
+/// A zsh startup folder that reads the person's own files and then puts
+/// `bin` first again. Codex runs a member's commands in a login shell
+/// (`zsh -lc`), whose profile can put an installed equipe's folder before
+/// the variant's: without this, a Codex member's `equipe …` ran this Mac's
+/// installed equipe, not the variant under test.
+/// `own` is where the person's own files are (their `ZDOTDIR`, else home).
+pub fn variant_zdotdir(bin: &Path, dir: &Path, own: &Path) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    for name in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
+        let own = own.join(name);
+        let text = format!("[ -f '{}' ] && . '{}'\nexport PATH='{}':\"$PATH\"\n", own.display(), own.display(), bin.display());
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+    dir.to_owned()
 }
 
 /// A run under way.
