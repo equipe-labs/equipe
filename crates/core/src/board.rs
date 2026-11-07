@@ -811,9 +811,9 @@ never into a project's repository, which may be public; it is saved as a change 
 name it by its absolute path, which members read from their worktrees. A new plan needs `title`; then each section you give replaces that section: goal, \
 approach, architecture (and data flow), edge_cases, test_plan (a list, one case an item: each gets its `TP-` number), \
 design_notes, risks. Name the plan again (`plan`) to change it: its status, the scope the person picked, a section. \
-`reviewers` asks members to review it, at once, each from its role's angle — an engineer for architecture, edge \
+For bigger or open work, `reviewers` asks members to review it, at once, each from its role's angle — an engineer for architecture, edge \
 cases and the test plan, the designer for what people see, QA for testability: each gets a review ticket, writes its \
-notes into the plan and hands in. Then cut its tickets with `create_ticket` (`plan`, `tests`)."
+notes into the plan and hands in; a clear, well-specified ask needs none. Then cut its tickets with `create_ticket` (`plan`, `tests`)."
     } else {
         "On a review ticket for a plan: write your review into the plan's review notes, under your name — what you \
 found from your role's angle. Only your own notes: the plan's sections are the PM's. Writing again replaces your notes."
