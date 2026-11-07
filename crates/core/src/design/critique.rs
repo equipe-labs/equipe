@@ -20,8 +20,45 @@ pub fn caller_engine(env: impl Fn(&str) -> Option<String>) -> Option<Engine> {
     } else if set("CLAUDECODE") {
         Some(Engine::Claude)
     } else {
-        None
+        // A member's command run outside its engine's sandbox loses the
+        // engine's own variables; equipe's, set for every member, stays.
+        match env(MEMBER_ENGINE_ENV).as_deref().map(str::trim) {
+            Some("codex") => Some(Engine::Codex),
+            Some("claude") => Some(Engine::Claude),
+            _ => None,
+        }
     }
+}
+
+/// Set in a member's commands' environment: the engine the member runs on.
+pub const MEMBER_ENGINE_ENV: &str = "EQUIPE_MEMBER_ENGINE";
+
+/// The value [`MEMBER_ENGINE_ENV`] holds for `engine`.
+pub fn member_engine_value(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Claude => "claude",
+        Engine::Codex => "codex",
+    }
+}
+
+/// What's said when nobody knows who is calling and `engine` was taken for
+/// `what`: it is never chosen unsaid.
+pub fn unknown_caller(engine: Engine, what: &str) -> String {
+    format!(
+        "No engine was named and none is known for whoever runs this, so the {what} runs on {}. Name one with `--engine claude` or `--engine codex`.",
+        engine.label()
+    )
+}
+
+/// When an engine couldn't be reached because the caller's sandbox has no
+/// network (`said` is what it printed): what the member does next.
+pub fn no_network(said: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let sandboxed = ["CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"].iter().any(|n| env(n).is_some_and(|v| !v.is_empty()));
+    let lower = said.to_lowercase();
+    let unreachable = ["enotfound", "can't reach the api", "could not resolve host", "network error", "error sending request", "connection refused", "dns"].iter().any(|w| lower.contains(w));
+    (sandboxed && unreachable).then(|| {
+        "It couldn't reach its engine: your sandbox has no network. Run the same command again outside the sandbox — ask for it, and the person allows or refuses. If that isn't allowed, don't try again: go on, and say in your hand-in that this check couldn't run and why.".to_owned()
+    })
 }
 
 /// Who critiques: the engine the caller isn't on. From a person's terminal,
@@ -146,6 +183,30 @@ mod tests {
         assert_eq!(critic_engine(Some(Engine::Claude)), Engine::Codex);
         assert_eq!(critic_engine(Some(Engine::Codex)), Engine::Claude);
         assert_eq!(critic_engine(None), Engine::Codex, "from a person's terminal, the designer is on Claude");
+    }
+
+    #[test]
+    fn a_members_command_outside_its_engines_sandbox_still_knows_its_engine() {
+        // A Codex member's command run outside the sandbox has none of Codex's
+        // own variables; equipe's says whose it is.
+        assert_eq!(caller_engine(env(&[(MEMBER_ENGINE_ENV, "codex")])), Some(Engine::Codex));
+        assert_eq!(caller_engine(env(&[(MEMBER_ENGINE_ENV, "claude")])), Some(Engine::Claude));
+        assert_eq!(caller_engine(env(&[(MEMBER_ENGINE_ENV, "codex"), ("CLAUDECODE", "1")])), Some(Engine::Claude), "the engine's own word first");
+        assert_eq!(caller_engine(env(&[(MEMBER_ENGINE_ENV, "other")])), None);
+        assert_eq!(member_engine_value(Engine::Codex), "codex");
+        assert_eq!(member_engine_value(Engine::Claude), "claude");
+        assert!(unknown_caller(Engine::Claude, "second look").contains("--engine"), "never Claude unsaid");
+    }
+
+    #[test]
+    fn a_critic_the_sandbox_cuts_off_from_the_network_says_what_to_do() {
+        let said = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)";
+        let sandboxed = env(&[("CODEX_SANDBOX", "seatbelt")]);
+        let told = no_network(said, &sandboxed).expect("the sandbox has no network");
+        assert!(told.contains("outside the sandbox") && told.contains("hand-in"), "{told}");
+        assert!(no_network("stream error: network error: error sending request", &env(&[("CODEX_SANDBOX_NETWORK_DISABLED", "1")])).is_some());
+        assert!(no_network(said, &env(&[])).is_none(), "not in a sandbox: the network itself is down");
+        assert!(no_network("Invalid API key", &sandboxed).is_none(), "another failure is said as it is");
     }
 
     fn ask() -> Ask {

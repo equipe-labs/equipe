@@ -71,6 +71,38 @@ pub struct Person {
     pub team_changes: usize,
     pub secrets: usize,
     pub routines: usize,
+    /// Each time a member put a ticket down for the person (`block_on_person`): the ticket and what it asked.
+    pub blocks: Vec<(TicketId, String)>,
+    /// Tickets put down more often than the person answers ([`ANSWERS_PER_TICKET`]): left waiting.
+    pub left_waiting: Vec<TicketId>,
+}
+
+/// How often the automatic person answers one ticket's `block_on_person`
+/// before it leaves the ticket waiting, as a person who has nothing more to give would.
+pub const ANSWERS_PER_TICKET: usize = 2;
+
+/// What the automatic person says to a ticket put down for them: it has
+/// nothing more than the task gave, so the member goes on with what it has.
+pub const NOTHING_MORE: &str = "I have nothing more to give you than the ticket and the project: use your judgement, go on, and say in your hand-in what you assumed.";
+
+impl Person {
+    /// What to do about `ticket` as it now is: `Some(note)` to resume it with,
+    /// once for each time it is put down, up to [`ANSWERS_PER_TICKET`].
+    pub fn on_ticket(&mut self, ticket: &Ticket) -> Option<&'static str> {
+        if ticket.status != equipe_core::protocol::TicketStatus::Waiting || ticket.assignee.is_none() {
+            return None;
+        }
+        let asked = ticket.note.clone().unwrap_or_default();
+        if self.blocks.iter().any(|(id, a)| *id == ticket.id && *a == asked) || self.left_waiting.contains(&ticket.id) {
+            return None;
+        }
+        if self.blocks.iter().filter(|(id, _)| *id == ticket.id).count() >= ANSWERS_PER_TICKET {
+            self.left_waiting.push(ticket.id);
+            return None;
+        }
+        self.blocks.push((ticket.id, asked));
+        Some(NOTHING_MORE)
+    }
 }
 
 /// What a run's members did, as the daemon told it.
@@ -101,6 +133,13 @@ impl State {
         self.tickets.values().filter(move |t| t.assignee.as_deref().is_some_and(|a| a == role || a.starts_with(&format!("{role}-"))) || t.owner.as_deref() == Some(role))
     }
 
+    /// Whether `role`'s work is over for the grader: handed in, done or
+    /// cancelled, or waiting on the person after they had nothing more to give.
+    pub fn settled(&self, role: &str) -> bool {
+        use equipe_core::protocol::TicketStatus as S;
+        self.tickets_of(role).any(|t| matches!(t.status, S::Review | S::Done | S::Cancelled) || (t.status == S::Waiting && self.person.left_waiting.contains(&t.id)))
+    }
+
     /// The replies `role` finished, oldest first.
     pub fn replies(&self, role: &str) -> &[String] {
         self.session(role).and_then(|s| self.turns.get(&s)).map(Vec::as_slice).unwrap_or(&[])
@@ -120,11 +159,17 @@ pub struct Daemon {
 
 impl Daemon {
     /// `binary daemon run` with its home at `home`, and nothing else changed
-    /// in its environment but the language equipe speaks and telemetry off.
+    /// in its environment but the language equipe speaks, telemetry off, and
+    /// the variant's own `equipe` first on `PATH` (as an installed equipe is),
+    /// so a member that runs `equipe …` gets this variant, not whichever
+    /// equipe this Mac has installed.
     pub fn start(binary: &Path, home: &Path, log: &Path) -> Self {
         let out = std::fs::File::create(log).unwrap();
+        let bin = home.parent().unwrap_or(home).join("bin");
+        let path = variant_path(binary, &bin, std::env::var_os("PATH").as_deref());
         let child = Process::new(binary)
             .args(["daemon", "run"])
+            .env("PATH", path)
             .env("EQUIPE_HOME", home)
             .env("EQUIPE_LANG", "en")
             .env("EQUIPE_TELEMETRY", "off")
@@ -162,6 +207,17 @@ impl Drop for Daemon {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// `PATH` with `bin` first, where `bin/equipe` is made a link to `binary`.
+pub fn variant_path(binary: &Path, bin: &Path, path: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+    std::fs::create_dir_all(bin).unwrap();
+    let link = bin.join("equipe");
+    let _ = std::fs::remove_file(&link);
+    let target = binary.canonicalize().unwrap_or_else(|_| binary.to_owned());
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let rest: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
+    std::env::join_paths(std::iter::once(bin.to_owned()).chain(rest)).unwrap()
 }
 
 /// A run under way.
@@ -329,6 +385,9 @@ impl Run {
             }
             Event::TicketChanged { ticket, .. } => {
                 s.tickets.insert(ticket.id, ticket.clone());
+                if let Some(note) = s.person.on_ticket(ticket) {
+                    self.commands.send(Command::Resume { squad: SQUAD.into(), ticket: ticket.id, note: note.into() });
+                }
             }
             Event::TextDelta { session, text } => s.current.entry(*session).or_default().push_str(text),
             Event::TurnEnded { session, usage, .. } => {

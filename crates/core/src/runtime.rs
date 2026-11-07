@@ -660,6 +660,9 @@ struct Work {
     screens: bool,
     /// Set by `design_qa` on a design QA ticket: the designer's word.
     verdict: Option<design_qa::Verdict>,
+    /// What a designer's last hand-in was refused for: the same again goes
+    /// in with it marked, rather than round and round.
+    refused: Option<Vec<String>>,
 }
 
 /// One of the PM's conversations at its desk, while another is the current one.
@@ -4146,6 +4149,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A member's commands know they are a member's: `equipe browser` refuses there.
         if let Some(m) = &session.member {
             env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
+            // And on which engine, for what they run outside its sandbox (`equipe design second-look`).
+            env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(session.engine).to_owned()));
         }
         // Claude Code's cap on subagents at once, where the squad set it;
         // Codex's goes in its thread's config (`codex_app::TurnRequest::subagents`).
@@ -5062,6 +5067,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 waiting: None,
                 screens: false,
                 verdict: None,
+                refused: None,
             });
         }
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket: ticket.clone() });
@@ -7079,13 +7085,27 @@ there, end your turn, and carry on when they say they're done."
                 let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
                     .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then hand in again."))?;
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
-                self.designer_hand_in(id)?;
+                let gap = self.designer_hand_in(id)?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
+                let ticket = work.ticket;
+                let summary = match &gap {
+                    Some(gap) => format!("{summary}\n\nNot cleared before hand-in — for the person to see (the design checks couldn't be cleared by going round again):\n{}", gap.iter().map(|g| format!("- {g}")).collect::<Vec<_>>().join("\n")),
+                    None => summary,
+                };
                 work.handed_in = Some(summary);
                 work.shown = shown;
                 work.waiting = None;
                 work.screens = screens;
+                if let Some(gap) = &gap {
+                    let n = gap.len();
+                    let line = move |name: &str| format!("{name} handed in T-{ticket} with {n} design check(s) it couldn't clear, marked in its hand-in for the person: look at why before they review it.");
+                    let shown = format!("T-{ticket}: handed in with {n} design check(s) not cleared, marked for the person.");
+                    self.tell_the_pm(id, line, Some(&shown));
+                    return Ok(format!(
+                        "Handed in T-{ticket}, with the {n} check(s) it couldn't clear marked for the person; the PM is told. Your changes are committed when this turn ends. End your turn now with a short summary."
+                    ));
+                }
                 Ok(if screens {
                     format!(
                         "Handed in T-{}. Your changes are committed when this turn ends; the squad's designer checks \
@@ -7850,6 +7870,7 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         waiting: None,
         screens: false,
         verdict: None,
+        refused: None,
     })
 }
 

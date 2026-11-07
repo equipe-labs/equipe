@@ -208,11 +208,13 @@ pub async fn lint(args: LintArgs) -> Result<(), String> {
         (pages.len() == 1).then(|| pages[0].to_string_lossy().into_owned())
     });
     let screen = screen_name(args.screen.as_deref(), target.as_deref().unwrap_or_else(|| args.paths.first().map_or("page", String::as_str)));
+    // Checked against `design`'s system; kept where the hand-in looks.
+    let ledger = record::ledger_home(&design, &files);
     if args.render {
         let Some(target) = &target else {
             return Err("--render draws one page: give one HTML file, or the running page with --url http://localhost:…".into());
         };
-        let mut measured = draw(target, &widths(&args.widths)?, &record::pictures_dir(&design, &screen)).await?;
+        let mut measured = draw(target, &widths(&args.widths)?, &record::pictures_dir(&ledger, &screen)).await?;
         // Findings name the page as it was given, not as Chrome opened it.
         measured.url = target.clone();
         render::judge(&measured, &mut report);
@@ -224,11 +226,11 @@ pub async fn lint(args: LintArgs) -> Result<(), String> {
     let mut summary = report.summary();
     summary.screen = Some(screen.clone());
     if args.render {
-        let new = record::note_check(&design, &screen, &files).unwrap_or(false);
-        let before = record::read(&design, &screen);
+        let new = record::note_check(&ledger, &screen, &files).unwrap_or(false);
+        let before = record::read(&ledger, &screen);
         let was_new = new || before.as_ref().is_some_and(|b| b.new);
-        let kept = record::of(&design, &screen, &report, &files, before, was_new);
-        let file = record::write(&design, &kept).map_err(|e| format!("{}: {e}", design.display()))?;
+        let kept = record::of(&ledger, &screen, &report, &files, before, was_new);
+        let file = record::write(&ledger, &kept).map_err(|e| format!("{}: {e}", ledger.display()))?;
         summary.record = Some(file.to_string_lossy().into_owned());
     }
     if args.json {
@@ -290,7 +292,9 @@ fn hook(ledger: bool) -> Result<(), String> {
 pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
     let design = args.design.clone().unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR));
     let screen = record::safe(&args.screen);
-    let mut rec = record::read(&design, &screen).ok_or_else(|| format!("{screen} has no check: `equipe design lint <file> --render --screen {screen}` first"))?;
+    // The record where lint kept it: the hand-in's folder, whatever system it was checked against.
+    let ledger = record::record_home(&design, &screen);
+    let mut rec = record::read(&ledger, &screen).ok_or_else(|| format!("{screen} has no check: `equipe design lint <file> --render --screen {screen}` first"))?;
     if !rec.rendered {
         return Err(format!("{screen} was only read: check it with --render so there are pictures to look at"));
     }
@@ -328,7 +332,10 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
             let engine = match args.engine.as_deref() {
                 Some("codex") => Engine::Codex,
                 Some(_) => Engine::Claude,
-                None => critique::caller_engine(|n| std::env::var(n).ok()).unwrap_or(Engine::Claude),
+                None => critique::caller_engine(|n| std::env::var(n).ok()).unwrap_or_else(|| {
+                    eprintln!("{}", critique::unknown_caller(Engine::Claude, "second look"));
+                    Engine::Claude
+                }),
             };
             (look(engine, &ask).await?, if engine == Engine::Codex { "codex".to_owned() } else { "claude".to_owned() })
         }
@@ -338,15 +345,17 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
     verdict.by = by;
     verdict.widths = ask.pictures.iter().map(|(w, _)| *w).collect();
     verdict.first = args.first;
-    if args.first {
-        rec.first = Some(verdict.clone());
-    } else {
-        rec.verdict = Some(verdict.clone());
-    }
-    record::write(&design, &rec).map_err(|e| format!("{}: {e}", design.display()))?;
+    record::note_verdict(&mut rec, verdict.clone());
+    record::write(&ledger, &rec).map_err(|e| format!("{}: {e}", ledger.display()))?;
     print!("{}", second_look::text(&verdict));
-    if !verdict.pass {
-        println!("Fix these, check again with `equipe design lint … --render --screen {screen}`, and ask for another look.");
+    if !verdict.pass && rec.fixes_in_a_row >= record::LOOKS_BEFORE_THE_PERSON {
+        println!("That's {} looks in a row asking for fixes: hand in now — what is left goes to the person with your hand-in, marked, and the PM is told.", rec.fixes_in_a_row);
+    } else if !verdict.pass {
+        println!(
+            "Fix these, check again with `equipe design lint … --render --screen {screen}`, and ask for another look ({} of {} in a row asking for fixes).",
+            rec.fixes_in_a_row,
+            record::LOOKS_BEFORE_THE_PERSON
+        );
     }
     println!("{}", second_look::mark_line(&screen, &verdict));
     if !verdict.pass {
@@ -363,6 +372,9 @@ async fn look(engine: Engine, ask: &second_look::Ask) -> Result<String, String> 
     let run = tokio::process::Command::new(&program).args(&args).stdin(Stdio::null()).stderr(Stdio::piped()).output().await.map_err(|e| format!("{program}: {e} — is {} installed and signed in? Or give your own fresh subagent the --prompt and record its --answer.", engine.label()))?;
     if !run.status.success() {
         let said = [String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout)].join("\n");
+        if let Some(next) = critique::no_network(&said, &|n| std::env::var(n).ok()) {
+            return Err(format!("{} couldn't look: {next}", engine.label()));
+        }
         let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
         return Err(format!("{} couldn't look ({}): {}", engine.label(), run.status, tail.into_iter().rev().collect::<Vec<_>>().join("\n")));
     }

@@ -32,10 +32,14 @@
 //! - `EQUIPE_EVAL_MODEL`: one model for every member (default: each role's own)
 //! - `EQUIPE_EVAL_OUT`: where the report goes (default `target/quality-gate/<time>`)
 //! - `EQUIPE_EVAL_KEEP=1`: keep each run's home and Claude Code's transcript folders
+//! - `EQUIPE_EVAL_REVIEW=off`: no reviewer on the design tasks (`design_grade.rs`)
+//! - `EQUIPE_EVAL_REVIEW_MODEL`: the reviewer's model (default `opus`)
+//! - `EQUIPE_EVAL_CHROME`: the Chrome the design tasks' pages are measured in
 //! - `EQUIPE_EVAL_REPORT=<runs.jsonl>[,<more.jsonl>]`: only write the report again from runs kept
 
 #![cfg(unix)]
 
+mod design_grade;
 mod harness;
 mod tasks;
 
@@ -74,6 +78,19 @@ pub struct Record {
     pub tool_calls: usize,
     pub transcripts: usize,
     pub errors: Vec<String>,
+    /// The reviewer's judgement, on a task that has one (`design_grade`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReviewRecord {
+    pub score: f64,
+    pub max: f64,
+    pub scores: serde_json::Value,
+    /// The reviewer's own tokens and cost: not in the run's.
+    pub tokens: u64,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -116,6 +133,7 @@ pub const METRICS: &[&str] = &[
     "no engine question tool",
     "no numbered questions in prose",
     "skills opened in time",
+    "no block on the person",
 ];
 
 /// A member's steps from the daemon's events, when there is no transcript
@@ -199,10 +217,13 @@ pub fn compliance(task: &Task, out: &Outcome) -> (BTreeMap<String, Option<bool>>
     put("no engine question tool", acted.then_some(rules.engine_questions == 0));
     put("no numbered questions in prose", acted.then_some(rules.prose_questions == 0));
     put("skills opened in time", (!skills.is_empty()).then(|| skills.iter().all(|c| c.opened.in_time())));
+    // No task needs the person beyond its ticket: each put-down is counted.
+    let blocked = out.state.person.blocks.iter().filter(|(id, _)| out.state.tickets_of(task.role).any(|t| t.id == *id)).count();
+    put("no block on the person", worked_ticket.then_some(blocked == 0));
     (m, skills, rules)
 }
 
-fn record(task: &Task, variant: &Variant, attempt: u32, checks: &[Check], out: &Outcome) -> Record {
+fn record(task: &Task, variant: &Variant, attempt: u32, checks: &[Check], out: &Outcome, review: Option<&design_grade::Review>) -> Record {
     let (compliance, skills, rules) = compliance(task, out);
     let mut mine = Tokens::default();
     let mut all = Tokens::default();
@@ -212,9 +233,15 @@ fn record(task: &Task, variant: &Variant, attempt: u32, checks: &[Check], out: &
             mine.add(t.tokens);
         }
     }
-    // No transcripts (Codex): the turns' own usage, as the daemon told it.
-    if out.transcripts.is_empty() {
-        for (session, usage) in &out.state.usage {
+    // Sessions with no transcript (Codex): the turns' own usage, as the
+    // daemon told it — beside the transcripts of any Claude Code run of the
+    // same squad (a critic on the other engine, say).
+    let codex: Vec<SessionId> = out.state.events.iter().filter_map(|(_, e)| match e {
+        Event::SessionStarted { session, engine: Engine::Codex, .. } => Some(*session),
+        _ => None,
+    }).collect();
+    {
+        for (session, usage) in out.state.usage.iter().filter(|(s, _)| out.transcripts.is_empty() || codex.contains(s)) {
             let t = usage.iter().fold(Tokens::default(), |mut t, u| {
                 t.add(Tokens { input: u.input_tokens.unwrap_or(0), cache_read: u.cache_tokens.unwrap_or(0), output: u.output_tokens.unwrap_or(0), cache_write: 0 });
                 t
@@ -241,6 +268,7 @@ fn record(task: &Task, variant: &Variant, attempt: u32, checks: &[Check], out: &
         tool_calls: rules.tool_calls,
         transcripts: out.transcripts.len(),
         errors: out.state.errors.clone(),
+        review: review.map(|r| ReviewRecord { score: r.score, max: r.max, scores: r.scores.clone(), tokens: r.tokens, cost_usd: r.cost_usd }),
     }
 }
 
@@ -255,8 +283,21 @@ async fn run_once(task: Task, variant: Variant, attempt: u32, setup: Setup, out:
     tasks::play(&task, &mut run, &fx).await;
     let dir = out.join("runs").join(format!("{}-{}{}", task.name, variant.name, attempt));
     let outcome = run.finish(&dir).await;
-    let checks = tasks::grade(&task, &fx, &outcome);
-    let rec = record(&task, &variant, attempt, &checks, &outcome);
+    let mut checks = tasks::grade(&task, &fx, &outcome);
+    // The reviewer's judgement, where a task has one: it informs, never fails a run.
+    let review = if env("EQUIPE_EVAL_REVIEW").as_deref() == Some("off") { None } else { tasks::review(&task, &outcome, &dir.join("review")) };
+    if let Some(r) = &review {
+        checks.push(design_grade::review_check(r));
+    }
+    let rec = record(&task, &variant, attempt, &checks, &outcome, review.as_ref().and_then(|r| r.as_ref().ok()));
+    // What a design task's page measured, and its pictures, kept beside the record.
+    if let Ok(files) = std::fs::read_dir(root.join("measured")) {
+        let kept = dir.join("measured");
+        let _ = std::fs::create_dir_all(&kept);
+        for f in files.flatten() {
+            let _ = std::fs::copy(f.path(), kept.join(f.file_name()));
+        }
+    }
     std::fs::write(dir.join("record.json"), serde_json::to_string_pretty(&rec).unwrap()).unwrap();
     if !setup.keep {
         // The run's worktrees were made from its fixture repositories, under the root too.
@@ -283,6 +324,7 @@ fn broken(task: &Task, variant: &str, attempt: u32, why: &str) -> Record {
         tool_calls: 0,
         transcripts: 0,
         errors: vec![why.into()],
+        review: None,
     }
 }
 
@@ -441,9 +483,38 @@ pub fn report(records: &[Record], threshold: f64, about: &str) -> String {
             md.push_str(&format!("- {s}: {n}\n"));
         }
     }
+    let reviewed: Vec<&Record> = records.iter().filter(|r| r.review.is_some()).collect();
+    if !reviewed.is_empty() {
+        md.push_str("\n## The reviewer's scores\n\nA reviewer with no context but a fixed rubric (`design_grade.rs`) and the pictures; it informs and never fails a run. Mean share of the most a run could score, and each run's.\n\n| task |");
+        for v in &variants {
+            md.push_str(&format!(" {v} |"));
+        }
+        md.push_str("\n|---|");
+        for _ in &variants {
+            md.push_str("---|");
+        }
+        md.push('\n');
+        let mut tasks: Vec<&str> = reviewed.iter().map(|r| r.task.as_str()).collect();
+        tasks.sort();
+        tasks.dedup();
+        for task in tasks {
+            md.push_str(&format!("| `{task}` |"));
+            for v in &variants {
+                let runs: Vec<&ReviewRecord> = reviewed.iter().filter(|r| r.task == task && r.variant == *v).filter_map(|r| r.review.as_ref()).collect();
+                let each: Vec<String> = runs.iter().map(|r| format!("{}/{}", r.score, r.max)).collect();
+                let share = mean(runs.iter().map(|r| r.score / r.max));
+                md.push_str(&format!(" {} ({}) |", pct(share), each.join(", ")));
+            }
+            md.push('\n');
+        }
+    }
     let total: f64 = records.iter().map(|r| r.cost_usd).sum();
     let tokens: u64 = records.iter().map(|r| r.tokens_all.total).sum();
     md.push_str(&format!("\n{} runs, {:.1}M tokens, ${total:.2} at API prices.\n", records.len(), tokens as f64 / 1e6));
+    if !reviewed.is_empty() {
+        let (t, c): (u64, f64) = reviewed.iter().filter_map(|r| r.review.as_ref()).fold((0, 0.0), |(t, c), r| (t + r.tokens, c + r.cost_usd));
+        md.push_str(&format!("The reviewer besides: {:.1}M tokens, ${c:.2}.\n", t as f64 / 1e6));
+    }
     md
 }
 
@@ -676,6 +747,7 @@ fn rec(task: &str, variant: &str, pass: bool, kept: Option<bool>) -> Record {
         tool_calls: 3,
         transcripts: 1,
         errors: vec![],
+        review: None,
     }
 }
 
@@ -721,6 +793,221 @@ fn ticket_work_is_timed_from_its_start_to_its_end() {
     assert_eq!(work_seconds(&[start(10.0), end(70.0), start(100.0), end(130.0)], 7), 90.0);
     assert_eq!(work_seconds(&[start(10.0), notice(250.0)], 7), 240.0, "still at it when the run ended");
     assert_eq!(work_seconds(&[start(10.0), end(70.0)], 8), 0.0);
+}
+
+#[test]
+fn made_up_numbers_quotes_and_proof_are_caught_and_the_briefs_own_facts_are_not() {
+    let brief = format!("{}\n{}", tasks::QUILLO_README, tasks::QUILLO_TICKET);
+    let honest = "Quillo. Upload a recording up to 2 hours long. Free: 3 meetings a month. Team: $8 per person per month. $0 to start. The beta opens 3 March. Step 1, 2, 3. 9:41 Weekly sync · 3 decisions · 5 to-dos. © 2026 Quillo";
+    assert_eq!(design_grade::made_up(honest, "<p>", &brief), Vec::<String>::new(), "the brief's numbers, a year, a sample's");
+    for (text, what) in [
+        ("Trusted by teams everywhere", "trusted by"),
+        ("Loved by product teams", "loved by"),
+        ("Rated 4.9/5 by early users", "rated"),
+        ("★★★★★", "★"),
+        ("Save 5 hours a week", "a count"),
+        ("Join 10,000+ teams", "a count with +"),
+        ("Notes 3x faster", "a multiple"),
+        ("98% accurate", "a percentage"),
+        ("Used by 1,200 companies", "used by"),
+        ("Only $12 a month", "a price"),
+        ("Summaries in 30 seconds", "a count"),
+    ] {
+        let found = design_grade::made_up(text, "<p>", &brief);
+        assert!(found.iter().any(|f| f.contains(what)), "{text:?} → {found:?}");
+    }
+    assert!(!design_grade::made_up("x", "<blockquote>“Great”</blockquote>", &brief).is_empty(), "a quote is a testimonial on a page nobody has used");
+    assert!(design_grade::made_up("It generated a summary", "", &brief).is_empty(), "whole words only: generated isn't rated");
+}
+
+#[test]
+fn the_report_shows_the_reviewers_scores_and_they_never_fail_a_run() {
+    let reviewed = |variant: &str, score: f64| Record { review: Some(ReviewRecord { score, max: 30.0, scores: json!({}), tokens: 40_000, cost_usd: 0.2 }), ..rec("t", variant, true, None) };
+    let records = [reviewed("A", 15.0), reviewed("B", 24.0), reviewed("B", 18.0)];
+    let md = report(&records, 10.0, "");
+    assert!(md.contains("## The reviewer's scores") && md.contains("| `t` | 50% (15/30) | 70% (24/30, 18/30) |"), "{md}");
+    assert!(md.contains("The reviewer besides: 0.1M tokens, $0.60."), "{md}");
+    assert!(design_grade::review_check(&Err("no pictures".into())).required == false, "a review informs, never fails a run");
+    let line = serde_json::to_string(&records[0]).unwrap();
+    assert_eq!(serde_json::from_str::<Record>(&line).unwrap(), records[0]);
+    let older = line.replace(&format!(",\"review\":{}", serde_json::to_string(records[0].review.as_ref().unwrap()).unwrap()), "");
+    assert!(serde_json::from_str::<Record>(&older).unwrap().review.is_none(), "runs kept before reviews read back");
+}
+
+#[test]
+fn on_codex_the_reviewer_gets_the_pictures_attached_and_its_tokens_from_its_events() {
+    for rubric in [design_grade::LANDING_RUBRIC, design_grade::EMPTY_STATE_RUBRIC] {
+        let codex = design_grade::for_codex(rubric);
+        assert!(!codex.contains("Read tool") && codex.contains("The images are attached") && codex.contains("only one JSON object"), "the same rubric, read from attachments");
+        assert_eq!(codex.replace("The images are attached, in the order listed.", ""), rubric.replace("Open every image with the Read tool first.", ""), "and nothing else changed");
+    }
+    let events = "{\"type\":\"thread.started\"}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":800,\"output_tokens\":150}}\nnot json\n";
+    assert_eq!(design_grade::codex_tokens(events), 1350, "input (its cached part included) and output");
+}
+
+#[test]
+fn a_codex_members_tokens_count_beside_a_claude_critics_transcript() {
+    use equipe_core::protocol::{Ticket, Usage};
+    let ticket: Ticket = serde_json::from_value(json!({
+        "id": 1, "title": "x", "body": "", "status": "review", "kind": "task", "owner": null, "assignee": "designer",
+        "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": null,
+    }))
+    .unwrap();
+    let mut out = outcome_with(&scratch("codex-tokens"), ticket);
+    out.state.sessions.insert("designer".into(), 7);
+    let started: Event = serde_json::from_value(json!({ "type": "session_started", "session": 7, "engine": "codex", "project": "/p", "model": null, "workspace": null })).unwrap();
+    assert!(matches!(started, Event::SessionStarted { engine: Engine::Codex, .. }), "a Codex session's start: {started:?}");
+    out.state.events.push((0.0, started));
+    out.state.usage.insert(7, vec![Usage { input_tokens: Some(400), cache_tokens: Some(1000), output_tokens: Some(100), ..Default::default() }]);
+    let critic = quality::Transcript { tokens: Tokens { input: 10, cache_write: 0, cache_read: 20, output: 5 }, ..Default::default() };
+    out.transcripts.push(critic);
+    let rec = record(&task("designer-empty-state"), &Variant { name: "B".into(), binary: PathBuf::new() }, 1, &[], &out, None);
+    assert_eq!(rec.tokens_all.total, 1500 + 35, "the member on Codex and the critic on Claude");
+    assert_eq!(rec.tokens.total, 1500);
+}
+
+#[test]
+fn without_a_transcript_a_skill_read_among_the_first_steps_counts_as_opened_first() {
+    use equipe_core::protocol::Ticket;
+    let ticket: Ticket = serde_json::from_value(json!({
+        "id": 1, "title": "x", "body": "", "status": "review", "kind": "task", "owner": null, "assignee": "designer",
+        "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": null,
+    }))
+    .unwrap();
+    let mut out = outcome_with(&scratch("early"), ticket);
+    out.state.sessions.insert("designer".into(), 7);
+    let used = |target: &str| (1.0, Event::ToolUse { session: 7, tool: "exec_command".into(), target: Some(target.into()), label: None, background: false });
+    out.state.events = vec![used("ls"), used("cat /h/skills/0.1/designer-x/skills/design-process/SKILL.md")];
+    assert!(tasks::opened_early(&out, "designer", "design-process").is_some());
+    out.state.events = (0..tasks::EARLY).map(|_| used("ls")).chain([used("cat /h/skills/design-process/SKILL.md")]).collect();
+    assert!(tasks::opened_early(&out, "designer", "design-process").is_none(), "read too late");
+    // On Codex the events cut commands short, so it informs and never fails a run.
+    assert!(!tasks::on_codex(&out, "designer"));
+    let started: Event = serde_json::from_value(json!({ "type": "session_started", "session": 7, "engine": "codex", "project": "/p", "model": null, "workspace": null })).unwrap();
+    out.state.events.insert(0, (0.0, started));
+    assert!(tasks::on_codex(&out, "designer"));
+    let root = scratch("codex-grade");
+    let fx = tasks::setup(&task("designer-empty-state"), &root);
+    let checks = tasks::grade(&task("designer-empty-state"), &fx, &out);
+    let opened = checks.iter().find(|c| c.name == "design-process opened first").unwrap();
+    assert!(!opened.ok && !opened.required, "{opened:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_reviewers_scores_are_read_from_its_reply() {
+    let said = "Here you go:\n{\"hierarchy\": 4, \"typography\": 3, \"layout\": 4, \"specificity\": 2, \"phone\": 5, \"finish\": 3, \"worst\": \"a {brace} in words\"}\nthanks";
+    let v = design_grade::first_object(said).unwrap();
+    assert_eq!(design_grade::total(&v), (21.0, 30.0));
+    assert_eq!(design_grade::total(&json!({"a": 9, "b": 0, "c": 2})), (2.0, 5.0), "only 1–5 scores count");
+    assert!(design_grade::first_object("no json").is_none());
+    for rubric in [design_grade::LANDING_RUBRIC, design_grade::EMPTY_STATE_RUBRIC] {
+        assert!(rubric.contains("Read tool") && rubric.contains("only one JSON object"), "each rubric asks for the pictures read and one JSON answer");
+    }
+}
+
+#[test]
+fn the_landing_page_grader_passes_a_sound_page_and_names_what_is_wrong_with_a_bad_one() {
+    if !design_grade::can_measure() {
+        return;
+    }
+    let brief = format!("{}\n{}", tasks::QUILLO_README, tasks::QUILLO_TICKET);
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/quality_gate/fixtures");
+    let grade = |name: &str| {
+        let page = fixtures.join(name);
+        let out = scratch("landing");
+        let m = design_grade::measure(&page, &out).unwrap();
+        assert!(out.join("1440-1.png").is_file() && out.join("360-1.png").is_file(), "pictures for the reviewer");
+        let checks = design_grade::landing_checks(&m, &brief, &std::fs::read_to_string(&page).unwrap());
+        let _ = std::fs::remove_dir_all(&out);
+        checks
+    };
+    let good = grade("landing-good.html");
+    assert!(good.iter().all(|c| c.ok), "{good:?}");
+    let bad = grade("landing-bad.html");
+    for name in ["fits at 360, 768 and 1440", "text contrast meets WCAG AA", "focus shows on every control", "sound structure", "the sections asked for", "only the brief's facts"] {
+        assert!(bad.iter().any(|c| c.name == name && !c.ok && c.required), "{name}: {bad:?}");
+    }
+    let structure = bad.iter().find(|c| c.name == "sound structure").unwrap();
+    for wrong in ["no lang", "viewport", "no title", "0 main", "0 h1", "images without alt", "fields without a name", "without a name"] {
+        assert!(structure.detail.contains(wrong), "{wrong}: {}", structure.detail);
+    }
+}
+
+#[test]
+fn the_reviewer_sees_the_tickets_own_mockups_not_check_renders_or_another_tickets() {
+    let root = scratch("mockups");
+    let worktree = root.join("wt");
+    let other = root.join("home/squads/eval/home/outputs/T-2 Top bar");
+    for p in [worktree.join("outputs/T-1 Empty/design/checks/saved/360.png"), worktree.join("outputs/T-1 Empty/options/a.png"), worktree.join("outputs/T-1 Empty/mockup/empty.png"), other.join("after.png")] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "").unwrap();
+    }
+    let ticket: equipe_core::protocol::Ticket = serde_json::from_value(json!({
+        "id": 1, "title": "Empty", "body": "", "status": "waiting", "kind": "task", "owner": null, "assignee": "designer",
+        "project": null, "depends_on": [], "branch": null, "worktree": worktree, "created_by": "you", "note": null,
+    }))
+    .unwrap();
+    let out = outcome_with(&root, ticket.clone());
+    let png = |p: &Path| p.extension().is_some_and(|x| x == "png");
+    let seen = tasks::mockups(&out, Some(&ticket), png);
+    assert_eq!(seen, [worktree.join("outputs/T-1 Empty/mockup/empty.png"), worktree.join("outputs/T-1 Empty/options/a.png")], "mockups first; no check renders, nothing of T-2");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_automatic_person_answers_a_ticket_put_down_for_them_twice_then_leaves_it_waiting() {
+    use equipe_core::protocol::{Ticket, TicketStatus};
+    let waiting = |note: &str| -> Ticket {
+        serde_json::from_value(json!({
+            "id": 1, "title": "Empty", "body": "", "status": "waiting", "kind": "task", "owner": null, "assignee": "designer",
+            "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": note,
+        }))
+        .unwrap()
+    };
+    let mut state = State::default();
+    let first = waiting("Waiting on you:\n- [ ] the save control's name");
+    assert_eq!(state.person.on_ticket(&first), Some(harness::NOTHING_MORE));
+    assert_eq!(state.person.on_ticket(&first), None, "the same put-down is answered once");
+    state.tickets.insert(1, first.clone());
+    assert!(!state.settled("designer"), "answered: the member goes on");
+    assert!(state.person.on_ticket(&waiting("Waiting on you:\n- [ ] say \"not designed yet\"")).is_some());
+    assert_eq!(state.person.on_ticket(&waiting("Waiting on you:\n- [ ] a third thing")), None, "after two answers it waits, as a person with nothing more would");
+    assert!(state.settled("designer"), "and the run can end on it");
+    assert_eq!(state.person.blocks.len(), 2);
+    let working = Ticket { status: TicketStatus::InProgress, ..waiting("x") };
+    assert_eq!(State::default().person.on_ticket(&working), None);
+    // The rule metric counts each put-down of the member's own tickets.
+    let t = task("designer-empty-state");
+    let mut out = outcome_with(&scratch("blocks"), Ticket { status: TicketStatus::Review, ..first });
+    out.state.person.blocks.push((1, "x".into()));
+    assert_eq!(compliance(&t, &out).0.get("no block on the person"), Some(&Some(false)));
+    out.state.person.blocks.clear();
+    assert_eq!(compliance(&t, &out).0.get("no block on the person"), Some(&Some(true)));
+}
+
+#[test]
+fn the_landing_page_task_starts_from_its_brief_alone() {
+    let root = scratch("landing-fixture");
+    let fx = tasks::setup(&task("designer-landing-page"), &root);
+    let repo = fx.repo.unwrap();
+    assert_eq!(std::fs::read_to_string(repo.join("README.md")).unwrap(), tasks::QUILLO_README);
+    assert!(!repo.join("index.html").exists(), "the page is the member's to make");
+    assert!(fx.expected[0].contains("Join the beta") && fx.expected[0].contains("$8"), "the grader knows the brief and the ticket");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn members_find_their_own_variants_equipe_first_on_path() {
+    let dir = scratch("path");
+    let binary = dir.join("equipe-A");
+    std::fs::write(&binary, "").unwrap();
+    let path = harness::variant_path(&binary, &dir.join("bin"), Some(std::ffi::OsStr::new("/usr/bin:/bin")));
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    assert_eq!(dirs, [dir.join("bin"), "/usr/bin".into(), "/bin".into()]);
+    assert_eq!(std::fs::read_link(dir.join("bin/equipe")).unwrap(), binary.canonicalize().unwrap());
+    harness::variant_path(&binary, &dir.join("bin"), None);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

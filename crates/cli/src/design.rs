@@ -1160,7 +1160,14 @@ async fn critique_command(mut ask: critique::Ask, brief: Option<PathBuf>, engine
     let engine = match engine.as_deref() {
         Some("claude") => Engine::Claude,
         Some(_) => Engine::Codex,
-        None => critique::critic_engine(critique::caller_engine(|name| std::env::var(name).ok())),
+        None => {
+            let caller = critique::caller_engine(|name| std::env::var(name).ok());
+            let critic = critique::critic_engine(caller);
+            if caller.is_none() {
+                eprintln!("{}", critique::unknown_caller(critic, "critique"));
+            }
+            critic
+        }
     };
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default().to_string();
     let kept = critique::kept_at(&design, &stamp);
@@ -1173,6 +1180,9 @@ async fn critique_command(mut ask: critique::Ask, brief: Option<PathBuf>, engine
     if !run.status.success() {
         // Claude says why on stdout, Codex on stderr.
         let said = [String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout)].join("\n");
+        if let Some(next) = critique::no_network(&said, &|n| std::env::var(n).ok()) {
+            return Err(format!("{} couldn't critique: {next}", engine.label()));
+        }
         let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
         return Err(format!("{} couldn't critique ({}): {}", engine.label(), run.status, tail.into_iter().rev().collect::<Vec<_>>().join("\n")));
     }
