@@ -314,7 +314,10 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     for set in journal.questions() {
         out.paths.extend(set.images().map(str::to_owned));
     }
-    for ticket in journal.tickets().unwrap_or_default() {
+    let tickets = journal.tickets().unwrap_or_default();
+    // What a ticket still at work keeps in its design folder: the designer studio's pictures.
+    out.paths.extend(crate::design::studio::shown(&tickets));
+    for ticket in tickets {
         out.paths.extend(ticket.images.iter().cloned());
         out.kept.extend(kept_of(&ticket, home, squad));
         out.roots.extend(ticket.worktree);

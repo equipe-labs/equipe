@@ -325,6 +325,16 @@ impl Visuals {
         }
     }
 
+    /// `paths` were drawn again under the same names: each is asked for again
+    /// the next time it is drawn.
+    pub fn refresh(&mut self, paths: &[String]) {
+        let keys: Vec<(String, Size)> = self.shown.keys().filter(|(p, _)| paths.contains(p)).cloned().collect();
+        for key in keys {
+            self.let_go(&key);
+            self.shown.remove(&key);
+        }
+    }
+
     /// Back on the line: what couldn't be had is asked for again.
     pub fn retry_gone(&mut self) {
         self.shown.retain(|_, look| !matches!(look, Look::Gone(_)));
