@@ -43,6 +43,7 @@ pub struct Task {
 
 pub const TASKS: &[Task] = &[
     Task { name: "backend-fix-failing-test", role: "backend", what: "fix the code behind a failing unit test, hand it in through the board", minutes: 20 },
+    Task { name: "backend-move-now", role: "backend", what: "the same fix, the member moved to the other engine \"now\" at the end of its first turn mid-ticket: it carries the ticket on there, nothing redone or lost", minutes: 25 },
     Task { name: "backend-wait-for-server", role: "backend", what: "start a slow server, wait for it without a foreground sleep, fix what its check reports", minutes: 25 },
     Task { name: "frontend-clear-button", role: "frontend", what: "add a tested button to a small web page, within the ticket's files", minutes: 25 },
     Task { name: "qa-planted-bug", role: "qa", what: "find a planted boundary bug against a written spec, as a failing test", minutes: 20 },
@@ -73,7 +74,7 @@ pub struct Fixture {
 
 pub fn setup(task: &Task, root: &Path) -> Fixture {
     match task.name {
-        "backend-fix-failing-test" => {
+        "backend-fix-failing-test" | "backend-move-now" => {
             let dir = root.join("stats");
             let base = repo(&dir, &[("README.md", "Small statistics helpers.\n\nRun the tests with `python3 -m unittest`.\n"), ("stats.py", STATS_PY), ("test_stats.py", STATS_TEST)]);
             Fixture { repo: Some(dir), base, ..Default::default() }
@@ -165,7 +166,7 @@ pub async fn play(task: &Task, run: &mut Run, fx: &Fixture) {
     let limit = Duration::from_secs(task.minutes * 60);
     let cwd = fx.repo.clone().unwrap_or_else(|| run.root.clone());
     run.add("pm", &cwd).await;
-    if task.role != "pm" {
+    if task.role != "pm" && task.name != "backend-move-now" {
         run.add(task.role, &cwd).await;
     }
     let repo = fx.repo.as_deref();
@@ -174,6 +175,24 @@ pub async fn play(task: &Task, run: &mut Run, fx: &Fixture) {
     match task.name {
         "backend-fix-failing-test" => {
             run.ticket("backend", repo, TicketKind::Code, "Fix the failing mean test", "`python3 -m unittest` fails: `test_mean` expects `mean([1, 2])` to be 1.5. Fix the bug in `stats.py` — the test is right.\n\nAcceptance criteria:\n- `python3 -m unittest` passes\n- only `stats.py` changes");
+            run.settle(limit, settled).await;
+        }
+        "backend-move-now" => {
+            // Its first turn on Claude, cut short at a clean point after a few
+            // steps — the person's "Move now" already given — then the rest on Codex.
+            let from = Engine::Claude;
+            let to = Engine::Codex;
+            let backend = run.add_on("backend", &cwd, Some(from), None).await;
+            run.ticket("backend", repo, TicketKind::Code, "Fix the failing mean test", "`python3 -m unittest` fails: `test_mean` expects `mean([1, 2])` to be 1.5. Fix the bug in `stats.py` — the test is right.\n\nAcceptance criteria:\n- `python3 -m unittest` passes\n- only `stats.py` changes");
+            let started = run.wait_for(Duration::from_secs(120), move |s| s.events.iter().any(|(_, e)| matches!(e, Event::WorkStarted { session, .. } if *session == backend))).await;
+            if started {
+                run.send(equipe_core::protocol::Command::MoveEngine { squad: crate::harness::SQUAD.into(), members: vec!["backend".into()], engine: to, model: None, effort: None, now: true });
+                let steps = move |s: &crate::harness::State| s.events.iter().filter(|(_, e)| matches!(e, Event::ToolUse { session, .. } if *session == backend)).count();
+                let some = run.wait_for(Duration::from_secs(300), move |s| steps(s) >= MOVE_AFTER_STEPS || s.turns.get(&backend).is_some_and(|t| !t.is_empty())).await;
+                if some && run.state.turns.get(&backend).is_none_or(|t| t.is_empty()) {
+                    run.send(equipe_core::protocol::Command::Interrupt { session: backend });
+                }
+            }
             run.settle(limit, settled).await;
         }
         "backend-wait-for-server" => {
@@ -261,6 +280,7 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
         out.work_dir(t).or_else(|| t.branch.as_deref().and_then(|b| checkout(repo, b, &check_dir))).or_else(|| (t.merged == Some(true)).then(|| checkout(repo, "main", &check_dir)).flatten())
     };
     match task.name {
+        "backend-move-now" => grade_move_now(fx, out, ticket, work()),
         "backend-fix-failing-test" => {
             let mut checks = vec![handed_in()];
             match work() {
@@ -592,6 +612,75 @@ fn files_named_in(dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// The backend's steps on its first engine before its turn is cut short and
+/// it moves (`backend-move-now`).
+pub const MOVE_AFTER_STEPS: usize = 3;
+
+/// `backend-move-now`: the ticket went across engines mid-way and came out
+/// as well as without the move — handed in through the board by the member
+/// on the new engine, tests passing, only `stats.py` changed, the fix made
+/// once (no duplicated edit) and nothing of the first engine's work lost —
+/// and the new session opened with the hand-over packet and checked the
+/// worktree before editing. Tokens on each engine are told.
+fn grade_move_now(fx: &Fixture, out: &Outcome, ticket: Option<&Ticket>, work: Option<PathBuf>) -> Vec<Check> {
+    let events = &out.state.events;
+    let started: Vec<(u64, Engine)> = events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Event::SessionStarted { session, engine, member: Some(m), .. } if m.name == "backend" => Some((*session, *engine)),
+            _ => None,
+        })
+        .collect();
+    let first = started.first().copied();
+    let moved = started.iter().find(|(_, e)| Some(*e) != first.map(|f| f.1)).copied();
+    let mut checks = vec![must("moved mid-ticket to the other engine", first.is_some() && moved.is_some(), format!("{started:?}"))];
+    let handed_by_new = moved.is_some_and(|(s, _)| events.iter().any(|(_, e)| matches!(e, Event::WorkStarted { session, .. } if *session == s)));
+    checks.push(must("the new session carried the ticket on", handed_by_new, ""));
+    let handed = ticket.is_some_and(|t| out.handed_in(t.id));
+    checks.push(must("handed in", handed, ticket.map(|t| format!("T-{} {}", t.id, t.status.label())).unwrap_or_default()));
+    let handover = ticket.and_then(|t| out.histories.get(&t.id)).is_some_and(|h| h.iter().any(|e| format!("{e:?}").contains("handed over")));
+    checks.push(must("the ticket's record says it was handed over", handover, ""));
+    match work {
+        Some(w) => {
+            let (ok, said) = run_in(&w, "python3", &["-m", "unittest"], &[]);
+            checks.push(must("tests pass", ok, tail(&said)));
+            let changed = changed_files(&w, &fx.base);
+            checks.push(must("the test is unchanged", !changed.iter().any(|f| f == "test_stats.py"), changed.join(", ")));
+            checks.push(must("only stats.py changed", !changed.is_empty() && changed.iter().all(|f| f == "stats.py"), changed.join(", ")));
+            let stats = std::fs::read_to_string(w.join("stats.py")).unwrap_or_default();
+            let defs = ["def mean", "def median"].map(|d| stats.matches(d).count());
+            checks.push(must("no duplicated edit", defs == [1, 1], format!("def mean ×{}, def median ×{}", defs[0], defs[1])));
+            checks.push(must("nothing lost", stats.contains("def median") && stats.contains("ordered[middle - 1]"), ""));
+        }
+        None => checks.push(must("its work can be found", false, "no worktree or branch")),
+    }
+    // Its first words there: the packet read, the worktree checked before an edit.
+    let new_steps: Vec<String> = moved
+        .map(|(s, _)| {
+            events
+                .iter()
+                .filter_map(|(_, e)| match e {
+                    Event::ToolUse { session, tool, target, .. } if *session == s => Some(format!("{tool} {}", target.clone().unwrap_or_default())),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let first_edit = new_steps.iter().position(|t| { let l = t.to_lowercase(); l.starts_with("edit") || l.starts_with("write") || l.contains("apply_patch") || l.starts_with("filechange") });
+    let checked = new_steps.iter().take(first_edit.unwrap_or(new_steps.len())).any(|t| t.contains("git status") || t.contains("git diff") || t.contains("git log") || t.contains("unittest"));
+    checks.push(should("checked the worktree before editing", checked, new_steps.iter().take(6).cloned().collect::<Vec<_>>().join(" · ")));
+    // Tokens per engine: Claude Code's transcripts, and each Codex turn's usage.
+    let codex: u64 = started
+        .iter()
+        .filter(|(_, e)| *e == Engine::Codex)
+        .flat_map(|(s, _)| out.state.usage.get(s).into_iter().flatten())
+        .map(|u| u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0) + u.cache_tokens.unwrap_or(0))
+        .sum();
+    let claude: u64 = out.transcripts_of("backend").iter().map(|t| t.tokens.total()).sum();
+    checks.push(should("tokens", true, format!("backend: Claude {claude}, Codex {codex}")));
+    checks
 }
 
 /// The members `pm-move-to-codex` asks to move.

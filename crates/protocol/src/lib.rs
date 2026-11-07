@@ -1126,8 +1126,17 @@ pub enum Command {
     /// Answered by [`Event::SubagentsAtOnceChanged`].
     SetSubagentsAtOnce { squad: SquadName, at_once: Option<u32> },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
-    /// each at its member's next ticket boundary. Only ever the person's.
-    ApplyEngineProposal { squad: SquadName, id: u64 },
+    /// each at its member's next ticket boundary — or, `now`, at the end of
+    /// each one's current turn, a ticket in progress handed over. On a card
+    /// whose moves are made already (`auto`, or the person's own), `now`
+    /// hurries those still waiting for their member's next ticket. Only ever
+    /// the person's.
+    ApplyEngineProposal {
+        squad: SquadName,
+        id: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        now: bool,
+    },
     /// The person leaves things as they are — or, for moves already made,
     /// closes the card that told of them.
     DismissEngineProposal { squad: SquadName, id: u64 },
@@ -1143,7 +1152,9 @@ pub enum Command {
     /// Propose the squad's recommended setup for both engines again.
     ShowEngineSetup { squad: SquadName },
     /// The person moves `members` (none named: every member) to `engine`,
-    /// each at its next ticket boundary, its work handed over. Only ever the
+    /// each at its next ticket boundary, its work handed over — or, `now`,
+    /// at the end of its current turn even mid-ticket, the ticket handed over
+    /// and carried on there. Only ever the
     /// person's; where they belong from then on. `model`: the one they run
     /// there, as the person picked it (`None`: what the engine recommends for
     /// each one's role); a daemon that predates it moves them all the same.
@@ -1157,6 +1168,8 @@ pub enum Command {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        now: bool,
     },
     /// Show the squad's design systems (`design::DesignSystem`): answered by
     /// [`Event::Design`], and again whenever one of them changes while a
@@ -3572,7 +3585,8 @@ mod tests {
         use engines::{Proposal, Switching, Why};
         let commands = [
             Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Auto },
-            Command::ApplyEngineProposal { squad: "acme".into(), id: 3 },
+            Command::ApplyEngineProposal { squad: "acme".into(), id: 3, now: false },
+            Command::ApplyEngineProposal { squad: "acme".into(), id: 3, now: true },
             Command::DismissEngineProposal { squad: "acme".into(), id: 3 },
             Command::UndoEngineProposal { squad: "acme".into(), id: 3 },
             Command::ShowEngineSetup { squad: "acme".into() },
@@ -3582,7 +3596,7 @@ mod tests {
             assert_eq!(serde_json::from_str::<Command>(&text).unwrap(), command, "{text}");
         }
         assert_eq!(serde_json::to_value(Command::SetEngineSwitching { squad: "a".into(), mode: Switching::Off }).unwrap(), json!({ "type": "set_engine_switching", "squad": "a", "mode": "off" }));
-        let proposal = Proposal { id: 3, why: Why::Setup, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![], applied: false, proposed_at: 1 };
+        let proposal = Proposal { id: 3, why: Why::Setup, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![], applied: false, proposed_at: 1, forecast: None };
         let events = [
             Event::EngineProposed { squad: "acme".into(), proposal },
             Event::EngineProposalClosed { squad: "acme".into(), id: 3, applied: true },
@@ -3773,12 +3787,16 @@ mod tests {
 
     #[test]
     fn a_move_carries_the_model_picked_and_a_listed_model_what_its_tool_says_of_it() {
-        let plain = Command::MoveEngine { squad: "acme".into(), members: vec!["pm".into()], engine: Engine::Codex, model: None, effort: None };
+        let plain = Command::MoveEngine { squad: "acme".into(), members: vec!["pm".into()], engine: Engine::Codex, model: None, effort: None, now: false };
         assert_eq!(serde_json::to_value(&plain).unwrap(), json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex" }), "as an older daemon reads it");
         let picked: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "model": "gpt-6.1-sol" })).unwrap();
         assert!(matches!(picked, Command::MoveEngine { model: Some(ref m), .. } if m == "gpt-6.1-sol"));
         let thought: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "effort": "high" })).unwrap();
         assert!(matches!(thought, Command::MoveEngine { effort: Some(ref e), model: None, .. } if e == "high"));
+        let now: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "now": true })).unwrap();
+        assert!(matches!(now, Command::MoveEngine { now: true, .. }), "at the end of its turn, mid-ticket");
+        let older: Command = serde_json::from_value(json!({ "type": "apply_engine_proposal", "squad": "acme", "id": 3 })).unwrap();
+        assert!(matches!(older, Command::ApplyEngineProposal { now: false, .. }), "as an older screen sends it");
         let older: ModelChoice = serde_json::from_value(json!({ "id": "gpt-6-luna" })).unwrap();
         assert_eq!((older.description, older.default), (None, false), "from a daemon that predates them");
         let said = ModelChoice { id: "gpt-6.1-sol".into(), description: Some("Frontier.".into()), default: true, ..Default::default() };

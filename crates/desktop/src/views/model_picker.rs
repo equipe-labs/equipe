@@ -220,7 +220,7 @@ impl Shell {
                 // What happens and when, as the picker said it.
                 let said = self.with_picker(|member, _| picker::applies(member, to, self.model.listed(Some(to))));
                 self.close_picker(cx);
-                self.send_command(Command::MoveEngine { squad: self.model.squad.clone(), members: vec![name], engine: to, model, effort: None });
+                self.send_command(Command::MoveEngine { squad: self.model.squad.clone(), members: vec![name], engine: to, model, effort: None, now: false });
                 self.composer.flash = said;
             }
             Act::SignIn(_) => {
@@ -234,6 +234,15 @@ impl Shell {
                     self.send_command(command);
                 }
                 self.composer.flash = Some(t!("models.updating").to_owned());
+            }
+            Act::MoveNow(to) => {
+                self.close_picker(cx);
+                self.send_command(Command::MoveEngine { squad: self.model.squad.clone(), members: vec![name.clone()], engine: to, model: None, effort: None, now: true });
+                self.composer.flash = Some(equipe_core::controls::move_when(crate::i18n::lang(), &equipe_core::controls::Mover { name, from: engine.unwrap_or(Engine::Claude), working: true, on_ticket: true, now: true }, to));
+            }
+            Act::Hurry(id) => {
+                self.close_picker(cx);
+                self.engines_decide(id, Answer::Now, cx);
             }
             Act::Undo(id) => {
                 self.close_picker(cx);
@@ -447,6 +456,7 @@ pub fn layer(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                         Act::Retry => Icon::Retry,
                         Act::UpdateClaude => Icon::ArrowUp,
                         Act::Undo(_) => Icon::Withdraw,
+                        Act::Hurry(_) | Act::MoveNow(_) => Icon::Retry,
                         Act::SignIn(_) => Icon::Settings,
                         Act::Move { engine: Engine::Codex, .. } => Icon::OpenAiMark,
                         Act::Move { .. } => Icon::ClaudeMark,

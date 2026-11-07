@@ -63,6 +63,39 @@ pub fn burns(home: &Path, weeks: &[(Engine, PlanWindow)], now: i64) -> Vec<Burn>
         .collect()
 }
 
+/// What engine switching reads of a plan's week: its forecast and each
+/// member's share of the week's load, as the Usage screen shows them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Load {
+    pub pace: Option<crate::protocol::plan_use::Pace>,
+    /// Each member's share of the week's load, by squad and name, in basis points.
+    pub members: Vec<(String, String, u32)>,
+}
+
+/// Each read week's [`Load`].
+pub fn loads(home: &Path, weeks: &[(Engine, PlanWindow)], now: i64) -> Vec<(Engine, Load)> {
+    weeks
+        .iter()
+        .map(|(engine, week)| {
+            let report = look(home, *engine, Span::Week, Some(*week), now, false);
+            (*engine, load_of(&report))
+        })
+        .collect()
+}
+
+/// A report's forecast and members' shares.
+pub fn load_of(report: &Report) -> Load {
+    let members = report
+        .members
+        .iter()
+        .filter_map(|s| match &s.who {
+            Who::Member { squad, member } => Some((squad.clone(), member.clone(), s.share_bp)),
+            _ => None,
+        })
+        .collect();
+    Load { pace: report.pace, members }
+}
+
 // ── the PM's look ──
 
 /// The PM's read-only tool: what burned the plans, answered by the runtime
