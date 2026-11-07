@@ -337,6 +337,122 @@ pub fn is_dismissed(message: &str) -> bool {
     message.starts_with(DISMISSED_HEAD)
 }
 
+// ── asked again ──
+
+/// How many days a set waits before screens group it with the older ones.
+/// Nothing is closed for its age: it only moves out of the way.
+pub const STALE_DAYS: u64 = 3;
+
+/// Whether `set` has waited [`STALE_DAYS`] or more at `now` (unix seconds).
+/// A set without a time (an older daemon's) is never called old.
+pub fn is_stale(set: &QuestionSet, now: u64) -> bool {
+    set.asked_at > 0 && now.saturating_sub(set.asked_at) >= STALE_DAYS * 86_400
+}
+
+/// How alike two questions' words must be (Dice over character pairs) to be
+/// the same question asked again: a word or a particle changed, not a topic.
+const SAME_WORDS: f64 = 0.8;
+
+/// Text reduced to what it says: lower case letters and digits, nothing
+/// between them — spaces, punctuation and brackets don't make a question new.
+fn bare(text: &str) -> Vec<char> {
+    text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// The numbers a text names, in order: "3 days" and "T-12" are kept apart
+/// from "4 days" and "T-13", however alike the rest reads.
+fn numbers(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_ascii_digit()).filter(|n| !n.is_empty()).map(str::to_owned).collect()
+}
+
+/// How alike two texts read, from 0 to 1: the share of character pairs they
+/// have in common (Sørensen–Dice), which survives a changed word or ending
+/// in any script.
+fn alike(a: &str, b: &str) -> f64 {
+    let (a, b) = (bare(a), bare(b));
+    if a == b {
+        return 1.0;
+    }
+    if a.len() < 2 || b.len() < 2 {
+        return 0.0;
+    }
+    let pairs = |s: &[char]| s.windows(2).map(|w| (w[0], w[1])).collect::<Vec<_>>();
+    let (pa, mut pb) = (pairs(&a), pairs(&b));
+    let total = pa.len() + pb.len();
+    let mut common = 0;
+    for pair in pa {
+        if let Some(at) = pb.iter().position(|p| *p == pair) {
+            pb.swap_remove(at);
+            common += 1;
+        }
+    }
+    (2 * common) as f64 / total as f64
+}
+
+/// Whether `later` puts to the person what `earlier` already does: the same
+/// member, the same kind of set, as many questions, each asked in the same
+/// or nearly the same words naming the same numbers, about the same ticket
+/// (or none). Its options may have changed — it is the newer word on it.
+pub fn same_decision(earlier: &QuestionSet, later: &QuestionSet) -> bool {
+    earlier.member == later.member
+        && earlier.review == later.review
+        && earlier.retro.is_some() == later.retro.is_some()
+        && earlier.ticket == later.ticket
+        && earlier.questions.len() == later.questions.len()
+        && earlier.questions.iter().zip(&later.questions).all(|(a, b)| numbers(&a.question) == numbers(&b.question) && alike(&a.question, &b.question) >= SAME_WORDS)
+}
+
+/// Whether two sets' options are the same, question by question — labels
+/// read without their "(Recommended)" and spacing: an answer picked on one
+/// means the same on the other.
+pub fn same_options(a: &QuestionSet, b: &QuestionSet) -> bool {
+    let labels = |q: &Question| q.options.iter().map(|c| bare(&recommended(&c.label).0)).collect::<Vec<_>>();
+    a.questions.len() == b.questions.len() && a.questions.iter().zip(&b.questions).all(|(x, y)| x.multi_select == y.multi_select && labels(x) == labels(y))
+}
+
+/// What adding a set to those waiting did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Added {
+    /// Nothing like it waited: it is new.
+    New,
+    /// It asks again what set `id` asked, with the same options: that set
+    /// takes its words and its time, keeps its id — whatever a screen has
+    /// picked on it so far still holds — and moves to the end, the newest.
+    Again { id: u64 },
+    /// It asks again what set `old` asked, with other options: the old one
+    /// is out (answers to it would mean other things), the new one in.
+    Replaced { old: u64 },
+}
+
+/// `set` among those waiting, oldest first: a set it asks again gives way
+/// to it — never a second card for one decision. Only sets still waiting
+/// are looked at, so an answer the person already gave stays as it went.
+pub fn add(sets: &mut Vec<QuestionSet>, mut set: QuestionSet) -> Added {
+    let Some(at) = sets.iter().rposition(|s| same_decision(s, &set)) else {
+        sets.push(set);
+        return Added::New;
+    };
+    let old = sets.remove(at);
+    let added = if same_options(&old, &set) {
+        set.id = old.id;
+        Added::Again { id: old.id }
+    } else {
+        Added::Replaced { old: old.id }
+    };
+    sets.push(set);
+    added
+}
+
+/// Sets kept from before asking again replaced a card ([`add`]): each one
+/// added in turn, so one decision asked twice waits once, as the latest.
+pub fn collapse(sets: Vec<QuestionSet>) -> Vec<QuestionSet> {
+    let mut out = Vec::with_capacity(sets.len());
+    for set in sets {
+        add(&mut out, set);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +640,76 @@ mod tests {
         assert_eq!(wire["questions"][0]["options"][0]["aspects"], json!(["type", "colour"]));
         assert!(serde_json::to_value(set()).unwrap()["questions"][0]["options"][0].get("aspects").is_none());
         assert_eq!(serde_json::from_value::<QuestionSet>(wire).unwrap(), design());
+    }
+
+    fn asked(id: u64, member: &str, ticket: Option<TicketId>, questions: &[(&str, &[&str])], asked_at: u64) -> QuestionSet {
+        let questions = questions
+            .iter()
+            .map(|(q, options)| Question { question: (*q).into(), options: options.iter().map(|l| Choice { label: (*l).into(), ..Choice::default() }).collect(), ..Question::default() })
+            .collect();
+        QuestionSet { id, session: 1, member: member.into(), ticket, questions, asked_at, review: false, retro: None }
+    }
+
+    #[test]
+    fn a_decision_asked_again_in_near_the_same_words_is_the_same_one() {
+        // As a PM asked twice, a day apart: one word, one option changed.
+        let engine: &[&str] = &["designer·mobile", "backend·marketing 둘도", "그대로 둠"];
+        let engine_again: &[&str] = &["designer·mobile", "backend·marketing도", "그대로 둠"];
+        let first = asked(1, "pm", None, &[("남은 3일 동안 어느 멤버를 Codex로 옮길까요?", engine), ("남은 사용량은 어디에 먼저 쓸까요?", &["T-428", "순서대로"])], 100);
+        let again = asked(2, "pm", None, &[("남은 3일 동안 어느 멤버를 Codex로 옮길까요?", engine_again), ("남은 사용량을 어디에 먼저 쓸까요?", &["T-428", "순서대로"])], 200);
+        assert!(same_decision(&first, &again) && !same_options(&first, &again));
+        // Reworded, its options new: still the one question.
+        let feel = asked(3, "pm", None, &[("처음 온 메이커가 3초 안에 무엇을 느껴야 할까요?", &["a", "b", "c"])], 100);
+        let feel_again = asked(4, "pm", None, &[("처음 보는 메이커가 3초 안에 무엇을 느껴야 할까요?", &["x", "y", "z"])], 200);
+        assert!(same_decision(&feel, &feel_again));
+        // Spacing, case, punctuation and a "(Recommended)" make nothing new.
+        let db = asked(5, "backend", Some(12), &[("Which database should the API use?", &["Postgres (Recommended)", "SQLite"])], 100);
+        let db_again = asked(6, "backend", Some(12), &[("which  database should the API use", &["Postgres", "sqlite"])], 200);
+        assert!(same_decision(&db, &db_again) && same_options(&db, &db_again));
+        // Not the same: another member, another ticket, other numbers, another topic, another count.
+        assert!(!same_decision(&db, &QuestionSet { member: "frontend".into(), ..db_again.clone() }));
+        assert!(!same_decision(&db, &QuestionSet { ticket: Some(13), ..db_again.clone() }));
+        assert!(!same_decision(&asked(7, "pm", None, &[("Deploy T-12 to production?", &["y", "n"])], 0), &asked(8, "pm", None, &[("Deploy T-13 to production?", &["y", "n"])], 0)));
+        assert!(!same_decision(&asked(7, "pm", None, &[("Which footer?", &["a", "b"])], 0), &asked(8, "pm", None, &[("Which header?", &["a", "b"])], 0)));
+        assert!(!same_decision(&asked(7, "pm", None, &[("Which database?", &["a", "b"])], 0), &asked(8, "pm", None, &[("Which datastore?", &["a", "b"])], 0)));
+        assert!(!same_decision(&asked(7, "pm", None, &[("통화 2/3: 전화를 받는 목소리는 누가 맡을까요?", &["a", "b"])], 0), &asked(8, "pm", None, &[("통화 3/3: 통화하면서 목소리로 어디까지 하게 할까요?", &["a", "b"])], 0)));
+        let mut two = db_again.clone();
+        two.questions.push(two.questions[0].clone());
+        assert!(!same_decision(&db, &two));
+        assert!(!same_decision(&db, &QuestionSet { review: true, ..db_again.clone() }));
+    }
+
+    #[test]
+    fn asking_again_replaces_the_card_keeping_its_id_when_the_options_hold() {
+        let db = asked(5, "backend", Some(12), &[("Which database should the API use?", &["Postgres", "SQLite"])], 100);
+        let other = asked(6, "pm", None, &[("Ship on Friday?", &["Yes", "No"])], 150);
+        let mut waiting = vec![db.clone(), other.clone()];
+        // The same options: the old id, the new words and time, moved to the end.
+        let again = QuestionSet { session: 9, ..asked(7, "backend", Some(12), &[("Which database should the API use, then?", &["Postgres", "SQLite"])], 300) };
+        assert_eq!(add(&mut waiting, again), Added::Again { id: 5 });
+        assert_eq!(waiting.iter().map(|s| (s.id, s.asked_at, s.session)).collect::<Vec<_>>(), [(6, 150, 1), (5, 300, 9)]);
+        assert_eq!(waiting[1].questions[0].question, "Which database should the API use, then?");
+        // Other options: the old one out, the new one in, under its own id.
+        let changed = asked(8, "backend", Some(12), &[("Which database should the API use?", &["Postgres", "MySQL"])], 400);
+        assert_eq!(add(&mut waiting, changed), Added::Replaced { old: 5 });
+        assert_eq!(waiting.iter().map(|s| s.id).collect::<Vec<_>>(), [6, 8]);
+        // Something new is just added.
+        assert_eq!(add(&mut waiting, asked(9, "backend", Some(12), &[("Which region?", &["EU", "US"])], 500)), Added::New);
+        assert_eq!(waiting.len(), 3);
+        // An answered set no longer waits: the same question asked after it is a card of its own.
+        let mut after_answer = vec![other.clone()];
+        assert_eq!(add(&mut after_answer, db.clone()), Added::New);
+        // What a journal kept from before: each decision once, the latest.
+        let kept = collapse(vec![db.clone(), other.clone(), QuestionSet { asked_at: 300, ..asked(7, "backend", Some(12), &[("Which database should the API use?", &["Postgres", "SQLite"])], 300) }]);
+        assert_eq!(kept.iter().map(|s| (s.id, s.asked_at)).collect::<Vec<_>>(), [(6, 150), (5, 300)]);
+    }
+
+    #[test]
+    fn a_set_is_old_after_three_days_and_one_without_a_time_never() {
+        let day = 86_400;
+        let set = asked(1, "pm", None, &[("?", &["a", "b"])], 10 * day);
+        assert!(!is_stale(&set, 13 * day - 1) && is_stale(&set, 13 * day));
+        assert!(!is_stale(&QuestionSet { asked_at: 0, ..set }, 99 * day));
     }
 
     #[test]

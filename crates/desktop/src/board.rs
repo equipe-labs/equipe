@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use equipe_core::protocol::briefs::{DocKind, ProjectDoc};
+use equipe_core::protocol::decide;
 use equipe_core::protocol::{Command, OffMain, Priority, Ticket, TicketId, TicketKind, TicketStatus};
 
 use crate::state::{Model, Need, Section, status_word};
@@ -176,6 +177,9 @@ pub enum AllOf {
     Start,
     /// Accepted but off main: merge every one.
     Merge,
+    /// Decisions waiting for days: ask the PM, in the person's own message,
+    /// to tidy them (nothing closed here).
+    Tidy,
 }
 
 /// A section's tickets, done all at once from its heading.
@@ -377,8 +381,17 @@ pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
                 _ => None,
             };
             let all = what.filter(|_| !tickets.is_empty()).map(|what| All { what, ids: tickets });
-            out.push(Row::Heading { label: section.label().to_owned(), count: items.len(), tone: Tone::ForYou, hint: section.hint().map(str::to_owned), all });
-            out.extend(items.into_iter().map(|need| Row::Item { need, depth: 0 }));
+            // Decisions waiting for days: their own group under the others, out of the way.
+            let (older, items): (Vec<Need>, Vec<Need>) = items.into_iter().partition(|need| matches!(need, Need::Questions(id) if model.asked.get(*id).is_some_and(|s| decide::is_stale(s, model.unix))));
+            if !items.is_empty() {
+                out.push(Row::Heading { label: section.label().to_owned(), count: items.len(), tone: Tone::ForYou, hint: section.hint().map(str::to_owned), all });
+                out.extend(items.into_iter().map(|need| Row::Item { need, depth: 0 }));
+            }
+            if !older.is_empty() {
+                let label = t!("decide.list_older", days = decide::STALE_DAYS).to_string();
+                out.push(Row::Heading { label, count: older.len(), tone: Tone::Plain, hint: None, all: Some(All { what: AllOf::Tidy, ids: Vec::new() }) });
+                out.extend(older.into_iter().map(|need| Row::Item { need, depth: 0 }));
+            }
         }
     }
     out
@@ -1265,6 +1278,23 @@ mod tests {
         assert_eq!(all[2], Some(All { what: AllOf::Accept, ids: vec![6, 5] }));
         assert_eq!(all[3], Some(All { what: AllOf::Start, ids: vec![3] }));
         assert_eq!(all[4], Some(All { what: AllOf::Merge, ids: vec![7] }));
+    }
+
+    #[test]
+    fn decisions_waiting_for_days_get_their_own_group_with_one_ask_to_the_pm_and_none_is_closed() {
+        use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
+        let mut m = model(vec![ticket(5, "in_progress", "/p", &[])], &["/p"]);
+        let day = 86_400;
+        m.unix = 20 * day;
+        let q = Question { question: "Which?".into(), options: vec![Choice { label: "a".into(), ..Choice::default() }, Choice { label: "b".into(), ..Choice::default() }], ..Question::default() };
+        let set = |id: u64, ticket: Option<u32>, ago: u64| QuestionSet { id, session: 1, member: "pm".into(), ticket, questions: vec![q.clone()], asked_at: 20 * day - ago, review: false, retro: None };
+        m.asked.load(vec![set(1, None, 9 * day), set(2, Some(5), 5 * day), set(3, None, day), set(4, None, 3600)]);
+        let rows = inbox(&m, &Filter::default());
+        assert_eq!(headings(&rows), vec!["결정 필요", "3일 넘은 질문"]);
+        assert_eq!(items(&rows), [4, 3, 2, 1].map(Need::Questions), "the newest first; of the older, the one holding work up first");
+        let all: Vec<Option<All>> = rows.iter().filter_map(|r| if let Row::Heading { all, .. } = r { Some(all.clone()) } else { None }).collect();
+        assert_eq!(all, [None, Some(All { what: AllOf::Tidy, ids: Vec::new() })]);
+        assert_eq!(m.needs_you_count(), 4, "every one still counts: nothing is closed for its age");
     }
 
     #[test]

@@ -16,15 +16,15 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use equipe_core::protocol::Command;
-use equipe_core::protocol::decide::{Answer, Question, QuestionSet};
+use equipe_core::protocol::decide::{self as asked, Answer, Question, QuestionSet};
+use equipe_core::protocol::{Command, SessionId};
 use equipe_core::t;
 use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::decide::{self as rules, Decided, Draft, Effect, Key, MixItem};
+use crate::decide::{self as rules, Decided, Draft, Effect, Key, MixItem, Rank, Rest};
 use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::render;
@@ -68,6 +68,29 @@ pub struct DecideUi {
     /// The menu last closed by a press outside it, and when: that press on
     /// its own button closes it rather than opening it again.
     mix_closed: Option<(Mixing, std::time::Instant)>,
+    /// The card the person went to in each member's conversation (← →, the
+    /// list), by the member's session: it stays in front until answered.
+    pub browsing: HashMap<SessionId, (u64, usize)>,
+    /// The list of every question the conversation offers, open over the
+    /// card — the row the keys are on.
+    pub listing: Option<usize>,
+    /// A question just asked in the conversation on screen, and when: lit
+    /// for a moment, so it is noticed.
+    pub fresh: Option<(u64, std::time::Instant)>,
+    /// Bumped with each fresh question: its arrival plays again.
+    fresh_serial: u64,
+}
+
+/// How long a question just asked stays lit.
+const FRESH_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Where the card in front stands among the conversation's questions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Nav {
+    /// Its place, from 0.
+    at: usize,
+    count: usize,
+    rest: Rest,
 }
 
 /// Which mix menu: set, question, option.
@@ -97,8 +120,8 @@ impl Shell {
         self.decide.fields.retain(|(id, _), _| live.contains(id));
         self.decide.subscriptions.retain(|(id, _), _| live.contains(id));
         self.decide.scrolls.retain(|id, _| live.contains(id));
-        for set in sets {
-            self.decide.drafts.entry(set.id).or_insert_with(|| Draft::new(&set));
+        for set in &sets {
+            self.decide.drafts.entry(set.id).or_insert_with(|| Draft::new(set));
             self.decide.scrolls.entry(set.id).or_default();
             for n in 0..set.questions.len() {
                 let k = (set.id, n);
@@ -126,17 +149,102 @@ impl Shell {
                 self.decide.subscriptions.insert(k, subscription);
             }
         }
+        self.decide_take_fresh(cx);
     }
 
-    /// The set the conversation on screen shows: the oldest of the member's
-    /// own — in the PM's, of everyone's.
-    pub fn decide_shown(&self) -> Option<u64> {
+    /// A question just asked (or asked again) in the conversation on screen:
+    /// it comes to the front — unless the person is in the middle of another
+    /// card, which stays — lights up for a moment, and its card comes before
+    /// the less pressing ones over the composer.
+    fn decide_take_fresh(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.model.asked.take_fresh() else { return };
+        let Some(member) = self.model.selected_member().map(|m| m.session) else { return };
+        let order = self.decide_order();
+        if !order.contains(&id) {
+            return;
+        }
+        let front = self.decide_front().map(|(f, _)| f).filter(|f| *f != id);
+        let busy = front.is_some_and(|f| self.decide.drafts.get(&f).is_some_and(Draft::begun) || self.decide.fields.iter().any(|((set, _), field)| *set == f && !field.read(cx).value().trim().is_empty()));
+        if !busy && let Some(to) = rules::jump(&order, id) {
+            self.decide.browsing.insert(member, to);
+        }
+        self.decide.fresh = Some((id, std::time::Instant::now()));
+        self.decide.fresh_serial += 1;
+        self.chat.dock_bring.set(true);
+        // Unlit again after a while.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FRESH_FOR).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
+    /// The questions the conversation on screen offers, by id, in order.
+    pub fn decide_order(&self) -> Vec<u64> {
+        self.model.questions_here().iter().map(|(s, _)| s.id).collect()
+    }
+
+    /// The card in front in the conversation on screen, and its place.
+    fn decide_front(&self) -> Option<(u64, usize)> {
         let member = self.model.selected_member()?;
         if self.model.opened.is_some() {
             return None;
         }
-        let is_pm = crate::state::Model::is_pm(member);
-        self.model.asked.in_conversation(&member.name, is_pm).first().map(|s| s.id)
+        rules::in_front(&self.decide_order(), self.decide.browsing.get(&member.session).copied())
+    }
+
+    /// ← / → or ‹ ›: the card before or after, nothing answered.
+    pub fn decide_browse(&mut self, by: isize, cx: &mut Context<Self>) {
+        let Some(member) = self.model.selected_member().map(|m| m.session) else { return };
+        let order = self.decide_order();
+        if let Some(to) = rules::browse(&order, self.decide.browsing.get(&member).copied(), by) {
+            self.decide.browsing.insert(member, to);
+        }
+        self.decide.listing = None;
+        self.decide.mixing = None;
+        cx.notify();
+    }
+
+    /// Straight to set `id`, picked from the list.
+    pub fn decide_jump(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(member) = self.model.selected_member().map(|m| m.session) else { return };
+        if let Some(to) = rules::jump(&self.decide_order(), id) {
+            self.decide.browsing.insert(member, to);
+            if let Some(draft) = self.decide.drafts.get_mut(&id) {
+                draft.collapsed = false;
+            }
+        }
+        self.decide.listing = None;
+        cx.notify();
+    }
+
+    /// The list of every question here, opened (on the card in front) or closed.
+    pub fn decide_list(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.decide.listing = if open { Some(self.decide_front().map_or(0, |(_, at)| at)) } else { None };
+        cx.notify();
+    }
+
+    /// "Ask PM to tidy these": the older questions, listed in one plain
+    /// message to the PM — the person's own, in their words. Nothing closes.
+    pub fn decide_ask_tidy(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<u64> = match self.screen {
+            Screen::Chat => self.model.questions_here().into_iter().filter(|(_, r)| *r == Rank::Older).map(|(s, _)| s.id).collect(),
+            _ => self.model.questions_waiting().into_iter().filter(|(_, r)| *r == Rank::Older).map(|(s, _)| s.id).collect(),
+        };
+        let Some(pm) = self.model.pm().filter(|_| !ids.is_empty() && self.can_act()) else { return };
+        let sets: Vec<&QuestionSet> = ids.iter().filter_map(|id| self.model.asked.get(*id)).collect();
+        let text = tidy_message(&sets, self.model.unix);
+        self.send_command(Command::Submit { session: pm, text, about: Some(self.model.focus.clone()) });
+        self.say(t!("decide.tidy_sent"));
+        self.decide.listing = None;
+        cx.notify();
+    }
+
+    /// The set the conversation on screen shows: the one the person went
+    /// to, else the first in order — what the member asked since the person
+    /// last spoke here ([`rules::order`]).
+    pub fn decide_shown(&self) -> Option<u64> {
+        self.decide_front().map(|(id, _)| id)
     }
 
     /// The decision waiting about ticket `ticket`, shown in its peek — not
@@ -193,6 +301,22 @@ impl Shell {
             },
             Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Orchestration | Screen::Usage | Screen::Docs | Screen::Studio => return Took::Pass,
         };
+        // The list of them open: ↑↓ through it, ⏎ to the one picked, Esc away.
+        if !peek && let Some(at) = self.decide.listing && self.composer.text(cx).is_empty() {
+            let order = self.decide_order();
+            match key {
+                "up" => self.decide.listing = Some(at.saturating_sub(1)),
+                "down" => self.decide.listing = Some((at + 1).min(order.len().saturating_sub(1))),
+                "enter" => match order.get(at) {
+                    Some(id) => self.decide_jump(*id, cx),
+                    None => self.decide_list(false, cx),
+                },
+                "escape" => self.decide_list(false, cx),
+                _ => return Took::Pass,
+            }
+            cx.notify();
+            return Took::Taken;
+        }
         if self.decide.drafts.get(&id).is_none_or(|d| d.collapsed) {
             return Took::Pass;
         }
@@ -209,7 +333,11 @@ impl Shell {
         if m.platform && k != Key::Next {
             return Took::Pass;
         }
-        if peek && matches!(k, Key::Up | Key::Down | Key::Enter | Key::Esc | Key::Back) && !in_other {
+        if peek && matches!(k, Key::Up | Key::Down | Key::Enter | Key::Esc | Key::Back | Key::Card(_)) && !in_other {
+            return Took::Pass;
+        }
+        // ← → over attachments in the composer are theirs.
+        if matches!(k, Key::Card(_)) && !in_other && !self.composer.strip.is_empty() {
             return Took::Pass;
         }
         if in_other && !matches!(k, Key::Tab | Key::Esc | Key::Next | Key::Up) {
@@ -236,6 +364,7 @@ impl Shell {
             }
             Effect::LeaveOther | Effect::Collapse => self.decide_give_back(window, cx),
             Effect::Send(answers) => self.decide_send(id, answers, window, cx),
+            Effect::Browse(by) => self.decide_browse(by, cx),
         }
         // A step taken in the box: the next question's box, if it had the typing.
         if in_other && changed {
@@ -423,7 +552,11 @@ impl Shell {
             Some(rest) => (true, rest),
             None => (false, key),
         };
-        let (Some(id), Some(k)) = (id, rules::key_of(key, cmd, false)) else { return false };
+        let (shift, key) = match key.strip_prefix("shift-") {
+            Some(rest) => (true, rest),
+            None => (false, key),
+        };
+        let (Some(id), Some(k)) = (id, rules::key_of(key, cmd, shift)) else { return false };
         let in_other = self.decide_in_other(id, window, cx);
         self.decide_key(id, k, in_other, window, cx)
     }
@@ -468,11 +601,187 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if shell.screen != Screen::Chat {
         return None;
     }
-    let id = shell.decide_shown()?;
-    let member = shell.model.selected_member()?;
-    let more = shell.model.asked.in_conversation(&member.name, crate::state::Model::is_pm(member)).len().saturating_sub(1);
-    let body = card(shell, id, Place::Docked, more, cx)?;
-    Some(motion::rise(v_flex().w_full().min_h_0().mb_3().child(body), ("decide-in", id)).into_any_element())
+    let (id, at) = shell.decide_front()?;
+    let order = shell.model.questions_here();
+    let nav = Nav { at, count: order.len(), rest: rules::rest(&order, id) };
+    if shell.decide.listing.is_some() {
+        return Some(div().w_full().min_h_0().mb_3().child(list(shell, &order, id, cx)).into_any_element());
+    }
+    let body = card(shell, id, Place::Docked, Some(nav), cx)?;
+    let serial = shell.decide.fresh.filter(|(f, _)| *f == id).map_or(0, |_| shell.decide.fresh_serial);
+    Some(motion::rise(v_flex().w_full().min_h_0().mb_3().child(body), ("decide-in", render::hash_of((id, serial)))).into_any_element())
+}
+
+/// Whether set `id` was just asked here, and is lit.
+fn is_fresh(shell: &Shell, id: u64) -> bool {
+    shell.decide.fresh.is_some_and(|(f, at)| f == id && at.elapsed() < FRESH_FOR)
+}
+
+/// The older questions, in the message that asks the PM to tidy them: each
+/// one's member, ticket, question and how long it has waited.
+pub fn tidy_message(sets: &[&QuestionSet], now: u64) -> String {
+    let lines: Vec<String> = sets
+        .iter()
+        .map(|s| {
+            let ticket = s.ticket.map(|t| format!(" · T-{t}")).unwrap_or_default();
+            let first = s.questions.first().map(|q| q.question.split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+            let first: String = if first.chars().count() > 140 { format!("{}…", first.chars().take(140).collect::<String>()) } else { first };
+            let more = if s.questions.len() > 1 { format!(" {}", t!("decide.and_more", count = s.questions.len() - 1)) } else { String::new() };
+            format!("- {}{ticket}: {first}{more} ({})", s.member, crate::activity::ago(now.saturating_sub(s.asked_at)))
+        })
+        .collect();
+    t!("decide.tidy_message", days = asked::STALE_DAYS, list = lines.join("\n")).to_string()
+}
+
+/// Every question the conversation offers, as one list over the card: what
+/// was asked here, the team's, and the older ones — each a row that goes
+/// to it; the older ones with "Ask PM to tidy these".
+fn list(shell: &Shell, order: &[(&QuestionSet, Rank)], front: u64, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let handle = cx.entity().downgrade();
+    let cursor = shell.decide.listing.unwrap_or(0);
+    let now = shell.model.unix;
+    let group_of = |r: Rank| match r {
+        Rank::Reply | Rank::Own => 0,
+        Rank::Others => 1,
+        Rank::Older => 2,
+    };
+    let mut rows: Vec<AnyElement> = Vec::new();
+    let mut last_group = None;
+    for (n, (set, rank)) in order.iter().enumerate() {
+        let group = group_of(*rank);
+        if last_group != Some(group) {
+            last_group = Some(group);
+            let label = match group {
+                0 => t!("decide.list_here").to_string(),
+                1 => t!("decide.list_others").to_string(),
+                _ => t!("decide.list_older", days = asked::STALE_DAYS).to_string(),
+            };
+            let tidy = (group == 2).then(|| {
+                let handle = handle.clone();
+                ui::button(p, "decide-tidy", Kind::Secondary, t!("decide.tidy")).disabled(!shell.can_act()).on_click(move |_, _, cx| {
+                    handle.update(cx, |shell, cx| shell.decide_ask_tidy(cx)).ok();
+                })
+            });
+            rows.push(
+                h_flex()
+                    .w_full()
+                    .pt(px(if rows.is_empty() { 0. } else { 8. }))
+                    .pb_1()
+                    .gap_2()
+                    .items_center()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.muted)
+                    .child(div().flex_1().child(label))
+                    .children(tidy)
+                    .into_any_element(),
+            );
+        }
+        let (name, _) = who(shell, set);
+        let first = set.questions.first().map(|q| if q.header.trim().is_empty() { q.question.clone() } else { format!("{} · {}", q.header, q.question) }).unwrap_or_default();
+        let title = crate::decide::review_title(set).unwrap_or(first);
+        let id = set.id;
+        let open = handle.clone();
+        let on = n == cursor;
+        rows.push(
+            h_flex()
+                .id(("decide-list-row", id))
+                .w_full()
+                .min_h(px(30.))
+                .px_2()
+                .gap_2()
+                .items_center()
+                .rounded(px(R_SM))
+                .cursor_pointer()
+                .when(on, |r| r.bg(p.wash))
+                .hover(move |s| s.bg(p.wash))
+                .text_size(px(SMALL))
+                .child(div().flex_none().w(px(22.)).font_family(MONO).text_size(px(11.)).text_color(p.muted).child(format!("{}", n + 1)))
+                .child(crate::theme::member_mark(p, &shell.model, &name, 14.))
+                .child(div().flex_none().text_color(p.text2).child(name.clone()))
+                .children(set.ticket.map(|t| div().flex_none().font_family(MONO).text_size(px(11.5)).text_color(p.muted).child(format!("T-{t}"))))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if id == front { p.accent } else { p.text }).child(title))
+                .child(div().flex_none().text_size(px(11.5)).text_color(p.muted).child(crate::activity::ago(now.saturating_sub(set.asked_at))))
+                .on_click(move |_, _, cx| {
+                    open.update(cx, |shell, cx| shell.decide_jump(id, cx)).ok();
+                })
+                .into_any_element(),
+        );
+    }
+    let close = {
+        let handle = handle.clone();
+        ui::icon_button(p, "decide-list-close", Icon::X, t!("decide.collapse"), Some("Esc")).on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.decide_list(false, cx)).ok();
+        })
+    };
+    let head = h_flex()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .child(div().flex_1().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("decide.list_tip")))
+        .child(div().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(order.len().to_string()))
+        .child(close);
+    v_flex()
+        .id("decide-list")
+        .w_full()
+        .max_h(px(card_tallest(shell, Place::Docked)))
+        .p(px(14.))
+        .gap_2()
+        .rounded(px(R_LG))
+        .bg(p.raised)
+        .border_1()
+        .border_color(p.hair)
+        .shadow_sm()
+        .child(head)
+        .child(v_flex().id("decide-list-rows").w_full().min_h_0().overflow_y_scroll().gap_0p5().children(rows))
+        .child(div().pt_1().text_size(px(12.)).text_color(p.muted).child(t!("decide.list_keys")))
+        .into_any_element()
+}
+
+/// ‹ 3 / 23 ›: the cards before and after, and where this one stands — a
+/// click on the place opens the list of them all.
+fn nav_control(p: Palette, nav: Nav, handle: &WeakEntity<Shell>) -> AnyElement {
+    let step = |id: &'static str, glyph: Icon, by: isize, name: &'static str, key: &'static str| {
+        let handle = handle.clone();
+        ui::icon_button(p, id, glyph, name, Some(key)).on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.decide_browse(by, cx)).ok();
+        })
+    };
+    let open = handle.clone();
+    let place = div()
+        .id("decide-place")
+        .px_1()
+        .rounded(px(R_SM))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .font_family(MONO)
+        .text_size(px(11.5))
+        .text_color(p.text2)
+        .child(format!("{} / {}", nav.at + 1, nav.count))
+        .on_click(move |_, _, cx| {
+            open.update(cx, |shell, cx| shell.decide_list(true, cx)).ok();
+        });
+    h_flex()
+        .flex_none()
+        .gap_0p5()
+        .items_center()
+        .child(step("decide-prev", Icon::ArrowLeft, -1, t!("decide.prev_card"), "←"))
+        .child(tip(place, p, t!("decide.list_tip"), None))
+        .child(step("decide-next-card", Icon::ArrowRight, 1, t!("decide.next_card"), "→"))
+        .into_any_element()
+}
+
+/// "+22 waiting · 9 older than 3 days": where the rest are.
+fn rest_words(rest: Rest) -> Option<String> {
+    let mut words = Vec::new();
+    if rest.more > 0 {
+        words.push(t!("decide.more", count = rest.more).to_string());
+    }
+    if rest.older > 0 {
+        words.push(t!("decide.older", count = rest.older, days = asked::STALE_DAYS).to_string());
+    }
+    (!words.is_empty()).then(|| words.join(" · "))
 }
 
 /// The card in the Inbox's peek.
@@ -485,7 +794,7 @@ pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
         .p_4()
         .gap_3()
         .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("state.section_decide")))
-        .children(card(shell, id, Place::Peek, 0, cx))
+        .children(card(shell, id, Place::Peek, None, cx))
         .into_any_element()
 }
 
@@ -494,7 +803,7 @@ pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
 pub fn for_ticket(shell: &Shell, ticket: u32, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let id = shell.ticket_question(ticket)?;
     let p = shell.palette;
-    let body = card(shell, id, Place::Peek, 0, cx)?;
+    let body = card(shell, id, Place::Peek, None, cx)?;
     Some(v_flex().gap_2().child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("state.section_decide"))).child(body).into_any_element())
 }
 
@@ -506,7 +815,7 @@ fn who(shell: &Shell, set: &QuestionSet) -> (String, Rgba) {
 }
 
 /// One set, at the step the person is on.
-fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shell>) -> Option<AnyElement> {
+fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let set = shell.model.asked.get(id)?.clone();
     let draft = shell.decide.drafts.get(&id).cloned().unwrap_or_else(|| Draft::new(&set));
@@ -514,7 +823,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     let (name, _) = who(shell, &set);
     if draft.collapsed && place == Place::Docked {
         let mark = crate::theme::member_mark(p, &shell.model, &name, 15.).into_any_element();
-        return Some(folded(p, id, &set, &name, mark, more, &handle));
+        return Some(folded(p, id, &set, &name, mark, nav.and_then(|n| rest_words(n.rest)), is_fresh(shell, id), &handle));
     }
     let q = draft.question(&set)?.clone();
     let total = set.questions.len();
@@ -562,6 +871,8 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
                 .flex_1()
                 .min_w_0()
                 // The weekly design review's: said over its question.
+                // Just asked here: said so, quietly, for a moment.
+                .when(place == Place::Docked && is_fresh(shell, id), |c| c.child(div().text_size(px(11.)).line_height(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(t!("decide.new"))))
                 .children(crate::decide::review_title(&set).map(|title| div().text_size(px(12.)).line_height(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(title)))
                 .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.question.clone())),
         )
@@ -697,19 +1008,35 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     });
     let back = (draft.step > 0).then(|| {
         let handle = handle.clone();
-        ui::button(p, ("decide-back", id), Kind::Ghost, t!("decide.back")).key("←").on_click(move |_, window, cx| {
+        ui::button(p, ("decide-back", id), Kind::Ghost, t!("decide.back")).key("⇧←").on_click(move |_, window, cx| {
             handle.update(cx, |shell, cx| shell.decide_step(id, Step::Back, window, cx)).ok();
         })
     });
-    let mut said = vec![h_flex().gap(px(5.)).items_center().child(crate::theme::member_mark(shell.palette, &shell.model, &name, 15.)).child(t!("decide.asks", name = name)).into_any_element()];
+    let mut said = Vec::new();
+    // More than one here: ‹ 3 / 23 › to go through them.
+    if let Some(nav) = nav.filter(|n| n.count > 1) {
+        said.push(nav_control(p, nav, &handle));
+    }
+    said.push(h_flex().gap(px(5.)).items_center().child(crate::theme::member_mark(shell.palette, &shell.model, &name, 15.)).child(t!("decide.asks", name = name)).into_any_element());
     if !q.header.is_empty() && total > 1 {
         said.push(div().child(format!("· {}", q.header)).into_any_element());
     }
     if let Some(t) = set.ticket {
         said.push(h_flex().gap(px(5.)).child("·").child(div().font_family(MONO).child(format!("T-{t}"))).into_any_element());
     }
-    if more > 0 {
-        said.push(div().child(format!("· {}", t!("decide.more", count = more))).into_any_element());
+    if let Some(words) = nav.and_then(|n| rest_words(n.rest)) {
+        let open = handle.clone();
+        said.push(
+            div()
+                .id(("decide-rest", id))
+                .cursor_pointer()
+                .hover(move |s| s.text_color(p.text2))
+                .child(format!("· {words}"))
+                .on_click(move |_, _, cx| {
+                    open.update(cx, |shell, cx| shell.decide_list(true, cx)).ok();
+                })
+                .into_any_element(),
+        );
     }
     let keys = match place {
         _ if q.options.is_empty() => t!("decide.keys_free"),
@@ -718,6 +1045,10 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         Place::Docked if q.multi_select => t!("decide.keys_multi"),
         Place::Docked => t!("decide.keys"),
         Place::Peek => t!("decide.keys_peek"),
+    };
+    let keys = match nav {
+        Some(nav) if nav.count > 1 => format!("{} · {keys}", t!("decide.keys_cards")),
+        _ => keys.to_string(),
     };
     let foot = h_flex()
         .w_full()
@@ -751,7 +1082,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
             .rounded(px(R_LG))
             .bg(p.raised)
             .border_1()
-            .border_color(p.hair)
+            .border_color(if is_fresh(shell, id) { p.accent } else { p.hair })
             .shadow_sm()
             .overflow_hidden()
             .child(inner)
@@ -1165,16 +1496,18 @@ fn question_pictures(shots: &Shots, id: u64, step: usize, q: &Question, width: f
     h_flex().w_full().flex_wrap().gap(px(visual::GAP)).children(tiles).into_any_element()
 }
 
-/// The card folded (Esc, ⌄): one line, who asks and how many; a click opens it.
-fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, mark: AnyElement, more: usize, handle: &WeakEntity<Shell>) -> AnyElement {
+/// The card folded (Esc, ⌄): one line, who asks and how many, and where the
+/// rest are; a click opens it.
+#[allow(clippy::too_many_arguments)]
+fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, mark: AnyElement, rest: Option<String>, fresh: bool, handle: &WeakEntity<Shell>) -> AnyElement {
     let open = handle.clone();
     let close = handle.clone();
     let mut words = t!("decide.folded", name = name, count = set.questions.len());
     if let Some(review) = crate::decide::review_title(set) {
         words = format!("{review} · {words}");
     }
-    if more > 0 {
-        words = format!("{words} · {}", t!("decide.more", count = more));
+    if let Some(rest) = rest {
+        words = format!("{words} · {rest}");
     }
     h_flex()
         .id(("decide-folded", id))
@@ -1187,7 +1520,7 @@ fn folded(p: Palette, id: u64, set: &QuestionSet, name: &str, mark: AnyElement, 
         .rounded(px(R_LG))
         .bg(p.raised)
         .border_1()
-        .border_color(p.hair)
+        .border_color(if fresh { p.accent } else { p.hair })
         .shadow_sm()
         .cursor_pointer()
         .text_size(px(SMALL))
@@ -1277,4 +1610,31 @@ pub fn row_text(shell: &Shell, id: u64) -> Option<(String, Option<u32>, String, 
 /// The mark the Inbox shows a decision with.
 pub fn mark(p: Palette) -> AnyElement {
     tip(div().id("decide-mark").size(px(14.)).flex_none().flex().items_center().justify_center().child(icon(Icon::Message, 13., p.accent)), p, t!("state.section_decide"), None).into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use equipe_core::protocol::decide::{Question, QuestionSet};
+
+    #[test]
+    fn the_ask_to_tidy_lists_each_older_question_with_who_asked_its_ticket_and_how_long_it_waited() {
+        let day = 86_400;
+        let set = |id: u64, member: &str, ticket: Option<u32>, questions: &[&str], ago: u64| QuestionSet {
+            id,
+            session: 1,
+            member: member.into(),
+            ticket,
+            questions: questions.iter().map(|q| Question { question: (*q).into(), ..Question::default() }).collect(),
+            asked_at: 20 * day - ago,
+            review: false,
+            retro: None,
+        };
+        let a = set(1, "backend", Some(318), &["How did the\nAWS sign-up go?"], 5 * day);
+        let b = set(2, "pm", None, &["Where first?", "For whom?"], 4 * day);
+        let text = super::tidy_message(&[&a, &b], 20 * day);
+        assert!(text.contains("3일 넘게 기다린"), "{text}");
+        assert!(text.contains("- backend · T-318: How did the AWS sign-up go? (5일 전)"), "{text}");
+        assert!(text.contains("- pm: Where first? 외 1개 (4일 전)"), "{text}");
+        assert!(text.contains("닫을 수 있게"), "asks which can be closed — the person closes them: {text}");
+    }
 }
