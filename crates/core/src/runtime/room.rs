@@ -256,7 +256,7 @@ impl Runtime {
     }
 
     /// Every member of `squad`, lanes left out.
-    fn squad_members(&self, squad: &str) -> Vec<SessionId> {
+    pub(super) fn squad_members(&self, squad: &str) -> Vec<SessionId> {
         self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.is_some()).map(|(&id, _)| id).collect()
     }
 

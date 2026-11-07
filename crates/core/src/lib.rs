@@ -15,6 +15,7 @@ pub mod awake;
 pub mod board;
 pub mod briefs;
 pub mod by_words;
+pub mod call;
 pub mod command_watch;
 pub mod controls;
 pub mod design_qa;
