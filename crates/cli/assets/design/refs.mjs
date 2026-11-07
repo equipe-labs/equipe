@@ -2,7 +2,10 @@
 // opens them, through the Mac's own Chrome, headless, saying so in its user
 // agent (nothing hides that it is automated). Reads a plan (--plan <file>):
 // { "pace": seconds between two pages of one site, "shots": [{ "url",
-// "path", "width", "height", "scheme", "full", "maxHeight", "capture" }] },
+// "path", "width", "height", "scheme", "full", "maxHeight", "capture",
+// "inspect", "css" }] } — with "inspect", the colour variables the page
+// declares come back (in "vars"); with "css", that stylesheet is laid over
+// the page first (a palette tried on the page being designed);
 // and writes what happened to --result <file>: for each shot its status,
 // title and final address, and — with "capture" — the stylesheets and font
 // files the page loaded from Google Fonts (their text, and their sizes), for
@@ -49,7 +52,7 @@ try {
       const wait = lastAt.get(host) + pace - Date.now();
       if (wait > 0) await sleep(wait);
     }
-    const out = { url: shot.url, path: shot.path, ok: false, status: 0, title: '', finalUrl: '', error: '', css: [], fonts: [] };
+    const out = { url: shot.url, path: shot.path, ok: false, status: 0, title: '', finalUrl: '', error: '', css: [], fonts: [], vars: [] };
     const context = await browser.newContext({
       viewport: { width: shot.width || 1280, height: shot.height || 800 },
       deviceScaleFactor: 1,
@@ -69,6 +72,31 @@ try {
       const response = await page.goto(url, { waitUntil: 'load', timeout: 45000 });
       out.status = response ? response.status() : 0;
       await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+      // A palette tried on the page itself: its colour variables, then the palette's over them.
+      if (shot.inspect) {
+        out.vars = await page.evaluate(() => {
+          const names = new Set();
+          for (const sheet of document.styleSheets) {
+            let rules;
+            try { rules = sheet.cssRules; } catch { continue; }
+            const walk = (list) => {
+              for (const r of list) {
+                if (r.style) for (const p of r.style) if (p.startsWith('--')) names.add(p);
+                if (r.cssRules) walk(r.cssRules);
+              }
+            };
+            walk(rules);
+          }
+          const cs = getComputedStyle(document.documentElement);
+          const probe = document.createElement('i');
+          document.body.appendChild(probe);
+          const colour = (v) => { probe.style.color = ''; probe.style.color = v.trim(); return probe.style.color !== ''; };
+          const out = [...names].filter((n) => { const v = cs.getPropertyValue(n); return v && colour(v); });
+          probe.remove();
+          return out;
+        });
+      }
+      if (shot.css) await page.addStyleTag({ content: shot.css });
       await page.evaluate(() => document.fonts && document.fonts.ready).catch(() => {});
       await page.waitForTimeout(shot.capture ? 600 : 1200);
       out.title = await page.title();

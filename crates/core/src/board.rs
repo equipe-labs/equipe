@@ -582,7 +582,7 @@ person with it. Then end your turn.",
         tools.push(json!({
             "name": DESIGN_TOOLS,
             "description": "Designers: run `equipe design refs | palette | type | component` without leaving your \
-sandbox — equipe runs it for you in your worktree and reads only the listed reference sites (Realtime Colors, Fontpair, \
+sandbox — equipe runs it for you in your worktree and reads only the listed reference sites (Fontpair, \
 21st.dev, Google Fonts; Lapa Ninja and Mobbin are browsed in your own browser and recorded with `refs add`), a few \
 pages a call, paced, as robots.txt allows. `args` are the words after `equipe design`, e.g. [\"refs\", \"shoot\", \
 \"https://fontpair.co/for/saas\", \"--learn\", \"…\", \"--aspect\", \"type\"] or [\"palette\", \"Calm=15161a-f6f5f1-1d4ed8-e8e6df-c2410c\"]. \

@@ -1185,9 +1185,7 @@
   "design.refs.gap_aspect": "{id} : aucun aspect.",
   "design.refs.gap_shot": "{id} : son image manque.",
   "design.refs.board_ready": "La planche est prête : références {count}, sources {sources}.",
-  "design.palette.bad": "« {spec} » n’est pas une palette : Nom=text-bg-primary-secondary-accent (cinq couleurs hex) ou Nom=<une adresse Realtime Colors> ; ajoutez /<cinq sombres> pour le mode sombre.",
   "design.palette.bad_fonts": "« {fonts} » n’est pas une paire : Titre/Texte.",
-  "design.palette.live_missed": "Realtime Colors non capturé ({why}) : notre propre page montre chaque palette.",
   "design.palette.fails": "Paires sous AA : {count}. Corrigez-les avant de proposer la palette.",
   "design.type.how_many": "D’une à {most} paires à la fois.",
   "design.type.bad_pair": "« {pair} » n’est pas une paire : Titre/Texte, comme Google Fonts les nomme.",
@@ -1206,5 +1204,7 @@
   "design.component.closed": "{site} ferme son registre aux outils (robots.txt), le code n’est donc pas récupéré : sa page, sa licence et ses dépendances sont dans {path}. Refaites le motif avec nos tokens, ou prenez un composant d’un registre public.",
   "design.taste.sandboxed": "Ceci lit le web et dessine dans Chrome, ce que votre bac à sable n’autorise pas : lancez la même commande hors du bac à sable (demandez une fois ; la personne accepte ou refuse), et les autres commandes `equipe design refs`, `palette`, `type` et `component` aussi.",
   "design.palette.how_many": "D’une à {most} palettes à la fois : une vérifie les couleurs livrées, plusieurs comparent des directions.",
-  "design.refs.not_listed": "{url} : depuis votre outil du tableau, seuls les sites de référence listés sont lus ({sites}) ; laissée."
+  "design.refs.not_listed": "{url} : depuis votre outil du tableau, seuls les sites de référence listés sont lus ({sites}) ; laissée.",
+  "design.palette.bad": "« {spec} » n’est pas une palette : Nom=text-bg-primary-secondary-accent (cinq couleurs hex) ; ajoutez /<cinq sombres> pour le mode sombre.",
+  "design.palette.page_missed": "{page} n’a pas pu être dessinée ({why}) : notre propre page montre chaque palette."
 }

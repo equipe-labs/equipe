@@ -1185,9 +1185,7 @@
   "design.refs.gap_aspect": "{id}: no aspect.",
   "design.refs.gap_shot": "{id}: its picture is missing.",
   "design.refs.board_ready": "The board is ready: references {count}, sources {sources}.",
-  "design.palette.bad": "“{spec}” isn’t a palette: Name=text-bg-primary-secondary-accent (five hex colours) or Name=<a Realtime Colors address>; add /<five dark ones> to give the dark.",
   "design.palette.bad_fonts": "“{fonts}” isn’t a pair: Heading/Body.",
-  "design.palette.live_missed": "Realtime Colors wasn’t shot ({why}): our own page shows each palette.",
   "design.palette.fails": "Pairs under AA: {count}. Fix them before the palette is offered.",
   "design.type.how_many": "One to {most} pairs at a time.",
   "design.type.bad_pair": "“{pair}” isn’t a pair: Heading/Body, as Google Fonts names them.",
@@ -1206,5 +1204,7 @@
   "design.component.closed": "{site} keeps its registry closed to tools (robots.txt), so its source isn’t fetched: its page, licence and dependencies are in {path}. Rebuild the pattern from our tokens, or take a component from a public registry.",
   "design.taste.sandboxed": "This reads the web and draws in Chrome, which your sandbox doesn’t allow: run the same command outside the sandbox (ask once; the person allows or refuses), and run the other `equipe design refs`, `palette`, `type` and `component` commands there too.",
   "design.palette.how_many": "One to {most} palettes at a time: one checks the colours that ship, more compare directions.",
-  "design.refs.not_listed": "{url}: from your board tool only the listed reference sites are read ({sites}); left alone."
+  "design.refs.not_listed": "{url}: from your board tool only the listed reference sites are read ({sites}); left alone.",
+  "design.palette.bad": "“{spec}” isn’t a palette: Name=text-bg-primary-secondary-accent (five hex colours); add /<five dark ones> to give the dark.",
+  "design.palette.page_missed": "{page} couldn’t be drawn ({why}): our own page shows each palette."
 }

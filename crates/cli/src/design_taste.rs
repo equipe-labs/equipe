@@ -93,15 +93,15 @@ pub struct ShootArgs {
 
 #[derive(Args)]
 pub struct PaletteArgs {
-    /// Two to four palettes: Name=<text>-<bg>-<primary>-<secondary>-<accent>[/<the same, dark>], or Name=<a Realtime Colors address>
+    /// One to four palettes: Name=<text>-<bg>-<primary>-<secondary>-<accent>[/<the same, dark>]
     #[arg(required = true)]
     pub palettes: Vec<String>,
     /// The type pair to set them in, Heading/Body (Google Fonts)
     #[arg(long)]
     pub fonts: Option<String>,
-    /// Also shoot each on Realtime Colors' live site, light and dark
+    /// The page being designed (a file, or a local address), each palette drawn on it light and dark (default: ./index.html when there is one; else a page of our own)
     #[arg(long)]
-    pub live: bool,
+    pub page: Option<String>,
     #[arg(long)]
     pub dir: Option<PathBuf>,
     #[arg(long)]
@@ -328,6 +328,7 @@ struct Taken {
     error: String,
     css: Vec<String>,
     fonts: Vec<FontFile>,
+    vars: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -662,7 +663,7 @@ pub async fn palette_command(args: PaletteArgs) -> Result<(), String> {
     }
     let palettes: Vec<palette::Palette> = args.palettes.iter().map(|p| palette::parse(p).map_err(|_| t!("design.palette.bad", spec = p))).collect::<Result<_, _>>()?;
     let pair = fonts_of(args.fonts.as_deref())?;
-    if args.live || !args.no_png {
+    if !args.no_png {
         not_sandboxed()?;
     }
     let fonts = pair.as_ref().map(|p| (p.heading.as_str(), p.body.as_str()));
@@ -680,36 +681,42 @@ pub async fn palette_command(args: PaletteArgs) -> Result<(), String> {
             failing += usize::from(!l.passes()) + usize::from(!d.passes());
             println!("  {}: {} {} · {} {}", words.get(&format!("design.palette.pair_{}", l.pair)), words.get("design.palette.light"), mark(l), words.get("design.palette.dark"), mark(&d));
         }
-        println!("  Realtime Colors: {}", palette::realtime_url(&p.light, fonts));
     }
-    let mut live: Vec<(String, bool, String)> = Vec::new();
-    if args.live {
-        let client = client()?;
-        match robots(&client, "https://www.realtimecolors.com/").await {
-            Robots::Allowed => {
+    // The page being designed, when there is one: each palette drawn on its own content.
+    let page = args.page.clone().or_else(|| Path::new("index.html").is_file().then(|| "index.html".to_owned()));
+    let mut drawn: Vec<(String, bool, String)> = Vec::new();
+    if let (Some(page), false) = (page, args.no_png) {
+        let url = if page.contains("://") { page.clone() } else { absolute(Path::new(&page)).to_string_lossy().into_owned() };
+        let mut look = shot(&url, &absolute(&out.join("page/.inspect.png")), 1280, "light", false);
+        look["inspect"] = json!(true);
+        let seen = draw(vec![look], 0).await?;
+        let _ = std::fs::remove_file(out.join("page/.inspect.png"));
+        match seen.first() {
+            Some(t) if t.ok => {
                 let mut shots = Vec::new();
                 for p in &palettes {
                     for (dark, roles) in [(false, &p.light), (true, &p.dark)] {
-                        let rel = format!("live/{}-{}.png", refs::slug(&p.name), if dark { "dark" } else { "light" });
-                        shots.push(shot(&palette::realtime_url(roles, fonts), &absolute(&out.join(&rel)), 1280, "light", false));
-                        live.push((p.name.clone(), dark, rel));
+                        let rel = format!("page/{}-{}.png", refs::slug(&p.name), if dark { "dark" } else { "light" });
+                        let mut one = shot(&url, &absolute(&out.join(&rel)), 1280, if dark { "dark" } else { "light" }, true);
+                        one["maxHeight"] = json!(2400);
+                        one["css"] = json!(palette::page_css(&t.vars, roles));
+                        shots.push(one);
+                        drawn.push((p.name.clone(), dark, rel));
                     }
                 }
-                let taken = draw(shots, refs::PACE_SECS).await?;
-                live.retain(|(_, _, rel)| taken.iter().any(|t| t.ok && t.path.ends_with(rel.as_str())));
-                for t in taken.iter().filter(|t| !t.ok) {
-                    eprintln!("{}", t!("design.palette.live_missed", why = t.error));
-                }
+                let taken = draw(shots, 0).await?;
+                drawn.retain(|(_, _, rel)| taken.iter().any(|t| t.ok && t.path.ends_with(rel.as_str())));
             }
-            Robots::Refused | Robots::Unread(_) => eprintln!("{}", t!("design.palette.live_missed", why = "robots.txt")),
+            Some(t) => eprintln!("{}", t!("design.palette.page_missed", page = page, why = t.error)),
+            None => eprintln!("{}", t!("design.palette.page_missed", page = page, why = "?")),
         }
     }
-    let shown: Vec<palette::Live<'_>> = live.iter().map(|(name, dark, path)| palette::Live { palette: name, dark: *dark, path: path.clone() }).collect();
+    let shown: Vec<palette::Picture<'_>> = drawn.iter().map(|(name, dark, path)| palette::Picture { palette: name, dark: *dark, path: path.clone() }).collect();
     let html = out.join("palettes.html");
     std::fs::write(&html, palette::sheet_html(&palettes, fonts, &shown, lang)).map_err(|e| format!("{}: {e}", html.display()))?;
     println!("{}", t!("design.taste.wrote", path = html.display()));
     if !args.no_png {
-        let tall = 160 + palettes.len() as u32 * if shown.is_empty() { 760 } else { 1200 };
+        let tall = 160 + palettes.len() as u32 * if shown.is_empty() { 760 } else { 1400 };
         println!("{}", t!("design.taste.wrote", path = picture(&html, 1440, tall).await?.display()));
     }
     if failing > 0 {
@@ -927,8 +934,8 @@ mod tests {
 
     #[test]
     fn the_other_tools_parse_as_a_designer_writes_them() {
-        let crate::design::DesignAction::Palette(p) = parse(&["palette", "Ink=050315-fbfbfe-2f27ce-dedcff-433bff", "Warm=2b1d14-fbf7f2-b4532a-f1e4d6-2a7f62", "--fonts", "Fraunces/Inter", "--live"]).unwrap() else { panic!() };
-        assert!(p.live && p.palettes.len() == 2 && p.fonts.as_deref() == Some("Fraunces/Inter"));
+        let crate::design::DesignAction::Palette(p) = parse(&["palette", "Ink=050315-fbfbfe-2f27ce-dedcff-433bff", "Warm=2b1d14-fbf7f2-b4532a-f1e4d6-2a7f62", "--fonts", "Fraunces/Inter", "--page", "index.html"]).unwrap() else { panic!() };
+        assert!(p.page.as_deref() == Some("index.html") && p.palettes.len() == 2 && p.fonts.as_deref() == Some("Fraunces/Inter"));
         let crate::design::DesignAction::Type(t) = parse(&["type", "Fraunces/Inter", "Space Grotesk/IBM Plex Sans", "--locales", "en,ko,ja"]).unwrap() else { panic!() };
         assert_eq!(t.pairs.len(), 2);
         assert_eq!(locales(t.locales.as_deref(), Path::new("/nowhere")).unwrap(), [Lang::En, Lang::Ko, Lang::Ja]);
@@ -990,7 +997,8 @@ mod tests {
         }
         assert!(listed("https://fontpair.co/for/saas") && listed("https://21st.dev/@a/components/b") && listed("https://ui.shadcn.com/r/x.json"));
         assert!(!listed("https://example.com/") && !listed("https://notfontpair.co/"));
-        assert!(listed_sites().contains("realtimecolors.com") && !listed_sites().contains("lapa.ninja"), "Lapa Ninja is browsed, not read");
+        assert!(listed_sites().contains("fontpair.co") && !listed_sites().contains("lapa.ninja"), "Lapa Ninja is browsed, not read");
+        assert!(!listed_sites().contains("realtimecolors"), "not a source");
         assert_eq!(plain("\u{1b}[1m✗\u{1b}[0m no"), "✗ no");
     }
 

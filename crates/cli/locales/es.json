@@ -1185,9 +1185,7 @@
   "design.refs.gap_aspect": "{id}: sin aspecto.",
   "design.refs.gap_shot": "{id}: falta su imagen.",
   "design.refs.board_ready": "El tablero está listo: referencias {count}, fuentes {sources}.",
-  "design.palette.bad": "«{spec}» no es una paleta: Nombre=text-bg-primary-secondary-accent (cinco colores hex) o Nombre=<una dirección de Realtime Colors>; añade /<cinco oscuros> para el modo oscuro.",
   "design.palette.bad_fonts": "«{fonts}» no es una pareja: Titular/Cuerpo.",
-  "design.palette.live_missed": "Realtime Colors no se capturó ({why}): nuestra propia página muestra cada paleta.",
   "design.palette.fails": "Pares por debajo de AA: {count}. Corrígelos antes de ofrecer la paleta.",
   "design.type.how_many": "De una a {most} parejas a la vez.",
   "design.type.bad_pair": "«{pair}» no es una pareja: Titular/Cuerpo, como las nombra Google Fonts.",
@@ -1206,5 +1204,7 @@
   "design.component.closed": "{site} mantiene su registro cerrado a herramientas (robots.txt), así que no se trae el código: su página, licencia y dependencias están en {path}. Reconstruye el patrón con nuestros tokens o toma un componente de un registro público.",
   "design.taste.sandboxed": "Esto lee la web y dibuja en Chrome, y tu sandbox no lo permite: ejecuta el mismo comando fuera del sandbox (pregunta una vez; la persona lo permite o no), y los demás comandos `equipe design refs`, `palette`, `type` y `component` también.",
   "design.palette.how_many": "De una a {most} paletas a la vez: una revisa los colores que se publican; varias comparan direcciones.",
-  "design.refs.not_listed": "{url}: desde tu herramienta del tablero solo se leen los sitios de referencia listados ({sites}); se deja."
+  "design.refs.not_listed": "{url}: desde tu herramienta del tablero solo se leen los sitios de referencia listados ({sites}); se deja.",
+  "design.palette.bad": "«{spec}» no es una paleta: Nombre=text-bg-primary-secondary-accent (cinco colores hex); añade /<cinco oscuros> para el modo oscuro.",
+  "design.palette.page_missed": "No se pudo dibujar {page} ({why}): nuestra propia página muestra cada paleta."
 }

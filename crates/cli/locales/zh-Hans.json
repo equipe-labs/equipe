@@ -1162,9 +1162,7 @@
   "design.refs.gap_aspect": "{id}：没有标注方面。",
   "design.refs.gap_shot": "{id}：缺少图片。",
   "design.refs.board_ready": "参考板已就绪：参考 {count}，来源 {sources}。",
-  "design.palette.bad": "“{spec}”不是配色：Name=text-bg-primary-secondary-accent（五个十六进制颜色）或 Name=<Realtime Colors 地址>；加 /<五个深色> 指定深色。",
   "design.palette.bad_fonts": "“{fonts}”不是搭配：标题/正文。",
-  "design.palette.live_missed": "未截取 Realtime Colors（{why}）：我们自己的页面展示每个配色。",
   "design.palette.fails": "低于 AA 的组合：{count}。提供配色前先修正。",
   "design.type.how_many": "一次 1 到 {most} 组搭配。",
   "design.type.bad_pair": "“{pair}”不是搭配：按 Google Fonts 的名称写 标题/正文。",
@@ -1183,5 +1181,7 @@
   "design.component.closed": "{site} 的注册表不对工具开放（robots.txt），因此不拉取源码：页面、许可和依赖都在 {path}。用我们的 token 重建该模式，或从公开注册表取组件。",
   "design.taste.sandboxed": "这会读取网页并在 Chrome 中绘制，而你的沙盒不允许：在沙盒外运行同一命令（只问一次，由本人允许或拒绝），其他 `equipe design refs`、`palette`、`type` 和 `component` 命令也在那里运行。",
   "design.palette.how_many": "一次 1 到 {most} 个配色：一个用于检查要上线的颜色，多个用于比较方向。",
-  "design.refs.not_listed": "{url}：通过看板工具只读取列出的参考网站（{sites}）；已跳过。"
+  "design.refs.not_listed": "{url}：通过看板工具只读取列出的参考网站（{sites}）；已跳过。",
+  "design.palette.bad": "“{spec}”不是配色：Name=text-bg-primary-secondary-accent（五个十六进制颜色）；加 /<五个深色> 指定深色。",
+  "design.palette.page_missed": "无法绘制 {page}（{why}）：我们自己的页面展示每个配色。"
 }

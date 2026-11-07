@@ -1124,7 +1124,11 @@ fn brand_checks(out: &Outcome, ticket: Option<&Ticket>) -> Vec<Check> {
     checks.push(must("each direction shown to the person with pictures", pictured >= 2, format!("{pictured} options with pictures")));
     let recommended = asked.iter().flat_map(|q| q.questions.iter()).any(|q| q.options.len() >= 2 && q.options.iter().any(|o| o.shown().1));
     checks.push(must("the pick asked with a recommendation", recommended, format!("{} question set(s)", asked.len())));
-    let tokens = files_named(out, ticket, |p| p.file_name().is_some_and(|n| n == "tokens.json" || n.to_string_lossy().ends_with(".tokens.json")) && !p.components().any(|c| c.as_os_str() == "node_modules"));
+    // The ticket asks for the chosen direction's tokens: the design system's
+    // own `design/tokens.json` once written, else every candidate's.
+    let all = files_named(out, ticket, |p| p.file_name().is_some_and(|n| n == "tokens.json" || n.to_string_lossy().ends_with(".tokens.json")) && !p.components().any(|c| c.as_os_str() == "node_modules"));
+    let chosen: Vec<PathBuf> = all.iter().filter(|p| p.ends_with("design/tokens.json")).cloned().collect();
+    let tokens = if chosen.is_empty() { all } else { chosen };
     let measured: Vec<(PathBuf, Result<(), String>)> = tokens.iter().filter_map(|t| token_contrast(t).map(|r| (t.clone(), r))).collect();
     let failing: Vec<String> = measured.iter().filter_map(|(t, r)| r.as_ref().err().map(|e| format!("{}: {e}", t.display()))).collect();
     let said = if measured.is_empty() { "no colour tokens with a background and text".to_owned() } else { failing.join(" · ") };

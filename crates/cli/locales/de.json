@@ -1185,9 +1185,7 @@
   "design.refs.gap_aspect": "{id}: kein Aspekt.",
   "design.refs.gap_shot": "{id}: das Bild fehlt.",
   "design.refs.board_ready": "Das Board steht: Referenzen {count}, Quellen {sources}.",
-  "design.palette.bad": "„{spec}“ ist keine Palette: Name=text-bg-primary-secondary-accent (fünf Hex-Farben) oder Name=<eine Realtime-Colors-Adresse>; /<fünf dunkle> für Dunkel anhängen.",
   "design.palette.bad_fonts": "„{fonts}“ ist kein Paar: Überschrift/Text.",
-  "design.palette.live_missed": "Realtime Colors nicht aufgenommen ({why}): unsere eigene Seite zeigt jede Palette.",
   "design.palette.fails": "Paare unter AA: {count}. Vor dem Anbieten beheben.",
   "design.type.how_many": "Ein bis {most} Paare auf einmal.",
   "design.type.bad_pair": "„{pair}“ ist kein Paar: Überschrift/Text, wie Google Fonts sie nennt.",
@@ -1206,5 +1204,7 @@
   "design.component.closed": "{site} hält seine Registry für Werkzeuge geschlossen (robots.txt), der Quelltext wird also nicht geholt: Seite, Lizenz und Abhängigkeiten stehen in {path}. Das Muster aus unseren Tokens nachbauen oder eine Komponente aus einer öffentlichen Registry nehmen.",
   "design.taste.sandboxed": "Das liest das Web und zeichnet in Chrome, was deine Sandbox nicht erlaubt: denselben Befehl außerhalb der Sandbox ausführen (einmal fragen; die Person erlaubt oder lehnt ab), und die anderen Befehle `equipe design refs`, `palette`, `type` und `component` ebenso.",
   "design.palette.how_many": "Eine bis {most} Paletten auf einmal: eine prüft die Farben, die ausgeliefert werden, mehrere vergleichen Richtungen.",
-  "design.refs.not_listed": "{url}: Über dein Board-Werkzeug werden nur die gelisteten Referenzseiten gelesen ({sites}); nicht gelesen."
+  "design.refs.not_listed": "{url}: Über dein Board-Werkzeug werden nur die gelisteten Referenzseiten gelesen ({sites}); nicht gelesen.",
+  "design.palette.bad": "„{spec}“ ist keine Palette: Name=text-bg-primary-secondary-accent (fünf Hex-Farben); /<fünf dunkle> für Dunkel anhängen.",
+  "design.palette.page_missed": "{page} ließ sich nicht zeichnen ({why}): unsere eigene Seite zeigt jede Palette."
 }

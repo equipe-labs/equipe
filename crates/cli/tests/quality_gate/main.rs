@@ -888,7 +888,7 @@ fn a_brand_direction_needs_its_board_its_directions_pictured_checked_tokens_and_
     let design = out.squad_home().join("design");
     // The board: five references from three sources, each pictured.
     let mut board = Vec::new();
-    for url in ["https://fontpair.co/for/saas", "https://fontpair.co/vibe/minimal", "https://21st.dev/@a/components/hero", "https://www.realtimecolors.com/", "https://fonts.google.com/specimen/Fraunces"] {
+    for url in ["https://fontpair.co/for/saas", "https://fontpair.co/vibe/minimal", "https://21st.dev/@a/components/hero", "https://21st.dev/@b/components/pricing", "https://fonts.google.com/specimen/Fraunces"] {
         let mut r = refs::new_reference(&board, url, "A calm two-column first screen with one action", vec![refs::Aspect::Layout], "2026-11-08", refs::Via::Shoot);
         let shot = refs::shot_path(&r.id, 1280);
         std::fs::create_dir_all(design.join(&shot).parent().unwrap()).unwrap();
@@ -1083,6 +1083,20 @@ fn members_find_their_own_variants_equipe_first_on_path() {
     assert_eq!(dirs, [dir.join("bin"), "/usr/bin".into(), "/bin".into()]);
     assert_eq!(std::fs::read_link(dir.join("bin/equipe")).unwrap(), binary.canonicalize().unwrap());
     harness::variant_path(&binary, &dir.join("bin"), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_codex_critic_stands_in_for_claude_only_as_a_one_shot_critic() {
+    let dir = scratch("critic");
+    harness::codex_critic(&dir.join("bin"));
+    let shim = dir.join("bin/claude");
+    let script = std::fs::read_to_string(&shim).unwrap();
+    assert!(script.contains("codex \"$@\"") && script.contains("--sandbox read-only") && script.contains("--image"), "{script}");
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&shim).unwrap().permissions()) & 0o111, 0o111);
+    // Anything but `-p <prompt>` is refused, without running Codex.
+    let said = std::process::Command::new(&shim).arg("auth").arg("status").output().unwrap();
+    assert_eq!(said.status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -1,6 +1,5 @@
 //! A brief's reference board: pages from the galleries and tools a designer
-//! studies — landing pages, product screens, palettes on a real layout, type
-//! pairings, components — each kept in `design/references/` with where it
+//! studies — landing pages, product screens, type pairings, components — each kept in `design/references/` with where it
 //! came from, when, and one line of what to learn from it (a pattern, a
 //! layout, a rhythm, type or colour), and drawn as one contact sheet.
 //!
@@ -66,7 +65,7 @@ pub struct Source {
     pub aspects: &'static [Aspect],
 }
 
-pub const SOURCES: [Source; 6] = [
+pub const SOURCES: [Source; 5] = [
     Source {
         id: "lapa",
         name: "Lapa Ninja",
@@ -84,15 +83,6 @@ pub const SOURCES: [Source; 6] = [
         needs_sign_in: true,
         searches: &["https://mobbin.com/explore/web/screens/{q}", "https://mobbin.com/explore/mobile/screens/{q}"],
         aspects: &[Aspect::Pattern, Aspect::Layout],
-    },
-    Source {
-        id: "realtime-colors",
-        name: "Realtime Colors",
-        hosts: &["realtimecolors.com"],
-        via: Via::Shoot,
-        needs_sign_in: false,
-        searches: &[],
-        aspects: &[Aspect::Colour],
     },
     Source {
         id: "fontpair",
@@ -547,13 +537,13 @@ mod tests {
         assert_eq!(source_of("https://www.lapa.ninja/post/june/").map(|s| s.id), Some("lapa"));
         assert_eq!(source_of("https://fontpair.co/fonts/google/inter").map(|s| s.id), Some("fontpair"));
         assert_eq!(source_of("https://21st.dev/@a/components/b").map(|s| s.id), Some("21st"));
-        assert_eq!(source_of("https://www.realtimecolors.com/?colors=000000-ffffff-111111-222222-333333").map(|s| s.id), Some("realtime-colors"));
+        assert!(source_of("https://www.realtimecolors.com/").is_none(), "not a source");
         assert!(source_of("https://example.com/").is_none());
         assert!(source_of("https://notmobbin.com/").is_none(), "a site is matched whole, not by its ending");
         assert_eq!(site("https://user@WWW.Example.com:8080/a?b"), "example.com");
         let lapa = source_of("https://lapa.ninja").unwrap();
         assert_eq!(search_urls(lapa, "SaaS"), ["https://www.lapa.ninja/category/saas/"]);
-        assert_eq!(search_urls(&SOURCES[5], "Space Grotesk"), ["https://fonts.google.com/specimen/Space+Grotesk"], "a family is its whole name");
+        assert_eq!(search_urls(SOURCES.iter().find(|s| s.id == "google-fonts").unwrap(), "Space Grotesk"), ["https://fonts.google.com/specimen/Space+Grotesk"], "a family is its whole name");
         let twenty_first = SOURCES.iter().find(|s| s.id == "21st").unwrap();
         assert_eq!(
             search_urls(twenty_first, "SaaS pricing hero form"),

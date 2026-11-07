@@ -54,10 +54,11 @@ Say which step you are on{{tools_at}}:
    contact sheet (`design/references/board.png`) and says what the board still needs; look at it yourself.
 3. **Directions, as pictures.** Draw three directions from the board, as `design-process` asks, each a layout
    pattern, a palette and a type pair, and each citing the references it learns from: `equipe design direction
-   propose <name> … --ref R2 --ref R5`. Try the palettes in one call on a real layout with `equipe design palette
-   "<Name>=<text>-<bg>-<primary>-<secondary>-<accent>" … --fonts "<Heading>/<Body>" --live` — our own page light and
-   dark, Realtime Colors' live layout, the WCAG AA contrast of every text pair, and tokens in the design system's
-   format in `design/palettes/`. Try the type pairs in one call with `equipe design type "<Heading>/<Body>" …
+   propose <name> … --ref R2 --ref R5`. Try the palettes in one call on the page itself with `equipe design palette
+   "<Name>=<text>-<bg>-<primary>-<secondary>-<accent>" … --fonts "<Heading>/<Body>" --page <your page or mockup>` —
+   your page in each palette, light and dark (a page of our own where there is none yet), the WCAG AA contrast of
+   every text pair, and tokens in the design system's format in `design/palettes/`; a palette with a pair under AA is
+   fixed before it is offered. Try the type pairs in one call with `equipe design type "<Heading>/<Body>" …
    --locales <the product's languages>`: a specimen at real sizes in each language, what each family lacks of a
    script, its licence and what it weighs to load (`design/type/specimen.png`); a family that lacks the product's
    script is paired with one that has it. Mock each direction's first screen up in its tokens, so each option is

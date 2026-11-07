@@ -1,10 +1,10 @@
 //! Candidate palettes tried on a real layout before one is chosen: each as
-//! Realtime Colors' five roles — text, background, primary, secondary,
-//! accent — light and dark (dark derived when not given), drawn on a page of
-//! our own and, where it can be reached, on Realtime Colors' live site
-//! (the colours ride in its address), checked for WCAG AA on the pairs text
-//! is set in, and written as tokens in the design system's format
-//! (`docs/DESIGN-SYSTEM.md`).
+//! five roles — text, background, primary, secondary, accent — light and
+//! dark (dark derived when not given), drawn on the page being designed
+//! when there is one (its own colour variables set to the palette's,
+//! [`page_css`]) and on a page of our own otherwise, checked for WCAG AA on
+//! the pairs text is set in, and written as tokens in the design system's
+//! format (`docs/DESIGN-SYSTEM.md`).
 
 use serde_json::{Value, json};
 
@@ -12,7 +12,8 @@ use super::contrast::{Grade, grade, ratio};
 use super::values::Color;
 use crate::i18n::Lang;
 
-/// The five roles, as Realtime Colors orders them in its address.
+/// The five roles, in the order a palette is written: text, background,
+/// primary, secondary, accent.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Roles {
     pub text: Color,
@@ -42,7 +43,7 @@ fn hex(text: &str) -> Option<Color> {
 }
 
 /// Five colours, `050315-fbfbfe-2f27ce-dedcff-433bff` (`#` optional), in
-/// Realtime Colors' order.
+/// the roles' order.
 fn roles(text: &str) -> Result<Roles, String> {
     let parts: Vec<&str> = text.split(['-', ',', ' ']).filter(|p| !p.is_empty()).collect();
     let colours: Vec<Color> = parts.iter().map(|p| hex(p).ok_or_else(|| (*p).to_owned())).collect::<Result<_, _>>()?;
@@ -52,8 +53,8 @@ fn roles(text: &str) -> Result<Roles, String> {
     }
 }
 
-/// A candidate: `Name=<text>-<bg>-<primary>-<secondary>-<accent>[/<the same, dark>]`,
-/// or `Name=<a Realtime Colors address>`. What it couldn't read, if not.
+/// A candidate: `Name=<text>-<bg>-<primary>-<secondary>-<accent>[/<the same, dark>]`.
+/// What it couldn't read, if not.
 pub fn parse(spec: &str) -> Result<Palette, String> {
     let (name, colours) = spec.split_once('=').ok_or_else(|| spec.to_owned())?;
     let name = name.trim();
@@ -61,10 +62,6 @@ pub fn parse(spec: &str) -> Result<Palette, String> {
         return Err(spec.to_owned());
     }
     let colours = colours.trim();
-    let colours = match colours.split_once("colors=") {
-        Some((_, rest)) => rest.split(['&', '#']).next().unwrap_or_default(),
-        None => colours,
-    };
     let (light, dark) = match colours.split_once('/') {
         Some((l, d)) => (roles(l)?, Some(roles(d)?)),
         None => (roles(colours)?, None),
@@ -172,17 +169,6 @@ pub fn checks(r: &Roles) -> Vec<Check> {
         .collect()
 }
 
-/// Realtime Colors with these roles, and these fonts (heading, body) if given.
-pub fn realtime_url(r: &Roles, fonts: Option<(&str, &str)>) -> String {
-    let h = |c: Color| c.hex().trim_start_matches('#').to_ascii_lowercase();
-    let mut url = format!("https://www.realtimecolors.com/?colors={}-{}-{}-{}-{}", h(r.text), h(r.bg), h(r.primary), h(r.secondary), h(r.accent));
-    if let Some((head, body)) = fonts {
-        let f = |name: &str| name.split_whitespace().collect::<Vec<_>>().join("+");
-        url.push_str(&format!("&fonts={}-{}", f(head), f(body)));
-    }
-    url
-}
-
 /// The palette as design tokens (DTCG, light in `$value`, dark in
 /// `$extensions.mode.dark`), the roles under `color.` as the design
 /// system names them, with the button label as `onPrimary`.
@@ -267,18 +253,84 @@ fn template(r: &Roles, s: &Sample, fonts: Option<(&str, &str)>) -> String {
     )
 }
 
-/// What one live picture is: the palette's name, light or dark, and its
-/// path relative to the sheet.
-pub struct Live<'a> {
+/// A picture of the page being designed in one palette: the palette's
+/// name, light or dark, and its path relative to the sheet.
+pub struct Picture<'a> {
     pub palette: &'a str,
     pub dark: bool,
     pub path: String,
 }
 
-/// The comparison sheet: each palette in a row — its swatches, our page in
-/// light and dark, the contrast of each pair with its grade, and its
-/// Realtime Colors pictures when there are any.
-pub fn sheet_html(palettes: &[Palette], fonts: Option<(&str, &str)>, live: &[Live<'_>], lang: Lang) -> String {
+/// Which role a page's colour variable plays, by its name: `--color-bg`,
+/// `--surface`, `--ink`, `--brand-primary`, `--accent` …; `None` for one it
+/// can't tell (a border, a shadow, a state).
+pub fn role_of(name: &str) -> Option<&'static str> {
+    let n = name.trim_start_matches('-').to_ascii_lowercase();
+    let words: Vec<&str> = n.split(['-', '_']).filter(|w| !w.is_empty()).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    if has(&["border", "shadow", "line", "divider", "outline", "ring", "focus", "hover", "active", "disabled", "error", "danger", "success", "warning", "info"]) {
+        return None;
+    }
+    if words.windows(2).any(|w| w[0] == "on" && ["primary", "accent", "action", "brand"].contains(&w[1])) || has(&["onprimary", "onaccent"]) {
+        return Some("on");
+    }
+    if has(&["muted", "subtle"]) && has(&["text", "ink", "fg", "foreground"]) {
+        return None;
+    }
+    if has(&["text", "ink", "fg", "foreground", "body", "heading"]) {
+        return Some("text");
+    }
+    if has(&["bg", "background", "canvas", "page", "paper", "base"]) && !has(&["subtle", "alt", "muted"]) {
+        return Some("bg");
+    }
+    if has(&["surface", "card", "panel", "subtle", "secondary", "muted", "raised", "sunken"]) {
+        return Some("secondary");
+    }
+    if has(&["primary", "action", "brand", "cta", "link"]) {
+        return Some("primary");
+    }
+    if has(&["accent", "highlight"]) {
+        return Some("accent");
+    }
+    None
+}
+
+/// The CSS that puts `r` on the page being designed: each of its own colour
+/// variables (`vars`, as its `:root` declares them) set to the role it
+/// plays; where it names no background or text, its page, links and buttons
+/// coloured directly.
+pub fn page_css(vars: &[String], r: &Roles) -> String {
+    let value = |role: &str| match role {
+        "text" => r.text,
+        "bg" => r.bg,
+        "secondary" => r.secondary,
+        "primary" => r.primary,
+        "accent" => r.accent,
+        _ => on_primary(r),
+    };
+    let mapped: Vec<(&String, &str)> = vars.iter().filter_map(|v| role_of(v).map(|role| (v, role))).collect();
+    let mut css = String::from(":root{");
+    for (var, role) in &mapped {
+        css.push_str(&format!("{var}:{} !important;", value(role).hex()));
+    }
+    css.push('}');
+    let named = |role: &str| mapped.iter().any(|(_, r)| *r == role);
+    if !named("bg") || !named("text") {
+        css.push_str(&format!(
+            "html,body{{background:{bg} !important;color:{text} !important}}a{{color:{primary} !important}}button,[type=submit],.button,.btn{{background:{primary} !important;color:{on} !important;border-color:{primary} !important}}",
+            bg = r.bg.hex(),
+            text = r.text.hex(),
+            primary = r.primary.hex(),
+            on = on_primary(r).hex(),
+        ));
+    }
+    css
+}
+
+/// The comparison sheet: each palette in a row — its swatches, the page
+/// being designed in it light and dark (`pictures`), or a page of our own
+/// where there is none, and the contrast of each pair with its grade.
+pub fn sheet_html(palettes: &[Palette], fonts: Option<(&str, &str)>, pictures: &[Picture<'_>], lang: Lang) -> String {
     let words = crate::i18n::core(lang);
     let w = |key: &str| esc(words.get(key));
     let s = sample(lang);
@@ -293,13 +345,13 @@ pub fn sheet_html(palettes: &[Palette], fonts: Option<(&str, &str)>, live: &[Liv
             table.push_str(&format!("<tr><th>{}</th>{}{}</tr>", w(&format!("design.palette.pair_{}", l.pair)), cell(l), cell(d)));
         }
         table.push_str("</table>");
-        let shots: String = live.iter().filter(|l| l.palette == p.name).map(|l| format!(r#"<figure><img src="{}" alt=""><figcaption>Realtime Colors · {}</figcaption></figure>"#, esc(&l.path), w(if l.dark { "design.palette.dark" } else { "design.palette.light" }))).collect();
+        let shown = |dark: bool| pictures.iter().find(|x| x.palette == p.name && x.dark == dark).map(|x| format!(r#"<img class="page" src="{}" alt="">"#, esc(&x.path)));
         let derived = if p.derived_dark { format!(r#"<p class="note">{}</p>"#, w("design.palette.derived_dark")) } else { String::new() };
         rows.push_str(&format!(
-            r#"<section><h2>{name}</h2><p class="sws">{swatches}</p>{derived}<div class="pair"><figure>{light}<figcaption>{lw}</figcaption></figure><figure>{dark}<figcaption>{dw}</figcaption></figure><div>{table}</div></div><div class="live">{shots}</div></section>"#,
+            r#"<section><h2>{name}</h2><p class="sws">{swatches}</p>{derived}<div class="pair"><figure>{light}<figcaption>{lw}</figcaption></figure><figure>{dark}<figcaption>{dw}</figcaption></figure><div>{table}</div></div></section>"#,
             name = esc(&p.name),
-            light = template(&p.light, &s, fonts),
-            dark = template(&p.dark, &s, fonts),
+            light = shown(false).unwrap_or_else(|| template(&p.light, &s, fonts)),
+            dark = shown(true).unwrap_or_else(|| template(&p.dark, &s, fonts)),
             lw = w("design.palette.light"),
             dw = w("design.palette.dark"),
         ));
@@ -313,7 +365,7 @@ h1{{font-size:22px;margin:0 0 20px}}h2{{font-size:18px;margin:0 0 8px}}section{{
 .sws{{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 12px}}.sw{{display:flex;align-items:center;gap:6px}}.sw i{{width:22px;height:22px;border-radius:4px;border:1px solid #0002;display:inline-block}}.sw code{{color:#5C5E66}}
 .note{{color:#5C5E66;margin:0 0 10px}}.pair{{display:grid;grid-template-columns:1fr 1fr 300px;gap:16px;align-items:start}}figure{{margin:0}}figcaption{{color:#5C5E66;margin-top:4px}}
 table{{border-collapse:collapse;width:100%}}th,td{{text-align:left;padding:5px 6px;border-bottom:1px solid #DAD8D2;font-weight:400}}td{{white-space:nowrap}}td.ok{{color:#1B6B3A}}td.no{{color:#B3261E;font-weight:600}}
-.live{{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}}.live img{{width:100%;border:1px solid #DAD8D2;border-radius:6px}}
+.page{{width:100%;border:1px solid #DAD8D2;border-radius:6px;display:block}}
 .tpl{{background:var(--bg);color:var(--text);font-family:var(--body);padding:18px 20px;border-radius:8px;border:1px solid #0001}}
 .tpl nav{{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}}.tpl .mark{{width:22px;height:22px;border-radius:6px;background:var(--text)}}.tpl .links a{{margin-left:14px}}
 .tpl h3{{font-family:var(--head);font-size:26px;line-height:1.15;margin:0 0 8px;font-weight:650}}.tpl .lede{{margin:0 0 14px;font-size:14px;opacity:.85}}
@@ -335,14 +387,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_candidate_is_read_from_five_colours_or_a_realtime_colors_address() {
+    fn a_candidate_is_read_from_five_colours() {
         let p = parse("Ink=050315-fbfbfe-2f27ce-dedcff-433bff").unwrap();
         assert_eq!(p.name, "Ink");
         assert_eq!(p.light.text, Color::rgb(0x050315));
         assert_eq!(p.light.accent, Color::rgb(0x433BFF));
         assert!(p.derived_dark);
-        let url = parse("Night=https://www.realtimecolors.com/?colors=e6e4ec-0b0420-c89ff4-1c1334-d3f980&fonts=Inter-Inter").unwrap();
-        assert_eq!(url.light.bg, Color::rgb(0x0B0420));
         let both = parse("Two=#111111,#ffffff,#1d4ed8,#eeeeee,#ff6600/eeeeee-0a0a0c-8fb0ff-1c1c22-ff9955").unwrap();
         assert!(!both.derived_dark && both.dark.bg == Color::rgb(0x0A0A0C));
         assert_eq!(parse("Bad=050315-fbfbfe").unwrap_err(), "050315-fbfbfe");
@@ -351,11 +401,23 @@ mod tests {
     }
 
     #[test]
-    fn the_address_carries_the_colours_and_fonts_both_ways() {
+    fn the_page_being_designed_wears_each_palette_through_its_own_variables() {
+        assert_eq!(role_of("--color-bg"), Some("bg"));
+        assert_eq!(role_of("--color-ink"), Some("text"));
+        assert_eq!(role_of("--surface-subtle"), Some("secondary"));
+        assert_eq!(role_of("--brand-primary"), Some("primary"));
+        assert_eq!(role_of("--color-on-primary"), Some("on"));
+        assert_eq!(role_of("--accent"), Some("accent"));
+        assert_eq!(role_of("--color-border"), None, "a border keeps its own");
+        assert_eq!(role_of("--text-muted"), None, "a muted text isn't the text");
+        assert_eq!(role_of("--color-rust-hover"), None, "a state keeps its own");
         let p = parse("Ink=050315-fbfbfe-2f27ce-dedcff-433bff").unwrap();
-        let url = realtime_url(&p.light, Some(("Space Grotesk", "Inter")));
-        assert_eq!(url, "https://www.realtimecolors.com/?colors=050315-fbfbfe-2f27ce-dedcff-433bff&fonts=Space+Grotesk-Inter");
-        assert_eq!(parse(&format!("Again={url}")).unwrap().light, p.light);
+        let vars: Vec<String> = ["--color-bg", "--color-ink", "--color-surface", "--color-accent", "--color-border"].map(String::from).into();
+        let css = page_css(&vars, &p.light);
+        assert!(css.contains("--color-bg:#FBFBFE !important;") && css.contains("--color-ink:#050315 !important;") && css.contains("--color-accent:#433BFF"), "{css}");
+        assert!(!css.contains("--color-border") && !css.contains("html,body"), "its own variables carry it: {css}");
+        let plain = page_css(&[], &p.dark);
+        assert!(plain.contains(&format!("html,body{{background:{} !important", p.dark.bg.hex())) && plain.contains("button"), "a page without variables is coloured directly: {plain}");
     }
 
     #[test]
@@ -409,10 +471,10 @@ mod tests {
     #[test]
     fn the_sheet_shows_each_palette_light_and_dark_with_its_grades() {
         let ps = [parse("Ink=050315-fbfbfe-2f27ce-dedcff-433bff").unwrap(), parse("Pale=222222-ffffff-9fc5ff-f0f0f0-ffd400").unwrap()];
-        let live = [Live { palette: "Ink", dark: false, path: "live/ink-light.png".into() }];
-        let html = sheet_html(&ps, Some(("Fraunces", "Inter")), &live, Lang::En);
-        assert_eq!(html.matches(r#"class="tpl""#).count(), 4);
-        assert!(html.contains("--primary:#2F27CE") && html.contains(r#"src="live/ink-light.png""#));
+        let page = [Picture { palette: "Ink", dark: false, path: "page/ink-light.png".into() }];
+        let html = sheet_html(&ps, Some(("Fraunces", "Inter")), &page, Lang::En);
+        assert_eq!(html.matches(r#"class="tpl""#).count(), 3, "the page in its place where it was drawn");
+        assert!(html.contains("--primary:#9FC5FF") && !html.contains("--primary:#2F27CE") && html.contains(r#"src="page/ink-light.png""#));
         assert!(html.contains(r#"class="no""#), "the pale palette's failures are marked");
         assert!(html.contains("family=Fraunces:wght") && html.contains("family=Inter:wght"));
     }
