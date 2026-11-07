@@ -67,8 +67,9 @@ impl Runtime {
         Ok((!gap.is_empty()).then_some(gap))
     }
 
-    /// What `submit_for_review` asks of a code ticket in a squad with a
-    /// designer: whether users see the change, and if so its screenshots.
+    /// What `submit_for_review` asks of an engineer's code ticket: whether
+    /// users see the change, and if so fresh screenshots across the design QA
+    /// range. A squad with a designer sends a complete hand-in to design QA.
     /// `Ok(true)`: it goes to design QA when the turn ends.
     pub(super) fn screens_handed_in(&mut self, squad: &str, id: SessionId, args: &Value, pictures: usize) -> Result<bool, String> {
         let Some(session) = self.sessions.get(&id) else {
@@ -81,18 +82,36 @@ impl Runtime {
         if self.checked_by(squad, ticket).is_some() {
             return Err(format!("T-{ticket} is a design QA ticket: finish it with design_qa — pass, or changes with your findings."));
         }
-        // A designer's own work, and what isn't code, has no one else to check it.
-        if kind != TicketKind::Code || role == DESIGNER || !self.has_designer(squad) {
+        // A designer's own work has its stricter design ledger; non-code work
+        // has no built screen to prove here.
+        if kind != TicketKind::Code || role == DESIGNER {
             return Ok(false);
         }
         match args.get("changes_screens").and_then(Value::as_bool) {
-            None => Err("Say whether this changes what users see (changes_screens: true or false): the squad's designer \
-checks changed screens before the person reviews. Then hand in again."
+            None => Err("Say whether this changes what users see (changes_screens: true or false). Then hand in again."
                 .into()),
-            Some(true) if pictures == 0 => Err("Screens changed: the designer checks them from screenshots. Save a \
-screenshot of each changed screen in your worktree, name them in images, and hand in again."
+            Some(true) if pictures == 0 => Err("Screens changed: save fresh screenshots of each changed screen in \
+your worktree, name them in images, and hand in again."
                 .into()),
-            Some(changed) => Ok(changed),
+            Some(true) => {
+                const ALL: [(&str, &str); 4] = [
+                    ("languages", "languages"),
+                    ("widths", "widths"),
+                    ("light_dark", "light and dark"),
+                    ("large_text", "large text"),
+                ];
+                let checked = board::arg_strs(args, "screen_checks");
+                let missing = ALL.iter().filter(|(key, _)| !checked.iter().any(|got| got == key)).map(|(_, label)| *label).collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "Screens changed: the hand-in screenshots must cover the same range as design QA. Add every \
+screen_checks value; missing: {}. Then hand in again.",
+                        missing.join(", ")
+                    ));
+                }
+                Ok(self.has_designer(squad))
+            }
+            Some(false) => Ok(false),
         }
     }
 
