@@ -494,6 +494,20 @@ pub fn on_codex(out: &Outcome, role: &str) -> bool {
     out.state.events.iter().any(|(_, e)| matches!(e, equipe_core::protocol::Event::SessionStarted { session: s, engine: equipe_core::protocol::Engine::Codex, .. } if *s == session))
 }
 
+/// The sessions `role`'s member ran on Codex after it started elsewhere
+/// (moved between engines mid-run).
+pub fn codex_sessions_of(out: &Outcome, role: &str) -> Vec<u64> {
+    let first = out.state.session(role);
+    out.state
+        .events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            equipe_core::protocol::Event::SessionStarted { session, engine: equipe_core::protocol::Engine::Codex, member: Some(m), .. } if m.name == role && Some(*session) != first => Some(*session),
+            _ => None,
+        })
+        .collect()
+}
+
 /// How many of a member's first tool uses count as "first" for a skill read
 /// from the daemon's events (as `quality::skill_checks` counts right after).
 pub const EARLY: usize = 8;
