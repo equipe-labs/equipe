@@ -620,12 +620,22 @@ impl Model {
     /// the person, who works, who rests, who left.
     pub fn team(&self) -> Vec<SessionId> {
         let pm = self.pm();
-        pm.into_iter().chain(self.ordered().into_iter().map(|m| m.session).filter(|s| Some(*s) != pm)).collect()
+        pm.into_iter().chain(self.ordered().into_iter().filter(|m| !self.moved_on(m)).map(|m| m.session).filter(|s| Some(*s) != pm)).collect()
+    }
+
+    /// A closed session whose member carries on in an open one under the same
+    /// name — what a move to the other engine leaves behind. Its work went
+    /// with the hand-over, so the team doesn't list it twice.
+    pub fn moved_on(&self, member: &Member) -> bool {
+        self.status(member) == Status::Closed && self.members.iter().any(|o| o.session != member.session && o.name == member.name && self.status(o) != Status::Closed)
     }
 
     /// The PM's session, or whoever came first without one.
     pub fn pm(&self) -> Option<SessionId> {
-        self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session)
+        // The PM on duty: a closed one (left behind by a move to the other
+        // engine) only when no PM is open.
+        let open = |m: &&Member| self.status(m) != Status::Closed;
+        self.members.iter().filter(|m| Self::is_pm(m)).find(open).or(self.members.iter().find(|m| Self::is_pm(m))).or(self.members.first()).map(|m| m.session)
     }
 
     /// Whether a ticket shows under the project in focus.
@@ -1943,11 +1953,11 @@ impl Model {
     /// is working, who is resting, and who has left — each in the order they joined.
     pub fn ordered(&self) -> Vec<&Member> {
         let rank = |m: &Member| match self.status(m) {
+            Status::Closed => 4,
             _ if m.role == "pm" => 0,
             Status::NeedsYou(_) => 1,
             Status::Working { .. } => 2,
             Status::Ready { .. } => 3,
-            Status::Closed => 4,
         };
         let mut list: Vec<&Member> = self.members.iter().collect();
         list.sort_by_key(|m| rank(m));
@@ -2471,6 +2481,22 @@ mod tests {
         model.take_alerts();
         model.apply(event(Event::TicketChanged { squad: "acme".into(), ticket: code("done", Some(true)) }), T0);
         assert!(matches!(&model.take_alerts()[..], [Alert::Merged { ticket: 4, .. }]));
+    }
+
+    #[test]
+    fn a_move_to_the_other_engine_leaves_no_closed_double_in_the_team() {
+        let mut model = Model::new("acme");
+        // The PM and backend moved: their old sessions closed, new ones open under the same names.
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Ready), session(3, "qa", "qa", SessionState::Ready), session(11, "pm", "pm", SessionState::Ready), session(12, "backend", "backend", SessionState::Ready)]), T0);
+        for gone in [1, 2, 3] {
+            model.apply(Update::Event(Event::SessionClosed { session: gone }), T0);
+        }
+        assert_eq!(model.pm(), Some(11), "the open PM, not the closed one");
+        let team = model.team();
+        assert_eq!(team.first(), Some(&11));
+        assert!(!team.contains(&1) && !team.contains(&2), "the moved members' old sessions aren't listed twice: {team:?}");
+        assert!(team.contains(&3), "someone who left, with no open session, still shows as closed");
+        assert_eq!(team.last(), Some(&3), "closed last");
     }
 
     #[test]
