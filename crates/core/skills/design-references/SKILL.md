@@ -1,6 +1,6 @@
 ---
 name: design-references
-description: Use before a new look — a landing page, a brand or rebrand, a redesign, a first screen — the brief, a reference board from galleries (Lapa Ninja, Mobbin, 21st.dev, Fontpair, Realtime Colors), directions tried as palettes and type pairs, and the person's pick.
+description: Use before a new look (a landing page, a rebrand, a redesign) — a reference board from Lapa Ninja, Mobbin, 21st.dev and Fontpair, palettes and type pairs tried as pictures, and the person's pick.
 ---
 
 # References and taste

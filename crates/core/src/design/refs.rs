@@ -252,10 +252,13 @@ pub fn signed_in(source: &Source, sites: &[String]) -> bool {
     source.hosts.iter().any(|h| sites.iter().any(|s| s == h))
 }
 
+/// A robots.txt group: the readers it names, and its rules (allow?, pattern).
+type RobotsGroup = (Vec<String>, Vec<(bool, String)>);
+
 /// What a robots.txt says of `path` for every reader (`User-agent: *`): the
 /// longest matching rule wins, `Allow` on a tie; nothing said is allowed.
 pub fn robots_allow(robots: &str, path: &str) -> bool {
-    let mut groups: Vec<(Vec<String>, Vec<(bool, String)>)> = Vec::new();
+    let mut groups: Vec<RobotsGroup> = Vec::new();
     let mut in_agents = false;
     for line in robots.lines() {
         let line = line.split('#').next().unwrap_or_default().trim();
