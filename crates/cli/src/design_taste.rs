@@ -160,6 +160,99 @@ fn not_sandboxed() -> Result<(), String> {
     outside_sandbox(&|name| std::env::var(name).ok())
 }
 
+/// Set when a member's board server runs these tools: only the listed
+/// reference sites are read.
+const LISTED_ONLY: &str = "EQUIPE_DESIGN_LISTED_SITES";
+
+fn listed_only() -> bool {
+    std::env::var_os(LISTED_ONLY).is_some_and(|v| !v.is_empty())
+}
+
+/// Whether `url` may be read when only the listed sites are: a reference
+/// source's own, or (for a component) shadcn/ui's public registry.
+fn listed(url: &str) -> bool {
+    refs::source_of(url).is_some() || refs::site(url) == "ui.shadcn.com"
+}
+
+fn listed_sites() -> String {
+    refs::SOURCES.iter().filter(|s| s.via == refs::Via::Shoot).flat_map(|s| s.hosts.iter().copied()).chain(["ui.shadcn.com"]).collect::<Vec<_>>().join(", ")
+}
+
+/// The words a board call may run: `equipe design` and one of its taste
+/// commands, never a folder of its own choosing (what it writes stays in the
+/// member's worktree).
+pub(crate) fn board_args(args: &[String]) -> Result<Vec<String>, String> {
+    let first = args.first().map(String::as_str).unwrap_or_default();
+    if !equipe_core::board::DESIGN_TOOL_COMMANDS.contains(&first) {
+        return Err(format!("design_tools runs {}: `args` starts with one of them.", equipe_core::board::DESIGN_TOOL_COMMANDS.join(", ")));
+    }
+    if let Some(flag) = args.iter().find(|a| ["--dir", "--out"].contains(&a.split('=').next().unwrap_or_default())) {
+        return Err(format!("{flag}: design_tools writes in your worktree's design/ folder only."));
+    }
+    Ok(std::iter::once("design".to_owned()).chain(args.iter().cloned()).collect())
+}
+
+/// `design_tools`, for a designer's board server: `equipe design <args>` run
+/// as this same equipe, in the member's worktree (asked of the daemon),
+/// reading only the listed sites; what it printed is the answer.
+pub(crate) async fn from_board(socket: &Path, home: &Path, squad: &str, member: &str, arguments: &serde_json::Value) -> equipe_core::protocol::rpc::ToolResult {
+    use equipe_core::protocol::rpc::{ToolCall, ToolResult};
+    let words: Vec<String> = arguments["args"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_owned)).collect();
+    let args = match board_args(&words) {
+        Ok(args) => args,
+        Err(why) => return ToolResult { text: why, is_error: true, image: None },
+    };
+    let ask = ToolCall { squad: squad.to_owned(), member: member.to_owned(), name: equipe_core::board::WORKDIR.to_owned(), arguments: json!({}) };
+    let cwd = match equipe_core::gateway::call_tool(socket, &ask).await {
+        Ok(r) if !r.is_error && Path::new(r.text.trim()).is_dir() => PathBuf::from(r.text.trim()),
+        Ok(r) => return ToolResult { text: r.text, is_error: true, image: None },
+        Err(e) => return ToolResult { text: format!("equipe's daemon didn't answer: {e}"), is_error: true, image: None },
+    };
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("equipe"));
+    let run = tokio::process::Command::new(exe)
+        .args(&args)
+        .current_dir(&cwd)
+        .env("EQUIPE_HOME", home)
+        .env(LISTED_ONLY, "1")
+        .env_remove("CODEX_SANDBOX")
+        .env_remove("CODEX_SANDBOX_NETWORK_DISABLED")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = match tokio::time::timeout(Duration::from_secs(15 * 60), run).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return ToolResult { text: format!("equipe design: {e}"), is_error: true, image: None },
+        Err(_) => return ToolResult { text: "equipe design ran for 15 minutes and was stopped: fewer pages a call.".into(), is_error: true, image: None },
+    };
+    let said = [String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)].join("\n");
+    let said = plain(said.trim());
+    // The end is what matters: what was written, and what it still needs.
+    let text = match said.char_indices().rev().nth(8000) {
+        Some((at, _)) => format!("…{}", &said[at..]),
+        None => said,
+    };
+    ToolResult { text: if text.is_empty() { "done".into() } else { text }, is_error: !output.status.success(), image: None }
+}
+
+/// Text without the terminal's colour codes.
+fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for d in chars.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// A lock on a folder while it is changed: another call of these tools on
 /// it waits its turn (two `refs shoot` at once wrote the same reference id,
 /// two first runs installed the drawing kit over each other). One left
@@ -506,6 +599,10 @@ async fn shoot(args: ShootArgs) -> Result<(), String> {
             eprintln!("{}", t!("design.refs.browser_only", url = url, site = source.name));
             continue;
         }
+        if listed_only() && !listed(url) {
+            eprintln!("{}", t!("design.refs.not_listed", url = url, sites = listed_sites()));
+            continue;
+        }
         match robots(&client, url).await {
             Robots::Allowed => {}
             Robots::Refused => {
@@ -719,6 +816,9 @@ fn origin_says(p: component::OriginProblem) -> String {
 
 pub async fn component_command(args: ComponentArgs) -> Result<(), String> {
     let origin = component::origin(&args.source).map_err(origin_says)?;
+    if listed_only() && !listed(&origin.page()) {
+        return Err(t!("design.refs.not_listed", url = origin.page(), sites = listed_sites()));
+    }
     let design = design_dir(args.dir);
     let out = args.out.unwrap_or_else(|| design.join("vendor").join(refs::slug(&origin.name())));
     not_sandboxed()?;
@@ -874,6 +974,24 @@ mod tests {
         let said = outside_sandbox(&env(&[("CODEX_SANDBOX", "seatbelt")])).unwrap_err();
         assert!(said.contains("outside the sandbox") && said.contains("palette"), "{said}");
         assert!(outside_sandbox(&env(&[("CODEX_SANDBOX_NETWORK_DISABLED", "1")])).is_err());
+    }
+
+    #[test]
+    fn the_board_tool_runs_only_the_taste_commands_in_the_members_own_folder() {
+        let words = |w: &[&str]| w.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(board_args(&words(&["refs", "shoot", "https://fontpair.co/", "--learn", "x", "--aspect", "type"])).unwrap()[..3], words(&["design", "refs", "shoot"]));
+        assert!(board_args(&words(&["palette", "A=050315-fbfbfe-2f27ce-dedcff-433bff"])).is_ok());
+        for refused in [&["lint", "index.html"][..], &["second-look", "x"], &[], &["refs", "board", "--dir", "/etc"], &["palette", "A=x", "--out=/tmp/x"]] {
+            assert!(board_args(&words(refused)).is_err(), "{refused:?}");
+        }
+        // Each board call parses as the command would.
+        for ok in [&["refs", "sources"][..], &["refs", "search", "21st", "hero"], &["type", "Fraunces/Inter", "--locales", "en,ja"], &["component", "https://ui.shadcn.com/r/styles/new-york-v4/card.json"]] {
+            assert!(parse(&board_args(&words(ok)).unwrap()[1..].iter().map(String::as_str).collect::<Vec<_>>()).is_ok(), "{ok:?}");
+        }
+        assert!(listed("https://fontpair.co/for/saas") && listed("https://21st.dev/@a/components/b") && listed("https://ui.shadcn.com/r/x.json"));
+        assert!(!listed("https://example.com/") && !listed("https://notfontpair.co/"));
+        assert!(listed_sites().contains("realtimecolors.com") && !listed_sites().contains("lapa.ninja"), "Lapa Ninja is browsed, not read");
+        assert_eq!(plain("\u{1b}[1m✗\u{1b}[0m no"), "✗ no");
     }
 
     #[tokio::test]

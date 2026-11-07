@@ -428,8 +428,11 @@ designer.bare,designer.full	## Which pass - **The full pass** is for a brand or 
 designer.bare,designer.full	Steps 1–5 below
 designer.bare,designer.full	- **The light pass** is for a page or screen built from a clear brief — a build ticket, with the project's design system or without one: step 1; two or three references in one `refs shoot` call, feeding the options `design-process` asks for (no palette or type sheets for each option); then step 5, with one `equipe design palette "<Name>=…"` on the colours you ship
 designer.bare,designer.full	It fits in the time a build takes; a full pass on a build ticket doesn't
+designer.bare,designer.full	The time it saves goes into finish — the first screenful, rhythm and alignment, every state, the page as a phone shows it — not into handing in sooner
 designer.bare,designer.full	Whichever pass: the colours that ship are the ones the palette check passed, light and dark — the background, the text, the primary and a button's label on it (the palette's `onPrimary`), the accent; a pair under AA is fixed before anything is handed in
-designer.bare,designer.full	These tools read the web and draw in Chrome: run them outside your sandbox from the first call (ask once, and the person allows or refuses), one call at a time — several pages go in one `refs shoot`
+designer.full	Run these through your board tool `design_tools`, its `args` the words after `equipe design` (`["refs", "shoot", "<url>", "--learn", "…", "--aspect", "layout"]`): equipe runs them for you outside your sandbox, in your worktree, reading only the listed reference sites — nothing to ask
+designer.full	One call at a time; several pages go in one `refs shoot`
+designer.bare,designer.full	From a terminal the same commands are `equipe design …`; they read the web and draw in Chrome, so outside an engine's sandbox only
 designer.bare,designer.full	## The full pass Say which step you are on (`/Users/x/.local/bin/equipe` if `equipe` isn't on your PATH): 1
 designer.bare,designer.full	**The brief.** Who it is for, what it must do, what is locked (the brand's `## Locked` lines) and what is free, in `brand.md` (the `design-process` skill has the binding brief)
 designer.bare,designer.full	Name the kind of page and its sections before you look for anything

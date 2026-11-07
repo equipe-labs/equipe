@@ -1205,5 +1205,6 @@
   "design.component.restyle": "Vor der Übernahme auf unsere Tokens umzustellen: {count}, in SOURCE.md aufgeführt.",
   "design.component.closed": "{site} hält seine Registry für Werkzeuge geschlossen (robots.txt), der Quelltext wird also nicht geholt: Seite, Lizenz und Abhängigkeiten stehen in {path}. Das Muster aus unseren Tokens nachbauen oder eine Komponente aus einer öffentlichen Registry nehmen.",
   "design.taste.sandboxed": "Das liest das Web und zeichnet in Chrome, was deine Sandbox nicht erlaubt: denselben Befehl außerhalb der Sandbox ausführen (einmal fragen; die Person erlaubt oder lehnt ab), und die anderen Befehle `equipe design refs`, `palette`, `type` und `component` ebenso.",
-  "design.palette.how_many": "Eine bis {most} Paletten auf einmal: eine prüft die Farben, die ausgeliefert werden, mehrere vergleichen Richtungen."
+  "design.palette.how_many": "Eine bis {most} Paletten auf einmal: eine prüft die Farben, die ausgeliefert werden, mehrere vergleichen Richtungen.",
+  "design.refs.not_listed": "{url}: Über dein Board-Werkzeug werden nur die gelisteten Referenzseiten gelesen ({sites}); nicht gelesen."
 }

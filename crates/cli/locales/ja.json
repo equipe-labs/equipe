@@ -1182,5 +1182,6 @@
   "design.component.restyle": "私たちのトークンに直すもの：{count}。SOURCE.md に一覧。",
   "design.component.closed": "{site} はレジストリをツールに閉じている（robots.txt）ため、ソースは取得しません。ページ・ライセンス・依存関係は {path} にあります。私たちのトークンでパターンを作り直すか、公開レジストリのコンポーネントを使う。",
   "design.taste.sandboxed": "これはウェブを読み Chrome で描画しますが、サンドボックスでは許されていません。同じコマンドをサンドボックスの外で実行し（一度だけ確認。本人が許可または拒否）、ほかの `equipe design refs`・`palette`・`type`・`component` もそこで実行する。",
-  "design.palette.how_many": "一度に1〜{most} 個のパレット。1つなら出荷する色の確認、複数なら方向性の比較。"
+  "design.palette.how_many": "一度に1〜{most} 個のパレット。1つなら出荷する色の確認、複数なら方向性の比較。",
+  "design.refs.not_listed": "{url}：ボードのツールからは一覧のリファレンスサイトだけを読みます（{sites}）。読みません。"
 }

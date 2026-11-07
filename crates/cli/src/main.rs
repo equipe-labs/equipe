@@ -789,6 +789,10 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
     while let Ok(Some(line)) = lines.next_line().await {
         let reply = match mcp::handle_for(&info, &line, &tools, VERSION) {
             Step::Reply(reply) => reply,
+            // A designer's reference tools run here, outside its engine's sandbox.
+            Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::DESIGN_TOOLS => {
+                mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, &arguments).await)
+            }
             Step::Call { id, name, arguments } => {
                 let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments };
                 let result = if desktop {

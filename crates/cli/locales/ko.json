@@ -1182,5 +1182,6 @@
   "design.component.restyle": "우리 토큰으로 바꿔야 할 것: {count}개, SOURCE.md에 정리되어 있습니다.",
   "design.component.closed": "{site}는 레지스트리를 도구에 닫아 두었으므로(robots.txt) 소스를 가져오지 않습니다. 페이지, 라이선스, 의존성은 {path}에 있습니다. 우리 토큰으로 패턴을 다시 만들거나 공개 레지스트리의 컴포넌트를 쓰세요.",
   "design.taste.sandboxed": "이 명령은 웹을 읽고 Chrome으로 그리는데, 샌드박스에서는 허용되지 않습니다. 같은 명령을 샌드박스 밖에서 실행하세요(한 번만 요청, 허용 여부는 사람이 정함). 다른 `equipe design refs`, `palette`, `type`, `component` 명령도 그곳에서 실행하세요.",
-  "design.palette.how_many": "팔레트는 한 번에 1~{most}개입니다. 하나면 내보낼 색을 점검하고, 여럿이면 방향을 비교합니다."
+  "design.palette.how_many": "팔레트는 한 번에 1~{most}개입니다. 하나면 내보낼 색을 점검하고, 여럿이면 방향을 비교합니다.",
+  "design.refs.not_listed": "{url}: 보드 도구로는 목록에 있는 레퍼런스 사이트만 읽습니다({sites}). 건드리지 않았습니다."
 }

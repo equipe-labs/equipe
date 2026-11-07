@@ -413,6 +413,19 @@ can't split, carry on alone.",
 /// A designer finishes a design QA ticket: the screens pass, or go back to their engineer.
 pub const DESIGN_QA: &str = "design_qa";
 
+/// A designer's reference and taste tools (`equipe design refs | palette |
+/// type | component`), run for it by its board server outside its engine's
+/// sandbox, in its worktree, reading only the listed reference sites.
+pub const DESIGN_TOOLS: &str = "design_tools";
+
+/// Where a member works now — its ticket's worktree, else its own folder.
+/// Asked by its board server for [`DESIGN_TOOLS`]; never listed as a tool.
+pub const WORKDIR: &str = "equipe_workdir";
+
+/// What `design_tools` runs: the words after `equipe design`, its first one
+/// of these.
+pub const DESIGN_TOOL_COMMANDS: [&str; 4] = ["refs", "palette", "type", "component"];
+
 /// The `kind` argument of `create_ticket` and `update_ticket`.
 static KIND_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     json!({
@@ -449,7 +462,7 @@ pub fn default_kind(project: Option<&Path>) -> TicketKind {
 pub fn tools_for(role: &str) -> Vec<Value> {
     let mut tools = tools(role == crate::roles::PM);
     if role != DESIGNER_ROLE {
-        tools.retain(|t| t["name"] != DESIGN_QA);
+        tools.retain(|t| t["name"] != DESIGN_QA && t["name"] != DESIGN_TOOLS);
     }
     tools
 }
@@ -564,6 +577,22 @@ person with it. Then end your turn.",
                     "images": IMAGES_SCHEMA.clone(),
                 },
                 "required": ["verdict", "findings", "checked"],
+            },
+        }));
+        tools.push(json!({
+            "name": DESIGN_TOOLS,
+            "description": "Designers: run `equipe design refs | palette | type | component` without leaving your \
+sandbox — equipe runs it for you in your worktree and reads only the listed reference sites (Realtime Colors, Fontpair, \
+21st.dev, Google Fonts; Lapa Ninja and Mobbin are browsed in your own browser and recorded with `refs add`), a few \
+pages a call, paced, as robots.txt allows. `args` are the words after `equipe design`, e.g. [\"refs\", \"shoot\", \
+\"https://fontpair.co/for/saas\", \"--learn\", \"…\", \"--aspect\", \"type\"] or [\"palette\", \"Calm=15161a-f6f5f1-1d4ed8-e8e6df-c2410c\"]. \
+Pictures and records land in your worktree's design/ folder; what it printed comes back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "args": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "The command's words after `equipe design`, starting with refs, palette, type or component." },
+                },
+                "required": ["args"],
             },
         }));
     }
@@ -1320,6 +1349,9 @@ mod tests {
         assert!(!names(tools(true)).contains(&DESIGN_QA.to_owned()));
         assert!(names(tools_for("designer")).contains(&DESIGN_QA.to_owned()), "the designer's own");
         assert!(!names(tools_for("frontend")).contains(&DESIGN_QA.to_owned()), "an engineer's screens are passed by the designer, not by itself");
+        assert!(names(tools_for("designer")).contains(&DESIGN_TOOLS.to_owned()), "the designer's reference tools");
+        assert!(!names(tools_for("frontend")).contains(&DESIGN_TOOLS.to_owned()) && !names(tools(true)).contains(&DESIGN_TOOLS.to_owned()));
+        assert!(!names(tools(false)).contains(&WORKDIR.to_owned()), "asked by the server, never offered");
         assert!(names(tools_for("pm")).contains(&crate::controls::CHANGE_SETTING.to_owned()), "the PM changes what the person asks it to");
         // A plan: written by the PM, reviewed by members — who write only their notes.
         let plan = |tools: Vec<Value>| tools.into_iter().find(|t| t["name"] == WRITE_PLAN).expect("write_plan");

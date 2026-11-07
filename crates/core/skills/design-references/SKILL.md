@@ -19,11 +19,21 @@ says to take a brand or its words is refused by the tools; say what its structur
   system or without one: step 1; two or three references in one `refs shoot` call, feeding the options
   `design-process` asks for (no palette or type sheets for each option); then step 5, with one `equipe design
   palette "<Name>=…"` on the colours you ship. It fits in the time a build takes; a full pass on a build ticket doesn't.
+  The time it saves goes into finish — the first screenful, rhythm and alignment, every state, the page as a phone
+  shows it — not into handing in sooner.
 
 Whichever pass: the colours that ship are the ones the palette check passed, light and dark — the background, the
 text, the primary and a button's label on it (the palette's `onPrimary`), the accent; a pair under AA is fixed before
-anything is handed in. These tools read the web and draw in Chrome: run them outside your sandbox from the first call
-(ask once, and the person allows or refuses), one call at a time — several pages go in one `refs shoot`.
+anything is handed in.
+{{#if board_tools}}
+
+Run these through your board tool `design_tools`, its `args` the words after `equipe design` (`["refs", "shoot",
+"<url>", "--learn", "…", "--aspect", "layout"]`): equipe runs them for you outside your sandbox, in your worktree,
+reading only the listed reference sites — nothing to ask. One call at a time; several pages go in one `refs shoot`.
+{{/if}}
+
+From a terminal the same commands are `equipe design …`; they read the web and draw in Chrome, so outside an
+engine's sandbox only.
 
 ## The full pass
 

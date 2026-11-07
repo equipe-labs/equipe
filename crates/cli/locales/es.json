@@ -1205,5 +1205,6 @@
   "design.component.restyle": "Por adaptar a nuestros tokens antes de que sea nuestro: {count}, en SOURCE.md.",
   "design.component.closed": "{site} mantiene su registro cerrado a herramientas (robots.txt), así que no se trae el código: su página, licencia y dependencias están en {path}. Reconstruye el patrón con nuestros tokens o toma un componente de un registro público.",
   "design.taste.sandboxed": "Esto lee la web y dibuja en Chrome, y tu sandbox no lo permite: ejecuta el mismo comando fuera del sandbox (pregunta una vez; la persona lo permite o no), y los demás comandos `equipe design refs`, `palette`, `type` y `component` también.",
-  "design.palette.how_many": "De una a {most} paletas a la vez: una revisa los colores que se publican; varias comparan direcciones."
+  "design.palette.how_many": "De una a {most} paletas a la vez: una revisa los colores que se publican; varias comparan direcciones.",
+  "design.refs.not_listed": "{url}: desde tu herramienta del tablero solo se leen los sitios de referencia listados ({sites}); se deja."
 }

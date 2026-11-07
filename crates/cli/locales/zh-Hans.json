@@ -1182,5 +1182,6 @@
   "design.component.restyle": "需改用我们 token 的地方：{count}，列在 SOURCE.md。",
   "design.component.closed": "{site} 的注册表不对工具开放（robots.txt），因此不拉取源码：页面、许可和依赖都在 {path}。用我们的 token 重建该模式，或从公开注册表取组件。",
   "design.taste.sandboxed": "这会读取网页并在 Chrome 中绘制，而你的沙盒不允许：在沙盒外运行同一命令（只问一次，由本人允许或拒绝），其他 `equipe design refs`、`palette`、`type` 和 `component` 命令也在那里运行。",
-  "design.palette.how_many": "一次 1 到 {most} 个配色：一个用于检查要上线的颜色，多个用于比较方向。"
+  "design.palette.how_many": "一次 1 到 {most} 个配色：一个用于检查要上线的颜色，多个用于比较方向。",
+  "design.refs.not_listed": "{url}：通过看板工具只读取列出的参考网站（{sites}）；已跳过。"
 }

@@ -1205,5 +1205,6 @@
   "design.component.restyle": "À reprendre avec nos tokens avant qu’il soit à nous : {count}, listés dans SOURCE.md.",
   "design.component.closed": "{site} ferme son registre aux outils (robots.txt), le code n’est donc pas récupéré : sa page, sa licence et ses dépendances sont dans {path}. Refaites le motif avec nos tokens, ou prenez un composant d’un registre public.",
   "design.taste.sandboxed": "Ceci lit le web et dessine dans Chrome, ce que votre bac à sable n’autorise pas : lancez la même commande hors du bac à sable (demandez une fois ; la personne accepte ou refuse), et les autres commandes `equipe design refs`, `palette`, `type` et `component` aussi.",
-  "design.palette.how_many": "D’une à {most} palettes à la fois : une vérifie les couleurs livrées, plusieurs comparent des directions."
+  "design.palette.how_many": "D’une à {most} palettes à la fois : une vérifie les couleurs livrées, plusieurs comparent des directions.",
+  "design.refs.not_listed": "{url} : depuis votre outil du tableau, seuls les sites de référence listés sont lus ({sites}) ; laissée."
 }
