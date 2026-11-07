@@ -35,9 +35,11 @@ impl Runtime {
     /// second look that passed after the check. Refused with what to do;
     /// on the way through, the edits' ledger is cleared for the next ticket.
     /// Reads two or three small files in its worktree's `design/`.
-    /// `Ok(Some(gap))`: refused the same way a second time, it goes in with
-    /// what stood in its way, to be marked for the person — a check that
-    /// can't be cleared is the person's to see, not a loop for the member.
+    /// `Ok(Some(gap))`: refused the same way a second time, or its screens'
+    /// looks asked for fixes [`crate::design::lint::record::LOOKS_BEFORE_THE_PERSON`]
+    /// times in a row, it goes in with what stood in its way, to be marked for
+    /// the person — a check that can't be cleared is the person's to see, not
+    /// a loop for the member.
     pub(super) fn designer_hand_in(&mut self, id: SessionId) -> Result<Option<Vec<String>>, String> {
         let Some(session) = self.sessions.get_mut(&id) else { return Ok(None) };
         if session.member.as_ref().is_none_or(|m| m.role != DESIGNER) {
@@ -56,11 +58,13 @@ impl Runtime {
                 needs.iter().map(|n| format!("- {n}")).collect::<Vec<_>>().join("\n")
             ));
         }
+        let mut gap = needs;
+        gap.extend(crate::design::lint::record::open_fixes(&design));
         crate::design::lint::record::handed_in(&design);
         if let Some(work) = session.work.as_mut() {
             work.refused = None;
         }
-        Ok((!needs.is_empty()).then_some(needs))
+        Ok((!gap.is_empty()).then_some(gap))
     }
 
     /// What `submit_for_review` asks of a code ticket in a squad with a

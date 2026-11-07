@@ -142,6 +142,7 @@ impl Runtime {
         let provider = cfg.codex_provider();
         let mut env = vec![cfg.codex_env()];
         env.push((guard::MEMBER_ENV.to_owned(), name.clone()));
+        env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(Engine::Codex).to_owned()));
         let binary = self.config.codex_binary.clone();
         let instructions = helpers::instructions(&name, &cwd, &limits);
         let internal = self.internal.clone();

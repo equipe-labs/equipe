@@ -4149,6 +4149,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A member's commands know they are a member's: `equipe browser` refuses there.
         if let Some(m) = &session.member {
             env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
+            // And on which engine, for what they run outside its sandbox (`equipe design second-look`).
+            env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(session.engine).to_owned()));
         }
         // Claude Code's cap on subagents at once, where the squad set it;
         // Codex's goes in its thread's config (`codex_app::TurnRequest::subagents`).
@@ -7088,7 +7090,7 @@ there, end your turn, and carry on when they say they're done."
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
                 let ticket = work.ticket;
                 let summary = match &gap {
-                    Some(gap) => format!("{summary}\n\nNot cleared before hand-in (the check refused it twice the same way):\n{}", gap.iter().map(|g| format!("- {g}")).collect::<Vec<_>>().join("\n")),
+                    Some(gap) => format!("{summary}\n\nNot cleared before hand-in — for the person to see (the design checks couldn't be cleared by going round again):\n{}", gap.iter().map(|g| format!("- {g}")).collect::<Vec<_>>().join("\n")),
                     None => summary,
                 };
                 work.handed_in = Some(summary);

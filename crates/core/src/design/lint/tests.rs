@@ -231,6 +231,41 @@ fn verdict(pass: bool, at: u64, first: bool) -> record::Verdict {
 }
 
 #[test]
+fn after_three_looks_in_a_row_asking_for_fixes_the_hand_in_goes_with_them_shown_to_the_person() {
+    let root = project(&[("design/mockups/home.html", CLEAN_HTML)]);
+    let design = std::fs::canonicalize(root.join("design")).unwrap();
+    let file = design.join("mockups/home.html");
+    record::note_edit(&design, &file, false).unwrap();
+    let report = Report { widths: vec![360, 1280], ..Report::default() };
+    record::note_check(&design, "home", std::slice::from_ref(&file)).unwrap();
+    let mut rec = record::of(&design, "home", &report, std::slice::from_ref(&file), None, false);
+    let at = rec.at;
+    for n in 1..record::LOOKS_BEFORE_THE_PERSON {
+        record::note_verdict(&mut rec, verdict(false, at, false));
+        record::write(&design, &rec).unwrap();
+        let said = record::hand_in(&design);
+        assert!(said.iter().any(|s| s.contains("asked for 1 fix")), "look {n}: still the designer's to fix: {said:?}");
+        assert!(record::open_fixes(&design).is_empty());
+    }
+    record::note_verdict(&mut rec, verdict(false, at, false));
+    record::write(&design, &rec).unwrap();
+    assert_eq!(rec.fixes_in_a_row, record::LOOKS_BEFORE_THE_PERSON);
+    assert!(record::hand_in(&design).is_empty(), "the third in a row: no longer in the way: {:?}", record::hand_in(&design));
+    let open = record::open_fixes(&design);
+    assert!(open.len() == 1 && open[0].contains("home") && open[0].contains("the headline wraps badly at 360") && open[0].contains("3 looks in a row"), "{open:?}");
+    // A pass starts the count again; so does a hand-in.
+    record::note_verdict(&mut rec, verdict(true, at, false));
+    assert_eq!(rec.fixes_in_a_row, 0);
+    record::note_verdict(&mut rec, verdict(false, at, false));
+    record::note_verdict(&mut rec, verdict(false, at, true));
+    record::note_verdict(&mut rec, verdict(false, at, false));
+    record::write(&design, &rec).unwrap();
+    assert_eq!(record::open_fixes(&design).len(), 1, "a first-screenful look counts in the row too");
+    record::handed_in(&design);
+    assert_eq!(record::read(&design, "home").unwrap().fixes_in_a_row, 0, "the next ticket starts afresh");
+}
+
+#[test]
 fn directions_explored_are_left_to_the_direction_log_and_only_shipping_files_wait_for_a_check() {
     let root = project(&[("design/directions/ledger/index.html", CLEAN_HTML), ("design/directions/ledger/styles.css", "a {}"), ("index.html", CLEAN_HTML)]);
     let design = std::fs::canonicalize(root.join("design")).unwrap();

@@ -332,7 +332,10 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
             let engine = match args.engine.as_deref() {
                 Some("codex") => Engine::Codex,
                 Some(_) => Engine::Claude,
-                None => critique::caller_engine(|n| std::env::var(n).ok()).unwrap_or(Engine::Claude),
+                None => critique::caller_engine(|n| std::env::var(n).ok()).unwrap_or_else(|| {
+                    eprintln!("{}", critique::unknown_caller(Engine::Claude, "second look"));
+                    Engine::Claude
+                }),
             };
             (look(engine, &ask).await?, if engine == Engine::Codex { "codex".to_owned() } else { "claude".to_owned() })
         }
@@ -342,15 +345,17 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
     verdict.by = by;
     verdict.widths = ask.pictures.iter().map(|(w, _)| *w).collect();
     verdict.first = args.first;
-    if args.first {
-        rec.first = Some(verdict.clone());
-    } else {
-        rec.verdict = Some(verdict.clone());
-    }
+    record::note_verdict(&mut rec, verdict.clone());
     record::write(&ledger, &rec).map_err(|e| format!("{}: {e}", ledger.display()))?;
     print!("{}", second_look::text(&verdict));
-    if !verdict.pass {
-        println!("Fix these, check again with `equipe design lint … --render --screen {screen}`, and ask for another look.");
+    if !verdict.pass && rec.fixes_in_a_row >= record::LOOKS_BEFORE_THE_PERSON {
+        println!("That's {} looks in a row asking for fixes: hand in now — what is left goes to the person with your hand-in, marked, and the PM is told.", rec.fixes_in_a_row);
+    } else if !verdict.pass {
+        println!(
+            "Fix these, check again with `equipe design lint … --render --screen {screen}`, and ask for another look ({} of {} in a row asking for fixes).",
+            rec.fixes_in_a_row,
+            record::LOOKS_BEFORE_THE_PERSON
+        );
     }
     println!("{}", second_look::mark_line(&screen, &verdict));
     if !verdict.pass {
@@ -367,6 +372,9 @@ async fn look(engine: Engine, ask: &second_look::Ask) -> Result<String, String> 
     let run = tokio::process::Command::new(&program).args(&args).stdin(Stdio::null()).stderr(Stdio::piped()).output().await.map_err(|e| format!("{program}: {e} — is {} installed and signed in? Or give your own fresh subagent the --prompt and record its --answer.", engine.label()))?;
     if !run.status.success() {
         let said = [String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout)].join("\n");
+        if let Some(next) = critique::no_network(&said, &|n| std::env::var(n).ok()) {
+            return Err(format!("{} couldn't look: {next}", engine.label()));
+        }
         let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
         return Err(format!("{} couldn't look ({}): {}", engine.label(), run.status, tail.into_iter().rev().collect::<Vec<_>>().join("\n")));
     }

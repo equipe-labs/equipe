@@ -91,6 +91,31 @@ pub struct Record {
     pub first: Option<Verdict>,
     /// The look at the whole, at every width.
     pub verdict: Option<Verdict>,
+    /// Looks in a row — the first screenful's or the whole's — that asked
+    /// for fixes; a pass starts again. At [`LOOKS_BEFORE_THE_PERSON`] what is
+    /// left goes to the person with the hand-in instead of round again.
+    pub fixes_in_a_row: u32,
+}
+
+/// How many looks in a row may ask for fixes before what is left goes to
+/// the person with the hand-in, marked, rather than round and round.
+pub const LOOKS_BEFORE_THE_PERSON: u32 = 3;
+
+/// Keep a second look's `verdict` on `record`: as its first-screenful look
+/// or its whole one, and counted in the row of looks that asked for fixes.
+pub fn note_verdict(record: &mut Record, verdict: Verdict) {
+    record.fixes_in_a_row = if verdict.pass { 0 } else { record.fixes_in_a_row + 1 };
+    if verdict.first {
+        record.first = Some(verdict);
+    } else {
+        record.verdict = Some(verdict);
+    }
+}
+
+/// Whether `record`'s looks asked for fixes often enough in a row for what
+/// is left to go to the person.
+fn to_the_person(record: &Record) -> bool {
+    record.fixes_in_a_row >= LOOKS_BEFORE_THE_PERSON
 }
 
 /// A screen's name as a path under `checks/`: `onboarding/login` stays two
@@ -139,6 +164,8 @@ pub fn now() -> u64 {
 pub fn of(design: &Path, screen: &str, report: &Report, files: &[PathBuf], before: Option<Record>, new: bool) -> Record {
     let stamps: Vec<Stamp> = files.iter().map(|f| Stamp { path: ledger_name(design, f), modified: modified(f) }).collect();
     let unchanged = before.as_ref().is_some_and(|b| b.files == stamps && b.rendered == !report.widths.is_empty());
+    // Checked again, its row of looks asking for fixes goes on: only a pass starts it again.
+    let fixes_in_a_row = before.as_ref().map_or(0, |b| b.fixes_in_a_row);
     let (first, verdict) = match before {
         Some(b) if unchanged => (b.first, b.verdict),
         Some(b) => (b.first, None),
@@ -146,7 +173,7 @@ pub fn of(design: &Path, screen: &str, report: &Report, files: &[PathBuf], befor
     };
     let mut summary = report.summary();
     summary.screen = Some(screen.to_owned());
-    Record { screen: screen.to_owned(), at: now(), files: stamps, rendered: !report.widths.is_empty(), summary, findings: report.findings.clone(), pictures: report.pictures.clone(), new, first, verdict }
+    Record { screen: screen.to_owned(), at: now(), files: stamps, rendered: !report.widths.is_empty(), summary, findings: report.findings.clone(), pictures: report.pictures.clone(), new, first, verdict, fixes_in_a_row }
 }
 
 // ── the edits not checked yet ──
@@ -302,13 +329,22 @@ pub fn hand_in(design: &Path) -> Vec<String> {
             out.push(format!("{screen} changed after its check: check it again."));
             continue;
         }
+        let latest = [&record.verdict, &record.first].into_iter().flatten().map(|v| v.at).max();
+        if to_the_person(&record) && latest.is_some_and(|at| at >= record.at) {
+            // Looked at, asked for fixes again and again: [`open_fixes`] takes it to the person.
+            continue;
+        }
         if record.new && record.first.as_ref().is_none_or(|v| !v.pass) {
             out.push(format!("{screen} is new: its first screenful gets a second look of its own first — `equipe design second-look {screen} --first`."));
         }
         match &record.verdict {
             None => out.push(format!("{screen} has had no second look: `equipe design second-look {screen}`.")),
             Some(v) if v.at < record.at => out.push(format!("{screen} changed after its second look: `equipe design second-look {screen}` again.")),
-            Some(v) if !v.pass => out.push(format!("{screen}: the second look asked for {} fix(es) — make them, check again, and ask it again.", v.fixes.len())),
+            Some(v) if !v.pass => out.push(format!(
+                "{screen}: the second look asked for {} fix(es) — make them, check again, and ask it again ({} of {LOOKS_BEFORE_THE_PERSON} looks in a row asking for fixes; at {LOOKS_BEFORE_THE_PERSON}, what is left goes to the person with your hand-in).",
+                v.fixes.len(),
+                record.fixes_in_a_row
+            )),
             Some(_) => {}
         }
     }
@@ -375,7 +411,29 @@ fn checked_elsewhere(design: &Path, file: &Path) -> Option<(PathBuf, String)> {
     found
 }
 
-/// After a hand-in: the next ticket starts with nothing pending.
+/// What a hand-in takes to the person instead of refusing: each checked
+/// screen whose looks asked for fixes [`LOOKS_BEFORE_THE_PERSON`] times in a
+/// row, with the fixes its last look asked for.
+pub fn open_fixes(design: &Path) -> Vec<String> {
+    let pending = read_pending(design);
+    let mut out = Vec::new();
+    for screen in &pending.checked {
+        let Some(record) = read(design, screen).filter(to_the_person) else { continue };
+        let last = [&record.verdict, &record.first].into_iter().flatten().filter(|v| !v.pass).max_by_key(|v| v.at);
+        let fixes = last.map(|v| v.fixes.iter().map(|f| format!("{}: {}", f.place, f.what)).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+        out.push(format!("{screen}: the second look still asked for fixes after {} looks in a row — shown to the person: {fixes}", record.fixes_in_a_row));
+    }
+    out
+}
+
+/// After a hand-in: the next ticket starts with nothing pending, and its
+/// screens' rows of looks start again.
 pub fn handed_in(design: &Path) {
+    for screen in read_pending(design).checked {
+        if let Some(mut record) = read(design, &screen).filter(|r| r.fixes_in_a_row > 0) {
+            record.fixes_in_a_row = 0;
+            let _ = write(design, &record);
+        }
+    }
     let _ = write_pending(design, &Pending::default());
 }

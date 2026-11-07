@@ -238,7 +238,18 @@ and the PM is told: a check that can't be cleared is theirs to see, not a loop.
 The second look asks only for facts the brief, the project's files or the
 design system give. A fact none of them has is an open question with neutral
 wording to use meanwhile, never a fix: it doesn't hold a pass, and the designer
-uses the wording or asks with `ask_decision` while it carries on.
+uses the wording or asks with `ask_decision` while it carries on. After three
+looks in a row that ask for fixes (the first screenful's or the whole's), the
+hand-in goes with what the last look asked for marked for the person, and the
+PM is told — the same way as a refusal met twice.
+
+A member's commands carry `EQUIPE_MEMBER_ENGINE` (`claude` or `codex`), so
+`second-look` and `critique` know the caller's engine even for a command run
+outside its engine's sandbox, where the engine's own variables are gone; with
+no engine known and none named, they say which they took. When the sandbox
+has no network for the engine, the member is told to run the command again
+outside it, or, if that isn't allowed, to say so in its hand-in rather than
+try again.
 
 ## Remixing references — the `design` tools (equipe-design)
 
