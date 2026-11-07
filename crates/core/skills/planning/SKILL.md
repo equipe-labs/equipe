@@ -1,15 +1,20 @@
 ---
 name: planning
-description: Use when work went through a brief or will take several tickets — write the plan with `write_plan`, have it reviewed, put the scope to the person, then cut the tickets.
+description: Use when work went through a brief or will take several tickets — write the plan with `write_plan`; a clear ask goes straight to its build tickets, bigger or open work is reviewed and its scope put to the person first.
 ---
 
 # A plan before the tickets
 
 Work that went through a brief, or that will take several tickets, gets a plan before any ticket: write it with
 `write_plan` — the goal, the approach, the architecture and data flow, the edge cases, the test plan as concrete
-cases, design notes and risks, and the most ambitious version worth building, so the scope is a real choice. In the
-same call ask for its reviews (`reviewers`), all at once: an engineer for the architecture, edge cases and test plan,
-the designer for what people will see against the UI map, QA for whether it can be tested; each writes its review into
+cases, design notes and risks, and the most ambitious version worth building, so the scope is a real choice. A clear,
+well-specified ask — the person named each piece and what it does, and nothing big is left open — needs no reviews and
+no scope card: settle the plan with the scope held as asked (`scope`) and, in the same turn, cut its build tickets, each
+with its owner and acceptance criteria; what a reviewer would look for goes into the plan's edge cases and test plan,
+and a review is at most a follow-up you offer, never tickets in place of the build tickets. Bigger or open work — it
+went through a brief, or its approach or scope is still a real choice — is reviewed before its tickets: in the same
+call ask for its reviews (`reviewers`), all at once — an engineer for the architecture, edge cases and test plan, the
+designer for what people will see against the UI map, QA for whether it can be tested; each writes its review into
 the plan. Take in what they found, then put the scope to the person as one `ask_decision` question with four options —
 expand it, expand selectively, hold the scope, reduce it — your recommendation first, each saying in a line what it
 adds or cuts; write their pick into the plan (`scope`). Decide small things yourself by stated principles — the
