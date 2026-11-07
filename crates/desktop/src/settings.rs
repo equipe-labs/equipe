@@ -130,6 +130,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         s(window, "⌘\\", t!("settings.key_sidebar")),
         s(window, "⌘B", t!("settings.key_board")),
         s(window, "⌘⇧B", t!("settings.key_browser")),
+        s(window, "⌘⇧L", t!("orchestra.title")),
         s(window, "⌘F", t!("chat.find_placeholder")),
         s(window, "⌃0–9", t!("board.key_projects")),
         s(window, "⌘+ · ⌘-", t!("settings.key_zoom")),
@@ -221,7 +222,7 @@ mod tests {
     fn every_shortcut_says_what_it_does_and_the_list_has_the_windows_keys() {
         let keys = shortcuts();
         assert!(keys.iter().all(|k| !k.keys.is_empty() && !k.what.is_empty() && !k.area.is_empty()));
-        for key in ["⌘,", "⌘\\", "⌘N", "⌘K", "⌘B", "⌘⇧B", "⏎", "⇧A", "J K · ↑ ↓", "⌘+ · ⌘-", "⌘0", "⌃0–9"] {
+        for key in ["⌘,", "⌘\\", "⌘N", "⌘K", "⌘B", "⌘⇧B", "⌘⇧L", "⏎", "⇧A", "J K · ↑ ↓", "⌘+ · ⌘-", "⌘0", "⌃0–9"] {
             assert!(keys.iter().any(|k| k.keys == key), "{key} is listed");
         }
         assert!(!keys.iter().any(|k| k.keys == "⌘0–9"), "⌘0 is actual size; the slices are ⌃0–9");
