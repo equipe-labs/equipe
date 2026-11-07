@@ -20,7 +20,12 @@ of generated screens, finishing notes (`--rules` lists every rule, `--tier floor
 "…"` keeps a habit with its reason) — and keeps the check and its pictures in `design/checks/`; `second-look
 <flow/screen>` has fresh eyes judge those pictures against the brief and the system; `direction` keeps the log of
 directions proposed and chosen; `kept record` and `kept check` make sure a redesign loses no link, field, action or
-heading. Look at every picture yourself before you show it, and hand a design system in only when `check` has
+heading. For taste (the `design-references` skill has when and how): `refs` keeps a brief's reference board in
+`design/references/` — `sources`, `search`, `shoot` public pages with what to learn from each, `add` a screenshot
+from your own browser, `board` draws the contact sheet; `palette` tries two to four palettes on a real layout, light
+and dark, with their contrast, as tokens; `type` sets type pairs as a specimen in the product's languages, with
+coverage, licence and weight; `component` pulls a public component's source in as a starting point, with its source
+and licence, to restyle to the tokens. Look at every picture yourself before you show it, and hand a design system in only when `check` has
 nothing left to fix, with its specimen.
 {{#if browser}}
 

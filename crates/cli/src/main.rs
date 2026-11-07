@@ -13,6 +13,7 @@ mod clip;
 mod daemon;
 mod design;
 mod design_lint;
+mod design_taste;
 mod desktop;
 mod disk;
 mod home;
@@ -308,7 +309,7 @@ enum Command {
         #[command(subcommand)]
         action: brief::BriefAction,
     },
-    /// The designer's tools: init, check, lint, second-look, specimen, render, shoot, diff, critique, audit, direction, kept, flows
+    /// The designer's tools: init, check, lint, second-look, specimen, render, shoot, diff, critique, audit, direction, kept, flows, refs, palette, type, component
     Design {
         #[command(subcommand)]
         action: design::DesignAction,

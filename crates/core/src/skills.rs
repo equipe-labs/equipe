@@ -72,6 +72,7 @@ const SOURCES: &[Source] = &[
     Source { dir: "design-system", files: &[file!("design-system", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source { dir: "design-process", files: &[file!("design-process", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source { dir: "design-tools", files: &[file!("design-tools", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "design-references", files: &[file!("design-references", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source {
         dir: "ui-map",
         files: &[file!("ui-map", "SKILL.md"), file!("ui-map", "references/other-apps.md"), file!("ui-map", "references/walkthrough.md")],
@@ -452,7 +453,7 @@ mod tests {
         let base = ctx(&team);
         let all = Context { browser: true, desktop: true, design: true, ..ctx(&team) };
         assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
-        assert_eq!(names("designer", &base), ["plan-review", "research-report", "design-system", "design-process", "design-tools", "ui-map", "design-qa"]);
+        assert_eq!(names("designer", &base), ["plan-review", "research-report", "design-system", "design-process", "design-tools", "design-references", "ui-map", "design-qa"]);
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
         assert_eq!(names("frontend", &base), ["plan-review", "research-report", "ui-floor"]);
         for id in ["backend", "mobile", "qa"] {

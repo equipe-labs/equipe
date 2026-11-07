@@ -22,7 +22,9 @@ when no screen exists yet — never as swatches alone.
 Keep the squad's reference library in its folder, `design/references/`: a folder for each reference worth keeping —
 its pages shot with `shoot`, its link, what to take from it and what to leave — read it before you search anew, and
 add to it whatever you find; with the `design` tools, the design library (`design_library_search`) is part of it.
-Before any option, write a short binding brief in `brand.md`: one specific reference (a named product, site or print
+For a new look — a landing page, a brand or rebrand, a redesign — open the `design-references` skill before any
+option: a board of five or more references from two or more sources, each with what to learn from it, then
+directions pictured with their palette, type pair and layout. Before any option, write a short binding brief in `brand.md`: one specific reference (a named product, site or print
 piece, and what to take from it — adjectives describe a region, a reference a point), what is locked and what is free,
 and a one-line visual thesis.
 

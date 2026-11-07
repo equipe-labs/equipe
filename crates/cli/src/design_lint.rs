@@ -108,6 +108,9 @@ pub enum DirectionAction {
         density: String,
         #[arg(long)]
         motion: String,
+        /// The references on the board it draws on (`R1`), repeatable
+        #[arg(long = "ref")]
+        refs: Vec<String>,
         /// The ticket the options are for
         #[arg(long)]
         ticket: Option<String>,
@@ -373,10 +376,15 @@ async fn look(engine: Engine, ask: &second_look::Ask) -> Result<String, String> 
 
 pub fn direction(action: DirectionAction) -> Result<(), String> {
     match action {
-        DirectionAction::Propose { name, layout, type_, palette, density, motion, ticket, design } => {
+        DirectionAction::Propose { name, layout, type_, palette, density, motion, refs, ticket, design } => {
             let design = design.unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR));
+            let board = equipe_core::design::refs::read(&design);
+            if let Some(unknown) = refs.iter().find(|r| !board.iter().any(|b| b.id.eq_ignore_ascii_case(r))) {
+                return Err(equipe_core::t!("design.refs.no_such_ref", id = unknown));
+            }
             let mut log = directions::read(&design);
-            let proposal = directions::Direction { name: name.clone(), ticket, at: record::now(), chosen: false, layout, type_, palette, density, motion };
+            let references = refs.iter().map(|r| r.to_ascii_uppercase()).collect();
+            let proposal = directions::Direction { name: name.clone(), ticket, at: record::now(), chosen: false, layout, type_, palette, density, motion, references };
             let locked = directions::locked(&design);
             let problems = directions::check(&log, &proposal, &locked);
             if !problems.is_empty() {
@@ -400,7 +408,8 @@ pub fn direction(action: DirectionAction) -> Result<(), String> {
         DirectionAction::List { design } => {
             let design = design.unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR));
             for d in directions::read(&design) {
-                println!("{} {}{} — layout: {}; type: {}; palette: {}; density: {}; motion: {}", if d.chosen { "✓" } else { "·" }, d.name, d.ticket.map(|t| format!(" ({t})")).unwrap_or_default(), d.layout, d.type_, d.palette, d.density, d.motion);
+                let refs = if d.references.is_empty() { String::new() } else { format!("; refs: {}", d.references.join(", ")) };
+                println!("{} {}{} — layout: {}; type: {}; palette: {}; density: {}; motion: {}{refs}", if d.chosen { "✓" } else { "·" }, d.name, d.ticket.map(|t| format!(" ({t})")).unwrap_or_default(), d.layout, d.type_, d.palette, d.density, d.motion);
             }
             Ok(())
         }
