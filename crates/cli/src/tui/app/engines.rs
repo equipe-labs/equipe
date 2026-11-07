@@ -153,7 +153,9 @@ impl App {
         let (id, applied) = (card.id, card.applied);
         let squad = self.squad.clone();
         let command = match code {
-            KeyCode::Char('y') if !applied => Command::ApplyEngineProposal { squad, id },
+            KeyCode::Char('y') if !applied => Command::ApplyEngineProposal { squad, id, now: false },
+            // Move now: at the end of each one's turn, a ticket in progress handed over.
+            KeyCode::Char('m') => Command::ApplyEngineProposal { squad, id, now: true },
             KeyCode::Char('u') if applied => Command::UndoEngineProposal { squad, id },
             KeyCode::Char('n') => Command::DismissEngineProposal { squad, id },
             _ => return None,

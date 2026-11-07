@@ -268,7 +268,7 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
         // the card the daemon writes, in the daemon's language.
         if std::env::var("FAKE_ASKS").is_ok_and(|v| v == "engine") {
             use equipe_core::controls::{ENGINE_TOOL, Mover, move_words};
-            let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket };
+            let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket, now: false };
             let movers = [mover("designer", false, true), mover("frontend", true, false), mover("backend", false, false)];
             let action = move_words(lang(), &movers, Engine::Codex, Some("GPT-6.1 Sol"), None);
             return std::sync::Mutex::new(vec![Approval { ticket: None, ..ask(9, 1, "pm", ENGINE_TOOL, &action, None) }]);

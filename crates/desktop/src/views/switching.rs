@@ -376,6 +376,20 @@ fn card_element(shell: &Shell, card: &Proposal, cx: &mut Context<Shell>) -> AnyE
         .children(rules::progress(card).map(|words| div().text_size(px(11.5)).font_weight(FontWeight::NORMAL).text_color(p.muted).child(words)));
     let title = div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(rules::headline(card, now));
     let why = div().text_size(px(13.)).line_height(px(19.)).text_color(p.text2).child(rules::subline(card));
+    // The forecast behind it: when the plan runs out at this pace, and who used it.
+    let forecast = rules::forecast_words(card, now).map(|words| {
+        let warn = card.forecast.is_some_and(|f| f.runs_out_at.is_some());
+        h_flex()
+            .id(("engines-forecast", id))
+            .gap_1p5()
+            .items_start()
+            .text_size(px(12.5))
+            .line_height(px(18.))
+            .text_color(if warn { p.amber } else { p.text2 })
+            .child(div().pt(px(2.)).flex_none().child(icon(Icon::Clock, 12., if warn { p.amber } else { p.muted })))
+            .child(div().flex_1().min_w_0().child(words))
+    });
+    let stands = |name: &str| shell.model.members.iter().find(|m| m.name == name).map_or_else(rules::Stands::default, |m| rules::Stands { working: m.presence == crate::state::Presence::Working, on_ticket: m.ticket.is_some() });
 
     // The limit that set it off, as a meter: how used, when it starts over.
     let limit = (!setup && card.why != Why::Return).then(|| {
@@ -396,20 +410,22 @@ fn card_element(shell: &Shell, card: &Proposal, cx: &mut Context<Shell>) -> AnyE
             .child(div().flex_none().text_color(p.muted).child(t!("engines.resets_in", span = rules::span(card.resets_at, now))))
     });
 
-    // Who moves: now → after.
-    let rows: Vec<AnyElement> = rules::rows(card)
+    // Who moves: now → after, and when.
+    let rows: Vec<AnyElement> = rules::rows(card, stands)
         .into_iter()
         .map(|r| {
             h_flex()
                 .w_full()
-                .h(px(28.))
+                .min_h(px(28.))
                 .gap_3()
                 .items_center()
+                .flex_wrap()
                 .text_size(px(12.5))
                 .child(h_flex().w(px(112.)).flex_none().gap(px(6.)).items_center().child(crate::theme::avatar(p, &r.role, &r.member, 15.)).child(div().truncate().text_color(p.text).child(r.member)))
-                .child(div().w(px(168.)).flex_none().truncate().text_color(p.muted).child(r.now))
+                .child(div().w(px(150.)).flex_none().truncate().text_color(p.muted).child(r.now))
                 .child(icon(Icon::ArrowRight, 12., if r.moves_engine { p.accent } else { p.muted }))
-                .child(div().flex_1().min_w_0().truncate().text_color(if r.done { p.muted } else { p.text }).font_weight(if r.moves_engine { FontWeight::MEDIUM } else { FontWeight::NORMAL }).child(r.after))
+                .child(div().flex_1().min_w(px(96.)).truncate().text_color(if r.done { p.muted } else { p.text }).font_weight(if r.moves_engine { FontWeight::MEDIUM } else { FontWeight::NORMAL }).child(r.after))
+                .child(div().flex_none().text_size(px(11.5)).text_color(p.muted).child(r.when))
                 .child(div().w(px(16.)).flex_none().children(r.done.then(|| icon(Icon::Check, 13., p.accent))))
                 .into_any_element()
         })
@@ -426,16 +442,30 @@ fn card_element(shell: &Shell, card: &Proposal, cx: &mut Context<Shell>) -> AnyE
         .child(div().flex_1().min_w_0().child(if setup { t!("engines.setup_note") } else { t!("engines.note") }));
 
     let (yes_words, no_words) = rules::buttons(card);
+    // A member mid-ticket: "Move now" hands its ticket over at its turn's end;
+    // the gentle way waits for the ticket to end.
+    let now_offered = rules::offers_now(card, stands);
     let yes_answer = if card.applied { Answer::Undo } else { Answer::Apply };
     let yes = {
         let handle = handle.clone();
-        let kind = if card.applied { Kind::Secondary } else { Kind::Primary };
-        let button = ui::button(p, ("engines-yes", id), kind, yes_words).disabled(!shell.can_act());
+        let kind = if card.applied || now_offered { Kind::Secondary } else { Kind::Primary };
+        let words = if now_offered && !card.applied { t!("engines.move_after") } else { yes_words };
+        let button = ui::button(p, ("engines-yes", id), kind, words).disabled(!shell.can_act());
         let button = if card.applied { button.icon(Icon::Withdraw) } else { button };
         button.on_click(move |_, _, cx| {
             handle.update(cx, |shell, cx| shell.engines_decide(id, yes_answer, cx)).ok();
         })
     };
+    let now_button = now_offered.then(|| {
+        let handle = handle.clone();
+        ui::button(p, ("engines-now", id), if card.applied { Kind::Secondary } else { Kind::Primary }, t!("engines.move_now")).disabled(!shell.can_act()).tip(t!("engines.move_now_tip"), None).on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.engines_decide(id, Answer::Now, cx)).ok();
+        })
+    });
+    // In suggest: one click lets equipe make moves like this itself.
+    let auto = rules::offers_auto(card, shell.model.engines.mode).then(|| {
+        ui::button(p, ("engines-auto", id), Kind::Ghost, t!("engines.auto_offer")).disabled(!shell.can_act()).tip(t!("engines.auto_offer_tip"), None).on_click(cx.listener(|this, _, _, cx| this.set_switching(Switching::Auto, cx)))
+    });
     let no = {
         let handle = handle.clone();
         ui::button(p, ("engines-no", id), if card.applied { Kind::Primary } else { Kind::Secondary }, no_words).disabled(!shell.can_act()).on_click(move |_, _, cx| {
@@ -443,9 +473,18 @@ fn card_element(shell: &Shell, card: &Proposal, cx: &mut Context<Shell>) -> AnyE
         })
     };
     let mode = div().text_size(px(SMALL)).text_color(p.muted).child(t!("engines.mode_line", mode = rules::mode_word(shell.model.engines.mode)));
-    let foot = h_flex().w_full().pt_3().gap_2().items_center().border_t_1().border_color(p.hair).flex_wrap().child(div().flex_1().min_w(px(crate::ui::WORDS_AT_LEAST)).child(mode)).child(h_flex().flex_none().ml_auto().gap_2().child(yes).child(no));
+    let foot = h_flex()
+        .w_full()
+        .pt_3()
+        .gap_2()
+        .items_center()
+        .border_t_1()
+        .border_color(p.hair)
+        .flex_wrap()
+        .child(h_flex().flex_1().min_w(px(crate::ui::WORDS_AT_LEAST)).gap_2().items_center().flex_wrap().child(mode).children(auto))
+        .child(h_flex().flex_none().ml_auto().gap_2().flex_wrap().children(now_button).child(yes).child(no));
 
-    let inner = v_flex().w_full().gap_2p5().child(head).child(v_flex().gap_1().child(title).child(why)).children(limit).child(table).child(note).child(foot);
+    let inner = v_flex().w_full().gap_2p5().child(head).child(v_flex().gap_1().child(title).child(why).children(forecast)).children(limit).child(table).child(note).child(foot);
     div()
         .id(("engines-card", id))
         .w_full()

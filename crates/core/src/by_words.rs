@@ -358,7 +358,7 @@ pub fn commands(squad: &str, ask: &Ask, w: &Waiting, said: &Said) -> Vec<Command
         }
         Ask::ApproveRoutine(id) => vec![Command::ApproveRoutine { squad, id: *id }],
         Ask::Team(id) => vec![Command::ApproveTeamChange { squad, id: *id }],
-        Ask::Engine(id) => vec![Command::ApplyEngineProposal { squad, id: *id }],
+        Ask::Engine(id) => vec![Command::ApplyEngineProposal { squad, id: *id, now: false }],
     }
 }
 
@@ -915,7 +915,7 @@ mod tests {
         );
         assert_eq!(run(Ask::ApproveRoutine(30)), [Command::ApproveRoutine { squad: s(), id: 30 }]);
         assert_eq!(run(Ask::Team(40)), [Command::ApproveTeamChange { squad: s(), id: 40 }]);
-        assert_eq!(run(Ask::Engine(50)), [Command::ApplyEngineProposal { squad: s(), id: 50 }]);
+        assert_eq!(run(Ask::Engine(50)), [Command::ApplyEngineProposal { squad: s(), id: 50, now: false }]);
         for ask in [Ask::Tickets { verb: Verb::Push, tickets: vec![1, 2, 4] }, Ask::Card(20), Ask::Approval(10)] {
             for c in run(ask) {
                 assert!(matches!(c, Command::Accept { .. } | Command::Merge { .. } | Command::ConfirmAccept { .. } | Command::Decide { decision: Decision::Allow, .. }), "{c:?}");

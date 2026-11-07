@@ -875,7 +875,7 @@ enum Internal {
     /// The free space on equipe's disk, as a look begun then found it.
     Disk(Option<crate::disk::DiskStatus>, std::time::Instant),
     /// A pass over the engines' transcripts ended: the burns going on now.
-    PlanUsePassed(Vec<equipe_protocol::plan_use::Burn>),
+    PlanUsePassed(Vec<equipe_protocol::plan_use::Burn>, Vec<(Engine, crate::plan_use::Load)>),
     /// What uses the disk, as a look begun then found it.
     DiskReport(Box<crate::disk::DiskReport>, std::time::Instant),
     /// What a clean gave back, the free space after it, and who asked.
@@ -1392,7 +1392,7 @@ impl Runtime {
                 Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
-                Internal::PlanUsePassed(burns) => self.on_plan_use_passed(burns),
+                Internal::PlanUsePassed(burns, loads) => self.on_plan_use_passed(burns, loads),
                 Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
                 Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
@@ -2197,12 +2197,12 @@ impl Runtime {
                 }
                 self.publish(Event::SubagentsAtOnceChanged { squad, at_once });
             }
-            Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
+            Command::ApplyEngineProposal { squad, id, now } => self.apply_engine_proposal(&squad, id, now).await,
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
             Command::UndoHomeChange { squad, session, change } => self.undo_home_change(&squad, session, &change),
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
-            Command::MoveEngine { squad, members, engine, model, effort } => self.move_engine(&squad, members, engine, model, effort).await,
+            Command::MoveEngine { squad, members, engine, model, effort, now } => self.move_engine(&squad, members, engine, model, effort, now).await,
             Command::Design { squad } => self.design_asked(squad),
             Command::ProjectDocs { squad } => self.docs_asked(squad),
             Command::SearchDocs { squad, query } => self.docs_searched(squad, query),
