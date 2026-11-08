@@ -69,7 +69,8 @@ fn reviewer_section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Not `super::*`: gpui_kit's glob brings its own `test` attribute, which `#[test]` would then mean.
+    use super::{Reviewer, reviewer_words};
 
     #[test]
     fn each_design_reviewer_choice_has_its_name_and_says_what_it_does() {
