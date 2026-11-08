@@ -83,7 +83,10 @@ pub struct Chat {
     /// The chapters' list open over the rail (`views/chapters.rs`).
     pub rail_open: bool,
     /// Which of the cards over the composer is in front, when several wait.
-    pub dock_at: usize,
+    pub dock_at: std::cell::Cell<usize>,
+    /// A member's question just asked here: its card comes to the front of
+    /// the others, unless a more pressing one is there.
+    pub dock_bring: std::cell::Cell<bool>,
     pub blocks: Rc<Vec<Block>>,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
     /// the slice of it.
@@ -192,7 +195,8 @@ impl Chat {
             at: Rc::default(),
             compact_focus: (cx.focus_handle().tab_stop(true), cx.focus_handle().tab_stop(true)),
             follow: true,
-            dock_at: 0,
+            dock_at: std::cell::Cell::new(0),
+            dock_bring: std::cell::Cell::new(false),
             faded_in: None,
             seen_revision: 0,
             expanded: false,
@@ -578,7 +582,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 /// conversation stays in sight: the one in front, and "1 / 3 ‹ ›" to go
 /// through the others. Answered, the next comes to the front.
 fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
-    let cards: Vec<AnyElement> = [
+    // The member's questions are the fourth kind: a new one comes forward over those after it.
+    const DECIDE: usize = 3;
+    let cards: Vec<(usize, AnyElement)> = [
         // What the next message answers comes first.
         super::words::docked(shell, cx),
         super::secrets::docked(shell, cx),
@@ -590,13 +596,21 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         super::switching::docked(shell, cx),
     ]
     .into_iter()
-    .flatten()
+    .enumerate()
+    .filter_map(|(kind, card)| card.map(|c| (kind, c)))
     .collect();
     let count = cards.len();
     if count == 0 {
         return None;
     }
-    let at = shell.chat.dock_at.min(count - 1);
+    if shell.chat.dock_bring.take()
+        && let Some(decide) = cards.iter().position(|(kind, _)| *kind == DECIDE)
+        && shell.chat.dock_at.get().min(count - 1) > decide
+    {
+        shell.chat.dock_at.set(decide);
+    }
+    let cards: Vec<AnyElement> = cards.into_iter().map(|(_, c)| c).collect();
+    let at = shell.chat.dock_at.get().min(count - 1);
     let card = cards.into_iter().nth(at)?;
     if count == 1 {
         return Some(card);
@@ -614,7 +628,7 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .hover(move |s| s.bg(p.wash))
             .child(icon(glyph, 12., p.text2))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.chat.dock_at = (this.chat.dock_at.min(count - 1) as isize + by).rem_euclid(count as isize) as usize;
+                this.chat.dock_at.set((this.chat.dock_at.get().min(count - 1) as isize + by).rem_euclid(count as isize) as usize);
                 cx.notify();
             }))
     };

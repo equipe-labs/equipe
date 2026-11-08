@@ -98,6 +98,7 @@ projects are tiny.
 | task | member | graded on (required) |
 |---|---|---|
 | `backend-fix-failing-test` | backend | handed in through the board; tests pass; the test file unchanged; only `stats.py` changed |
+| `backend-move-now` | backend | the same fix, its first turn on Claude cut short after three steps with the person's "Move now" given: moved to Codex mid-ticket, the new session carries the ticket on and hands it in; tests pass; only `stats.py` changed; the fix made once (no duplicated edit) and nothing lost; the ticket's record says it was handed over; told: whether it checked the worktree before its first edit, and each engine's tokens. Compare it with `backend-fix-failing-test` on Codex alone (`EQUIPE_EVAL_ENGINE=codex`) as the control |
 | `backend-wait-for-server` | backend | a server that takes 20 s to start, waited for without a foreground sleep (a rule metric); tests pass; only `server.py` changed |
 | `frontend-clear-button` | frontend | handed in; `node --test` passes; the button, `clearItems` exported and tested; only the ticket's files changed |
 | `qa-planted-bug` | qa | handed in; its `test_found.py` fails on the planted boundary bug and passes on the fixed copy |

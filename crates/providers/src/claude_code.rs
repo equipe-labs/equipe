@@ -688,8 +688,8 @@ pub(crate) fn tool_target(name: &str, input: Option<&Value>) -> Option<String> {
     }
     board_target(name, input).or_else(|| {
         // `element` and `text`: what a browser step clicks or types into, in words;
-        // `app`, `keys`, `window`: a desktop step's.
-        ["file_path", "path", "notebook_path", "pattern", "command", "url", "action", "element", "text", "description", "app", "keys", "window"]
+        // `app`, `keys`, `window`: a desktop step's; `skill`: the skill a Skill step opens.
+        ["file_path", "path", "notebook_path", "pattern", "command", "url", "action", "element", "text", "description", "app", "keys", "window", "skill"]
             .iter()
             .find_map(|key| input?.get(*key).and_then(Value::as_str))
             .map(|t| t.lines().next().unwrap_or("").chars().take(120).collect())
@@ -1466,6 +1466,11 @@ mod tests {
         // A member's turn: its own conversation, Claude Code's whole tool set.
         let member = turn_args(&TurnRequest { prompt: "x", resume: Some("sess-1"), ..Default::default() });
         assert!(!member.iter().any(|a| a == "--fork-session" || a == "--tools"), "{member:?}");
+    }
+
+    #[test]
+    fn a_skill_step_names_the_skill_it_opens() {
+        assert_eq!(tool_target("Skill", Some(&json!({ "skill": "equipe:design-process" }))).as_deref(), Some("equipe:design-process"));
     }
 
     #[test]

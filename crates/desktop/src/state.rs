@@ -383,10 +383,13 @@ pub struct Model {
     pub revision: u64,
     /// The side chats opened from this window, by their id (`crate::side_chat`).
     pub side_chats: HashMap<equipe_core::protocol::SideChatId, crate::side_chat::SideConvo>,
-    /// Now, in unix seconds: set by the shell before each update (never read here).
+    /// Now, in unix seconds: set by the shell before each update.
     pub unix: u64,
     /// When each ticket came to the state it is in, as seen from here.
     pub since: HashMap<TicketId, u64>,
+    /// When the person last said something in each conversation, as seen
+    /// from here (unix seconds): what a member asked since is its reply.
+    pub said_at: HashMap<SessionId, u64>,
     /// Tickets the person just acted on, as they looked then: out of what
     /// waits for them until the daemon says they changed.
     pub acted: HashMap<TicketId, Look>,
@@ -520,6 +523,7 @@ impl Model {
             side_chats: HashMap::new(),
             unix: 0,
             since: HashMap::new(),
+            said_at: HashMap::new(),
             acted: HashMap::new(),
             news: Default::default(),
             daemon_version: String::new(),
@@ -616,12 +620,22 @@ impl Model {
     /// the person, who works, who rests, who left.
     pub fn team(&self) -> Vec<SessionId> {
         let pm = self.pm();
-        pm.into_iter().chain(self.ordered().into_iter().map(|m| m.session).filter(|s| Some(*s) != pm)).collect()
+        pm.into_iter().chain(self.ordered().into_iter().filter(|m| !self.moved_on(m)).map(|m| m.session).filter(|s| Some(*s) != pm)).collect()
+    }
+
+    /// A closed session whose member carries on in an open one under the same
+    /// name — what a move to the other engine leaves behind. Its work went
+    /// with the hand-over, so the team doesn't list it twice.
+    pub fn moved_on(&self, member: &Member) -> bool {
+        self.status(member) == Status::Closed && self.members.iter().any(|o| o.session != member.session && o.name == member.name && self.status(o) != Status::Closed)
     }
 
     /// The PM's session, or whoever came first without one.
     pub fn pm(&self) -> Option<SessionId> {
-        self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session)
+        // The PM on duty: a closed one (left behind by a move to the other
+        // engine) only when no PM is open.
+        let open = |m: &&Member| self.status(m) != Status::Closed;
+        self.members.iter().filter(|m| Self::is_pm(m)).find(open).or(self.members.iter().find(|m| Self::is_pm(m))).or(self.members.first()).map(|m| m.session)
     }
 
     /// Whether a ticket shows under the project in focus.
@@ -1354,6 +1368,9 @@ impl Model {
             other => {
                 let Some(id) = other.session() else { return };
                 let unix = self.unix;
+                if matches!(other, Event::UserMessage { .. }) {
+                    self.said_at.insert(id, unix);
+                }
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == id) {
                     if matches!(other, Event::UserMessage { .. } | Event::TurnEnded { .. }) {
                         lane.active = unix;
@@ -1697,7 +1714,7 @@ impl Model {
     /// and leave once the person acted on them; requests always show.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
-        out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
+        out.extend(self.questions_waiting().into_iter().map(|(s, _)| (Section::Decide, Need::Questions(s.id))));
         out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
         out.extend(self.routine_asks.open().map(|r| (Section::Decide, Need::Routine(r.id))));
         out.extend(self.accepts.open().map(|c| (Section::Decide, Need::Accept(c.id))));
@@ -1716,6 +1733,30 @@ impl Model {
             out.extend(tickets.into_iter().map(|t| (*section, Need::Ticket(t.id))));
         }
         out
+    }
+
+    /// Whether a question set holds work up: it is about a ticket still open.
+    pub fn question_blocks(&self, set: &equipe_core::protocol::decide::QuestionSet) -> bool {
+        set.ticket.is_some_and(|id| self.tickets.iter().any(|t| t.id == id && !t.status.is_closed()))
+    }
+
+    /// Every question set waiting, in the order they are offered away from
+    /// any one conversation (Needs you): those that hold work up first, then
+    /// the newest; the older ones last.
+    pub fn questions_waiting(&self) -> Vec<(&equipe_core::protocol::decide::QuestionSet, crate::decide::Rank)> {
+        crate::decide::order(self.asked.open().collect(), None, self.unix, |s| self.question_blocks(s))
+    }
+
+    /// The question sets the conversation on screen offers, in order: what
+    /// its member asked since the person last spoke there first
+    /// ([`crate::decide::order`]). None with no member on screen.
+    pub fn questions_here(&self) -> Vec<(&equipe_core::protocol::decide::QuestionSet, crate::decide::Rank)> {
+        let Some(member) = self.selected_member() else { return Vec::new() };
+        let mut sessions = vec![member.session];
+        sessions.extend(self.viewed().filter(|v| *v != member.session));
+        let said_at = sessions.iter().filter_map(|s| self.said_at.get(s)).max().copied();
+        let here = crate::decide::Here { member: &member.name, sessions, said_at };
+        crate::decide::order(self.asked.in_conversation(&member.name, Self::is_pm(member)), Some(&here), self.unix, |s| self.question_blocks(s))
     }
 
     /// How many things wait for the person.
@@ -1912,11 +1953,11 @@ impl Model {
     /// is working, who is resting, and who has left — each in the order they joined.
     pub fn ordered(&self) -> Vec<&Member> {
         let rank = |m: &Member| match self.status(m) {
+            Status::Closed => 4,
             _ if m.role == "pm" => 0,
             Status::NeedsYou(_) => 1,
             Status::Working { .. } => 2,
             Status::Ready { .. } => 3,
-            Status::Closed => 4,
         };
         let mut list: Vec<&Member> = self.members.iter().collect();
         list.sort_by_key(|m| rank(m));
@@ -2443,6 +2484,22 @@ mod tests {
     }
 
     #[test]
+    fn a_move_to_the_other_engine_leaves_no_closed_double_in_the_team() {
+        let mut model = Model::new("acme");
+        // The PM and backend moved: their old sessions closed, new ones open under the same names.
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Ready), session(3, "qa", "qa", SessionState::Ready), session(11, "pm", "pm", SessionState::Ready), session(12, "backend", "backend", SessionState::Ready)]), T0);
+        for gone in [1, 2, 3] {
+            model.apply(Update::Event(Event::SessionClosed { session: gone }), T0);
+        }
+        assert_eq!(model.pm(), Some(11), "the open PM, not the closed one");
+        let team = model.team();
+        assert_eq!(team.first(), Some(&11));
+        assert!(!team.contains(&1) && !team.contains(&2), "the moved members' old sessions aren't listed twice: {team:?}");
+        assert!(team.contains(&3), "someone who left, with no open session, still shows as closed");
+        assert_eq!(team.last(), Some(&3), "closed last");
+    }
+
+    #[test]
     fn events_move_a_member_between_states() {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
@@ -2960,6 +3017,36 @@ mod tests {
         assert!(model.apply(Update::Event(Event::QuestionsClosed { squad: "acme".into(), id: 40, answers: None }), T0), "answered on another screen: it goes, live");
         assert!(model.asked.ids().is_empty());
         assert!(matches!(model.status(&model.members[1]), Status::Working { .. }));
+    }
+
+    #[test]
+    fn the_question_the_pm_just_asked_in_reply_comes_first_in_its_conversation_and_needs_you_puts_blocked_work_first() {
+        use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
+        // The PM and backend at work; ticket 2 in progress, ticket 1 done.
+        let mut model = needs_model();
+        let day = 86_400;
+        let now = 40 * day;
+        model.unix = now;
+        let q = Question { question: "Which?".into(), options: vec![Choice { label: "a".into(), ..Choice::default() }, Choice { label: "b".into(), ..Choice::default() }], ..Question::default() };
+        let set = |id: u64, member: &str, session: SessionId, ticket: Option<u32>, ago: u64| QuestionSet { id, session, member: member.into(), ticket, questions: vec![q.clone()], asked_at: now - ago, review: false, retro: None };
+        // backend's two first, as asked: one on ticket 2 (in progress), one on 1 (done) — then the PM's, nine days back to now.
+        model.asked.load(vec![set(50, "backend", 2, Some(1), 5 * day), set(51, "backend", 2, Some(2), 2 * day), set(52, "pm", 1, None, 9 * day), set(53, "pm", 1, None, day), set(54, "backend", 2, Some(1), 3600)]);
+        // The person speaks to the PM; the PM asks in reply.
+        model.select(1);
+        model.unix = now + 10;
+        model.apply(Update::Event(Event::UserMessage { session: 1, text: "Let's do office hours".into(), kept: Vec::new() }), T0);
+        model.unix = now + 20;
+        model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: QuestionSet { asked_at: now + 20, ..set(55, "pm", 1, None, 0) } }), T0);
+        let here: Vec<u64> = model.questions_here().iter().map(|(s, _)| s.id).collect();
+        assert_eq!(here, [55, 53, 51, 54, 50, 52], "the reply on top, the PM's own, the team's (work held up first), the older ones last");
+        assert_eq!(model.questions_here()[0].1, crate::decide::Rank::Reply);
+        // In backend's conversation, only its own: the newest it asked there first.
+        model.select(2);
+        let here: Vec<u64> = model.questions_here().iter().map(|(s, _)| s.id).collect();
+        assert_eq!(here, [54, 51, 50], "its newest there stands for the reply: nothing heard from the person here");
+        // Needs you: the one holding work up (ticket 2 in progress) first, then the newest; the older last.
+        let decide: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Decide).map(|(_, n)| n).collect();
+        assert_eq!(decide, [51, 55, 54, 53, 50, 52].map(Need::Questions));
     }
 
     #[test]

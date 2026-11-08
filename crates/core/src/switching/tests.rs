@@ -3,7 +3,8 @@
 //! and the order roles move in.
 
 use super::*;
-use equipe_protocol::engines::{Switching, Why, Window};
+use equipe_protocol::engines::{Forecast, Switching, Why, Window};
+use equipe_protocol::plan_use::Pace;
 use equipe_protocol::{Engine, PlanWindow};
 
 const NOW: i64 = 1_760_000_000;
@@ -19,7 +20,7 @@ fn win(used: u8, left: i64) -> Option<PlanWindow> {
 
 /// A reading of `engine` taken at `at`: five hours used and left, a week used and left.
 fn read_at(engine: Engine, at: i64, five: Option<(u8, i64)>, week: Option<(u8, i64)>) -> Reading {
-    Reading { engine, five_hour: five.and_then(|(u, l)| win(u, l)), weekly: week.and_then(|(u, l)| win(u, l)), at, warning: false, rejected: false }
+    Reading { engine, five_hour: five.and_then(|(u, l)| win(u, l)), weekly: week.and_then(|(u, l)| win(u, l)), at, warning: false, rejected: false, pace: None }
 }
 
 fn claude(five: u8, week: u8) -> Reading {
@@ -44,6 +45,8 @@ fn mate(name: &str, engine: Engine) -> Mate {
         pinned: false,
         switched: Vec::new(),
         waiting: false,
+        load_bp: None,
+        ticket_left: None,
     }
 }
 
@@ -236,11 +239,11 @@ fn both_engines_low_step_down_on_the_same_engine_and_hold_new_tickets() {
     let again = decide_at(&r, &mates, &reach(), Switching::Auto, NOW + M, &mut memory);
     assert!(again.batch.is_none() && !again.hold.is_empty());
     // As light as it goes.
-    assert_eq!(step_down(Engine::Claude, Some("sonnet"), Some("low")), None);
-    assert_eq!(step_down(Engine::Claude, Some("sonnet"), None), Some((Some("sonnet".into()), Some("low".into()))), "the default is medium");
-    assert_eq!(step_down(Engine::Codex, Some("gpt-6-astra"), Some("high")), Some((Some("gpt-6.1-sol".into()), Some("high".into()))));
-    assert_eq!(step_down(Engine::Codex, Some("gpt-6.1-sol"), Some("low")), Some((Some("gpt-6.1-sol".into()), Some("minimal".into()))));
-    assert_eq!(step_down(Engine::Codex, Some("gpt-6.1-sol"), Some("minimal")), None);
+    assert_eq!(step_down(Engine::Claude, "backend", Some("sonnet"), Some("low")), None);
+    assert_eq!(step_down(Engine::Claude, "backend", Some("sonnet"), None), Some((Some("sonnet".into()), Some("low".into()))), "the default is medium");
+    assert_eq!(step_down(Engine::Codex, "backend", Some("gpt-6-astra"), Some("high")), Some((Some("gpt-6.1-sol".into()), Some("high".into()))));
+    assert_eq!(step_down(Engine::Codex, "backend", Some("gpt-6.1-sol"), Some("low")), Some((Some("gpt-6.1-sol".into()), Some("minimal".into()))));
+    assert_eq!(step_down(Engine::Codex, "backend", Some("gpt-6.1-sol"), Some("minimal")), None);
 }
 
 #[test]
@@ -486,4 +489,141 @@ fn codex_models_come_from_the_accounts_catalog() {
     let older: Vec<String> = ["gpt-6-astra", "gpt-6-sol"].iter().map(|s| (*s).to_owned()).collect();
     assert_eq!(codex_model("gpt-6.1-sol", &older).as_deref(), Some("gpt-6-sol"), "the family's newest the account has");
     assert_eq!(codex_model("gpt-6.1-sol", &["gpt-5.6-terra".to_owned()]), None, "the engine's own choice");
+}
+
+// ── the week's pace, who used it, pins, and moves now ──
+
+const D: i64 = 24 * H;
+
+/// A Claude week `used`, starting over in `left`, its pace running it out at `out` (from now), if known.
+fn paced(used: u8, left: i64, out: Option<i64>) -> Reading {
+    let mut r = read_at(Engine::Claude, NOW, Some((20, 3 * H)), Some((used, left)));
+    r.pace = out.map(|o| Pace { runs_out_at: NOW + o, before_reset: o < left, per_day_bp: 1_000 });
+    r
+}
+
+fn loaded(name: &str, bp: u32) -> Mate {
+    Mate { load_bp: Some(bp), ..mate(name, Engine::Claude) }
+}
+
+#[test]
+fn the_weeks_pace_shifts_a_week_that_wont_last_and_only_watches_one_that_will() {
+    let at = |r: Reading| {
+        let a = assess(&r, &Memory::default(), NOW);
+        (a.level, a.runs_out_at.map(|t| t - NOW), a.lasts)
+    };
+    // 72% used, three days left, out in one: two days early — moved.
+    assert_eq!(at(paced(72, 3 * D, Some(D))), (Level::Shift, Some(D), false));
+    // The same week with the pace lasting it: watched only for being over 70%.
+    assert_eq!(at(paced(72, 3 * D, Some(4 * D))), (Level::Watch, None, true));
+    // Out, but only six hours early: watched.
+    assert_eq!(at(paced(72, 3 * D, Some(3 * D - 6 * H))).0, Level::Watch);
+    // Under 70%: watched whatever the pace says.
+    assert_eq!(at(paced(60, 3 * D, Some(D))).0, Level::Watch);
+    // 86% whose pace lasts until the reset: watched, not moved — and moved without a pace.
+    assert_eq!(at(paced(86, 2 * D, Some(3 * D))).0, Level::Watch);
+    assert_eq!(at(paced(86, 2 * D, None)).0, Level::Shift);
+    // A drain is a drain, whatever the pace.
+    assert_eq!(at(paced(93, 2 * D, Some(5 * D))).0, Level::Drain);
+    // A stale reading's pace isn't trusted.
+    let mut stale = paced(72, 3 * D, Some(D));
+    stale.at = NOW - 2 * H;
+    assert_eq!(assess(&stale, &Memory::default(), NOW).level, Level::Watch);
+}
+
+#[test]
+fn a_shift_moves_the_heaviest_first_as_many_as_the_week_needs_and_light_ones_stay() {
+    let team = [loaded("pm", 1_200), loaded("backend", 4_000), loaded("frontend", 2_400), loaded("designer", 1_500), loaded("qa", 300), loaded("mobile", 0)];
+    // Out in one day of three: two thirds of the burn must go, and a margin.
+    let d = run(&[paced(80, 3 * D, Some(D)), codex(5, 5)], &team);
+    let batch = d.batch.clone().expect("a batch");
+    assert_eq!((batch.why, batch.window), (Why::Shift, Some(Window::Weekly)));
+    assert_eq!(moved(&d), ["backend", "frontend", "designer"], "the PM, qa and mobile used little or are the PM: they stay");
+    assert_eq!(batch.forecast, Some(Forecast { runs_out_at: Some(NOW + D), resets_at: NOW + 3 * D, load_bp: Some(7_900) }));
+    // Five hours running low, no pace: half the burn — the two heaviest.
+    let d = run(&[claude(88, 30), codex(5, 5)], &team);
+    assert_eq!(moved(&d), ["backend", "frontend"]);
+    // Nobody's use known: the implementation roles, as before.
+    let d = run(&[claude(88, 30), codex(5, 5)], &[mate("pm", Engine::Claude), mate("backend", Engine::Claude), mate("qa", Engine::Claude)]);
+    assert_eq!(moved(&d), ["backend"]);
+    // A drain: everyone, the heaviest first, the PM last.
+    let d = run(&[claude(96, 30), codex(5, 5)], &team);
+    assert_eq!(moved(&d), ["backend", "frontend", "designer", "qa", "mobile", "pm"]);
+    assert_eq!(rank(Engine::Codex, "pm"), 16, "the PM's own place stays last");
+}
+
+#[test]
+fn a_draining_plan_moves_at_the_turns_end_and_a_shift_only_when_the_ticket_would_outlast_it() {
+    let busy = |left: Option<i64>| Mate { ticket_left: left, ..loaded("backend", 5_000) };
+    let now_of = |d: &Decision| d.batch.as_ref().map(|b| b.moves.iter().map(|m| m.now).collect::<Vec<_>>()).unwrap_or_default();
+    assert_eq!(now_of(&run(&[claude(96, 30), codex(5, 5)], &[busy(None)])), [true], "a drain: at the end of its turn");
+    let far = read_at(Engine::Claude, NOW, None, Some((100, 2 * D)));
+    let mut memory = Memory::default();
+    let d = decide_at(&[far, codex(5, 5)], &[busy(None)], &reach(), Switching::Auto, NOW, &mut memory);
+    assert_eq!(now_of(&d), [true], "out: handed over");
+    // A Shift whose plan runs out in a day: a ticket said to take two more days moves now; one of an hour waits.
+    assert_eq!(now_of(&run(&[paced(80, 3 * D, Some(D)), codex(5, 5)], &[busy(Some(2 * D))])), [true]);
+    assert_eq!(now_of(&run(&[paced(80, 3 * D, Some(D)), codex(5, 5)], &[busy(Some(H))])), [false]);
+    assert_eq!(now_of(&run(&[paced(80, 3 * D, Some(D)), codex(5, 5)], &[busy(None)])), [false], "no estimate: before its next ticket");
+}
+
+#[test]
+fn a_member_the_person_pinned_stays_unless_its_engine_runs_out_and_then_comes_back_to_it() {
+    let pinned = Mate { pinned: true, ..loaded("backend", 6_000) };
+    let free = loaded("frontend", 3_000);
+    let d = run(&[paced(80, 3 * D, Some(D)), codex(5, 5)], &[pinned.clone(), free.clone()]);
+    assert_eq!(moved(&d), ["frontend"], "pinned: not moved on a shift");
+    assert_eq!(moved(&run(&[claude(96, 30), codex(5, 5)], &[pinned.clone(), free])), ["frontend"], "nor on a drain");
+    let out = read_at(Engine::Claude, NOW, None, Some((100, 2 * D)));
+    assert_eq!(moved(&run(&[out, codex(5, 5)], std::slice::from_ref(&pinned))), ["backend"], "out: handed over all the same");
+    // Away, its pin's engine recovered: back.
+    let away = Mate { engine: Engine::Codex, switched: vec![NOW - 4 * H], ..pinned };
+    let mut memory = Memory::default();
+    let ok = |at| read_at(Engine::Claude, at, Some((10, 4 * H)), Some((20, 6 * D)));
+    decide_at(&[ok(NOW), codex(5, 5)], std::slice::from_ref(&away), &reach(), Switching::Auto, NOW, &mut memory);
+    let d = decide_at(&[ok(NOW + 11 * M), codex(5, 5)], &[away], &reach(), Switching::Auto, NOW + 11 * M, &mut memory);
+    assert_eq!((d.batch.as_ref().map(|b| b.why), moved(&d)), (Some(Why::Return), vec!["backend"]));
+}
+
+#[test]
+fn the_pace_lasting_brings_nobody_back_before_the_week_is_under_75() {
+    // Moved off a Claude week at 80% whose pace now lasts: it stays away.
+    let away = vec![Mate { engine: Engine::Codex, home: Engine::Claude, switched: vec![NOW - 4 * H], ..loaded("backend", 0) }];
+    let mut memory = Memory::default();
+    let lasting = |at| {
+        let mut r = read_at(Engine::Claude, at, Some((10, 4 * H)), Some((80, 2 * D)));
+        r.pace = Some(Pace { runs_out_at: at + 5 * D, before_reset: false, per_day_bp: 400 });
+        r
+    };
+    for at in [NOW, NOW + 11 * M, NOW + 30 * M] {
+        let d = decide_at(&[lasting(at), codex(5, 5)], &away, &reach(), Switching::Auto, at, &mut memory);
+        assert!(d.batch.is_none(), "at +{}m", (at - NOW) / M);
+    }
+}
+
+#[test]
+fn nobody_moves_to_an_engine_the_person_is_signed_out_of() {
+    let signed_out = Reach { ready: vec![Engine::Claude], ..reach() };
+    for readings in [vec![claude(96, 30), codex(5, 5)], vec![paced(80, 3 * D, Some(D)), codex(5, 5)], vec![read_at(Engine::Claude, NOW, None, Some((100, 2 * D))), codex(5, 5)]] {
+        let d = decide_at(&readings, &[loaded("backend", 6_000)], &signed_out, Switching::Auto, NOW, &mut Memory::default());
+        assert!(d.batch.as_ref().is_none_or(|b| b.moves.iter().all(|m| m.to == Engine::Claude)), "{:?}", d.batch);
+        assert!(d.refresh.is_empty(), "nothing read toward it either");
+    }
+}
+
+#[test]
+fn a_reviewer_stepped_down_keeps_its_tiers_floor() {
+    assert_eq!(step_down(Engine::Codex, "qa", Some("gpt-6.1-sol"), Some("high")), Some((Some("gpt-6.1-sol".into()), Some("medium".into()))));
+    assert_eq!(step_down(Engine::Codex, "qa", Some("gpt-6.1-sol"), Some("medium")), None, "never under medium");
+    assert_eq!(step_down(Engine::Claude, "security", Some("sonnet"), None), None, "the default is medium already");
+    assert_eq!(step_down(Engine::Codex, "qa", Some("gpt-6-astra"), Some("medium")), Some((Some("gpt-6.1-sol".into()), Some("medium".into()))), "Astra to Sol, its floor");
+    assert_eq!(step_down(Engine::Codex, "data", Some("gpt-6.1-sol"), Some("medium")), Some((Some("gpt-6.1-sol".into()), Some("low".into()))));
+}
+
+#[test]
+fn what_must_go_is_what_the_pace_says_and_a_margin() {
+    let a = assess(&paced(80, 3 * D, Some(D)), &Memory::default(), NOW);
+    assert_eq!(a.need_bp(NOW), 7_666);
+    let a = assess(&claude(88, 30), &Memory::default(), NOW);
+    assert_eq!(a.need_bp(NOW), NEED_BP, "no forecast: half");
 }

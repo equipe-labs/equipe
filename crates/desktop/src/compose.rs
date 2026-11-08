@@ -696,9 +696,14 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             }
         }
         // `/engine codex` (the member in view), `/engine backend codex`,
-        // `/engine all claude`: moved at each one's next ticket boundary.
+        // `/engine all claude`: moved at each one's next ticket boundary —
+        // `/engine backend codex now`: at the end of its turn, mid-ticket.
         "engine" => {
-            let words: Vec<&str> = rest.split_whitespace().collect();
+            let mut words: Vec<&str> = rest.split_whitespace().collect();
+            let now = words.last().is_some_and(|w| w.eq_ignore_ascii_case("now"));
+            if now {
+                words.pop();
+            }
             let engine = words.last().and_then(|w| match w.to_ascii_lowercase().as_str() {
                 "claude" | "claude-code" | "claudecode" => Some(Engine::Claude),
                 "codex" => Some(Engine::Codex),
@@ -722,7 +727,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             };
             let who = if members.is_empty() { t!("compose.engine_everyone").to_owned() } else { members.join("·") };
             Plan {
-                commands: vec![Command::MoveEngine { squad, members, engine, model: None, effort: None }],
+                commands: vec![Command::MoveEngine { squad, members, engine, model: None, effort: None, now }],
                 flash: Some(t!("compose.engine_moving", names = who, engine = crate::switching::engine_name(engine))),
                 ..Plan::default()
             }

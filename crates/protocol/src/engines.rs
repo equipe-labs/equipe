@@ -1,6 +1,7 @@
 //! Two plans, one squad: equipe watches what is left of each engine's plan
-//! ([`crate::EnginePlan`]) and moves members between engines at their ticket
-//! boundaries — never mid-turn. How it does is the squad's choice
+//! ([`crate::EnginePlan`]) and moves members between engines — between
+//! tickets, or at the end of a turn mid-ticket with the ticket handed over
+//! ([`Move::now`]); never mid-turn. How it does is the squad's choice
 //! ([`Switching`]): only showing, proposing on a card the person answers, or
 //! moving on its own and saying so, with one click to undo. A move is never
 //! paid for: equipe doesn't spend credits or overage on its own.
@@ -98,6 +99,12 @@ pub struct Move {
     /// Made: the member runs as it says now.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
+    /// At the end of the member's current turn, even mid-ticket: its ticket
+    /// is handed over (same branch and worktree, a brief of what was done and
+    /// what is next) and carried on on the other engine. Otherwise a member on
+    /// a ticket finishes it where it is and moves before its next one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub now: bool,
 }
 
 impl Move {
@@ -105,6 +112,22 @@ impl Move {
     pub fn in_place(&self) -> bool {
         self.from == self.to
     }
+}
+
+/// Why a plan's moves are worth it, as the Usage screen's forecast says:
+/// when the plan runs out at the pace of late, against when it starts over,
+/// and how much of its week the members moving used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forecast {
+    /// When it runs out at this pace (unix seconds); `None`: it lasts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs_out_at: Option<i64>,
+    /// When the window starts over (unix seconds).
+    pub resets_at: i64,
+    /// Of the engine's load this week, what the members moving used, in
+    /// basis points (10 000 = 100 %); `None`: not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_bp: Option<u32>,
 }
 
 /// Moves equipe proposes — or, in [`Switching::Auto`], made and tells of.
@@ -129,12 +152,20 @@ pub struct Proposal {
     /// When, in unix seconds.
     #[serde(default)]
     pub proposed_at: u64,
+    /// The forecast behind it, when the plan's pace is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forecast: Option<Forecast>,
 }
 
 impl Proposal {
     /// The engine members move to — the first move's.
     pub fn to(&self) -> Option<Engine> {
         self.moves.iter().find(|m| !m.in_place()).map(|m| m.to)
+    }
+
+    /// Whether any of its moves still waits for its member.
+    pub fn waiting(&self) -> bool {
+        self.moves.iter().any(|m| !m.done)
     }
 }
 
@@ -151,9 +182,10 @@ mod tests {
             window: Some(Window::FiveHour),
             used_percent: 86,
             resets_at: 1_760_007_200,
-            moves: vec![Move { member: "backend".into(), role: "backend".into(), from: Engine::Claude, to: Engine::Codex, model: None, effort: None, was_model: Some("opus".into()), done: false }],
+            moves: vec![Move { member: "backend".into(), role: "backend".into(), from: Engine::Claude, to: Engine::Codex, model: None, effort: None, was_model: Some("opus".into()), done: false, now: false }],
             applied: false,
             proposed_at: 1_760_000_000,
+            forecast: None,
         }
     }
 
@@ -169,6 +201,15 @@ mod tests {
         let setup: Proposal = serde_json::from_value(json!({ "id": 1, "why": "setup", "moves": [] })).unwrap();
         assert_eq!((setup.engine, setup.window, setup.applied, setup.to()), (None, None, false, None));
         assert_eq!(shift().to(), Some(Engine::Codex));
+        // A move now and its forecast, as a newer daemon sends them; an older screen reads neither.
+        let mut now = shift();
+        now.moves[0].now = true;
+        now.forecast = Some(Forecast { runs_out_at: Some(1_760_100_000), resets_at: 1_760_300_000, load_bp: Some(6_400) });
+        let wire = serde_json::to_value(&now).unwrap();
+        assert_eq!(wire["moves"][0]["now"], json!(true));
+        assert_eq!(wire["forecast"], json!({ "runs_out_at": 1_760_100_000i64, "resets_at": 1_760_300_000i64, "load_bp": 6_400 }));
+        assert_eq!(serde_json::from_value::<Proposal>(wire).unwrap(), now);
+        assert!(now.waiting());
     }
 
     #[test]

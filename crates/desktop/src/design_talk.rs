@@ -174,7 +174,16 @@ const LEAVES: f32 = 560.;
 /// Whether the panel is open: in a narrow room only when the person opened
 /// it there; else as they left it, open at first.
 pub fn shown(kept: Option<bool>, opened_narrow: bool, room: f32) -> bool {
-    if room < NARROW { opened_narrow } else { kept != Some(false) }
+    shown_from(kept, opened_narrow, room, NARROW)
+}
+
+/// The designer studio's room is narrow only under this: its own column
+/// gives way to the conversation sooner than the design screen's.
+pub const STUDIO_NARROW: f32 = 880.;
+
+/// [`shown`], narrow under `narrow`.
+pub fn shown_from(kept: Option<bool>, opened_narrow: bool, room: f32, narrow: f32) -> bool {
+    if room < narrow { opened_narrow } else { kept != Some(false) }
 }
 
 /// Its width: as dragged, within what the room leaves.
@@ -280,6 +289,8 @@ mod tests {
         assert!(shown(Some(true), false, 1400.));
         assert!(!shown(Some(true), false, 800.), "a narrow room folds it");
         assert!(shown(Some(false), true, 800.), "unless opened there");
+        assert!(shown_from(None, false, 920., STUDIO_NARROW), "the studio keeps it open in a room the design screen folds it in");
+        assert!(!shown(None, false, 920.));
         assert_eq!(width(None, 1400.), WIDTH);
         assert_eq!(width(Some(700.), 1100.), 540.);
         assert_eq!(width(Some(100.), 1400.), MIN_WIDTH);

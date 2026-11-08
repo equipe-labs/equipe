@@ -202,6 +202,12 @@ pub fn compliance(task: &Task, out: &Outcome) -> (BTreeMap<String, Option<bool>>
             skills.extend(quality::skill_checks(t, Some(task.role)));
         }
     }
+    // A member moved to Codex mid-run: what it did there counts too.
+    if !codex {
+        for session in tasks::codex_sessions_of(out, task.role) {
+            rules.add(&quality::rules(&steps_from_events(&out.state.events, session)));
+        }
+    }
     let asked: Vec<_> = out.state.person.questions.iter().filter(|q| q.member == task.role || q.member.starts_with(&format!("{}-", task.role))).collect();
     let with_options: Vec<_> = asked.iter().filter(|q| q.questions.iter().any(|x| !x.options.is_empty())).collect();
     let recommended = with_options.iter().filter(|q| q.questions.iter().filter(|x| !x.options.is_empty()).all(|x| x.options.iter().any(|o| o.shown().1))).count();

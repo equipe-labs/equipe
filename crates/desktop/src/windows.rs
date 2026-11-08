@@ -92,6 +92,8 @@ impl Spot {
             Screen::Project => project.map_or(Spot::Pm, |p| Spot::Project(p.to_owned())),
             // Settings is a visit, not a place to come back to.
             Screen::Settings => Spot::Pm,
+            // A ticket's work watched: that ticket, when the window opens again.
+            Screen::Studio => place.ticket.map_or(Spot::Pm, Spot::Ticket),
         }
     }
 

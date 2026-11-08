@@ -146,11 +146,11 @@ impl Runtime {
             Change::PmAccepts(on) => Command::SetPmAccepts { squad: squad_name, on },
             Change::IdleWake(hours) => Command::SetIdleWake { squad: squad_name, hours },
             Change::Model { member, model } => Command::SetModel { session: session(&member)?, model },
-            Change::Engine { members, engine, model, effort } => {
+            Change::Engine { members, engine, model, effort, now } => {
                 for name in &members {
                     session(name)?;
                 }
-                Command::MoveEngine { squad: squad_name, members, engine, model, effort }
+                Command::MoveEngine { squad: squad_name, members, engine, model, effort, now }
             }
             Change::Effort { member, effort } => Command::SetEffort { session: session(&member)?, effort },
             Change::EngineSwitching(mode) => Command::SetEngineSwitching { squad: squad_name, mode },
@@ -215,7 +215,7 @@ impl Runtime {
                     takes => format!("{member}'s model on {} takes effort {}, or default — not {effort:?}. Nothing changed.", engine_name(engine), takes.join(" | ")),
                 })
             }
-            Change::Engine { members, engine, model, effort } => {
+            Change::Engine { members, engine, model, effort, .. } => {
                 let mut already = Vec::new();
                 for name in members {
                     if self.engine_of(squad, name)? == *engine {
@@ -298,12 +298,12 @@ impl Runtime {
     }
 
     /// The members an engine move takes, as they stand now: for when each one moves.
-    fn movers(&self, squad: &str, members: &[String]) -> Vec<Mover> {
+    fn movers(&self, squad: &str, members: &[String], now: bool) -> Vec<Mover> {
         members
             .iter()
             .filter_map(|name| {
                 let s = self.member_id(squad, name).and_then(|id| self.sessions.get(&id))?;
-                Some(Mover { name: name.clone(), from: s.engine, working: s.is_working(), on_ticket: s.work.is_some() })
+                Some(Mover { name: name.clone(), from: s.engine, working: s.is_working(), on_ticket: s.work.is_some(), now })
             })
             .collect()
     }
@@ -321,9 +321,9 @@ impl Runtime {
             Change::IdleWake(0) => say!(self, "control.idle_wake_off"),
             Change::IdleWake(hours) => say!(self, "control.idle_wake", hours = hours),
             Change::Model { member, model } => say!(self, "control.model", member = member, model = model),
-            Change::Engine { members, engine, model, effort } => {
+            Change::Engine { members, engine, model, effort, now } => {
                 let model = model.as_deref().map(|m| self.model_label(m));
-                controls::move_words(lang, &self.movers(squad, members), *engine, model.as_deref(), effort.as_deref())
+                controls::move_words(lang, &self.movers(squad, members, *now), *engine, model.as_deref(), effort.as_deref())
             }
             Change::Effort { member, effort } => say!(self, "control.effort", member = member, effort = effort.as_deref().unwrap_or("default")),
             Change::EngineSwitching(m) => say!(self, "control.engine_switching", mode = format!("{m:?}").to_lowercase()),

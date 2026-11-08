@@ -384,7 +384,19 @@ fn lane_card(shell: &Shell, ix: usize, l: &Lane, cx: &mut Context<Shell>) -> Any
                     }))
                     .child(div().flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
                     .child(div().flex_1().min_w(px(160.)).truncate().text_size(px(14.)).text_color(p.text).child(c.title.clone()))
-                    .child(div().flex_none().text_size(px(12.)).text_color(p.text2).child(state)),
+                    .child(div().flex_none().text_size(px(12.)).text_color(p.text2).child(state))
+                    // A design ticket: watched in the designer studio.
+                    .when(shell.studio_offered(id), |row| {
+                        row.child(
+                            ui::button(p, ("orch-studio", ix), ui::Kind::Secondary, t!("studio.open"))
+                                .icon(Icon::Eye)
+                                .tip(t!("studio.open_tip"), None)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.open_studio(id, window, cx);
+                                })),
+                        )
+                    }),
             );
             if let Some(step) = step.filter(|_| l.doing == Doing::Working) {
                 card = card.child(div().w_full().truncate().text_size(px(12.)).text_color(p.muted).child(step));
