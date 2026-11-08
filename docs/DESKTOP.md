@@ -373,6 +373,20 @@ is the person's own: on this Mac "Sign in in Terminal" opens Terminal running `c
 there. A phone may see where the engines stand, never sign one in or out, and never gets a
 code. `FAKE_ENGINES` in the fake daemon shows each state.
 
+**Call setup.** There is no separate call switch on the Mac. The recovery path is
+**Settings › AI platforms › Codex**: install the Codex CLI from that card when it is
+missing, then sign in to ChatGPT. A call is set up only when the daemon sees the installed
+CLI as `EngineState::SignedIn` *and* a Codex app-server started with experimental APIs
+accepts the realtime capability used by `thread/realtime/start`. The older equipe-owned
+ChatGPT login does not count: realtime calls use the person's installed Codex CLI and its
+own login. A successful sign-in refreshes the engine state immediately, so neither the
+daemon nor the phone is restarted.
+
+When a connected phone asks to start a call and either check fails, the daemon reports the
+call as `notSetUp`; `macOff` remains only for a Mac that is not connected. iOS and Android
+offer the same recovery: fix the Codex card on the Mac, then explicitly try again. They do
+not start a call or resend a command automatically when the state changes.
+
 ## Anonymous usage data (opt-in)
 
 The daemon keeps the answer (`telemetry`, `telemetry_set` — `docs/TELEMETRY.md`);
