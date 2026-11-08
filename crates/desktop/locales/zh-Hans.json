@@ -3424,7 +3424,7 @@
   "moved.between": "在两个工单之间",
   "moved.packet_note": "这是新对话一开始收到的原文，只读。",
   "render.card_waiting": "正在绘制卡片…",
-  "render.card_failed": "无法绘制此卡片，以下是其源码。",
+  "render.card_failed": "无法绘制此卡片",
   "render.card_open": "在浏览器面板中打开",
   "render.card_big": "放大查看",
   "render.card_label": "HTML 卡片",

@@ -3508,7 +3508,7 @@
   "moved.between": "zwischen Tickets",
   "moved.packet_note": "Genau das, womit das neue Gespräch begann. Nur lesbar.",
   "render.card_waiting": "Karte wird gezeichnet…",
-  "render.card_failed": "Diese Karte ließ sich nicht zeichnen; hier ist ihr Quelltext.",
+  "render.card_failed": "Diese Karte ließ sich nicht zeichnen",
   "render.card_open": "Im Browser-Bereich öffnen",
   "render.card_big": "Vergrößern",
   "render.card_label": "HTML-Karte",

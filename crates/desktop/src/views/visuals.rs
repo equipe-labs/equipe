@@ -425,12 +425,116 @@ pub fn inline(shots: &Shots, row: u64, path: &str, alt: &str, pictures: &[(Strin
     div().py_1().child(tip(frame, p, label, None)).into_any_element()
 }
 
+/// A small button over a picture (a card's "View larger", a diagram's source
+/// and copy): out of sight until the pointer is on the picture or the keys
+/// have come to it, then there in `motion::FAST`. It takes the keys' focus
+/// (the ring shows only for keys) and is named for a screen reader.
+pub struct Reveal {
+    hovered: Entity<bool>,
+    focus: FocusHandle,
+    pub shown: f32,
+}
+
+impl Reveal {
+    /// The state of one picture's buttons: `id` tells the picture, `held`
+    /// keeps them up (the way back from a view of the source).
+    pub fn of(name: &'static str, id: u64, held: bool, window: &mut Window, cx: &mut App) -> Self {
+        let hovered = window.use_keyed_state(ElementId::NamedInteger(format!("{name}-hover").into(), id), cx, |_, _| false);
+        let focus = window.use_keyed_state(ElementId::NamedInteger(format!("{name}-focus").into(), id), cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
+        let on = *hovered.read(cx) || held || focus.is_focused(window);
+        let shown = motion::openness(ElementId::NamedInteger(format!("{name}-fade").into(), id), on, window, cx);
+        Self { hovered, focus, shown }
+    }
+
+    /// For the picture's frame: it tells when the pointer is on it.
+    pub fn watch<E: StatefulInteractiveElement>(&self, frame: E) -> E {
+        let hovered = self.hovered.clone();
+        frame.on_hover(move |on, _, cx| {
+            if *hovered.read(cx) != *on {
+                hovered.update(cx, |h, cx| {
+                    *h = *on;
+                    cx.notify();
+                });
+            }
+        })
+    }
+
+    /// One button; its own `focus` when the picture has several.
+    pub fn button(&self, p: Palette, id: ElementId, label: &'static str, name: String, focus: Option<&FocusHandle>) -> Stateful<Div> {
+        let ring = Rgba { a: 0.55, ..p.accent };
+        let focus = focus.unwrap_or(&self.focus).clone();
+        div()
+            .id(id)
+            .h(px(24.))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded(px(R_SM))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.hair)
+            .text_size(px(12.))
+            .text_color(p.muted)
+            .cursor_pointer()
+            .opacity(self.shown)
+            .hover(move |s| s.text_color(p.text))
+            .track_focus(&focus)
+            .focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]))
+            .role(Role::Button)
+            .aria_label(name)
+            .child(label)
+    }
+}
+
+/// A card's title for a screen reader: its `<title>`, else its first heading.
+pub fn card_title(source: &str) -> Option<String> {
+    let lower = source.to_ascii_lowercase();
+    ["title", "h1", "h2", "h3"].iter().find_map(|tag| {
+        let open = lower.find(&format!("<{tag}"))?;
+        let from = open + lower[open..].find('>')? + 1;
+        let to = from + lower[from..].find(&format!("</{tag}"))?;
+        let mut text = String::new();
+        let mut in_tag = false;
+        for c in source[from..to].chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!text.is_empty()).then_some(text)
+    })
+}
+
+/// A diagram's title for a screen reader: its `title` line or front matter.
+pub fn diagram_title(source: &str) -> Option<String> {
+    let line = source.lines().map(str::trim).find_map(|l| l.strip_prefix("title:").or_else(|| l.strip_prefix("title ")))?;
+    let line = line.trim().trim_matches(|c| c == '"' || c == '\'');
+    (!line.is_empty()).then(|| line.to_owned())
+}
+
+/// An HTML card's page as a `data:` URL, which the browser panel opens
+/// wherever the app runs (a `file://` it won't). `None`: the page can't be
+/// read here, or is past what a URL should carry.
+pub fn page_url(page: &str) -> Option<String> {
+    use base64::Engine as _;
+    const MOST: u64 = 1 << 20;
+    let file = std::fs::File::open(page).ok()?;
+    if file.metadata().ok()?.len() > MOST {
+        return None;
+    }
+    let bytes = std::fs::read(page).ok()?;
+    Some(format!("data:text/html;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
 /// An HTML card the daemon drew, in the tone the window is in: as wide as
 /// it was drawn at 1x (never wider than the column), whole. A click opens its
-/// page in the browser panel (the big view when it has none); "크게 보기",
-/// under the pointer, opens the picture big. `None`: the picture can't be had
-/// (the card's source is shown instead).
-pub fn card(shots: &Shots, row: u64, drawn: &equipe_core::protocol::Rendered, cx: &mut App) -> Option<AnyElement> {
+/// page in the browser panel (the big view when it has none); "View larger",
+/// under the pointer or at the keys, opens the picture big. `None`: the
+/// picture can't be had (the card's source is shown instead).
+pub fn card(shots: &Shots, row: u64, drawn: &equipe_core::protocol::Rendered, title: Option<String>, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let p = shots.p;
     let tone = if is_dark(p) { &drawn.dark } else { &drawn.light };
     shots.in_row(&tone.path, row);
@@ -456,33 +560,24 @@ pub fn card(shots: &Shots, row: u64, drawn: &equipe_core::protocol::Rendered, cx
     };
     let handle = shots.handle();
     let page = drawn.page.clone();
-    let viewer = Viewer::of_reply(row, &[(tone.path.clone(), t!("render.card_label").to_owned())], &tone.path);
+    let name = match &title {
+        Some(title) => format!("{}: {title}", t!("render.card_label")),
+        None => t!("render.card_label").to_owned(),
+    };
+    let viewer = Viewer::of_reply(row, &[(tone.path.clone(), name.clone())], &tone.path);
+    let reveal = Reveal::of("card", id, false, window, cx);
+    // Bottom right, where a card has the date line's empty end — its heading, at the top, stays whole.
     let big = {
         let (handle, viewer) = (handle.clone(), viewer.clone());
-        h_flex()
-            .id(("card-big", id))
+        reveal
+            .button(p, ElementId::NamedInteger("card-big".into(), id), t!("render.card_big"), format!("{}: {}", t!("render.card_big"), name), None)
             .absolute()
-            .top(px(8.))
+            .bottom(px(8.))
             .right(px(8.))
-            .h(px(24.))
-            .px_2()
-            .items_center()
-            .rounded(px(R_SM))
-            .bg(p.raised)
-            .border_1()
-            .border_color(p.hair)
-            .text_size(px(12.))
-            .text_color(p.muted)
-            .cursor_pointer()
-            .opacity(0.)
-            .group_hover(SharedString::from(format!("card-{id}")), |s| s.opacity(1.))
-            .hover(move |s| s.text_color(p.text))
-            .child(t!("render.card_big"))
             .on_click(opens(&handle, viewer))
     };
     let frame = div()
         .id(("card", id))
-        .group(SharedString::from(format!("card-{id}")))
         .relative()
         .flex_none()
         .w(px(w))
@@ -490,21 +585,25 @@ pub fn card(shots: &Shots, row: u64, drawn: &equipe_core::protocol::Rendered, cx
         .rounded(px(R_LG))
         .overflow_hidden()
         .cursor_pointer()
+        .role(Role::Image)
+        .aria_label(name)
         .child(face)
         .child(big)
-        .on_click(move |_, window, cx| match &page {
-            Some(page) => {
-                let url = format!("file://{page}");
-                handle.update(cx, |shell, cx| shell.open_in_panel(&url, window, cx)).ok();
-            }
-            None => {
-                if let Some(viewer) = viewer.clone() {
-                    handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+        .on_click(move |_, window, cx| {
+            let url = page.as_deref().and_then(page_url);
+            match url {
+                Some(url) => {
+                    handle.update(cx, |shell, cx| shell.open_in_panel(&url, window, cx)).ok();
+                }
+                None => {
+                    if let Some(viewer) = viewer.clone() {
+                        handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                    }
                 }
             }
         });
     let label = if drawn.page.is_some() { t!("render.card_open") } else { t!("render.card_big") };
-    Some(div().py_1().child(tip(frame, p, label, None)).into_any_element())
+    Some(reveal.watch(div().id(("card-row", id)).py_1().child(tip(frame, p, label, None))).into_any_element())
 }
 
 /// The strip under a reply that names a folder of pictures: "N images",
@@ -669,6 +768,11 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
     let viewport = window.viewport_size();
     let room = ((f32::from(viewport.width) - 96.).max(120.), (f32::from(viewport.height) - 150.).max(120.));
     let size = match shown.as_ref().and_then(|s| s.dims) {
+        // A tall one (a long card) is shown as wide as the room, and the wheel scrolls it: fitted whole it would be smaller than it was in the conversation.
+        Some(dims) if tall(dims, room) => {
+            let w = room.0.min(dims.0 as f32 / 2. * 1.5).max(240.);
+            (w, w * dims.1 as f32 / dims.0.max(1) as f32)
+        }
         Some(dims) => rules::contain(dims, (room.0.min(dims.0 as f32 / 2. * 1.5).max(240.), room.1.min(dims.1 as f32 / 2. * 1.5).max(180.))),
         None => {
             let side = room.0.min(room.1).min(720.);
@@ -676,7 +780,11 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
         }
     };
     // Zoomed in: the picture bigger, moved by `pan`, within the view's room.
-    let (scale, pan) = shell.viewer_zoom.of(&item.path);
+    let (scale, mut pan) = shell.viewer_zoom.of(&item.path);
+    // A tall picture not yet touched starts at its top.
+    if shell.viewer_zoom.path != item.path && size.1 > room.1 + 0.5 {
+        pan.1 = (size.1 - room.1) / 2.;
+    }
     let zoomed = (size.0 * scale, size.1 * scale);
     let face: AnyElement = match (&shown, &thumb) {
         (Some(shot), _) => {
@@ -821,6 +929,14 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
     Some(motion::fade(backdrop, "viewer-in", motion::BASE).into_any_element())
 }
 
+/// Whether a picture (px at 2x) is so tall that fitted whole it would show
+/// under three quarters of the width it could have.
+fn tall(dims: (u32, u32), room: (f32, f32)) -> bool {
+    let width = room.0.min(dims.0 as f32 / 2. * 1.5).max(240.);
+    let whole = room.1 * dims.0 as f32 / dims.1.max(1) as f32;
+    whole < width * 0.75
+}
+
 /// The room the picture is shown in: whole, it sits in the middle; zoomed in,
 /// it is clipped to the room and moved by `pan`. A trackpad's pinch zooms
 /// with the fingers, the point between them kept where it is; the wheel
@@ -837,13 +953,16 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
     // The picture whole: the same however far it is zoomed, so it holds for
     // every event this frame sends, however many come before the next.
     let fit = (size.0 / scale, size.1 / scale);
+    // Taller than the room even whole: the wheel and a drag move it at 1×.
+    let scrolls = fit.1 > room.1 + 0.5;
+    let top_pan = (fit.1 - room.1) / 2.;
     div()
         .id("viewer-stage")
         .relative()
         .w(px(room.0))
         .h(px(room.1))
         .overflow_hidden()
-        .when(scale > 1., |s| s.cursor_grab())
+        .when(scale > 1. || scrolls, |s| s.cursor_grab())
         .child(div().absolute().left(px((room.0 - size.0) / 2. + pan.0)).top(px((room.1 - size.1) / 2. + pan.1)).child(face))
         .on_scroll_wheel(cx.listener(move |this, e: &ScrollWheelEvent, window, cx| {
             let delta = e.delta.pixel_delta(window.line_height());
@@ -852,7 +971,12 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
             if e.modifiers.platform || e.modifiers.control {
                 let next = (now * (1. + dy / 300.)).clamp(1., 12.);
                 this.viewer_zoom.set(&wheel_path, next, from_centre(e.position));
-            } else if now > 1. {
+            } else if now > 1. || scrolls {
+                if this.viewer_zoom.path != wheel_path {
+                    this.viewer_zoom.path = wheel_path.clone();
+                    this.viewer_zoom.scale = 1.;
+                    this.viewer_zoom.pan = (0., top_pan);
+                }
                 this.viewer_zoom.pan = (this.viewer_zoom.pan.0 + dx, this.viewer_zoom.pan.1 + dy);
             } else {
                 return;
@@ -871,7 +995,10 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
         }))
         .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
             cx.stop_propagation();
-            let (now, pan) = this.viewer_zoom.of(&down_path);
+            let (now, mut pan) = this.viewer_zoom.of(&down_path);
+            if this.viewer_zoom.path != down_path && scrolls {
+                pan.1 = top_pan;
+            }
             if e.click_count >= 2 {
                 let next = if now > 1. { 1. } else { 2. };
                 this.viewer_zoom.set(&down_path, next, from_centre(e.position));
@@ -880,7 +1007,7 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
                 cx.notify();
                 return;
             }
-            this.viewer_zoom.drag = (now > 1.).then_some(((f32::from(e.position.x), f32::from(e.position.y)), pan, false));
+            this.viewer_zoom.drag = (now > 1. || scrolls).then_some(((f32::from(e.position.x), f32::from(e.position.y)), pan, false));
         }))
         .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
             let Some((from, pan0, _)) = this.viewer_zoom.drag else { return };

@@ -1274,7 +1274,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: reading::REPLY.into() });
                         }
                         if visuals::on() {
-                            history.push(Entry::User { text: visuals::ASKED.into() });
+                            history.push(Entry::User { text: visuals::ASKED.into(), kept: Vec::new() });
                             history.push(Entry::Reply { text: visuals::reply() });
                         }
                         if pictures::on() {
