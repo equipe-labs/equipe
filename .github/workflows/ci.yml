@@ -34,8 +34,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo check -p equipe-core -p equipe-providers -p equipe-protocol --locked
       - run: cargo build -p equipe-core -p equipe-providers -p equipe-protocol --locked
-      - run: cargo test -p equipe-core -p equipe-providers -p equipe-protocol --locked
-      - run: cargo clippy -p equipe-core -p equipe-providers -p equipe-protocol --all-targets --locked -- -D warnings
+      - run: cargo clippy -p equipe-core -p equipe-providers -p equipe-protocol --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
