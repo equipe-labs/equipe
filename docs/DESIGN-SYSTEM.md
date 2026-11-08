@@ -169,8 +169,47 @@ shown only on dark, `…-light` only on light, any other on both.
   1.5 s — their files' sizes and times only — and sends the event again when
   one changed, so the screen follows what the designer saves.
 - `read_image` `{ squad, path, max? }` for each asset.
+- The designer studio (below) asks `design_studio` `{ squad, ticket }` →
+  `Studio` (`crates/protocol/src/studio.rs`) every 2 s while it is open: what
+  the ticket's worktree design folder holds — each screen's latest check and
+  second look, the edits not checked yet, the directions' log, the critiques,
+  the reference board — and every other picture of the work, each with where
+  it came from: the phone's recordings (`<squad home>/recordings/T-<n>/`), the
+  ticket's hand-in folder (`outputs/T-<n>…/`) and its reports, the pictures
+  the member opened or wrote while working on the ticket (read from its
+  conversation's lines, `Journal::ticket_lines`) and those beside them, what
+  is new in its worktree since the work began, what its hand-in names.
+  Read-only, every file and list capped (`crates/core/src/design/studio.rs`);
+  its pictures through `read_image`, which gives what a studio answer named
+  for the squad for 15 minutes after. The read-only real view may ask it;
+  phones are not routed it.
 
 See `docs/remote-protocol.md` for the phone's side.
+
+### The designer studio (desktop)
+
+Watch a ticket's design work as it happens (`crates/desktop/src/views/studio.rs`;
+from a ticket's card, the member's lane in Orchestration, or the conversation's
+header when the member is on a design ticket). Under the title, an honest status
+line — where the member is, weighed as the sidebar weighs it (an OK asked, a
+waiting ticket, a question of its own, on this ticket or another: "Waiting for
+you on T-60: …"), else handed in, working or idle — and what holds the work up
+("Checks failing: Contrast — …"); what it is doing now, its last ten steps in
+plain words with the latest lit and how long it has run; the steps of its kind
+of work — a design's brief, references, directions, build, checks, hand-in; a
+design QA's brief, the change, the screens seen, measured, findings, verdict;
+building screens' brief, build, checks, hand-in — each lit from what the member
+did, with how much and when; the newest picture of the work (a check's at each
+of seven widths, a phone recording, a screenshot it opened, its hand-in folder's
+sheets — never "nothing drawn" while one exists), with the recent ones to pick
+from; its report's findings; and a timeline of what it left —
+references with what to learn from them, directions and the pick, critiques,
+each check and second look, each hand-in and why it was refused — any of them
+opened big. The member's conversation is docked at the right, as on the design
+screen. The rules (`crates/desktop/src/studio.rs`) read only the member's own
+lines on the ticket (Claude's and Codex's steps alike) and the folder above —
+never guessed. `studio:<ticket>` in the snapshot script; `FAKE_STUDIO=1|waiting|
+failing|handed|codex` in the fake daemon.
 
 ## The designer's tools — `equipe design`
 
@@ -226,7 +265,30 @@ On Claude Code, a designer's and a frontend engineer's skills plugin has a
 just written and handed back in the same turn. A designer's edits are also
 written to `design/checks/pending.json`, and its hand-in is refused until each
 was drawn and checked, passed the floor, and had a passing second look after
-the check (a new screen's first screenful looked at first).
+the check (a new screen's first screenful looked at first). The directions it
+explored (`design/directions/`) are left to the directions' log: only what
+ships waits for a check. A check is kept where the hand-in looks — the design
+folder nearest the files checked — whichever system `--design` checked them
+against; a refusal names each file, the rule and the exact commands, and says
+when a check was kept in another folder. Refused the same way a second time,
+the work goes in with what wasn't cleared marked in its hand-in for the person,
+and the PM is told: a check that can't be cleared is theirs to see, not a loop.
+
+The second look asks only for facts the brief, the project's files or the
+design system give. A fact none of them has is an open question with neutral
+wording to use meanwhile, never a fix: it doesn't hold a pass, and the designer
+uses the wording or asks with `ask_decision` while it carries on. After three
+looks in a row that ask for fixes (the first screenful's or the whole's), the
+hand-in goes with what the last look asked for marked for the person, and the
+PM is told — the same way as a refusal met twice.
+
+A member's commands carry `EQUIPE_MEMBER_ENGINE` (`claude` or `codex`), so
+`second-look` and `critique` know the caller's engine even for a command run
+outside its engine's sandbox, where the engine's own variables are gone; with
+no engine known and none named, they say which they took. When the sandbox
+has no network for the engine, the member is told to run the command again
+outside it, or, if that isn't allowed, to say so in its hand-in rather than
+try again.
 
 ## Remixing references — the `design` tools (equipe-design)
 

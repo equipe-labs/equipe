@@ -231,8 +231,9 @@ one person does, so give the busiest roles to the plan with the most room.
 ## Contributing
 
 Issues and pull requests are welcome on
-[GitHub](https://github.com/equipe-labs/equipe/issues). There is no CONTRIBUTING guide yet;
-until there is, please open an issue before a large change so we can agree on the approach.
+[GitHub](https://github.com/equipe-labs/equipe/issues). Read [CONTRIBUTING.md](CONTRIBUTING.md)
+first: open an issue before a large change so we can agree on the approach. Everyone taking
+part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 The workspace is all Rust:
 
@@ -255,8 +256,8 @@ The README's screenshots are drawn offscreen by the desktop app against an examp
 ([`scripts/design-shot.sh`](scripts/design-shot.sh), [`fake_daemon.rs`](crates/desktop/examples/fake_daemon.rs)),
 so they show example data, not anyone's real squad.
 
-**Security issues:** there is no security policy yet. Please don't post vulnerability details
-in a public issue; open an issue asking for a private contact instead.
+**Security issues:** please don't post them in a public issue. Report them privately through
+the repository's **Security** tab; see [SECURITY.md](SECURITY.md).
 
 ## License
 

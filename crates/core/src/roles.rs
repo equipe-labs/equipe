@@ -116,7 +116,9 @@ Code is an engineer's to change: delegate it, every time someone on the team can
 change yourself waits for the person to accept, and they would rather not. Do a change yourself only when nobody on the \
 team can do it, and never work an engineer is already on. Then it is a `code` ticket you own, on your \
 own branch in a worktree of your own — never in the conversation — and the person accepts it, not you. The person may talk with you about \
-anything, tied to no project: work that belongs to none happens in the squad's folder. When they want a new project \
+anything, tied to no project: work that belongs to none happens in the squad's folder. After any code merge, push \
+main immediately and verify its upstream ahead/behind counts are both zero; a merge is not finished while it exists only locally. \
+When they want a new project \
 (an app, a repository), or ask you to add one they have, add it with `add_project`: a new one's folder where they say \
 (else beside their other projects), made and started as a repository for you. Only when they asked for it. \
 Everything else they can set on their screen they can ask you for in words: read it with `settings`, change it with \
@@ -566,6 +568,13 @@ own words: hand it in with `submit_for_review` and the PM takes it from there. W
 — approve something, give a password, sign in — goes in front of them as a card (`ask_person`, `ask_decision`, \
 `block_on_person`, `show_my_browser`), never only asked in words and waited on.";
 
+/// The common finish line for engineers, whichever product they build.
+const ENGINEER_HAND_IN: &str = "On a screen-changing `code` ticket, before you hand it in, run the changed screens \
+yourself and take fresh screenshots across the same scope as design QA: every relevant language and supported width, \
+light and dark, and large text. Attach them to `submit_for_review` in `images` and give all four `screen_checks`; a \
+hand-in without them is refused with what is missing. Immediately before handing in, refresh main from its remote, \
+rebase your branch onto the latest main, prove there are no conflicts, and run the relevant tests on that rebased tree.";
+
 pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
     let duties = match (role.id == CUSTOM.id, ctx.edits) {
@@ -575,6 +584,11 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
         ),
         (true, false) => format!("{} In the projects you read and report; you don't change their files.", role.duties),
         (false, _) => role.duties.to_owned(),
+    };
+    let duties = if matches!(role.id, "frontend" | "backend" | "mobile") {
+        format!("{duties}\n{ENGINEER_HAND_IN}")
+    } else {
+        duties
     };
     let mates: Vec<String> = ctx
         .team
@@ -1003,7 +1017,14 @@ mod tests {
             "`write_plan`",
             "the architecture and data flow, the edge cases, the test plan as concrete cases, design notes and risks",
             "the most ambitious version worth building",
-            // Reviews: the right members, in parallel, each into the plan.
+            // A clear, well-specified ask: no reviews, no scope card — its build tickets at once, never review tickets instead.
+            "A clear, well-specified ask",
+            "needs no reviews and no scope card",
+            "in the same turn, cut its build tickets, each with its owner and acceptance criteria",
+            "never tickets in place of the build tickets",
+            // Reviews: for bigger or open work — the right members, in parallel, each into the plan.
+            "Bigger or open work",
+            "is reviewed before its tickets",
             "(`reviewers`), all at once",
             "an engineer for the architecture, edge cases and test plan",
             "the designer for what people will see against the UI map",
@@ -1025,6 +1046,7 @@ mod tests {
         }
         let at = |part: &str| pm.find(part).unwrap();
         assert!(at("`reviewers`") < at("`ask_decision` question with four") && at("four options") < at("Then cut its tickets"), "reviews, then the scope, then tickets");
+        assert!(at("well-specified ask") < at("Bigger or open work"), "the clear ask is told before the review path");
     }
 
     #[test]
@@ -1855,6 +1877,36 @@ invent one."), "{id}: true numbers");
         // Kept by the person: as before.
         let kept = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(kept.contains("Only the person accepts finished work") && !kept.contains("`accept_work`"), "{kept}");
+    }
+
+    #[test]
+    fn engineers_prove_screens_and_rebase_while_the_pm_pushes_merges() {
+        let team = [
+            Teammate { name: "pm", role: PM },
+            Teammate { name: "frontend", role: "frontend" },
+            Teammate { name: "backend", role: "backend" },
+            Teammate { name: "mobile", role: "mobile" },
+            Teammate { name: "qa", role: "qa" },
+        ];
+        for engineer in ["frontend", "backend", "mobile"] {
+            let text = charter(role(engineer).unwrap(), engineer, &ctx(&team, &[], true));
+            for part in [
+                "fresh screenshots",
+                "every relevant language and supported width",
+                "light and dark",
+                "large text",
+                "all four `screen_checks`",
+                "rebase your branch onto the latest main",
+                "no conflicts",
+                "run the relevant tests",
+            ] {
+                assert!(text.contains(part), "{engineer}: {part}: {text}");
+            }
+        }
+        let qa = charter(role("qa").unwrap(), "qa", &ctx(&team, &[], true));
+        assert!(!qa.contains("all four `screen_checks`"), "{qa}");
+        let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(pm.contains("After any code merge") && pm.contains("ahead/behind counts are both zero"), "{pm}");
     }
 
     #[test]

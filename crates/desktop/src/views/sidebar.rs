@@ -224,6 +224,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let working = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).count();
     let risky = crate::board::progress(model, model.unix).risks.len();
     let progress_on = shell.screen == Screen::Progress;
+    let orchestra_on = shell.screen == Screen::Orchestration;
 
     // The strip: the title bar's fixed buttons float over its left (see
     // `title_buttons`); search, the sidebar's own, sits after them and leaves
@@ -276,6 +277,16 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
                     if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Progress, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                         this.open_progress(cx);
+                    }
+                })),
+        )
+        // Who does what and waits on whom, beside the work's progress.
+        .child(
+            nav("nav-orchestra", glyph(IconName::Network, orchestra_on), t!("orchestra.title").into(), 0, 0, false, orchestra_on)
+                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘⇧L"))
+                .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                    if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Orchestration, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                        this.open_orchestra(cx);
                     }
                 })),
         )
@@ -2225,7 +2236,7 @@ impl Shell {
 
     /// Where the window is now, for back and forward.
     pub fn place(&self) -> Place {
-        Place { screen: self.screen, menu: self.board.view.menu, member: self.model.selected, ticket: self.model.opened }
+        Place { screen: self.screen, menu: self.board.view.menu, member: self.model.selected, ticket: if self.screen == Screen::Studio { self.studio.ticket } else { self.model.opened } }
     }
 
     /// Called from each draw: a new place goes on the history.
@@ -2274,7 +2285,12 @@ impl Shell {
             Screen::Metrics => self.open_metrics(cx),
             Screen::Progress => self.open_progress(cx),
             Screen::Usage => self.open_usage(cx),
+            Screen::Orchestration => self.open_orchestra(cx),
             Screen::Docs => self.open_docs(cx),
+            Screen::Studio => match place.ticket.or(self.studio.ticket) {
+                Some(id) => self.open_studio(id, window, cx),
+                None => self.open_side(Side::Pm, window, cx),
+            },
             Screen::Project => match self.board.project_page.clone() {
                 Some(name) => self.open_project_page(name, window, cx),
                 None => self.open_side(Side::Pm, window, cx),

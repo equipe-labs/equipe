@@ -35,26 +35,41 @@ impl Runtime {
     /// second look that passed after the check. Refused with what to do;
     /// on the way through, the edits' ledger is cleared for the next ticket.
     /// Reads two or three small files in its worktree's `design/`.
-    pub(super) fn designer_hand_in(&self, id: SessionId) -> Result<(), String> {
-        let Some(session) = self.sessions.get(&id) else { return Ok(()) };
+    /// `Ok(Some(gap))`: refused the same way a second time, or its screens'
+    /// looks asked for fixes [`crate::design::lint::record::LOOKS_BEFORE_THE_PERSON`]
+    /// times in a row, it goes in with what stood in its way, to be marked for
+    /// the person — a check that can't be cleared is the person's to see, not
+    /// a loop for the member.
+    pub(super) fn designer_hand_in(&mut self, id: SessionId) -> Result<Option<Vec<String>>, String> {
+        let Some(session) = self.sessions.get_mut(&id) else { return Ok(None) };
         if session.member.as_ref().is_none_or(|m| m.role != DESIGNER) {
-            return Ok(());
+            return Ok(None);
         }
         let cwd = session.work.as_ref().map_or_else(|| session.cwd.clone(), |w| w.cwd.clone());
         let design = cwd.join(crate::design::DIR);
         let needs = crate::design::lint::record::hand_in(&design);
-        if !needs.is_empty() {
+        let again = session.work.as_ref().and_then(|w| w.refused.as_ref()).is_some_and(|before| *before == needs);
+        if !needs.is_empty() && !again {
+            if let Some(work) = session.work.as_mut() {
+                work.refused = Some(needs.clone());
+            }
             return Err(format!(
-                "Not yet — a screen you made goes to the person only checked and seen fresh:\n{}\nThen hand in again.",
+                "Not yet — a screen you made goes to the person only checked and seen fresh:\n{}\nThen hand in again. If you hand in again the same way, it goes in with these marked for the person as not cleared.",
                 needs.iter().map(|n| format!("- {n}")).collect::<Vec<_>>().join("\n")
             ));
         }
+        let mut gap = needs;
+        gap.extend(crate::design::lint::record::open_fixes(&design));
         crate::design::lint::record::handed_in(&design);
-        Ok(())
+        if let Some(work) = session.work.as_mut() {
+            work.refused = None;
+        }
+        Ok((!gap.is_empty()).then_some(gap))
     }
 
-    /// What `submit_for_review` asks of a code ticket in a squad with a
-    /// designer: whether users see the change, and if so its screenshots.
+    /// What `submit_for_review` asks of an engineer's code ticket: whether
+    /// users see the change, and if so fresh screenshots across the design QA
+    /// range. A squad with a designer sends a complete hand-in to design QA.
     /// `Ok(true)`: it goes to design QA when the turn ends.
     pub(super) fn screens_handed_in(&mut self, squad: &str, id: SessionId, args: &Value, pictures: usize) -> Result<bool, String> {
         let Some(session) = self.sessions.get(&id) else {
@@ -67,18 +82,36 @@ impl Runtime {
         if self.checked_by(squad, ticket).is_some() {
             return Err(format!("T-{ticket} is a design QA ticket: finish it with design_qa — pass, or changes with your findings."));
         }
-        // A designer's own work, and what isn't code, has no one else to check it.
-        if kind != TicketKind::Code || role == DESIGNER || !self.has_designer(squad) {
+        // A designer's own work has its stricter design ledger; non-code work
+        // has no built screen to prove here.
+        if kind != TicketKind::Code || role == DESIGNER {
             return Ok(false);
         }
         match args.get("changes_screens").and_then(Value::as_bool) {
-            None => Err("Say whether this changes what users see (changes_screens: true or false): the squad's designer \
-checks changed screens before the person reviews. Then hand in again."
+            None => Err("Say whether this changes what users see (changes_screens: true or false). Then hand in again."
                 .into()),
-            Some(true) if pictures == 0 => Err("Screens changed: the designer checks them from screenshots. Save a \
-screenshot of each changed screen in your worktree, name them in images, and hand in again."
+            Some(true) if pictures == 0 => Err("Screens changed: save fresh screenshots of each changed screen in \
+your worktree, name them in images, and hand in again."
                 .into()),
-            Some(changed) => Ok(changed),
+            Some(true) => {
+                const ALL: [(&str, &str); 4] = [
+                    ("languages", "languages"),
+                    ("widths", "widths"),
+                    ("light_dark", "light and dark"),
+                    ("large_text", "large text"),
+                ];
+                let checked = board::arg_strs(args, "screen_checks");
+                let missing = ALL.iter().filter(|(key, _)| !checked.iter().any(|got| got == key)).map(|(_, label)| *label).collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "Screens changed: the hand-in screenshots must cover the same range as design QA. Add every \
+screen_checks value; missing: {}. Then hand in again.",
+                        missing.join(", ")
+                    ));
+                }
+                Ok(self.has_designer(squad))
+            }
+            Some(false) => Ok(false),
         }
     }
 

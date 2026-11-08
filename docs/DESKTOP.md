@@ -520,6 +520,41 @@ members' pages as 0.47 did, for a before shot). The host's
 ops have a smoke test, a stand-in Cloudflare wall included:
 `npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
 
+## Orchestration
+
+The sidebar's **Orchestration** row (under Progress), ⌘⇧L or View ›
+Orchestration: the squad at a glance, read-only, drawn from what the daemon
+already sends (`crates/desktop/src/orchestra.rs` derives it,
+`views/orchestra.rs` draws it).
+
+- **Waiting on you**: what Needs you holds, counted by kind (permissions,
+  decisions, your turn, reviews, the rest) — its breakdown, a dot and a quiet
+  number each; a click opens Needs you.
+- **Where work is stuck**, the worst first, each in a sentence: tickets that
+  wait on each other in a loop; a failed turn; a chain of waiting (a member
+  waits on another who waits too — "frontend-2 → backend · T-74 → backend ·
+  T-73 → you · your part"); a ticket waiting on one no one holds; nothing heard
+  from a member at work for 30 minutes; a ticket under way unchanged for two
+  hours while its member rests; past its estimate; a subagent gone quiet, or
+  at it for 20 minutes.
+- **A lane per member**, the PM first, then who needs the person, who works,
+  who waits; an idle one is a single row. Each has its engine and model, the
+  ticket it is on and for how long, its subagents as small bars (at work, and
+  those that handed back in the last 15 minutes), a chip for each wait
+  ("Waits on backend · T-74") that lights the lane it waits on under the
+  pointer and scrolls to it on a click, who it holds up, and its share of the
+  plan over the last day (from the Usage screen's look at it; a click opens
+  Usage at that day, by member).
+
+Who waits on whom comes from the board: a ticket's `depends_on`, who holds
+each ticket (the member on it, else its assignee, else its owner — a role
+names its member), a ticket waiting on the person or in their review, and a
+permission or decision a member asks. A member's own next ticket behind one
+of its own is its queue, not a wait. A dependency done, cancelled or no
+longer on the board holds nothing up. A phone gets the same snapshot and
+events, so it can show the same picture; nothing new travels for it.
+`FAKE_ORCHESTRA=1` gives the fake daemon a squad with each of these.
+
 ## Notifications
 
 While the window is out of sight — another app in front, the window hidden,

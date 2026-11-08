@@ -213,6 +213,7 @@ pub const READ_METHODS: &[&str] = &[
     rpc::READ_UPLOAD,
     rpc::READ_IMAGE,
     rpc::LIST_IMAGES,
+    rpc::DESIGN_STUDIO,
     rpc::TELEMETRY,
     rpc::PERSON_LOOK,
     metrics::SOURCES,
@@ -581,13 +582,13 @@ mod tests {
             Command::SetSubagentsAtOnce { squad: s(), at_once: Some(4) },
             Command::Models { engine: Engine::Codex },
             Command::SetRoleModel { squad: s(), default: equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: None, effort: None } },
-            Command::ApplyEngineProposal { squad: s(), id: 1 },
+            Command::ApplyEngineProposal { squad: s(), id: 1, now: false },
             Command::DismissEngineProposal { squad: s(), id: 1 },
             Command::UndoEngineProposal { squad: s(), id: 1 },
             Command::UndoHomeChange { squad: s(), session: 1, change: "abc".into() },
             Command::OnPhone { command: Box::new(Command::Interrupt { session: 1 }) },
             Command::ShowEngineSetup { squad: s() },
-            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude, model: None, effort: None },
+            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude, model: None, effort: None, now: false },
             Command::Design { squad: s() },
             Command::ProjectDocs { squad: s() },
             Command::SearchDocs { squad: s(), query: "checkout".into() },
@@ -643,7 +644,7 @@ mod tests {
 
     #[test]
     fn only_requests_that_read_go() {
-        for method in [rpc::HELLO, rpc::SQUADS, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::READ_UPLOAD, rpc::PERSON_LOOK, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
+        for method in [rpc::HELLO, rpc::SQUADS, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::DESIGN_STUDIO, rpc::READ_UPLOAD, rpc::PERSON_LOOK, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
             assert!(reads_method(method), "{method}");
         }
         // The real view tells no look of its own: it isn't the person's screen.

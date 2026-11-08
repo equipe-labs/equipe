@@ -928,6 +928,17 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
             let way = shell.merge_way_of(&shell.project_of(t));
             let offered = acts(t.status, t.not_on_main(), t.branch.is_some());
             let first = offered.first().copied();
+            // A design ticket: its work, watched in the designer studio.
+            let studio = shell.studio_offered(id).then(|| {
+                let handle = handle.clone();
+                btn(p, "card-studio", t!("studio.open"), None, false, true).h(px(26.)).on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    put_away(cx);
+                    if let Some(shell) = handle.upgrade() {
+                        shell.update(cx, |s, cx| s.open_studio(id, window, cx));
+                    }
+                })
+            });
             h_flex()
                 .flex_wrap()
                 .gap_2()
@@ -947,6 +958,7 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
                         })
                     })
                 }))
+                .children(studio)
                 .into_any_element()
         }
     };

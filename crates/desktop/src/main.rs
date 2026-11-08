@@ -58,6 +58,7 @@ mod sshkey;
 mod snapshot;
 mod state;
 mod stream;
+mod studio;
 mod target;
 mod theme;
 mod routine;
@@ -77,6 +78,7 @@ use relaunch::DaemonUpdate;
 mod metrics;
 mod models;
 mod picker;
+mod orchestra;
 mod roadmap;
 mod sent;
 mod releases;
@@ -133,6 +135,8 @@ actions!(equipe, [PairPhone]);
 actions!(equipe, [DismissOverlay, NewSquad]);
 // The View menu's: the window's size, as a browser zooms (⌘+, ⌘-, ⌘0).
 actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
+// Orchestration (⌘⇧L), from the View menu or anywhere.
+actions!(equipe, [ShowOrchestration]);
 // The Window menu's: one more window (⌘⇧N), and the Mac's own two.
 actions!(equipe, [NewWindow, MinimizeWindow, ZoomWindow]);
 
@@ -206,8 +210,12 @@ pub enum Screen {
     Progress,
     /// Usage: where the plans went (`views/usage.rs`).
     Usage,
+    /// Orchestration: who is doing what, who waits on whom, where work is stuck (`views/orchestra.rs`).
+    Orchestration,
     /// Briefs and plans: every project's and the squad's own, in one place (`views/docs.rs`).
     Docs,
+    /// The designer studio: a ticket's design work, watched as it happens (`views/studio.rs`).
+    Studio,
 }
 
 pub struct Shell {
@@ -251,6 +259,8 @@ pub struct Shell {
     pub settings: views::settings::SettingsUi,
     /// Design system's state: what the daemon said, what is on screen.
     pub design: design::DesignUi,
+    /// The designer studio: a ticket's design work, watched (`views/studio.rs`).
+    pub studio: studio::StudioUi,
     /// Compare and review's box for what to change, a draft sent back with it.
     pub design_redo: Entity<InputState>,
     /// The routines' list on Progress: which is being edited or deleted.
@@ -446,6 +456,7 @@ impl Shell {
             side_chat: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
+            studio: Default::default(),
             design_redo: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.compare_redo_placeholder"))),
             routines_ui: Default::default(),
             releases: Vec::new(),
@@ -1699,7 +1710,9 @@ impl Shell {
                     Screen::Project => views::project::render(self, cx),
                     Screen::Progress => views::progress::render(self, cx),
                     Screen::Usage => views::usage::render(self, cx),
+                    Screen::Orchestration => views::orchestra::render(self, cx),
                     Screen::Docs => views::docs::render(self, cx),
+                    Screen::Studio => views::studio::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
@@ -2014,6 +2027,7 @@ impl Render for Shell {
         self.board.relocalize(window, cx);
         self.board_prepare(window, cx);
         self.design_prepare(window, cx);
+        self.studio_prepare(window, cx);
         // What the person did here (accepted, answered, a project in focus) changes Needs you too.
         self.sync_badge();
         self.sync_window(window);
@@ -2121,6 +2135,7 @@ impl Render for Shell {
                 let next = if this.screen == Screen::Chat { Screen::Board } else { Screen::Chat };
                 this.show(next, cx);
             }))
+            .on_action(cx.listener(|this, _: &ShowOrchestration, _, cx| this.open_orchestra(cx)))
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| this.toggle_terminal(window, cx)))
@@ -2318,6 +2333,7 @@ fn view_menu() -> Menu {
         MenuItem::separator(),
         MenuItem::action(t!("menu.palette"), CommandPalette),
         MenuItem::action(t!("menu.toggle_board"), ToggleBoard),
+        MenuItem::action(t!("orchestra.title"), ShowOrchestration),
         MenuItem::action(t!("menu.all_projects"), AllProjects),
         MenuItem::action(t!("menu.toggle_folds"), ToggleFolds),
     ])
@@ -2329,6 +2345,7 @@ fn window_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-b", ToggleBoard, None),
         KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
+        KeyBinding::new("cmd-shift-l", ShowOrchestration, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-n", NewMessage, None),
@@ -2617,6 +2634,11 @@ mod tests {
         assert_eq!(bound("alt-cmd-n"), ["equipe::AddMembers"], "adding members moved over for it");
         assert_eq!(bound("cmd-m"), ["equipe::MinimizeWindow"]);
         assert_eq!(bound("cmd-n"), ["equipe::NewMessage"], "⌘N stays a new message");
+    }
+
+    #[test]
+    fn orchestration_has_a_key_of_its_own() {
+        assert_eq!(bound("cmd-shift-l"), ["equipe::ShowOrchestration"]);
     }
 
     #[test]

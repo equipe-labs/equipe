@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use equipe_core::protocol::{Engine, Event, Ticket, TicketKind, TicketStatus};
 
+use crate::design_grade;
 use crate::harness::{Outcome, Questions, Run, changed_files, checkout, git, repo, run_in};
 
 /// What a task's grader found, one point each.
@@ -42,6 +43,7 @@ pub struct Task {
 
 pub const TASKS: &[Task] = &[
     Task { name: "backend-fix-failing-test", role: "backend", what: "fix the code behind a failing unit test, hand it in through the board", minutes: 20 },
+    Task { name: "backend-move-now", role: "backend", what: "the same fix, the member moved to the other engine \"now\" at the end of its first turn mid-ticket: it carries the ticket on there, nothing redone or lost", minutes: 25 },
     Task { name: "backend-wait-for-server", role: "backend", what: "start a slow server, wait for it without a foreground sleep, fix what its check reports", minutes: 25 },
     Task { name: "frontend-clear-button", role: "frontend", what: "add a tested button to a small web page, within the ticket's files", minutes: 25 },
     Task { name: "qa-planted-bug", role: "qa", what: "find a planted boundary bug against a written spec, as a failing test", minutes: 20 },
@@ -49,6 +51,7 @@ pub const TASKS: &[Task] = &[
     Task { name: "pm-vague-ask", role: "pm", what: "answer a vague ask with ask_decision questions, a recommendation each, and no tickets yet", minutes: 10 },
     Task { name: "pm-move-to-codex", role: "pm", what: "move three Claude members to Codex as asked: one engine card for them all, never a Codex model put in a Claude member's model, nothing moved before the person's yes", minutes: 10 },
     Task { name: "designer-empty-state", role: "designer", what: "design an empty state as a mockup picture, opening design-process first", minutes: 30 },
+    Task { name: "designer-landing-page", role: "designer", what: "design and build a product's landing page from a brief: it fits phone to desktop, reads, shows focus, and invents nothing", minutes: 45 },
     Task { name: "security-review", role: "security", what: "find a planted SQL injection and hard-coded key without repeating the key", minutes: 20 },
     Task { name: "data-weekly-signups", role: "data", what: "count signups per ISO week from a CSV and name the busiest week", minutes: 15 },
     Task { name: "marketing-launch-draft", role: "marketing", what: "draft a launch post and a social post, publishing nothing", minutes: 20 },
@@ -71,7 +74,7 @@ pub struct Fixture {
 
 pub fn setup(task: &Task, root: &Path) -> Fixture {
     match task.name {
-        "backend-fix-failing-test" => {
+        "backend-fix-failing-test" | "backend-move-now" => {
             let dir = root.join("stats");
             let base = repo(&dir, &[("README.md", "Small statistics helpers.\n\nRun the tests with `python3 -m unittest`.\n"), ("stats.py", STATS_PY), ("test_stats.py", STATS_TEST)]);
             Fixture { repo: Some(dir), base, ..Default::default() }
@@ -112,6 +115,11 @@ pub fn setup(task: &Task, root: &Path) -> Fixture {
             let dir = root.join("web");
             let base = repo(&dir, &[("README.md", "# web\n\nA reading app: people save articles to read later.\n"), ("saved.html", SAVED_HTML), ("styles.css", SAVED_CSS)]);
             Fixture { repo: Some(dir), base, ..Default::default() }
+        }
+        "designer-landing-page" => {
+            let dir = root.join("site");
+            let base = repo(&dir, &[("README.md", QUILLO_README)]);
+            Fixture { repo: Some(dir), base, expected: vec![format!("{QUILLO_README}\n{QUILLO_TICKET}")], ..Default::default() }
         }
         "security-review" => {
             let dir = root.join("api");
@@ -158,15 +166,33 @@ pub async fn play(task: &Task, run: &mut Run, fx: &Fixture) {
     let limit = Duration::from_secs(task.minutes * 60);
     let cwd = fx.repo.clone().unwrap_or_else(|| run.root.clone());
     run.add("pm", &cwd).await;
-    if task.role != "pm" {
+    if task.role != "pm" && task.name != "backend-move-now" {
         run.add(task.role, &cwd).await;
     }
     let repo = fx.repo.as_deref();
     let role = task.role;
-    let settled = move |s: &crate::harness::State| s.tickets_of(role).any(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Done | TicketStatus::Waiting | TicketStatus::Cancelled));
+    let settled = move |s: &crate::harness::State| s.settled(role);
     match task.name {
         "backend-fix-failing-test" => {
             run.ticket("backend", repo, TicketKind::Code, "Fix the failing mean test", "`python3 -m unittest` fails: `test_mean` expects `mean([1, 2])` to be 1.5. Fix the bug in `stats.py` — the test is right.\n\nAcceptance criteria:\n- `python3 -m unittest` passes\n- only `stats.py` changes");
+            run.settle(limit, settled).await;
+        }
+        "backend-move-now" => {
+            // Its first turn on Claude, cut short at a clean point after a few
+            // steps — the person's "Move now" already given — then the rest on Codex.
+            let from = Engine::Claude;
+            let to = Engine::Codex;
+            let backend = run.add_on("backend", &cwd, Some(from), None).await;
+            run.ticket("backend", repo, TicketKind::Code, "Fix the failing mean test", "`python3 -m unittest` fails: `test_mean` expects `mean([1, 2])` to be 1.5. Fix the bug in `stats.py` — the test is right.\n\nAcceptance criteria:\n- `python3 -m unittest` passes\n- only `stats.py` changes");
+            let started = run.wait_for(Duration::from_secs(120), move |s| s.events.iter().any(|(_, e)| matches!(e, Event::WorkStarted { session, .. } if *session == backend))).await;
+            if started {
+                run.send(equipe_core::protocol::Command::MoveEngine { squad: crate::harness::SQUAD.into(), members: vec!["backend".into()], engine: to, model: None, effort: None, now: true });
+                let steps = move |s: &crate::harness::State| s.events.iter().filter(|(_, e)| matches!(e, Event::ToolUse { session, .. } if *session == backend)).count();
+                let some = run.wait_for(Duration::from_secs(300), move |s| steps(s) >= MOVE_AFTER_STEPS || s.turns.get(&backend).is_some_and(|t| !t.is_empty())).await;
+                if some && run.state.turns.get(&backend).is_none_or(|t| t.is_empty()) {
+                    run.send(equipe_core::protocol::Command::Interrupt { session: backend });
+                }
+            }
             run.settle(limit, settled).await;
         }
         "backend-wait-for-server" => {
@@ -214,6 +240,10 @@ pub async fn play(task: &Task, run: &mut Run, fx: &Fixture) {
             run.ticket("designer", repo, TicketKind::Task, "Design the Saved page's empty state", "`saved.html` lists the articles a person saved. Design what it shows before they have saved anything. Hand in a mockup picture of it (PNG or SVG) and a line on why.\n\nAcceptance criteria:\n- a mockup picture of the empty state\n- it uses the page's existing styles");
             run.settle(limit, settled).await;
         }
+        "designer-landing-page" => {
+            run.ticket("designer", repo, TicketKind::Code, "Design and build Quillo's landing page", QUILLO_TICKET);
+            run.settle(limit, settled).await;
+        }
         "security-review" => {
             run.ticket("security", repo, TicketKind::Task, "Security review of the api repository", "Review the api repository for security problems. Report what you find, most severe first, each with its file and line and how to fix it.\n\nAcceptance criteria:\n- every finding names its file and line\n- the report is in your hand-in");
             run.settle(limit, settled).await;
@@ -250,6 +280,7 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
         out.work_dir(t).or_else(|| t.branch.as_deref().and_then(|b| checkout(repo, b, &check_dir))).or_else(|| (t.merged == Some(true)).then(|| checkout(repo, "main", &check_dir)).flatten())
     };
     match task.name {
+        "backend-move-now" => grade_move_now(fx, out, ticket, work()),
         "backend-fix-failing-test" => {
             let mut checks = vec![handed_in()];
             match work() {
@@ -349,8 +380,36 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
             let mut checks = vec![handed_in()];
             let pictures = files_named(out, ticket, |p| p.extension().is_some_and(|x| ["png", "svg", "jpg", "jpeg", "webp"].contains(&x.to_string_lossy().to_lowercase().as_str())));
             checks.push(must("a mockup picture", !pictures.is_empty(), pictures.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
-            let opened = out.transcripts_of("designer").iter().flat_map(|t| equipe_core::quality::skill_checks(t, Some("designer"))).find(|c| c.skill == "design-process");
-            checks.push(must("design-process opened first", opened.as_ref().is_some_and(|c| c.opened.in_time()), opened.map(|c| format!("{:?}", c.opened)).unwrap_or_else(|| "not offered, or no transcript".into())));
+            let transcripts = out.transcripts_of("designer");
+            if on_codex(out, "designer") {
+                // No Claude Code transcript of its own (a critic's on Claude may be there):
+                // the skill is a file it reads, seen only in the daemon's events, whose
+                // commands are cut short — several skills read at once may not show.
+                // So it informs, and never fails a run.
+                let first = opened_early(out, "designer", "design-process");
+                checks.push(should("design-process opened first", first.is_some(), first.unwrap_or_else(|| format!("not seen among its first {EARLY} tool uses (on Codex, commands are cut short)"))));
+            } else {
+                let opened = transcripts.iter().flat_map(|t| equipe_core::quality::skill_checks(t, Some("designer"))).find(|c| c.skill == "design-process");
+                checks.push(must("design-process opened first", opened.as_ref().is_some_and(|c| c.opened.in_time()), opened.map(|c| format!("{:?}", c.opened)).unwrap_or_else(|| "not offered, or no transcript".into())));
+            }
+            checks
+        }
+        "designer-landing-page" => {
+            let mut checks = vec![handed_in()];
+            match landing_page(out, ticket, work()) {
+                Some(page) => {
+                    checks.push(must("index.html built", true, page.display().to_string()));
+                    match design_grade::measure(&page, &out.root.join("measured")) {
+                        Ok(m) => {
+                            let _ = std::fs::write(out.root.join("measured/measured.json"), serde_json::to_string_pretty(&m).unwrap_or_default());
+                            let html = std::fs::read_to_string(&page).unwrap_or_default();
+                            checks.extend(design_grade::landing_checks(&m, &fx.expected[0], &html));
+                        }
+                        Err(e) => checks.push(must("the page could be measured", false, e)),
+                    }
+                }
+                None => checks.push(must("index.html built", false, "none in the ticket's worktree, its branch or the squad's folder")),
+            }
             checks
         }
         "security-review" => {
@@ -429,6 +488,215 @@ pub fn grade(task: &Task, fx: &Fixture, out: &Outcome) -> Vec<Check> {
     }
 }
 
+/// Whether `role`'s session ran on Codex.
+pub fn on_codex(out: &Outcome, role: &str) -> bool {
+    let Some(session) = out.state.session(role) else { return false };
+    out.state.events.iter().any(|(_, e)| matches!(e, equipe_core::protocol::Event::SessionStarted { session: s, engine: equipe_core::protocol::Engine::Codex, .. } if *s == session))
+}
+
+/// The sessions `role`'s member ran on Codex after it started elsewhere
+/// (moved between engines mid-run).
+pub fn codex_sessions_of(out: &Outcome, role: &str) -> Vec<u64> {
+    let first = out.state.session(role);
+    out.state
+        .events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            equipe_core::protocol::Event::SessionStarted { session, engine: equipe_core::protocol::Engine::Codex, member: Some(m), .. } if m.name == role && Some(*session) != first => Some(*session),
+            _ => None,
+        })
+        .collect()
+}
+
+/// How many of a member's first tool uses count as "first" for a skill read
+/// from the daemon's events (as `quality::skill_checks` counts right after).
+pub const EARLY: usize = 8;
+
+/// Whether `role` read `skill`'s file among its first [`EARLY`] tool uses, by
+/// the daemon's events — for an engine with no Claude Code transcript, whose
+/// skills are files it reads (`…/skills/<skill>/SKILL.md`). `Some(the use)`.
+pub fn opened_early(out: &Outcome, role: &str, skill: &str) -> Option<String> {
+    let session = out.state.session(role)?;
+    let needle = format!("/skills/{skill}/");
+    out.state
+        .events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            equipe_core::protocol::Event::ToolUse { session: s, tool, target, .. } if *s == session => Some(format!("{tool} {}", target.clone().unwrap_or_default())),
+            _ => None,
+        })
+        .take(EARLY)
+        .find(|used| used.contains(&needle))
+}
+
+/// The landing page a run built: `index.html` at the top of its work, else
+/// the nearest one to the top in its worktree or the squad's folder.
+fn landing_page(out: &Outcome, ticket: Option<&Ticket>, work: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(p) = work.as_ref().map(|w| w.join("index.html")).filter(|p| p.is_file()) {
+        return Some(p);
+    }
+    let mut found = files_named(out, ticket, |p| p.file_name().is_some_and(|n| n == "index.html"));
+    if let Some(w) = &work {
+        found.extend(files_named_in(w, |p| p.file_name().is_some_and(|n| n == "index.html")));
+    }
+    found.sort_by_key(|p| p.components().count());
+    found.into_iter().next()
+}
+
+/// The reviewer's judgement of a design task's work (see `design_grade`):
+/// `None` for a task that has none. Run after [`grade`], whose measurements
+/// of the landing page it reviews; in `dir`, with its rubric beside it.
+pub fn review(task: &Task, out: &Outcome, dir: &Path) -> Option<Result<design_grade::Review, String>> {
+    let ticket = out.state.tickets_of(task.role).next();
+    match task.name {
+        "designer-landing-page" => {
+            let mut shots: Vec<(String, PathBuf)> = Vec::new();
+            for (width, name) in [("1440", "desktop"), ("360", "phone")] {
+                for n in 1..=4 {
+                    let p = out.root.join("measured").join(format!("{width}-{n}.png"));
+                    if p.is_file() {
+                        shots.push((format!("{name}-{n}.png"), p));
+                    }
+                }
+            }
+            Some(design_grade::review(&shots, design_grade::LANDING_RUBRIC, dir))
+        }
+        "designer-empty-state" => {
+            let picture = |p: &Path| p.extension().is_some_and(|x| ["png", "svg", "jpg", "jpeg", "webp"].contains(&x.to_string_lossy().to_lowercase().as_str()));
+            let mut pictures: Vec<PathBuf> = ticket.map(|t| t.images.iter().map(PathBuf::from).filter(|p| p.is_file() && picture(p)).collect()).unwrap_or_default();
+            if pictures.is_empty() {
+                pictures = mockups(out, ticket, picture);
+            }
+            let mut shots = Vec::new();
+            for (i, p) in pictures.iter().take(3).enumerate() {
+                if p.extension().is_some_and(|x| x == "svg") {
+                    match design_grade::shoot(p, &out.root.join("shots").join(i.to_string())) {
+                        Ok(png) => shots.extend(png.into_iter().take(1).map(|f| (format!("option-{}.png", i + 1), f))),
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    let ext = p.extension().unwrap().to_string_lossy().to_lowercase();
+                    shots.push((format!("option-{}.{ext}", i + 1), p.clone()));
+                }
+            }
+            Some(design_grade::review(&shots, design_grade::EMPTY_STATE_RUBRIC, dir))
+        }
+        _ => None,
+    }
+}
+
+/// A ticket's own mockups when its hand-in named none: pictures in its
+/// worktree or its outputs folder — not another ticket's, and not the
+/// renders a design check draws of a page (`design/checks/`) — those named
+/// as mockups first, then the newest.
+pub fn mockups(out: &Outcome, ticket: Option<&Ticket>, picture: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let Some(t) = ticket else { return Vec::new() };
+    let own = format!("T-{} ", t.id);
+    let mut found: Vec<PathBuf> = files_named(out, ticket, &picture)
+        .into_iter()
+        .filter(|p| {
+            let s = p.to_string_lossy();
+            let in_worktree = out.work_dir(t).is_some_and(|w| p.starts_with(&w));
+            (in_worktree || s.contains(&own)) && !s.contains("/design/checks/")
+        })
+        .collect();
+    let newest = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    found.sort_by(|a, b| {
+        let named = |p: &PathBuf| !p.to_string_lossy().to_lowercase().contains("mockup");
+        named(a).cmp(&named(b)).then_with(|| newest(b).cmp(&newest(a)))
+    });
+    found
+}
+
+fn files_named_in(dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.file_name().is_some_and(|n| n == ".git" || n == "node_modules") {
+                continue;
+            }
+            if p.is_dir() {
+                stack.push(p);
+            } else if wanted(&p) {
+                found.push(p);
+            }
+        }
+    }
+    found
+}
+
+/// The backend's steps on its first engine before its turn is cut short and
+/// it moves (`backend-move-now`).
+pub const MOVE_AFTER_STEPS: usize = 3;
+
+/// `backend-move-now`: the ticket went across engines mid-way and came out
+/// as well as without the move — handed in through the board by the member
+/// on the new engine, tests passing, only `stats.py` changed, the fix made
+/// once (no duplicated edit) and nothing of the first engine's work lost —
+/// and the new session opened with the hand-over packet and checked the
+/// worktree before editing. Tokens on each engine are told.
+fn grade_move_now(fx: &Fixture, out: &Outcome, ticket: Option<&Ticket>, work: Option<PathBuf>) -> Vec<Check> {
+    let events = &out.state.events;
+    let started: Vec<(u64, Engine)> = events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Event::SessionStarted { session, engine, member: Some(m), .. } if m.name == "backend" => Some((*session, *engine)),
+            _ => None,
+        })
+        .collect();
+    let first = started.first().copied();
+    let moved = started.iter().find(|(_, e)| Some(*e) != first.map(|f| f.1)).copied();
+    let mut checks = vec![must("moved mid-ticket to the other engine", first.is_some() && moved.is_some(), format!("{started:?}"))];
+    let handed_by_new = moved.is_some_and(|(s, _)| events.iter().any(|(_, e)| matches!(e, Event::WorkStarted { session, .. } if *session == s)));
+    checks.push(must("the new session carried the ticket on", handed_by_new, ""));
+    let handed = ticket.is_some_and(|t| out.handed_in(t.id));
+    checks.push(must("handed in", handed, ticket.map(|t| format!("T-{} {}", t.id, t.status.label())).unwrap_or_default()));
+    let handover = ticket.and_then(|t| out.histories.get(&t.id)).is_some_and(|h| h.iter().any(|e| format!("{e:?}").contains("handed over")));
+    checks.push(must("the ticket's record says it was handed over", handover, ""));
+    match work {
+        Some(w) => {
+            let (ok, said) = run_in(&w, "python3", &["-m", "unittest"], &[]);
+            checks.push(must("tests pass", ok, tail(&said)));
+            let changed = changed_files(&w, &fx.base);
+            checks.push(must("the test is unchanged", !changed.iter().any(|f| f == "test_stats.py"), changed.join(", ")));
+            checks.push(must("only stats.py changed", !changed.is_empty() && changed.iter().all(|f| f == "stats.py"), changed.join(", ")));
+            let stats = std::fs::read_to_string(w.join("stats.py")).unwrap_or_default();
+            let defs = ["def mean", "def median"].map(|d| stats.matches(d).count());
+            checks.push(must("no duplicated edit", defs == [1, 1], format!("def mean ×{}, def median ×{}", defs[0], defs[1])));
+            checks.push(must("nothing lost", stats.contains("def median") && stats.contains("ordered[middle - 1]"), ""));
+        }
+        None => checks.push(must("its work can be found", false, "no worktree or branch")),
+    }
+    // Its first words there: the packet read, the worktree checked before an edit.
+    let new_steps: Vec<String> = moved
+        .map(|(s, _)| {
+            events
+                .iter()
+                .filter_map(|(_, e)| match e {
+                    Event::ToolUse { session, tool, target, .. } if *session == s => Some(format!("{tool} {}", target.clone().unwrap_or_default())),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let first_edit = new_steps.iter().position(|t| { let l = t.to_lowercase(); l.starts_with("edit") || l.starts_with("write") || l.contains("apply_patch") || l.starts_with("filechange") });
+    let checked = new_steps.iter().take(first_edit.unwrap_or(new_steps.len())).any(|t| t.contains("git status") || t.contains("git diff") || t.contains("git log") || t.contains("unittest"));
+    checks.push(should("checked the worktree before editing", checked, new_steps.iter().take(6).cloned().collect::<Vec<_>>().join(" · ")));
+    // Tokens per engine: Claude Code's transcripts, and each Codex turn's usage.
+    let codex: u64 = started
+        .iter()
+        .filter(|(_, e)| *e == Engine::Codex)
+        .flat_map(|(s, _)| out.state.usage.get(s).into_iter().flatten())
+        .map(|u| u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0) + u.cache_tokens.unwrap_or(0))
+        .sum();
+    let claude: u64 = out.transcripts_of("backend").iter().map(|t| t.tokens.total()).sum();
+    checks.push(should("tokens", true, format!("backend: Claude {claude}, Codex {codex}")));
+    checks
+}
+
 /// The members `pm-move-to-codex` asks to move.
 const MOVING: [&str; 3] = ["designer", "mobile", "mobile-2"];
 
@@ -479,21 +747,7 @@ fn files_named(out: &Outcome, ticket: Option<&Ticket>, wanted: impl Fn(&Path) ->
     dirs.push(out.squad_home());
     let mut found = Vec::new();
     for dir in dirs {
-        let mut stack = vec![dir];
-        while let Some(d) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&d) else { continue };
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.file_name().is_some_and(|n| n == ".git" || n == "node_modules") {
-                    continue;
-                }
-                if p.is_dir() {
-                    stack.push(p);
-                } else if wanted(&p) {
-                    found.push(p);
-                }
-            }
-        }
+        found.extend(files_named_in(&dir, &wanted));
     }
     found.sort();
     found.dedup();
@@ -882,3 +1136,9 @@ fn grade_plan_use(fx: &Fixture, out: &Outcome) -> Vec<Check> {
     ]
 }
 
+/// The landing page's brief. It has every fact the page may state, and says
+/// the product is new: a page that shows customers, quotes or usage numbers
+/// made them up.
+pub const QUILLO_README: &str = "# Quillo\n\nQuillo turns a recorded meeting into a one-page summary: what was decided, who does what, and by when.\n\n- Works with any recording: upload an audio or video file up to 2 hours long.\n- Decisions and to-dos are pulled out, each with its owner.\n- Share the summary as a link or a PDF.\n\nPricing: Free for 3 meetings a month. Team: $8 per person per month.\n\nThe public beta opens on 3 March. Quillo is new: nobody outside the team has used it yet.\n";
+
+pub const QUILLO_TICKET: &str = "Design and build the landing page for Quillo from the brief in `README.md`: one static page, `index.html` (with its CSS and any script beside it), that works from 360 px phones to wide desktop screens.\n\nIt needs a hero with the product's name, what it does and a \"Join the beta\" button; the three features; pricing (both plans); a sign-up form for the beta with an email field (there is no backend yet: the form needn't send anything); and a footer.\n\nAcceptance criteria:\n- `index.html` opens in a browser and reads well at phone, tablet and desktop widths\n- every part above is there\n- it states only what the brief says";

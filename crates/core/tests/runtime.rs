@@ -1182,7 +1182,7 @@ async fn a_ticket_goes_to_its_owner_who_hands_it_in_and_the_person_accepts_it() 
     assert_eq!(arg(&call, "--permission-mode"), Some("acceptEdits"));
 
     // It hands the work in mid-turn; at the turn's end the work is committed.
-    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done." })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     let review =
         until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
@@ -1247,7 +1247,7 @@ async fn the_pm_changes_code_only_on_a_ticket_of_its_own_in_its_worktree_and_nev
     assert!(denied(&beside).contains(&only_read), "{:?}", denied(&beside));
 
     // Handed in: on its branch, the person's checkout untouched.
-    let handed = tool(&handle, "pm", "submit_for_review", serde_json::json!({ "summary": "Fixed the typo." })).await;
+    let handed = tool(&handle, "pm", "submit_for_review", serde_json::json!({ "summary": "Fixed the typo.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     let branch = ticket_changed(&review).pop().unwrap().branch.unwrap();
@@ -1280,7 +1280,7 @@ async fn accepted_work_is_where_the_next_ticket_starts_and_lands_on_main_only_wh
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done." })).await;
+    tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done.", "changes_screens": false })).await;
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
 
     // Merging waits for acceptance.
@@ -1507,7 +1507,7 @@ async fn work_sent_back_returns_to_its_member_on_the_same_branch_and_conversatio
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Page", "body": "-", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
-    tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Page done." })).await;
+    tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Page done.", "changes_screens": false })).await;
     let review =
         until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
     let branch = ticket_changed(&review).pop().unwrap().branch;
@@ -1647,7 +1647,7 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
 
     // The member is free, and takes the next ticket.
     until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 2, .. })).await;
-    tool(&handle, "backend", "submit_for_review", serde_json::json!({ "summary": "Webhooks done." })).await;
+    tool(&handle, "backend", "submit_for_review", serde_json::json!({ "summary": "Webhooks done.", "changes_screens": false })).await;
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review))
         .await;
 
@@ -2830,7 +2830,7 @@ fn squads_home(home: &Path) -> PathBuf {
 #[tokio::test]
 async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_all() {
     let seen = scratch("member-env");
-    let (claude, recorded) = recording_claude(&format!("printf '%s' \"$EQUIPE_MEMBER\" > '{}/member'\n{}", seen.display(), answering("ok")));
+    let (claude, recorded) = recording_claude(&format!("printf '%s' \"$EQUIPE_MEMBER\" > '{}/member'\nprintf '%s' \"$EQUIPE_MEMBER_ENGINE\" > '{0}/engine'\n{}", seen.display(), answering("ok")));
     let (site, app) = (named("site"), named("app"));
     let home = squad_home(&[&site, &app]);
     squads::create(&home, "beta", &named("beta-app")).unwrap();
@@ -2864,6 +2864,7 @@ async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_
     assert!(refused.contains(&"Bash(equipe browser:*)") && refused.contains(&"Bash(/opt/equipe browser:*)"), "{refused:?}");
     // Its commands know they are a member's, and its charter needn't say what the guard refuses.
     assert_eq!(std::fs::read_to_string(seen.join("member")).unwrap(), "frontend");
+    assert_eq!(std::fs::read_to_string(seen.join("engine")).unwrap(), "claude", "and the engine they run on, outside its sandbox too");
     assert!(!arg(call, "--append-system-prompt").unwrap().contains("Never sleep"));
     assert_eq!(settings["sandbox"]["filesystem"]["denyWrite"], serde_json::json!([site, app]));
     assert!(settings["sandbox"]["filesystem"]["denyRead"].as_array().unwrap().contains(&serde_json::json!(beta)));
@@ -2982,6 +2983,69 @@ async fn a_designer_hands_a_screen_in_only_once_it_was_checked_and_seen_fresh() 
     std::fs::remove_file(&ledger).unwrap();
     let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
     assert!(!handed.is_error, "{handed:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_same_refusal_twice_hands_the_work_in_with_the_gap_marked_and_the_pm_told() {
+    let site = named("site");
+    let pending = r#"{"edited":[{"path":"design/mockups/home.html","at":1,"created":true}],"checked":[]}"#;
+    let (claude, _recorded) = recording_claude(&writing_turn("design/checks/pending.json", pending));
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Home", "body": "A first screen.", "owner": "designer", "kind": "task" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    let ledger = ws.path.join("design/checks/pending.json");
+    for _ in 0..100 {
+        if ledger.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let first = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(first.is_error && first.text.contains("design/mockups/home.html was edited and not checked") && first.text.contains("again the same way"), "it says what a second time does: {first:?}");
+    // Nothing changed: the second refusal would be the first's again. It
+    // goes in, with what wasn't cleared marked for the person, and the PM hears.
+    let second = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(!second.is_error && second.text.contains("Handed in T-1") && second.text.contains("marked"), "{second:?}");
+    let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("T-1") && text.contains("not cleared"))).await;
+    assert!(!told.is_empty());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn after_three_looks_in_a_row_asking_for_fixes_the_hand_in_goes_with_them_for_the_person() {
+    let site = named("site");
+    let pending = r#"{"edited":[],"checked":["home"]}"#;
+    let record = r#"{"screen":"home","at":1,"files":[],"rendered":true,"new":false,"verdict":{"pass":false,"fixes":[{"where":"hero","what":"the headline wraps at 360"}],"at":5},"fixes_in_a_row":3}"#;
+    let turn = format!(
+        "case \"$*\" in *\"You're on T-\"*) sleep 1; mkdir -p design/checks; echo '{pending}' > design/checks/pending.json; echo '{record}' > design/checks/home.json;; esac\n{}",
+        answering("working on it")
+    );
+    let (claude, _recorded) = recording_claude(&turn);
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Home", "body": "A first screen.", "owner": "designer", "kind": "task" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    let kept = ws.path.join("design/checks/home.json");
+    for _ in 0..100 {
+        if kept.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Not refused first: the looks already went round three times.
+    let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(!handed.is_error && handed.text.contains("Handed in T-1") && handed.text.contains("marked"), "{handed:?}");
+    let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("T-1") && text.contains("not cleared"))).await;
+    assert!(!told.is_empty());
     handle.shutdown().await;
 }
 
@@ -4718,7 +4782,14 @@ async fn screens_in_design_qa(recorded: &Path, handle: &Handle, events: &mut Unb
     assert!(unsaid.is_error && unsaid.text.contains("changes_screens"), "{unsaid:?}");
     let unseen = tool(handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built.", "changes_screens": true })).await;
     assert!(unseen.is_error && unseen.text.contains("screenshot"), "{unseen:?}");
-    let handed = tool(handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built.", "changes_screens": true, "images": ["shot.png"] })).await;
+    let unchecked = tool(handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built.", "changes_screens": true, "images": ["shot.png"] })).await;
+    assert!(unchecked.is_error && unchecked.text.contains("missing: languages, widths, light and dark, large text"), "{unchecked:?}");
+    let handed = tool(handle, "frontend", "submit_for_review", serde_json::json!({
+        "summary": "Settings built.",
+        "changes_screens": true,
+        "images": ["shot.png"],
+        "screen_checks": ["languages", "widths", "light_dark", "large_text"],
+    })).await;
     assert!(!handed.is_error && handed.text.contains("designer checks"), "{handed:?}");
 
     // In review, held for design QA: a task for the designer, who takes it.
@@ -4840,9 +4911,18 @@ async fn without_a_designer_changed_screens_go_straight_to_the_person() {
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 2, member(&site, "frontend")).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Settings screen", "body": "-", "owner": "frontend" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    // Nobody to check screens: nothing more to say, and no step in between.
-    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built." })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    exists(&ws.path.join("shot.png")).await;
+    // Nobody to run design QA, but the engineer still proves the complete self-check.
+    let unsaid = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built." })).await;
+    assert!(unsaid.is_error && unsaid.text.contains("changes_screens"), "{unsaid:?}");
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({
+        "summary": "Settings built.",
+        "changes_screens": true,
+        "images": ["shot.png"],
+        "screen_checks": ["languages", "widths", "light_dark", "large_text"],
+    })).await;
     assert!(!handed.is_error && handed.text.contains("the person reviews them"), "{handed:?}");
     let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
     let ticket = ticket_changed(&review).pop().unwrap();
@@ -4929,7 +5009,7 @@ async fn hand_in_reviewed_at(base: &str) -> (Handle, UnboundedReceiver<Event>, P
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Landing hero", "body": "- [ ] A headline and one button.", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
     // Handed in mid-turn: at the turn's end the work is committed, and reviewed.
-    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done." })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     (handle, events, home)
 }

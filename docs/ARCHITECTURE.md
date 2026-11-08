@@ -237,12 +237,15 @@ it (T-143, 2026-10-16): required for every change users see, skipped when the
 squad has no designer. `equipe_core::runtime::design_qa`.
 
 - **What counts as a screen change is the engineer's word**, not a guess from
-  file names: in a squad with a designer, `submit_for_review` on a `code` ticket
-  by anyone but a designer must say `changes_screens` — true when users see a
-  change (a screen, page, layout, style, visible copy, an icon), false otherwise.
-  Left out, the hand-in is refused with why; true without a screenshot in
-  `images` is refused too, since the designer checks from pictures. A designer's
-  own code ticket, a `task` or an `action` skips the step.
+  file names: `submit_for_review` on every `code` ticket by anyone but a
+  designer must say `changes_screens` — true when users see a change (a screen,
+  page, layout, style, visible copy, an icon), false otherwise. Left out, the
+  hand-in is refused with why. True requires fresh screenshots in `images` and
+  all four `screen_checks`: relevant languages, supported widths, light and
+  dark, and large text. The runtime refuses the hand-in and names any missing
+  proof. This self-check applies even without a designer; with one, the complete
+  hand-in continues to design QA. A designer's own code ticket (checked through
+  its design ledger), a `task` or an `action` skips this step.
 - **The hand-in waits in `review` on a design QA ticket.** At the end of the
   turn the ticket goes to `review` as ever, with `design_qa: <id>` set, and
   equipe creates that ticket: a `task` owned by `designer`, created by `equipe`,
@@ -265,6 +268,10 @@ squad has no designer. `equipe_core::runtime::design_qa`.
   accepting the design QA ticket itself releases the ticket to their review.
   An older screen, which doesn't know `design_qa`, shows the ticket as an
   ordinary review.
+- **Engineers finish on current main.** Immediately before hand-in they refresh
+  main, rebase the ticket branch onto it, resolve to zero conflicts and run the
+  relevant tests on the rebased tree. After a merge the PM pushes main at once
+  and verifies that its upstream ahead/behind counts are both zero.
 - **What a designer counts as a defect**: differences from the spec, the
   design system's tokens and accessibility — not taste. New ideas are proposed
   tickets.

@@ -58,12 +58,15 @@ impl Runtime {
                 crate::daemon_log!("equipe: couldn't keep the plans' use: {e}");
             }
             let burns = plan_use::burns(&home, &weeks, now);
-            let _ = internal.send(Internal::PlanUsePassed(burns));
+            // The weeks' forecasts and who used them, for engine switching.
+            let loads = plan_use::loads(&home, &weeks, now);
+            let _ = internal.send(Internal::PlanUsePassed(burns, loads));
         });
     }
 
-    pub(super) fn on_plan_use_passed(&mut self, burns: Vec<Burn>) {
+    pub(super) fn on_plan_use_passed(&mut self, burns: Vec<Burn>, loads: Vec<(Engine, plan_use::Load)>) {
         self.plan_use.passing = false;
+        self.engine_loads(loads);
         let now = now_secs() as i64;
         self.plan_use.told.retain(|_, at| now - *at < TELL_AGAIN);
         self.plan_use.recent.retain(|b| now - b.at < RECENT);

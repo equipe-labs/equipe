@@ -541,7 +541,7 @@ mod tests {
     fn an_engine_move_the_pm_asked_for_shows_who_moves_and_when_each_one_does_and_is_never_always() {
         use equipe_core::controls::{Mover, move_words};
         use equipe_core::protocol::Engine;
-        let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket };
+        let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket, now: false };
         let action = move_words(equipe_core::i18n::Lang::En, &[mover("designer", false, true), mover("mobile", true, false), mover("mobile-2", false, false)], Engine::Codex, Some("GPT-6.1 Sol"), Some("high"));
         let card = Card::of(&approval(1, 2, equipe_core::controls::ENGINE_TOOL, &action));
         assert_eq!(card.noun, equipe_core::t!("approvals.noun_engine"));

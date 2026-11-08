@@ -88,10 +88,12 @@ impl Spot {
                 (None, None) => Spot::Pm,
             },
             Screen::Board => Spot::Board(place.menu),
-            Screen::Progress | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Usage | Screen::Docs => Spot::Screen(place.screen),
+            Screen::Progress | Screen::Orchestration | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Usage | Screen::Docs => Spot::Screen(place.screen),
             Screen::Project => project.map_or(Spot::Pm, |p| Spot::Project(p.to_owned())),
             // Settings is a visit, not a place to come back to.
             Screen::Settings => Spot::Pm,
+            // A ticket's work watched: that ticket, when the window opens again.
+            Screen::Studio => place.ticket.map_or(Spot::Pm, Spot::Ticket),
         }
     }
 
@@ -132,7 +134,7 @@ impl Spot {
                 _ => Menu::Inbox,
             })),
             "project" if !rest.trim().is_empty() => Some(Spot::Project(rest.to_owned())),
-            screen => [Screen::Progress, Screen::Design, Screen::Roadmap, Screen::Metrics, Screen::Usage, Screen::Docs].into_iter().find(|s| screen_code(*s) == screen).map(Spot::Screen),
+            screen => [Screen::Progress, Screen::Orchestration, Screen::Design, Screen::Roadmap, Screen::Metrics, Screen::Usage, Screen::Docs].into_iter().find(|s| screen_code(*s) == screen).map(Spot::Screen),
         };
         spot.unwrap_or_default()
     }
@@ -150,6 +152,7 @@ fn menu_code(menu: Menu) -> &'static str {
 fn screen_code(screen: Screen) -> &'static str {
     match screen {
         Screen::Progress => "progress",
+        Screen::Orchestration => "orchestration",
         Screen::Design => "design",
         Screen::Roadmap => "roadmap",
         Screen::Metrics => "metrics",
@@ -595,6 +598,7 @@ mod tests {
             Spot::Board(Menu::All),
             Spot::Board(Menu::View(0)),
             Spot::Screen(Screen::Progress),
+            Spot::Screen(Screen::Orchestration),
             Spot::Screen(Screen::Design),
             Spot::Screen(Screen::Roadmap),
             Spot::Screen(Screen::Metrics),

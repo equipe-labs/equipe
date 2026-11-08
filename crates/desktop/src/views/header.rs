@@ -126,8 +126,23 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(screen)
         .children(context)
         // The buttons stay whole; the words before them give way.
+        .children(studio_button(shell, cx))
         .child(div().flex_none().child(terminal_button(shell, cx)))
         .child(div().flex_none().child(browser_button(shell, cx)))
+}
+
+/// The designer studio, when the member in view is on a design ticket: its work, watched.
+fn studio_button(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    let p = shell.palette;
+    let ticket = shell.model.opened.or_else(|| shell.model.selected_member().and_then(|m| m.ticket)).filter(|id| shell.studio_offered(*id))?;
+    Some(
+        div().flex_none().child(
+            crate::ui::button(p, "header-studio", crate::ui::Kind::Ghost, t!("studio.open"))
+                .icon(crate::icons::Icon::Eye)
+                .tip(t!("studio.open_tip"), None)
+                .on_click(cx.listener(move |this, _, window, cx| this.open_studio(ticket, window, cx))),
+        ),
+    )
 }
 
 /// The terminal's switch (⌃`): a shell on the daemon's machine.

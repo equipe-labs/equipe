@@ -507,6 +507,56 @@ async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn a_screen_watches_a_tickets_design_work_from_its_design_folder_only() {
+    use equipe_core::design::lint::record::{self, Record};
+    use equipe_core::protocol::rpc::{self, ImageRead, Message, ReadImage};
+    use equipe_core::protocol::studio::{Studio, StudioAsk};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (home, _project) = squad();
+    // A designer's ticket at work, its worktree's design folder holding a check and its picture.
+    let worktree = scratch("studio-worktree").canonicalize().unwrap();
+    let design = worktree.join("design");
+    std::fs::create_dir_all(design.join("checks/home")).unwrap();
+    image::RgbImage::new(5, 3).save(design.join("checks/home/1280.png")).unwrap();
+    record::write(&design, &Record { screen: "home".into(), at: 10, rendered: true, pictures: vec!["design/checks/home/1280.png".into()], ..Record::default() }).unwrap();
+    image::RgbImage::new(2, 2).save(worktree.join("outside.png")).unwrap();
+    let ticket: equipe_core::protocol::Ticket = serde_json::from_value(serde_json::json!({ "id": 0, "title": "Home", "body": "", "status": "in_progress", "kind": "task", "depends_on": [], "owner": "designer", "created_by": "pm" })).unwrap();
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    let id = journal.create_ticket(&ticket).unwrap();
+    journal.set_ticket_work(id, &equipe_core::journal::TicketWork { worktree: Some(worktree.clone()), ..Default::default() }).unwrap();
+    drop(journal);
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut ask = async |n: u64, method: &str, params: serde_json::Value| -> Message {
+        writer.write_all(Message::request(n, method, params).to_line().as_bytes()).await.unwrap();
+        loop {
+            let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if message.id == Some(n) {
+                return message;
+            }
+        }
+    };
+    let watch = |squad: &str, ticket: u32| serde_json::to_value(StudioAsk { squad: squad.into(), ticket }).unwrap();
+    assert!(ask(1, rpc::DESIGN_STUDIO, watch("acme", id)).await.error.is_some(), "not before hello");
+    assert!(ask(2, rpc::HELLO, serde_json::json!({ "version": "test", "squad": "acme" })).await.result.is_some());
+    let studio = ask(3, rpc::DESIGN_STUDIO, watch("acme", id)).await.result_as::<Studio>().unwrap();
+    assert_eq!(studio.checks.len(), 1);
+    let picture = studio.checks[0].pictures[0].path.clone();
+    assert_eq!(studio.checks[0].pictures[0].width, Some(1280));
+    assert!(ask(4, rpc::DESIGN_STUDIO, watch("zeta", id)).await.error.is_some(), "only the squad it follows");
+    assert!(ask(5, rpc::DESIGN_STUDIO, watch("acme", id + 40)).await.error.is_some(), "a ticket the board doesn't have");
+    // Its pictures are given; the worktree's others are not.
+    let read = |path: &str| serde_json::to_value(ReadImage { squad: "acme".into(), path: path.into(), max: None }).unwrap();
+    assert_eq!(ask(6, rpc::READ_IMAGE, read(&picture)).await.result_as::<ImageRead>().unwrap().width, Some(5));
+    assert!(ask(7, rpc::READ_IMAGE, read(&worktree.join("outside.png").to_string_lossy())).await.error.is_some());
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
 async fn the_socket_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let home = scratch("home");

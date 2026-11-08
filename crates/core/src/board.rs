@@ -508,14 +508,20 @@ It waits on the board as a proposal until the PM or the person accepts it."
 Your changes are committed to the ticket's branch and the person reviews them. Then end your turn. When the work is \
 visual — a logo, a screen, a mockup, an illustration, colours, a layout — name its pictures in `images` (renders or \
 screenshots you saved in your worktree), so the person sees them above your summary; images your branch changes \
-are shown too. On a code ticket, say whether it changes what users see (`changes_screens`): when the squad has a \
-designer, they check those screens from your screenshots before the person reviews.",
+are shown too. On a code ticket, say whether it changes what users see (`changes_screens`). When it does, attach \
+fresh screenshots and confirm their coverage in `screen_checks`; a squad's designer checks those screens before the \
+person reviews when it has one.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "summary": { "type": "string", "description": "What you did and how to check it, in a few lines — in the person's language." },
                     "images": IMAGES_SCHEMA.clone(),
-                    "changes_screens": { "type": "boolean", "description": "Code tickets: true when users see a change — a screen, page, layout, style, visible copy, an icon; then give screenshots of each changed screen in `images`. False for changes nobody sees." },
+                    "changes_screens": { "type": "boolean", "description": "Code tickets: true when users see a change — a screen, page, layout, style, visible copy, an icon; then give fresh screenshots of each changed screen in `images` and all four `screen_checks`. False for changes nobody sees." },
+                    "screen_checks": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": ["languages", "widths", "light_dark", "large_text"] },
+                        "description": "Screen-changing code tickets: confirm that the attached screenshots cover every relevant language, supported width, light and dark appearance, and large text by giving all four values: languages, widths, light_dark, large_text."
+                    },
                 },
                 "required": ["summary"],
             },
@@ -811,9 +817,9 @@ never into a project's repository, which may be public; it is saved as a change 
 name it by its absolute path, which members read from their worktrees. A new plan needs `title`; then each section you give replaces that section: goal, \
 approach, architecture (and data flow), edge_cases, test_plan (a list, one case an item: each gets its `TP-` number), \
 design_notes, risks. Name the plan again (`plan`) to change it: its status, the scope the person picked, a section. \
-`reviewers` asks members to review it, at once, each from its role's angle — an engineer for architecture, edge \
+For bigger or open work, `reviewers` asks members to review it, at once, each from its role's angle — an engineer for architecture, edge \
 cases and the test plan, the designer for what people see, QA for testability: each gets a review ticket, writes its \
-notes into the plan and hands in. Then cut its tickets with `create_ticket` (`plan`, `tests`)."
+notes into the plan and hands in; a clear, well-specified ask needs none. Then cut its tickets with `create_ticket` (`plan`, `tests`)."
     } else {
         "On a review ticket for a plan: write your review into the plan's review notes, under your name — what you \
 found from your role's angle. Only your own notes: the plan's sections are the PM's. Writing again replaces your notes."
@@ -1493,8 +1499,9 @@ mod tests {
             }
             let hand_in = tools.iter().find(|t| t["name"] == SUBMIT_FOR_REVIEW).unwrap();
             assert_eq!(hand_in["inputSchema"]["properties"]["images"]["type"], "array");
+            assert_eq!(hand_in["inputSchema"]["properties"]["screen_checks"]["items"]["enum"].as_array().unwrap().len(), 4);
             let doc = hand_in["description"].as_str().unwrap();
-            assert!(doc.contains("`images`") && doc.contains("visual"), "{doc}");
+            assert!(doc.contains("`images`") && doc.contains("visual") && doc.contains("`screen_checks`"), "{doc}");
         }
     }
 

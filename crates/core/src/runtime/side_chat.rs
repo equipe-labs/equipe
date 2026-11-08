@@ -182,6 +182,7 @@ impl Runtime {
         let mut env: Vec<(String, String)> = Vec::new();
         if let Some(name) = session.name() {
             env.push((guard::MEMBER_ENV.to_owned(), name.to_owned()));
+            env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(session.engine).to_owned()));
         }
         let model = session.model.clone();
         let effort = effort_of(session);

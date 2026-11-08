@@ -227,7 +227,81 @@ fn the_edit_time_check_hands_back_the_floor_failures_in_what_was_just_written() 
 }
 
 fn verdict(pass: bool, at: u64, first: bool) -> record::Verdict {
-    record::Verdict { pass, fixes: if pass { vec![] } else { vec![record::Fix { place: "hero".into(), what: "the headline wraps badly at 360".into(), why: String::new() }] }, summary: "x".into(), at, by: "claude".into(), widths: vec![360, 1280], first }
+    record::Verdict { pass, fixes: if pass { vec![] } else { vec![record::Fix { place: "hero".into(), what: "the headline wraps badly at 360".into(), why: String::new() }] }, summary: "x".into(), at, by: "claude".into(), widths: vec![360, 1280], first, ..Default::default() }
+}
+
+#[test]
+fn after_three_looks_in_a_row_asking_for_fixes_the_hand_in_goes_with_them_shown_to_the_person() {
+    let root = project(&[("design/mockups/home.html", CLEAN_HTML)]);
+    let design = std::fs::canonicalize(root.join("design")).unwrap();
+    let file = design.join("mockups/home.html");
+    record::note_edit(&design, &file, false).unwrap();
+    let report = Report { widths: vec![360, 1280], ..Report::default() };
+    record::note_check(&design, "home", std::slice::from_ref(&file)).unwrap();
+    let mut rec = record::of(&design, "home", &report, std::slice::from_ref(&file), None, false);
+    let at = rec.at;
+    for n in 1..record::LOOKS_BEFORE_THE_PERSON {
+        record::note_verdict(&mut rec, verdict(false, at, false));
+        record::write(&design, &rec).unwrap();
+        let said = record::hand_in(&design);
+        assert!(said.iter().any(|s| s.contains("asked for 1 fix")), "look {n}: still the designer's to fix: {said:?}");
+        assert!(record::open_fixes(&design).is_empty());
+    }
+    record::note_verdict(&mut rec, verdict(false, at, false));
+    record::write(&design, &rec).unwrap();
+    assert_eq!(rec.fixes_in_a_row, record::LOOKS_BEFORE_THE_PERSON);
+    assert!(record::hand_in(&design).is_empty(), "the third in a row: no longer in the way: {:?}", record::hand_in(&design));
+    let open = record::open_fixes(&design);
+    assert!(open.len() == 1 && open[0].contains("home") && open[0].contains("the headline wraps badly at 360") && open[0].contains("3 looks in a row"), "{open:?}");
+    // A pass starts the count again; so does a hand-in.
+    record::note_verdict(&mut rec, verdict(true, at, false));
+    assert_eq!(rec.fixes_in_a_row, 0);
+    record::note_verdict(&mut rec, verdict(false, at, false));
+    record::note_verdict(&mut rec, verdict(false, at, true));
+    record::note_verdict(&mut rec, verdict(false, at, false));
+    record::write(&design, &rec).unwrap();
+    assert_eq!(record::open_fixes(&design).len(), 1, "a first-screenful look counts in the row too");
+    record::handed_in(&design);
+    assert_eq!(record::read(&design, "home").unwrap().fixes_in_a_row, 0, "the next ticket starts afresh");
+}
+
+#[test]
+fn directions_explored_are_left_to_the_direction_log_and_only_shipping_files_wait_for_a_check() {
+    let root = project(&[("design/directions/ledger/index.html", CLEAN_HTML), ("design/directions/ledger/styles.css", "a {}"), ("index.html", CLEAN_HTML)]);
+    let design = std::fs::canonicalize(root.join("design")).unwrap();
+    for f in ["design/directions/ledger/index.html", "design/directions/ledger/styles.css"] {
+        record::note_edit(&design, &root.join(f), true).unwrap();
+    }
+    assert!(record::hand_in(&design).is_empty(), "an explored direction isn't what ships: {:?}", record::hand_in(&design));
+    record::note_edit(&design, &root.join("index.html"), true).unwrap();
+    let said = record::hand_in(&design);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("index.html") && said[0].contains("`equipe design lint index.html --render --screen index`") && said[0].contains("`equipe design second-look index`"), "the file, the rule and the exact commands: {said:?}");
+}
+
+#[test]
+fn a_check_kept_by_another_design_folder_still_clears_the_edit_where_the_hand_in_looks() {
+    let root = project(&[("site/index.html", CLEAN_HTML), ("design/directions/a/tokens.json", TOKENS)]);
+    let design = std::fs::canonicalize(root.join("design")).unwrap();
+    let file = std::fs::canonicalize(root.join("site/index.html")).unwrap();
+    record::note_edit(&design, &file, true).unwrap();
+    // Checked against another system (`--design design/directions/a`): the
+    // check is kept where the hand-in looks all the same.
+    let other = design.join("directions/a");
+    assert_eq!(record::ledger_home(&other, std::slice::from_ref(&file)), design);
+    assert_eq!(record::ledger_home(&other, &[]), design, "a design folder inside another keeps its checks in the outer one");
+    let lone = project(&[]);
+    let lone = std::fs::canonicalize(lone.join("design")).unwrap();
+    assert_eq!(record::ledger_home(&lone, &[]), lone);
+    // A check an older equipe kept in the other folder is named in the refusal.
+    let mut report = Report { widths: vec![360], ..Report::default() };
+    report.checked.push("contrast".into());
+    let rec = record::of(&other, "landing/home", &report, std::slice::from_ref(&file), None, true);
+    record::write(&other, &rec).unwrap();
+    let said = record::hand_in(&design);
+    assert!(said.len() == 1 && said[0].contains("design/directions/a/checks/") && said[0].contains("--screen landing/home"), "{said:?}");
+    assert_eq!(record::record_home(&other, "landing/home"), other, "a second look finds the record where it is");
+    assert_eq!(record::record_home(&other, "nowhere"), design);
 }
 
 #[test]

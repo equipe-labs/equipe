@@ -491,6 +491,18 @@ fn switching(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let mode = shell.model.engines.mode;
     let squad = shell.model.squad.clone();
+    // The week won't last at this pace and equipe doesn't move members on its own: say Auto would.
+    let hint = (mode != Switching::Auto && shell.plan_use.report().and_then(|r| r.pace).is_some_and(|pace| pace.before_reset)).then(|| {
+        h_flex()
+            .id("usage-auto-hint")
+            .gap_1p5()
+            .items_start()
+            .text_size(px(12.))
+            .line_height(px(17.))
+            .text_color(p.amber)
+            .child(div().pt(px(2.)).flex_none().child(icon(Icon::Clock, 12., p.amber)))
+            .child(div().flex_1().min_w_0().child(t!("plan_use.auto_hint")))
+    });
     h_flex()
         .w_full()
         .flex_wrap()
@@ -506,7 +518,8 @@ fn switching(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .min_w(px(220.))
                 .gap_0p5()
                 .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("engines.settings_section")))
-                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).child(crate::switching::mode_about(mode))),
+                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).child(crate::switching::mode_about(mode)))
+                .children(hint),
         )
         .child(h_flex().flex_none().p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash).children(Switching::ALL.into_iter().map(|m| {
             let on = m == mode;

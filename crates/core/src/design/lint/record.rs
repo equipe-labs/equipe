@@ -48,6 +48,21 @@ pub struct Verdict {
     pub widths: Vec<u32>,
     /// It saw the first screenful alone (a new screen's, before the rest is built).
     pub first: bool,
+    /// Facts the screen needs that neither the brief, the project's files nor
+    /// the design system give: asked, never a fix — each with neutral wording
+    /// the screen can use until someone answers.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<Question>,
+}
+
+/// A fact the second look found missing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Question {
+    /// What is missing: the save control's name, the launch date.
+    pub what: String,
+    /// What the screen can say meanwhile, without the fact.
+    pub wording: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +91,31 @@ pub struct Record {
     pub first: Option<Verdict>,
     /// The look at the whole, at every width.
     pub verdict: Option<Verdict>,
+    /// Looks in a row — the first screenful's or the whole's — that asked
+    /// for fixes; a pass starts again. At [`LOOKS_BEFORE_THE_PERSON`] what is
+    /// left goes to the person with the hand-in instead of round again.
+    pub fixes_in_a_row: u32,
+}
+
+/// How many looks in a row may ask for fixes before what is left goes to
+/// the person with the hand-in, marked, rather than round and round.
+pub const LOOKS_BEFORE_THE_PERSON: u32 = 3;
+
+/// Keep a second look's `verdict` on `record`: as its first-screenful look
+/// or its whole one, and counted in the row of looks that asked for fixes.
+pub fn note_verdict(record: &mut Record, verdict: Verdict) {
+    record.fixes_in_a_row = if verdict.pass { 0 } else { record.fixes_in_a_row + 1 };
+    if verdict.first {
+        record.first = Some(verdict);
+    } else {
+        record.verdict = Some(verdict);
+    }
+}
+
+/// Whether `record`'s looks asked for fixes often enough in a row for what
+/// is left to go to the person.
+fn to_the_person(record: &Record) -> bool {
+    record.fixes_in_a_row >= LOOKS_BEFORE_THE_PERSON
 }
 
 /// A screen's name as a path under `checks/`: `onboarding/login` stays two
@@ -124,6 +164,8 @@ pub fn now() -> u64 {
 pub fn of(design: &Path, screen: &str, report: &Report, files: &[PathBuf], before: Option<Record>, new: bool) -> Record {
     let stamps: Vec<Stamp> = files.iter().map(|f| Stamp { path: ledger_name(design, f), modified: modified(f) }).collect();
     let unchanged = before.as_ref().is_some_and(|b| b.files == stamps && b.rendered == !report.widths.is_empty());
+    // Checked again, its row of looks asking for fixes goes on: only a pass starts it again.
+    let fixes_in_a_row = before.as_ref().map_or(0, |b| b.fixes_in_a_row);
     let (first, verdict) = match before {
         Some(b) if unchanged => (b.first, b.verdict),
         Some(b) => (b.first, None),
@@ -131,7 +173,7 @@ pub fn of(design: &Path, screen: &str, report: &Report, files: &[PathBuf], befor
     };
     let mut summary = report.summary();
     summary.screen = Some(screen.to_owned());
-    Record { screen: screen.to_owned(), at: now(), files: stamps, rendered: !report.widths.is_empty(), summary, findings: report.findings.clone(), pictures: report.pictures.clone(), new, first, verdict }
+    Record { screen: screen.to_owned(), at: now(), files: stamps, rendered: !report.widths.is_empty(), summary, findings: report.findings.clone(), pictures: report.pictures.clone(), new, first, verdict, fixes_in_a_row }
 }
 
 // ── the edits not checked yet ──
@@ -185,9 +227,29 @@ pub fn ledger_name(design: &Path, file: &Path) -> String {
     real.strip_prefix(&root).map_or_else(|_| real.to_string_lossy().into_owned(), |p| p.to_string_lossy().into_owned())
 }
 
-/// Not the design's own bookkeeping, nor its generated sheets.
+/// Where checks are kept and the hand-in looks for them: the design folder
+/// the edit-time check writes edits down in — the one nearest the files
+/// checked (or, with none, the one `design` sits in) — whichever design
+/// system they were checked against (`--design`). Only a folder with no
+/// design folder above it is its own.
+pub fn ledger_home(design: &Path, files: &[PathBuf]) -> PathBuf {
+    files.iter().find_map(|f| super::design_dir_of(f)).or_else(|| design.parent().and_then(super::design_dir_of).filter(|home| home != design && design.starts_with(home))).unwrap_or_else(|| design.to_path_buf())
+}
+
+/// Where `screen`'s check record is: in `design` when it is there, else
+/// where the hand-in looks ([`ledger_home`]).
+pub fn record_home(design: &Path, screen: &str) -> PathBuf {
+    if path(design, screen).is_file() {
+        return design.to_path_buf();
+    }
+    ledger_home(design, &[])
+}
+
+/// Not the design's own bookkeeping, nor its generated sheets, nor the
+/// directions explored before one was chosen (`design/directions/`): those
+/// are kept by the directions' log, and what ships is checked on its own.
 fn tracked(name: &str) -> bool {
-    let skip = ["design/checks/", "design/audit/", "design/critiques/", "design/qa/", "design/build/", "design/references/", "node_modules/"];
+    let skip = ["design/checks/", "design/audit/", "design/critiques/", "design/qa/", "design/build/", "design/references/", "design/directions/", "node_modules/"];
     !skip.iter().any(|s| name.starts_with(s) || name.contains(&format!("/{s}"))) && !name.contains("specimen") && !super::is_token_file(Path::new(name))
 }
 
@@ -229,8 +291,23 @@ pub fn note_check(design: &Path, screen: &str, files: &[PathBuf]) -> std::io::Re
 pub fn hand_in(design: &Path) -> Vec<String> {
     let pending = read_pending(design);
     let mut out = Vec::new();
+    let root = design.parent().unwrap_or(design);
     for e in &pending.edited {
-        out.push(format!("{} was edited and not checked: `equipe design lint {} --render --screen <flow/screen>`, then `equipe design second-look <flow/screen>`.", e.path, e.path));
+        let file = root.join(&e.path);
+        let elsewhere = checked_elsewhere(design, &file);
+        let screen = elsewhere.as_ref().map(|(_, s)| s.clone()).or_else(|| screen_of(design, &file)).unwrap_or_else(|| {
+            let stem = Path::new(&e.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            safe(if stem.is_empty() { "page" } else { &stem })
+        });
+        let mut line = format!(
+            "{} was edited and not checked since (every UI file a hand-in ships is drawn and checked first): run `equipe design lint {} --render --screen {screen}`, then `equipe design second-look {screen}`.",
+            e.path, e.path
+        );
+        if let Some((other, _)) = elsewhere {
+            let shown = |d: &Path| d.strip_prefix(root).map_or_else(|_| d.display().to_string(), |p| p.display().to_string());
+            line.push_str(&format!(" A check of it was kept in `{}/{DIR}/`, not in `{}/{DIR}/` where the hand-in looks: run it again without `--design`.", shown(&other), shown(design)));
+        }
+        out.push(line);
     }
     for screen in &pending.checked {
         let Some(record) = read(design, screen) else {
@@ -252,20 +329,112 @@ pub fn hand_in(design: &Path) -> Vec<String> {
             out.push(format!("{screen} changed after its check: check it again."));
             continue;
         }
+        let latest = [&record.verdict, &record.first].into_iter().flatten().map(|v| v.at).max();
+        if to_the_person(&record) && latest.is_some_and(|at| at >= record.at) {
+            // Looked at, asked for fixes again and again: [`open_fixes`] takes it to the person.
+            continue;
+        }
         if record.new && record.first.as_ref().is_none_or(|v| !v.pass) {
             out.push(format!("{screen} is new: its first screenful gets a second look of its own first — `equipe design second-look {screen} --first`."));
         }
         match &record.verdict {
             None => out.push(format!("{screen} has had no second look: `equipe design second-look {screen}`.")),
             Some(v) if v.at < record.at => out.push(format!("{screen} changed after its second look: `equipe design second-look {screen}` again.")),
-            Some(v) if !v.pass => out.push(format!("{screen}: the second look asked for {} fix(es) — make them, check again, and ask it again.", v.fixes.len())),
+            Some(v) if !v.pass => out.push(format!(
+                "{screen}: the second look asked for {} fix(es) — make them, check again, and ask it again ({} of {LOOKS_BEFORE_THE_PERSON} looks in a row asking for fixes; at {LOOKS_BEFORE_THE_PERSON}, what is left goes to the person with your hand-in).",
+                v.fixes.len(),
+                record.fixes_in_a_row
+            )),
             Some(_) => {}
         }
     }
     out
 }
 
-/// After a hand-in: the next ticket starts with nothing pending.
+/// The records under `design/checks/`, each with its screen.
+fn records_in(design: &Path) -> Vec<Record> {
+    let mut out = Vec::new();
+    let mut stack = vec![design.join(DIR)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "json")
+                && p.file_name().is_some_and(|n| n != PENDING)
+                && let Some(r) = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Record>(&t).ok()).filter(|r| !r.screen.is_empty())
+            {
+                out.push(r);
+            }
+        }
+    }
+    out
+}
+
+/// Whether `record` (kept by `design`) checked `file`, by its real path.
+fn covers(design: &Path, record: &Record, file: &Path) -> bool {
+    let root = design.parent().unwrap_or(design);
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let file = real(file);
+    record.files.iter().any(|s| real(&root.join(&s.path)) == file)
+}
+
+/// The screen a check in `design` last drew `file` as.
+fn screen_of(design: &Path, file: &Path) -> Option<String> {
+    records_in(design).into_iter().filter(|r| covers(design, r, file)).max_by_key(|r| r.at).map(|r| r.screen)
+}
+
+/// A check of `file` kept by another design folder in the same work — one
+/// `--design` pointed at — and its screen.
+fn checked_elsewhere(design: &Path, file: &Path) -> Option<(PathBuf, String)> {
+    let root = design.parent().unwrap_or(design);
+    let mut found = None;
+    let mut stack = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = e.file_name();
+            if !p.is_dir() || name == ".git" || name == "node_modules" || depth > 6 {
+                continue;
+            }
+            if name == DIR && p.parent() != Some(design) {
+                let other = p.parent().unwrap_or(root).to_path_buf();
+                if let Some(r) = records_in(&other).into_iter().filter(|r| covers(&other, r, file)).max_by_key(|r| r.at) {
+                    found = Some((other, r.screen));
+                }
+                continue;
+            }
+            stack.push((p, depth + 1));
+        }
+    }
+    found
+}
+
+/// What a hand-in takes to the person instead of refusing: each checked
+/// screen whose looks asked for fixes [`LOOKS_BEFORE_THE_PERSON`] times in a
+/// row, with the fixes its last look asked for.
+pub fn open_fixes(design: &Path) -> Vec<String> {
+    let pending = read_pending(design);
+    let mut out = Vec::new();
+    for screen in &pending.checked {
+        let Some(record) = read(design, screen).filter(to_the_person) else { continue };
+        let last = [&record.verdict, &record.first].into_iter().flatten().filter(|v| !v.pass).max_by_key(|v| v.at);
+        let fixes = last.map(|v| v.fixes.iter().map(|f| format!("{}: {}", f.place, f.what)).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+        out.push(format!("{screen}: the second look still asked for fixes after {} looks in a row — shown to the person: {fixes}", record.fixes_in_a_row));
+    }
+    out
+}
+
+/// After a hand-in: the next ticket starts with nothing pending, and its
+/// screens' rows of looks start again.
 pub fn handed_in(design: &Path) {
+    for screen in read_pending(design).checked {
+        if let Some(mut record) = read(design, &screen).filter(|r| r.fixes_in_a_row > 0) {
+            record.fixes_in_a_row = 0;
+            let _ = write(design, &record);
+        }
+    }
     let _ = write_pending(design, &Pending::default());
 }

@@ -117,6 +117,8 @@ pub struct BoardUi {
     /// Progress: since when "since you last looked" counts, and whether it shows today instead.
     pub progress_since: u64,
     pub progress_today: bool,
+    /// Orchestration's lit lane and scroll (`views/orchestra.rs`).
+    pub orchestra: super::orchestra::OrchestraUi,
     /// The project whose page is open (or was last), and its tab.
     pub project_page: Option<String>,
     pub project_tab: crate::board::ProjectTab,
@@ -214,6 +216,7 @@ impl BoardUi {
             side_more: false,
             progress_since: 0,
             progress_today: false,
+            orchestra: Default::default(),
             project_menu: None,
             removed_project: None,
             sub_motion: Default::default(),
@@ -1750,9 +1753,15 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
                         board::AllOf::Accept => t!("board.all_accept"),
                         board::AllOf::Start => t!("board.all_start"),
                         board::AllOf::Merge => t!("board.all_merge"),
+                        board::AllOf::Tidy => t!("decide.tidy"),
                     };
                     h_flex().flex_1().justify_end().child(
                         btn(p, SharedString::from(format!("all-{ix}")), word, None, false, shell.can_act()).on_click(cx.listener(move |this, _, _, cx| {
+                            // Older decisions: one plain message to the PM, nothing picked.
+                            if all.what == board::AllOf::Tidy {
+                                this.decide_ask_tidy(cx);
+                                return;
+                            }
                             this.board.view.chosen = all.ids.iter().copied().collect();
                             this.board.view.anchor = None;
                             this.board.flow = Some(Flow::Bulk { yes: true });

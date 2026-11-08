@@ -314,7 +314,10 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     for set in journal.questions() {
         out.paths.extend(set.images().map(str::to_owned));
     }
-    for ticket in journal.tickets().unwrap_or_default() {
+    let tickets = journal.tickets().unwrap_or_default();
+    // What a ticket still at work keeps in its design folder: the designer studio's pictures.
+    out.paths.extend(crate::design::studio::shown(&tickets));
+    for ticket in tickets {
         out.paths.extend(ticket.images.iter().cloned());
         out.kept.extend(kept_of(&ticket, home, squad));
         out.roots.extend(ticket.worktree);
@@ -439,6 +442,13 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         return read(Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);
     }
     let mut shown = shown(home, &ask.squad);
+    // A picture of a ticket's work the designer studio named lately (`crate::design::studio`).
+    if crate::design::studio::given(home, &ask.squad, &ask.path) {
+        shown.paths.insert(ask.path.clone());
+        if let Some(dir) = Path::new(&ask.path).parent() {
+            shown.roots.push(dir.to_path_buf());
+        }
+    }
     // A line that embeds a picture by its name alone, read against another
     // folder than the screen's: the same name said counts as said.
     let named = file_name(&ask.path).is_some_and(|name| shown.said.iter().any(|s| file_name(s) == Some(name)));

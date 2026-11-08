@@ -81,12 +81,16 @@ after each edit).
 The last critique before you hand in is a second look by fresh eyes: `equipe design second-look <flow/screen>
 --criteria "<the ticket's acceptance criteria>"` gives a reviewer that saw none of your work only the pictures lint
 drew at each width, the brief, the criteria and the design system, and keeps its verdict on the screen's record. Fix
-every fix it lists, check again and ask again until it passes — never argue it into a pass, and never write its
-verdict yourself. For a new screen, its first screenful is looked at alone first (`--first`), before you build the
+every fix it lists, check again and ask again until it passes, or until three looks in a row have asked for fixes:
+then hand in, and what is left goes to the person marked, the PM told. Never argue it into a pass, and never write
+its verdict yourself. What it needs that the brief, the project's files and the design system don't give comes back as
+open questions, not fixes: use the neutral wording it suggests, or ask the person with `ask_decision` while you carry
+on — never stop the ticket on `block_on_person` for them. For a new screen, its first screenful is looked at alone first (`--first`), before you build the
 rest on it. Only when no engine can run: start a subagent with nothing of your conversation, give it only what
 `equipe design second-look <flow/screen> --prompt` prints, and record its answer with `--answer <file>`. A hand-in is
-refused until every UI file you edited was checked this way, passed the floor and had a passing second look; say in
-it the floor's count, each habit kept and why, and what the second look asked for and you changed.
+refused until every UI file you edited — not the directions you explored in `design/directions/` — was checked this
+way, passed the floor and had a passing second look; say in it the floor's count, each habit kept and why, and what
+the second look asked for and you changed.
 {{#if board_tools}}
 
 Give each design option its `images` and its `aspects` (what of it can go into another — type, colour, shape — in the
