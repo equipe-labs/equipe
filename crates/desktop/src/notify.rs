@@ -616,7 +616,7 @@ mod tests {
         let alerts = vec![ask("Bash", "a"), ask("Bash", "b"), Alert::Waiting { ticket: 3, by: None }, Alert::Review { ticket: 4, title: "t".into(), by: None, project: None }];
         let t = toasts(&alerts, "acme", true);
         assert_eq!(t.len(), 1);
-        assert_eq!(t[0].title, "acme에서 4건이 당신을 기다려요");
+        assert_eq!(t[0].title, "acme에서 4건이 내 답을 기다려요");
         assert_eq!(t[0].body, "승인 2 · 리뷰 1 · 사람 대기 1");
         assert_eq!(t[0].go, Go::Board);
         assert_eq!(t[0].thread, "squad/acme");
