@@ -82,6 +82,14 @@ impl Shell {
         cx.notify();
     }
 
+    /// Who reviews the designer's work, from settings.
+    pub fn set_design_reviewer(&mut self, reviewer: equipe_core::protocol::engines::Reviewer, cx: &mut Context<Self>) {
+        self.model.design_reviewer = reviewer;
+        let squad = self.model.squad.clone();
+        self.send_command(equipe_core::protocol::Command::SetDesignReviewer { squad, reviewer });
+        cx.notify();
+    }
+
     /// "See the recommended setup again": the daemon proposes the setup again.
     pub fn show_engine_setup(&mut self, cx: &mut Context<Self>) {
         let squad = self.model.squad.clone();

@@ -7,7 +7,9 @@
 //! - `values`: what a token's value is — a colour, a size, a curve, a type style.
 //! - `contrast`: WCAG 2.x contrast, and which colour is the background.
 //! - `diff`: what changed since the person last looked.
-//! - `critique`: the designer's pictures, critiqued by the other engine.
+//! - `critique`: the designer's pictures, critiqued by a fresh reviewer.
+//! - `reviewer`: which engine reviews the designer's work — the other one when
+//!   it can take it, else a fresh session of the member's own — and why.
 //! - `lint`: a screen held to rules in code — the floor never waived, the
 //!   habits of generated screens kept only with a reason, finishing notes —
 //!   in its source and as a browser draws it, and what a hand-in needs.
@@ -53,6 +55,7 @@ pub mod flows;
 pub mod folder;
 pub mod kept;
 pub mod review;
+pub mod reviewer;
 pub mod second_look;
 pub mod studio;
 pub mod system;

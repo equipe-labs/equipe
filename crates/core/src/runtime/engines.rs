@@ -26,7 +26,7 @@
 //! news. Nothing here spends credits or overage: an engine out of its plan is
 //! waited for or left, never paid for.
 
-use equipe_protocol::engines::{HandOver, Move, Proposal, Switching, Why, Window};
+use equipe_protocol::engines::{HandOver, Move, Proposal, Reviewed, Switching, Why, Window};
 use equipe_protocol::{EnginePlan, PlanUsage};
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +68,9 @@ pub(super) struct Engines {
     claude_looking: bool,
     /// Each plan's week as the Usage screen reads it: its pace, and who used it.
     loads: HashMap<Engine, crate::plan_use::Load>,
+    /// Where each engine stood when the screens last asked (signed in,
+    /// out, not installed): who reviews the designer's work goes by it.
+    states: HashMap<Engine, equipe_protocol::EngineState>,
 }
 
 #[derive(Default)]
@@ -171,6 +174,13 @@ impl Engines {
         self.squads.get(squad).is_some_and(|s| s.holds.iter().any(|h| h.engine == engine && h.until > now))
     }
 
+    /// The engines as just looked at.
+    pub(super) fn saw(&mut self, statuses: &[equipe_protocol::EngineStatus]) {
+        for status in statuses {
+            self.states.insert(status.engine, status.state);
+        }
+    }
+
     /// Whether a move waits for `name`.
     fn waits_for(&self, squad: &str, name: &str) -> bool {
         self.squads.get(squad).is_some_and(|s| s.due.iter().any(|d| d.mv.member == name))
@@ -213,6 +223,44 @@ impl Runtime {
         squads.sort();
         squads.dedup();
         squads
+    }
+
+    // ── who reviews the designer's work ──
+
+    /// Who reviews the design work of a member of `squad` on `engine`, at
+    /// the turn starting now (`crate::design::reviewer`): the squad's
+    /// setting, and the other engine as it stands — signed in as the screens
+    /// last saw it (a member running on it says so too; never looked at, it
+    /// is there when its program is), its plan as last read and burning.
+    pub(super) fn design_reviewer(&self, squad: &str, engine: Engine) -> Reviewed {
+        use crate::design::reviewer::{self, Limit, Standing};
+        use equipe_protocol::EngineState;
+        let setting = self.journals.get(squad).map(Journal::design_reviewer).unwrap_or_default();
+        let other = reviewer::across(engine);
+        let in_use = self.sessions.values().any(|s| s.engine == other);
+        let here = || {
+            let binary = match other {
+                Engine::Claude => &self.config.claude_binary,
+                Engine::Codex => &self.config.codex_binary,
+            };
+            codex_app::find(binary).is_some()
+        };
+        let now = unix_now();
+        let fallback = Memory::default();
+        let memory = self.engines.squads.get(squad).map_or(&fallback, |s| &s.memory);
+        let limits = || {
+            let read = self.readings().into_iter().find(|r| r.engine == other);
+            read.map(|r| rules::windows_at(&r, memory, now).into_iter().map(|(window, used, runs_out)| Limit { window, used, runs_out }).collect()).unwrap_or_default()
+        };
+        let standing = match self.engines.states.get(&other) {
+            _ if in_use => Standing::Ready(limits()),
+            Some(EngineState::SignedIn) => Standing::Ready(limits()),
+            Some(EngineState::SignedOut) => Standing::SignedOut,
+            Some(EngineState::NotInstalled) => Standing::NotInstalled,
+            Some(EngineState::Unknown) | None if here() => Standing::Ready(limits()),
+            Some(EngineState::Unknown) | None => Standing::NotInstalled,
+        };
+        reviewer::choose(setting, engine, &standing)
     }
 
     // ── readings ──

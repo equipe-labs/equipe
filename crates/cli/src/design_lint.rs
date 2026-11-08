@@ -13,6 +13,8 @@ use equipe_core::design::lint::{self, System, Tier, record, render, waivers};
 use equipe_core::design::{critique, directions, kept, second_look};
 use equipe_core::protocol::Engine;
 
+use crate::design::NoReview;
+
 /// Exit codes of `lint`: the floor fails; the floor passes with habits left
 /// to fix or keep. Clean is 0.
 pub const FLOOR_FAILS: i32 = 1;
@@ -79,7 +81,7 @@ pub struct SecondLookArgs {
     /// The brief (default: design/brand.md)
     #[arg(long)]
     pub brief: Option<PathBuf>,
-    /// Who looks (default: a fresh run of the engine this is run from)
+    /// Who looks (default: as the squad sets it — the other engine when it has room, else a fresh run of this one)
     #[arg(long, value_parser = ["codex", "claude"])]
     pub engine: Option<String>,
     /// Print the reviewer's prompt and stop: for a fresh subagent of your own when no engine can run
@@ -334,23 +336,21 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
         println!("{}", second_look::prompt(&ask));
         return Ok(());
     }
-    let (answer, by) = match &args.answer {
-        Some(file) => (read(file).ok_or_else(|| format!("{}: no such file", file.display()))?, "subagent".to_owned()),
+    let (answer, by, reviewer) = match &args.answer {
+        Some(file) => (read(file).ok_or_else(|| format!("{}: no such file", file.display()))?, "subagent".to_owned(), None),
         None => {
-            let engine = match args.engine.as_deref() {
-                Some("codex") => Engine::Codex,
-                Some(_) => Engine::Claude,
-                None => critique::caller_engine(|n| std::env::var(n).ok()).unwrap_or_else(|| {
-                    eprintln!("{}", critique::unknown_caller(Engine::Claude, "second look"));
-                    Engine::Claude
-                }),
-            };
-            (look(engine, &ask).await?, if engine == Engine::Codex { "codex".to_owned() } else { "claude".to_owned() })
+            let first = crate::design::reviewer_for(args.engine.as_deref(), "second look");
+            let (answer, r) = crate::design::reviewed(first, |engine| look(engine, &ask)).await?;
+            (answer, critique::member_engine_value(r.engine).to_owned(), Some(r))
         }
     };
     let mut verdict = second_look::verdict_of(&answer).ok_or("the reviewer gave no verdict (a JSON object with \"verdict\")")?;
     verdict.at = record::now();
     verdict.by = by;
+    verdict.reviewer = reviewer;
+    if let Some(r) = &reviewer {
+        println!("{}", equipe_core::design::reviewer::said(r));
+    }
     verdict.widths = ask.pictures.iter().map(|(w, _)| *w).collect();
     verdict.first = args.first;
     record::note_verdict(&mut rec, verdict.clone());
@@ -373,18 +373,14 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
 }
 
 /// One fresh, read-only run of `engine` on the ask; its answer.
-async fn look(engine: Engine, ask: &second_look::Ask) -> Result<String, String> {
+async fn look(engine: Engine, ask: &second_look::Ask) -> Result<String, NoReview> {
+    const OR_SUBAGENT: &str = " Or give your own fresh subagent the --prompt and record its --answer.";
     let answer = std::env::temp_dir().join(format!("equipe-second-look-{}.md", std::process::id()));
     let (program, args) = second_look::command(engine, ask, &answer);
     eprintln!("A fresh {} is looking at {} picture(s) of {}…", engine.label(), ask.pictures.len(), ask.screen);
-    let run = tokio::process::Command::new(&program).args(&args).stdin(Stdio::null()).stderr(Stdio::piped()).output().await.map_err(|e| format!("{program}: {e} — is {} installed and signed in? Or give your own fresh subagent the --prompt and record its --answer.", engine.label()))?;
+    let run = tokio::process::Command::new(&program).args(&args).stdin(Stdio::null()).stderr(Stdio::piped()).output().await.map_err(|e| NoReview::spawn(&program, engine, &e, OR_SUBAGENT))?;
     if !run.status.success() {
-        let said = [String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout)].join("\n");
-        if let Some(next) = critique::no_network(&said, &|n| std::env::var(n).ok()) {
-            return Err(format!("{} couldn't look: {next}", engine.label()));
-        }
-        let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
-        return Err(format!("{} couldn't look ({}): {}", engine.label(), run.status, tail.into_iter().rev().collect::<Vec<_>>().join("\n")));
+        return Err(NoReview::failed(engine, "look", &run, ""));
     }
     let text = if engine == Engine::Claude { String::from_utf8_lossy(&run.stdout).into_owned() } else { std::fs::read_to_string(&answer).unwrap_or_default() };
     let _ = std::fs::remove_file(&answer);

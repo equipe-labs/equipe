@@ -320,6 +320,8 @@ pub struct Model {
     /// How many subagents each member runs at once, where its engine has
     /// them, as the person set it; `None`: each engine's own.
     pub subagents_at_once: Option<u32>,
+    /// Which engine reviews the designer's work, as the squad set it.
+    pub design_reviewer: equipe_core::protocol::engines::Reviewer,
     /// The squad's signals, each with its latest readings.
     pub signals: Vec<equipe_core::protocol::signals::SignalView>,
     /// Conversations with the PM the person put away, the latest first.
@@ -510,6 +512,7 @@ impl Model {
             catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
             subagents_at_once: None,
+            design_reviewer: Default::default(),
             signals: Vec::new(),
             put_away: Vec::new(),
             secret_asks: Vec::new(),
@@ -1089,6 +1092,7 @@ impl Model {
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
         self.subagents_at_once = snapshot.subagents_at_once;
+        self.design_reviewer = snapshot.design_reviewer;
         self.signals = snapshot.signals.clone();
         self.put_away = snapshot.put_away.clone();
         self.secret_asks = snapshot.secret_asks.clone();
@@ -1240,6 +1244,10 @@ impl Model {
             }
             Event::SubagentsAtOnceChanged { squad, at_once } if *squad == self.squad => {
                 self.subagents_at_once = *at_once;
+                self.revision += 1;
+            }
+            Event::DesignReviewerChanged { squad, reviewer } if *squad == self.squad => {
+                self.design_reviewer = *reviewer;
                 self.revision += 1;
             }
             Event::SignalsChanged { squad, signals } if *squad == self.squad => {
@@ -3441,6 +3449,18 @@ mod tests {
         assert_eq!(model.subagents_at_once, Some(4), "another squad's");
         assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: None }), T0));
         assert_eq!(model.subagents_at_once, None, "back to each engine's own");
+    }
+
+    #[test]
+    fn who_reviews_the_designers_work_shows_and_follows_the_daemon() {
+        use equipe_core::protocol::engines::Reviewer;
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.design_reviewer, Reviewer::Auto, "an older daemon says nothing: auto");
+        assert!(model.apply(Update::Event(Event::DesignReviewerChanged { squad: "acme".into(), reviewer: Reviewer::Same }), T0));
+        assert_eq!(model.design_reviewer, Reviewer::Same);
+        model.apply(Update::Event(Event::DesignReviewerChanged { squad: "other".into(), reviewer: Reviewer::Other }), T0);
+        assert_eq!(model.design_reviewer, Reviewer::Same, "another squad's");
     }
 
     #[test]

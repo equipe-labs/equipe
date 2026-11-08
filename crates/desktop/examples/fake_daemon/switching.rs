@@ -224,6 +224,9 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         Command::SetEngineSwitching { mode, .. } => {
             let _ = events.send(Event::EngineSwitchingChanged { squad: squad(), mode: *mode });
         }
+        Command::SetDesignReviewer { reviewer, .. } => {
+            let _ = events.send(Event::DesignReviewerChanged { squad: squad(), reviewer: *reviewer });
+        }
         Command::ApplyEngineProposal { id, now, .. } => {
             // On moves made already, "Move now" marks those waiting; the card stays.
             if let Some(mut made) = proposals().into_iter().find(|p| p.id == *id && p.applied).filter(|_| *now) {

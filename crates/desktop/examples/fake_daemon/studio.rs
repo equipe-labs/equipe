@@ -27,7 +27,8 @@ use equipe_core::design::second_look;
 use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{ImageRead, ReadImage};
 use equipe_core::protocol::studio::{Studio, StudioAsk};
-use equipe_core::protocol::{Entry, Ticket, TicketStatus, ToolOutcome};
+use equipe_core::protocol::engines::{ReviewWhy, Reviewed, Window};
+use equipe_core::protocol::{Engine, Entry, Ticket, TicketStatus, ToolOutcome};
 use image::{Rgba, RgbaImage};
 
 pub const TICKET: u32 = 205;
@@ -145,12 +146,26 @@ fn fixes() -> Verdict {
         questions: vec![LookQuestion { what: "How long the free trial is".into(), wording: "Start free".into() }],
         by: if codex() { "claude" } else { "codex" }.into(),
         widths: WIDTHS.to_vec(),
+        reviewer: Some(reviewer(false)),
         ..Verdict::default()
     }
 }
 
 fn passed() -> Verdict {
-    Verdict { pass: true, summary: "One clear next step at every width; the type keeps the warmth asked for.".into(), by: if codex() { "claude" } else { "codex" }.into(), widths: WIDTHS.to_vec(), ..Verdict::default() }
+    let fresh = reviewer(true);
+    Verdict { pass: true, summary: "One clear next step at every width; the type keeps the warmth asked for.".into(), by: equipe_core::design::critique::member_engine_value(fresh.engine).into(), widths: WIDTHS.to_vec(), reviewer: Some(fresh), ..Verdict::default() }
+}
+
+/// Who reviewed: the other engine with room, or — its week nearly gone — a
+/// fresh session of the designer's own.
+fn reviewer(fresh: bool) -> Reviewed {
+    let own = if codex() { Engine::Codex } else { Engine::Claude };
+    let other = if codex() { Engine::Claude } else { Engine::Codex };
+    if fresh {
+        Reviewed { engine: own, member: Some(own), why: ReviewWhy::NearLimit { window: Window::Weekly, used: 92 } }
+    } else {
+        Reviewed { engine: other, member: Some(own), why: ReviewWhy::Room { used: Some(38) } }
+    }
 }
 
 fn look_run(v: &Verdict) -> Entry {
@@ -574,7 +589,8 @@ pub fn seed() {
         touch(&dir.join(file), at(step));
     }
     let _ = std::fs::create_dir_all(dir.join("critiques"));
-    let _ = std::fs::write(dir.join(format!("critiques/{}.md", at("design critique"))), "## The whole\nThe poster shouts and could be any launch page; the ledger reads at a glance.\n\n## Details\n- Ledger: the CTA is timid next to the heading.\n- Poster: the serif's warmth is worth keeping.\n");
+    let critic = equipe_core::design::reviewer::mark(&reviewer(false));
+    let _ = std::fs::write(dir.join(format!("critiques/{}.md", at("design critique"))), critic + "\n## The whole\nThe poster shouts and could be any launch page; the ledger reads at a glance.\n\n## Details\n- Ledger: the CTA is timid next to the heading.\n- Poster: the serif's warmth is worth keeping.\n");
     if is("waiting") {
         return;
     }

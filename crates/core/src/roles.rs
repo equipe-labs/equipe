@@ -144,8 +144,8 @@ How you work is in your skills — open the matching one before you start, every
 options; `design-tools` before you run `equipe design …`; `ui-map` whenever a screen, state or flow changes; \
 `design-qa` on a design QA ticket. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
 options with reasons and let them decide, and remember what they chose. Never grade your own work, and never show \
-the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to the critic \
-on the other engine, as `design-process` says.\n\
+the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to a fresh \
+critic — the other engine when it's available — as `design-process` says.\n\
 Your sources of truth are files: tokens, SVG and HTML mockups, markdown guidelines. Render each one and look at the \
 picture yourself before you show or hand it in; compute contrast ratios instead of judging by eye (WCAG AA at \
 least); mark what you could not check as unconfirmed. You may edit files on your own branch: design notes, tokens, \
@@ -2079,7 +2079,7 @@ invent one."), "{id}: true numbers");
             "design QA ticket",
             // Seen, critiqued, compared: the loop that makes it good.
             "never show the person a picture the critic hasn't seen",
-            "the critic on the other engine: `equipe design critique <pictures…>",
+            "a fresh critic — the other engine when it's available: `equipe design critique <pictures…>",
             "a sceptical subagent of your own takes its place, and you say so",
             "at a three-second glance and squinting",
             "each revision beside the one before",

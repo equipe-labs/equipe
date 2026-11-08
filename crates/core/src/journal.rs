@@ -697,6 +697,15 @@ impl Journal {
         self.set_meta("subagents_at_once", &at_once.map(|n| equipe_protocol::subagents_at_once(n).to_string()).unwrap_or_default())
     }
 
+    /// Which engine reviews the designer's work; auto unless the person set it.
+    pub fn design_reviewer(&self) -> equipe_protocol::engines::Reviewer {
+        self.meta("design_reviewer").and_then(|v| equipe_protocol::engines::Reviewer::parse(&v)).unwrap_or_default()
+    }
+
+    pub fn set_design_reviewer(&self, reviewer: equipe_protocol::engines::Reviewer) -> Result<()> {
+        self.set_meta("design_reviewer", reviewer.code())
+    }
+
     /// What new members of a role start with on an engine, where the person
     /// set it; every other role takes equipe's recommendation.
     pub fn role_models(&self) -> Vec<equipe_protocol::RoleModel> {
@@ -1669,6 +1678,19 @@ mod tests {
         // Back to each engine's own.
         j.set_subagents_at_once(None).unwrap();
         assert_eq!(j.subagents_at_once(), None);
+    }
+
+    #[test]
+    fn a_squad_keeps_who_reviews_its_designers_work_auto_until_set() {
+        use equipe_protocol::engines::Reviewer;
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        assert_eq!(j.design_reviewer(), Reviewer::Auto);
+        j.set_design_reviewer(Reviewer::Same).unwrap();
+        assert_eq!(j.design_reviewer(), Reviewer::Same);
+        j.set_design_reviewer(Reviewer::Other).unwrap();
+        assert_eq!(j.design_reviewer(), Reviewer::Other);
+        j.set_design_reviewer(Reviewer::Auto).unwrap();
+        assert_eq!(j.design_reviewer(), Reviewer::Auto);
     }
 
     #[test]

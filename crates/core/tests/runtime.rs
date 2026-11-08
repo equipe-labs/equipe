@@ -969,6 +969,34 @@ async fn a_claude_member_runs_the_squads_number_of_subagents_at_once_and_is_told
 }
 
 #[tokio::test]
+async fn a_members_design_work_is_reviewed_by_the_other_engine_when_it_is_here_or_as_the_squad_sets_it() {
+    use equipe_core::protocol::engines::{ReviewWhy, Reviewed, Reviewer};
+    let seen = scratch("reviewer-env");
+    let (claude, _recorded) = recording_claude(&format!("printf '%s' \"$EQUIPE_DESIGN_REVIEWER\" > '{}/reviewer'\n{}", seen.display(), answering("ok")));
+    // Codex's program is here; nobody runs on it and its sign-in wasn't looked at.
+    let codex = seen.join("codex");
+    std::fs::write(&codex, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&codex, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 1, member(&cwd, "designer")).await;
+    assert_eq!(handle.snapshot("acme").await.design_reviewer, Reviewer::Auto, "auto until set");
+    let turn = async |events: &mut UnboundedReceiver<Event>, n: usize| -> Reviewed {
+        handle.send(Command::Submit { session: 1, text: format!("draw it {n}"), about: None });
+        until(events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        serde_json::from_str(&std::fs::read_to_string(seen.join("reviewer")).unwrap()).unwrap()
+    };
+    // Auto: the other engine, its plan not read yet.
+    assert_eq!(turn(&mut events, 0).await, Reviewed { engine: Engine::Codex, member: Some(Engine::Claude), why: ReviewWhy::Room { used: None } });
+    // The person keeps reviews on the member's own engine: every screen hears, the next turn gets it.
+    handle.send(Command::SetDesignReviewer { squad: "acme".into(), reviewer: Reviewer::Same });
+    until(&mut events, |e| matches!(e, Event::DesignReviewerChanged { reviewer: Reviewer::Same, .. })).await;
+    assert_eq!(handle.snapshot("acme").await.design_reviewer, Reviewer::Same);
+    assert_eq!(turn(&mut events, 1).await, Reviewed { engine: Engine::Claude, member: Some(Engine::Claude), why: ReviewWhy::Setting });
+}
+
+#[tokio::test]
 async fn a_members_skills_load_as_a_plugin_and_its_charter_keeps_only_their_index() {
     let (claude, recorded) = recording_claude(&answering("on it"));
     let cwd = scratch("cwd");
@@ -2830,7 +2858,7 @@ fn squads_home(home: &Path) -> PathBuf {
 #[tokio::test]
 async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_all() {
     let seen = scratch("member-env");
-    let (claude, recorded) = recording_claude(&format!("printf '%s' \"$EQUIPE_MEMBER\" > '{}/member'\nprintf '%s' \"$EQUIPE_MEMBER_ENGINE\" > '{0}/engine'\n{}", seen.display(), answering("ok")));
+    let (claude, recorded) = recording_claude(&format!("printf '%s' \"$EQUIPE_MEMBER\" > '{}/member'\nprintf '%s' \"$EQUIPE_MEMBER_ENGINE\" > '{0}/engine'\nprintf '%s' \"$EQUIPE_DESIGN_REVIEWER\" > '{0}/reviewer'\n{}", seen.display(), answering("ok")));
     let (site, app) = (named("site"), named("app"));
     let home = squad_home(&[&site, &app]);
     squads::create(&home, "beta", &named("beta-app")).unwrap();
@@ -2865,6 +2893,9 @@ async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_
     // Its commands know they are a member's, and its charter needn't say what the guard refuses.
     assert_eq!(std::fs::read_to_string(seen.join("member")).unwrap(), "frontend");
     assert_eq!(std::fs::read_to_string(seen.join("engine")).unwrap(), "claude", "and the engine they run on, outside its sandbox too");
+    // And who reviews its design work this turn: with no Codex here, a fresh Claude, and why.
+    let reviewer: equipe_core::protocol::engines::Reviewed = serde_json::from_str(&std::fs::read_to_string(seen.join("reviewer")).unwrap()).unwrap();
+    assert_eq!(reviewer, equipe_core::protocol::engines::Reviewed { engine: Engine::Claude, member: Some(Engine::Claude), why: equipe_core::protocol::engines::ReviewWhy::NotInstalled });
     assert!(!arg(call, "--append-system-prompt").unwrap().contains("Never sleep"));
     assert_eq!(settings["sandbox"]["filesystem"]["denyWrite"], serde_json::json!([site, app]));
     assert!(settings["sandbox"]["filesystem"]["denyRead"].as_array().unwrap().contains(&serde_json::json!(beta)));

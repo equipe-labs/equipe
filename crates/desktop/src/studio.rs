@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use equipe_core::design::lint::Summary;
 use equipe_core::design::lint::record::Verdict;
+use equipe_core::protocol::engines::Reviewed;
 use equipe_core::protocol::studio::{PictureFrom, Studio, StudioCheck, StudioLook, StudioPicture};
 use equipe_core::protocol::{Entry, Ticket, TicketId, TicketStatus, Transcript};
 use equipe_core::t;
@@ -121,7 +122,7 @@ pub enum Did {
     Checked(Box<Summary>),
     /// A second look, its verdict.
     Looked2 { screen: String, verdict: Box<Verdict> },
-    /// Sent pictures to the other engine for a critique.
+    /// Sent pictures to a fresh reviewer for a critique.
     Critiqued,
     /// Worked in the shared browser.
     Browsed,
@@ -885,8 +886,10 @@ fn check_lines(s: &Summary) -> Vec<String> {
     out
 }
 
-fn look_lines(pass: bool, summary: &str, fixes: &[(String, String, String)], questions: &[(String, String)]) -> Vec<String> {
+fn look_lines(pass: bool, summary: &str, fixes: &[(String, String, String)], questions: &[(String, String)], reviewer: Option<&Reviewed>) -> Vec<String> {
     let mut out = vec![if pass { t!("look.pass").to_owned() } else { t!("look.fixes", count = fixes.len()) }];
+    // Who looked, beside the verdict: what the timeline shows of it.
+    out.extend(reviewer.map(checks::reviewed));
     if !summary.trim().is_empty() {
         out.push(summary.trim().to_owned());
     }
@@ -946,7 +949,8 @@ pub fn items(happenings: &[Happening], files: Option<&Studio>) -> Vec<Item> {
             out.push(Item { key: format!("report:{}", r.path), kind: ItemKind::Report, at: Some(r.at), title: r.title.clone(), lines, pictures, link: None, tone: Tone::Plain });
         }
         for c in &f.critiques {
-            let lines = c.text.lines().map(str::trim).filter(|l| !l.starts_with('#')).map(|l| l.trim_start_matches(['*', '-', ' ']).trim()).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+            let said = c.reviewer.as_ref().map(checks::reviewed);
+            let lines = said.into_iter().chain(c.text.lines().map(str::trim).filter(|l| !l.starts_with('#')).map(|l| l.trim_start_matches(['*', '-', ' ']).trim()).filter(|l| !l.is_empty()).map(str::to_owned)).collect();
             out.push(Item { key: format!("crit:{}", c.path), kind: ItemKind::Critique, at: Some(c.at), title: t!("studio.item_critique").to_owned(), lines, pictures: Vec::new(), link: None, tone: Tone::Plain });
         }
     }
@@ -976,7 +980,7 @@ pub fn items(happenings: &[Happening], files: Option<&Studio>) -> Vec<Item> {
                 let fixes: Vec<(String, String, String)> = verdict.fixes.iter().map(|f| (f.place.clone(), f.what.clone(), f.why.clone())).collect();
                 let questions: Vec<(String, String)> = verdict.questions.iter().map(|q| (q.what.clone(), q.wording.clone())).collect();
                 let title = screen.clone();
-                out.push(Item { key: format!("look:{n}"), kind: ItemKind::Look, at: h.at.or(Some(verdict.at)), title, lines: look_lines(verdict.pass, &verdict.summary, &fixes, &questions), pictures: if last_run(screen, true) == Some(n) { picture_of(screen) } else { Vec::new() }, link: None, tone: if verdict.pass { Tone::Good } else { Tone::Bad } });
+                out.push(Item { key: format!("look:{n}"), kind: ItemKind::Look, at: h.at.or(Some(verdict.at)), title, lines: look_lines(verdict.pass, &verdict.summary, &fixes, &questions, verdict.reviewer.as_ref()), pictures: if last_run(screen, true) == Some(n) { picture_of(screen) } else { Vec::new() }, link: None, tone: if verdict.pass { Tone::Good } else { Tone::Bad } });
             }
             Did::HandIn { ok, why } => {
                 let title = if *ok { t!("studio.item_handed") } else { t!("studio.item_refused") }.to_owned();
@@ -995,7 +999,7 @@ pub fn items(happenings: &[Happening], files: Option<&Studio>) -> Vec<Item> {
             if !seen_looks.contains(&c.screen) {
                 for l in [&c.first, &c.look].into_iter().flatten() {
                     let (fixes, questions) = studio_look(l);
-                    out.push(Item { key: format!("reclook:{}:{}", c.screen, l.at), kind: ItemKind::Look, at: Some(l.at), title: c.screen.clone(), lines: look_lines(l.pass, &l.summary, &fixes, questions), pictures: usual_first(&c.pictures), link: None, tone: if l.pass { Tone::Good } else { Tone::Bad } });
+                    out.push(Item { key: format!("reclook:{}:{}", c.screen, l.at), kind: ItemKind::Look, at: Some(l.at), title: c.screen.clone(), lines: look_lines(l.pass, &l.summary, &fixes, questions, l.reviewer.as_ref()), pictures: usual_first(&c.pictures), link: None, tone: if l.pass { Tone::Good } else { Tone::Bad } });
                 }
             }
         }
@@ -1651,6 +1655,26 @@ mod tests {
         assert_eq!(kept.iter().filter(|i| i.kind == ItemKind::Check).count(), 1);
         let keys: std::collections::HashSet<&str> = list.iter().map(|i| i.key.as_str()).collect();
         assert_eq!(keys.len(), list.len(), "each its own key");
+    }
+
+    #[test]
+    fn the_timeline_says_which_engine_reviewed_and_why_that_one() {
+        use equipe_core::protocol::Engine;
+        use equipe_core::protocol::engines::{ReviewWhy, Window};
+        let room = Reviewed { engine: Engine::Codex, member: Some(Engine::Claude), why: ReviewWhy::Room { used: Some(40) } };
+        let near = Reviewed { engine: Engine::Claude, member: Some(Engine::Claude), why: ReviewWhy::NearLimit { window: Window::Weekly, used: 93 } };
+        let mut f = files();
+        f.critiques = vec![
+            equipe_core::protocol::studio::StudioCritique { path: "/w/design/critiques/600.md".into(), at: 600, text: "## Whole\nCramped at 360.".into(), reviewer: Some(near) },
+            equipe_core::protocol::studio::StudioCritique { path: "/w/design/critiques/90.md".into(), at: 90, text: "Flat.".into(), reviewer: None },
+        ];
+        f.checks[0].look.as_mut().unwrap().reviewer = Some(room);
+        let list = items(&[], Some(&f));
+        let critique = list.iter().find(|i| i.key.ends_with("600.md")).unwrap();
+        assert_eq!(critique.lines, ["Claude 새 세션 검토 · Codex 주간 93% 사용", "Cramped at 360."], "who, first: what the timeline shows");
+        assert_eq!(list.iter().find(|i| i.key.ends_with("90.md")).unwrap().lines, ["Flat."], "one kept before it: as it was");
+        let look = list.iter().find(|i| i.kind == ItemKind::Look && i.at == Some(520)).unwrap();
+        assert_eq!(look.lines[..2], [t!("look.fixes", count = 1), "Codex 검토 · Codex 여유 있음 — 주간 40% 사용".to_owned()]);
     }
 
     #[test]

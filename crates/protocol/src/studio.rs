@@ -37,7 +37,7 @@ pub struct Studio {
     /// no ticket named.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub directions: Vec<StudioDirection>,
-    /// The other engine's critiques, oldest first.
+    /// The critiques, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub critiques: Vec<StudioCritique>,
     /// The reference board: each reference kept, newest first.
@@ -149,6 +149,9 @@ pub struct StudioLook {
     /// Facts it found missing: what, and the wording meanwhile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<(String, String)>,
+    /// Which engine looked, and why that one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<crate::engines::Reviewed>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,13 +186,16 @@ pub struct StudioDirection {
     pub pictures: Vec<StudioPicture>,
 }
 
-/// A critique the other engine wrote (`design/critiques/<stamp>.md`), cut short.
+/// A critique a fresh reviewer wrote (`design/critiques/<stamp>.md`), cut short.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StudioCritique {
     pub path: String,
     #[serde(default)]
     pub at: u64,
     pub text: String,
+    /// Which engine wrote it, and why that one; `None` for one kept before it was said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<crate::engines::Reviewed>,
 }
 
 /// A reference kept on the board (`design/references/<name>/`): its link,

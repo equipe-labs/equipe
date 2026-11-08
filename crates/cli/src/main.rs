@@ -1666,6 +1666,7 @@ impl App {
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
                 | Event::SubagentsAtOnceChanged { .. }
+                | Event::DesignReviewerChanged { .. }
                 | Event::RoleModelsChanged { .. }
                 | Event::Models { .. }
                 | Event::SecretAsked { .. }

@@ -83,6 +83,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::SetPmAccepts { .. }
         | C::SetEngineSwitching { .. }
         | C::SetSubagentsAtOnce { .. }
+        | C::SetDesignReviewer { .. }
         | C::Scale { .. }
         | C::SetIdleWake { .. }
         | C::SetModel { .. }

@@ -1,8 +1,8 @@
-//! `equipe design critique`: the designer's pictures go to the other engine
-//! for a sceptical critique — a second model's eyes, not the author's own.
-//! Run from a Claude member, Codex critiques; from a Codex member, Claude.
-//! The critic only reads: Codex in its read-only sandbox, Claude with its
-//! reading tools alone.
+//! `equipe design critique`: the designer's pictures go to a fresh reviewer
+//! for a sceptical critique — eyes that saw none of the work being made. The
+//! other engine when it can take it, else a fresh session of the member's
+//! own, as the squad sets it (`reviewer`). The critic only reads: Codex in
+//! its read-only sandbox, Claude with its reading tools alone.
 
 use std::path::{Path, PathBuf};
 
@@ -61,8 +61,9 @@ pub fn no_network(said: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<St
     })
 }
 
-/// Who critiques: the engine the caller isn't on. From a person's terminal,
-/// Codex — the designer works on Claude unless moved.
+/// The engine the caller isn't on — a brief's second opinion
+/// (`equipe brief critique`); a design review asks [`super::reviewer`]. From
+/// a person's terminal, Codex — the designer works on Claude unless moved.
 pub fn critic_engine(caller: Option<Engine>) -> Engine {
     caller.map_or(Engine::Codex, other_engine)
 }

@@ -125,7 +125,7 @@ fn look(v: &Verdict) -> StudioLook {
         at: v.at,
         by: v.by.clone(),
         fixes: v.fixes.iter().take(12).map(|f| StudioFix { place: f.place.clone(), what: f.what.clone(), why: f.why.clone() }).collect(),
-        questions: v.questions.iter().take(8).map(|q| (q.what.clone(), q.wording.clone())).collect(),
+        questions: v.questions.iter().take(8).map(|q| (q.what.clone(), q.wording.clone())).collect(),        reviewer: v.reviewer,
     }
 }
 
@@ -217,7 +217,8 @@ fn critiques(design: &Path) -> Vec<StudioCritique> {
         .filter_map(|(p, meta)| {
             let text = text_inside(design, &p, 256 << 10)?;
             let at = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or_else(|| modified(&meta));
-            Some(StudioCritique { path: p.to_string_lossy().into_owned(), at, text: cut(&text, CRITIQUE_CUT) })
+            let (reviewer, text) = super::reviewer::read_mark(&text);
+            Some(StudioCritique { path: p.to_string_lossy().into_owned(), at, text: cut(text, CRITIQUE_CUT), reviewer })
         })
         .collect();
     out.sort_by_key(|c| c.at);
@@ -735,7 +736,7 @@ mod tests {
         record::write(&design, &failing).unwrap();
         png(&design.join("checks/home/360.png"));
         png(&design.join("checks/home/1280.png"));
-        let verdict = Verdict { pass: false, fixes: vec![Fix { place: "top bar".into(), what: "less in it".into(), why: String::new() }], questions: vec![Question { what: "the plan's price".into(), wording: "See plans".into() }], at: 210, by: "codex".into(), ..Verdict::default() };
+        let verdict = Verdict { pass: false, fixes: vec![Fix { place: "top bar".into(), what: "less in it".into(), why: String::new() }], questions: vec![Question { what: "the plan's price".into(), wording: "See plans".into() }], at: 210, by: "codex".into(), reviewer: Some(equipe_protocol::engines::Reviewed { engine: equipe_protocol::Engine::Codex, member: Some(equipe_protocol::Engine::Claude), why: equipe_protocol::engines::ReviewWhy::Room { used: Some(30) } }), ..Verdict::default() };
         let home = Record { screen: "home".into(), at: 200, rendered: true, summary: Summary { floor: (11, 11), ..Summary::default() }, pictures: vec!["design/checks/home/1280.png".into(), "design/checks/home/360.png".into()], verdict: Some(verdict), fixes_in_a_row: 1, ..Record::default() };
         record::write(&design, &home).unwrap();
         record::write_pending(&design, &record::Pending { edited: vec![record::Edited { path: "web/index.html".into(), at: 220, created: false }], checked: vec![] }).unwrap();
@@ -746,6 +747,9 @@ mod tests {
         png(&design.join("directions/loud-poster.png"));
         std::fs::create_dir_all(design.join("critiques")).unwrap();
         std::fs::write(design.join("critiques/150.md"), "The hierarchy is flat.").unwrap();
+        // One kept with who wrote it, and why that engine.
+        let fresh = equipe_protocol::engines::Reviewed { engine: equipe_protocol::Engine::Claude, member: Some(equipe_protocol::Engine::Claude), why: equipe_protocol::engines::ReviewWhy::SignedOut };
+        std::fs::write(design.join("critiques/160.md"), format!("{}\n## Whole\nCramped.", super::super::reviewer::mark(&fresh))).unwrap();
         // The board: a folder with notes and a shot, and a loose shot.
         std::fs::create_dir_all(design.join("references/linear")).unwrap();
         std::fs::write(design.join("references/linear/notes.md"), "- https://linear.app\nTake: the quiet density.\nLeave: the purple.").unwrap();
@@ -765,13 +769,14 @@ mod tests {
         assert_eq!(s.checks[0].pictures.iter().map(|p| p.width).collect::<Vec<_>>(), [Some(360), Some(1280)], "narrowest first");
         let look = s.checks[0].look.as_ref().unwrap();
         assert!(!look.pass && look.fixes[0].place == "top bar" && look.questions == [("the plan's price".to_owned(), "See plans".to_owned())]);
+        assert_eq!(look.reviewer.map(|r| r.engine), Some(equipe_protocol::Engine::Codex), "who looked travels with it");
         assert_eq!(s.checks[1].failing, [("contrast".to_owned(), "the CTA is 2.47:1".to_owned())]);
         assert_eq!(s.pending, ["web/index.html"]);
         assert_eq!(s.directions.iter().map(|d| (d.name.as_str(), d.chosen)).collect::<Vec<_>>(), [("Loud poster", false), ("Calm ledger", true)], "this ticket's, the latest word on each");
         assert_eq!(s.directions[1].pictures.len(), 1);
         assert_eq!(s.directions[0].pictures.len(), 1, "a loose picture named for it");
-        assert_eq!(s.critiques.len(), 1);
-        assert_eq!(s.critiques[0].at, 150);
+        assert_eq!(s.critiques.iter().map(|c| (c.at, c.reviewer.map(|r| r.why))).collect::<Vec<_>>(), [(150, None), (160, Some(equipe_protocol::engines::ReviewWhy::SignedOut))]);
+        assert_eq!(s.critiques[1].text, "## Whole\nCramped.", "the mark is not the critique");
         let linear = s.references.iter().find(|r| r.name == "linear").unwrap();
         assert_eq!(linear.link.as_deref(), Some("https://linear.app"));
         assert!(linear.notes.contains("quiet density") && !linear.notes.contains("https://"), "{}", linear.notes);

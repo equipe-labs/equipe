@@ -53,6 +53,10 @@ pub struct Verdict {
     /// the screen can use until someone answers.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<Question>,
+    /// Which engine looked and why that one (`design::reviewer`); `None` for
+    /// a subagent's answer, or a verdict kept before it was said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<equipe_protocol::engines::Reviewed>,
 }
 
 /// A fact the second look found missing.
