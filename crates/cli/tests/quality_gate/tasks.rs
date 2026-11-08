@@ -1124,10 +1124,11 @@ fn brand_checks(out: &Outcome, ticket: Option<&Ticket>) -> Vec<Check> {
     checks.push(must("each direction shown to the person with pictures", pictured >= 2, format!("{pictured} options with pictures")));
     let recommended = asked.iter().flat_map(|q| q.questions.iter()).any(|q| q.options.len() >= 2 && q.options.iter().any(|o| o.shown().1));
     checks.push(must("the pick asked with a recommendation", recommended, format!("{} question set(s)", asked.len())));
-    // The ticket asks for the chosen direction's tokens: the design system's
-    // own `design/tokens.json` once written, else every candidate's.
+    // The ticket asks for the chosen direction's tokens: a design system's own
+    // `tokens.json` once written (`design/`, or a task's outputs folder),
+    // else every candidate's (`<name>.tokens.json`).
     let all = files_named(out, ticket, |p| p.file_name().is_some_and(|n| n == "tokens.json" || n.to_string_lossy().ends_with(".tokens.json")) && !p.components().any(|c| c.as_os_str() == "node_modules"));
-    let chosen: Vec<PathBuf> = all.iter().filter(|p| p.ends_with("design/tokens.json")).cloned().collect();
+    let chosen: Vec<PathBuf> = all.iter().filter(|p| p.file_name().is_some_and(|n| n == "tokens.json")).cloned().collect();
     let tokens = if chosen.is_empty() { all } else { chosen };
     let measured: Vec<(PathBuf, Result<(), String>)> = tokens.iter().filter_map(|t| token_contrast(t).map(|r| (t.clone(), r))).collect();
     let failing: Vec<String> = measured.iter().filter_map(|(t, r)| r.as_ref().err().map(|e| format!("{}: {e}", t.display()))).collect();
@@ -1138,8 +1139,19 @@ fn brand_checks(out: &Outcome, ticket: Option<&Ticket>) -> Vec<Check> {
 
 /// A picture an option named: as given when absolute, else in the ticket's
 /// worktree or the squad's folder.
-fn resolve_picture(out: &Outcome, ticket: Option<&Ticket>, image: &str) -> PathBuf {
+pub fn resolve_picture(out: &Outcome, ticket: Option<&Ticket>, image: &str) -> PathBuf {
     let p = PathBuf::from(image);
+    if p.is_file() {
+        return p;
+    }
+    // A task ticket's worktree is gone once it was accepted: what it made
+    // under `outputs/` is in the squad's folder now.
+    if let Some(at) = image.find("/outputs/") {
+        let moved = out.squad_home().join(&image[at + 1..]);
+        if moved.is_file() {
+            return moved;
+        }
+    }
     if p.is_absolute() {
         return p;
     }

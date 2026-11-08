@@ -912,6 +912,15 @@ fn a_brand_direction_needs_its_board_its_directions_pictured_checked_tokens_and_
     .unwrap();
     out.state.person.questions.push(set);
     assert!(failed(&out).is_empty(), "all there: {:?}", failed(&out));
+    // A candidate passed over may fall short; the chosen tokens are what ship.
+    std::fs::create_dir_all(design.join("palettes")).unwrap();
+    std::fs::write(design.join("palettes/loud.tokens.json"), r##"{"color":{"$type":"color","bg":{"$value":"#FFFFFF"},"text":{"$value":"#BBBBBB"}}}"##).unwrap();
+    assert!(failed(&out).is_empty(), "a candidate isn't the choice: {:?}", failed(&out));
+    // A picture named in the accepted ticket's worktree is found where its outputs went.
+    let moved = out.squad_home().join("outputs/T-1 Kettle/directions/a.png");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::write(&moved, b"png").unwrap();
+    assert_eq!(tasks::resolve_picture(&out, None, "/gone/worktrees/eval.home/t1-x/outputs/T-1 Kettle/directions/a.png"), moved);
     // A board line that takes a brand, and a dark label under AA, fail it.
     board[0].learn = "Use their logo in our header".into();
     refs::write(&design, &board).unwrap();
