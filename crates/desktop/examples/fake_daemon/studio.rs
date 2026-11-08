@@ -550,6 +550,7 @@ pub fn seed() {
         palette: palette.into(),
         density: density.into(),
         motion: motion.into(),
+        references: Vec::new(),
     };
     let _ = directions::write(
         &dir,

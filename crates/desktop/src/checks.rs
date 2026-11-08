@@ -167,6 +167,7 @@ mod tests {
             screen: Some("settings/notifications".into()),
             record: None,
             skipped: vec!["primary-in-view".into()],
+            system: Vec::new(),
         }
     }
 
