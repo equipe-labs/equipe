@@ -81,6 +81,7 @@ pub fn event_of(said: &Value, now_ms: u64) -> Option<Event> {
     Some(Event::PairEnded { why, message })
 }
 
+#[cfg(any(unix, test))]
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -89,9 +90,11 @@ fn now_ms() -> u64 {
 /// and closed with the screen's connection — which, mid-pairing, closes the
 /// code too.
 pub struct Bridge {
+    #[cfg(unix)]
     home: PathBuf,
     /// The language the screen speaks, for what the bridge itself says.
     pub lang: crate::i18n::Lang,
+    #[cfg(unix)]
     link: Option<UnboundedSender<Value>>,
     /// What reads the link's answers, stopped with the bridge.
     reader: Option<tokio::task::JoinHandle<()>>,
@@ -107,7 +110,16 @@ impl Drop for Bridge {
 
 impl Bridge {
     pub fn new(home: &Path, lang: Option<crate::i18n::Lang>) -> Self {
-        Self { home: home.to_owned(), lang: lang.unwrap_or(crate::i18n::Lang::En), link: None, reader: None }
+        #[cfg(windows)]
+        let _ = home;
+        Self {
+            #[cfg(unix)]
+            home: home.to_owned(),
+            lang: lang.unwrap_or(crate::i18n::Lang::En),
+            #[cfg(unix)]
+            link: None,
+            reader: None,
+        }
     }
 
     /// Carry `command` to the phone link; its answers go to `out` as events.

@@ -227,6 +227,7 @@ fn private_write(path: &Path, text: &str) -> Result<(), String> {
 }
 
 /// The `metrics` folder a path is in.
+#[cfg(unix)]
 fn dir_root(path: &Path) -> &Path {
     path.ancestors().find(|a| a.file_name().is_some_and(|n| n == "metrics")).unwrap_or(path)
 }
