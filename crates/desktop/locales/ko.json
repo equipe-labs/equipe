@@ -3383,5 +3383,19 @@
   "studio.count_findings.other": "찾은 것 {count}개",
   "studio.count_helpers.other": "새 시선 {count}번",
   "studio.count_pictures.other": "그림 {count}장",
-  "studio.count_read_files.other": "파일 {count}개 읽음"
+  "studio.count_read_files.other": "파일 {count}개 읽음",
+  "moved.divider": "{from}에서 {to}로 옮겼어요",
+  "moved.divider_same": "{engine}에서 새로 이어 가요",
+  "moved.see": "넘겨받은 내용 보기",
+  "moved.packet_name": "{name} — {engine}로 넘긴 내용",
+  "moved.packet_gone": "넘긴 내용이 남아 있지 않아요.",
+  "moved.history": "엔진 기록",
+  "moved.line": "{from} → {to} · {when} · {why} · {place}",
+  "moved.why_person": "직접 요청함",
+  "moved.why_pace": "{engine} 사용량이 빠듯했음",
+  "moved.why_out": "{engine} 사용량을 다 씀",
+  "moved.why_back": "{engine} 사용량에 여유가 생김",
+  "moved.mid_ticket": "작업 중, T-{id} 넘김",
+  "moved.between": "작업 사이",
+  "moved.packet_note": "새 대화가 처음 받은 내용 그대로예요. 읽기 전용이에요."
 }

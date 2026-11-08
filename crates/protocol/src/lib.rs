@@ -1171,6 +1171,11 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         now: bool,
     },
+    /// What member session `session` was handed when it took over from the
+    /// one before it on the other engine ([`engines::HandOver`]): the packet it
+    /// opened with and the conversation before it, as the journal keeps them —
+    /// answered by [`Event::HandOver`]. A read.
+    HandOver { squad: SquadName, session: SessionId },
     /// Show the squad's design systems (`design::DesignSystem`): answered by
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
@@ -2323,6 +2328,23 @@ pub enum Event {
         #[serde(default)]
         applied: bool,
     },
+    /// A member moved to the other engine: its old session closed, a new one
+    /// opened under the same name, carrying on from the hand-over packet.
+    MemberMoved { squad: SquadName, hand_over: engines::HandOver },
+    /// What session `session` was handed ([`Command::HandOver`]): the packet
+    /// it opened with (empty when not kept) and the conversation before it,
+    /// its latest [`engines::EARLIER_LINES`] lines at most, each with when it
+    /// was said.
+    HandOver {
+        squad: SquadName,
+        session: SessionId,
+        #[serde(default)]
+        packet: String,
+        #[serde(default)]
+        lines: Vec<Entry>,
+        #[serde(default)]
+        lines_at: Vec<Option<u64>>,
+    },
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
     /// Whether the PM accepts the team's work now ([`Command::SetPmAccepts`]).
@@ -2447,6 +2469,8 @@ impl Event {
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
+            | Event::MemberMoved { squad, .. }
+            | Event::HandOver { squad, .. }
             | Event::PmAcceptsChanged { squad, .. }
             | Event::RoleModelsChanged { squad, .. }
             | Event::SecretAsked { squad, .. }
@@ -2531,6 +2555,8 @@ impl Event {
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
+            | Event::MemberMoved { .. }
+            | Event::HandOver { .. }
             | Event::PmAcceptsChanged { .. }
             | Event::RoleModelsChanged { .. }
             | Event::SecretAsked { .. }
@@ -2920,6 +2946,10 @@ pub struct Snapshot {
     /// How the squad moves members between engines.
     #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
     pub engine_switching: engines::Switching,
+    /// The squad's latest moves to the other engine, oldest first: which
+    /// closed session each open member carries on from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hand_overs: Vec<engines::HandOver>,
     /// Whether the PM accepts the team's work itself ([`Command::SetPmAccepts`]);
     /// `false` from a daemon that predates it, where the person accepts all.
     #[serde(default)]
@@ -3085,6 +3115,27 @@ mod tests {
     }
 
     #[test]
+    fn a_move_and_its_hand_over_travel_as_the_squads_and_an_older_snapshot_has_none() {
+        let read = Command::HandOver { squad: "acme".into(), session: 12 };
+        assert_eq!(serde_json::to_value(&read).unwrap(), json!({ "type": "hand_over", "squad": "acme", "session": 12 }));
+        let moved = engines::HandOver { member: "backend".into(), from_session: 2, to_session: 12, from: Engine::Claude, to: Engine::Codex, why: engines::Why::Drain, at: 1_760_000_000, ticket: Some(42) };
+        let told = Event::MemberMoved { squad: "acme".into(), hand_over: moved.clone() };
+        let back = Event::HandOver { squad: "acme".into(), session: 12, packet: "[equipe] You are backend".into(), lines: vec![Entry::Reply { text: "on it".into() }], lines_at: vec![Some(1_759_999_000)] };
+        for event in [told, back] {
+            assert_eq!(event.squad(), Some("acme"));
+            assert_eq!(event.session(), None, "the squad's, not a conversation's own event");
+            assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&event).unwrap()).unwrap(), event);
+        }
+        // An older daemon's answer: nothing kept, nothing shown.
+        let bare: Event = serde_json::from_value(json!({ "type": "hand_over", "squad": "acme", "session": 12 })).unwrap();
+        assert_eq!(bare, Event::HandOver { squad: "acme".into(), session: 12, packet: String::new(), lines: vec![], lines_at: vec![] });
+        let snapshot: Snapshot = serde_json::from_value(json!({ "squad": "acme", "sessions": [] })).unwrap();
+        assert!(snapshot.hand_overs.is_empty());
+        let with = Snapshot { hand_overs: vec![moved], ..snapshot };
+        assert_eq!(serde_json::from_value::<Snapshot>(serde_json::to_value(&with).unwrap()).unwrap(), with);
+    }
+
+    #[test]
     fn only_the_person_accepts_and_it_travels_as_json() {
         let cmd = Command::Accept { squad: "acme".into(), ticket: 3 };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "accept", "squad": "acme", "ticket": 3 }));
@@ -3231,6 +3282,7 @@ mod tests {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
             hq: Some("/repo".into()),
+            hand_overs: Vec::new(),
             put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000 }],
             words: None,
             words_all: false,

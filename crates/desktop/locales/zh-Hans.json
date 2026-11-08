@@ -3382,5 +3382,19 @@
   "studio.count_findings.other": "{count} 个发现",
   "studio.count_helpers.other": "新视角 {count} 次",
   "studio.count_pictures.other": "{count} 张图片",
-  "studio.count_read_files.other": "读了 {count} 个文件"
+  "studio.count_read_files.other": "读了 {count} 个文件",
+  "moved.divider": "已从 {from} 换到 {to}",
+  "moved.divider_same": "在 {engine} 上重新接着做",
+  "moved.see": "查看交接内容",
+  "moved.packet_name": "{name} — 交接给 {engine}",
+  "moved.packet_gone": "交接内容没有保留。",
+  "moved.history": "引擎记录",
+  "moved.line": "{from} → {to} · {when} · {why} · {place}",
+  "moved.why_person": "你要求的",
+  "moved.why_pace": "{engine} 的额度快用完了",
+  "moved.why_out": "{engine} 的额度用完了",
+  "moved.why_back": "{engine} 的额度又够了",
+  "moved.mid_ticket": "进行中，已交接 T-{id}",
+  "moved.between": "在两个工单之间",
+  "moved.packet_note": "这是新对话一开始收到的原文，只读。"
 }

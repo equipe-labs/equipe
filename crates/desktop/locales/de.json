@@ -3466,5 +3466,19 @@
   "studio.count_pictures.one": "{count} Bild",
   "studio.count_pictures.other": "{count} Bilder",
   "studio.count_read_files.one": "{count} Datei gelesen",
-  "studio.count_read_files.other": "{count} Dateien gelesen"
+  "studio.count_read_files.other": "{count} Dateien gelesen",
+  "moved.divider": "Von {from} zu {to} gewechselt",
+  "moved.divider_same": "Auf {engine} neu weitergemacht",
+  "moved.see": "Übergabe ansehen",
+  "moved.packet_name": "{name} — Übergabe an {engine}",
+  "moved.packet_gone": "Die Übergabe wurde nicht aufbewahrt.",
+  "moved.history": "Engine-Verlauf",
+  "moved.line": "{from} → {to} · {when} · {why} · {place}",
+  "moved.why_person": "auf Ihren Wunsch",
+  "moved.why_pace": "{engine}-Kontingent wurde knapp",
+  "moved.why_out": "{engine}-Kontingent aufgebraucht",
+  "moved.why_back": "{engine}-Kontingent wieder frei",
+  "moved.mid_ticket": "mitten im Ticket, T-{id} übergeben",
+  "moved.between": "zwischen Tickets",
+  "moved.packet_note": "Genau das, womit das neue Gespräch begann. Nur lesbar."
 }

@@ -3466,5 +3466,19 @@
   "studio.count_pictures.one": "{count} imagen",
   "studio.count_pictures.other": "{count} imágenes",
   "studio.count_read_files.one": "{count} archivo leído",
-  "studio.count_read_files.other": "{count} archivos leídos"
+  "studio.count_read_files.other": "{count} archivos leídos",
+  "moved.divider": "Pasó de {from} a {to}",
+  "moved.divider_same": "Empezó de nuevo en {engine}",
+  "moved.see": "Ver lo que se entregó",
+  "moved.packet_name": "{name} — traspaso a {engine}",
+  "moved.packet_gone": "Lo que se entregó no se guardó.",
+  "moved.history": "Historial de motores",
+  "moved.line": "{from} → {to} · {when} · {why} · {place}",
+  "moved.why_person": "lo pediste tú",
+  "moved.why_pace": "el plan de {engine} se estaba agotando",
+  "moved.why_out": "el plan de {engine} se agotó",
+  "moved.why_back": "el plan de {engine} volvió a tener margen",
+  "moved.mid_ticket": "a mitad de ticket, T-{id} entregado",
+  "moved.between": "entre tickets",
+  "moved.packet_note": "Exactamente lo que recibió la nueva conversación al empezar. Solo lectura."
 }

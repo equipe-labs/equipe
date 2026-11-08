@@ -3382,5 +3382,19 @@
   "studio.count_findings.other": "見つかったこと {count}件",
   "studio.count_helpers.other": "新しい目 {count}回",
   "studio.count_pictures.other": "画像 {count}枚",
-  "studio.count_read_files.other": "ファイル {count}件を読んだ"
+  "studio.count_read_files.other": "ファイル {count}件を読んだ",
+  "moved.divider": "{from} から {to} に移りました",
+  "moved.divider_same": "{engine} で新しく続けています",
+  "moved.see": "引き継いだ内容を見る",
+  "moved.packet_name": "{name} — {engine} への引き継ぎ",
+  "moved.packet_gone": "引き継ぎの内容は残っていません。",
+  "moved.history": "エンジンの履歴",
+  "moved.line": "{from} → {to} · {when} · {why} · {place}",
+  "moved.why_person": "あなたの指示",
+  "moved.why_pace": "{engine} のプランが残り少なかった",
+  "moved.why_out": "{engine} のプランを使い切った",
+  "moved.why_back": "{engine} のプランに余裕が戻った",
+  "moved.mid_ticket": "作業の途中、T-{id} を引き継ぎ",
+  "moved.between": "チケットの合間",
+  "moved.packet_note": "新しい会話が最初に受け取った内容そのままです。読み取り専用です。"
 }

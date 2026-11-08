@@ -986,6 +986,7 @@ fn snapshot() -> Snapshot {
         role_models: Vec::new(),
         secret_asks: Vec::new(),
         engine_proposals: vec![engine_proposal(Why::Shift, false)],
+        hand_overs: Vec::new(),
         suggestions_off: false,
         desktop: Default::default(),
         allowed: vec![],

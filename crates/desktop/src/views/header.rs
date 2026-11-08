@@ -64,7 +64,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                         Some(name) => div().min_w_0().flex_shrink(1.).max_w(px(320.)).truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name).into_any_element(),
                         None => title(p, m).into_any_element(),
                     })
-                    .children(m.engine.map(|e| super::switching::label(p, e)))
+                    .children(m.engine.map(|e| engine_label(p, model, m, e)))
                     .children(ticket.map(|t| div().min_w_0().flex_shrink(1.).max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
                     .child(div().flex_none().child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted))),
             )
@@ -129,6 +129,19 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(studio_button(shell, cx))
         .child(div().flex_none().child(terminal_button(shell, cx)))
         .child(div().flex_none().child(browser_button(shell, cx)))
+}
+
+/// The engine the member runs on now — and, when it moved between engines,
+/// its engine history on the pointer: when and why each move, and whether
+/// it was mid-ticket.
+fn engine_label(p: Palette, model: &Model, member: &Member, engine: equipe_core::protocol::Engine) -> AnyElement {
+    let history = model.engine_history(member.session);
+    let label = super::switching::label(p, engine);
+    if history.is_empty() {
+        return label;
+    }
+    let words = format!("{}\n{}", t!("moved.history"), history.join("\n"));
+    crate::tips::tip(div().id("engine-history").flex_none().child(label), p, words, None).into_any_element()
 }
 
 /// The designer studio, when the member in view is on a design ticket: its work, watched.

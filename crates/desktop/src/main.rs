@@ -291,6 +291,8 @@ pub struct Shell {
     /// The document open in the panel at the right, if one is.
     pub(crate) doc: Option<doc::Doc>,
     doc_reads: u64,
+    /// A hand-over packet asked to be shown, by the session it was handed to: opened once it comes.
+    pub(crate) packet_wanted: Option<SessionId>,
     /// The side panel's edge being dragged: where it began, and the width then.
     pub(crate) side_drag: Option<(f32, f32)>,
     /// The terminal's top edge being dragged (under the conversation): where it began, the height then.
@@ -474,6 +476,7 @@ impl Shell {
             signin_sub: None,
             doc: None,
             doc_reads: 0,
+            packet_wanted: None,
             side_drag: None,
             term_drag: None,
             daemon_update: None,
@@ -1451,6 +1454,31 @@ impl Shell {
         let Some(words) = self.chat.sent.borrow().kept(path).map(str::to_owned) else { return };
         self.doc_reads += 1;
         self.doc = Some(doc::Doc::of_kept(path.into(), &words, self.doc_reads));
+        cx.notify();
+    }
+
+    /// The packet session `session` opened with after its member moved to the
+    /// other engine — exactly as it was handed — read-only in the document
+    /// panel. Asked of the daemon first when it isn't here yet.
+    pub fn open_hand_over(&mut self, session: SessionId, cx: &mut Context<Self>) {
+        let Some(handed) = self.model.handed.get(&session) else {
+            self.packet_wanted = Some(session);
+            self.send_command(Command::HandOver { squad: self.model.squad.clone(), session });
+            return;
+        };
+        self.packet_wanted = None;
+        if handed.packet.trim().is_empty() {
+            self.composer.flash = Some(t!("moved.packet_gone").into());
+            cx.notify();
+            return;
+        }
+        let name = match self.model.hand_overs.iter().find(|h| h.to_session == session) {
+            Some(h) => state::packet_name(h),
+            None => t!("moved.see").to_owned(),
+        };
+        let packet = handed.packet.clone();
+        self.doc_reads += 1;
+        self.doc = Some(doc::Doc::of_kept(std::path::PathBuf::from(name), &packet, self.doc_reads));
         cx.notify();
     }
 

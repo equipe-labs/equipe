@@ -2202,6 +2202,7 @@ impl Runtime {
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
             Command::UndoHomeChange { squad, session, change } => self.undo_home_change(&squad, session, &change),
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
+            Command::HandOver { squad, session } => self.send_hand_over(&squad, session),
             Command::MoveEngine { squad, members, engine, model, effort, now } => self.move_engine(&squad, members, engine, model, effort, now).await,
             Command::Design { squad } => self.design_asked(squad),
             Command::ProjectDocs { squad } => self.docs_asked(squad),
@@ -7375,6 +7376,8 @@ it back there once they have done it.{again} End your turn now with a short line
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
         let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
         let put_away = self.journals.get(squad).and_then(|j| j.put_away(PUT_AWAY_SHOWN).ok()).unwrap_or_default();
+        // Which closed session each open member carries on from: its moves on record.
+        let hand_overs = self.hand_overs(squad);
         Snapshot {
             signals,
             reviews,
@@ -7402,6 +7405,7 @@ it back there once they have done it.{again} End your turn now with a short line
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
             engine_proposals: self.engines.proposals(squad),
+            hand_overs,
             desktop: self.desktop.state(),
             allowed,
             browsers_shown,
