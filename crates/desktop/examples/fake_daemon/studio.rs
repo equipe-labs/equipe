@@ -13,6 +13,8 @@
 //! through `read_image`.
 //!
 //! - `waiting`: stopped at the directions, the person asked to pick one.
+//! - `blocked`: stopped after a picked direction, waiting on the person without
+//!   a more specific question (the studio's generic waiting copy).
 //! - `failing`: stopped at the check that fails the floor.
 //! - `handed`: handed in, in review.
 //! - `codex`: the same work by a Codex designer — its how-tos opened by
@@ -54,7 +56,7 @@ pub fn codex() -> bool {
 
 /// At it right now (not resting, not waiting, not handed in).
 pub fn working() -> bool {
-    !is("waiting") && !is("handed")
+    !is("waiting") && !is("blocked") && !is("handed")
 }
 
 /// The ticket's worktree, under the fake daemon's own home.
@@ -78,7 +80,7 @@ fn start() -> u64 {
 
 /// The ticket on the board.
 pub fn ticket(make: impl Fn(u32, &str, &str, &str, &str, &str) -> Ticket) -> Option<Ticket> {
-    let status = if is("waiting") {
+    let status = if is("waiting") || is("blocked") {
         "waiting"
     } else if is("handed") {
         "review"

@@ -882,7 +882,7 @@
               "id": "default",
               "label": "Default",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `settings:permissions`"
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:permissions`; EQUIPE_LANG=ko"
             }
           ]
         },
@@ -1027,7 +1027,7 @@
               "id": "handover",
               "label": "Browser handed to the person",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_BROWSER=handover; script `chat`"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BROWSER=handover; script `chat`; EQUIPE_LANG=ko"
             }
           ]
         },
@@ -1137,6 +1137,33 @@
               "label": "Default",
               "kind": "default",
               "note": "shot by design/flows/shoot-desktop.py: script `bell:sheet`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "studio",
+      "title": "Designer studio",
+      "summary": "A live view of design work: what it is waiting on, its steps, current picture, findings and timeline.",
+      "screens": [
+        {
+          "id": "designer",
+          "title": "Designer studio",
+          "note": "The waiting state shows work paused for the person's answer.",
+          "source": [
+            "crates/desktop/src/views/studio.rs",
+            "crates/desktop/src/studio.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "waiting",
+              "label": "Waiting for the person",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_STUDIO=blocked; script `studio:205`; EQUIPE_LANG=ko"
             }
           ]
         }
