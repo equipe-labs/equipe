@@ -1467,7 +1467,7 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
                             let reveal = path.clone();
                             b.child(action("design-reveal", Icon::Folder, t!("design.reveal").into()).on_click(move |_, _, cx| {
                                 cx.stop_propagation();
-                                let _ = std::process::Command::new("open").arg("-R").arg(&reveal).spawn();
+                                let _ = equipe_providers::platform::reveal(&reveal);
                             }))
                         }),
                 )
@@ -1577,7 +1577,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .when(!remote, |b| {
                     b.child(round(
                         div().id("design-lb-reveal").on_click(move |_, _, _| {
-                            let _ = std::process::Command::new("open").arg("-R").arg(&reveal).spawn();
+                            let _ = equipe_providers::platform::reveal(&reveal);
                         }),
                         Icon::Folder,
                         t!("design.reveal").into(),
@@ -1901,9 +1901,9 @@ impl Shell {
             cx.write_to_clipboard(ClipboardItem::new_string(dir.to_owned()));
             self.composer.flash = Some(t!("design.folder_copied", path = dir));
         } else if std::path::Path::new(dir).is_dir() {
-            let _ = std::process::Command::new("open").arg(dir).spawn();
+            let _ = equipe_providers::platform::open(dir);
         } else if let Some(parent) = std::path::Path::new(dir).parent() {
-            let _ = std::process::Command::new("open").arg(parent).spawn();
+            let _ = equipe_providers::platform::open(parent);
         }
         cx.notify();
     }
@@ -1931,7 +1931,7 @@ impl Shell {
             });
             let _ = notices.send(match saved {
                 Ok(target) => {
-                    let _ = std::process::Command::new("open").arg("-R").arg(&target).spawn();
+                    let _ = equipe_providers::platform::reveal(&target);
                     t!("design.downloaded", name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
                 }
                 Err(why) => t!("design.download_failed", why = why),

@@ -32,58 +32,34 @@ pub struct Local;
 /// UTC: the same everywhere, for tests.
 pub struct Utc;
 
-fn tm_parts(tm: &libc::tm) -> Parts {
+fn calendar_parts(tm: equipe_providers::platform::CalendarTime) -> Parts {
     Parts {
-        year: tm.tm_year + 1900,
-        month: (tm.tm_mon + 1) as u32,
-        day: tm.tm_mday,
-        weekday: if tm.tm_wday == 0 { 7 } else { tm.tm_wday as u8 },
-        hour: tm.tm_hour as u8,
-        minute: tm.tm_min as u8,
+        year: tm.year,
+        month: tm.month,
+        day: tm.day as i32,
+        weekday: if tm.weekday == 0 { 7 } else { tm.weekday as u8 },
+        hour: tm.hour as u8,
+        minute: tm.minute as u8,
     }
-}
-
-fn parts_tm(p: Parts) -> libc::tm {
-    // SAFETY: a zeroed `tm` is a valid one; the fields that matter are set below.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    tm.tm_year = p.year - 1900;
-    tm.tm_mon = p.month as i32 - 1;
-    tm.tm_mday = p.day;
-    tm.tm_hour = i32::from(p.hour);
-    tm.tm_min = i32::from(p.minute);
-    tm.tm_isdst = -1;
-    tm
 }
 
 impl Clock for Local {
     fn parts(&self, unix: u64) -> Parts {
-        let t = unix as libc::time_t;
-        // SAFETY: `localtime_r` writes only into the `tm` given.
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        unsafe { libc::localtime_r(&t, &mut tm) };
-        tm_parts(&tm)
+        calendar_parts(equipe_providers::platform::local_time(unix).expect("valid Unix time"))
     }
 
     fn unix(&self, parts: Parts) -> u64 {
-        let mut tm = parts_tm(parts);
-        // SAFETY: `mktime` reads and normalises the `tm` given.
-        (unsafe { libc::mktime(&mut tm) }).max(0) as u64
+        equipe_providers::platform::local_unix(parts.year, parts.month, parts.day, parts.hour, parts.minute).unwrap_or(0)
     }
 }
 
 impl Clock for Utc {
     fn parts(&self, unix: u64) -> Parts {
-        let t = unix as libc::time_t;
-        // SAFETY: `gmtime_r` writes only into the `tm` given.
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        unsafe { libc::gmtime_r(&t, &mut tm) };
-        tm_parts(&tm)
+        calendar_parts(equipe_providers::platform::utc_time(unix).expect("valid Unix time"))
     }
 
     fn unix(&self, parts: Parts) -> u64 {
-        let mut tm = parts_tm(parts);
-        // SAFETY: `timegm` reads and normalises the `tm` given.
-        (unsafe { libc::timegm(&mut tm) }).max(0) as u64
+        equipe_providers::platform::utc_unix(parts.year, parts.month, parts.day, parts.hour, parts.minute).unwrap_or(0)
     }
 }
 

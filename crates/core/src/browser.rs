@@ -135,7 +135,7 @@ impl Drop for Running {
         match &self.kind {
             Kind::Own(child) => {
                 if let Some(pid) = child.id() {
-                    crate::group::end(pid, libc::SIGTERM);
+                    crate::group::end(pid, crate::group::Signal::Terminate);
                 }
             }
             Kind::Lane { id, host } => {
@@ -413,7 +413,6 @@ impl Host {
     /// the sign-ins members' own browsers kept. What it says comes on
     /// `events`; its pictures go to `hub`.
     pub fn start(npx: &Path, home: &Path, hub: &std::sync::Arc<Hub>, events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> std::io::Result<SharedHost> {
-        use std::os::unix::process::CommandExt as _;
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
         let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE);
@@ -423,7 +422,8 @@ impl Host {
         let profile = host_profile(home);
         std::fs::create_dir_all(&profile)?;
         let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join("browser").join("host.log"))?;
-        let mut child = std::process::Command::new(npx)
+        let mut command = std::process::Command::new(npx);
+        command
             .args(["-y", "-p", PLAYWRIGHT_PACKAGE, "node"])
             .arg(&script)
             .arg(&profile)
@@ -431,9 +431,13 @@ impl Host {
             .env("EQUIPE_FIRST_PAGE", first_page_id(std::time::SystemTime::now()).to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(log)
-            .process_group(0)
-            .spawn()?;
+            .stderr(log);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let hub = hub.clone();
@@ -530,7 +534,7 @@ fn read_host(mut out: impl std::io::Read, hub: &Hub, events: &tokio::sync::mpsc:
 
 impl Drop for Host {
     fn drop(&mut self) {
-        crate::group::end(self.child.id(), libc::SIGTERM);
+        crate::group::end(self.child.id(), crate::group::Signal::Terminate);
     }
 }
 

@@ -444,7 +444,7 @@ mod tests {
         assert!(names.iter().any(|n| n == "sleep"), "what the shell runs, with it: {names:?}");
         assert!(!stop.iter().any(|p| p.pid == bystander.id()), "{names:?}");
         for p in &stop {
-            crate::group::end(p.pid, libc::SIGTERM);
+            crate::group::end(p.pid, crate::group::Signal::Terminate);
         }
         assert!(!command.wait().unwrap().success(), "stopped");
         assert!(bystander.try_wait().unwrap().is_none(), "the bystander runs on");

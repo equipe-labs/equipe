@@ -6,6 +6,10 @@
 //! see docs/DESKTOP.md. `EQUIPE_LOG_RENDER=1` prints a line per frame, to see that.
 
 mod asklist;
+#[cfg(unix)]
+mod askpass;
+#[cfg(windows)]
+#[path = "askpass_windows.rs"]
 mod askpass;
 mod attach;
 mod beat;
@@ -1631,7 +1635,7 @@ impl Shell {
     pub fn open_file(&self, path: &str) {
         match &self.endpoint {
             Endpoint::Local { .. } => {
-                let _ = std::process::Command::new("open").arg(path).spawn();
+                let _ = equipe_providers::platform::open(path);
             }
             Endpoint::Ssh(host) => {
                 let (host, path, notices) = (host.clone(), path.to_owned(), self.notices.clone());
@@ -1642,7 +1646,7 @@ impl Shell {
                         Ok(bytes) => {
                             let local = ssh::scratch_dir().join(format!("{}-{}", std::process::id(), ssh::safe_name(std::path::Path::new(&path))));
                             match std::fs::write(&local, bytes) {
-                                Ok(()) => drop(std::process::Command::new("open").arg(&local).spawn()),
+                                Ok(()) => drop(equipe_providers::platform::open(&local)),
                                 Err(e) => drop(notices.send(t!("main.preview_save_failed", e = e))),
                             }
                         }

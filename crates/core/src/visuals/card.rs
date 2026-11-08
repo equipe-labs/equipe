@@ -432,12 +432,17 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Result<Self, String> {
-        use std::os::unix::fs::DirBuilderExt as _;
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
         let dir = std::env::temp_dir().join(format!("equipe-card-{}-{n}-{nanos}", std::process::id()));
-        std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(|e| format!("no scratch folder: {e}"))?;
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder.create(&dir).map_err(|e| format!("no scratch folder: {e}"))?;
         Ok(Self(dir))
     }
 }
@@ -451,7 +456,6 @@ impl Drop for Scratch {
 /// `html` photographed by `chrome` in a tone: a PNG at twice its size, as
 /// tall as what it shows (no more than the window), and its size in pixels.
 pub fn render(chrome: &Path, html: &str, dark: bool, limits: &Limits) -> Result<(Vec<u8>, u32, u32), String> {
-    use std::os::unix::process::CommandExt as _;
     let scratch = Scratch::new()?;
     let page = scratch.0.join("card.html");
     let shot = scratch.0.join("card.png");
@@ -468,7 +472,13 @@ pub fn render(chrome: &Path, html: &str, dark: bool, limits: &Limits) -> Result<
         command.arg("--force-dark-mode");
     }
     command.arg(format!("file://{}", page.display().to_string().replace('%', "%25").replace(' ', "%20")));
-    let mut child = command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map_err(|e| format!("Chrome didn't start: {e}"))?;
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|e| format!("Chrome didn't start: {e}"))?;
     let group = child.id();
     let deadline = Instant::now() + limits.time;
     let ended = loop {
@@ -481,9 +491,7 @@ pub fn render(chrome: &Path, html: &str, dark: bool, limits: &Limits) -> Result<
     };
     // Chrome and its helpers, whatever is left of them: the group it leads.
     // SAFETY: a signal to a process group of ours; ESRCH when it is gone.
-    unsafe {
-        libc::killpg(group as libc::pid_t, libc::SIGKILL);
-    }
+    crate::group::end(group, crate::group::Signal::Kill);
     let _ = child.wait();
     ended?;
     let bytes = std::fs::read(&shot).map_err(|_| "Chrome drew nothing".to_owned())?;
@@ -654,5 +662,5 @@ pub fn kept(home: &Path, squad: &str, lines: &[Entry]) -> Vec<Rendered> {
     found
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

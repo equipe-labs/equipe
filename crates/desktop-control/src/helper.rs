@@ -37,18 +37,20 @@ pub fn log_path(home: &Path) -> PathBuf {
 
 /// The folder, only the person's to open.
 pub fn ensure_dir(home: &Path) -> io::Result<PathBuf> {
-    use std::os::unix::fs::PermissionsExt as _;
     let dir = dir(home);
     std::fs::create_dir_all(&dir)?;
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
     Ok(dir)
 }
 
 /// Random hex from the system's generator.
 pub fn random_hex(bytes: usize) -> io::Result<String> {
-    use std::io::Read as _;
     let mut buf = vec![0u8; bytes];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
+    getrandom::fill(&mut buf).map_err(io::Error::other)?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
@@ -57,10 +59,16 @@ pub fn ensure_token(home: &Path) -> io::Result<String> {
     if let Some(token) = read_token(home) {
         return Ok(token);
     }
-    use std::os::unix::fs::OpenOptionsExt as _;
     ensure_dir(home)?;
     let token = random_hex(32)?;
-    let mut file = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(token_path(home))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(token_path(home))?;
     file.write_all(token.as_bytes())?;
     Ok(token)
 }
@@ -84,6 +92,7 @@ pub const SCENE: &str = "_scene";
 pub const CAPTURE: &str = "_capture";
 
 /// Serve on the socket until the process ends, one request at a time.
+#[cfg(unix)]
 pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: impl Fn(&D) -> Value, request: impl Fn(&D)) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     ensure_dir(home)?;
@@ -104,6 +113,11 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
         let _ = out.write_all(format!("{}\n", serde_json::to_string(&result).unwrap_or_default()).as_bytes());
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub fn serve<D: Desktop>(_home: &Path, _controller: &mut Controller<D>, _status: impl Fn(&D) -> Value, _request: impl Fn(&D)) -> io::Result<()> {
+    Err(io::Error::other("desktop control unsupported on Windows yet"))
 }
 
 fn answer<D: Desktop>(
@@ -160,6 +174,7 @@ fn same(a: &str, b: &str) -> bool {
 
 /// Send one call to the helper and wait for its answer — what the daemon does
 /// for each desktop call a member makes.
+#[cfg(unix)]
 pub async fn call(home: &Path, member: &str, tool: &str, arguments: &Value) -> ToolResult {
     let Some(token) = read_token(home) else {
         return ToolResult::error(NOT_RUNNING);
@@ -178,6 +193,11 @@ pub async fn call(home: &Path, member: &str, tool: &str, arguments: &Value) -> T
         Ok(Err(err)) => ToolResult::error(format!("The desktop helper didn't answer ({err}). If it keeps happening, ask the person to run `{SETUP}`.")),
         Err(_) => ToolResult::error("The desktop helper took longer than 90 s to answer; nothing more was done."),
     }
+}
+
+#[cfg(windows)]
+pub async fn call(_home: &Path, _member: &str, _tool: &str, _arguments: &Value) -> ToolResult {
+    ToolResult::error("desktop control unsupported on Windows yet")
 }
 
 #[cfg(test)]

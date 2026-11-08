@@ -1231,7 +1231,7 @@ fn qa_row(rows: &Rows, key: u64, r: &crate::activity::QaReport, cx: &mut App) ->
     let here = std::path::Path::new(&r.video).is_file();
     let video = r.video.clone();
     let play = crate::ui::button(p, ("qa-play", key), crate::ui::Kind::Secondary, t!("qa.play")).icon(Icon::Play).on_click(move |_, _, _| {
-        let _ = std::process::Command::new("open").arg(&video).spawn();
+        let _ = equipe_providers::platform::open(&video);
     });
     let play: AnyElement = if here { play.into_any_element() } else { tip(div().id(("qa-play-far", key)).opacity(0.5).child(play), p, t!("qa.elsewhere"), None).into_any_element() };
     let name = std::path::Path::new(&r.video).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

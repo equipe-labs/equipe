@@ -46,10 +46,14 @@ pub(crate) fn git_command(dir: &Path) -> Command {
 /// What `command` printed, once it ends — or an error once `timeout` passes,
 /// the command and whatever it started killed. Its standard input is empty.
 pub(crate) fn output_within(mut command: Command, timeout: Duration) -> Result<Output> {
-    use std::os::unix::process::CommandExt as _;
     let program = command.get_program().to_string_lossy().into_owned();
     // A group of its own, so a timeout stops what it started too (a push's ssh).
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     let child = command.spawn().map_err(|err| format!("couldn't run {program}: {err}"))?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -59,7 +63,7 @@ pub(crate) fn output_within(mut command: Command, timeout: Duration) -> Result<O
     match rx.recv_timeout(timeout) {
         Ok(out) => out.map_err(|err| format!("couldn't run {program}: {err}")),
         Err(_) => {
-            crate::group::end(pid, libc::SIGKILL);
+            crate::group::end(pid, crate::group::Signal::Kill);
             let args: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
             Err(format!("{program} {} took more than {}s and was stopped", args.join(" "), timeout.as_secs()))
         }

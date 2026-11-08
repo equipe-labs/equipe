@@ -2237,6 +2237,7 @@ dependencies = [
  "equipe-protocol",
  "equipe-providers",
  "flate2",
+ "fs2",
  "image",
  "libc",
  "mermaid-rs-renderer",
@@ -2297,6 +2298,7 @@ dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
  "equipe-protocol",
+ "getrandom 0.4.3",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-graphics",
@@ -2319,6 +2321,7 @@ name = "equipe-providers"
 version = "0.103.74"
 dependencies = [
  "base64 0.23.1",
+ "chrono",
  "dirs 7.0.0",
  "futures-util",
  "rand 0.10.3",
@@ -2657,6 +2660,16 @@ dependencies = [
  "cc",
  "libc",
  "pkg-config",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -7393,7 +7406,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

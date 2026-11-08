@@ -133,6 +133,7 @@ pub fn watched(home: &Path, projects: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// What `statvfs` says of the volume `path` is on: (its id, free, total).
+#[cfg(unix)]
 fn volume(path: &Path) -> Option<(u64, u64, u64)> {
     use std::os::unix::ffi::OsStrExt as _;
     // A folder not made yet: the volume it will be on.
@@ -148,6 +149,15 @@ fn volume(path: &Path) -> Option<(u64, u64, u64)> {
     #[allow(clippy::unnecessary_cast)]
     let (free, total) = (stat.f_bavail as u64 * stat.f_frsize as u64, stat.f_blocks as u64 * stat.f_frsize as u64);
     Some((dev, free, total))
+}
+
+#[cfg(windows)]
+fn volume(path: &Path) -> Option<(u64, u64, u64)> {
+    use std::hash::{Hash as _, Hasher as _};
+    let path = path.ancestors().find(|p| p.exists())?;
+    let mut drive = std::collections::hash_map::DefaultHasher::new();
+    path.components().next()?.as_os_str().hash(&mut drive);
+    Some((drive.finish(), fs2::available_space(path).ok()?, fs2::total_space(path).ok()?))
 }
 
 /// The free space of the tightest volume among `paths` (its level left

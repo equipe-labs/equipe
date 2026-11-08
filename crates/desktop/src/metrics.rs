@@ -122,10 +122,8 @@ pub fn day_words(day: &str) -> String {
 
 /// The local `YYYY-MM-DD` and `HH:MM` of unix seconds.
 pub fn local_day_time(unix: u64) -> (String, String) {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    (format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday), format!("{:02}:{:02}", tm.tm_hour, tm.tm_min))
+    let Some(tm) = equipe_providers::platform::local_time(unix) else { return (unix.to_string(), String::new()) };
+    (format!("{:04}-{:02}-{:02}", tm.year, tm.month, tm.day), format!("{:02}:{:02}", tm.hour, tm.minute))
 }
 
 /// A moment: just the time when it is today, else the day and the time.
