@@ -725,6 +725,22 @@ impl Journal {
         self.set_meta("engines", json)
     }
 
+    /// The hand-over packet session `id` opened with, after a move to the
+    /// other engine (`runtime/engines.rs`), as it was sent.
+    pub fn hand_over_packet(&self, id: SessionId) -> Option<String> {
+        self.meta(&format!("hand_over:{id}"))
+    }
+
+    pub fn set_hand_over_packet(&self, id: SessionId, packet: &str) -> Result<()> {
+        self.set_meta(&format!("hand_over:{id}"), packet)
+    }
+
+    /// A packet no move on record names any more.
+    pub fn forget_hand_over_packet(&self, id: SessionId) -> Result<()> {
+        self.conn.execute("DELETE FROM meta WHERE key = ?1", params![format!("hand_over:{id}")])?;
+        Ok(())
+    }
+
     /// The members equipe brought in to help, which it lets go when idle.
     pub fn helpers(&self) -> Vec<SessionId> {
         self.meta("helpers").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()

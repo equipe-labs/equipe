@@ -329,16 +329,13 @@ pub fn mark(p: Palette, id: impl Into<ElementId>, engine: Engine) -> AnyElement 
 /// The engine as words with its mark, unboxed: inside a control that has an
 /// edge of its own (the header's title).
 pub fn label(p: Palette, engine: Engine) -> AnyElement {
+    h_flex().flex_none().gap(px(4.)).items_center().text_size(px(12.)).text_color(p.muted).child(glyph(p, engine)).child(rules::engine_name(engine)).into_any_element()
+}
+
+/// An engine's mark alone, in its colour.
+pub fn glyph(p: Palette, engine: Engine) -> AnyElement {
     let (glyph, tint) = if engine == Engine::Codex { (crate::icons::Icon::OpenAiMark, p.text2) } else { (crate::icons::Icon::ClaudeMark, rgb(0xD97757)) };
-    h_flex()
-        .flex_none()
-        .gap(px(4.))
-        .items_center()
-        .text_size(px(12.))
-        .text_color(p.muted)
-        .child(crate::icons::icon(glyph, 11., tint))
-        .child(rules::engine_name(engine))
-        .into_any_element()
+    crate::icons::icon(glyph, 11., tint).into_any_element()
 }
 
 // ── the card ──

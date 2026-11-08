@@ -114,6 +114,50 @@ impl Move {
     }
 }
 
+/// How much of the conversation before a move a screen is sent with its
+/// hand-over ([`crate::Event::HandOver`]): its latest lines, at most this many.
+pub const EARLIER_LINES: usize = 600;
+/// A hand-over packet is kept to this many bytes at most.
+pub const PACKET_MOST: usize = 64 * 1024;
+
+/// A member moved to the other engine: the session it was closed, and one
+/// under the same name carries on, opening with the hand-over packet equipe
+/// wrote. Its memory, worktree and tickets stay; the conversation before is
+/// the journal's, read back with [`crate::Command::HandOver`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandOver {
+    pub member: String,
+    /// The session that closed.
+    pub from_session: crate::SessionId,
+    /// The one that carries on.
+    pub to_session: crate::SessionId,
+    pub from: Engine,
+    /// Where it carries on: the other engine — or the same one, when the
+    /// other couldn't start it.
+    pub to: Engine,
+    pub why: Why,
+    /// When, in unix seconds.
+    pub at: i64,
+    /// The ticket it was in the middle of, handed over with it; `None`: it
+    /// moved between tickets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<crate::TicketId>,
+}
+
+impl HandOver {
+    /// The moves session `session` carries on from, newest first: the one
+    /// into it, then the one into that, and so on.
+    pub fn chain(all: &[HandOver], session: crate::SessionId) -> Vec<&HandOver> {
+        let mut out: Vec<&HandOver> = Vec::new();
+        let mut at = session;
+        while let Some(h) = all.iter().rev().find(|h| h.to_session == at && !out.iter().any(|o| o.to_session == h.to_session)) {
+            out.push(h);
+            at = h.from_session;
+        }
+        out
+    }
+}
+
 /// Why a plan's moves are worth it, as the Usage screen's forecast says:
 /// when the plan runs out at the pace of late, against when it starts over,
 /// and how much of its week the members moving used.
@@ -210,6 +254,27 @@ mod tests {
         assert_eq!(wire["forecast"], json!({ "runs_out_at": 1_760_100_000i64, "resets_at": 1_760_300_000i64, "load_bp": 6_400 }));
         assert_eq!(serde_json::from_value::<Proposal>(wire).unwrap(), now);
         assert!(now.waiting());
+    }
+
+    fn moved(from: u64, to: u64, engine: (Engine, Engine)) -> HandOver {
+        HandOver { member: "backend".into(), from_session: from, to_session: to, from: engine.0, to: engine.1, why: Why::Person, at: 1_760_000_000 + to as i64, ticket: None }
+    }
+
+    #[test]
+    fn a_member_carries_on_from_every_session_before_it_newest_first_and_says_so_on_the_wire() {
+        let all = vec![moved(1, 2, (Engine::Claude, Engine::Codex)), moved(7, 8, (Engine::Claude, Engine::Codex)), moved(2, 3, (Engine::Codex, Engine::Claude))];
+        let chain: Vec<(u64, u64)> = HandOver::chain(&all, 3).iter().map(|h| (h.from_session, h.to_session)).collect();
+        assert_eq!(chain, [(2, 3), (1, 2)], "Claude to Codex and back: both moves, the latest first");
+        assert!(HandOver::chain(&all, 1).is_empty(), "where it began: nothing before");
+        assert_eq!(HandOver::chain(&all, 8).len(), 1, "another member's move is its own");
+        // A record that loops is read once, not forever.
+        let looped = vec![moved(1, 2, (Engine::Claude, Engine::Codex)), moved(2, 1, (Engine::Codex, Engine::Claude))];
+        assert_eq!(HandOver::chain(&looped, 2).len(), 2);
+        let mid = HandOver { ticket: Some(42), why: Why::Exhausted, ..moved(1, 2, (Engine::Claude, Engine::Codex)) };
+        let wire = serde_json::to_value(&mid).unwrap();
+        assert_eq!(wire, json!({ "member": "backend", "from_session": 1, "to_session": 2, "from": "claude", "to": "codex", "why": "exhausted", "at": 1_760_000_002i64, "ticket": 42 }));
+        assert_eq!(serde_json::from_value::<HandOver>(wire).unwrap(), mid);
+        assert_eq!(serde_json::to_value(moved(1, 2, (Engine::Claude, Engine::Codex))).unwrap().get("ticket"), None, "between tickets: no ticket on the wire");
     }
 
     #[test]

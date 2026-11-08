@@ -3466,5 +3466,19 @@
   "studio.count_pictures.one": "{count} image",
   "studio.count_pictures.other": "{count} images",
   "studio.count_read_files.one": "{count} fichier lu",
-  "studio.count_read_files.other": "{count} fichiers lus"
+  "studio.count_read_files.other": "{count} fichiers lus",
+  "moved.divider": "Passé de {from} à {to}",
+  "moved.divider_same": "Reparti de zéro sur {engine}",
+  "moved.see": "Voir ce qui a été transmis",
+  "moved.packet_name": "{name} — passation vers {engine}",
+  "moved.packet_gone": "Ce qui a été transmis n'a pas été conservé.",
+  "moved.history": "Historique des moteurs",
+  "moved.line": "{from} → {to} · {when} · {why} · {place}",
+  "moved.why_person": "à votre demande",
+  "moved.why_pace": "le forfait {engine} s'épuisait",
+  "moved.why_out": "le forfait {engine} était épuisé",
+  "moved.why_back": "le forfait {engine} avait de nouveau de la marge",
+  "moved.mid_ticket": "en plein ticket, T-{id} transmis",
+  "moved.between": "entre deux tickets",
+  "moved.packet_note": "Exactement ce que la nouvelle conversation a reçu au départ. En lecture seule."
 }

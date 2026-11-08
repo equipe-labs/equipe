@@ -103,6 +103,8 @@
 //!
 //! The Usage screen's look at where the plans went is a made-up week (`fake_daemon/plan_use.rs`);
 //! `FAKE_BURN=1` adds T-42's fast burn as the notice over every screen.
+//! `FAKE_MOVED=1|twice|live`: backend moved to the other engine mid-ticket, its
+//! conversation before and its hand-over packet kept (`fake_daemon/moved.rs`).
 //! `FAKE_USAGE=healthy|claude86|claude_out|both_low|week61`: both engines' plans,
 //! and the card for moving members between them (`fake_daemon/engines.rs`;
 //! `FAKE_SWITCHING=auto|off`, `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
@@ -1091,6 +1093,9 @@ mod command;
 #[path = "fake_daemon/helpers.rs"]
 mod helpers;
 
+#[path = "fake_daemon/moved.rs"]
+mod moved;
+
 #[path = "fake_daemon/switching.rs"]
 mod switching;
 
@@ -1465,6 +1470,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                         }
                         switching::mix(&mut sessions);
+                        moved::dress(&mut sessions);
+                        if moved::plays() {
+                            static MOVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                            if !MOVING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                tokio::spawn(moved::play(events.clone()));
+                            }
+                        }
                         // Read apart: the board's lock is held while the snapshot is put together.
                         let waiting_words = {
                             let board = tickets().lock().unwrap().clone();
@@ -1498,6 +1510,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 Vec::new()
                             },
                             engine_proposals: switching::proposals(),
+                            hand_overs: moved::hand_overs(),
                             squad: params.squad,
                             projects: if crowd::on() { crowd::projects() } else { vec![repo("web"), repo("app"), repo("api")] },
                             sessions,
@@ -1882,7 +1895,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) {
+                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) || moved::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

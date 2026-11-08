@@ -137,6 +137,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::Interrupt { .. }
         | C::Close { .. }
         | C::TicketHistory { .. }
+        // What a member was handed when it moved to the other engine: a read.
+        | C::HandOver { .. }
         | C::Refresh { .. }
         | C::Focus { .. }
         | C::NewConversation { .. }
@@ -540,6 +542,7 @@ mod tests {
             Command::Submit { session: 1, text: "hi".into(), about: None },
             Command::Interrupt { session: 1 },
             Command::TicketHistory { squad: "a".into(), ticket: 1 },
+            Command::HandOver { squad: "a".into(), session: 1 },
             Command::Focus { squad: "a".into(), project: None },
             Command::WatchBrowser { squad: "a".into(), session: None },
             Command::Models { engine: crate::protocol::Engine::Claude },

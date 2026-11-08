@@ -26,7 +26,7 @@
 //! news. Nothing here spends credits or overage: an engine out of its plan is
 //! waited for or left, never paid for.
 
-use equipe_protocol::engines::{Move, Proposal, Switching, Why, Window};
+use equipe_protocol::engines::{HandOver, Move, Proposal, Switching, Why, Window};
 use equipe_protocol::{EnginePlan, PlanUsage};
 use serde::{Deserialize, Serialize};
 
@@ -105,6 +105,22 @@ struct Record {
     /// Every decision, newest last: when, and what.
     #[serde(default)]
     log: Vec<(i64, String)>,
+    /// The moves to the other engine, newest last: which session each member
+    /// carries on from, for the screens to show it as one member.
+    #[serde(default)]
+    moves: Vec<HandOver>,
+}
+
+/// The moves the journal keeps, with their packets.
+const MOVES_KEPT: usize = 100;
+
+/// `text` cut to [`equipe_protocol::engines::PACKET_MOST`] bytes, on a character boundary.
+fn packet_kept(text: &str) -> &str {
+    let mut end = text.len().min(equipe_protocol::engines::PACKET_MOST);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -777,6 +793,44 @@ impl Runtime {
         }
     }
 
+    /// A move to the other engine made: kept on the squad's record with the
+    /// packet the new session opens with, and told to the screens, so they
+    /// show the member as one, its conversations one after the other.
+    fn keep_move(&mut self, squad: &str, hand_over: HandOver, packet: &str) {
+        let mut record = self.engines_record(squad);
+        record.moves.push(hand_over.clone());
+        let gone: Vec<SessionId> = record.moves.drain(..record.moves.len().saturating_sub(MOVES_KEPT)).map(|h| h.to_session).collect();
+        self.save_engines_record(squad, &record);
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.set_hand_over_packet(hand_over.to_session, packet);
+            for id in gone {
+                let _ = journal.forget_hand_over_packet(id);
+            }
+        }
+        self.publish(Event::MemberMoved { squad: squad.to_owned(), hand_over });
+    }
+
+    /// The squad's moves to the other engine on record, oldest first.
+    pub(super) fn hand_overs(&mut self, squad: &str) -> Vec<HandOver> {
+        self.engines_record(squad).moves
+    }
+
+    /// What session `session` was handed when it took over
+    /// ([`Command::HandOver`]): its packet and the conversation before it, the
+    /// latest lines of it — to the screens following the squad.
+    pub(super) fn send_hand_over(&mut self, squad: &str, session: SessionId) {
+        let Some(from) = self.engines_record(squad).moves.iter().rev().find(|h| h.to_session == session).map(|h| h.from_session) else {
+            return;
+        };
+        let Some(journal) = self.journal(squad) else { return };
+        let packet = journal.hand_over_packet(session).unwrap_or_default();
+        let (mut lines, mut lines_at) = journal.conversation_at(from).unwrap_or_default();
+        let cut = lines.len().saturating_sub(equipe_protocol::engines::EARLIER_LINES);
+        lines.drain(..cut);
+        lines_at.drain(..cut.min(lines_at.len()));
+        self.publish_in(Some(squad), Event::HandOver { squad: squad.to_owned(), session, packet, lines, lines_at });
+    }
+
     /// Move member `id` as `due` says. In place: its model and effort, as
     /// `/model` and `/effort` set them. To the other engine: its ticket handed
     /// over (a WIP commit on its branch), the member closed as `/close` does and
@@ -803,7 +857,9 @@ impl Runtime {
             (Engine::Codex, Some(hint)) => self.codex_model(&hint).await,
             (_, model) => model,
         };
+        let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         let brief = self.hand_over(squad, id, due).await;
+        let packet = packet_kept(&brief).to_owned();
         let fresh = equipe_protocol::new_session_id();
         self.engines.names.insert(fresh, name.clone());
         self.engines.briefs.insert(fresh, brief);
@@ -832,6 +888,11 @@ impl Runtime {
         };
         if let Some(session) = self.sessions.get_mut(&now_id) {
             session.briefing = briefing;
+        }
+        if self.sessions.contains_key(&now_id) {
+            let to = if moved { mv.to } else { mv.from };
+            let hand_over = HandOver { member: name.clone(), from_session: id, to_session: now_id, from: mv.from, to, why: due.why, at: unix_now(), ticket };
+            self.keep_move(squad, hand_over, &packet);
         }
         if moved {
             if mv.effort.is_some() {
@@ -1281,6 +1342,11 @@ mod tests {
         let text = packet("backend", &backend_move(), Why::Drain, Some(&part), &huge, &State::default());
         // Bounded: about 10k tokens at most.
         assert!(text.len() < 45_000, "{}", text.len());
+        // Kept for the screens whole, as sent; anything past the most, cut on a character.
+        assert_eq!(packet_kept(&text), text);
+        let wide = "é".repeat(equipe_protocol::engines::PACKET_MOST);
+        let kept = packet_kept(&wide);
+        assert!(kept.len() <= equipe_protocol::engines::PACKET_MOST && kept.len() >= equipe_protocol::engines::PACKET_MOST - 1 && kept.chars().all(|c| c == 'é'));
     }
 
     #[test]

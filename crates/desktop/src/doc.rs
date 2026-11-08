@@ -320,6 +320,27 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_over_packet_shows_as_handed_under_its_name_with_nothing_to_read_again_or_copy() {
+        let packet = "[equipe] You are backend, carrying on on Codex what you were doing on Claude.\n\n## The ticket: T-70 Orders API pagination\n> Keep the old `offset` parameter working.";
+        let h = equipe_core::protocol::engines::HandOver {
+            member: "backend".into(),
+            from_session: 30,
+            to_session: 3,
+            from: equipe_core::protocol::Engine::Claude,
+            to: equipe_core::protocol::Engine::Codex,
+            why: equipe_core::protocol::engines::Why::Exhausted,
+            at: 1_762_300_000,
+            ticket: Some(70),
+        };
+        let name = crate::state::packet_name(&h);
+        let doc = Doc::of_kept(PathBuf::from(&name), packet, 4);
+        assert_eq!(doc.name(), name, "named for its member and where it went: {name}");
+        assert!(doc.kept && !doc.path.is_absolute(), "read-only: no file to read again, open or copy");
+        assert_eq!(doc.markdown().as_deref(), Some(packet), "the words the new session opened with, as Markdown");
+        assert_eq!(folder_shown(&doc.path, Path::new("/w"), None), "", "no folder shown");
+    }
+
+    #[test]
     fn plain_text_is_shown_as_written() {
         let mut doc = Doc::new("/a/notes.txt".into(), 1);
         doc.text = Some(Ok("*not emphasis*".into()));

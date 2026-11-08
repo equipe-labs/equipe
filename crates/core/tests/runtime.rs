@@ -3895,6 +3895,40 @@ async fn a_claude_member_set_to_a_providers_model_moves_to_codexs_agent_on_it_at
 }
 
 #[tokio::test]
+async fn a_move_to_the_other_engine_is_kept_with_its_packet_and_the_conversation_before_it() {
+    let cwd = scratch("move-kept");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    let id = equipe_core::model_providers::add(&home, "ollama", None, None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "qwen3-coder:30b");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), equipe_binary: Some("/opt/equipe".into()), ..config(&claude, &home, true) });
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    handle.send(Command::Submit { session: 1, text: "Tidy the header first".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    handle.send(Command::SetModel { session: 1, model });
+    let seen = until(&mut events, |e| matches!(e, Event::MemberMoved { .. } | Event::Error { .. })).await;
+    let Some(Event::MemberMoved { squad, hand_over }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!((squad.as_str(), hand_over.member.as_str(), hand_over.from_session, hand_over.from, hand_over.to, hand_over.ticket), ("acme", "frontend", 1, Engine::Claude, Engine::Codex, None));
+    let fresh = hand_over.to_session;
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionStarted { session, .. } if *session == fresh)), "the session it names is the one that started: {seen:#?}");
+    // The screens learn it with the squad too, and can read back what the new session was handed.
+    assert_eq!(handle.snapshot("acme").await.hand_overs, std::slice::from_ref(hand_over));
+    handle.send(Command::HandOver { squad: "acme".into(), session: fresh });
+    let back = until(&mut events, |e| matches!(e, Event::HandOver { .. })).await;
+    let Some(Event::HandOver { session, packet, lines, lines_at, .. }) = back.last() else { unreachable!() };
+    assert_eq!(*session, fresh);
+    assert!(packet.starts_with("[equipe] You are frontend, carrying on on Codex what you were doing on Claude"), "{packet}");
+    assert!(packet.contains("Tidy the header first"), "the person's words, verbatim: {packet}");
+    assert!(lines.iter().any(|e| matches!(e, Entry::User { text, .. } if text == "Tidy the header first")), "the conversation before: {lines:#?}");
+    assert!(lines.iter().any(|e| matches!(e, Entry::Reply { text } if text == "ok")), "{lines:#?}");
+    assert_eq!(lines.len(), lines_at.len(), "a time for each line");
+    // Asked about a session nobody handed anything: no answer at all.
+    handle.send(Command::HandOver { squad: "acme".into(), session: 1 });
+    assert!(!within(&mut events, 300).await.iter().any(|e| matches!(e, Event::HandOver { .. })));
+}
+
+#[tokio::test]
 async fn a_folder_inside_a_repository_is_a_project_of_its_own_worked_in_its_folder() {
     let repo = repo();
     let desktop = repo.join("crates").join("desktop");

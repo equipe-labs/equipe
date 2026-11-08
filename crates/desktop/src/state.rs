@@ -8,6 +8,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use equipe_core::protocol::engines::HandOver;
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
 use equipe_core::protocol::{DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
@@ -432,6 +433,23 @@ pub struct Model {
     pub board_rev: u64,
     /// Bumped on every error the daemon says about the squad (a refused edit).
     pub squad_errors: u64,
+    /// The squad's moves to the other engine, oldest first: which closed
+    /// session each member carries on from, so it shows as one member.
+    pub hand_overs: Vec<HandOver>,
+    /// What each session that took over was handed, by that session, as the
+    /// daemon read it back ([`Event::HandOver`]).
+    pub handed: HashMap<SessionId, Handed>,
+    /// Hand-overs asked of the daemon and not answered yet.
+    handed_asked: std::collections::HashSet<SessionId>,
+}
+
+/// What a session that took over from another on the other engine was
+/// handed: the packet it opened with, and the conversation before it.
+#[derive(Debug, Clone)]
+pub struct Handed {
+    /// Empty when the daemon didn't keep it.
+    pub packet: String,
+    pub before: Convo,
 }
 
 /// A member's browser page that waits for the person. No member decides it,
@@ -542,6 +560,9 @@ impl Model {
             reviews: HashMap::new(),
             board_rev: 0,
             squad_errors: 0,
+            hand_overs: Vec::new(),
+            handed: HashMap::new(),
+            handed_asked: Default::default(),
         }
     }
 
@@ -786,13 +807,75 @@ impl Model {
     /// project in focus, its thread and the squad's — never another project's.
     pub fn conversation(&self, follow: bool) -> crate::convo::Sliced {
         let Some(convo) = self.convo() else { return Default::default() };
-        match self.chat_slice(follow) {
-            Some(slice) => convo.sliced(slice.as_deref()),
-            None => {
-                let (blocks, at) = convo.blocks_at();
-                crate::convo::Sliced { about: vec![None; blocks.len()], blocks, at }
+        let slice = self.chat_slice(follow);
+        let now = shown_of(convo, slice.as_ref().map(Option::as_deref));
+        // A member's own conversation, after a move to the other engine: the
+        // one before above it, each move a line between — one member, one thread.
+        match self.viewed().filter(|s| self.shows_own(*s)) {
+            Some(session) => self.stitched(session, slice.as_ref().map(Option::as_deref), now),
+            None => now,
+        }
+    }
+
+    /// The moves member session `session` carries on from, oldest first.
+    pub fn moves_into(&self, session: SessionId) -> Vec<&HandOver> {
+        let mut chain = HandOver::chain(&self.hand_overs, session);
+        chain.reverse();
+        chain
+    }
+
+    /// `now`, the conversation of member session `session`, with every one it
+    /// carries on from above it, oldest first, each followed by its move's
+    /// divider. What was said before shows as the daemon read it back, else
+    /// as this window saw it, if it did.
+    fn stitched(&self, session: SessionId, slice: Option<Option<&str>>, now: crate::convo::Sliced) -> crate::convo::Sliced {
+        let moves = self.moves_into(session);
+        if moves.is_empty() {
+            return now;
+        }
+        let mut out = crate::convo::Sliced::default();
+        for h in moves {
+            let before = self.handed.get(&h.to_session).map(|x| &x.before).or_else(|| self.convos.get(&h.from_session));
+            if let Some(before) = before {
+                let part = shown_of(before, slice);
+                // What waited for the old session went with the hand-over.
+                let said = part.blocks.iter().rposition(|b| !matches!(b, crate::convo::Block::Pending { .. })).map_or(0, |at| at + 1);
+                out.blocks.extend(part.blocks.into_iter().take(said));
+                out.about.extend(part.about.into_iter().take(said));
+                out.at.extend(part.at.into_iter().take(said));
+            }
+            let at = u64::try_from(h.at).unwrap_or(0);
+            out.blocks.push(crate::convo::Block::Moved { from: h.from, to: h.to, at, session: h.to_session });
+            out.about.push(None);
+            out.at.push(Some(at));
+        }
+        out.blocks.extend(now.blocks);
+        out.about.extend(now.about);
+        out.at.extend(now.at);
+        // One member speaks throughout: named over its first reply only.
+        let mut named = false;
+        for block in &mut out.blocks {
+            if let crate::convo::Block::Reply { first, .. } = block {
+                *first = !named;
+                named = true;
             }
         }
+        out
+    }
+
+    /// The hand-overs the member in view carries on from that the daemon
+    /// hasn't sent yet, nor been asked for: asked now ([`Command::HandOver`]).
+    pub fn hand_overs_wanted(&mut self) -> Vec<SessionId> {
+        let Some(session) = self.selected else { return Vec::new() };
+        let wanted: Vec<SessionId> = self.moves_into(session).iter().map(|h| h.to_session).filter(|s| !self.handed.contains_key(s) && !self.handed_asked.contains(s)).collect();
+        self.handed_asked.extend(wanted.iter().copied());
+        wanted
+    }
+
+    /// A member's moves between engines, as its header tells them: each
+    /// one's engines, when, why, and whether it was mid-ticket — oldest first.
+    pub fn engine_history(&self, session: SessionId) -> Vec<String> {
+        self.moves_into(session).iter().map(|h| moved_line(h, self.unix)).collect()
     }
 
     pub fn convo_mut(&mut self) -> Option<&mut Convo> {
@@ -886,6 +969,15 @@ impl Model {
     fn keep_selection(&mut self) {
         let valid = self.selected.is_some_and(|id| self.members.iter().any(|m| m.session == id));
         if !valid {
+            // A member that moved to the other engine meanwhile: where it carries on.
+            let mut at = self.selected;
+            for _ in 0..self.hand_overs.len() {
+                at = at.and_then(|s| self.hand_overs.iter().rev().find(|h| h.from_session == s).map(|h| h.to_session));
+                if let Some(heir) = at.filter(|s| self.members.iter().any(|m| m.session == *s)) {
+                    self.selected = Some(heir);
+                    return;
+                }
+            }
             self.selected = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
         }
     }
@@ -977,6 +1069,9 @@ impl Model {
         let version = hello.version;
         let snapshot = hello.snapshot;
         self.engines.load(&snapshot, self.unix as i64);
+        // What came before a move is kept as read; asked again only if lost on the way.
+        self.hand_overs = snapshot.hand_overs.clone();
+        self.handed_asked.clear();
         self.squad = snapshot.squad;
         // When each came to where it stands: what the journal says, unless it
         // was seen here already in that state.
@@ -1098,6 +1193,25 @@ impl Model {
             }
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
+            Event::MemberMoved { squad, hand_over } if *squad == self.squad => {
+                if !self.hand_overs.iter().any(|h| h.to_session == hand_over.to_session) {
+                    self.hand_overs.push(hand_over.clone());
+                }
+                self.retire_moved();
+                self.revision += 1;
+            }
+            Event::HandOver { squad, session, packet, lines, lines_at } if *squad == self.squad => {
+                self.handed_asked.remove(session);
+                let Some(h) = self.hand_overs.iter().find(|h| h.to_session == *session) else { return };
+                // Drawn as its member's conversation was: from where it worked, the PM's sliced.
+                let old = self.convos.get(&h.from_session);
+                let base = old.map_or_else(|| self.convos.get(session).map(|c| c.base.clone()).unwrap_or_default(), |c| c.base.clone());
+                let is_pm = old.or(self.convos.get(session)).is_some_and(|c| c.is_pm);
+                let mut before = Convo::new(base, is_pm);
+                before.transcript = equipe_core::protocol::Transcript::with_times(lines.clone(), lines_at.clone());
+                self.handed.insert(*session, Handed { packet: packet.clone(), before });
+                self.revision += 1;
+            }
             Event::SecretAsked { squad, ask } if *squad == self.squad => {
                 if !self.secret_asks.iter().any(|a| a.id == ask.id) {
                     self.secret_asks.push(ask.clone());
@@ -1226,6 +1340,8 @@ impl Model {
     }
 
     fn on_member_event(&mut self, event: Event) {
+        // A member starting or leaving may be a move to the other engine.
+        let comes_or_goes = matches!(event, Event::SessionStarted { .. } | Event::SessionClosed { .. });
         match event {
             Event::TicketChanged { ticket, .. } => self.on_ticket(&ticket),
             Event::TicketHistory { squad, ticket, entries } if squad == self.squad => {
@@ -1443,6 +1559,34 @@ impl Model {
                     _ => {}
                 }
             }
+        }
+        if comes_or_goes {
+            self.retire_moved();
+        }
+    }
+
+    /// A member's closed session that an open one under the same name carries
+    /// on from — what a move to the other engine leaves — leaves the team:
+    /// every list shows the member once, as the session that is open. Its
+    /// conversation stays, to show above the new one's; whoever looked at
+    /// it looks at the new one.
+    fn retire_moved(&mut self) {
+        let gone: Vec<(SessionId, SessionId)> = self
+            .members
+            .iter()
+            .filter(|m| self.moved_on(m))
+            .filter_map(|m| Some((m.session, self.members.iter().find(|o| o.name == m.name && self.status(o) != Status::Closed)?.session)))
+            .collect();
+        for (old, heir) in gone {
+            // The member keeps its place in the team: the open session takes the closed one's.
+            if let (Some(at), Some(from)) = (self.members.iter().position(|m| m.session == old), self.members.iter().position(|m| m.session == heir)) {
+                self.members.swap(at, from);
+            }
+            self.members.retain(|m| m.session != old);
+            if self.selected == Some(old) {
+                self.selected = Some(heir);
+            }
+            self.revision += 1;
         }
     }
 
@@ -1972,6 +2116,54 @@ pub struct Eta {
     pub guessed: bool,
 }
 
+/// A conversation as it shows: whole (`None`), or a slice of the PM's (see
+/// [`Convo::sliced`]).
+fn shown_of(convo: &Convo, slice: Option<Option<&str>>) -> crate::convo::Sliced {
+    match slice {
+        Some(slice) => convo.sliced(slice),
+        None => {
+            let (blocks, at) = convo.blocks_at();
+            crate::convo::Sliced { about: vec![None; blocks.len()], blocks, at }
+        }
+    }
+}
+
+/// The line between a member's conversations where it moved: "Moved from
+/// Claude to Codex" — or, the other engine not starting it, "Started again on Claude".
+pub fn moved_words(from: Engine, to: Engine) -> String {
+    let name = crate::switching::engine_name;
+    if from == to { t!("moved.divider_same", engine = name(to)) } else { t!("moved.divider", from = name(from), to = name(to)) }
+}
+
+/// What the document panel calls a hand-over packet: "backend — hand-over to Codex".
+pub fn packet_name(h: &HandOver) -> String {
+    // A name, never a path: nothing in it reads as a folder.
+    t!("moved.packet_name", name = h.member, engine = crate::switching::engine_name(h.to)).replace(['/', '\\'], "-")
+}
+
+/// Why a member moved, as its engine history says it.
+pub fn moved_why(h: &HandOver) -> String {
+    use equipe_core::protocol::engines::Why;
+    let name = crate::switching::engine_name;
+    match h.why {
+        Why::Person | Why::Setup => t!("moved.why_person").to_owned(),
+        Why::Exhausted => t!("moved.why_out", engine = name(h.from)),
+        Why::Return => t!("moved.why_back", engine = name(h.to)),
+        Why::Shift | Why::Drain | Why::StepDown => t!("moved.why_pace", engine = name(h.from)),
+    }
+}
+
+/// One move, as a member's engine history lists it: "Claude → Codex · 14:05
+/// · Claude's plan ran out · mid-ticket, T-42 handed over".
+pub fn moved_line(h: &HandOver, now: u64) -> String {
+    let name = crate::switching::engine_name;
+    let place = match h.ticket {
+        Some(id) => t!("moved.mid_ticket", id = id),
+        None => t!("moved.between").to_owned(),
+    };
+    t!("moved.line", from = name(h.from), to = name(h.to), when = crate::metrics::moment(u64::try_from(h.at).unwrap_or(0), now), why = moved_why(h), place = place)
+}
+
 /// `14:30` in local time.
 pub fn local_hm(unix: u64) -> String {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -2497,6 +2689,119 @@ mod tests {
         assert!(!team.contains(&1) && !team.contains(&2), "the moved members' old sessions aren't listed twice: {team:?}");
         assert!(team.contains(&3), "someone who left, with no open session, still shows as closed");
         assert_eq!(team.last(), Some(&3), "closed last");
+    }
+
+    fn moved(from: SessionId, to: SessionId, engines: (Engine, Engine), ticket: Option<TicketId>) -> HandOver {
+        use equipe_core::protocol::engines::Why;
+        HandOver { member: "backend".into(), from_session: from, to_session: to, from: engines.0, to: engines.1, why: if ticket.is_some() { Why::Exhausted } else { Why::Person }, at: 1_762_300_000 + to as i64, ticket }
+    }
+
+    fn person(text: &str) -> Entry {
+        Entry::User { text: text.into(), kept: Vec::new() }
+    }
+
+    fn reply(text: &str) -> Entry {
+        Entry::Reply { text: text.into() }
+    }
+
+    #[test]
+    fn a_member_that_moves_engines_mid_ticket_is_one_member_in_every_list_and_whoever_looked_follows() {
+        let mut model = Model::new("acme");
+        let mut backend = session(2, "backend", "backend", SessionState::Ready);
+        backend.recent = vec![person("로그인 횟수 제한해 줘"), reply("T-42 시작할게요")];
+        backend.work = Some(equipe_core::protocol::WorkInfo { ticket: 42, project: "/p".into(), workspace: None });
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), backend, session(3, "qa", "qa", SessionState::Ready)]), T0);
+        model.select(2);
+        // The move, as the daemon makes it: the old session closed, the new one
+        // started under the same name, then the move told.
+        model.apply(Update::Event(Event::SessionClosed { session: 2 }), T0);
+        model.apply(Update::Event(Event::SessionStarted { session: 12, project: "/p".into(), engine: Engine::Codex, model: Some("gpt-5.5-codex".into()), workspace: None, member: Some(Who { role: "backend".into(), name: "backend".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::MemberMoved { squad: "acme".into(), hand_over: moved(2, 12, (Engine::Claude, Engine::Codex), Some(42)) }), T0);
+        let backends: Vec<(SessionId, Option<Engine>)> = model.members.iter().filter(|m| m.name == "backend").map(|m| (m.session, m.engine)).collect();
+        assert_eq!(backends, [(12, Some(Engine::Codex))], "one backend, the open one, on Codex");
+        assert_eq!(model.team(), [1, 12, 3], "the sidebar and the header's list");
+        assert_eq!(model.selected, Some(12), "looking at it, the person looks at it still");
+        assert_eq!(model.viewed(), Some(12), "what is said goes to the open session");
+        assert_eq!(model.open_member("backend").map(|m| m.session), Some(12), "@backend");
+        let lanes: Vec<String> = crate::orchestra::overview(&model, Instant::now()).lanes.into_iter().map(|l| l.name).collect();
+        assert_eq!(lanes.iter().filter(|n| *n == "backend").count(), 1, "orchestration: {lanes:?}");
+        // A question it asks waits under the member that is there.
+        let set: equipe_core::protocol::decide::QuestionSet = serde_json::from_value(serde_json::json!({ "id": 5, "session": 2, "member": "backend", "ticket": 42, "questions": [] })).unwrap();
+        model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: set }), T0);
+        assert!(matches!(&model.take_alerts()[..], [.., Alert::Decision { session: 12, .. }]));
+        // Its conversation so far stays above the new one's, until the daemon's comes.
+        let blocks = model.conversation(false).blocks;
+        assert!(matches!(&blocks[..], [crate::convo::Block::User(t), crate::convo::Block::Reply { .. }, crate::convo::Block::Moved { from: Engine::Claude, to: Engine::Codex, session: 12, .. }] if t == "로그인 횟수 제한해 줘"), "{blocks:#?}");
+        // Seen again after a restart: only the open session, its move in the snapshot.
+        let mut again = Model::new("acme");
+        again.selected = Some(2);
+        let snapshot = Snapshot { squad: "acme".into(), sessions: vec![session(1, "pm", "pm", SessionState::Ready), session(12, "backend", "backend", SessionState::Ready)], hand_overs: vec![moved(2, 12, (Engine::Claude, Engine::Codex), Some(42))], ..Default::default() };
+        again.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        assert_eq!(again.team(), [1, 12]);
+        assert_eq!(again.moves_into(12).len(), 1);
+        assert_eq!(again.selected, Some(12), "the window was on its old session: on the one it carries on in, not the PM");
+    }
+
+    #[test]
+    fn the_conversations_before_moves_stack_above_in_order_each_move_a_line_and_search_reaches_them() {
+        use crate::convo::Block;
+        let mut model = Model::new("acme");
+        let mut backend = session(3, "backend", "backend", SessionState::Ready);
+        backend.recent = vec![person("세 번째: 다시 Claude"), reply("이어서 할게요")];
+        // Claude, then Codex, then Claude again.
+        let moves = vec![moved(29, 30, (Engine::Claude, Engine::Codex), None), moved(30, 3, (Engine::Codex, Engine::Claude), Some(42))];
+        let snapshot = Snapshot { squad: "acme".into(), sessions: vec![session(1, "pm", "pm", SessionState::Ready), backend], hand_overs: moves, ..Default::default() };
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        model.select(3);
+        // Asked of the daemon once each, oldest first.
+        assert_eq!(model.hand_overs_wanted(), [30, 3]);
+        assert!(model.hand_overs_wanted().is_empty(), "not asked twice");
+        // Before they come: the lines, where they will be.
+        let kinds = |m: &Model| m.conversation(false).blocks.iter().map(|b| match b { Block::User(t) => format!("you: {t}"), Block::Reply { text, first, .. } => format!("reply{}: {text}", if *first { " (named)" } else { "" }), Block::Moved { from, to, .. } => format!("{from:?}→{to:?}"), other => format!("{other:?}") }).collect::<Vec<_>>();
+        assert_eq!(kinds(&model), ["Claude→Codex", "Codex→Claude", "you: 세 번째: 다시 Claude", "reply (named): 이어서 할게요"]);
+        let back = |session: SessionId, lines: Vec<Entry>| Update::Event(Event::HandOver { squad: "acme".into(), session, packet: format!("[equipe] You are backend ({session})"), lines_at: vec![None; lines.len()], lines });
+        // Answered in any order: shown in the order they were said.
+        model.apply(back(3, vec![person("두 번째: Codex에서"), reply("Codex에서 했어요")]), T0);
+        model.apply(back(30, vec![person("첫 번째: Claude에서"), reply("Claude에서 했어요")]), T0);
+        assert_eq!(
+            kinds(&model),
+            ["you: 첫 번째: Claude에서", "reply (named): Claude에서 했어요", "Claude→Codex", "you: 두 번째: Codex에서", "reply: Codex에서 했어요", "Codex→Claude", "you: 세 번째: 다시 Claude", "reply: 이어서 할게요"],
+            "one member speaking throughout, named once"
+        );
+        // ⌘F finds words of every part, the lines between them too.
+        let found: Vec<String> = model.conversation(false).blocks.iter().filter_map(Block::searchable).collect();
+        assert!(found.iter().any(|t| t.contains("첫 번째")) && found.iter().any(|t| t.contains("두 번째")), "{found:?}");
+        assert!(found.iter().any(|t| t == "Claude에서 Codex로 옮겼어요"), "{found:?}");
+        // The packet each one opened with, kept to show.
+        assert_eq!(model.handed[&3].packet, "[equipe] You are backend (3)");
+        // The header's engine history: when, why, and whether mid-ticket.
+        let history = model.engine_history(3);
+        assert_eq!(history.len(), 2);
+        assert!(history[0].starts_with("Claude → Codex · ") && history[0].ends_with(" · 직접 요청함 · 작업 사이"), "{history:?}");
+        assert!(history[1].starts_with("Codex → Claude · ") && history[1].ends_with(" · Codex 사용량을 다 씀 · 작업 중, T-42 넘김"), "{history:?}");
+        // A ticket's work, a conversation with the PM: their own, not stitched.
+        assert!(model.engine_history(1).is_empty());
+        model.select(1);
+        assert!(!model.conversation(false).blocks.iter().any(|b| matches!(b, Block::Moved { .. })));
+    }
+
+    #[test]
+    fn the_line_where_a_member_moved_and_its_history_read_in_every_language() {
+        use equipe_core::i18n::Lang;
+        let keys = ["moved.divider", "moved.divider_same", "moved.see", "moved.packet_name", "moved.packet_gone", "moved.history", "moved.line", "moved.why_person", "moved.why_pace", "moved.why_out", "moved.why_back", "moved.mid_ticket", "moved.between", "moved.packet_note"];
+        for lang in Lang::ALL {
+            for key in keys {
+                assert!(crate::i18n::of(lang).own(key).is_some_and(|w| !w.trim().is_empty()), "{lang:?} {key}");
+            }
+            let line = crate::i18n::of(lang).fill("moved.divider", &[("from", "Claude".into()), ("to", "Codex".into())]);
+            assert!(line.contains("Claude") && line.contains("Codex") && !line.contains('{'), "{lang:?}: {line}");
+        }
+        let en = crate::i18n::of(Lang::En);
+        assert_eq!(en.fill("moved.divider", &[("from", "Claude".into()), ("to", "Codex".into())]), "Moved from Claude to Codex");
+        assert_eq!(en.get("moved.see"), "See what was handed over");
+        assert_eq!(moved_words(Engine::Claude, Engine::Codex), "Claude에서 Codex로 옮겼어요");
+        assert_eq!(moved_words(Engine::Claude, Engine::Claude), "Claude에서 새로 이어 가요", "the other engine couldn't start it");
+        assert_eq!(packet_name(&moved(2, 12, (Engine::Claude, Engine::Codex), None)), "backend — Codex로 넘긴 내용");
     }
 
     #[test]

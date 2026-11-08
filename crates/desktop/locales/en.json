@@ -3466,5 +3466,19 @@
   "studio.count_pictures.one": "{count} picture",
   "studio.count_pictures.other": "{count} pictures",
   "studio.count_read_files.one": "{count} file read",
-  "studio.count_read_files.other": "{count} files read"
+  "studio.count_read_files.other": "{count} files read",
+  "moved.divider": "Moved from {from} to {to}",
+  "moved.divider_same": "Started again on {engine}",
+  "moved.see": "See what was handed over",
+  "moved.packet_name": "{name} — hand-over to {engine}",
+  "moved.packet_gone": "What was handed over wasn't kept.",
+  "moved.history": "Engine history",
+  "moved.line": "{from} → {to} · {when} · {why} · {place}",
+  "moved.why_person": "you asked",
+  "moved.why_pace": "{engine}'s plan was running low",
+  "moved.why_out": "{engine}'s plan ran out",
+  "moved.why_back": "{engine}'s plan had room again",
+  "moved.mid_ticket": "mid-ticket, T-{id} handed over",
+  "moved.between": "between tickets",
+  "moved.packet_note": "Exactly what the new conversation opened with. Read-only."
 }

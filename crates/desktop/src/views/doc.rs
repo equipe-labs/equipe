@@ -107,10 +107,13 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             let path = doc.path.clone();
             bar.child(ui::icon_button(p, "doc-open", Icon::External, t!("doc.open"), None).on_click(move |_, _, cx| crate::render::open_file(&path, crate::render::Open::Edit, cx)))
         })
-        .child(ui::icon_button(p, "doc-copy", Icon::Copy, t!("doc.copy_path"), None).on_click(move |_, _, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
-            crate::render::flash(t!("doc.copied").into(), cx);
-        }))
+        // Words with no file of their own (a hand-over packet) have no path to copy.
+        .when(doc.path.is_absolute(), |bar| {
+            bar.child(ui::icon_button(p, "doc-copy", Icon::Copy, t!("doc.copy_path"), None).on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+                crate::render::flash(t!("doc.copied").into(), cx);
+            }))
+        })
         .child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx))))
         .child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close"), None).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx))));
     let named = crate::docs::doc_at(&shell.docs, &doc.path.to_string_lossy()).map(|d| d.ticket_ids()).unwrap_or_default();
@@ -168,7 +171,8 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
                             .text_size(px(SMALL))
                             .text_color(p.muted)
                             .child(icon(Icon::Info, 13., p.muted))
-                            .child(t!("doc.kept")),
+                            // Words with no file of their own: a hand-over packet, as it was handed.
+                            .child(if doc.path.is_absolute() { t!("doc.kept") } else { t!("moved.packet_note") }),
                     )
                 })
                 .child(crate::render::view::document(p, ("doc", crate::render::hash_of((&doc.path, doc.read))), &markdown, look))
