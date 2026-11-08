@@ -1753,9 +1753,15 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
                         board::AllOf::Accept => t!("board.all_accept"),
                         board::AllOf::Start => t!("board.all_start"),
                         board::AllOf::Merge => t!("board.all_merge"),
+                        board::AllOf::Tidy => t!("decide.tidy"),
                     };
                     h_flex().flex_1().justify_end().child(
                         btn(p, SharedString::from(format!("all-{ix}")), word, None, false, shell.can_act()).on_click(cx.listener(move |this, _, _, cx| {
+                            // Older decisions: one plain message to the PM, nothing picked.
+                            if all.what == board::AllOf::Tidy {
+                                this.decide_ask_tidy(cx);
+                                return;
+                            }
                             this.board.view.chosen = all.ids.iter().copied().collect();
                             this.board.view.anchor = None;
                             this.board.flow = Some(Flow::Bulk { yes: true });

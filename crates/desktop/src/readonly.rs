@@ -71,6 +71,8 @@ pub fn reads(command: &Command) -> bool {
     match command {
         // Answered with what is there, to this screen or every screen.
         C::TicketHistory { .. }
+        // What a member was handed when it moved to the other engine, and what came before.
+        | C::HandOver { .. }
         | C::Logins
         | C::BrowserProfiles
         | C::Devices
@@ -498,6 +500,7 @@ mod tests {
             Command::MoveTicket { squad: s(), ticket: 1, status: None, before: None },
             Command::CommentTicket { squad: s(), ticket: 1, text: "x".into() },
             Command::TicketHistory { squad: s(), ticket: 1 },
+            Command::HandOver { squad: s(), session: 1 },
             Command::SetMode { squad: s(), member: None, mode: Some(Mode::default()) },
             Command::Decide { squad: s(), approval: 1, decision: Decision::Allow, words: None, said: None },
             Command::AnswerQuestions { squad: s(), id: 1, answers: vec![decide::Answer::default()], about: None },
@@ -584,13 +587,13 @@ mod tests {
             Command::SetDesignReviewer { squad: s(), reviewer: engines::Reviewer::Same },
             Command::Models { engine: Engine::Codex },
             Command::SetRoleModel { squad: s(), default: equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: None, effort: None } },
-            Command::ApplyEngineProposal { squad: s(), id: 1 },
+            Command::ApplyEngineProposal { squad: s(), id: 1, now: false },
             Command::DismissEngineProposal { squad: s(), id: 1 },
             Command::UndoEngineProposal { squad: s(), id: 1 },
             Command::UndoHomeChange { squad: s(), session: 1, change: "abc".into() },
             Command::OnPhone { command: Box::new(Command::Interrupt { session: 1 }) },
             Command::ShowEngineSetup { squad: s() },
-            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude, model: None, effort: None },
+            Command::MoveEngine { squad: s(), members: vec![], engine: Engine::Claude, model: None, effort: None, now: false },
             Command::Design { squad: s() },
             Command::ProjectDocs { squad: s() },
             Command::SearchDocs { squad: s(), query: "checkout".into() },
@@ -635,7 +638,7 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "hand_over", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
         for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");

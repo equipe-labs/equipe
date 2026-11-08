@@ -138,6 +138,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::Interrupt { .. }
         | C::Close { .. }
         | C::TicketHistory { .. }
+        // What a member was handed when it moved to the other engine: a read.
+        | C::HandOver { .. }
         | C::Refresh { .. }
         | C::Focus { .. }
         | C::NewConversation { .. }
@@ -505,11 +507,11 @@ mod tests {
             Command::ConfirmAccept { squad: "a".into(), id: 1, tickets: vec![], said: None },
             Command::ApproveTeamChange { squad: "a".into(), id: 1 },
             Command::ApproveRoutine { squad: "a".into(), id: 1 },
-            Command::ApplyEngineProposal { squad: "a".into(), id: 1 },
+            Command::ApplyEngineProposal { squad: "a".into(), id: 1, now: false },
             // Moving members to another engine, on a model and effort there: the
             // PM asks for it on a card; its process never sends it.
-            Command::MoveEngine { squad: "a".into(), members: vec!["designer".into()], engine: crate::protocol::Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) },
-            Command::OnPhone { command: Box::new(Command::MoveEngine { squad: "a".into(), members: vec![], engine: crate::protocol::Engine::Codex, model: None, effort: None }) },
+            Command::MoveEngine { squad: "a".into(), members: vec!["designer".into()], engine: crate::protocol::Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()), now: true },
+            Command::OnPhone { command: Box::new(Command::MoveEngine { squad: "a".into(), members: vec![], engine: crate::protocol::Engine::Codex, model: None, effort: None, now: false }) },
             Command::SetModel { session: 1, model: "gpt-6.1-sol".into() },
             Command::SetMode { squad: "a".into(), member: None, mode: None },
             Command::SetPmAccepts { squad: "a".into(), on: true },
@@ -541,6 +543,7 @@ mod tests {
             Command::Submit { session: 1, text: "hi".into(), about: None },
             Command::Interrupt { session: 1 },
             Command::TicketHistory { squad: "a".into(), ticket: 1 },
+            Command::HandOver { squad: "a".into(), session: 1 },
             Command::Focus { squad: "a".into(), project: None },
             Command::WatchBrowser { squad: "a".into(), session: None },
             Command::Models { engine: crate::protocol::Engine::Claude },

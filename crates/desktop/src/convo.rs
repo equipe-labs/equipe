@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use equipe_core::protocol::harness;
 use equipe_core::protocol::transcript::scope;
 use equipe_core::protocol::watch::CommandWatch;
-use equipe_core::protocol::{CompactTrigger, Entry, Event, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
+use equipe_core::protocol::{CompactTrigger, Engine, Entry, Event, SessionId, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
 use equipe_core::t;
 
 use crate::activity::News;
@@ -777,6 +777,10 @@ pub enum Block {
     Thinking(String),
     /// A summary finished here: the divider.
     Summarized,
+    /// The member moved to the other engine here (`engines::HandOver`): the
+    /// divider between its conversation before and the one that carries on —
+    /// `session`, which opened with the packet it links to; when, in unix seconds.
+    Moved { from: Engine, to: Engine, at: u64, session: SessionId },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
     /// Said while the member works, waiting: a steer (read at its next
@@ -819,6 +823,7 @@ impl Block {
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
             Block::Landed { branch, stat } => Some(format!("{branch}\n{stat}")),
+            Block::Moved { from, to, .. } => Some(crate::state::moved_words(*from, *to)),
             Block::Thought { .. } | Block::Thinking(_) | Block::Summarized => None,
         }
     }

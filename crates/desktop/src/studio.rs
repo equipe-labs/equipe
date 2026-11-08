@@ -14,7 +14,7 @@ use std::time::Instant;
 use equipe_core::design::lint::Summary;
 use equipe_core::design::lint::record::Verdict;
 use equipe_core::protocol::engines::Reviewed;
-use equipe_core::protocol::studio::{Studio, StudioCheck, StudioLook, StudioPicture};
+use equipe_core::protocol::studio::{PictureFrom, Studio, StudioCheck, StudioLook, StudioPicture};
 use equipe_core::protocol::{Entry, Ticket, TicketId, TicketStatus, Transcript};
 use equipe_core::t;
 
@@ -41,6 +41,9 @@ pub struct StudioUi {
     pub width: Option<u32>,
     /// A timeline item opened in the centre, by its key.
     pub open: Option<String>,
+    /// A picture picked from the strip of recent ones, shown in the centre
+    /// instead of the newest; `None`: the newest, as it lands.
+    pub picked: Option<String>,
     /// The asks' loop: dropped, it stops.
     pub poll: Option<gpui_kit::Task<()>>,
     pub scroll: gpui_kit::ScrollHandle,
@@ -61,6 +64,7 @@ impl StudioUi {
             self.files = None;
             self.width = None;
             self.open = None;
+            self.picked = None;
         }
     }
 
@@ -124,6 +128,24 @@ pub enum Did {
     Browsed,
     /// Handed in: taken, or refused with why.
     HandIn { ok: bool, why: Vec<String> },
+    /// Opened a picture to look at it.
+    Opened(String),
+    /// Took a picture: a simulator's or an emulator's screenshot, a shot of a page.
+    Shot,
+    /// Worked the ticket's phone: `look`, `act`, `record`, `frames`…
+    Phone(String),
+    /// Read a file that isn't a picture: code, a note.
+    Read(String),
+    /// Looked at what a branch changed (`git diff`, `git show`, `git log`).
+    Diff,
+    /// Handed part of the work to a helper: fresh eyes, a search.
+    Helper,
+    /// Wrote a report into the hand-in folder.
+    Report(String),
+    /// Gave a design QA's verdict.
+    Verdict,
+    /// Asked the person something, in its words.
+    Asked(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,6 +194,13 @@ fn refusal(output: &str) -> Vec<String> {
     if listed.is_empty() { output.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_owned).into_iter().collect() } else { listed }
 }
 
+/// A command that takes a picture: a simulator's or an emulator's
+/// screenshot or recording, a page shot.
+pub fn is_shot(command: &str) -> bool {
+    let c = command.to_ascii_lowercase();
+    (c.contains("simctl io") && (c.contains("screenshot") || c.contains("recordvideo"))) || c.contains("screencap") || c.contains("screenrecord") || c.contains("equipe shoot") || c.contains("screencapture")
+}
+
 /// What each step of the work did, in order — only the steps that say
 /// something about the design process.
 pub fn happenings(work: &[(&Entry, Option<u64>)]) -> Vec<Happening> {
@@ -183,6 +212,8 @@ pub fn happenings(work: &[(&Entry, Option<u64>)]) -> Vec<Happening> {
         let done = outcome.as_ref().map(|o| o.ok);
         let did = if let Some(name) = skill_of(tool, target) {
             Some(Did::Skill(name))
+        } else if tool == "Read" && equipe_core::visuals::is_image_name(target) {
+            Some(Did::Opened(target.to_owned()))
         } else if let Some(ran) = outcome.as_ref().and_then(|o| checks::ran(tool, target, &o.output)) {
             Some(match ran {
                 Ran::Check(summary) => Did::Checked(summary),
@@ -206,6 +237,22 @@ pub fn happenings(work: &[(&Entry, Option<u64>)]) -> Vec<Happening> {
             Some(Did::Built(target.to_owned()))
         } else if matches!(tool.as_str(), "Edit" | "Write") && target.contains("/design/references/") {
             Some(Did::Looked)
+        } else if matches!(tool.as_str(), "Edit" | "Write") && target.contains("/outputs/") && target.ends_with(".md") {
+            Some(Did::Report(target.to_owned()))
+        } else if let Some(action) = tool.strip_prefix("mcp__phone__") {
+            Some(Did::Phone(action.to_owned()))
+        } else if tool == "Bash" && is_shot(target) {
+            Some(Did::Shot)
+        } else if tool == "Bash" && ["git diff", "git show", "git log"].iter().any(|g| target.contains(g)) {
+            Some(Did::Diff)
+        } else if tool == "Read" {
+            Some(Did::Read(target.to_owned()))
+        } else if matches!(tool.as_str(), "Agent" | "Task") {
+            Some(Did::Helper)
+        } else if tool == "mcp__equipe__design_qa" {
+            Some(Did::Verdict)
+        } else if tool == "mcp__equipe__ask_decision" {
+            Some(Did::Asked(target.to_owned()))
         } else {
             None
         };
@@ -218,7 +265,54 @@ pub fn happenings(work: &[(&Entry, Option<u64>)]) -> Vec<Happening> {
 
 // ── the steps ──
 
-/// The process's steps, in order, in the person's words.
+/// What kind of design work a ticket is: the steps it goes through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Flow {
+    /// A new design — a direction, a brand, a flow: the whole path.
+    Design,
+    /// Design QA, or any review of someone else's screens.
+    Qa,
+    /// Building screens in code: no references or directions to go through.
+    Build,
+}
+
+impl Flow {
+    /// Its steps, in order.
+    pub fn steps(self) -> &'static [StepKind] {
+        match self {
+            Flow::Design => &[StepKind::Brief, StepKind::References, StepKind::Directions, StepKind::Build, StepKind::Checks, StepKind::HandIn],
+            Flow::Qa => &[StepKind::Brief, StepKind::Change, StepKind::Shots, StepKind::Measure, StepKind::Findings, StepKind::Verdict],
+            Flow::Build => &[StepKind::Brief, StepKind::Build, StepKind::Checks, StepKind::HandIn],
+        }
+    }
+
+    /// Its name, as the studio's header says it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Flow::Design => t!("studio.flow_design"),
+            Flow::Qa => t!("studio.flow_qa"),
+            Flow::Build => t!("studio.flow_build"),
+        }
+    }
+}
+
+/// The kind of work `ticket` is: a review when another ticket waits on it
+/// for design QA or the member opened the design QA guide for it; building
+/// in code when it is a code ticket that went through no references or
+/// directions; else the whole design path.
+pub fn flow_of(ticket: &Ticket, reviews: bool, happenings: &[Happening]) -> Flow {
+    let qa = reviews || happenings.iter().any(|h| matches!(&h.did, Did::Skill(s) if s == "design-qa") || matches!(h.did, Did::Verdict));
+    let explored = happenings.iter().any(|h| matches!(h.did, Did::Proposed(_) | Did::Chose(_) | Did::Looked));
+    if qa {
+        Flow::Qa
+    } else if ticket.kind == equipe_core::protocol::TicketKind::Code && !explored {
+        Flow::Build
+    } else {
+        Flow::Design
+    }
+}
+
+/// The process's steps, in the person's words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepKind {
     Brief,
@@ -227,11 +321,19 @@ pub enum StepKind {
     Build,
     Checks,
     HandIn,
+    /// A review: what the change is (its diff, its code).
+    Change,
+    /// A review: the screens seen for real — screenshots, the phone, pictures opened.
+    Shots,
+    /// A review: held to the rules and measured — checks, fresh eyes.
+    Measure,
+    /// A review: what it found, written down.
+    Findings,
+    /// A review: its word on the change.
+    Verdict,
 }
 
 impl StepKind {
-    pub const ALL: [StepKind; 6] = [StepKind::Brief, StepKind::References, StepKind::Directions, StepKind::Build, StepKind::Checks, StepKind::HandIn];
-
     pub fn label(self) -> &'static str {
         match self {
             StepKind::Brief => t!("studio.step_brief"),
@@ -240,6 +342,11 @@ impl StepKind {
             StepKind::Build => t!("studio.step_build"),
             StepKind::Checks => t!("studio.step_checks"),
             StepKind::HandIn => t!("studio.step_handin"),
+            StepKind::Change => t!("studio.step_change"),
+            StepKind::Shots => t!("studio.step_shots"),
+            StepKind::Measure => t!("studio.step_measure"),
+            StepKind::Findings => t!("studio.step_findings"),
+            StepKind::Verdict => t!("studio.step_verdict"),
         }
     }
 
@@ -252,7 +359,17 @@ impl StepKind {
             StepKind::Build => t!("studio.step_build_tip"),
             StepKind::Checks => t!("studio.step_checks_tip"),
             StepKind::HandIn => t!("studio.step_handin_tip"),
+            StepKind::Change => t!("studio.step_change_tip"),
+            StepKind::Shots => t!("studio.step_shots_tip"),
+            StepKind::Measure => t!("studio.step_measure_tip"),
+            StepKind::Findings => t!("studio.step_findings_tip"),
+            StepKind::Verdict => t!("studio.step_verdict_tip"),
         }
+    }
+
+    /// A step where checks fail shows it.
+    fn checks(self) -> bool {
+        matches!(self, StepKind::Checks | StepKind::HandIn | StepKind::Measure | StepKind::Findings | StepKind::Verdict)
     }
 }
 
@@ -289,10 +406,21 @@ pub struct Step {
 pub enum WaitFor {
     /// Directions proposed, none picked.
     Pick,
-    /// A question of the member's, in its words.
-    Answer(String),
-    /// The ticket waits on the person.
+    /// A question of the member's, in its words — on another ticket, which.
+    Answer { what: String, ticket: Option<TicketId> },
+    /// The person's OK to run something, as the member asked it.
+    Permission(String),
+    /// Another ticket of the member's waits on the person.
+    Ticket(TicketId),
+    /// This ticket waits on the person.
     Something,
+}
+
+impl WaitFor {
+    /// About this ticket, not another.
+    pub fn is_here(&self) -> bool {
+        !matches!(self, WaitFor::Ticket(_) | WaitFor::Answer { ticket: Some(_), .. })
+    }
 }
 
 /// Everything the studio is drawn from, gathered once a frame.
@@ -303,6 +431,7 @@ pub struct Watch<'a> {
     /// The member is at it right now.
     pub working: bool,
     pub waiting: Option<WaitFor>,
+    pub flow: Flow,
 }
 
 /// The latest check, from what it printed, or from its record when the
@@ -409,25 +538,45 @@ pub fn steps(w: &Watch) -> Vec<Step> {
     let hand_in = last_hand_in(w);
     let handed = handed_in(w);
 
-    let reached = [
-        briefs > 0,
-        board > 0 || lookups > 0,
-        proposed > 0,
-        !built.is_empty() || files.is_some_and(|f| !f.pending.is_empty() || !f.pictures.is_empty()),
-        checked,
-        handed || refusal_stands(w).is_some(),
-    ];
+    // A review's own steps: the change looked at, the screens seen, measured, found, judged.
+    let (reads, _, change_last) = of(&|d| matches!(d, Did::Read(_) | Did::Diff));
+    let shots_seen = w.happenings.iter().filter(|h| matches!(&h.did, Did::Shot | Did::Opened(_)) || matches!(&h.did, Did::Phone(a) if matches!(a.as_str(), "look" | "frames" | "record"))).count();
+    let shots_kept = files.map_or(0, |f| f.pictures.iter().filter(|p| matches!(p.from, PictureFrom::Recording | PictureFrom::Opened | PictureFrom::Made | PictureFrom::Output)).count());
+    let (_, _, shots_last) = of(&|d| matches!(d, Did::Shot | Did::Opened(_) | Did::Phone(_)));
+    let (helpers, _, helper_last) = of(&|d| matches!(d, Did::Helper | Did::Critiqued));
+    let found = files.map(findings).unwrap_or_default();
+    let (reported, _, report_last) = of(&|d| matches!(d, Did::Report(_)));
+    let report_last = report_last.or_else(|| files.and_then(|f| f.reports.first().map(|r| r.at)));
+    let (verdicts, _, verdict_last) = of(&|d| matches!(d, Did::Verdict | Did::HandIn { ok: true, .. }));
+    let steps = w.flow.steps();
+    let reached: Vec<bool> = steps
+        .iter()
+        .map(|kind| match kind {
+            StepKind::Brief => briefs > 0,
+            StepKind::References => board > 0 || lookups > 0,
+            StepKind::Directions => proposed > 0,
+            StepKind::Build => !built.is_empty() || files.is_some_and(|f| !f.pending.is_empty()),
+            StepKind::Checks => checked,
+            StepKind::HandIn => handed || refusal_stands(w).is_some(),
+            StepKind::Change => reads > 0,
+            StepKind::Shots => shots_seen > 0 || shots_kept > 0,
+            StepKind::Measure => checked || helpers > 0,
+            StepKind::Findings => reported > 0 || !found.is_empty(),
+            StepKind::Verdict => handed || verdicts > 0,
+        })
+        .collect();
     // Where it is now: the furthest step reached.
     let now = reached.iter().rposition(|r| *r);
     let failing = check.as_ref().is_some_and(|(_, s)| !s.passes()) || look.is_some_and(|(_, pass, _)| !pass) || refusal_stands(w).is_some();
     let mut out = Vec::new();
-    for (ix, kind) in StepKind::ALL.into_iter().enumerate() {
+    for (ix, kind) in steps.iter().copied().enumerate() {
         let mark = match now {
             _ if handed => if reached[ix] { Mark::Done } else { Mark::Skipped },
             Some(n) if ix < n => if reached[ix] { Mark::Done } else { Mark::Skipped },
             Some(n) if ix == n => match () {
-                _ if w.waiting.is_some() => Mark::Waiting,
-                _ if failing && ix >= 4 => Mark::Attention,
+                // Only a wait about this ticket holds its step up; one on another ticket doesn't.
+                _ if w.waiting.as_ref().is_some_and(WaitFor::is_here) => Mark::Waiting,
+                _ if failing && kind.checks() => Mark::Attention,
                 _ => Mark::Now,
             },
             // Waiting on a pick before anything is built: the directions step waits.
@@ -435,6 +584,16 @@ pub fn steps(w: &Watch) -> Vec<Step> {
             _ => Mark::Ahead,
         };
         let (count, at) = match kind {
+            StepKind::Change => ((reads > 0).then(|| t!("studio.count_read_files", count = reads)), change_last),
+            StepKind::Shots => ((shots_seen.max(shots_kept) > 0).then(|| t!("studio.count_pictures", count = shots_seen.max(shots_kept))), shots_last),
+            StepKind::Measure => (match (check.as_ref(), helpers) {
+                (Some((_, s)), 0) => Some(checks::floor(s)),
+                (Some((_, s)), n) => Some(format!("{} · {}", checks::floor(s), t!("studio.count_helpers", count = n))),
+                (None, 0) => None,
+                (None, n) => Some(t!("studio.count_helpers", count = n)),
+            }, checks_last.max(helper_last)),
+            StepKind::Findings => ((!found.is_empty() || reported > 0).then(|| if found.is_empty() { t!("studio.count_report").to_owned() } else { t!("studio.count_findings", count = found.len()) }), report_last),
+            StepKind::Verdict => ((handed || verdicts > 0).then(|| t!("studio.count_verdict").to_owned()), verdict_last.or(hand_in.and_then(|h| h.0))),
             StepKind::Brief => ((briefs > 0).then(|| if guides.is_empty() { t!("studio.count_read").to_owned() } else { t!("studio.count_guides", count = guides.len()) }), brief_last),
             StepKind::References => (match (board, lookups) {
                 (0, 0) => None,
@@ -472,70 +631,100 @@ pub fn steps(w: &Watch) -> Vec<Step> {
 
 // ── the line that says how it is going ──
 
+/// Where the member is with the ticket, as the sidebar would say it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
-    HandedIn { at: Option<u64> },
+pub enum Presence {
     Waiting(WaitFor),
+    HandedIn { at: Option<u64> },
+    /// At it since it began the ticket.
+    Working { since: Option<u64> },
+    /// Not at it now: its last step then.
+    Idle { last: Option<u64> },
+    NotStarted,
+}
+
+/// Something the work is held up by, said beside where it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Issue {
     /// The last hand-in was refused, and why (its first line).
     Refused(String),
     /// The latest check fails the floor: the rule, in words, and what it saw.
     Failing { rule: String, evidence: String },
     /// The second look asked for this many fixes.
     Fixing(usize),
-    Working { since: Option<u64> },
-    Resting { last: Option<u64> },
-    NotStarted,
 }
 
-/// How it is going, honestly: the most pressing thing first.
-pub fn status(w: &Watch) -> Status {
-    if handed_in(w) {
-        return Status::HandedIn { at: last_hand_in(w).and_then(|h| h.0) };
-    }
-    if let Some(wait) = &w.waiting {
-        return Status::Waiting(wait.clone());
-    }
-    // A refusal stands until the member has checked or looked again since.
-    if let Some(why) = refusal_stands(w) {
-        return Status::Refused(why.first().cloned().unwrap_or_default());
-    }
-    if let Some((_, s)) = latest_check(w).filter(|(_, s)| !s.passes())
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub presence: Presence,
+    pub issue: Option<Issue>,
+}
+
+/// How it is going, honestly: where the member is — waiting for the person
+/// first, as the sidebar says it — and what holds the work up, if anything.
+pub fn status(w: &Watch, first: Option<u64>, last: Option<u64>) -> Status {
+    let presence = if let Some(wait) = &w.waiting {
+        Presence::Waiting(wait.clone())
+    } else if handed_in(w) {
+        Presence::HandedIn { at: last_hand_in(w).and_then(|h| h.0) }
+    } else if w.working {
+        Presence::Working { since: first }
+    } else if last.is_some() || w.files.is_some_and(|f| f.dir.is_some() || !f.pictures.is_empty()) {
+        Presence::Idle { last }
+    } else {
+        Presence::NotStarted
+    };
+    let issue = if handed_in(w) {
+        None
+    } else if let Some(why) = refusal_stands(w) {
+        // A refusal stands until the member has checked or looked again since.
+        Some(Issue::Refused(why.first().cloned().unwrap_or_default()))
+    } else if let Some((_, s)) = latest_check(w).filter(|(_, s)| !s.passes())
         && let Some((id, evidence)) = s.failing.first()
     {
-        return Status::Failing { rule: checks::rule_name(id), evidence: evidence.clone() };
-    }
-    if let Some((_, false, fixes)) = latest_look(w) {
-        return Status::Fixing(fixes);
-    }
-    if w.working {
-        return Status::Working { since: w.happenings.iter().find_map(|h| h.at) };
-    }
-    match w.happenings.iter().rev().find_map(|h| h.at) {
-        Some(at) => Status::Resting { last: Some(at) },
-        None if w.files.is_some_and(|f| f.dir.is_some()) => Status::Resting { last: None },
-        None => Status::NotStarted,
+        Some(Issue::Failing { rule: checks::rule_name(id), evidence: evidence.clone() })
+    } else if let Some((_, false, fixes)) = latest_look(w) {
+        Some(Issue::Fixing(fixes))
+    } else {
+        None
+    };
+    Status { presence, issue }
+}
+
+/// Where it is, in words.
+pub fn presence_words(p: &Presence, now: u64) -> String {
+    let ago = |at: u64| crate::activity::ago(now.saturating_sub(at));
+    match p {
+        Presence::HandedIn { at: Some(at) } => t!("studio.status_handed_at", when = ago(*at)),
+        Presence::HandedIn { at: None } => t!("studio.status_handed").to_owned(),
+        Presence::Waiting(WaitFor::Pick) => t!("studio.status_waiting_pick").to_owned(),
+        Presence::Waiting(WaitFor::Answer { what, ticket: None }) => t!("studio.status_waiting_answer", what = what),
+        Presence::Waiting(WaitFor::Answer { what, ticket: Some(id) }) => t!("studio.status_waiting_elsewhere", id = id, what = what),
+        Presence::Waiting(WaitFor::Permission(what)) => t!("studio.status_waiting_ok", what = what),
+        Presence::Waiting(WaitFor::Ticket(id)) => t!("studio.status_waiting_ticket", id = id),
+        Presence::Waiting(WaitFor::Something) => t!("studio.status_waiting").to_owned(),
+        Presence::Working { since: Some(at) } => t!("studio.status_working", span = crate::state::short_span(now.saturating_sub(*at))),
+        Presence::Working { since: None } => t!("studio.status_working_now").to_owned(),
+        Presence::Idle { last: Some(at) } => t!("studio.status_resting", when = ago(*at)),
+        Presence::Idle { last: None } => t!("studio.status_resting_now").to_owned(),
+        Presence::NotStarted => t!("studio.status_not_started").to_owned(),
     }
 }
 
-/// The status line's words.
+/// What holds it up, in words.
+pub fn issue_words(i: &Issue) -> String {
+    match i {
+        Issue::Refused(why) => t!("studio.status_refused", why = why),
+        Issue::Failing { rule, evidence } => t!("studio.status_failing", rule = rule, evidence = evidence),
+        Issue::Fixing(n) => t!("studio.status_fixing", count = n),
+    }
+}
+
+/// The whole line, as a screen reader says it.
 pub fn status_words(s: &Status, now: u64) -> String {
-    let ago = |at: Option<u64>| at.map(|a| crate::activity::ago(now.saturating_sub(a)));
-    match s {
-        Status::HandedIn { at } => match ago(*at) {
-            Some(when) => t!("studio.status_handed_at", when = when),
-            None => t!("studio.status_handed").to_owned(),
-        },
-        Status::Waiting(WaitFor::Pick) => t!("studio.status_waiting_pick").to_owned(),
-        Status::Waiting(WaitFor::Answer(q)) => t!("studio.status_waiting_answer", what = q),
-        Status::Waiting(WaitFor::Something) => t!("studio.status_waiting").to_owned(),
-        Status::Refused(why) => t!("studio.status_refused", why = why),
-        Status::Failing { rule, evidence } => t!("studio.status_failing", rule = rule, evidence = evidence),
-        Status::Fixing(n) => t!("studio.status_fixing", count = n),
-        Status::Working { since: Some(at) } => t!("studio.status_working", span = crate::state::short_span(now.saturating_sub(*at))),
-        Status::Working { since: None } => t!("studio.status_working_now").to_owned(),
-        Status::Resting { last: Some(at) } => t!("studio.status_resting", when = crate::activity::ago(now.saturating_sub(*at))),
-        Status::Resting { last: None } => t!("studio.status_resting_now").to_owned(),
-        Status::NotStarted => t!("studio.status_not_started").to_owned(),
+    match &s.issue {
+        Some(issue) => format!("{} · {}", presence_words(&s.presence, now), issue_words(issue)),
+        None => presence_words(&s.presence, now),
     }
 }
 
@@ -549,27 +738,34 @@ pub enum Tone {
     Busy,
 }
 
-pub fn status_tone(s: &Status) -> Tone {
-    match s {
-        Status::HandedIn { .. } => Tone::Good,
-        Status::Waiting(_) => Tone::Wait,
-        Status::Refused(_) | Status::Failing { .. } | Status::Fixing(_) => Tone::Bad,
-        Status::Working { .. } => Tone::Busy,
-        Status::Resting { .. } | Status::NotStarted => Tone::Plain,
+pub fn status_tone(p: &Presence) -> Tone {
+    match p {
+        Presence::HandedIn { .. } => Tone::Good,
+        Presence::Waiting(_) => Tone::Wait,
+        Presence::Working { .. } => Tone::Busy,
+        Presence::Idle { .. } | Presence::NotStarted => Tone::Plain,
     }
 }
 
-/// What the person is waited on for: a question of the member's on this
-/// ticket — a pick, when directions are out and none was picked — or the
-/// ticket itself waiting.
-pub fn waiting_for(ticket: &Ticket, question: Option<&str>, files: Option<&Studio>, happenings: &[Happening]) -> Option<WaitFor> {
+/// What the person is waited on for, in the order the sidebar weighs it
+/// (`Model::status`): the member's ask for an OK, then a ticket of its own
+/// waiting on the person, then a question of its own — each, on this
+/// ticket or another. Directions out with none picked make this ticket's
+/// wait a pick.
+pub fn waiting_for(this: TicketId, ticket: &Ticket, permission: Option<String>, question: Option<(String, Option<TicketId>)>, waiting: Option<TicketId>, files: Option<&Studio>, happenings: &[Happening]) -> Option<WaitFor> {
     let picked = files.is_some_and(|f| f.directions.iter().any(|d| d.chosen)) || happenings.iter().any(|h| matches!(h.did, Did::Chose(_)));
     let proposed = files.is_some_and(|f| !f.directions.is_empty()) || happenings.iter().any(|h| matches!(h.did, Did::Proposed(_)));
-    match question {
-        Some(_) if proposed && !picked => Some(WaitFor::Pick),
-        Some(q) => Some(WaitFor::Answer(q.to_owned())),
-        None if ticket.status == TicketStatus::Waiting => Some(if proposed && !picked { WaitFor::Pick } else { WaitFor::Something }),
-        None => None,
+    let pick = proposed && !picked;
+    if let Some(what) = permission {
+        return Some(WaitFor::Permission(what));
+    }
+    let here = waiting == Some(this) || ticket.status == TicketStatus::Waiting;
+    match (question, waiting) {
+        (Some((_, on)), _) if pick && on.is_none_or(|t| t == this) => Some(WaitFor::Pick),
+        (Some((what, on)), _) => Some(WaitFor::Answer { what, ticket: on.filter(|t| *t != this) }),
+        (None, _) if here => Some(if pick { WaitFor::Pick } else { WaitFor::Something }),
+        (None, Some(other)) => Some(WaitFor::Ticket(other)),
+        (None, None) => None,
     }
 }
 
@@ -591,6 +787,8 @@ pub struct Centre {
     /// Directions out and none picked yet, nothing else drawn: each one's
     /// name and picture, side by side for the person to pick from.
     pub choices: Vec<(String, String)>,
+    /// Where the picture came from, when not a check's or a direction's.
+    pub from: Option<PictureFrom>,
 }
 
 /// The width shown when none is picked: the desktop one most look at.
@@ -599,7 +797,19 @@ pub const USUAL_WIDTH: u32 = 1280;
 /// What the centre shows: the newest of a check's pictures and any other
 /// picture the member made — the check's at the width picked (else the usual
 /// one, else the widest).
-pub fn centre(files: &Studio, picked: Option<u32>) -> Option<Centre> {
+/// A picture the person picked from the strip shows instead of the newest,
+/// while it is still there.
+pub fn centre_of(files: &Studio, picked: Option<u32>, path: Option<&str>) -> Option<Centre> {
+    if let Some(path) = path {
+        if let Some(c) = files.checks.iter().find(|c| c.pictures.iter().any(|p| p.path == path)) {
+            let width = c.pictures.iter().find(|p| p.path == path).and_then(|p| p.width);
+            let widths: Vec<(u32, String)> = c.pictures.iter().filter_map(|p| p.width.map(|w| (w, p.path.clone()))).collect();
+            return Some(Centre { screen: Some(c.screen.clone()), widths, shown: path.to_owned(), width, at: c.at, direction: None, choices: Vec::new(), from: None });
+        }
+        if let Some(p) = files.pictures.iter().find(|p| p.path == path) {
+            return Some(Centre { screen: None, widths: Vec::new(), shown: p.path.clone(), width: None, at: p.modified, direction: None, choices: Vec::new(), from: Some(p.from) });
+        }
+    }
     let check = files.checks.iter().filter(|c| !c.pictures.is_empty()).max_by_key(|c| c.at);
     let other = files.pictures.iter().max_by_key(|p| p.modified);
     let from_check = check.map(|c| {
@@ -611,9 +821,9 @@ pub fn centre(files: &Studio, picked: Option<u32>) -> Option<Centre> {
             None => (None, c.pictures[0].path.clone()),
         };
         let at = c.pictures.iter().map(|p| p.modified).max().unwrap_or(c.at).max(c.at);
-        Centre { screen: Some(c.screen.clone()), widths, shown, width, at, direction: None, choices: Vec::new() }
+        Centre { screen: Some(c.screen.clone()), widths, shown, width, at, direction: None, choices: Vec::new(), from: None }
     });
-    let from_other = other.map(|p| Centre { screen: None, widths: Vec::new(), shown: p.path.clone(), width: None, at: p.modified, direction: None, choices: Vec::new() });
+    let from_other = other.map(|p| Centre { screen: None, widths: Vec::new(), shown: p.path.clone(), width: None, at: p.modified, direction: None, choices: Vec::new(), from: Some(p.from) });
     // A width picked keeps the check's pictures in the centre.
     match (from_check, from_other) {
         (Some(c), Some(o)) if picked.is_none() && o.at > c.at => Some(o),
@@ -623,7 +833,7 @@ pub fn centre(files: &Studio, picked: Option<u32>) -> Option<Centre> {
             let d = drawn.iter().rev().find(|d| d.chosen).or_else(|| drawn.last())?;
             let picked = drawn.iter().any(|d| d.chosen);
             let choices = if picked || drawn.len() < 2 { Vec::new() } else { drawn.iter().map(|d| (d.name.clone(), d.pictures[0].path.clone())).collect() };
-            Some(Centre { screen: None, widths: Vec::new(), shown: d.pictures[0].path.clone(), width: None, at: d.at, direction: Some(d.name.clone()), choices })
+            Some(Centre { screen: None, widths: Vec::new(), shown: d.pictures[0].path.clone(), width: None, at: d.at, direction: Some(d.name.clone()), choices, from: None })
         }),
     }
 }
@@ -638,6 +848,7 @@ pub enum ItemKind {
     Check,
     Look,
     HandIn,
+    Report,
 }
 
 /// One thing on the timeline, in words.
@@ -731,6 +942,12 @@ pub fn items(happenings: &[Happening], files: Option<&Studio>) -> Vec<Item> {
             lines.extend(dims.iter().filter(|(_, v)| !v.trim().is_empty()).map(|(k, v)| format!("{} · {}", crate::i18n::catalog().get(k), v.trim())));
             out.push(Item { key: format!("dir:{}", d.name), kind: ItemKind::Direction, at: Some(d.at), title: d.name.clone(), lines, pictures: d.pictures.iter().map(|p| p.path.clone()).collect(), link: None, tone: if d.chosen { Tone::Good } else { Tone::Plain } });
         }
+        for r in &f.reports {
+            let pictures = f.pictures.iter().filter(|p| p.from == PictureFrom::Output).map(|p| p.path.clone()).collect();
+            let mut lines: Vec<String> = report_lead(&r.text).into_iter().collect();
+            lines.extend(report_items(&r.text));
+            out.push(Item { key: format!("report:{}", r.path), kind: ItemKind::Report, at: Some(r.at), title: r.title.clone(), lines, pictures, link: None, tone: Tone::Plain });
+        }
         for c in &f.critiques {
             let said = c.reviewer.as_ref().map(checks::reviewed);
             let lines = said.into_iter().chain(c.text.lines().map(str::trim).filter(|l| !l.starts_with('#')).map(|l| l.trim_start_matches(['*', '-', ' ']).trim()).filter(|l| !l.is_empty()).map(str::to_owned)).collect();
@@ -789,6 +1006,246 @@ pub fn items(happenings: &[Happening], files: Option<&Studio>) -> Vec<Item> {
     }
     out.sort_by_key(|i| std::cmp::Reverse(i.at.unwrap_or(0)));
     out
+}
+
+/// Only what this ticket's work made: a shared design folder (the squad's
+/// own, which every ticket works in) keeps every ticket's checks, critiques
+/// and references — those from before the work began are another's.
+pub fn scoped(files: &Studio, since: Option<u64>) -> Studio {
+    let mut out = files.clone();
+    if let Some(since) = since.map(|s| s.saturating_sub(60)) {
+        out.checks.retain(|c| c.at >= since);
+        out.critiques.retain(|c| c.at >= since);
+        out.references.retain(|r| r.modified >= since);
+        out.pictures.retain(|p| p.from != PictureFrom::Design || p.modified >= since);
+        out.reports.retain(|r| r.at >= since);
+    }
+    out
+}
+
+/// The pictures of the work, newest first: each check's at the usual width,
+/// and every other picture found — at most `most`.
+pub fn recent(files: &Studio, most: usize) -> Vec<StudioPicture> {
+    let mut out: Vec<StudioPicture> = files
+        .checks
+        .iter()
+        .filter_map(|c| c.pictures.iter().find(|p| p.width == Some(USUAL_WIDTH)).or_else(|| c.pictures.last()))
+        .cloned()
+        .chain(files.pictures.iter().cloned())
+        .collect();
+    out.sort_by_key(|p| std::cmp::Reverse(p.modified));
+    out.dedup_by(|a, b| a.path == b.path);
+    out.truncate(most);
+    out
+}
+
+/// Where a picture came from, in a word.
+pub fn from_words(from: PictureFrom) -> &'static str {
+    match from {
+        PictureFrom::Design => t!("studio.from_design"),
+        PictureFrom::Recording => t!("studio.from_recording"),
+        PictureFrom::Output => t!("studio.from_output"),
+        PictureFrom::Opened => t!("studio.from_opened"),
+        PictureFrom::Made => t!("studio.from_made"),
+        PictureFrom::HandIn => t!("studio.from_hand_in"),
+    }
+}
+
+/// Markdown's emphasis and code marks taken off a line.
+fn plain(line: &str) -> String {
+    line.replace("**", "").replace('`', "").trim().to_owned()
+}
+
+/// A report's first paragraph after its title: where it stands, said up front.
+pub fn report_lead(text: &str) -> Option<String> {
+    let mut lines = text.lines().map(str::trim).skip_while(|l| l.is_empty() || l.starts_with("# "));
+    let lead: Vec<&str> = lines.by_ref().take_while(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    (!lead.is_empty() && !lead[0].starts_with(['-', '*', '|'])).then(|| plain(&lead.join(" ")))
+}
+
+/// What a report found, a line each: its numbered items — the findings a
+/// report counts — else its bullets; never inside code or a table.
+pub fn report_items(text: &str) -> Vec<String> {
+    let mut numbered = Vec::new();
+    let mut bullets = Vec::new();
+    let mut code = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with("```") {
+            code = !code;
+            continue;
+        }
+        if code || l.starts_with('|') || line.starts_with("    ") || line.starts_with('\t') {
+            continue;
+        }
+        let digits = l.chars().take_while(char::is_ascii_digit).count();
+        if digits > 0 && l[digits..].starts_with(". ") {
+            numbered.push(plain(&l[digits + 2..]));
+        } else if let Some(rest) = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")) {
+            bullets.push(plain(rest));
+        }
+    }
+    let mut out = if numbered.is_empty() { bullets } else { numbered };
+    out.retain(|l| !l.is_empty());
+    out.truncate(12);
+    out
+}
+
+/// Every finding its reports hold, the newest report's first.
+pub fn findings(files: &Studio) -> Vec<String> {
+    files.reports.iter().flat_map(|r| report_items(&r.text)).collect()
+}
+
+// ── what it is doing now, from its conversation ──
+
+/// What a line of the feed is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedKind {
+    /// A step it took.
+    Step,
+    /// Something it said.
+    Said,
+    /// Something the person said.
+    You,
+    /// A line from equipe: stopped, started again.
+    Note,
+}
+
+/// One line of what it is doing, in plain words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedLine {
+    pub at: Option<u64>,
+    pub words: String,
+    pub kind: FeedKind,
+    /// Still running: no answer yet.
+    pub running: bool,
+    pub tone: Tone,
+}
+
+/// Steps that say nothing to the person.
+const QUIET_TOOLS: [&str; 6] = ["ToolSearch", "TodoWrite", "ListAgents", "mcp__equipe__estimate", "mcp__equipe__board", "TaskOutput"];
+
+/// A file's name, from a path.
+fn file_name(path: &str) -> &str {
+    path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
+}
+
+/// A command as the person reads it: past the `cd somewhere;` it starts
+/// with, cut short.
+pub fn command_words(command: &str) -> String {
+    let mut rest = command.lines().next().unwrap_or("").trim();
+    while let Some(after) = rest.strip_prefix("cd ") {
+        match after.find([';', '&']) {
+            Some(at) => rest = after[at..].trim_start_matches([';', '&', ' ']),
+            None => break,
+        }
+    }
+    let mut out: String = rest.chars().take(64).collect();
+    if rest.chars().count() > 64 {
+        out.push('…');
+    }
+    out
+}
+
+/// What a phone step did, in a word.
+fn phone_words(action: &str) -> String {
+    let key = format!("studio.phone_{action}");
+    let word = crate::i18n::catalog().get(&key);
+    if word == key { action.to_owned() } else { word.to_owned() }
+}
+
+/// A step, in plain words: what the check or the look printed, what a known
+/// tool does, else the member's own words for it (its label), else the tool.
+pub fn step_words(tool: &str, target: &str, label: Option<&str>, outcome: Option<&equipe_core::protocol::ToolOutcome>, background: bool) -> (String, Tone) {
+    if let Some(ran) = outcome.and_then(|o| checks::ran(tool, target, &o.output)) {
+        return match ran {
+            Ran::Check(s) => (t!("studio.do_check", screen = s.screen.clone().unwrap_or_default(), result = checks::floor(&s)), if s.passes() { Tone::Good } else { Tone::Bad }),
+            Ran::Look { screen, verdict } => (t!("studio.do_look", screen = screen, result = checks::verdict(&verdict)), if verdict.pass { Tone::Good } else { Tone::Bad }),
+        };
+    }
+    let ok = outcome.is_none_or(|o| o.ok);
+    let plain = Tone::Plain;
+    if let Some(name) = skill_of(tool, target) {
+        return (t!("studio.do_skill", name = skill_words(&name)), plain);
+    }
+    let words = match tool {
+        "Read" if equipe_core::visuals::is_image_name(target) => t!("studio.do_looked_at", name = file_name(target)),
+        "Read" => t!("studio.do_read", name = file_name(target)),
+        "Write" => t!("studio.do_wrote", name = file_name(target)),
+        "Edit" | "MultiEdit" => t!("studio.do_edited", name = file_name(target)),
+        "WebSearch" => t!("studio.do_search", what = target),
+        "WebFetch" => t!("studio.do_fetch", what = target),
+        "Agent" | "Task" => t!("studio.do_helper", what = label.unwrap_or(target)),
+        "Monitor" => t!("studio.do_wait", what = command_words(label.unwrap_or(target))),
+        "mcp__equipe__ask_decision" => t!("studio.do_asked", what = target),
+        "mcp__equipe__submit_for_review" if ok => t!("studio.do_handed").to_owned(),
+        "mcp__equipe__submit_for_review" => t!("studio.do_refused", why = outcome.map(|o| refusal(&o.output).into_iter().next().unwrap_or_default()).unwrap_or_default()),
+        "mcp__equipe__design_qa" => t!("studio.do_verdict").to_owned(),
+        "Bash" if target.contains("design direction propose") => t!("studio.do_propose", name = direction_name(target, "propose").unwrap_or_default()),
+        "Bash" if target.contains("design direction choose") => t!("studio.do_choose", name = direction_name(target, "choose").unwrap_or_default()),
+        "Bash" if target.contains("design critique") => t!("studio.do_critique").to_owned(),
+        "Bash" if is_shot(target) => t!("studio.do_shot").to_owned(),
+        "Bash" if ["git diff", "git show"].iter().any(|g| target.contains(g)) => t!("studio.do_diff").to_owned(),
+        _ if tool.starts_with("mcp__phone__") => t!("studio.do_phone", what = [phone_words(&tool["mcp__phone__".len()..]), target.to_owned()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" · ")),
+        _ if tool.starts_with("mcp__browser") => t!("studio.do_browse", what = target),
+        // The member's own words for the step, when it gave them.
+        _ if label.is_some_and(|l| !l.trim().is_empty()) => label.unwrap_or_default().trim().to_owned(),
+        "Bash" if background => t!("studio.do_started", command = command_words(target)),
+        "Bash" => t!("studio.do_ran", command = command_words(target)),
+        _ => t!("studio.do_tool", name = tool.rsplit("__").next().unwrap_or(tool)),
+    };
+    (words, if ok { plain } else { Tone::Bad })
+}
+
+/// What it said, in a line: its first sentence or line, cut short.
+fn said_words(text: &str) -> String {
+    let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let mut out: String = first.chars().take(160).collect();
+    if first.chars().count() > 160 {
+        out.push('…');
+    }
+    out
+}
+
+/// The last `most` lines of what it did and said on the ticket, newest
+/// last: its steps in plain words, what it said, what the person said —
+/// never the engine's own notices (a background task ending).
+pub fn feed(work: &[(&Entry, Option<u64>)], most: usize) -> Vec<FeedLine> {
+    let mut out: Vec<FeedLine> = Vec::new();
+    let last_tool = work.iter().rposition(|(e, _)| matches!(e, Entry::Tool { .. }));
+    for (ix, (entry, at)) in work.iter().enumerate() {
+        let line = match entry {
+            Entry::Tool { tool, target, outcome, label, background } if !QUIET_TOOLS.contains(&tool.as_str()) => {
+                let (words, tone) = step_words(tool, target.as_deref().unwrap_or(""), label.as_deref(), outcome.as_deref(), *background);
+                let running = outcome.is_none() && Some(ix) == last_tool && !*background;
+                FeedLine { at: *at, words, kind: FeedKind::Step, running, tone }
+            }
+            Entry::Reply { text } if !text.trim().is_empty() => FeedLine { at: *at, words: said_words(text), kind: FeedKind::Said, running: false, tone: Tone::Plain },
+            Entry::User { text, .. } if !text.trim_start().starts_with('<') => FeedLine { at: *at, words: t!("studio.do_you", words = said_words(&crate::design_talk::split(text).1)), kind: FeedKind::You, running: false, tone: Tone::Plain },
+            Entry::Note { text, .. } if !text.starts_with("── T-") && !text.trim().is_empty() => FeedLine { at: *at, words: equipe_core::i18n::note(crate::i18n::lang(), text).into_owned(), kind: FeedKind::Note, running: false, tone: Tone::Plain },
+            _ => continue,
+        };
+        out.push(line);
+    }
+    if out.len() > most {
+        out.drain(..out.len() - most);
+    }
+    out
+}
+
+/// What it said along the way, newest last: the notes a review writes as it
+/// goes, before its report.
+pub fn said_so_far(work: &[(&Entry, Option<u64>)], most: usize) -> Vec<(Option<u64>, String)> {
+    let mut out: Vec<(Option<u64>, String)> = work.iter().filter_map(|(e, at)| if let Entry::Reply { text } = e { Some((*at, said_words(text))) } else { None }).filter(|(_, w)| !w.is_empty()).collect();
+    if out.len() > most {
+        out.drain(..out.len() - most);
+    }
+    out
+}
+
+/// When the work on the ticket began, and when it last moved.
+pub fn span_of(work: &[(&Entry, Option<u64>)]) -> (Option<u64>, Option<u64>) {
+    (work.iter().filter_map(|(_, at)| *at).min(), work.iter().filter_map(|(_, at)| *at).max())
 }
 
 /// The skills' names in the person's words, as far as the studio knows them.
@@ -883,7 +1340,7 @@ mod tests {
     fn watch<'a>(ticket: &'a Ticket, entries: &'a [Entry], files: Option<&'a Studio>, working: bool, waiting: Option<WaitFor>) -> Watch<'a> {
         let t = Transcript::from_entries(entries.to_vec());
         let happenings = happenings(&work_of(&t, ticket.id));
-        Watch { ticket, happenings, files, working, waiting }
+        Watch { ticket, happenings, files, working, waiting, flow: Flow::Design }
     }
 
     #[test]
@@ -918,9 +1375,18 @@ mod tests {
                     Did::Browsed => "browsed",
                     Did::HandIn { ok: true, .. } => "handed",
                     Did::HandIn { .. } => "refused",
+                    Did::Opened(_) => "opened",
+                    Did::Shot => "shot",
+                    Did::Phone(_) => "phone",
+                    Did::Read(_) => "read",
+                    Did::Diff => "diff",
+                    Did::Helper => "helper",
+                    Did::Report(_) => "report",
+                    Did::Verdict => "verdict",
+                    Did::Asked(_) => "asked",
                 })
                 .collect();
-            assert_eq!(did, ["skill", "brief", "looked", "looked", "proposed", "proposed", "chose", "built", "fail", "built", "pass", "refused", "look-fix", "built", "pass", "look-pass"], "{engine}");
+            assert_eq!(did, ["skill", "brief", "looked", "looked", "proposed", "proposed", "asked", "chose", "built", "fail", "built", "pass", "refused", "look-fix", "built", "pass", "look-pass"], "{engine}");
         }
         assert_eq!(skill_of("Skill", "equipe:design-process").as_deref(), Some("design-process"));
         assert_eq!(skill_of("Bash", "cat /h/skills/ui-floor/SKILL.md | head").as_deref(), Some("ui-floor"));
@@ -963,48 +1429,150 @@ mod tests {
     }
 
     #[test]
-    fn the_status_says_the_most_pressing_thing_first() {
+    fn the_status_says_where_it_is_and_what_holds_it_up() {
         let t = ticket(TicketStatus::InProgress);
         let all = claude_work();
         let upto = |n: usize| all[..n].to_vec();
-        // The first check fails: what failed, in words, and what it saw.
+        // The first check fails: working, and what failed, in words, and what it saw.
         let failing = upto(11);
         let w = watch(&t, &failing, None, true, None);
-        assert_eq!(status(&w), Status::Failing { rule: "대비".into(), evidence: "the CTA is 2.47:1".into() });
-        assert_eq!(status_words(&status(&w), 0), "검사 실패: 대비 — the CTA is 2.47:1");
+        let s = status(&w, Some(9_280), Some(9_900));
+        assert_eq!(s.presence, Presence::Working { since: Some(9_280) });
+        assert_eq!(s.issue, Some(Issue::Failing { rule: "대비".into(), evidence: "the CTA is 2.47:1".into() }));
+        assert_eq!(status_words(&s, 10_000), "작업 중 · 12분 · 검사 실패: 대비 — the CTA is 2.47:1");
         // Refused at the hand-in: why, until it checks again.
         let refused = upto(14);
         let w = watch(&t, &refused, None, true, None);
-        assert_eq!(status(&w), Status::Refused("onboarding/welcome has had no second look: `equipe design second-look onboarding/welcome`.".into()));
+        assert_eq!(status(&w, None, None).issue, Some(Issue::Refused("onboarding/welcome has had no second look: `equipe design second-look onboarding/welcome`.".into())));
         // The second look asked for a fix.
         let fixing = upto(15);
-        assert_eq!(status(&watch(&t, &fixing, None, true, None)), Status::Fixing(1));
-        // All passed, still at it: working, since its first step.
-        let at_work = Watch { happenings: vec![Happening { at: Some(9_280), did: Did::Brief }], ..watch(&t, &all, None, true, None) };
-        assert_eq!(status_words(&status(&at_work), 10_000), "작업 중 · 12분");
-        // Waiting on the person to pick.
-        let w = watch(&t, &all[..7], None, false, Some(WaitFor::Pick));
-        assert_eq!(status(&w), Status::Waiting(WaitFor::Pick));
+        assert_eq!(status(&watch(&t, &fixing, None, true, None), None, None).issue, Some(Issue::Fixing(1)));
+        // Not at it: idle since its last step, never "working".
+        let s = status(&watch(&t, &all, None, false, None), Some(1_000), Some(9_820));
+        assert_eq!(s.presence, Presence::Idle { last: Some(9_820) });
+        assert_eq!(presence_words(&s.presence, 10_000), "쉬는 중 · 마지막 단계 3분 전");
+        // Waiting on the person beats working, as the sidebar says it.
+        let w = watch(&t, &all[..7], None, true, Some(WaitFor::Pick));
+        assert_eq!(status(&w, None, None).presence, Presence::Waiting(WaitFor::Pick));
         assert_eq!(steps(&w)[2].mark, Mark::Waiting);
-        // Handed in beats everything.
+        // Handed in: no issue left to say.
         let review = ticket(TicketStatus::Review);
-        assert!(matches!(status(&watch(&review, &failing, None, false, None)), Status::HandedIn { .. }));
+        let s = status(&watch(&review, &failing, None, false, None), None, None);
+        assert!(matches!(s.presence, Presence::HandedIn { .. }) && s.issue.is_none());
     }
 
     #[test]
-    fn what_it_waits_on_is_a_pick_while_directions_are_out_and_none_is_picked() {
+    fn it_waits_for_the_person_exactly_when_the_sidebar_says_so() {
         let t = ticket(TicketStatus::InProgress);
         let proposed = vec![Happening { at: None, did: Did::Proposed("A".into()) }];
-        assert_eq!(waiting_for(&t, Some("Which one?"), None, &proposed), Some(WaitFor::Pick));
-        assert_eq!(waiting_for(&t, Some("Which one?"), None, &[]), Some(WaitFor::Answer("Which one?".into())));
-        let picked = [proposed.clone(), vec![Happening { at: None, did: Did::Chose("A".into()) }]].concat();
-        assert_eq!(waiting_for(&t, Some("The price?"), None, &picked), Some(WaitFor::Answer("The price?".into())));
-        assert_eq!(waiting_for(&t, None, None, &picked), None);
-        assert_eq!(waiting_for(&ticket(TicketStatus::Waiting), None, None, &proposed), Some(WaitFor::Pick));
+        let wf = |permission: Option<&str>, question: Option<(&str, Option<TicketId>)>, waiting: Option<TicketId>, hs: &[Happening]| waiting_for(205, &t, permission.map(str::to_owned), question.map(|(q, on)| (q.to_owned(), on)), waiting, None, hs);
+        // The order Model::status weighs it: an OK asked, a ticket waiting, a question.
+        assert_eq!(wf(Some("Bash · xcodebuild test"), Some(("Which one?", Some(205))), None, &[]), Some(WaitFor::Permission("Bash · xcodebuild test".into())));
+        assert_eq!(wf(None, Some(("Which one?", Some(205))), None, &proposed), Some(WaitFor::Pick));
+        assert_eq!(wf(None, Some(("Which one?", Some(205))), None, &[]), Some(WaitFor::Answer { what: "Which one?".into(), ticket: None }));
+        // On another ticket: said which.
+        assert_eq!(wf(None, Some(("The price?", Some(499))), None, &[]), Some(WaitFor::Answer { what: "The price?".into(), ticket: Some(499) }));
+        assert_eq!(wf(None, None, Some(499), &[]), Some(WaitFor::Ticket(499)));
+        assert!(!WaitFor::Ticket(499).is_here() && WaitFor::Pick.is_here(), "a wait on another ticket doesn't hold this one's steps");
+        assert_eq!(wf(None, None, None, &proposed), None);
+        assert_eq!(waiting_for(205, &ticket(TicketStatus::Waiting), None, None, None, None, &proposed), Some(WaitFor::Pick));
+        assert_eq!(presence_words(&Presence::Waiting(WaitFor::Answer { what: "The price?".into(), ticket: Some(499) }), 0), "T-499에서 기다리는 중: The price?");
+        assert_eq!(presence_words(&Presence::Waiting(WaitFor::Permission("Bash · xcodebuild test".into())), 0), "허락을 기다리는 중: Bash · xcodebuild test");
+    }
+
+    /// A design QA ticket's conversation, in the shape the journal keeps it
+    /// (a review of another ticket's screens on a phone simulator), paths made up.
+    fn qa_work() -> Vec<(Entry, Option<u64>)> {
+        let line = |json: &str| serde_json::from_str::<Entry>(json).unwrap();
+        [
+            r#"{"kind":"note","text":"── T-502 · Design QA: T-498 the composer's glyphs at AX5 — on branch equipe/designer-t502-1"}"#,
+            r#"{"kind":"tool","tool":"Skill","target":"equipe:design-qa"}"#,
+            r#"{"kind":"tool","tool":"Bash","target":"cd /w/t498; git diff main...HEAD --stat"}"#,
+            r#"{"kind":"tool","tool":"mcp__equipe__estimate","target":null}"#,
+            r#"{"kind":"tool","tool":"Bash","target":"cd /w/t498/ios/Features; sed -n 780,880p ChatScreen.swift"}"#,
+            r#"{"kind":"reply","text":"Building a simulator copy while I read the Android composer."}"#,
+            r#"{"kind":"tool","tool":"Bash","target":"/tmp/t502/run.sh > /tmp/t502/run.log 2>&1","background":true}"#,
+            r#"{"kind":"tool","tool":"Read","target":"/w/t498/design/flows/chat/large.dark.360.png"}"#,
+            r#"{"kind":"user","text":"<task-notification>\n<summary>Monitor event</summary>\n</task-notification>"}"#,
+            r#"{"kind":"tool","tool":"Bash","target":"xcrun simctl io booted screenshot /tmp/t502/ax5.png"}"#,
+            r#"{"kind":"tool","tool":"Read","target":"/tmp/t502/ios-ax5-17e.png"}"#,
+            r#"{"kind":"reply","text":"At AX5 the dictation cancel glyph spills out of its circle — the fix missed that button."}"#,
+            r#"{"kind":"tool","tool":"Agent","target":"Fresh-eyes look at composer glyphs"}"#,
+            r#"{"kind":"note","text":"Stopped."}"#,
+            r#"{"kind":"tool","tool":"Write","target":"/h/outputs/T-502 Design QA/report.md"}"#,
+            r#"{"kind":"tool","tool":"Bash","target":"tail -c 300 /tmp/t502/build-touch.log","label":"Peek build progress"}"#,
+        ]
+        .iter()
+        .enumerate()
+        .map(|(n, j)| (line(j), Some(1_000 + 60 * n as u64)))
+        .collect()
+    }
+
+    #[test]
+    fn a_design_qa_ticket_shows_its_own_steps_from_its_real_shape() {
+        let mut t = ticket(TicketStatus::InProgress);
+        t.id = 502;
+        let lines = qa_work();
+        let work: Vec<(&Entry, Option<u64>)> = lines.iter().map(|(e, at)| (e, *at)).collect();
+        let hs = happenings(&work);
+        assert_eq!(flow_of(&t, false, &hs), Flow::Qa, "the design QA guide opened");
+        assert_eq!(flow_of(&t, true, &[]), Flow::Qa, "another ticket waits on it for design QA");
+        assert_eq!(flow_of(&t, false, &[]), Flow::Design);
+        let report = "# T-502 Design QA — the composer\n\nBranch `b` (80a7af9). Verdict: **fix and again**.\n\n## Shot\n- iOS on two simulators\n\n## Blocking\n1. **The dictation cancel X still spills at AX5.** `DictationViews.swift` misses `.composerGlyph()`.\n2. The + touch area reads 36pt.\n\n| glyph | main |\n|---|---|\n| + | 43pt |\n";
+        let files = Studio {
+            ticket: 502,
+            pictures: vec![StudioPicture { path: "/tmp/t502/ios-ax5-17e.png".into(), modified: 1_600, width: None, from: PictureFrom::Opened }, StudioPicture { path: "/h/outputs/T-502 Design QA/1-ax5.png".into(), modified: 1_900, width: None, from: PictureFrom::Output }],
+            reports: vec![equipe_core::protocol::studio::StudioReport { path: "/h/outputs/T-502 Design QA/report.md".into(), at: 1_850, title: "T-502 Design QA — the composer".into(), text: report.into() }],
+            ..Studio::default()
+        };
+        let w = Watch { ticket: &t, happenings: hs, files: Some(&files), working: true, waiting: None, flow: Flow::Qa };
+        let rail = steps(&w);
+        assert_eq!(rail.iter().map(|s| s.kind).collect::<Vec<_>>(), [StepKind::Brief, StepKind::Change, StepKind::Shots, StepKind::Measure, StepKind::Findings, StepKind::Verdict]);
+        assert_eq!(rail.iter().map(|s| s.mark).collect::<Vec<_>>(), [Mark::Done, Mark::Done, Mark::Done, Mark::Done, Mark::Now, Mark::Ahead], "nothing 'not needed' on a review");
+        assert_eq!(rail[4].count.as_deref(), Some("찾은 것 2개"));
+        assert_eq!(findings(&files), ["The dictation cancel X still spills at AX5. DictationViews.swift misses .composerGlyph().", "The + touch area reads 36pt."], "numbered items, marks taken off, never the table");
+        assert_eq!(report_lead(report).as_deref(), Some("Branch b (80a7af9). Verdict: fix and again."));
+        // What it is doing, in plain words, the engine's notices and quiet steps left out.
+        let f = feed(&work, 10);
+        let words: Vec<&str> = f.iter().map(|l| l.words.as_str()).collect();
+        assert_eq!(words.last(), Some(&"Peek build progress"), "its own words for a step");
+        assert!(words.contains(&"스크린샷을 찍음"));
+        assert!(words.contains(&"ios-ax5-17e.png 봄"));
+        assert!(words.contains(&"도우미에게 맡김: Fresh-eyes look at composer glyphs"));
+        assert!(words.contains(&"At AX5 the dictation cancel glyph spills out of its circle — the fix missed that button."));
+        assert!(!words.iter().any(|w| w.contains("estimate") || w.contains("task-notification")));
+        assert_eq!(f.len(), 10);
+        let all = feed(&work, 99);
+        assert!(all.iter().any(|l| l.words == "실행: sed -n 780,880p ChatScreen.swift"), "past the cd it starts with: {:?}", all.iter().map(|l| &l.words).collect::<Vec<_>>());
+        assert!(all.iter().any(|l| l.words == "백그라운드에서 시작: /tmp/t502/run.sh > /tmp/t502/run.log 2>&1"));
+        assert!(all.iter().any(|l| l.words == "안내 열어 봄: 디자인 QA"));
+        assert!(all.iter().any(|l| l.kind == FeedKind::Note), "a stop shows");
+        assert_eq!(span_of(&work), (Some(1_000), Some(1_900)));
+        assert_eq!(said_so_far(&work, 1).len(), 1);
+    }
+
+    #[test]
+    fn the_latest_step_still_running_says_so() {
+        let lines = [Entry::Note { undo: None, text: "── T-1 · A — on branch b".into() }, Entry::Tool { tool: "mcp__phone__look".into(), target: Some("Composer".into()), outcome: None, label: None, background: false }];
+        let work: Vec<(&Entry, Option<u64>)> = lines.iter().map(|e| (e, Some(5))).collect();
+        let f = feed(&work, 10);
+        assert_eq!(f.len(), 1);
+        assert!(f[0].running);
+        assert_eq!(f[0].words, "폰: 화면을 봄 · Composer");
+    }
+
+    #[test]
+    fn a_shared_design_folder_shows_only_what_this_work_made() {
+        let mut f = files();
+        f.checks[0].at = 50;
+        let s = scoped(&f, Some(400));
+        assert!(s.checks.is_empty(), "a check from before the work began is another ticket's");
+        assert!(s.references.is_empty());
+        assert_eq!(scoped(&f, None).checks.len(), 1, "no start known: all of it");
     }
 
     fn pic(path: &str, width: Option<u32>, modified: u64) -> StudioPicture {
-        StudioPicture { path: path.into(), modified, width }
+        StudioPicture { path: path.into(), modified, width, from: PictureFrom::Design }
     }
 
     fn files() -> Studio {
@@ -1034,25 +1602,25 @@ mod tests {
     #[test]
     fn the_centre_shows_the_newest_picture_at_the_usual_width_or_the_one_picked() {
         let f = files();
-        let c = centre(&f, None).unwrap();
+        let c = centre_of(&f, None, None).unwrap();
         assert_eq!((c.screen.as_deref(), c.width), (Some("onboarding/welcome"), Some(1280)));
         assert_eq!(c.widths.len(), 7);
-        assert_eq!(centre(&f, Some(360)).unwrap().shown, "/w/design/checks/onboarding/welcome/360.png");
+        assert_eq!(centre_of(&f, Some(360), None).unwrap().shown, "/w/design/checks/onboarding/welcome/360.png");
         // A mockup made after the check: that is what it is making now.
         let mut newer = f.clone();
         newer.pictures[0].modified = 900;
-        assert_eq!(centre(&newer, None).unwrap().shown, "/w/design/mockups/welcome-v1.png");
-        assert_eq!(centre(&newer, Some(390)).unwrap().width, Some(390), "a width picked keeps the check's");
+        assert_eq!(centre_of(&newer, None, None).unwrap().shown, "/w/design/mockups/welcome-v1.png");
+        assert_eq!(centre_of(&newer, Some(390), None).unwrap().width, Some(390), "a width picked keeps the check's");
         // Nothing checked or made yet: the direction picked.
         let only = Studio { checks: vec![], pictures: vec![], ..f.clone() };
-        let c = centre(&only, None).unwrap();
+        let c = centre_of(&only, None, None).unwrap();
         assert_eq!((c.shown.as_str(), c.direction.as_deref()), ("/w/design/directions/calm-ledger/home.png", Some("Calm ledger")));
         assert!(c.choices.is_empty());
         // None picked yet: both, side by side, to pick from.
         let mut open = only.clone();
         open.directions[1].chosen = false;
-        assert_eq!(centre(&open, None).unwrap().choices.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["Poster", "Calm ledger"]);
-        assert_eq!(centre(&Studio::default(), None), None);
+        assert_eq!(centre_of(&open, None, None).unwrap().choices.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["Poster", "Calm ledger"]);
+        assert_eq!(centre_of(&Studio::default(), None, None), None);
     }
 
     #[test]
@@ -1125,8 +1693,9 @@ mod tests {
     fn its_words_name_each_skill_and_say_when_it_waits() {
         assert_eq!(skill_words("design-process"), "디자인 작업 순서");
         assert_eq!(skill_words("not-a-skill"), "not-a-skill");
-        assert_eq!(status_words(&Status::Waiting(WaitFor::Pick), 0), "기다리는 중: 방향을 골라 주세요");
-        assert_eq!(status_tone(&Status::Fixing(2)), Tone::Bad);
+        assert_eq!(presence_words(&Presence::Waiting(WaitFor::Pick), 0), "기다리는 중: 방향을 골라 주세요");
+        assert_eq!(status_tone(&Presence::Waiting(WaitFor::Pick)), Tone::Wait);
+        assert_eq!(issue_words(&Issue::Fixing(2)), "새 시선이 고칠 점 2개를 요청했어요");
         assert!(browsing(&[Happening { at: None, did: Did::Browsed }], true));
         assert!(!browsing(&[Happening { at: None, did: Did::Browsed }], false));
     }

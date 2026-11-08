@@ -181,6 +181,18 @@ fn fold_memory(from: &Path, to: &Path, who: &str) -> std::io::Result<usize> {
     Ok(moved)
 }
 
+/// The most lines of a ticket's work [`Journal::ticket_lines`] reads.
+pub const TICKET_WORK_MOST: usize = 4000;
+
+/// A ticket's work as its conversation kept it ([`Journal::ticket_lines`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TicketWorkLines {
+    pub session: SessionId,
+    /// Where the conversation works, as last recorded.
+    pub cwd: Option<PathBuf>,
+    pub lines: Vec<(Entry, Option<u64>)>,
+}
+
 /// Where an editing member's ticket work is checked out, so it can be resumed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TicketWork {
@@ -720,6 +732,22 @@ impl Journal {
 
     pub fn set_engines_record(&self, json: &str) -> Result<()> {
         self.set_meta("engines", json)
+    }
+
+    /// The hand-over packet session `id` opened with, after a move to the
+    /// other engine (`runtime/engines.rs`), as it was sent.
+    pub fn hand_over_packet(&self, id: SessionId) -> Option<String> {
+        self.meta(&format!("hand_over:{id}"))
+    }
+
+    pub fn set_hand_over_packet(&self, id: SessionId, packet: &str) -> Result<()> {
+        self.set_meta(&format!("hand_over:{id}"), packet)
+    }
+
+    /// A packet no move on record names any more.
+    pub fn forget_hand_over_packet(&self, id: SessionId) -> Result<()> {
+        self.conn.execute("DELETE FROM meta WHERE key = ?1", params![format!("hand_over:{id}")])?;
+        Ok(())
     }
 
     /// The members equipe brought in to help, which it lets go when idle.
@@ -1448,6 +1476,41 @@ impl Journal {
         Ok(rows
             .filter_map(|row| row.ok().and_then(|(body, at)| Some((serde_json::from_str::<Entry>(&body).ok()?, u64::try_from(at).ok().filter(|&at| at > 0)))))
             .unzip())
+    }
+
+    /// The latest work on `ticket` in whichever conversation did it: the
+    /// session, where it works, and its lines from the ticket's header
+    /// (`── T-<n> · …`) to the next ticket's or a thread's start, each with
+    /// when it was kept — at most [`TICKET_WORK_MOST`] lines. `None`: no
+    /// conversation has worked on it.
+    pub fn ticket_lines(&self, ticket: TicketId) -> Result<Option<TicketWorkLines>> {
+        let header = format!("── T-{ticket} ");
+        let found: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT session, MAX(seq) FROM entries WHERE instr(body, ?1) > 0 AND instr(body, '\"kind\":\"note\"') > 0 GROUP BY session ORDER BY MAX(at) DESC LIMIT 1",
+                [&header],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((session, from)) = found else { return Ok(None) };
+        let cwd: Option<String> = self.conn.query_row("SELECT cwd FROM sessions WHERE id = ?1", [session], |r| r.get(0)).optional()?;
+        let mut stmt = self.conn.prepare("SELECT body, at FROM entries WHERE session = ?1 AND seq >= ?2 ORDER BY seq ASC LIMIT ?3")?;
+        let rows = stmt.query_map(params![session, from, TICKET_WORK_MOST as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut lines = Vec::new();
+        for (body, at) in rows.filter_map(|row| row.ok()) {
+            let Ok(entry) = serde_json::from_str::<Entry>(&body) else { continue };
+            let ends = match &entry {
+                Entry::Note { text, .. } => text.starts_with("── T-") && !text.starts_with(&header),
+                Entry::Thread { .. } => true,
+                _ => false,
+            };
+            if ends && !lines.is_empty() {
+                break;
+            }
+            lines.push((entry, u64::try_from(at).ok().filter(|&at| at > 0)));
+        }
+        Ok(Some(TicketWorkLines { session: session as SessionId, cwd: cwd.map(PathBuf::from), lines }))
     }
 
     /// The last `limit` lines of a session's conversation, oldest first.

@@ -145,7 +145,7 @@ async fn handed_in() -> (Handle, UnboundedReceiver<Event>, PathBuf) {
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Pricing", "body": "-", "owner": "frontend", "depends_on": [1] })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done." })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     (handle, events, repo)
@@ -224,7 +224,7 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     // The person keeps acceptance for themselves: the PM only puts it on a card.
     handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
     until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
-    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Pricing done." })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Pricing done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review)).await;
     let kept = tool(&handle, "pm", "accept_work", json!({ "tickets": [2], "checked": "fine" })).await;

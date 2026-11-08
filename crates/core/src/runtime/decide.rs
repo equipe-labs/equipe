@@ -13,11 +13,18 @@ use crate::visuals;
 
 impl Runtime {
     /// `squad`'s question sets waiting for the person, oldest first — read
-    /// from its journal the first time.
+    /// from its journal the first time, a decision asked more than once
+    /// there (before asking again replaced the card) kept once, the latest.
     pub(super) fn question_sets(&mut self, squad: &str) -> &mut Vec<QuestionSet> {
         if !self.questions.contains_key(squad) {
             let kept = self.journal(squad).map(Journal::questions).unwrap_or_default();
-            self.questions.insert(squad.to_owned(), kept);
+            let count = kept.len();
+            let once = decide::collapse(kept);
+            let collapsed = once.len() != count;
+            self.questions.insert(squad.to_owned(), once);
+            if collapsed {
+                self.save_questions(squad);
+            }
         }
         self.questions.entry(squad.to_owned()).or_default()
     }
@@ -66,8 +73,14 @@ impl Runtime {
         let retro = self.retro_asked(id, now_secs(), args, questions.len());
         let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs(), review, retro };
         let (count, first) = (set.questions.len(), set.questions[0].question.clone());
-        self.question_sets(squad).push(set.clone());
+        // The same decision asked again replaces its card — every screen's —
+        // rather than adding a second one.
+        let added = decide::add(self.question_sets(squad), set);
+        let set = self.question_sets(squad).last().cloned().expect("just added");
         self.save_questions(squad);
+        if let decide::Added::Replaced { old } = added {
+            self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id: old, answers: None });
+        }
         if let (Some(ticket), Some(journal)) = (ticket, self.journal(squad)) {
             let asked: Vec<&str> = set.questions.iter().map(|q| q.question.as_str()).collect();
             let _ = journal.ticket_event(ticket, member, "asked", &asked.join("\n"));

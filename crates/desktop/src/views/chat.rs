@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use equipe_core::protocol::SessionId;
+use equipe_core::protocol::{Engine, SessionId};
 use gpui_kit::base::SelectableText;
 use gpui_kit::base::text::{RangeHighlight, TextView, TextViewState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -83,7 +83,10 @@ pub struct Chat {
     /// The chapters' list open over the rail (`views/chapters.rs`).
     pub rail_open: bool,
     /// Which of the cards over the composer is in front, when several wait.
-    pub dock_at: usize,
+    pub dock_at: std::cell::Cell<usize>,
+    /// A member's question just asked here: its card comes to the front of
+    /// the others, unless a more pressing one is there.
+    pub dock_bring: std::cell::Cell<bool>,
     pub blocks: Rc<Vec<Block>>,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
     /// the slice of it.
@@ -192,7 +195,8 @@ impl Chat {
             at: Rc::default(),
             compact_focus: (cx.focus_handle().tab_stop(true), cx.focus_handle().tab_stop(true)),
             follow: true,
-            dock_at: 0,
+            dock_at: std::cell::Cell::new(0),
+            dock_bring: std::cell::Cell::new(false),
             faded_in: None,
             seen_revision: 0,
             expanded: false,
@@ -578,7 +582,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 /// conversation stays in sight: the one in front, and "1 / 3 ‹ ›" to go
 /// through the others. Answered, the next comes to the front.
 fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
-    let cards: Vec<AnyElement> = [
+    // The member's questions are the fourth kind: a new one comes forward over those after it.
+    const DECIDE: usize = 3;
+    let cards: Vec<(usize, AnyElement)> = [
         // What the next message answers comes first.
         super::words::docked(shell, cx),
         super::secrets::docked(shell, cx),
@@ -590,13 +596,21 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         super::switching::docked(shell, cx),
     ]
     .into_iter()
-    .flatten()
+    .enumerate()
+    .filter_map(|(kind, card)| card.map(|c| (kind, c)))
     .collect();
     let count = cards.len();
     if count == 0 {
         return None;
     }
-    let at = shell.chat.dock_at.min(count - 1);
+    if shell.chat.dock_bring.take()
+        && let Some(decide) = cards.iter().position(|(kind, _)| *kind == DECIDE)
+        && shell.chat.dock_at.get().min(count - 1) > decide
+    {
+        shell.chat.dock_at.set(decide);
+    }
+    let cards: Vec<AnyElement> = cards.into_iter().map(|(_, c)| c).collect();
+    let at = shell.chat.dock_at.get().min(count - 1);
     let card = cards.into_iter().nth(at)?;
     if count == 1 {
         return Some(card);
@@ -614,7 +628,7 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .hover(move |s| s.bg(p.wash))
             .child(icon(glyph, 12., p.text2))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.chat.dock_at = (this.chat.dock_at.min(count - 1) as isize + by).rem_euclid(count as isize) as usize;
+                this.chat.dock_at.set((this.chat.dock_at.get().min(count - 1) as isize + by).rem_euclid(count as isize) as usize);
                 cx.notify();
             }))
     };
@@ -803,6 +817,51 @@ fn said_changes_in(blocks: &[Block], at: &[Option<u64>], turn_ends: &HashSet<usi
 fn said_stamp(p: Palette, id: (&'static str, u64), at: u64, now: u64) -> AnyElement {
     let line = div().id(id).px_1().whitespace_nowrap().text_size(px(META)).text_color(p.muted).child(crate::activity::said_when(at, now));
     tip(line, p, crate::activity::said_on(at), None).into_any_element()
+}
+
+/// Where the member moved to the other engine: a line across, "Moved from
+/// Claude to Codex · 14:05 · See what was handed over" — the last opening the
+/// packet the new conversation began with, beside it.
+fn moved_row(rows: &Rows, key: u64, from: Engine, to: Engine, at: u64, session: SessionId) -> AnyElement {
+    let p = rows.p;
+    let handle = rows.handle.clone();
+    let words = crate::state::moved_words(from, to);
+    let see = div()
+        .id(("moved-see", key))
+        .flex_none()
+        .cursor_pointer()
+        .text_color(p.accent)
+        .hover(|s| s.underline())
+        .role(Role::Link)
+        .aria_label(format!("{words} · {}", t!("moved.see")))
+        .child(t!("moved.see"))
+        .on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.open_hand_over(session, cx)).ok();
+        });
+    h_flex()
+        .w_full()
+        .min_h(px(24.))
+        .my_2()
+        .gap_2()
+        .items_center()
+        .text_size(px(META))
+        .text_color(p.muted)
+        .child(div().h(px(1.)).flex_1().min_w(px(12.)).bg(p.hair))
+        // Narrow beside a panel, its words wrap rather than run past the edge.
+        .child(
+            h_flex()
+                .flex_shrink(1.)
+                .min_w_0()
+                .flex_wrap()
+                .justify_center()
+                .items_center()
+                .gap_2()
+                .child(h_flex().flex_none().gap_2().items_center().child(crate::views::switching::glyph(p, to)).child(words))
+                .child(div().flex_none().child(format!("· {} ·", crate::activity::said_when(at, rows.now))))
+                .child(see),
+        )
+        .child(div().h(px(1.)).flex_1().min_w(px(12.)).bg(p.hair))
+        .into_any_element()
 }
 
 /// The conversation with the member selected, in its pane.
@@ -1005,6 +1064,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(format!("{} · {}", worked.took(), worked.at))
             .into_any_element(),
         Block::Summarized => super::compact::divider(p, rows.tones.added).into_any_element(),
+        Block::Moved { from, to, at, session } => moved_row(rows, key, *from, *to, *at, *session),
         Block::Background { summary, failed, file } => background_row(rows, key, summary, *failed, file.as_deref(), window, cx),
         Block::Note(text) if resumable(&rows.blocks, ix) && rows.step_since.is_none() => {
             // The turn stopped (Esc, ⌘., Stop) and nothing has been said since:
@@ -1459,7 +1519,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::DesignCheck(_) | Block::SecondLook { .. } | Block::QaReport(_));
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::Moved { .. } | Block::DesignCheck(_) | Block::SecondLook { .. } | Block::QaReport(_));
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
@@ -2599,6 +2659,14 @@ impl Shell {
 
     /// The conversation brought up to what the model shows, its cards with it.
     pub fn chat_sync(&mut self, cx: &mut Context<Self>) {
+        // A member that moved engines: the conversations before, asked once each.
+        for session in self.model.hand_overs_wanted() {
+            self.send_command(equipe_core::protocol::Command::HandOver { squad: self.model.squad.clone(), session });
+        }
+        // The packet asked to be shown, come since.
+        if let Some(session) = self.packet_wanted.filter(|s| self.model.handed.contains_key(s)) {
+            self.open_hand_over(session, cx);
+        }
         let looks = yourturn::looks(self, cx);
         self.chat.sync(&self.model, &looks, cx);
     }

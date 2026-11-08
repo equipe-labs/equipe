@@ -4,6 +4,9 @@
 //! - `healthy`: Claude 5h 34% · week 22%, Codex 5h 12% · week 9%;
 //! - `claude86`: Claude's five hours at 86% (resets in 2 hours), Codex roomy —
 //!   with a card proposing backend and frontend move to Codex;
+//! - `claude_week`: Claude's week at 86%, running out at this pace in 1 day
+//!   6 hours, 2 days before it resets — a card proposing backend and frontend
+//!   (64% of the week's use, both mid-ticket) move, with "Move now";
 //! - `claude_out`: Claude's week used up (resets in 3 days) — a card proposing
 //!   the work be handed over;
 //! - `both_low`: Claude 5h 91%, Codex week 88% — a card proposing lighter settings;
@@ -21,9 +24,10 @@
 //! `slow`, two seconds after it is asked; `silent`, never (the model
 //! picker's "didn't say"). A move to the other engine from the picker
 //! (`MoveEngine`) shows as the person's own, waiting for the member's next
-//! ticket, with its undo.
+//! ticket — or, moved now, at the end of its turn — with its undo; "Move
+//! now" on a card whose moves are made marks them so.
 
-use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
+use equipe_core::protocol::engines::{Forecast, Move, Proposal, Switching, Why, Window};
 use equipe_core::protocol::{Command, Engine, EnginePlan, Event, ModelChoice, PlanUsage, PlanWindow, RoleModel, SessionInfo};
 use tokio::sync::broadcast;
 
@@ -60,6 +64,7 @@ pub fn plans() -> Vec<EnginePlan> {
     match env("FAKE_USAGE").as_deref() {
         None => vec![],
         Some("claude86") => vec![plan(Engine::Claude, 86, 2 * H, 41, 3 * D, 60), plan(Engine::Codex, 12, 4 * H, 18, 5 * D, 300)],
+        Some("claude_week") => vec![plan(Engine::Claude, 41, 3 * H, 86, 3 * D + 6 * H, 60), plan(Engine::Codex, 12, 4 * H, 18, 5 * D, 300)],
         Some("claude_out") => vec![plan(Engine::Claude, 64, 3 * H, 100, 3 * D, 120), plan(Engine::Codex, 9, 4 * H, 14, 5 * D, 240)],
         Some("week61") => vec![plan(Engine::Claude, 48, 3 * H, 61, 2 * D + 10 * H, 60), plan(Engine::Codex, 12, 4 * H, 23, 5 * D, 300)],
         Some("both_low") => vec![plan(Engine::Claude, 91, 3 * H, 58, 3 * D, 60), plan(Engine::Codex, 47, 2 * H, 88, 2 * D, 600)],
@@ -85,7 +90,7 @@ pub fn switching() -> Switching {
 }
 
 fn mv(name: &str, from: Engine, to: Engine, was: &str) -> Move {
-    Move { member: name.into(), role: name.into(), from, to, model: None, effort: None, was_model: Some(was.into()), done: false }
+    Move { member: name.into(), role: name.into(), from, to, model: None, effort: None, was_model: Some(was.into()), done: false, now: false }
 }
 
 /// The card on show, if any.
@@ -99,12 +104,18 @@ pub fn proposals() -> Vec<Proposal> {
     }
     let auto = mode == Switching::Auto;
     let now = now();
-    let card = |why, engine, window, used, resets_at, moves| Proposal { id: CARD, why, engine: Some(engine), window: Some(window), used_percent: used, resets_at, moves, applied: auto, proposed_at: now as u64 };
+    let card = |why, engine, window, used, resets_at, moves| Proposal { id: CARD, why, engine: Some(engine), window: Some(window), used_percent: used, resets_at, moves, applied: auto, proposed_at: now as u64, forecast: None };
     match env("FAKE_USAGE").as_deref() {
         Some("claude86") => {
             let mut moves = vec![mv("backend", Engine::Claude, Engine::Codex, "claude-opus-5-5"), mv("frontend", Engine::Claude, Engine::Codex, "claude-sonnet-5-5")];
             moves[0].done = auto;
             vec![card(Why::Shift, Engine::Claude, Window::FiveHour, 86, now + 2 * H, moves)]
+        }
+        Some("claude_week") => {
+            let moves = vec![mv("backend", Engine::Claude, Engine::Codex, "claude-opus-5-5"), mv("frontend", Engine::Claude, Engine::Codex, "claude-sonnet-5-5")];
+            let resets_at = now + 3 * D + 6 * H;
+            let forecast = Some(Forecast { runs_out_at: Some(now + D + 6 * H), resets_at, load_bp: Some(6_400) });
+            vec![Proposal { forecast, ..card(Why::Shift, Engine::Claude, Window::Weekly, 86, resets_at, moves) }]
         }
         Some("claude_out") => {
             let moves = vec![mv("backend", Engine::Claude, Engine::Codex, "claude-opus-5-5"), mv("frontend", Engine::Claude, Engine::Codex, "claude-sonnet-5-5"), mv("designer", Engine::Claude, Engine::Codex, "claude-opus-5-5")];
@@ -145,6 +156,7 @@ fn setup() -> Proposal {
         ],
         applied: false,
         proposed_at: now() as u64,
+        forecast: None,
     }
 }
 
@@ -197,11 +209,12 @@ fn codex_answer() -> Option<std::time::Duration> {
     }
 }
 
-/// The person's own move from the picker, waiting for each member's next ticket.
-fn person_move(members: &[String], engine: Engine, model: Option<String>) -> Proposal {
+/// The person's own move from the picker, waiting for each member's next
+/// ticket — or, `now`, for the end of its turn.
+fn person_move(members: &[String], engine: Engine, model: Option<String>, now: bool) -> Proposal {
     let from = if engine == Engine::Codex { Engine::Claude } else { Engine::Codex };
-    let moves = members.iter().map(|m| Move { member: m.clone(), role: m.clone(), from, to: engine, model: model.clone(), effort: None, was_model: None, done: false }).collect();
-    Proposal { id: CARD + 2, why: Why::Person, engine: None, window: None, used_percent: 0, resets_at: 0, moves, applied: true, proposed_at: now() as u64 }
+    let moves = members.iter().map(|m| Move { member: m.clone(), role: m.clone(), from, to: engine, model: model.clone(), effort: None, was_model: None, done: false, now }).collect();
+    Proposal { id: CARD + 2, why: Why::Person, engine: None, window: None, used_percent: 0, resets_at: 0, moves, applied: true, proposed_at: self::now() as u64, forecast: None }
 }
 
 /// The person's answers, as the daemon would take them. Whether it was one.
@@ -214,9 +227,22 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         Command::SetDesignReviewer { reviewer, .. } => {
             let _ = events.send(Event::DesignReviewerChanged { squad: squad(), reviewer: *reviewer });
         }
-        Command::ApplyEngineProposal { id, .. } => {
+        Command::ApplyEngineProposal { id, now, .. } => {
+            // On moves made already, "Move now" marks those waiting; the card stays.
+            if let Some(mut made) = proposals().into_iter().find(|p| p.id == *id && p.applied).filter(|_| *now) {
+                for m in made.moves.iter_mut().filter(|m| !m.done) {
+                    m.now = true;
+                }
+                let _ = events.send(Event::EngineProposed { squad: squad(), proposal: made });
+                return true;
+            }
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: true });
-            let _ = events.send(Event::Notice { undo: None, session: 1, text: "Moving them — backend and frontend each switch from their next ticket".into() });
+            let text = if *now {
+                "Moving backend·frontend. backend switches to Codex when this turn ends, mid-ticket: its ticket is handed over — same branch, with what's done and what's next — and carried on there."
+            } else {
+                "Moving backend·frontend. backend keeps Claude for the ticket in progress and switches to Codex from its next ticket, its work handed over."
+            };
+            let _ = events.send(Event::Notice { undo: None, session: 1, text: text.into() });
         }
         Command::DismissEngineProposal { id, .. } | Command::UndoEngineProposal { id, .. } => {
             let _ = events.send(Event::EngineProposalClosed { squad: squad(), id: *id, applied: false });
@@ -233,8 +259,8 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                 });
             }
         }
-        Command::MoveEngine { members, engine, model, .. } => {
-            let _ = events.send(Event::EngineProposed { squad: squad(), proposal: person_move(members, *engine, model.clone()) });
+        Command::MoveEngine { members, engine, model, now, .. } => {
+            let _ = events.send(Event::EngineProposed { squad: squad(), proposal: person_move(members, *engine, model.clone(), *now) });
         }
         Command::SetRoleModel { default, .. } => {
             let mut defaults: Vec<RoleModel> = role_models().into_iter().filter(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine)).collect();

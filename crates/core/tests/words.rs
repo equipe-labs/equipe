@@ -162,7 +162,7 @@ async fn handed_in_at(home: &Path, repo: &Path, task: bool) -> (Handle, Unbounde
     let kind = if task { "task" } else { "code" };
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend", "kind": kind })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done." })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     (handle, events)

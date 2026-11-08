@@ -12,8 +12,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::TicketId;
-use equipe_protocol::studio::{Studio, StudioCheck, StudioCritique, StudioDirection, StudioFix, StudioLook, StudioPicture, StudioReference};
+use equipe_protocol::studio::{PictureFrom, Studio, StudioCheck, StudioCritique, StudioDirection, StudioFix, StudioLook, StudioPicture, StudioReference, StudioReport};
+use equipe_protocol::{Entry, TicketId};
 
 use super::lint::record::{self, Record, Verdict};
 use crate::visuals;
@@ -94,7 +94,7 @@ fn cut(text: &str, most: usize) -> String {
 fn picture(root: &Path, path: &Path, width: Option<u32>) -> Option<StudioPicture> {
     let real = visuals::check(path, std::slice::from_ref(&root.to_path_buf())).ok()?;
     let meta = std::fs::metadata(&real).ok()?;
-    Some(StudioPicture { path: real.to_string_lossy().into_owned(), modified: modified(&meta), width })
+    Some(StudioPicture { path: real.to_string_lossy().into_owned(), modified: modified(&meta), width, from: PictureFrom::Design })
 }
 
 /// The width a check's picture was drawn at, from its name: `360.png`, `home-1280.light.png`.
@@ -325,6 +325,7 @@ pub fn read(design: &Path, ticket: TicketId) -> Studio {
         critiques: critiques(&design),
         references: references(&design),
         pictures: others(&design),
+        reports: Vec::new(),
         stamp: 0,
     };
     studio.stamp = stamp_of(&studio);
@@ -365,7 +366,9 @@ pub fn design_of(worktree: &Path) -> Option<PathBuf> {
 }
 
 /// A screen's ask for `ticket`'s work in `squad`: its worktree's design
-/// folder read; nothing, said so, for a ticket the squad doesn't have.
+/// folder read, and every other picture of the work found ([`gather`]);
+/// nothing, said so, for a ticket the squad doesn't have. What it names is
+/// what `read_image` may give for a while ([`given`]).
 pub fn of_ticket(home: &Path, squad: &str, ticket: TicketId) -> Result<Studio, String> {
     if !crate::squads::valid_name(squad) {
         return Err("no such squad".into());
@@ -373,10 +376,298 @@ pub fn of_ticket(home: &Path, squad: &str, ticket: TicketId) -> Result<Studio, S
     let db = crate::journal::squad_dir(home, squad).join("squad.db");
     let journal = crate::journal::Journal::open(&db).map_err(|_| "the squad's board couldn't be read".to_owned())?;
     let found = journal.tickets().unwrap_or_default().into_iter().find(|t| t.id == ticket).ok_or_else(|| format!("no T-{ticket} on the board"))?;
-    Ok(match found.worktree.as_deref().and_then(design_of) {
-        Some(design) => read(&design, ticket),
-        None => Studio { ticket, ..Studio::default() },
-    })
+    let work = journal.ticket_lines(ticket).ok().flatten();
+    // Where its work is checked out, as the board keeps it beside the ticket.
+    let worktree = found.worktree.clone().or_else(|| journal.ticket_work(ticket).ok().and_then(|w| w.worktree));
+    drop(journal);
+    let studio = gather(&Gather {
+        ticket,
+        design: worktree.as_deref().and_then(design_of),
+        worktree,
+        recordings: Some(crate::phone::recordings_dir(&crate::squad_home::path(home, squad), ticket)),
+        images: found.images.clone(),
+        cwd: work.as_ref().and_then(|w| w.cwd.clone()),
+        lines: work.map(|w| w.lines).unwrap_or_default(),
+        also: vec![crate::squad_home::path(home, squad)],
+    });
+    remember(home, squad, &studio);
+    Ok(studio)
+}
+
+// ── every picture of the work, not only the design folder's ──
+
+/// What a ticket's work is gathered from.
+#[derive(Debug, Clone, Default)]
+pub struct Gather {
+    pub ticket: TicketId,
+    /// Its worktree's design folder, if it has one.
+    pub design: Option<PathBuf>,
+    pub worktree: Option<PathBuf>,
+    /// The phone's recordings for the ticket (`<squad home>/recordings/T-<n>/`).
+    pub recordings: Option<PathBuf>,
+    /// What its hand-in names.
+    pub images: Vec<String>,
+    /// Where its conversation works: what a relative path in it is read against.
+    pub cwd: Option<PathBuf>,
+    /// Its conversation on the ticket, each line with when it was kept.
+    pub lines: Vec<(Entry, Option<u64>)>,
+    /// Other folders its hand-in folder (`outputs/T-<n>…`) may be in: the
+    /// squad's folder, where a task's lands once accepted.
+    pub also: Vec<PathBuf>,
+}
+
+/// How many pictures of each kind, and in all.
+const RECORDINGS_MAX: usize = 24;
+const OPENED_MAX: usize = 40;
+const BESIDE_PER_FOLDER: usize = 8;
+const BESIDE_FOLDERS: usize = 6;
+const WORKTREE_MAX: usize = 24;
+const ALL_MAX: usize = 80;
+const REPORTS_MAX: usize = 4;
+const REPORT_CUT: usize = 6000;
+/// Folders a walk of a worktree never goes into.
+const SKIP_DIRS: [&str; 10] = [".git", "node_modules", "target", "build", "DerivedData", "Pods", ".build", "dist", ".next", "vendor"];
+
+/// The image paths a line of the conversation names: a tool's file, a
+/// `--out` it was told to write and absolute paths in a command, absolute
+/// paths in its words and a Markdown image (relative to where it works).
+pub fn named_images(entry: &Entry, cwd: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut take = |raw: &str| {
+        let raw = raw.trim_start_matches(['`', '"', '\'', '(', '<', '*', '!']);
+        let raw = raw.trim_end_matches(['`', '"', '\'', ')', '>', ',', ';', ':', '*', '.']);
+        if !visuals::is_image_name(raw) {
+            return;
+        }
+        let path = Path::new(raw);
+        let full = if path.is_absolute() { Some(path.to_path_buf()) } else { cwd.map(|c| c.join(path)) };
+        if let Some(full) = full.filter(|p| !p.components().any(|c| matches!(c, std::path::Component::ParentDir))) {
+            out.push(full);
+        }
+    };
+    match entry {
+        Entry::Tool { tool, target: Some(target), .. } => {
+            if matches!(tool.as_str(), "Read" | "Write" | "Edit" | "MultiEdit") {
+                take(target);
+            } else if tool == "Bash" {
+                let words: Vec<&str> = target.split_whitespace().collect();
+                for (i, w) in words.iter().enumerate() {
+                    if matches!(*w, "--out" | "-o" | ">") {
+                        if let Some(next) = words.get(i + 1) {
+                            take(next);
+                        }
+                    } else if w.starts_with('/') {
+                        take(w);
+                    }
+                }
+            }
+        }
+        Entry::Reply { text } | Entry::User { text, .. } => {
+            for image in visuals::markdown::local_images(text) {
+                take(&image.path);
+            }
+            // A path written out whole, in or out of backticks.
+            for w in text.split_whitespace().map(|w| w.trim_start_matches(['`', '"', '\'', '(', '<'])).filter(|w| w.starts_with('/')) {
+                take(w);
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// A picture outside the design folder, as screens ask for it: a file named
+/// as an image, no bigger than the most `read_image` gives.
+fn outside(path: &Path, from: PictureFrom) -> Option<StudioPicture> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > visuals::FILE_MAX || !visuals::is_image_name(&path.to_string_lossy()) {
+        return None;
+    }
+    let real = std::fs::canonicalize(path).ok()?;
+    Some(StudioPicture { path: real.to_string_lossy().into_owned(), modified: modified(&meta), width: None, from })
+}
+
+/// The images right in `dir`, newest first, at most `most`.
+fn images_in(dir: &Path, most: usize, from: PictureFrom) -> Vec<StudioPicture> {
+    let mut found: Vec<StudioPicture> = walk(dir, 0).into_iter().filter_map(|(p, _)| outside(&p, from)).collect();
+    found.sort_by_key(|p| std::cmp::Reverse(p.modified));
+    found.truncate(most);
+    found
+}
+
+/// The files under `dir` a walk of a worktree finds, never in [`SKIP_DIRS`].
+fn walk_worktree(dir: &Path, depth: usize) -> Vec<(PathBuf, std::fs::Metadata)> {
+    let mut out = Vec::new();
+    let mut stack = vec![(dir.to_path_buf(), 0)];
+    let mut seen = 0;
+    while let Some((at, d)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else { continue };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > 2 * ENTRIES_MAX {
+                return out;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            if meta.is_dir() {
+                if d < depth {
+                    stack.push((entry.path(), d + 1));
+                }
+            } else if meta.is_file() {
+                out.push((entry.path(), meta));
+            }
+        }
+    }
+    out
+}
+
+/// The ticket's own folders in its worktree's `outputs/`: named for it
+/// (`T-<n>`, `T-<n> …`).
+fn output_dirs(worktree: &Path, ticket: TicketId) -> Vec<PathBuf> {
+    let name = format!("T-{ticket}");
+    let Ok(entries) = std::fs::read_dir(worktree.join("outputs")) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n == name || n.strip_prefix(&name).is_some_and(|rest| rest.starts_with([' ', '-', '_', '.']))
+        })
+        .filter(|e| std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir()))
+        .map(|e| e.path())
+        .collect()
+}
+
+/// A report's title: its first heading, else its file's name.
+fn title_of(text: &str, path: &Path) -> String {
+    text.lines().map(str::trim).find_map(|l| l.strip_prefix("# ")).map(|t| t.trim().to_owned()).unwrap_or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// Everything of `g`'s work: its design folder, then each picture found
+/// elsewhere — the phone's recordings, the hand-in folder and its reports,
+/// what it opened to look at and what lies beside those, what is new in its
+/// worktree since the work began, what its hand-in names — each once,
+/// newest first.
+pub fn gather(g: &Gather) -> Studio {
+    let mut studio = match &g.design {
+        Some(design) => read(design, g.ticket),
+        None => Studio { ticket: g.ticket, ..Studio::default() },
+    };
+    let since = g.lines.iter().filter_map(|(_, at)| *at).min();
+    let mut more: Vec<StudioPicture> = Vec::new();
+    // The phone's recordings: frames and shots.
+    if let Some(dir) = &g.recordings {
+        let mut found: Vec<StudioPicture> = walk(dir, 3).into_iter().filter_map(|(p, _)| outside(&p, PictureFrom::Recording)).collect();
+        found.sort_by_key(|p| std::cmp::Reverse(p.modified));
+        found.truncate(RECORDINGS_MAX);
+        more.extend(found);
+    }
+    // The hand-in folder: its pictures and its reports — in its worktree, or where it landed.
+    let mut seen_dirs: Vec<PathBuf> = Vec::new();
+    for root in g.worktree.iter().chain(&g.also) {
+        for dir in output_dirs(root, g.ticket) {
+            let real = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            if seen_dirs.contains(&real) {
+                continue;
+            }
+            seen_dirs.push(real);
+            for (path, meta) in walk(&dir, 2) {
+                let name = path.to_string_lossy().into_owned();
+                if let Some(p) = outside(&path, PictureFrom::Output) {
+                    more.push(p);
+                } else if name.ends_with(".md")
+                    && studio.reports.len() < REPORTS_MAX
+                    && let Some(text) = text_inside(&dir, &path, 256 << 10)
+                {
+                    studio.reports.push(StudioReport { path: name, at: modified(&meta), title: title_of(&text, &path), text: cut(&text, REPORT_CUT) });
+                }
+            }
+        }
+    }
+    // What it opened, wrote or named while it worked, and what lies beside it.
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let mut opened = 0;
+    for (entry, _) in &g.lines {
+        for path in named_images(entry, g.cwd.as_deref()) {
+            if opened >= OPENED_MAX {
+                break;
+            }
+            if let Some(p) = outside(&path, PictureFrom::Opened) {
+                opened += 1;
+                if let Some(dir) = Path::new(&p.path).parent().map(Path::to_path_buf)
+                    && !folders.contains(&dir)
+                    && folders.len() < BESIDE_FOLDERS
+                {
+                    folders.push(dir);
+                }
+                more.push(p);
+            }
+        }
+    }
+    for dir in &folders {
+        more.extend(images_in(dir, BESIDE_PER_FOLDER, PictureFrom::Made).into_iter().filter(|p| since.is_none_or(|s| p.modified + 60 >= s)));
+    }
+    // New in its worktree since the work began.
+    if let (Some(worktree), Some(since)) = (&g.worktree, since) {
+        // The design folder and the hand-in folders are read above, each its own way.
+        let apart: Vec<PathBuf> = [g.design.clone(), Some(worktree.join("outputs"))].into_iter().flatten().filter_map(|d| std::fs::canonicalize(d).ok()).collect();
+        let mut found: Vec<StudioPicture> = walk_worktree(worktree, DEPTH_MAX)
+            .into_iter()
+            .filter(|(_, meta)| modified(meta) + 60 >= since)
+            .filter_map(|(p, _)| outside(&p, PictureFrom::Made))
+            .filter(|p| !apart.iter().any(|d| Path::new(&p.path).starts_with(d)))
+            .collect();
+        found.sort_by_key(|p| std::cmp::Reverse(p.modified));
+        found.truncate(WORKTREE_MAX);
+        more.extend(found);
+    }
+    // What its hand-in names.
+    more.extend(g.images.iter().filter_map(|p| outside(Path::new(p), PictureFrom::HandIn)));
+    // Each once — the design folder's and the checks' as they are — newest first.
+    let mut known: std::collections::HashSet<String> = studio.picture_paths().into_iter().map(str::to_owned).collect();
+    for p in more {
+        if known.insert(p.path.clone()) {
+            studio.pictures.push(p);
+        }
+    }
+    studio.pictures.sort_by_key(|p| std::cmp::Reverse(p.modified));
+    studio.pictures.truncate(ALL_MAX);
+    studio.reports.sort_by_key(|r| std::cmp::Reverse(r.at));
+    studio.stamp = stamp_of(&studio);
+    studio
+}
+
+// ── what read_image may give ──
+
+/// How long the pictures a studio named stay given.
+const GIVEN_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+type Given = std::collections::HashMap<(PathBuf, String), (std::time::Instant, std::collections::HashSet<String>)>;
+
+fn given_store() -> &'static std::sync::Mutex<Given> {
+    static GIVEN: std::sync::OnceLock<std::sync::Mutex<Given>> = std::sync::OnceLock::new();
+    GIVEN.get_or_init(Default::default)
+}
+
+/// The pictures a studio answer named for `squad`: `read_image` gives them
+/// for a while after ([`given`]).
+pub fn remember(home: &Path, squad: &str, studio: &Studio) {
+    let mut store = given_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.retain(|_, (at, _)| at.elapsed() < GIVEN_FOR);
+    let entry = store.entry((home.to_path_buf(), squad.to_owned())).or_insert_with(|| (std::time::Instant::now(), Default::default()));
+    entry.0 = std::time::Instant::now();
+    if entry.1.len() > 4000 {
+        entry.1.clear();
+    }
+    entry.1.extend(studio.picture_paths().into_iter().map(str::to_owned));
+}
+
+/// Whether a studio answer for `squad` named `path` lately.
+pub fn given(home: &Path, squad: &str, path: &str) -> bool {
+    let store = given_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.get(&(home.to_path_buf(), squad.to_owned())).is_some_and(|(at, paths)| at.elapsed() < GIVEN_FOR && paths.contains(path))
 }
 
 /// The pictures a watched ticket's design folder holds, for `read_image` to
@@ -412,7 +703,7 @@ mod tests {
 
     fn png(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        image::RgbaImage::from_pixel(4, 4, image::Rgba([20, 90, 250, 255])).save(path).unwrap();
+        image::RgbImage::from_pixel(4, 4, image::Rgb([20, 90, 250])).save(path).unwrap();
     }
 
     #[test]
@@ -503,6 +794,102 @@ mod tests {
         assert!(empty.checks.is_empty());
     }
 
+    /// A design QA ticket's conversation, in the shape the journal keeps it
+    /// (`{"kind":"tool","tool":…,"target":…,"label":…}`), with made-up paths.
+    fn qa_lines(scratch: &Path, worktree: &Path, other: &Path) -> Vec<(Entry, Option<u64>)> {
+        let line = |json: String| serde_json::from_str::<Entry>(&json).unwrap();
+        let s = scratch.display();
+        let w = worktree.display();
+        let o = other.display();
+        vec![
+            (line(r#"{"kind":"note","text":"── T-7 · Design QA: T-6 the composer at large text — on branch equipe/designer-t7-1"}"#.into()), Some(1_000)),
+            (line(r#"{"kind":"tool","tool":"Skill","target":"equipe:design-qa"}"#.into()), Some(1_010)),
+            (line(format!(r#"{{"kind":"tool","tool":"Bash","target":"cd {o}; git diff main...HEAD --stat"}}"#)), Some(1_020)),
+            (line(format!(r#"{{"kind":"tool","tool":"Read","target":"{o}/design/flows/chat/large.dark.360.png"}}"#)), Some(1_030)),
+            (line(format!(r#"{{"kind":"tool","tool":"Bash","target":"xcrun simctl io booted screenshot {s}/ax5.png","background":true}}"#)), Some(1_040)),
+            (line(format!(r#"{{"kind":"tool","tool":"Read","target":"{s}/ax5.png"}}"#)), Some(1_050)),
+            (line(format!(r#"{{"kind":"reply","text":"At AX5 the cancel glyph spills out of its circle: {s}/ax5.png"}}"#)), Some(1_060)),
+            (line(format!(r#"{{"kind":"tool","tool":"Write","target":"{w}/outputs/T-7 Design QA/report.md","label":"Write the report"}}"#)), Some(1_070)),
+            (line(r#"{"kind":"tool","tool":"Read","target":"/private/tmp/claude-501/-Users-someone--equipe-worktrees-squad-home-t7-1/668b1517-195e-4164-b67a-46deb0ae48"}"#.into()), Some(1_080)),
+        ]
+    }
+
+    #[test]
+    fn a_qa_tickets_pictures_come_from_everywhere_it_looked_and_made() {
+        let root = dir("qa");
+        let (scratch, worktree, other, recordings) = (root.join("scratch/t7"), root.join("wt"), root.join("other-wt"), root.join("home/recordings/T-7"));
+        png(&scratch.join("ax5.png"));
+        png(&scratch.join("before-after.png"));
+        png(&other.join("design/flows/chat/large.dark.360.png"));
+        png(&recordings.join("composer/01-0.0s.jpg"));
+        png(&worktree.join("outputs/T-7 Design QA/1-ax5.png"));
+        std::fs::write(worktree.join("outputs/T-7 Design QA/report.md"), "# T-7 Design QA — the composer\n\nVerdict: **fix and again**.\n\n## Blocking\n1. The cancel glyph spills at AX5.\n").unwrap();
+        png(&worktree.join("outputs/T-70 Other/old.png"));
+        png(&worktree.join("notes/sketch.png"));
+        png(&worktree.join("node_modules/pkg/icon.png"));
+        let lines = qa_lines(&scratch, &worktree, &other);
+        let g = Gather { ticket: 7, design: None, worktree: Some(worktree.clone()), recordings: Some(recordings.clone()), images: vec![], cwd: Some(worktree.clone()), lines, also: vec![worktree.clone()] };
+        let s = gather(&g);
+        let name = |p: &StudioPicture| Path::new(&p.path).file_name().unwrap().to_string_lossy().into_owned();
+        let from = |n: &str| s.pictures.iter().find(|p| name(p) == n).map(|p| p.from);
+        assert_eq!(from("ax5.png"), Some(PictureFrom::Opened), "a shot it took and opened");
+        assert_eq!(from("large.dark.360.png"), Some(PictureFrom::Opened), "the engineer's picture it looked at");
+        assert_eq!(from("before-after.png"), Some(PictureFrom::Made), "made beside what it opened");
+        assert_eq!(from("01-0.0s.jpg"), Some(PictureFrom::Recording));
+        assert_eq!(from("1-ax5.png"), Some(PictureFrom::Output));
+        assert_eq!(from("sketch.png"), Some(PictureFrom::Made), "new in its worktree since it began");
+        assert_eq!(from("old.png"), None, "another ticket's hand-in folder isn't this one's");
+        assert_eq!(from("icon.png"), None, "never in dependencies");
+        assert_eq!(s.pictures.iter().filter(|p| name(p) == "ax5.png").count(), 1, "each once");
+        assert_eq!(s.reports.len(), 1);
+        assert_eq!(s.reports[0].title, "T-7 Design QA — the composer");
+        assert!(s.reports[0].text.contains("cancel glyph"));
+        // Newest first.
+        assert!(s.pictures.windows(2).all(|w| w[0].modified >= w[1].modified));
+        // A truncated path is no picture.
+        assert!(s.pictures.iter().all(|p| !p.path.contains("668b1517")));
+    }
+
+    #[test]
+    fn a_tickets_work_is_read_from_the_conversation_that_did_it() {
+        let root = dir("journal");
+        let journal = crate::journal::Journal::open(&root.join("squad.db")).unwrap();
+        let note = |t: &str| Entry::Note { text: t.into(), undo: None };
+        let read = |t: &str| Entry::Tool { tool: "Read".into(), target: Some(t.into()), outcome: None, label: None, background: false };
+        for e in [note("── T-6 · Other — on branch b"), read("/a.png"), note("── T-7 · QA — on branch c"), read("/b.png"), note("Stopped."), read("/c.png"), note("── T-8 · Next — on branch d"), read("/d.png")] {
+            journal.append(42, &e).unwrap();
+        }
+        let work = journal.ticket_lines(7).unwrap().unwrap();
+        assert_eq!(work.session, 42);
+        let targets: Vec<String> = work.lines.iter().filter_map(|(e, _)| if let Entry::Tool { target, .. } = e { target.clone() } else { None }).collect();
+        assert_eq!(targets, ["/b.png", "/c.png"], "from its header to the next ticket's, a restart's note and all");
+        assert!(work.lines.iter().all(|(_, at)| at.is_some()));
+        assert!(journal.ticket_lines(70).unwrap().is_none(), "T-70 is not T-7");
+    }
+
+    #[test]
+    fn the_studio_names_what_read_image_may_give_for_a_while() {
+        let root = dir("given");
+        let studio = Studio { ticket: 1, pictures: vec![StudioPicture { path: "/tmp/x/a.png".into(), modified: 1, width: None, from: PictureFrom::Opened }], ..Studio::default() };
+        assert!(!given(&root, "acme", "/tmp/x/a.png"));
+        remember(&root, "acme", &studio);
+        assert!(given(&root, "acme", "/tmp/x/a.png"));
+        assert!(!given(&root, "zeta", "/tmp/x/a.png"), "only for the squad it was asked for");
+        assert!(!given(&root, "acme", "/tmp/x/b.png"));
+    }
+
+    #[test]
+    fn a_line_names_the_pictures_it_opened_shot_or_wrote_of() {
+        let entry = |json: &str| serde_json::from_str::<Entry>(json).unwrap();
+        let cwd = Path::new("/w");
+        assert_eq!(named_images(&entry(r#"{"kind":"tool","tool":"Read","target":"/tmp/a.png"}"#), Some(cwd)), [PathBuf::from("/tmp/a.png")]);
+        assert_eq!(named_images(&entry(r#"{"kind":"tool","tool":"Bash","target":"equipe shoot https://x.com --out design/references/x/shot.png"}"#), Some(cwd)), [PathBuf::from("/w/design/references/x/shot.png")]);
+        assert_eq!(named_images(&entry(r#"{"kind":"tool","tool":"Bash","target":"xcrun simctl io booted screenshot /tmp/t/s.png"}"#), None), [PathBuf::from("/tmp/t/s.png")]);
+        assert_eq!(named_images(&entry(r#"{"kind":"reply","text":"Here: ![sheet](out/sheet.png) and `/tmp/t/b.jpg`."}"#), Some(cwd)), [PathBuf::from("/w/out/sheet.png"), PathBuf::from("/tmp/t/b.jpg")]);
+        assert!(named_images(&entry(r#"{"kind":"tool","tool":"Read","target":"../up.png"}"#), Some(cwd)).is_empty(), "never up and out");
+        assert!(named_images(&entry(r#"{"kind":"tool","tool":"Read","target":"/w/src/App.swift"}"#), Some(cwd)).is_empty());
+    }
+
     #[test]
     fn a_worktree_keeps_its_design_work_at_its_top_or_in_a_project_folder() {
         let root = dir("where");
@@ -513,3 +900,4 @@ mod tests {
         assert_eq!(design_of(&root), Some(root.join("design")));
     }
 }
+

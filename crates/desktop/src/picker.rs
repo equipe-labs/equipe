@@ -57,13 +57,15 @@ pub struct Moving {
     pub to: Engine,
     pub model: Option<String>,
     pub applied: bool,
+    /// At the end of the member's turn, its ticket handed over.
+    pub now: bool,
 }
 
 /// The move of `name` still to happen, among the cards on show.
 pub fn moving<'a>(proposals: impl IntoIterator<Item = &'a Proposal>, name: &str) -> Option<Moving> {
     proposals.into_iter().find_map(|p| {
         let mv = p.moves.iter().find(|m| m.member == name && !m.done && !m.in_place())?;
-        Some(Moving { proposal: p.id, to: mv.to, model: mv.model.clone(), applied: p.applied })
+        Some(Moving { proposal: p.id, to: mv.to, model: mv.model.clone(), applied: p.applied, now: mv.now })
     })
 }
 
@@ -166,6 +168,12 @@ pub enum Act {
     Model(String),
     /// The member to the other engine (`MoveEngine`), on `model` if picked.
     Move { engine: Engine, model: Option<String> },
+    /// The member on a ticket to the other engine now: at the end of its
+    /// turn, its ticket handed over (`MoveEngine` with `now`).
+    MoveNow(Engine),
+    /// A move of the person's waiting for the member's ticket to end, made
+    /// now instead (`ApplyEngineProposal` with `now`).
+    Hurry(u64),
     /// A family's versions shown or hidden.
     Versions(&'static str),
     /// Codex asked for its list again.
@@ -448,9 +456,17 @@ pub fn build(member: &Member, world: &World, ui: &Ui) -> View {
 
     if let Some(moving) = world.moving.as_ref().filter(|m| m.to == tab || here) {
         rows.push(Row::Note { text: moving_words(member, moving, world.listed(moving.to)), warn: false });
+        if moving.applied && member.on_ticket && !moving.now {
+            rows.push(Row::Action { label: t!("models.hurry").to_owned(), act: Act::Hurry(moving.proposal) });
+        }
         if moving.applied {
             rows.push(Row::Action { label: t!("models.undo_move").to_owned(), act: Act::Undo(moving.proposal) });
         }
+    }
+    // On a ticket, the other engine reachable: move now, the ticket handed over at the turn's end.
+    let reachable = tab == Engine::Claude || (world.codex_state != Some(EngineState::SignedOut) && !matches!(codex_list(world), CodexList::SignedOut | CodexList::Missing));
+    if !here && member.on_ticket && reachable && world.moving.as_ref().is_none_or(|m| m.to != tab) {
+        rows.push(Row::Action { label: t!("models.move_now", name = member.name, engine = engine_name(tab)), act: Act::MoveNow(tab) });
     }
     if here && let Some((line, update)) = gap_line(member.engine, member.asked, member.ran, listed) {
         rows.push(Row::Note { text: line, warn: true });
@@ -883,11 +899,11 @@ mod tests {
 
     #[test]
     fn a_move_on_its_way_shows_with_its_undo_and_a_suggestion_without() {
-        let mv = |done| Move { member: "pm".into(), role: "pm".into(), from: Engine::Claude, to: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: None, was_model: None, done };
-        let card = |applied, done| Proposal { id: 7, why: Why::Person, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![mv(done)], applied, proposed_at: 0 };
+        let mv = |done| Move { member: "pm".into(), role: "pm".into(), from: Engine::Claude, to: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: None, was_model: None, done, now: false };
+        let card = |applied, done| Proposal { id: 7, why: Why::Person, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![mv(done)], applied, proposed_at: 0, forecast: None };
         let mine = [card(true, false)];
         let moving = super::moving(&mine, "pm").unwrap();
-        assert_eq!(moving, Moving { proposal: 7, to: Engine::Codex, model: Some("gpt-6.1-sol".into()), applied: true });
+        assert_eq!(moving, Moving { proposal: 7, to: Engine::Codex, model: Some("gpt-6.1-sol".into()), applied: true, now: false });
         assert_eq!(super::moving(&[card(true, true)], "pm"), None, "made already");
         assert_eq!(super::moving(&mine, "backend"), None);
         let list = codex_models();
@@ -895,12 +911,39 @@ mod tests {
         let world = World { codex: Some(&list), moving: Some(moving.clone()), ..Default::default() };
         let view = build(&member, &world, &ui(Engine::Codex));
         assert_eq!(view.rows[0], Row::Note { text: t!("models.moving_ticket", name = "pm", to = "Codex · GPT-6.1 Sol"), warn: false });
+        // Mid-ticket, waiting for it to end: "Move now instead", then the undo.
+        assert_eq!(view.rows[1].act(), Some(Act::Hurry(7)));
+        assert_eq!(view.rows[2].act(), Some(Act::Undo(7)));
+        // Made now already: nothing left to hurry.
+        let hurried = World { moving: Some(Moving { now: true, ..moving.clone() }), ..world.clone() };
+        let view = build(&member, &hurried, &ui(Engine::Codex));
+        assert_eq!(view.rows[1].act(), Some(Act::Undo(7)));
+        // Off a ticket: no hurry either — it moves as soon as it is free.
+        let view = build(&Member { on_ticket: false, ..pm() }, &world, &ui(Engine::Codex));
         assert_eq!(view.rows[1].act(), Some(Act::Undo(7)));
         let suggested = Moving { applied: false, ..moving };
         let world = World { moving: Some(suggested), ..world };
         let view = build(&member, &world, &ui(Engine::Claude));
         assert_eq!(view.rows[0], Row::Note { text: t!("models.suggested", name = "pm", to = "Codex"), warn: false });
         assert!(!view.rows.iter().any(|r| matches!(r.act(), Some(Act::Undo(_)))));
+    }
+
+    #[test]
+    fn a_member_mid_ticket_can_be_moved_now_to_an_engine_it_can_reach() {
+        let list = codex_models();
+        let member = Member { on_ticket: true, ..pm() };
+        let world = World { codex: Some(&list), ..Default::default() };
+        let view = build(&member, &world, &ui(Engine::Codex));
+        let now = view.rows.iter().find(|r| matches!(r.act(), Some(Act::MoveNow(_)))).expect("Move now offered");
+        assert_eq!(now.act(), Some(Act::MoveNow(Engine::Codex)));
+        assert!(view.applies.contains(&t!("models.applies_ticket", name = "pm", from = "Claude", to = "Codex")), "{}", view.applies);
+        // Off a ticket, on its own tab, or the other engine signed out: no "now" to offer.
+        let free = build(&pm(), &world, &ui(Engine::Codex));
+        assert!(!free.rows.iter().any(|r| matches!(r.act(), Some(Act::MoveNow(_)))));
+        let own = build(&member, &world, &ui(Engine::Claude));
+        assert!(!own.rows.iter().any(|r| matches!(r.act(), Some(Act::MoveNow(_)))));
+        let out = World { codex_state: Some(EngineState::SignedOut), ..world.clone() };
+        assert!(!build(&member, &out, &ui(Engine::Codex)).rows.iter().any(|r| matches!(r.act(), Some(Act::MoveNow(_)))), "signed out: nothing to move to");
     }
 
     #[test]

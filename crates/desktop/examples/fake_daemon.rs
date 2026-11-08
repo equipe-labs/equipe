@@ -90,7 +90,9 @@
 //!
 //! `FAKE_STUDIO=1`: the designer at T-205 with references, two directions, a failing then
 //! passing check, a refused hand-in and a second look's fixes then pass, for the designer
-//! studio (`fake_daemon/studio.rs`; `waiting`, `failing`, `handed`, `codex`).
+//! studio (`fake_daemon/studio.rs`; `waiting`, `failing`, `handed`, `codex`; `qa`: a design QA
+//! of T-42 on the phone, with screenshots, recordings and a report; `qa_ask`: the same while
+//! the designer asks the person something on T-60).
 //! `FAKE_CHECKS=1`: the designer's conversation checks a screen in code and has a
 //! second look at it (`fake_daemon/checks.rs`); `FAKE_CHECKS=fail` stops at a failing check.
 //! `FAKE_NOISE=1`: the designer's conversation holds the engine's own turns —
@@ -101,6 +103,8 @@
 //!
 //! The Usage screen's look at where the plans went is a made-up week (`fake_daemon/plan_use.rs`);
 //! `FAKE_BURN=1` adds T-42's fast burn as the notice over every screen.
+//! `FAKE_MOVED=1|twice|live`: backend moved to the other engine mid-ticket, its
+//! conversation before and its hand-over packet kept (`fake_daemon/moved.rs`).
 //! `FAKE_USAGE=healthy|claude86|claude_out|both_low|week61`: both engines' plans,
 //! and the card for moving members between them (`fake_daemon/engines.rs`;
 //! `FAKE_SWITCHING=auto|off`, `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
@@ -268,7 +272,7 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
         // the card the daemon writes, in the daemon's language.
         if std::env::var("FAKE_ASKS").is_ok_and(|v| v == "engine") {
             use equipe_core::controls::{ENGINE_TOOL, Mover, move_words};
-            let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket };
+            let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket, now: false };
             let movers = [mover("designer", false, true), mover("frontend", true, false), mover("backend", false, false)];
             let action = move_words(lang(), &movers, Engine::Codex, Some("GPT-6.1 Sol"), None);
             return std::sync::Mutex::new(vec![Approval { ticket: None, ..ask(9, 1, "pm", ENGINE_TOOL, &action, None) }]);
@@ -466,6 +470,12 @@ fn board() -> Vec<Ticket> {
     }
     // `FAKE_STUDIO`: the designer's T-205, its worktree's design folder filled.
     out.extend(studio::ticket(|id, status, project, who, title, body| ticket(id, status, project, who, title, body, &[], None, None)));
+    // `FAKE_STUDIO=qa`: frontend's T-42 waits on that design QA.
+    if studio::qa() {
+        for t in out.iter_mut().filter(|t| t.id == 42) {
+            t.design_qa = Some(studio::TICKET);
+        }
+    }
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
@@ -555,7 +565,15 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
         let sets = if deciding().as_deref() == Some("scope") { std::iter::once(scope_set(now)).chain(sets).collect() } else { sets };
-        let mut waiting = if briefs::office() { vec![briefs::office_hours_set(now)] } else if deciding().is_some() { sets } else { Vec::new() };
+        let mut waiting = if queue::on() {
+            queue::sets(now)
+        } else if briefs::office() {
+            vec![briefs::office_hours_set(now)]
+        } else if deciding().is_some() {
+            sets
+        } else {
+            Vec::new()
+        };
         if review::on() {
             waiting.insert(0, review::set(now));
         }
@@ -1075,6 +1093,9 @@ mod command;
 #[path = "fake_daemon/helpers.rs"]
 mod helpers;
 
+#[path = "fake_daemon/moved.rs"]
+mod moved;
+
 #[path = "fake_daemon/switching.rs"]
 mod switching;
 
@@ -1083,6 +1104,8 @@ mod design;
 
 #[path = "fake_daemon/briefs.rs"]
 mod briefs;
+#[path = "fake_daemon/queue.rs"]
+mod queue;
 
 #[path = "fake_daemon/flows.rs"]
 mod flows;
@@ -1301,6 +1324,22 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 });
                             }
                         }
+                        // `FAKE_DECIDE=queue` with `FAKE_DECIDE_AFTER`: the PM asks one more, live.
+                        if queue::on()
+                            && let Some(after) = std::env::var("FAKE_DECIDE_AFTER").ok().and_then(|v| v.parse::<u64>().ok())
+                        {
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(after)).await;
+                                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                                let set = queue::later(now);
+                                {
+                                    let mut all = questions().lock().unwrap();
+                                    equipe_core::protocol::decide::add(&mut all, set.clone());
+                                }
+                                let _ = events.send(Event::QuestionsAsked { squad: "demo".into(), questions: set });
+                            });
+                        }
                         if deciding().as_deref() == Some("elsewhere") {
                             let events = events.clone();
                             tokio::spawn(async move {
@@ -1341,7 +1380,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_STUDIO`: the designer at T-205, watched in the designer studio.
                         if studio::on() {
                             let lines = studio::history();
-                            designer = on(designer, studio::TICKET, "app", studio::TITLE, studio::working(), ("Read", "design/brand.md"), None);
+                            designer = on(designer, studio::TICKET, "app", studio::title(), studio::working(), ("Read", "design/brand.md"), None);
                             designer.recent = lines;
                             if studio::codex() {
                                 designer.engine = Engine::Codex;
@@ -1431,6 +1470,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                         }
                         switching::mix(&mut sessions);
+                        moved::dress(&mut sessions);
+                        if moved::plays() {
+                            static MOVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                            if !MOVING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                tokio::spawn(moved::play(events.clone()));
+                            }
+                        }
                         // Read apart: the board's lock is held while the snapshot is put together.
                         let waiting_words = {
                             let board = tickets().lock().unwrap().clone();
@@ -1464,6 +1510,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 Vec::new()
                             },
                             engine_proposals: switching::proposals(),
+                            hand_overs: moved::hand_overs(),
                             squad: params.squad,
                             projects: if crowd::on() { crowd::projects() } else { vec![repo("web"), repo("app"), repo("api")] },
                             sessions,
@@ -1848,7 +1895,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) {
+                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) || moved::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

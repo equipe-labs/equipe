@@ -814,6 +814,7 @@ fn engine_proposal(why: Why, applied: bool) -> Proposal {
         effort: None,
         was_model: Some(model.into()),
         done: false,
+        now: false,
     };
     Proposal {
         id: 7_000_001,
@@ -825,6 +826,7 @@ fn engine_proposal(why: Why, applied: bool) -> Proposal {
         moves: vec![mv("backend", "opus"), mv("frontend", "sonnet")],
         applied,
         proposed_at: NOW / 1000,
+        forecast: None,
     }
 }
 
@@ -985,6 +987,7 @@ fn snapshot() -> Snapshot {
         role_models: Vec::new(),
         secret_asks: Vec::new(),
         engine_proposals: vec![engine_proposal(Why::Shift, false)],
+        hand_overs: Vec::new(),
         suggestions_off: false,
         desktop: Default::default(),
         allowed: vec![],

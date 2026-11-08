@@ -1341,7 +1341,7 @@ pub(crate) mod tests {
         use equipe_core::protocol::Engine;
         let (mut core, phone, now) = core_with_phone();
         let c = core.config.clone().unwrap();
-        let movers: Vec<Mover> = ["designer", "mobile", "mobile-2"].iter().map(|n| Mover { name: (*n).into(), from: Engine::Claude, working: false, on_ticket: true }).collect();
+        let movers: Vec<Mover> = ["designer", "mobile", "mobile-2"].iter().map(|n| Mover { name: (*n).into(), from: Engine::Claude, working: false, on_ticket: true, now: false }).collect();
         let action = move_words(equipe_core::i18n::Lang::En, &movers, Engine::Codex, None, None);
         let approval = Approval { id: 12, session: 1, member: "pm".into(), ticket: None, tool: ENGINE_TOOL.into(), action: action.clone(), reason: None, preview: None };
         core.on_relay(&json!({ "type": "presence", "device": phone.id, "online": false }), now);
@@ -1357,7 +1357,7 @@ pub(crate) mod tests {
         let always = Command::Decide { squad: "acme".into(), approval: 12, decision: Decision::Always, words: None, said: None };
         assert!(matches!(allowed(always), Some(Command::Decide { decision: Decision::Allow, .. })));
         // A phone never moves members itself.
-        assert_eq!(allowed(Command::MoveEngine { squad: "acme".into(), members: vec!["mobile".into()], engine: Engine::Codex, model: None, effort: None }), None);
+        assert_eq!(allowed(Command::MoveEngine { squad: "acme".into(), members: vec!["mobile".into()], engine: Engine::Codex, model: None, effort: None, now: false }), None);
     }
 
     #[test]

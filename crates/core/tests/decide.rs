@@ -372,3 +372,80 @@ async fn a_member_with_equipes_tools_has_no_engine_question_tool() {
     assert!(call[at..].iter().any(|a| a == "AskUserQuestion"), "{call:?}");
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_decision_asked_again_replaces_its_card_and_one_already_answered_stays_answered() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "backend")).await;
+    tool(&handle, "backend", "ask_decision", two_questions()).await;
+    let first = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
+    tool(&handle, "pm", "ask_decision", json!({ "questions": [{ "question": "Ship on Friday?", "options": ["Yes", "No"] }] })).await;
+    let other = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "pm")).await);
+
+    // The same questions, spaced and worded a little differently, the same
+    // options: the card keeps its id (a pick in progress still holds) and
+    // moves to the end, the newest.
+    let mut again = two_questions();
+    again["questions"][0]["question"] = json!("Which  database should the API use, then?");
+    tool(&handle, "backend", "ask_decision", again).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::QuestionsClosed { .. })), "nothing closed: {seen:#?}");
+    let replaced = asked(&seen);
+    assert_eq!(replaced.id, first.id);
+    assert_eq!(replaced.questions[0].question, "Which  database should the API use, then?");
+    assert!(replaced.asked_at >= first.asked_at);
+    let waiting = handle.snapshot("acme").await.questions;
+    assert_eq!(waiting.iter().map(|s| s.id).collect::<Vec<_>>(), [other.id, first.id], "one card for it");
+
+    // Other options this time: the old card goes, unanswered and untold; the new one comes.
+    let mysql = || {
+        let mut changed = two_questions();
+        changed["questions"][0]["options"] = json!([{ "label": "Postgres" }, { "label": "MySQL" }]);
+        changed
+    };
+    tool(&handle, "backend", "ask_decision", mysql()).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::QuestionsClosed { id, answers: None, .. } if *id == first.id)), "{seen:#?}");
+    let newer = asked(&seen);
+    assert_ne!(newer.id, first.id);
+    assert_eq!(handle.snapshot("acme").await.questions.iter().map(|s| s.id).collect::<Vec<_>>(), [other.id, newer.id]);
+
+    // Answered: the answer goes as given, once — and the same question asked
+    // after it is a card of its own; the answer isn't touched.
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: newer.id, answers: vec![Answer::pick(1), Answer::pick(0)], about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let told: Vec<&str> = seen.iter().filter_map(|e| if let Event::UserMessage { session: 2, text, .. } = e { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(told, ["Answers to your questions:\n1) Which database should the API use? → MySQL\n2) Which features ship first? → Auth"]);
+    tool(&handle, "backend", "ask_decision", mysql()).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::QuestionsClosed { .. })), "{seen:#?}");
+    let after = asked(&seen);
+    assert!(after.id != newer.id && after.id != first.id);
+    assert_eq!(handle.snapshot("acme").await.questions.len(), 2);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_decision_kept_twice_from_before_waits_once_after_a_restart() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let set = {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&project, "pm")).await;
+        tool(&handle, "pm", "ask_decision", json!({ "questions": [{ "question": "Ship on Friday?", "options": ["Yes", "No"] }] })).await;
+        let set = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
+        handle.shutdown().await;
+        set
+    };
+    // A journal from before asking again replaced a card: the one decision kept twice.
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    let twice = decide::QuestionSet { id: set.id + 1, asked_at: set.asked_at + 60, ..set.clone() };
+    journal.set_questions(&[set.clone(), twice.clone()]).unwrap();
+    drop(journal);
+    let (handle, _events) = runtime::start(config(&claude, &home, true));
+    assert_eq!(handle.snapshot("acme").await.questions, [decide::QuestionSet { id: set.id, ..twice }], "once, as last asked");
+    handle.shutdown().await;
+}

@@ -32,6 +32,9 @@ pub struct Engines {
 pub enum Answer {
     /// Move, Apply.
     Apply,
+    /// Move now: at the end of each one's turn, a ticket in progress handed
+    /// over — on a card whose moves are made, those still waiting.
+    Now,
     /// Not this time, Later — or Confirm on moves already made.
     Leave,
     /// Undo.
@@ -106,12 +109,16 @@ impl Engines {
         let card = self.get(id)?;
         let squad = squad.to_owned();
         let command = match (answer, card.applied) {
-            (Answer::Apply, false) => Command::ApplyEngineProposal { squad, id },
+            (Answer::Apply, false) => Command::ApplyEngineProposal { squad, id, now: false },
+            (Answer::Now, _) => Command::ApplyEngineProposal { squad, id, now: true },
             (Answer::Undo, true) => Command::UndoEngineProposal { squad, id },
             (Answer::Leave, _) => Command::DismissEngineProposal { squad, id },
             _ => return None,
         };
-        self.sent.push(id);
+        // A hurry leaves the card showing: its moves are on their way.
+        if !(answer == Answer::Now && card.applied) {
+            self.sent.push(id);
+        }
         Some(command)
     }
 
@@ -431,7 +438,8 @@ pub fn subline(p: &Proposal) -> &'static str {
     }
 }
 
-/// One move as the card's table shows it: who, now, after, whether done.
+/// One move as the card's table shows it: who, now, after, whether done —
+/// and when it happens, in plain words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub member: String,
@@ -440,6 +448,55 @@ pub struct Row {
     pub after: String,
     pub moves_engine: bool,
     pub done: bool,
+    pub when: String,
+}
+
+/// Where a member stands, for when a move reaches it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stands {
+    pub working: bool,
+    pub on_ticket: bool,
+}
+
+/// When a move reaches its member, as the daemon's rule says: moved; at the
+/// end of this turn with its ticket handed over (`now`); after its ticket;
+/// when this turn ends; as soon as it's free.
+pub fn when(m: &Move, s: Stands) -> &'static str {
+    match () {
+        _ if m.done => t!("engines.when_done"),
+        _ if m.in_place() => t!("engines.when_turn"),
+        _ if s.on_ticket && m.now => t!("engines.when_now"),
+        _ if s.on_ticket => t!("engines.when_ticket"),
+        _ if s.working => t!("engines.when_turn"),
+        _ => t!("engines.when_free"),
+    }
+}
+
+/// Whether the card offers "Move now": a move to the other engine waits for
+/// a member on a ticket, not yet made to happen at its turn's end.
+pub fn offers_now(p: &Proposal, stands: impl Fn(&str) -> Stands) -> bool {
+    !matches!(p.why, Why::Setup | Why::StepDown | Why::Return) && p.moves.iter().any(|m| !m.done && !m.in_place() && !m.now && stands(&m.member).on_ticket)
+}
+
+/// The forecast behind a card, in words: "Claude runs out in about 1 day
+/// 6 hours, 2 days before it resets — backend·frontend used 64% of its week".
+pub fn forecast_words(p: &Proposal, now: i64) -> Option<String> {
+    let f = p.forecast?;
+    let engine = p.engine.map(engine_name).unwrap_or_default();
+    let names = p.moves.iter().filter(|m| !m.in_place()).map(|m| m.member.as_str()).collect::<Vec<_>>().join("·");
+    let pace = match f.runs_out_at {
+        Some(at) => t!("engines.forecast_out", engine = engine, out = until(at, now), early = until(f.resets_at - at + now, now)),
+        None => t!("engines.forecast_lasts", engine = engine, span = until(f.resets_at, now)),
+    };
+    Some(match f.load_bp {
+        Some(bp) if bp > 0 && !names.is_empty() => format!("{pace} · {}", t!("engines.forecast_load", names = names, share = (bp + 50) / 100)),
+        _ => pace,
+    })
+}
+
+/// In `suggest`, the card's offer to let equipe make such moves itself.
+pub fn offers_auto(p: &Proposal, mode: Switching) -> bool {
+    mode == Switching::Suggest && !p.applied && matches!(p.why, Why::Shift | Why::Drain | Why::Exhausted)
 }
 
 /// "Claude · opus" — or the engine's own default.
@@ -461,7 +518,7 @@ fn short_model(model: &str) -> String {
     model.to_owned()
 }
 
-pub fn rows(p: &Proposal) -> Vec<Row> {
+pub fn rows(p: &Proposal, stands: impl Fn(&str) -> Stands) -> Vec<Row> {
     p.moves
         .iter()
         .map(|m: &Move| Row {
@@ -471,6 +528,7 @@ pub fn rows(p: &Proposal) -> Vec<Row> {
             after: seat(m.to, m.model.as_deref(), m.effort.as_deref()),
             moves_engine: !m.in_place(),
             done: m.done,
+            when: when(m, stands(&m.member)).to_owned(),
         })
         .collect()
 }
@@ -622,6 +680,7 @@ mod tests {
             effort: None,
             was_model: Some(model.into()),
             done: false,
+            now: false,
         };
         Proposal {
             id: 7,
@@ -633,16 +692,22 @@ mod tests {
             moves: vec![mv("backend", "claude-opus-5-5"), mv("frontend", "sonnet")],
             applied,
             proposed_at: NOW as u64,
+            forecast: None,
         }
+    }
+
+    /// backend mid-ticket and at work, frontend free.
+    fn stands(name: &str) -> Stands {
+        Stands { working: name == "backend", on_ticket: name == "backend" }
     }
 
     #[test]
     fn a_card_in_suggest_asks_and_one_in_auto_tells_with_an_undo() {
-        assert_eq!(headline(&shift(false), NOW), "Claude 5시간 한도 86% · 리셋 2시간 뒤 — backend·frontend를 다음 티켓부터 Codex로 옮길까요?");
+        assert_eq!(headline(&shift(false), NOW), "Claude 5시간 한도 86% · 리셋 2시간 뒤 — backend·frontend를 Codex로 옮길까요?");
         assert_eq!(buttons(&shift(false)), ("옮기기", "이번엔 그대로"));
-        assert_eq!(headline(&shift(true), NOW), "backend·frontend: Claude 5시간 한도 86% → 다음 티켓부터 Codex로");
+        assert_eq!(headline(&shift(true), NOW), "backend·frontend: Claude 5시간 한도 86% → Codex로 옮겨요");
         assert_eq!(buttons(&shift(true)), ("되돌리기", "확인"));
-        let rows = rows(&shift(false));
+        let rows = rows(&shift(false), stands);
         assert_eq!((rows[0].now.as_str(), rows[0].after.as_str(), rows[0].moves_engine), ("Claude · opus", "Codex · 기본 모델", true));
         let mut half = shift(true);
         half.moves[0].done = true;
@@ -656,12 +721,62 @@ mod tests {
             why: Why::Setup,
             engine: None,
             window: None,
-            moves: vec![Move { member: "qa".into(), role: "qa".into(), from: Engine::Claude, to: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("medium".into()), was_model: Some("sonnet".into()), done: false }],
+            moves: vec![Move { member: "qa".into(), role: "qa".into(), from: Engine::Claude, to: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("medium".into()), was_model: Some("sonnet".into()), done: false, now: false }],
             ..shift(false)
         };
         assert_eq!(kind(&setup), "추천 구성");
         assert_eq!(buttons(&setup), ("적용", "나중에"));
-        assert_eq!(rows(&setup)[0].after, "Codex · gpt-6.1-sol · medium");
+        assert_eq!(rows(&setup, |_| Stands::default())[0].after, "Codex · gpt-6.1-sol · medium");
+        assert!(!offers_now(&setup, |_| Stands { working: false, on_ticket: true }), "the setup moves between tickets");
+    }
+
+    #[test]
+    fn each_row_says_when_its_move_happens_and_a_member_mid_ticket_is_offered_move_now() {
+        let card = shift(false);
+        let when: Vec<String> = rows(&card, stands).into_iter().map(|r| r.when).collect();
+        assert_eq!(when, ["지금 티켓을 마친 뒤", "손이 비는 대로"]);
+        assert!(offers_now(&card, stands), "backend is mid-ticket");
+        assert!(!offers_now(&card, |_| Stands::default()), "nobody on a ticket: nothing to hurry");
+        // Made now: its row says so, and nothing is left to hurry.
+        let mut now = shift(true);
+        now.moves[0].now = true;
+        assert_eq!(rows(&now, stands)[0].when, "이번 턴이 끝날 때 · 티켓 넘김");
+        assert!(!offers_now(&now, stands));
+        now.moves[0].done = true;
+        assert_eq!(rows(&now, stands)[0].when, "옮김");
+        // Working off a ticket: at its turn's end.
+        assert_eq!(rows(&card, |_| Stands { working: true, on_ticket: false })[1].when, "이번 턴이 끝나면");
+        // The card's buttons: "Move now" answers with now; on moves made, it hurries them and the card stays.
+        let mut e = Engines::default();
+        e.propose(shift(false));
+        assert_eq!(e.decide("acme", 7, Answer::Now), Some(Command::ApplyEngineProposal { squad: "acme".into(), id: 7, now: true }));
+        assert_eq!(e.first(), None);
+        let mut made = Engines::default();
+        made.propose(shift(true));
+        assert_eq!(made.decide("acme", 7, Answer::Now), Some(Command::ApplyEngineProposal { squad: "acme".into(), id: 7, now: true }));
+        assert!(made.first().is_some(), "moves on their way: the card still tells of them, with its undo");
+    }
+
+    #[test]
+    fn the_card_says_the_forecast_and_in_suggest_offers_to_do_it_on_its_own() {
+        use equipe_core::protocol::engines::Forecast;
+        const DAY: i64 = 86_400;
+        let mut card = shift(false);
+        card.window = Some(Window::Weekly);
+        card.resets_at = NOW + 3 * DAY + 6 * 3600;
+        card.forecast = Some(Forecast { runs_out_at: Some(NOW + DAY + 6 * 3600), resets_at: NOW + 3 * DAY + 6 * 3600, load_bp: Some(6_400) });
+        assert_eq!(forecast_words(&card, NOW).as_deref(), Some("지금 속도면 Claude는 1일 6시간 뒤에 다 써요. 리셋보다 2일 빨라요 · backend·frontend: 이번 주 사용량의 64%"));
+        card.forecast = Some(Forecast { runs_out_at: None, resets_at: NOW + 2 * DAY, load_bp: None });
+        assert_eq!(forecast_words(&card, NOW).as_deref(), Some("지금 속도면 Claude는 2일 뒤 리셋까지 버텨요"));
+        assert_eq!(forecast_words(&shift(false), NOW), None, "no forecast known: no line");
+        assert!(offers_auto(&shift(false), Switching::Suggest));
+        assert!(!offers_auto(&shift(false), Switching::Auto) && !offers_auto(&shift(true), Switching::Suggest), "already on its own");
+        // Every language words the new lines.
+        for lang in equipe_core::i18n::Lang::ALL {
+            for key in ["engines.when_now", "engines.when_ticket", "engines.move_now", "engines.move_after", "engines.auto_offer", "engines.forecast_out", "engines.forecast_load", "plan_use.auto_hint", "models.move_now", "models.hurry"] {
+                assert!(crate::i18n::of(lang).own(key).is_some(), "{lang:?} {key}");
+            }
+        }
     }
 
     #[test]
@@ -669,7 +784,7 @@ mod tests {
         let mut e = Engines::default();
         assert!(e.propose(shift(false)));
         assert_eq!(e.decide("acme", 7, Answer::Undo), None, "nothing made yet to undo");
-        assert_eq!(e.decide("acme", 7, Answer::Apply), Some(Command::ApplyEngineProposal { squad: "acme".into(), id: 7 }));
+        assert_eq!(e.decide("acme", 7, Answer::Apply), Some(Command::ApplyEngineProposal { squad: "acme".into(), id: 7, now: false }));
         assert_eq!(e.first(), None, "hidden at once");
         assert_eq!(e.decide("acme", 7, Answer::Apply), None, "not twice");
         e.forget_sent();

@@ -85,7 +85,8 @@ pub fn ticket(make: impl Fn(u32, &str, &str, &str, &str, &str) -> Ticket) -> Opt
     } else {
         "in_progress"
     };
-    let mut t = make(TICKET, status, "app", "designer", TITLE, "Make the first-run welcome calmer, with one clear next step.\n\n- [ ] The primary action is in the first screenful at every width\n- [ ] Light and dark");
+    let body = if qa() { "frontend's T-42 changes what users see: check its screens before the person reviews it." } else { "Make the first-run welcome calmer, with one clear next step.\n\n- [ ] The primary action is in the first screenful at every width\n- [ ] Light and dark" };
+    let mut t = make(TICKET, status, "app", "designer", title(), body);
     t.worktree = Some(worktree());
     t.branch = Some(format!("equipe/designer-t{TICKET}"));
     if t.status == TicketStatus::Waiting {
@@ -175,6 +176,9 @@ fn look_run(v: &Verdict) -> Entry {
 const REFUSED: &str = "Not yet — a screen you made goes to the person only checked and seen fresh:\n- onboarding/welcome has had no second look: `equipe design second-look onboarding/welcome`.\nThen hand in again. If you hand in again the same way, it goes in with these marked for the person as not cleared.";
 
 pub fn history() -> Vec<Entry> {
+    if qa() {
+        return qa_history();
+    }
     let reply = |text: &str| Entry::Reply { text: text.into() };
     let shoot = |url: &str, name: &str| tool("Bash", &format!("equipe shoot {url} --out design/references/{name}/shot.png"), true, &format!("kept design/references/{name}/shot.png"));
     let mut out = vec![
@@ -243,8 +247,31 @@ fn time_of(lines: &[Entry], at: usize) -> u64 {
     times(lines).get(at).copied().flatten().unwrap_or_else(unix)
 }
 
+/// `FAKE_STUDIO=qa_ask`: a question of the designer's on another ticket.
+fn elsewhere_set(now: u64) -> QuestionSet {
+    QuestionSet {
+        id: 9206,
+        session: 4,
+        member: "designer".into(),
+        ticket: Some(60),
+        questions: vec![Question {
+            question: "Which tone for the onboarding's first line?".into(),
+            header: "Onboarding tone".into(),
+            options: vec![Choice { label: "Warm (Recommended)".into(), ..Choice::default() }, Choice { label: "Plain".into(), ..Choice::default() }],
+            multi_select: false,
+            ..Question::default()
+        }],
+        asked_at: now.saturating_sub(5 * 60),
+        review: false,
+        retro: None,
+    }
+}
+
 /// `FAKE_STUDIO=waiting`: the pick, waiting on the person.
 pub fn question_set(now: u64) -> Option<QuestionSet> {
+    if is("qa_ask") {
+        return Some(elsewhere_set(now));
+    }
     is("waiting").then(|| QuestionSet {
         id: 9205,
         session: 4,
@@ -264,6 +291,133 @@ pub fn question_set(now: u64) -> Option<QuestionSet> {
         review: false,
         retro: None,
     })
+}
+
+
+// ── `FAKE_STUDIO=qa`: a design QA ticket, as real ones go ──
+
+/// A design QA: the designer reviewing frontend's T-42 on the ticket's phone
+/// — the change read, simulator screenshots taken and opened, the phone
+/// looked at and recorded, fresh eyes asked, a report with its findings in
+/// the hand-in folder. `qa_ask`: meanwhile it asks the person something on
+/// another ticket, so the sidebar says "Your turn" — and the studio too.
+pub fn qa() -> bool {
+    is("qa") || is("qa_ask")
+}
+
+pub const QA_TITLE: &str = "Design QA: T-42 the checkout's buttons at the largest text size";
+
+/// The ticket's title, as the mode has it.
+pub fn title() -> &'static str {
+    if qa() { QA_TITLE } else { TITLE }
+}
+
+fn scratch(name: &str) -> PathBuf {
+    equipe_providers::credentials::equipe_home().join("studio/scratch/t205").join(name)
+}
+
+fn recordings() -> PathBuf {
+    equipe_providers::credentials::equipe_home().join("studio/recordings").join(format!("T-{TICKET}"))
+}
+
+fn outputs() -> PathBuf {
+    worktree().join("outputs").join(format!("T-{TICKET} Design QA"))
+}
+
+fn labelled(name: &str, target: &str, label: &str, background: bool) -> Entry {
+    Entry::Tool { tool: name.into(), target: Some(target.into()), outcome: Some(Box::new(ToolOutcome { ok: true, exit: Some(0), ms: Some(1_200), output: String::new(), skipped: 0, diff: None })), label: Some(label.into()), background }
+}
+
+fn qa_history() -> Vec<Entry> {
+    let reply = |text: &str| Entry::Reply { text: text.into() };
+    let s = |n: &str| scratch(n).to_string_lossy().into_owned();
+    let o = |n: &str| outputs().join(n).to_string_lossy().into_owned();
+    let mut out = vec![
+        Entry::Note { undo: None, text: format!("── T-{TICKET} · {QA_TITLE} — on branch equipe/designer-t{TICKET}-1a2b") },
+        tool("Skill", "equipe:design-qa", true, ""),
+        labelled("Bash", "cd /tmp/fake/web; git log --oneline main..HEAD; git diff main...HEAD --stat", "See what T-42 changed", false),
+        tool("Read", "/tmp/fake/web/src/checkout/PayButton.tsx", true, ""),
+        tool("mcp__equipe__estimate", "", true, ""),
+        reply("Building T-42's branch for the simulator; meanwhile I read the button styles."),
+        labelled("Bash", &format!("{} > {} 2>&1", s("run.sh"), s("run.log")), "Build T-42 and shoot it at the largest text size", true),
+        tool("mcp__phone__start", "iPhone 17e", true, ""),
+        tool("mcp__phone__look", "Checkout", true, ""),
+        tool("Bash", &format!("xcrun simctl io booted screenshot {}", s("checkout-ax5.png")), true, ""),
+        tool("Read", &s("checkout-ax5.png"), true, ""),
+        reply("At the largest text size the Pay button's label wraps onto two lines and the card icon spills out of its circle."),
+        tool("mcp__phone__record", "Checkout → Pay", true, ""),
+        tool("mcp__phone__frames", "checkout.mp4", true, ""),
+        labelled("Bash", &format!("cd {}; python3 sheet.py", s("")), "Make a before/after sheet", false),
+        tool("Read", &s("before-after-ax5.png"), true, ""),
+        tool("Agent", "Fresh-eyes look at the checkout buttons", true, ""),
+        reply("Fresh eyes agree: the label wrap is the blocker; the icon is a polish note."),
+        tool("Write", &o("report.md"), true, ""),
+        tool("Read", &o("1-checkout-ax5-before-after.png"), true, ""),
+    ];
+    out.push(Entry::Tool { tool: "mcp__phone__look".into(), target: Some("Checkout, dark".into()), outcome: None, label: None, background: false });
+    out
+}
+
+/// A phone screen with the checkout's Pay button: at the largest text size
+/// the label wraps and the icon spills out of its circle.
+fn phone(ax5: bool, dark: bool) -> RgbaImage {
+    let (w, h) = (195, 422);
+    let (bg, ink, soft) = if dark { ([0x15, 0x15, 0x13, 0xFF], [0xF3, 0xF0, 0xE9, 0xFF], [0x4A, 0x48, 0x43, 0xFF]) } else { (BG, INK, SOFT) };
+    let mut img = RgbaImage::from_pixel(w, h, Rgba(bg));
+    fill(&mut img, 12, 14, 60, 8, ink, 3);
+    for i in 0..4u32 {
+        fill(&mut img, 12, 50 + i * 46, w - 24, 34, soft, 8);
+    }
+    let big = if ax5 { 2 } else { 1 };
+    // The Pay button: one line, or two when the text is at its largest.
+    let bh = 40 * big;
+    fill(&mut img, 12, h - 24 - bh, w - 24, bh, BLUE, 12);
+    fill(&mut img, 52, h - 24 - bh + 14, 90, 10, [0xFF, 0xFF, 0xFF, 0xFF], 4);
+    if ax5 {
+        fill(&mut img, 52, h - 24 - bh + 34, 60, 10, [0xFF, 0xFF, 0xFF, 0xFF], 4);
+    }
+    // The card icon in its circle, spilling at the largest size.
+    fill(&mut img, 22, h - 24 - bh + 10, 22, 22, [0xFF, 0xFF, 0xFF, 0xFF], 11);
+    let g = if ax5 { 30 } else { 12 };
+    fill(&mut img, 33 - g / 2, h - 24 - bh + 21 - g / 4, g, g / 2, ORANGE, 2);
+    img
+}
+
+/// Two screens side by side, before and after.
+fn sheet(a: &RgbaImage, b: &RgbaImage) -> RgbaImage {
+    let mut img = RgbaImage::from_pixel(a.width() + b.width() + 36, a.height().max(b.height()) + 24, Rgba([0xFF, 0xFF, 0xFF, 0xFF]));
+    image::imageops::overlay(&mut img, a, 12, 12);
+    image::imageops::overlay(&mut img, b, i64::from(a.width()) + 24, 12);
+    img
+}
+
+fn seed_qa() {
+    let lines = history();
+    let at = |needle: &str| lines.iter().position(|e| matches!(e, Entry::Tool { target: Some(t), .. } if t.contains(needle))).map(|i| time_of(&lines, i)).unwrap_or_else(unix);
+    // The squad's shared design folder, with an old check of another ticket's: never this one's.
+    let _ = std::fs::write(design().join("tokens.json"), "{}");
+    let old = Record { screen: "settings/notifications".into(), at: start() - 3 * 86_400, rendered: true, summary: passing(), ..Record::default() };
+    let _ = record::write(&design(), &old);
+    let shots = [
+        (scratch("checkout-ax5.png"), phone(true, false), "checkout-ax5.png"),
+        (scratch("checkout-ax5-dark.png"), phone(true, true), "booted screenshot"),
+        (scratch("before-after-ax5.png"), sheet(&phone(false, false), &phone(true, false)), "sheet.py"),
+        (outputs().join("1-checkout-ax5-before-after.png"), sheet(&phone(false, false), &phone(true, false)), "report.md"),
+        (outputs().join("2-checkout-ax5-dark.png"), phone(true, true), "report.md"),
+    ];
+    for (path, img, step) in shots {
+        save(&img, &path);
+        touch(&path, at(step));
+    }
+    for n in 0..4u32 {
+        let frame = recordings().join(format!("checkout/{:02}-{}.0s.png", n + 1, n));
+        save(&phone(n >= 2, false), &frame);
+        touch(&frame, at("checkout.mp4") - u64::from(3 - n));
+    }
+    let report = "# T-205 Design QA — T-42 checkout buttons at the largest text size\n\nT-42's branch on an iPhone 17e simulator, light and dark, default and largest text. Verdict: **change and again**.\n\n## Shot\n- Checkout, default and largest text, light and dark\n- The Pay flow, recorded\n\n## Blocking\n1. **The Pay button's label wraps onto two lines at the largest text size** — let the button grow, or shorten the label to \"Pay\".\n2. The card icon spills out of its 22pt circle at the largest size: scale it with the text.\n\n## Polish\n- The total's figures aren't tabular, so they jump as the amount changes.\n";
+    let _ = std::fs::create_dir_all(outputs());
+    let _ = std::fs::write(outputs().join("report.md"), report);
+    touch(&outputs().join("report.md"), at("report.md"));
 }
 
 // ── the design folder ──
@@ -385,8 +539,11 @@ pub fn seed() {
         return;
     }
     let dir = design();
-    let _ = std::fs::remove_dir_all(worktree());
+    let _ = std::fs::remove_dir_all(equipe_providers::credentials::equipe_home().join("studio"));
     let _ = std::fs::create_dir_all(&dir);
+    if qa() {
+        return seed_qa();
+    }
     let _ = std::fs::write(dir.join("tokens.json"), r##"{ "color": { "$type": "color", "bg": { "$value": "#F6F5F1" }, "ink": { "$value": "#1D1C19" }, "accent": { "$value": "#2160AB" } } }"##);
     let _ = std::fs::write(dir.join("brand.md"), "# Brief\n\nReference: Linear's method pages — the quiet density.\nLocked: the logo.\nThesis: calm, one next step.\n");
     let lines = history();
@@ -465,17 +622,30 @@ fn touch(path: &Path, at: u64) {
     let _ = std::fs::File::options().write(true).open(path).and_then(|f| f.set_modified(when));
 }
 
-/// `design_studio`: the folder read as the daemon reads it.
+/// `design_studio`: the work gathered as the daemon gathers it — its
+/// design folder, the phone's recordings, its hand-in folder, what its
+/// conversation opened.
 pub fn answer(ask: &StudioAsk) -> Result<Studio, String> {
     if !on() || ask.ticket != TICKET {
         return Ok(Studio { ticket: ask.ticket, ..Studio::default() });
     }
-    Ok(equipe_core::design::studio::read(&design(), ask.ticket))
+    let entries = history();
+    let lines = entries.iter().cloned().zip(times(&entries)).collect();
+    Ok(equipe_core::design::studio::gather(&equipe_core::design::studio::Gather {
+        ticket: ask.ticket,
+        design: Some(design()),
+        worktree: Some(worktree()),
+        recordings: Some(recordings()),
+        images: Vec::new(),
+        cwd: Some(worktree()),
+        lines,
+        also: Vec::new(),
+    }))
 }
 
 /// A picture of the folder's, checked as the daemon checks one.
 pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
-    let root = std::fs::canonicalize(design()).map_err(|e| e.to_string())?;
+    let root = std::fs::canonicalize(equipe_providers::credentials::equipe_home().join("studio")).map_err(|e| e.to_string())?;
     if !on() || !Path::new(&ask.path).starts_with(&root) {
         return Err(format!("{} isn't one of the studio's", ask.path));
     }

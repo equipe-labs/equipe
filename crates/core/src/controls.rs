@@ -37,8 +37,10 @@ pub enum Change {
     /// A member's model, within the engine it runs on.
     Model { member: String, model: String },
     /// Members moved to another engine — on `model` and at `effort` there,
-    /// when named (else what that engine recommends for each one's role).
-    Engine { members: Vec<String>, engine: Engine, model: Option<String>, effort: Option<String> },
+    /// when named (else what that engine recommends for each one's role);
+    /// `now`: at the end of each one's current turn, a ticket in progress
+    /// handed over, rather than before its next ticket.
+    Engine { members: Vec<String>, engine: Engine, model: Option<String>, effort: Option<String>, now: bool },
     /// A member's effort; none: its engine's default.
     Effort { member: String, effort: Option<String> },
     /// How members move between engines as plans run low.
@@ -136,7 +138,12 @@ impl Change {
                 if members.is_empty() {
                     return Err("Which members? Give `members` (or one `member`).".to_owned());
                 }
-                Change::Engine { members, engine, model: s("model"), effort: s("effort").filter(|e| e != "default") }
+                let now = match s("when").as_deref() {
+                    None | Some("next_ticket") => false,
+                    Some("now") => true,
+                    Some(v) => return Err(format!("`when` is now or next_ticket, not {v:?}.")),
+                };
+                Change::Engine { members, engine, model: s("model"), effort: s("effort").filter(|e| e != "default"), now }
             }
             "effort" => Change::Effort { member: member()?, effort: Some(s("value").or_else(|| s("effort")).ok_or("Give the new `value`.")?).filter(|v| v != "default") },
             "engine_switching" => Change::EngineSwitching(match value()?.as_str() {
@@ -205,16 +212,21 @@ pub struct Mover {
     pub from: Engine,
     /// Mid-turn.
     pub working: bool,
-    /// On a ticket: it finishes it where it is.
+    /// On a ticket: it finishes it where it is — unless the move is `now`.
     pub on_ticket: bool,
+    /// The move happens at the end of its turn, a ticket in progress handed over.
+    pub now: bool,
 }
 
 /// When a move to `to` reaches `m`, in the model picker's own words: the
-/// daemon's rule — between tickets, else when the turn ends, else at once.
+/// daemon's rule — between tickets (or, `now`, at the end of this turn with
+/// the ticket handed over), else when the turn ends, else at once.
 pub fn move_when(lang: Lang, m: &Mover, to: Engine) -> String {
     let words = core(lang);
     let (name, from, to) = (("name", m.name.clone()), ("from", engine_name(m.from).to_owned()), ("to", engine_name(to).to_owned()));
-    if m.on_ticket {
+    if m.on_ticket && m.now {
+        words.fill(if m.working { "control.engine_ticket_now" } else { "control.engine_ticket_now_free" }, &[name, to])
+    } else if m.on_ticket {
         words.fill("control.engine_ticket", &[name, from, to])
     } else if m.working {
         words.fill("control.engine_turn_end", &[name, to])
@@ -261,9 +273,11 @@ to the person as an approval card saying exactly what changes; it happens only i
 their answer. Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default \
 with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), model (member, value: a model of the engine \
 the member runs on), effort (member, value, or default), engine (members — every one in one call — value claude | \
-codex, and optionally model and effort there), engine_switching (off | suggest | auto), design_reviewer (who reviews \
-the designer's work: auto — the other engine when it is signed in with room, else the member's own in a fresh session — | \
-same | other), remove_project (project), \
+codex, optionally model and effort there, and when: next_ticket — the default: one on a ticket finishes it where it is and \
+moves before its next — or now: at the end of each one's current turn, a ticket in progress handed over, same branch, and \
+carried on there; one not on a ticket, you included, moves once its turn ends either way, its conversation handed over), \
+engine_switching (off | suggest | auto), design_reviewer (who reviews the designer's work: auto — the other engine when \
+it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
 the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket). Never set another engine's model \
 through `model`: moving a member to it is `engine`. Adding a project is `add_project`; adding a routine, \
@@ -277,6 +291,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
                     "model": { "type": "string", "description": "engine: the model there (left out: what that engine recommends for each one's role)." },
                     "effort": { "type": "string", "description": "engine: the effort there (left out: its default)." },
+                    "when": { "type": "string", "enum": ["next_ticket", "now"], "description": "engine: next_ticket (the default), or now — mid-ticket, at the end of each one's turn, its ticket handed over. Use now when the person asks for it now." },
                     "project": { "type": "string", "description": "The project's name, for remove_project, hq and signal." },
                     "name": { "type": "string", "description": "The signal's name." },
                     "id": { "type": "integer", "description": "The routine's id." },
@@ -356,15 +371,19 @@ mod tests {
     #[test]
     fn an_engine_move_names_its_members_and_engine_and_always_waits_for_the_persons_tap() {
         let moved = change(json!({ "setting": "engine", "members": ["designer", "mobile", "mobile-2"], "value": "codex" }));
-        assert_eq!(moved, Change::Engine { members: vec!["designer".into(), "mobile".into(), "mobile-2".into()], engine: Engine::Codex, model: None, effort: None });
+        assert_eq!(moved, Change::Engine { members: vec!["designer".into(), "mobile".into(), "mobile-2".into()], engine: Engine::Codex, model: None, effort: None, now: false });
         for now in [Mode::ReadOnly, Mode::Ask, Mode::Auto, Mode::Full] {
             assert!(moved.needs_yes(now), "never at once, in any mode");
         }
         // One member as `member`, both at once, each once; the model and effort there.
         let one = change(json!({ "setting": "engine", "member": "qa", "members": ["backend", "qa"], "value": "Claude", "model": "opus", "effort": "high" }));
-        assert_eq!(one, Change::Engine { members: vec!["backend".into(), "qa".into()], engine: Engine::Claude, model: Some("opus".into()), effort: Some("high".into()) });
-        assert_eq!(change(json!({ "setting": "engine", "member": "qa", "value": "codex", "effort": "default" })), Change::Engine { members: vec!["qa".into()], engine: Engine::Codex, model: None, effort: None });
+        assert_eq!(one, Change::Engine { members: vec!["backend".into(), "qa".into()], engine: Engine::Claude, model: Some("opus".into()), effort: Some("high".into()), now: false });
+        assert_eq!(change(json!({ "setting": "engine", "member": "qa", "value": "codex", "effort": "default" })), Change::Engine { members: vec!["qa".into()], engine: Engine::Codex, model: None, effort: None, now: false });
+        // Now, mid-ticket: as the person asked; anything else is refused, not guessed.
+        assert_eq!(change(json!({ "setting": "engine", "member": "qa", "value": "codex", "when": "now" })), Change::Engine { members: vec!["qa".into()], engine: Engine::Codex, model: None, effort: None, now: true });
+        assert!(change(json!({ "setting": "engine", "member": "qa", "value": "codex", "when": "now" })).needs_yes(Mode::Full), "now too: only the person's tap");
         let err = |args: Value| Change::parse(&args).unwrap_err();
+        assert!(err(json!({ "setting": "engine", "member": "qa", "value": "codex", "when": "soon" })).contains("now or next_ticket"));
         assert!(err(json!({ "setting": "engine", "value": "codex" })).contains("`members`"));
         assert!(err(json!({ "setting": "engine", "members": [], "value": "codex" })).contains("`members`"));
         assert!(err(json!({ "setting": "engine", "member": "qa", "value": "gemini" })).contains("claude or codex"));
@@ -398,7 +417,7 @@ mod tests {
 
     #[test]
     fn an_engine_moves_card_says_who_moves_where_and_when_each_one_does_in_the_pickers_words() {
-        let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket };
+        let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket, now: false };
         let movers = [mover("designer", false, true), mover("mobile", true, false), mover("mobile-2", false, false)];
         let card = move_words(Lang::En, &movers, Engine::Codex, None, None);
         assert_eq!(
@@ -420,11 +439,24 @@ mod tests {
         assert_eq!(ko[2], "designer는 진행 중인 티켓은 Claude로 마치고 다음 티켓부터 Codex로 옮겨요. 하던 일은 넘겨줘요.");
         assert_eq!(ko[3], "mobile은 이번 턴이 끝나면 Codex로 옮겨요. 대화 내용은 넘겨줘요.");
         assert_eq!(ko[4], "mobile-2는 손이 비는 대로 Codex로 옮겨요. 대화 내용은 넘겨줘요.");
+        // Now: mid-ticket, at the end of this turn — what is handed over, said; at the desk, as before.
+        let now = |m: &Mover| Mover { now: true, ..m.clone() };
+        let busy = Mover { working: true, ..now(&movers[0]) };
+        assert_eq!(
+            move_when(Lang::En, &busy, Engine::Codex),
+            "designer switches to Codex when this turn ends, mid-ticket: its ticket is handed over — same branch, with what's done and what's next — and carried on there."
+        );
+        assert_eq!(move_when(Lang::En, &now(&movers[0]), Engine::Codex), "designer switches to Codex now, mid-ticket: its ticket is handed over — same branch, with what's done and what's next — and carried on there.");
+        assert_eq!(move_when(Lang::En, &now(&movers[1]), Engine::Codex), move_when(Lang::En, &movers[1], Engine::Codex), "off a ticket, now changes nothing");
         // Every language words each case.
         for lang in Lang::ALL {
             let card = move_words(lang, &movers, Engine::Codex, Some("GPT-6.1 Sol"), Some("high"));
             assert_eq!(card.lines().count(), 6, "{lang:?}: {card}");
             assert!(!card.contains('{') && card.contains("mobile-2") && card.contains("GPT-6.1 Sol"), "{lang:?}: {card}");
+            for m in [&busy, &now(&movers[0])] {
+                let line = move_when(lang, m, Engine::Codex);
+                assert!(!line.contains('{') && line.contains("designer") && line.contains("Codex") && line != move_when(lang, &movers[0], Engine::Codex), "{lang:?}: {line}");
+            }
         }
     }
 }

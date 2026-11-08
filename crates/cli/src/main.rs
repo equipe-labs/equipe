@@ -1637,6 +1637,8 @@ impl App {
                 | Event::EngineProposed { .. }
                 | Event::EngineProposalClosed { .. }
                 | Event::EngineSwitchingChanged { .. }
+                | Event::MemberMoved { .. }
+                | Event::HandOver { .. }
                 | Event::ProjectsChanged { .. }
                 | Event::RoutinesChanged { .. }
                 | Event::RoutineProposed { .. }
