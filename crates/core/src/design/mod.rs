@@ -14,6 +14,7 @@
 //! - `second_look`: a reviewer started fresh, given only the pictures, the
 //!   brief and the system, whose verdict a hand-in waits on.
 //! - `directions`: the directions proposed and chosen, so the next differs.
+//! - `brand`: which tickets are brand work, and what a designer starting one is told.
 //! - `refs`: a brief's reference board — pages from the galleries a designer
 //!   studies, each with what to learn from it, never another's brand.
 //! - `palette`: candidate palettes on a real layout, light and dark, with
@@ -32,6 +33,7 @@
 //! - `versions`: the accepted versions of a folder, from its history, and
 //!   the ticket that asks for one back.
 
+pub mod brand;
 pub mod check;
 pub mod component;
 pub mod fonts;

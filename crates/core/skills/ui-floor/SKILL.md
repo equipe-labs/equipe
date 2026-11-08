@@ -18,7 +18,3 @@ Before you hand in a change to what users see, check the changed screens drawn a
 `data-primary` action in the first screenful. Hand in with the floor passing on what you changed. Where the
 designer's spec keeps one of the habits it reports (a centred layout, say), its reason is in `design/decisions/`
 and the lint says so; anything else it reports as a habit, fix or name in your hand-in, and its notes are polish.
-
-A component pulled with `equipe design component` (its `SOURCE.md` beside it, in `design/vendor/`) is a starting
-point, not ours: take its structure and behaviour, restyle every colour, font, radius and picture it brings to the
-design system's tokens, keep its licence's notice, and never ship another brand's look or words.

@@ -3989,6 +3989,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                 .collect(),
             _ => Vec::new(),
         };
+        // A designer on brand work gets its reference tools too (`board::design_tools_tool`).
+        let on_ticket = self.sessions.get(&id).filter(|s| s.member.as_ref().is_some_and(|m| m.role == design_qa::DESIGNER)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        let branding = match (on_ticket, squad.clone()) {
+            (Some(on), Some(sq)) => self.tickets(&sq).into_iter().find(|t| t.id == on).is_some_and(|t| crate::design::brand::is_branding(&t.title, &t.body)),
+            _ => false,
+        };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -4010,6 +4016,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                     "command": binary,
                     "args": ["mcp", "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
                 }});
+                if branding && let Some(args) = servers[MCP_SERVER]["args"].as_array_mut() {
+                    args.push(json!("--branding"));
+                }
                 if let Some(port) = browser {
                     servers[browser::SERVER] = browser::entry(port);
                 }
@@ -5085,6 +5094,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
             prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
+        }
+        // Brand work, and only it, takes the designer's full reference pass.
+        let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);
+        if designer && crate::design::brand::is_branding(&ticket.title, &ticket.body) {
+            prompt.push_str(&crate::design::brand::note(board_tools));
         }
         if let Some(plan) = &ticket.plan {
             let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());

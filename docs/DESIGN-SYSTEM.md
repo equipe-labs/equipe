@@ -235,6 +235,21 @@ say when (`crates/core/skills/design-tools/` and the rest).
 
 ### References and taste — `equipe design refs`
 
+These are for brand work — a brand, a rebrand, a new visual direction — and
+only brand work changes what a designer is told: every other ticket's charter,
+skills and board tools are exactly as before (`members_without_phone` pins
+them). A ticket is brand work when its body has a line `Design: brand` (or
+`Design: rebrand`, `Design: new direction`), the PM's explicit flag, or when
+its title or body asks for one in so many words — a rebrand, a brand or visual
+identity, a new visual direction (`design::brand::is_branding`). On such a
+ticket the designer's first prompt carries the full pass
+(`crates/core/assets/brand-pass.md`: brief, a board of five or more references
+from two sources or more, two or three directions pictured, the critic, the
+person's pick with a recommendation, the chosen tokens at AA, the build), and
+its board server is started with `--branding`, which adds the `design_tools`
+tool: `equipe design refs | palette | type | component` run for it outside
+its engine's sandbox, in its worktree, reading only the listed sites.
+
 References are studied for their patterns and layouts, never taken for a
 brand: a reference's "what to learn" line that says to take another company's
 logo, name, marks or words is refused (`refs::learn_problems`). Each reference
