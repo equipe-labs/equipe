@@ -7,16 +7,27 @@
 //! members' sandboxed commands can't read, so only the daemon gets through.
 //! Requests are served one at a time: two members never move the pointer at once.
 
-use std::io::{self, BufRead as _, Write as _};
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::io::BufRead as _;
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 use base64::Engine as _;
-use equipe_protocol::rpc::{Image, ToolResult};
-use serde_json::{Value, json};
+#[cfg(unix)]
+use equipe_protocol::rpc::Image;
+use equipe_protocol::rpc::ToolResult;
+#[cfg(unix)]
+use serde_json::json;
+use serde_json::Value;
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-use crate::controller::{Controller, Desktop, Reply, SETUP};
+use crate::controller::{Controller, Desktop};
+#[cfg(unix)]
+use crate::controller::{Reply, SETUP};
 
 /// The helper's folder in equipe's home: socket, token, signing key, bundles.
 pub fn dir(home: &Path) -> PathBuf {
@@ -120,6 +131,7 @@ pub fn serve<D: Desktop>(_home: &Path, _controller: &mut Controller<D>, _status:
     Err(io::Error::other("desktop control unsupported on Windows yet"))
 }
 
+#[cfg(unix)]
 fn answer<D: Desktop>(
     home: &Path,
     controller: &mut Controller<D>,
@@ -159,6 +171,7 @@ fn answer<D: Desktop>(
     }
 }
 
+#[cfg(unix)]
 fn reply(reply: Reply) -> ToolResult {
     ToolResult {
         text: reply.text,
@@ -168,6 +181,7 @@ fn reply(reply: Reply) -> ToolResult {
 }
 
 /// Compare without stopping at the first difference.
+#[cfg(unix)]
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -200,7 +214,7 @@ pub async fn call(_home: &Path, _member: &str, _tool: &str, _arguments: &Value) 
     ToolResult::error("desktop control unsupported on Windows yet")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

@@ -436,7 +436,10 @@ impl Scratch {
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
         let dir = std::env::temp_dir().join(format!("equipe-card-{}-{n}-{nanos}", std::process::id()));
+        #[cfg(unix)]
         let mut builder = std::fs::DirBuilder::new();
+        #[cfg(windows)]
+        let builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt as _;

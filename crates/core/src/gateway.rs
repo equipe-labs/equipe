@@ -287,7 +287,7 @@ async fn serve_client(
     // (phone relay, Telegram), or a member's process reaching in. Read once,
     // before the stream is split, from the peer's credentials. Person-only
     // commands from a member are refused below ([`crate::origin`]).
-    let peer = stream.peer_cred().ok().and_then(|cred| cred.pid()).and_then(|pid| u32::try_from(pid).ok());
+    let peer = peer_pid(&stream);
     let origin = crate::origin::of(peer);
     let (reader, writer) = stream.into_split();
     // Replies and events share the write half; a task owns it.
@@ -1202,8 +1202,20 @@ pub async fn is_running(socket: &Path) -> bool {
 /// daemon that no longer answers.
 pub async fn daemon_pid(socket: &Path) -> Option<u32> {
     let stream = connect(socket).await.ok()?;
+    peer_pid(&stream).filter(|pid| *pid > 1)
+}
+
+#[cfg(unix)]
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
     let pid = stream.peer_cred().ok()?.pid()?;
-    u32::try_from(pid).ok().filter(|p| *p > 1)
+    u32::try_from(pid).ok()
+}
+
+// The TCP compatibility listener is only a compile-time bridge. T-514
+// replaces it with named pipes and their client-process identity.
+#[cfg(windows)]
+fn peer_pid(_stream: &UnixStream) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]
