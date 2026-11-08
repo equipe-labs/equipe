@@ -18,3 +18,12 @@ Before you hand in a change to what users see, check the changed screens drawn a
 `data-primary` action in the first screenful. Hand in with the floor passing on what you changed. Where the
 designer's spec keeps one of the habits it reports (a centred layout, say), its reason is in `design/decisions/`
 and the lint says so; anything else it reports as a habit, fix or name in your hand-in, and its notes are polish.
+
+Where the project has a design system of its own — a component registry, a `components.json` — build products only
+from it: its components and its tokens, nothing beside them. The lint holds every UI edit to that (the `system-*`
+rules, blocking like the floor): a styled `<button>` where the registry has Button, a hand-made modal where it has
+Dialog, Radix or another UI kit imported around the registry, a colour, radius, shadow or size written out that a token
+holds. Use the registry's component, installed with `npx shadcn add`; when it lacks something the screen needs, ask
+the designer for it in the system (a variant, a component, a token) rather than build a one-off. A real exception is
+kept only with its reason, scoped to its file: `equipe design lint --waive system-component --scope <file> --why "…"`.
+A component you build for the registry follows the `design-system` skill and the registry reference it points to.

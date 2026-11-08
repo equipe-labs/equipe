@@ -131,6 +131,12 @@ pub enum DesignAction {
         #[command(subcommand)]
         action: crate::design_lint::KeptAction,
     },
+    /// A project's design system as code — its tokens, components.json, registry, components and docs pages — what is there and what is missing
+    System(crate::design_system::SystemArgs),
+    /// A registry component drawn in every variant, state and theme from its docs page, with axe-core and a keyboard pass — one contact sheet
+    Matrix(crate::design_system::MatrixArgs),
+    /// Check registry.json before a release — files, dependencies, sources and licences, no other brand's assets — build it, and install a sample into a scratch project
+    Registry(crate::design_system::RegistryArgs),
     /// The UI map: every flow, its screens in order, each in every state, pictured light and dark at each width
     Flows {
         #[command(subcommand)]
@@ -294,6 +300,9 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
         DesignAction::SecondLook(args) => crate::design_lint::second_look(args).await,
         DesignAction::Direction { action } => crate::design_lint::direction(action),
         DesignAction::Kept { action } => crate::design_lint::kept(action).await,
+        DesignAction::System(args) => crate::design_system::system_command(args),
+        DesignAction::Matrix(args) => crate::design_system::matrix_command(args).await,
+        DesignAction::Registry(args) => crate::design_system::registry_command(args).await,
     }
 }
 
@@ -1202,14 +1211,14 @@ async fn critique_command(mut ask: critique::Ask, brief: Option<PathBuf>, engine
 /// Where the scripts and the Playwright they import live: the person's own,
 /// made once. Chrome is the Mac's own (`channel: 'chrome'`), so no browser
 /// is downloaded.
-fn kit_dir() -> PathBuf {
+pub(crate) fn kit_dir() -> PathBuf {
     equipe_providers::credentials::equipe_home().join("design-kit")
 }
 
 const PLAYWRIGHT: &str = "playwright@1.64.0";
 
 /// Node and npm beside the `npx` the squad's browser uses.
-fn node_tools() -> Result<(PathBuf, PathBuf), String> {
+pub(crate) fn node_tools() -> Result<(PathBuf, PathBuf), String> {
     let npx = equipe_core::browser::find_npx().ok_or("Node.js isn't installed (no npx on PATH): `brew install node`")?;
     let bin = npx.parent().map(Path::to_path_buf).unwrap_or_default();
     Ok((bin.join("node"), bin.join("npm")))
@@ -1240,6 +1249,7 @@ async fn ensure_kit() -> Result<PathBuf, String> {
         ("diff.mjs", include_str!("../assets/design/diff.mjs")),
         ("record.mjs", include_str!("../assets/design/record.mjs")),
         ("lint.mjs", include_str!("../assets/design/lint.mjs")),
+        ("matrix.mjs", include_str!("../assets/design/matrix.mjs")),
     ] {
         std::fs::write(dir.join(name), body).map_err(|e| e.to_string())?;
     }

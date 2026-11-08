@@ -21,6 +21,10 @@
 //!   one changed; the pictures in them are what `read_image` may give.
 //! - `studio`: a ticket's design work as it is on disk, for a screen that
 //!   watches it (checks, directions, critiques, references, pictures).
+//! - `system`: a project's design system as code — its tokens, its
+//!   component registry and docs pages, found wherever they are kept; each
+//!   component's matrix of variants, states and themes checked in a browser;
+//!   the registry checked and installed into a scratch project.
 //! - `versions`: the accepted versions of a folder, from its history, and
 //!   the ticket that asks for one back.
 
@@ -37,6 +41,7 @@ pub mod kept;
 pub mod review;
 pub mod second_look;
 pub mod studio;
+pub mod system;
 pub mod tokens;
 pub mod values;
 pub mod versions;

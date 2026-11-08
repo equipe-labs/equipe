@@ -413,6 +413,23 @@ can't split, carry on alone.",
 /// A designer finishes a design QA ticket: the screens pass, or go back to their engineer.
 pub const DESIGN_QA: &str = "design_qa";
 
+/// The design system's checks (`equipe design system | matrix | registry`),
+/// run for a designer or a frontend engineer by its board server outside its
+/// engine's sandbox — Chrome and the network are there — in its worktree.
+pub const SYSTEM_TOOLS: &str = "system_tools";
+
+/// What `system_tools` runs: the words after `equipe design`, its first one of these.
+pub const SYSTEM_TOOL_COMMANDS: [&str; 3] = ["system", "matrix", "registry"];
+
+/// Where a member works now — its ticket's worktree, else its own folder.
+/// Asked by its board server for the tools it runs itself; never listed as a tool.
+pub const WORKDIR: &str = "equipe_workdir";
+
+/// The roles that build a design system and products from it.
+pub fn builds_from_system(role: &str) -> bool {
+    matches!(role, "designer" | "frontend")
+}
+
 /// The `kind` argument of `create_ticket` and `update_ticket`.
 static KIND_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     json!({
@@ -450,6 +467,9 @@ pub fn tools_for(role: &str) -> Vec<Value> {
     let mut tools = tools(role == crate::roles::PM);
     if role != DESIGNER_ROLE {
         tools.retain(|t| t["name"] != DESIGN_QA);
+    }
+    if !builds_from_system(role) {
+        tools.retain(|t| t["name"] != SYSTEM_TOOLS);
     }
     tools
 }
@@ -564,6 +584,23 @@ person with it. Then end your turn.",
                     "images": IMAGES_SCHEMA.clone(),
                 },
                 "required": ["verdict", "findings", "checked"],
+            },
+        }));
+        tools.push(json!({
+            "name": SYSTEM_TOOLS,
+            "description": "Designers and frontend engineers: run the design system's checks without leaving your sandbox — \
+equipe runs `equipe design system | matrix | registry` for you in your worktree, where Chrome and the network are. `args` \
+are the words after `equipe design`, e.g. [\"system\"] (what the project's system has and lacks, and its coverage), \
+[\"matrix\", \"button\", \"--url\", \"http://localhost:3000/docs/components/{name}\"] (every variant and state, light and \
+dark, with axe and a keyboard pass, into one contact sheet) or [\"registry\", \"--build\", \"--try\", \"dialog\"] (registry.json \
+checked, built and installed into a scratch project). Records and pictures land in your worktree's design/checks/; what it \
+printed comes back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "args": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "The command's words after `equipe design`, starting with system, matrix or registry." },
+                },
+                "required": ["args"],
             },
         }));
     }
@@ -1320,6 +1357,9 @@ mod tests {
         assert!(!names(tools(true)).contains(&DESIGN_QA.to_owned()));
         assert!(names(tools_for("designer")).contains(&DESIGN_QA.to_owned()), "the designer's own");
         assert!(!names(tools_for("frontend")).contains(&DESIGN_QA.to_owned()), "an engineer's screens are passed by the designer, not by itself");
+        assert!(names(tools_for("designer")).contains(&SYSTEM_TOOLS.to_owned()) && names(tools_for("frontend")).contains(&SYSTEM_TOOLS.to_owned()), "who builds the system and from it");
+        assert!(!names(tools_for("backend")).contains(&SYSTEM_TOOLS.to_owned()) && !names(tools(true)).contains(&SYSTEM_TOOLS.to_owned()));
+        assert!(!names(tools(false)).contains(&WORKDIR.to_owned()), "asked by the server, never offered");
         assert!(names(tools_for("pm")).contains(&crate::controls::CHANGE_SETTING.to_owned()), "the PM changes what the person asks it to");
         // A plan: written by the PM, reviewed by members — who write only their notes.
         let plan = |tools: Vec<Value>| tools.into_iter().find(|t| t["name"] == WRITE_PLAN).expect("write_plan");

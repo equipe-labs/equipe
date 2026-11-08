@@ -69,7 +69,11 @@ const SOURCES: &[Source] = &[
     Source { dir: "browser", files: &[file!("browser", "SKILL.md")], offered: |_, c| c.browser },
     Source { dir: "desktop-apps", files: &[file!("desktop-apps", "SKILL.md")], offered: |_, c| c.desktop },
     Source { dir: "mobile-qa", files: &[file!("mobile-qa", "SKILL.md")], offered: |_, c| c.phone },
-    Source { dir: "design-system", files: &[file!("design-system", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source {
+        dir: "design-system",
+        files: &[file!("design-system", "SKILL.md"), file!("design-system", "references/registry.md")],
+        offered: |r, _| matches!(r.id, "designer" | "frontend"),
+    },
     Source { dir: "design-process", files: &[file!("design-process", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source { dir: "design-tools", files: &[file!("design-tools", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source {
@@ -454,7 +458,14 @@ mod tests {
         assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
         assert_eq!(names("designer", &base), ["plan-review", "research-report", "design-system", "design-process", "design-tools", "ui-map", "design-qa"]);
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
-        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "ui-floor"]);
+        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "design-system", "ui-floor"]);
+        // An engineer gets the component system, not the designer's setup of a brand.
+        let text = |id: &str, c: &Context<'_>, name: &str| offered(role(id).unwrap(), c).into_iter().find(|s| s.name == name).unwrap().text();
+        let frontend = text("frontend", &base, "design-system");
+        assert!(frontend.contains("references/registry.md") && frontend.contains("You build the components the designer specifies") && frontend.contains("## A component's life"));
+        assert!(!frontend.contains("five steps in order") && !frontend.contains("builds one from the brand"));
+        let designer = text("designer", &base, "design-system");
+        assert!(designer.contains("five steps in order") && designer.contains("builds one from the brand") && !designer.contains("You build the components the designer specifies"));
         for id in ["backend", "mobile", "qa"] {
             assert_eq!(names(id, &base), ["plan-review", "research-report"], "{id}");
         }

@@ -250,6 +250,17 @@ id, a tier, what it checks and how to fix it (`equipe design lint --rules`).
   one coloured word, a gradient first screen, cards in cards, emoji as
   icons, everything centred, one radius and shadow everywhere, decorative
   dots, a form that pretends to send.
+- **Build from the system** — only where the project has one (a
+  `registry.json` or `components.json` at or above the file, inside its
+  repository): no value written out that a token holds (`system-token` —
+  colours, sizes, radii, shadows), no raw element re-making a registry
+  component (`system-component` — a styled `<button>` where there is Button, a
+  `role="dialog"` where there is Dialog; which markup each component replaces
+  is data in `crates/core/assets/design/components.json`), no import around the
+  registry (`system-import` — Radix, another UI kit, the registry's source by
+  path). Blocks like the floor, at edit time and at a hand-in; a real
+  exception is a `Waive` line scoped to its file or screen. The registry's own
+  components and the theme's stylesheet aren't held to it.
 - **Finish** — said, never blocking: name the token, tabular figures, heading
   order, image size, line length, touch targets.
 
@@ -289,6 +300,39 @@ no engine known and none named, they say which they took. When the sandbox
 has no network for the engine, the member is told to run the command again
 outside it, or, if that isn't allowed, to say so in its hand-in rather than
 try again.
+
+### A component system — `equipe design system | matrix | registry`
+
+`crates/core/src/design/system/` reads a project's design system as code,
+wherever it keeps it: tokens as DTCG JSON, as CSS variables (`:root`,
+`.dark`, `[data-theme=dark]`, `prefers-color-scheme`) or as a Tailwind v4
+`@theme`; `components.json`; `registry.json` and what `shadcn build` wrote;
+the components' folder (by `components.json`'s aliases); and a docs page per
+component (a `docs/` route or file, or a story).
+
+- `equipe design system` says what is there and missing, the coverage against
+  the catalog's full set ("47/49 components, missing: …") and each token text
+  pair under AA in light or dark.
+- `equipe design matrix <component> --url <docs page, {name} for each>` puts
+  every `[data-example]` on the page in each state its pattern has, light and
+  dark, at the widths asked, into a contact sheet a width
+  (`assets/design/matrix.mjs` measures; `system/matrix.rs` judges); runs
+  axe-core's WCAG A/AA rules (installed once into the design kit — a run
+  without it says so) and a keyboard pass. Kept in
+  `design/checks/components/<name>.json`.
+- `equipe design registry [--build] [--try <item>] [--npx]` checks each item
+  (files, declared dependencies, `registryDependencies` that install from this
+  registry rather than shadcn's, `meta.source` and `meta.license`, no other
+  brand's pictures), the build against the source, and installs an item into a
+  scratch project offline from the build; `--npx` also runs the real
+  `npx shadcn add`.
+
+What equipe knows of each component — its WAI-ARIA pattern, the part an
+example holds, its states, its keyboard checks, how it opens, the markup it
+replaces — is the data file `crates/core/assets/design/components.json`:
+extend it there, not in code. A designer's and a frontend engineer's board
+server runs these three for them as `system_tools`, outside the engine's
+sandbox, in the member's worktree.
 
 ## Remixing references — the `design` tools (equipe-design)
 

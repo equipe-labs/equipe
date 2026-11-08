@@ -5,7 +5,12 @@
 //! `Waive nested-cards (settings): the billing summary is a card in a card by design`
 //!
 //! — the rule, optionally the screen or file it holds for, and the reason.
-//! A floor rule is never waived: such a line is refused, and said.
+//! A floor rule is never waived: such a line is refused, and said. A rule
+//! about building from the design system (`system-component`, …) is kept
+//! the same way as a habit — the line is its allow-list entry, scoped to the
+//! file or screen where the exception is real:
+//!
+//! `Waive system-component (src/app/legacy/Modal.tsx): the old checkout stays until T-40 moves it to Dialog`
 
 use std::path::{Path, PathBuf};
 
@@ -25,7 +30,7 @@ pub struct Waiver {
 impl Waiver {
     pub fn covers(&self, f: &Finding, screen: Option<&str>) -> bool {
         f.rule == self.rule
-            && f.tier == Tier::Habit
+            && matches!(f.tier, Tier::Habit | Tier::System)
             && self.scope.as_deref().is_none_or(|s| screen.is_some_and(|x| x == s || x.ends_with(&format!("/{s}"))) || f.file.as_deref().is_some_and(|file| file.contains(s)))
     }
 }
