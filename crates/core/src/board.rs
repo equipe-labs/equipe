@@ -34,6 +34,18 @@ fn knows_where(ticket: &Ticket, single_project: bool) -> bool {
 /// priority decides only between equals; a member takes one ticket at a
 /// time; an owner naming a member wins over one naming a role.
 pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project: bool) -> Vec<(TicketId, String)> {
+    assignments_prioritizing(tickets, members, single_project, &[])
+}
+
+/// The same board assignment rules, with named ready tickets considered first
+/// in the order given. Missing, held, finished, unowned, misplaced, dependent,
+/// or role-mismatched tickets still fall through the ordinary rules.
+pub fn assignments_prioritizing(
+    tickets: &[Ticket],
+    members: &[Candidate<'_>],
+    single_project: bool,
+    first: &[TicketId],
+) -> Vec<(TicketId, String)> {
     let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
     let mut busy: Vec<&str> = members.iter().filter(|m| !m.free).map(|m| m.name).collect();
     let mut out = Vec::new();
@@ -41,7 +53,7 @@ pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project
     // that order — the more pressing first only between equals.
     // A started idea the PM is still thinking through with the person waits.
     let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo && !t.office_hours_first()).collect();
-    ready.sort_by_key(|t| (t.order_key(), t.priority, t.id));
+    ready.sort_by_key(|t| (first.iter().position(|id| *id == t.id).unwrap_or(usize::MAX), t.order_key(), t.priority, t.id));
     for ticket in ready {
         let Some(owner) = ticket.owner.as_deref() else {
             continue;
@@ -1216,6 +1228,31 @@ mod tests {
         let members = [free("frontend", "frontend"), free("frontend-2", "frontend")];
         assert_eq!(assignments(&tickets, &members, true), [(1, "frontend".into()), (2, "frontend-2".into())]);
         assert_eq!(assignments(&tickets, &members[..1], true), [(1, "frontend".into())]);
+    }
+
+    #[test]
+    fn named_ready_tickets_go_first_in_the_given_order_without_bypassing_readiness_or_roles() {
+        let old = ticket(1, "frontend");
+        let backend = ticket(2, "backend");
+        let preferred = ticket(3, "frontend");
+        let mut waiting = ticket(4, "frontend");
+        waiting.depends_on = vec![9];
+        let members = [free("frontend-2", "frontend"), free("frontend-3", "frontend")];
+        let tickets = [old, backend, preferred, waiting];
+        assert_eq!(
+            assignments_prioritizing(&tickets, &members, true, &[4, 2, 3]),
+            [(3, "frontend-2".into()), (1, "frontend-3".into())],
+        );
+    }
+
+    #[test]
+    fn several_named_tickets_are_assigned_once_each_in_order() {
+        let tickets = [ticket(1, "frontend"), ticket(2, "frontend"), ticket(3, "frontend")];
+        let members = [free("frontend-2", "frontend"), free("frontend-3", "frontend")];
+        assert_eq!(
+            assignments_prioritizing(&tickets, &members, true, &[3, 2, 3]),
+            [(3, "frontend-2".into()), (2, "frontend-3".into())],
+        );
     }
 
     #[test]
