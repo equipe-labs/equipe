@@ -130,7 +130,6 @@ impl Bridge {
                 let event = Event::PairEnded { why: PairEnd::Unavailable, message: "phone pairing is unsupported on Windows yet".to_owned() };
                 let _ = out.send(Message::event(&event));
             }
-            return;
         }
         #[cfg(unix)]
         {

@@ -191,7 +191,7 @@ pub fn by_service(env: &dyn Fn(&str) -> Option<String>, pid: u32) -> bool {
 /// Start [`relaunch_script`] on its own, outliving this daemon.
 pub fn move_into_login(exe: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
-    { let _ = exe; return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "login service is unsupported on Windows yet")); }
+    { let _ = exe; Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "login service is unsupported on Windows yet")) }
     #[cfg(unix)]
     {
     use std::os::unix::process::CommandExt as _;

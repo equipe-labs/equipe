@@ -122,6 +122,7 @@ pub struct Running {
     pub last_used: std::time::Instant,
 }
 
+#[cfg_attr(windows, allow(clippy::large_enum_variant))]
 enum Kind {
     /// A Chrome of its own, with a profile of its own.
     Own(tokio::process::Child),
