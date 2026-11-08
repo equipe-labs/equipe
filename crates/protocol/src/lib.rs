@@ -1826,6 +1826,9 @@ fn claude() -> Engine {
 }
 
 /// Core → screen: "this happened".
+// Windows lays this wire enum out above Clippy's size-ratio threshold. Keeping
+// the payloads unboxed preserves the existing public API and serialized shape.
+#[cfg_attr(windows, allow(clippy::large_enum_variant))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
