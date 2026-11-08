@@ -11,6 +11,7 @@ use equipe_protocol::call::{CallEnded, CallRoute, CallTarget, Dispatched, RouteB
 use equipe_protocol::{Event, SessionId};
 
 pub mod judge;
+pub mod status;
 
 use judge::{Intent, JudgeInput, Judged, RosterMember};
 
@@ -46,6 +47,9 @@ pub enum Effect {
     Publish(Event),
     /// Judge this off the loop, then hand the answer to [`Call::judged`].
     Judge(JudgeInput),
+    /// Read the board, put it in words ([`status::speak`]) and hand them to [`Call::tell`].
+    /// Nothing is sent to anyone.
+    Status(status::Ask),
 }
 
 /// A fresh call id.
@@ -94,7 +98,7 @@ impl Call {
             asked: false,
             ended: false,
         };
-        (call, vec![Effect::Publish(started)])
+        (call, vec![Effect::Publish(started), Effect::Status(status::Ask::Briefing)])
     }
 
     pub fn ended(&self) -> bool {
@@ -136,6 +140,12 @@ impl Call {
             out.extend(self.end(CallEnded::Person));
             return out;
         }
+        if j.intent == Intent::Question {
+            // Answered from the board: sent to no one.
+            self.asked = false;
+            out.push(Effect::Status(status::Ask::Status));
+            return out;
+        }
         if j.routes.is_empty() {
             if !self.asked {
                 // Asked once only; the next one that can't be told goes to the PM.
@@ -158,6 +168,14 @@ impl Call {
         out.push(Effect::Publish(Event::CallRoute { squad: self.squad.clone(), call: self.id.clone(), routes: j.routes, by: j.by }));
         out.push(self.say(&reply, SayKind::Reply));
         out
+    }
+
+    /// Words about the board ([`Effect::Status`]), said as a reply.
+    pub fn tell(&mut self, text: &str) -> Vec<Effect> {
+        if self.ended || text.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![self.say(text.trim(), SayKind::Reply)]
     }
 
     /// The clock: silence asks "Anything else?", then ends the call.
@@ -349,6 +367,19 @@ mod tests {
         let fx = call.judged(judged(Intent::Unclear, vec![]), 4);
         assert!(fx.iter().any(|e| matches!(e, Effect::Submit { session: 1, .. })));
         assert!(events(&fx).iter().any(|e| matches!(e, Event::CallRoute { by: RouteBy::Fallback, .. })));
+    }
+
+    #[test]
+    fn opens_with_a_briefing_and_answers_a_question_without_sending() {
+        let r = roster();
+        let (mut call, started) = Call::new("c".into(), "acme".into(), 0);
+        assert!(matches!(started[..], [Effect::Publish(Event::CallStarted { .. }), Effect::Status(status::Ask::Briefing)]));
+        call.hear("Where are we?", r, 1);
+        let fx = call.judged(judged(Intent::Question, vec![]), 2);
+        assert!(matches!(fx[..], [Effect::Status(status::Ask::Status)]), "{fx:?}");
+        let fx = call.tell("2 in progress. Anything else?");
+        assert!(matches!(events(&fx)[..], [Event::CallSay { kind: SayKind::Reply, text, .. }] if text == "2 in progress. Anything else?"));
+        assert!(call.dispatched.is_empty());
     }
 
     #[test]

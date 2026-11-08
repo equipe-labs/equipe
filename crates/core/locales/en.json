@@ -376,6 +376,7 @@
   "match.call_frontend": "frontend|front-end|front end",
   "match.call_qa": "qa|tester",
   "match.call_everyone": "everyone|everybody|all of you|you all",
+  "match.call_question": "where are we|what's the status|what is the status|status update|how are we doing|what's going on|what is going on|any updates|how's it going|where do we stand",
   "match.placeholder_names": "john doe|jane doe|john smith|jane smith|acme|globex|initech|lorem",
   "match.claim_trust": "trusted by|loved by|as seen on|as seen in|join thousands|join millions|rated #1|world's leading|industry-leading|award-winning",
   "match.claim_lead": "over|join|than|nearly|almost",

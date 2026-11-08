@@ -376,6 +376,7 @@
   "match.call_frontend": "frontend",
   "match.call_qa": "qa|tester|testerin",
   "match.call_everyone": "ihr alle|alle zusammen",
+  "match.call_question": "wo stehen wir|wie ist der stand|was ist der stand",
   "match.placeholder_names": "max mustermann|erika mustermann",
   "match.claim_trust": "vertraut von|geliebt von|bekannt aus|weltweit führend|branchenführend|preisgekrönt",
   "match.claim_lead": "über|mehr als|fast|nahezu",

@@ -376,6 +376,7 @@
   "match.call_frontend": "frontend",
   "match.call_qa": "qa|tester",
   "match.call_everyone": "todo el mundo|todos ustedes",
+  "match.call_question": "cómo vamos|en qué estamos|cuál es el estado",
   "match.placeholder_names": "juan pérez|fulano de tal|maría pérez",
   "match.claim_trust": "con la confianza de|la confianza de|amado por|visto en|líder mundial|líder del sector|galardonado",
   "match.claim_lead": "más de|casi|únete a",

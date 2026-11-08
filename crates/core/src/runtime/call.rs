@@ -3,7 +3,7 @@
 //! as a submit sent from the phone. Nothing said in a call decides anything.
 
 use super::*;
-use crate::call::{self, Call, Effect, judge};
+use crate::call::{self, Call, Effect, judge, status};
 
 /// Unix milliseconds.
 fn now_ms() -> i64 {
@@ -35,7 +35,7 @@ impl Runtime {
         let Some(call) = self.calls.get_mut(&id).filter(|c| c.squad == squad) else { return };
         let effects = call.hang_up();
         self.call_effects(&id, effects).await;
-        self.calls.remove(&id);
+        self.call_gone(&id);
     }
 
     /// The judge's answer for call `id`, back on the loop.
@@ -44,7 +44,21 @@ impl Runtime {
         let effects = call.judged(judged, now_ms());
         self.call_effects(&id, effects).await;
         if self.calls.get(&id).is_some_and(|c| c.ended()) {
-            self.calls.remove(&id);
+            self.call_gone(&id);
+        }
+    }
+
+    /// Words about the board for call `id`, back on the loop.
+    pub(super) async fn call_told(&mut self, id: String, text: String) {
+        let Some(call) = self.calls.get_mut(&id) else { return };
+        let effects = call.tell(&text);
+        self.call_effects(&id, effects).await;
+    }
+
+    /// Call `id` is over: its squad's next call is briefed from now.
+    fn call_gone(&mut self, id: &str) {
+        if let Some(call) = self.calls.remove(id) {
+            self.calls_ended_at.insert(call.squad, now_ms());
         }
     }
 
@@ -56,8 +70,10 @@ impl Runtime {
             let Some(call) = self.calls.get_mut(&id) else { continue };
             let effects = call.tick(now);
             self.call_effects(&id, effects).await;
+            if self.calls.get(&id).is_some_and(|c| c.ended()) {
+                self.call_gone(&id);
+            }
         }
-        self.calls.retain(|_, c| !c.ended());
     }
 
     /// Who in `squad` the judge may route to: members, their role, and the
@@ -90,6 +106,22 @@ impl Runtime {
                     let was = std::mem::replace(&mut self.on_phone, true);
                     Box::pin(self.handle(Command::Submit { session, text, about: None })).await;
                     self.on_phone = was;
+                }
+                Effect::Status(ask) => {
+                    let Some(squad) = self.calls.get(id).map(|c| c.squad.clone()) else { continue };
+                    let now = (now_ms() / 1000) as u64;
+                    let since = match self.calls_ended_at.get(&squad) {
+                        Some(&ms) => (ms / 1000) as u64,
+                        None => now.saturating_sub(status::BRIEFING_LOOKBACK_S),
+                    };
+                    let snapshot = status::Snapshot::of(&self.tickets(&squad), ask, since, now);
+                    let llm = self.call_llm.clone();
+                    let internal = self.internal.clone();
+                    let call = id.to_owned();
+                    tokio::spawn(async move {
+                        let text = status::speak(&snapshot, ask, &llm).await;
+                        let _ = internal.send(Internal::CallTold { call, text });
+                    });
                 }
                 Effect::Judge(input) => {
                     let llm = self.call_llm.clone();

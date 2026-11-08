@@ -6,7 +6,9 @@ use std::collections::VecDeque;
 use std::io::Write as _;
 
 use equipe_core::call::judge::{self, LlmConfig, RosterMember};
+use equipe_core::call::status::{self, Snapshot};
 use equipe_core::call::{self, Call, Effect};
+use equipe_protocol::{Ticket, TicketStatus};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 
 fn now_ms() -> i64 {
@@ -19,6 +21,28 @@ fn roster() -> Vec<RosterMember> {
         .enumerate()
         .map(|(i, role)| RosterMember { session: i as u64 + 1, name: (*role).to_owned(), role: (*role).to_owned(), tickets: Vec::new() })
         .collect()
+}
+
+/// A fixed board for the sim: changed an hour ago, so the opening briefing tells it.
+fn board(now_s: u64) -> Vec<Ticket> {
+    [
+        (1, "Login screen mockups", TicketStatus::Done, "designer"),
+        (2, "Review the call API", TicketStatus::Review, "backend"),
+        (3, "Android call screen", TicketStatus::InProgress, "frontend"),
+        (4, "Call loop test plan", TicketStatus::InProgress, "qa"),
+    ]
+    .into_iter()
+    .filter_map(|(id, title, status, who)| {
+        let mut t: Ticket = serde_json::from_value(serde_json::json!({
+            "id": id, "title": title, "body": "", "status": "todo", "owner": who, "assignee": who,
+            "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": null,
+        }))
+        .ok()?;
+        t.status = status;
+        t.updated_at = Some(now_s - 3600);
+        Some(t)
+    })
+    .collect()
 }
 
 fn prompt() {
@@ -41,6 +65,13 @@ pub async fn run(squad: String, no_llm: bool) -> Result<(), String> {
                 Effect::Submit { session, text } => {
                     let name = roster.iter().find(|m| m.session == session).map_or("?", |m| m.name.as_str());
                     println!("submit → {name} (session {session}): {text}");
+                }
+                Effect::Status(ask) => {
+                    let now = (now_ms() / 1000) as u64;
+                    let snapshot = Snapshot::of(&board(now), ask, now.saturating_sub(status::BRIEFING_LOOKBACK_S), now);
+                    let text = status::speak(&snapshot, ask, &llm).await;
+                    println!("board: {ask:?} (nothing sent)");
+                    queue.extend(call.tell(&text));
                 }
                 Effect::Judge(input) => {
                     let judged = judge::judge(&input, &llm).await;

@@ -610,7 +610,9 @@ Events (daemon → phone), each with `squad` set:
   the call (the phone keeps it across a reconnect).
 - `call_say` `{ "squad", "call", "text", "kind": "reply" | "ask" | "bye" }` — what the phone
   says aloud: `reply` after work was sent ("Sent to Designer and Backend. Anything else?"),
-  `ask` to ask once when it couldn't tell, `bye` as the call ends.
+  as the call's opening briefing right after `call_started` ("Since our last call, Designer
+  finished the mockups. What do you need?"), and as the answer to a question about the board
+  ("2 in progress, 1 waiting for review. Anything else?"); `ask` to ask once when it couldn't tell, `bye` as the call ends.
 - `call_route` `{ "squad", "call", "routes": [{ "to": { "kind": "member" | "squad" | "pm",
   "session"?, "name"?, "role"? }, "text" }], "by": "llm" | "rules" | "fallback" }` — where the
   utterance went: one route a recipient, `text` what that one was sent. `by`: a fast model read
@@ -626,7 +628,14 @@ The daemon keeps the last 8 turns of a call and folds older ones into a running 
 the judge reads stays the same size however long the call runs. The judge is a fast model
 (`claude-haiku-5-5`, `ANTHROPIC_API_KEY` in the daemon's environment) with 2.5 seconds; past
 that, or on any failure, word rules (role names and "everyone" in every language equipe speaks,
-kept in core's `locales/` as `match.call_*`), and failing those the PM. A question goes to the PM ("I'll ask the PM").
+kept in core's `locales/` as `match.call_*`), and failing those the PM.
+
+A question about where things stand ("Where are we?", `match.call_question`) is sent to no one:
+the daemon reads the board (in progress, waiting for review, done today) and answers it in a
+`call_say` `reply`, put in a sentence or two by the same fast model, or by a template when that
+fails ("2 in progress, 1 waiting for review."). A call opens the same way with what changed on
+the board since the squad's last call ended (kept in the daemon's memory; the last 3 hours after
+a restart).
 
 A call never decides anything: what is said in it reaches members only as `submit`, never
 through decisions in words (`say`), so nothing is approved, accepted or merged by voice.
