@@ -800,6 +800,7 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
             // A designer's reference tools run here, outside its engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::DESIGN_TOOLS => {
                 mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, &arguments).await)
+            }
             // The design system's checks run here, outside the member's engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::SYSTEM_TOOLS => {
                 mcp::call_reply(id, &design_system::from_board(&socket, &home, &squad, &member, &arguments).await)
