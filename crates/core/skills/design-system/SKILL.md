@@ -1,10 +1,11 @@
 ---
 name: design-system
-description: Use when you set up a project's design or work on its brand, brief, logo, tokens, components or guidelines — the `design/` folder's layout, the five setup steps and how a system is built.
+description: Use when you set up a project's design or work on its brand, brief, logo, tokens, components or guidelines — the `design/` folder's layout, the five setup steps and how a system is built — and its registry's components.
 ---
 
 # The design folder, the setup and the system
 
+{{#if role:designer}}
 equipe's design system screen shows what these `design/` folders hold, so keep their layout, and bring it up to date
 in the same hand-in whenever brand or design work lands: `design/tokens.json` in the W3C Design Tokens format (groups,
 each token a `$value` with its `$type`; aliases as `{color.blue.600}`) covering colour, typography, spacing, radius,
@@ -59,3 +60,28 @@ its own tokens (`color.change.up`, `color.change.down`), apart from danger and i
 and a sign; units in the column head ("(in $M)", "(unit: 100M KRW)", "(in € thousands)"), never a currency sign and
 the written unit together; changes of a rate in percentage points (pp, or %p where the market writes it so); and the date the numbers stand at on every
 screen of figures.
+{{/if}}
+
+## The component system: a registry, each component documented and checked
+
+A project with a web UI (React, Vue or Svelte with Tailwind) keeps its components as a registry of its own, built on
+shadcn/ui's open source base (MIT) and restyled to its tokens, so every product is built from it and `npx shadcn add`
+installs from it. `equipe design system`{{tools_at}} says what a project has — its tokens (a DTCG `tokens.json`, the CSS variables
+its theme sets, a Tailwind `@theme`), `components.json`, `registry.json`, the components' folder, a docs page each —
+what is missing, and its coverage against the full set ("47/49 components, missing: …"). Read
+`references/registry.md` next to this file before you start a registry, add or change a component, or release one:
+it has each step of a component's life — spec, built on the shadcn base, its docs page, its matrix with accessibility
+and keyboard checks, version and changelog, release — and how each is checked.
+{{#if role:designer}}
+
+When a project has no system yet, its setup builds one from the brand in this order: the brief and the logo, then the
+tokens (primitives, roles, dark values), then the registry — every component in the full set, restyled to those tokens,
+a docs page each — then the products from it. What isn't there yet, you build; nothing assumes another project's
+system or a tool beyond these.
+{{/if}}
+{{#if role:frontend}}
+
+You build the components the designer specifies, on the shadcn base, restyled only with the system's tokens, each with
+its docs page; the designer checks them against the spec. A product screen uses only the registry's components and
+tokens — the `ui-floor` skill says how that is held.
+{{/if}}

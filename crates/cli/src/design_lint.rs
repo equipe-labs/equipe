@@ -164,9 +164,13 @@ fn widths(text: &str) -> Result<Vec<u32>, String> {
     text.split(',').map(|w| w.trim().parse::<u32>().map_err(|_| format!("{w}: a width is a number of px"))).filter(|w| w.as_ref().map_or(true, |w| *w > 0)).collect()
 }
 
-/// The design folder: given, else the nearest to the first file, else ./design.
+/// The design folder: given, else the nearest to the first file, else the
+/// `design/` of the project whose design system it is, else ./design.
 fn design_of(given: Option<PathBuf>, near: Option<&Path>) -> PathBuf {
-    given.or_else(|| near.and_then(lint::design_dir_of)).unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR))
+    given
+        .or_else(|| near.and_then(lint::design_dir_of))
+        .or_else(|| near.and_then(equipe_core::design::system::project_of).map(|p| p.join(equipe_core::design::DIR)))
+        .unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR))
 }
 
 fn screen_name(given: Option<&str>, target: &str) -> String {
@@ -203,7 +207,8 @@ pub async fn lint(args: LintArgs) -> Result<(), String> {
             return Err(format!("{p}: no such file or folder"));
         }
     }
-    let system = System::read(&design);
+    // Where the project has a design system of its own, product code is held to building from it.
+    let system = System::read(&design).with_kit(first.as_deref().unwrap_or(Path::new(".")));
     let mut report = lint::lint_sources(&files, &system);
     let target = args.url.clone().or_else(|| args.paths.iter().find(|p| is_url(p)).cloned()).or_else(|| {
         // A page that draws itself: one HTML file.
@@ -222,7 +227,7 @@ pub async fn lint(args: LintArgs) -> Result<(), String> {
         measured.url = target.clone();
         render::judge(&measured, &mut report);
     }
-    lint::apply_waivers(&mut report, &design, Some(&screen));
+    lint::apply_waivers(&mut report, &system.decisions_home(), Some(&screen));
     if args.tier == "floor" {
         report.only(Tier::Floor);
     }
@@ -489,9 +494,10 @@ pub async fn kept(action: KeptAction) -> Result<(), String> {
 /// Every rule by tier, what it checks and how it is fixed: `equipe design lint --rules`.
 pub fn rules_text() -> String {
     let mut out = String::new();
-    for tier in [Tier::Floor, Tier::Habit, Tier::Finish] {
+    for tier in [Tier::Floor, Tier::System, Tier::Habit, Tier::Finish] {
         out.push_str(match tier {
             Tier::Floor => "Floor — never waived:\n",
+            Tier::System => "\nBuild from the system — only where the project has one (a registry, components.json); blocks like the floor, a real exception kept with its reason in design/decisions/:\n",
             Tier::Habit => "\nHabits — fixed, or kept with a reason in design/decisions/:\n",
             Tier::Finish => "\nFinish — said, never blocking:\n",
         });

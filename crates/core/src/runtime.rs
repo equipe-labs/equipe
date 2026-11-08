@@ -7166,14 +7166,15 @@ it back there once they have done it.{again} End your turn now with a short line
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
-            // Asked by a designer's board server, which runs `design_tools` itself, in this folder.
+            // Asked by a designer's or frontend engineer's board server, which runs `system_tools` itself, in this folder.
             board::WORKDIR => {
                 let session = self.sessions.get(&id).ok_or("You're not on the squad.")?;
-                if session.member.as_ref().is_none_or(|m| m.role != "designer") {
-                    return Err("Only a designer's board server asks where it works.".into());
+                if session.member.as_ref().is_none_or(|m| !board::builds_from_system(&m.role)) {
+                    return Err("Only a designer's or a frontend engineer's board server asks where it works.".into());
                 }
                 Ok(session.work.as_ref().map_or_else(|| session.cwd.clone(), |w| w.cwd.clone()).to_string_lossy().into_owned())
             }
+            board::SYSTEM_TOOLS => Err("system_tools is run by your board server; this equipe's server is older than its daemon — restart your conversation.".into()),
             board::DESIGN_TOOLS => Err("design_tools is run by your board server; this equipe's server is older than its daemon — restart your conversation.".into()),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),

@@ -14,6 +14,7 @@ mod daemon;
 mod design;
 mod design_lint;
 mod design_taste;
+mod design_system;
 mod desktop;
 mod disk;
 mod home;
@@ -799,6 +800,9 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
             // A designer's reference tools run here, outside its engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::DESIGN_TOOLS => {
                 mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, &arguments).await)
+            // The design system's checks run here, outside the member's engine's sandbox.
+            Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::SYSTEM_TOOLS => {
+                mcp::call_reply(id, &design_system::from_board(&socket, &home, &squad, &member, &arguments).await)
             }
             Step::Call { id, name, arguments } => {
                 let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments };

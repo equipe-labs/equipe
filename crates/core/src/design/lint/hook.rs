@@ -61,11 +61,14 @@ fn lines_written(text: &str, written: &[String]) -> Option<Vec<(u32, u32)>> {
 pub fn check(edit: &Edit, system: &System) -> Vec<Finding> {
     let Ok(text) = std::fs::read_to_string(&edit.file) else { return Vec::new() };
     let Some(src) = source::Source::read(&edit.file, text.clone()) else { return Vec::new() };
-    let findings = scan::scan(&src, system, super::is_token_file(&edit.file));
+    let findings = scan::scan(&src, system, system.token_source(&edit.file));
+    let kept = super::waivers::read(&system.decisions_home());
     let ranges = lines_written(&text, &edit.written);
     let mut findings: Vec<Finding> = findings
         .into_iter()
-        .filter(|f| f.tier == Tier::Floor)
+        .filter(|f| f.tier.blocks())
+        // An exception to building from the system, kept with its reason.
+        .filter(|f| !kept.waivers.iter().any(|w| w.covers(f, None)))
         // A rule about the whole file (motion with no fallback anywhere) counts when the edit touches it.
         .filter(|f| match (&ranges, f.line) {
             (None, _) | (_, None) => true,
@@ -80,7 +83,14 @@ pub fn check(edit: &Edit, system: &System) -> Vec<Finding> {
 /// What the member is told: each failure with its fix, and that the edit
 /// isn't done until they're gone.
 pub fn told(file: &Path, findings: &[Finding]) -> String {
-    let mut out = format!("equipe design lint: the floor fails in what you just wrote to {} — fix it now (floor rules are never waived):\n", file.display());
+    let mut out = if findings.iter().all(|f| f.tier == Tier::Floor) {
+        format!("equipe design lint: the floor fails in what you just wrote to {} — fix it now (floor rules are never waived):\n", file.display())
+    } else {
+        format!(
+            "equipe design lint: what you just wrote to {} fails the floor or isn't built from the project's design system — fix it now (a real exception to the system is kept with its reason: `equipe design lint --waive <rule> --scope <file> --why \"…\"`):\n",
+            file.display()
+        )
+    };
     let mut last = "";
     for f in findings {
         if f.rule != last {
@@ -102,7 +112,7 @@ pub fn run(input: &Value, ledger: bool) -> Option<String> {
     if ledger && let Some(design) = &design {
         let _ = record::note_edit(design, &edit.file, edit.created);
     }
-    let system = design.as_deref().map(System::read).unwrap_or_default();
+    let system = design.as_deref().map(System::read).unwrap_or_default().with_kit(&edit.file);
     let findings = check(&edit, &system);
     (!findings.is_empty()).then(|| told(&edit.file, &findings))
 }

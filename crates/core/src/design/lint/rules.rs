@@ -3,6 +3,12 @@
 //! it looks for and how to put it right.
 //!
 //! - **Floor**: never waived. A screen that breaks one isn't handed in.
+//! - **System**: build from the project's design system, where it has one
+//!   (a component registry, `components.json`): no value written out that a
+//!   token holds, no raw element re-making a registry component, no import
+//!   around the registry. Blocks like the floor — at edit time and at a
+//!   hand-in — but a real exception is kept with its reason in the decision
+//!   log. A project without a system is never held to it.
 //! - **Habit**: what generated screens fall into by default. Fixed, or kept
 //!   with a reason written in the design's decision log.
 //! - **Finish**: craft. Said, never blocking.
@@ -13,14 +19,21 @@ use serde::Serialize;
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     Floor,
+    System,
     Habit,
     Finish,
 }
 
 impl Tier {
+    /// Whether its findings hold up an edit and a hand-in.
+    pub fn blocks(self) -> bool {
+        matches!(self, Tier::Floor | Tier::System)
+    }
+
     pub fn word(self) -> &'static str {
         match self {
             Tier::Floor => "floor",
+            Tier::System => "system",
             Tier::Habit => "habit",
             Tier::Finish => "finish",
         }
@@ -136,6 +149,28 @@ pub const RULES: &[Rule] = &[
         how: How::Render,
         checks: "The screen's primary action (marked `data-primary`) is in the first screenful at every width.",
         fix: "Bring it up, or keep it in view (a bar that stays); move what pushes it down.",
+    },
+    // ── build from the system ──
+    Rule {
+        id: "system-token",
+        tier: Tier::System,
+        how: How::Source,
+        checks: "No colour, size, spacing, radius or shadow written out where the design system has a token for it.",
+        fix: "Use the token — its utility (`bg-primary`, `rounded-lg`, `shadow-sm`) or its variable (`var(--radius)`) — so a change to the system reaches this screen.",
+    },
+    Rule {
+        id: "system-component",
+        tier: Tier::System,
+        how: How::Source,
+        checks: "No raw element re-making a component the registry has: a styled <button> when it has Button, a hand-made modal when it has Dialog.",
+        fix: "Use the registry's component (`<Button>`, `<Dialog>`), installed with `npx shadcn add`; if it lacks a variant you need, ask the designer for it in the system rather than build a one-off.",
+    },
+    Rule {
+        id: "system-import",
+        tier: Tier::System,
+        how: How::Source,
+        checks: "No import around the registry: a UI kit or primitive (Radix, Headless UI, MUI…) used directly where a registry component wraps it, or the registry's source imported by path.",
+        fix: "Import the registry's component from where components.json puts it (`@/components/ui/dialog`).",
     },
     // ── habits ──
     Rule {

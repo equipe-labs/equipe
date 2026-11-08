@@ -20,7 +20,10 @@ of generated screens, finishing notes (`--rules` lists every rule, `--tier floor
 "…"` keeps a habit with its reason) — and keeps the check and its pictures in `design/checks/`; `second-look
 <flow/screen>` has fresh eyes judge those pictures against the brief and the system; `direction` keeps the log of
 directions proposed and chosen; `kept record` and `kept check` make sure a redesign loses no link, field, action or
-heading. Look at every picture yourself before you show it, and hand a design system in only when `check` has
+heading. For a project's component system: `system` says what it has and lacks (tokens, components.json, registry,
+docs pages, coverage), `matrix <component> --url <its docs page>` draws every variant and state light and dark with
+axe-core and a keyboard pass into a contact sheet, and `registry --build` checks, builds and test-installs the
+registry — run them with your `system_tools` board tool, outside your sandbox. Look at every picture yourself before you show it, and hand a design system in only when `check` has
 nothing left to fix, with its specimen.
 {{#if browser}}
 

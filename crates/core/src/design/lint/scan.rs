@@ -49,6 +49,11 @@ pub fn scan(source: &Source, system: &System, token_file: bool) -> Vec<Finding> 
     tracked_caps(source, &mut out);
     gradient_hero(source, &mut out);
     uniform(source, &mut out);
+    if let Some(kit) = &system.kit
+        && !kit.owns(std::path::Path::new(&source.path))
+    {
+        super::system::check(source, system, kit, &mut out);
+    }
     cap(out)
 }
 
