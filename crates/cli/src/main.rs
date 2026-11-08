@@ -9,6 +9,7 @@
 
 mod attach;
 mod brief;
+mod call_sim;
 mod clip;
 mod daemon;
 mod design;
@@ -318,6 +319,15 @@ enum Command {
         #[command(subcommand)]
         action: design::DesignAction,
     },
+    /// A call (voice radio) without a daemon: type what you'd say, see where it goes
+    CallSim {
+        /// The squad's name, only as a label
+        #[arg(long, default_value = "demo")]
+        squad: String,
+        /// Route by word rules only, without the model
+        #[arg(long)]
+        no_llm: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -531,6 +541,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
+        Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
@@ -1675,6 +1686,10 @@ impl App {
                 | Event::Design { .. }
                 | Event::ProjectDocs { .. }
                 | Event::DocsFound { .. }
+                | Event::CallStarted { .. }
+                | Event::CallSay { .. }
+                | Event::CallRoute { .. }
+                | Event::CallSummary { .. }
                 | Event::DocCopyKept { .. }
                 | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
