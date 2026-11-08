@@ -372,6 +372,7 @@
   "match.call_frontend": "フロントエンド|フロント",
   "match.call_qa": "テスター",
   "match.call_everyone": "みんな|皆さん|全員",
+  "match.call_question": "どうなって|進捗|状況は",
   "match.placeholder_names": "山田太郎|山田花子|田中太郎",
   "match.claim_trust": "導入実績|多くの企業に選ばれ|愛用され|メディア掲載|業界no.1|業界ナンバーワン|受賞",
   "match.claim_lead": "以上|約|累計",

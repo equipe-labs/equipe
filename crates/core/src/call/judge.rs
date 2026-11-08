@@ -71,7 +71,6 @@ use equipe_protocol::call::{CallTarget, TargetKind};
 use super::Who;
 
 const DEFAULT_BASE: &str = "https://api.anthropic.com";
-const QUESTION_REPLY: &str = "I'll ask the PM.";
 const FALLBACK_REPLY: &str = "I'll pass that to the PM. Anything else?";
 
 impl LlmConfig {
@@ -131,27 +130,9 @@ pub async fn judge(input: &JudgeInput, llm: &LlmConfig) -> Judged {
         match tokio::time::timeout(llm.timeout, ask_model(llm, key, &system, &user)).await {
             Ok(Ok(text)) => match parse(&text, &input.roster) {
                 Ok((intent, routes, reply)) => {
-                    judged = Some(match intent {
-                        Intent::Question => Judged {
-                            intent,
-                            routes: vec![CallRoute {
-                                to: pm_target(&input.roster),
-                                text: input.utterance.clone(),
-                            }],
-                            reply: Some(QUESTION_REPLY.to_string()),
-                            by: RouteBy::Llm,
-                            millis: 0,
-                            input_bytes,
-                        },
-                        _ => Judged {
-                            intent,
-                            routes,
-                            reply,
-                            by: RouteBy::Llm,
-                            millis: 0,
-                            input_bytes,
-                        },
-                    });
+                    // A question is answered from the board (`super::status`), sent to no one.
+                    let (routes, reply) = if intent == Intent::Question { (Vec::new(), None) } else { (routes, reply) };
+                    judged = Some(Judged { intent, routes, reply, by: RouteBy::Llm, millis: 0, input_bytes });
                 }
                 Err(e) => eprintln!("call judge: model answer unusable: {e}"),
             },
@@ -238,7 +219,7 @@ For instruct, reply may be omitted."
     (system, user)
 }
 
-async fn ask_model(llm: &LlmConfig, key: &str, system: &str, user: &str) -> Result<String, String> {
+pub(crate) async fn ask_model(llm: &LlmConfig, key: &str, system: &str, user: &str) -> Result<String, String> {
     let body = serde_json::json!({
         "model": llm.model,
         "max_tokens": 400,
@@ -450,6 +431,11 @@ fn end_phrases() -> &'static [&'static str] {
     crate::i18n::every("match.call_end")
 }
 
+/// Words that ask where things stand, in every language (`locales/`).
+fn question_phrases() -> &'static [&'static str] {
+    crate::i18n::every("match.call_question")
+}
+
 /// Role words → role (`squad` for everyone), in every language (`locales/`).
 fn role_words() -> impl Iterator<Item = (&'static str, &'static str)> {
     [
@@ -503,6 +489,9 @@ pub fn rules(text: &str, roster: &[RosterMember]) -> Option<Judged> {
             millis: 0,
             input_bytes: 0,
         });
+    }
+    if question_phrases().iter().any(|p| has_phrase(&norm, p)) {
+        return Some(Judged { intent: Intent::Question, routes: Vec::new(), reply: None, by: RouteBy::Rules, millis: 0, input_bytes: 0 });
     }
 
     let mut context: Vec<String> = Vec::new();
@@ -694,6 +683,15 @@ mod tests {
     }
 
     #[test]
+    fn rules_question_sends_to_no_one() {
+        for text in ["Where are we?", "What's the status?", "지금 어디까지 됐어?", "현황 알려줘"] {
+            let j = rules(text, &roster()).unwrap();
+            assert_eq!(j.intent, Intent::Question, "{text}");
+            assert!(j.routes.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
     fn parse_errors() {
         assert!(parse("no json here", &roster()).is_err());
         assert!(parse("{\"intent\":\"instruct\",\"routes\":[]}", &roster()).is_err());
@@ -818,7 +816,7 @@ mod tests {
         let j = judge(&input("What is the backend doing?"), &llm).await;
         assert_eq!(j.by, RouteBy::Llm);
         assert_eq!(j.intent, Intent::Question);
-        assert_eq!(j.routes[0].to.kind, TargetKind::Pm);
-        assert_eq!(j.reply.as_deref(), Some(QUESTION_REPLY));
+        assert!(j.routes.is_empty());
+        assert_eq!(j.reply, None);
     }
 }

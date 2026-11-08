@@ -372,6 +372,7 @@
   "match.call_frontend": "프론트|프런트",
   "match.call_qa": "테스터|큐에이",
   "match.call_everyone": "다들|전체|모두",
+  "match.call_question": "어디까지|현황|진행 상황|진행상황|상황 어때|어떻게 돼|뭐 하고 있",
   "match.placeholder_names": "홍길동|김철수|이영희",
   "match.claim_trust": "신뢰하는|믿고 쓰는|사랑받는|언론 보도|업계 1위|업계 최고|수상",
   "match.claim_lead": "이상|약|누적",

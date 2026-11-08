@@ -372,6 +372,7 @@
   "match.call_frontend": "前端",
   "match.call_qa": "测试",
   "match.call_everyone": "大家|所有人",
+  "match.call_question": "进展|进度|现在怎么样",
   "match.placeholder_names": "张三|李四|王五",
   "match.claim_trust": "信赖|深受喜爱|媒体报道|行业领先|全球领先|行业第一|荣获",
   "match.claim_lead": "超过|近|累计",

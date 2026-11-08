@@ -529,6 +529,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         secret_asks: HashMap::new(),
         calls: HashMap::new(),
         call_llm: crate::call::judge::LlmConfig::from_env(),
+        calls_ended_at: HashMap::new(),
         desktop: desktop::Desktop::new(mac),
         config,
         // A server that never answers a connection must not hold anything up.
@@ -954,6 +955,8 @@ enum Internal {
     SideDone(side_chat::SideDone),
     /// The judge read an utterance of call `call` (`call.rs`).
     CallJudged { call: String, judged: Box<crate::call::judge::Judged> },
+    /// Words about the board for a call (`call::status`).
+    CallTold { call: String, text: String },
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -1138,6 +1141,9 @@ struct Runtime {
     calls: HashMap<String, crate::call::Call>,
     /// The model a call's judge asks.
     call_llm: crate::call::judge::LlmConfig,
+    /// When each squad's last call ended (unix ms), for the next one's briefing;
+    /// kept in memory only.
+    calls_ended_at: HashMap<String, i64>,
 }
 
 /// What woke the loop.
@@ -1225,6 +1231,7 @@ impl Wake {
             Wake::Internal(Internal::SideChat { .. }) => Borrowed("a side chat's step"),
             Wake::Internal(Internal::SideDone(_)) => Borrowed("a side chat's turn ended"),
             Wake::Internal(Internal::CallJudged { .. }) => Borrowed("a call's utterance judged"),
+            Wake::Internal(Internal::CallTold { .. }) => Borrowed("a call's words about the board"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -1468,6 +1475,7 @@ impl Runtime {
                 Internal::SideChat { side, event } => self.side_event(side, *event),
                 Internal::SideDone(done) => self.side_done(done),
                 Internal::CallJudged { call, judged } => self.call_judged(call, *judged).await,
+                Internal::CallTold { call, text } => self.call_told(call, text).await,
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
