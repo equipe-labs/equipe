@@ -14,6 +14,15 @@
 //! - `second_look`: a reviewer started fresh, given only the pictures, the
 //!   brief and the system, whose verdict a hand-in waits on.
 //! - `directions`: the directions proposed and chosen, so the next differs.
+//! - `brand`: which tickets are brand work, and what a designer starting one is told.
+//! - `refs`: a brief's reference board — pages from the galleries a designer
+//!   studies, each with what to learn from it, never another's brand.
+//! - `palette`: candidate palettes on a real layout, light and dark, with
+//!   their contrast, as tokens.
+//! - `fonts`: candidate type pairs as a specimen, in the product's
+//!   languages, with coverage, licence and weight.
+//! - `component`: a public component's source pulled in as a starting
+//!   point, with its source and licence, listed for restyling.
 //! - `kept`: what a screen offers, recorded before a redesign and checked after.
 //! - `flows`: the service's UI map — every flow, screen and state, pictured.
 //! - `review`: the designer's weekly review, held back until the setup is done.
@@ -24,7 +33,12 @@
 //! - `versions`: the accepted versions of a folder, from its history, and
 //!   the ticket that asks for one back.
 
+pub mod brand;
 pub mod check;
+pub mod component;
+pub mod fonts;
+pub mod palette;
+pub mod refs;
 pub mod kit;
 pub mod lint;
 pub mod contrast;

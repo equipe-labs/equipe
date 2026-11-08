@@ -650,8 +650,8 @@ fn task(name: &str) -> Task {
 }
 
 #[test]
-fn there_are_fifteen_tasks_across_the_roles_with_names_of_their_own() {
-    assert_eq!(TASKS.len(), 15);
+fn there_are_sixteen_tasks_across_the_roles_with_names_of_their_own() {
+    assert_eq!(TASKS.len(), 16);
     let mut names: Vec<&str> = TASKS.iter().map(|t| t.name).collect();
     names.sort();
     names.dedup();
@@ -878,6 +878,66 @@ fn a_codex_members_tokens_count_beside_a_claude_critics_transcript() {
 }
 
 #[test]
+fn a_brand_direction_needs_its_board_its_directions_pictured_checked_tokens_and_a_recommended_pick() {
+    use equipe_core::design::{directions, refs};
+    use equipe_core::protocol::Ticket;
+    let ticket: Ticket = serde_json::from_value(json!({
+        "id": 1, "title": "Kettle", "body": "", "status": "review", "kind": "task", "owner": null, "assignee": "designer",
+        "project": null, "depends_on": [], "branch": null, "worktree": null, "created_by": "you", "note": null,
+    }))
+    .unwrap();
+    let root = scratch("brand");
+    let mut out = outcome_with(&root, ticket);
+    let t = task("designer-brand-directions");
+    let failed = |out: &Outcome| tasks::grade(&t, &tasks::Fixture::default(), out).into_iter().filter(|c| c.required && !c.ok).map(|c| c.name).collect::<Vec<_>>();
+    assert_eq!(failed(&out).len(), 5, "nothing done: {:?}", failed(&out));
+    let design = out.squad_home().join("design");
+    // The board: five references from three sources, each pictured.
+    let mut board = Vec::new();
+    for url in ["https://fontpair.co/for/saas", "https://fontpair.co/vibe/minimal", "https://21st.dev/@a/components/hero", "https://21st.dev/@b/components/pricing", "https://fonts.google.com/specimen/Fraunces"] {
+        let mut r = refs::new_reference(&board, url, "A calm two-column first screen with one action", vec![refs::Aspect::Layout], "2026-11-08", refs::Via::Shoot);
+        let shot = refs::shot_path(&r.id, 1280);
+        std::fs::create_dir_all(design.join(&shot).parent().unwrap()).unwrap();
+        std::fs::write(design.join(&shot), b"png").unwrap();
+        r.shots.push(shot);
+        board.push(r);
+    }
+    refs::write(&design, &board).unwrap();
+    let d = |name: &str, layout: &str| directions::Direction { name: name.into(), layout: layout.into(), type_: "Fraunces/Inter".into(), palette: "warm".into(), density: "airy".into(), motion: "none".into(), ..Default::default() };
+    directions::write(&design, &[d("Hearth", "split"), d("Counter", "one column")]).unwrap();
+    std::fs::write(design.join("tokens.json"), r##"{"color":{"$type":"color","bg":{"$value":"#FBF7F2","$extensions":{"mode":{"dark":"#16120F"}}},"text":{"$value":"#2B1D14","$extensions":{"mode":{"dark":"#F3ECE4"}}},"primary":{"$value":"#B4532A","$extensions":{"mode":{"dark":"#E9926A"}}},"onPrimary":{"$value":"#FFFFFF","$extensions":{"mode":{"dark":"#16120F"}}}}}"##).unwrap();
+    let pic = design.join("directions/hearth.png");
+    std::fs::write(&pic, b"png").unwrap();
+    let set: equipe_core::protocol::decide::QuestionSet = serde_json::from_value(json!({
+        "id": 1, "session": 7, "member": "designer",
+        "questions": [{ "question": "Which direction?", "options": [
+            { "label": "Hearth", "images": [pic], "recommended": true },
+            { "label": "Counter", "images": [pic] },
+        ]}],
+    }))
+    .unwrap();
+    out.state.person.questions.push(set);
+    assert!(failed(&out).is_empty(), "all there: {:?}", failed(&out));
+    // A candidate passed over may fall short; the chosen tokens are what ship.
+    std::fs::create_dir_all(design.join("palettes")).unwrap();
+    std::fs::write(design.join("palettes/loud.tokens.json"), r##"{"color":{"$type":"color","bg":{"$value":"#FFFFFF"},"text":{"$value":"#BBBBBB"}}}"##).unwrap();
+    assert!(failed(&out).is_empty(), "a candidate isn't the choice: {:?}", failed(&out));
+    // A picture named in the accepted ticket's worktree is found where its outputs went.
+    let moved = out.squad_home().join("outputs/T-1 Kettle/directions/a.png");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::write(&moved, b"png").unwrap();
+    assert_eq!(tasks::resolve_picture(&out, None, "/gone/worktrees/eval.home/t1-x/outputs/T-1 Kettle/directions/a.png"), moved);
+    // A board line that takes a brand, and a dark label under AA, fail it.
+    board[0].learn = "Use their logo in our header".into();
+    refs::write(&design, &board).unwrap();
+    std::fs::write(design.join("tokens.json"), r##"{"color":{"$type":"color","bg":{"$value":"#FBF7F2","$extensions":{"mode":{"dark":"#16120F"}}},"text":{"$value":"#2B1D14","$extensions":{"mode":{"dark":"#F3ECE4"}}},"primary":{"$value":"#B4532A","$extensions":{"mode":{"dark":"#FF805D"}}},"onPrimary":{"$value":"#FFFFFF"}}}"##).unwrap();
+    let now = failed(&out);
+    assert!(now.contains(&"no brand or copy taken from a reference") && now.contains(&"colour tokens meet AA for text, light and dark"), "{now:?}");
+    assert!(tasks::token_contrast(&design.join("tokens.json")).unwrap().unwrap_err().contains("(dark)"), "the dark button label is the failing pair");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn a_codex_members_rules_are_read_from_its_own_steps_not_its_critics_transcript() {
     use equipe_core::protocol::Ticket;
     let ticket: Ticket = serde_json::from_value(json!({
@@ -1038,6 +1098,20 @@ fn members_find_their_own_variants_equipe_first_on_path() {
     assert_eq!(dirs, [dir.join("bin"), "/usr/bin".into(), "/bin".into()]);
     assert_eq!(std::fs::read_link(dir.join("bin/equipe")).unwrap(), binary.canonicalize().unwrap());
     harness::variant_path(&binary, &dir.join("bin"), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_codex_critic_stands_in_for_claude_only_as_a_one_shot_critic() {
+    let dir = scratch("critic");
+    harness::codex_critic(&dir.join("bin"));
+    let shim = dir.join("bin/claude");
+    let script = std::fs::read_to_string(&shim).unwrap();
+    assert!(script.contains("codex \"$@\"") && script.contains("--sandbox read-only") && script.contains("--image"), "{script}");
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&shim).unwrap().permissions()) & 0o111, 0o111);
+    // Anything but `-p <prompt>` is refused, without running Codex.
+    let said = std::process::Command::new(&shim).arg("auth").arg("status").output().unwrap();
+    assert_eq!(said.status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

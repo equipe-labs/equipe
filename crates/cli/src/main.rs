@@ -13,6 +13,7 @@ mod clip;
 mod daemon;
 mod design;
 mod design_lint;
+mod design_taste;
 mod desktop;
 mod disk;
 mod home;
@@ -200,6 +201,9 @@ enum Command {
         /// The member's engine has no subagents of its own: equipe's helpers too
         #[arg(long)]
         helpers: bool,
+        /// A designer on brand work: its reference tools (`design_tools`) too
+        #[arg(long)]
+        branding: bool,
     },
     /// Sign in to sites in a browser, for the squad to work in as you
     Browser {
@@ -308,7 +312,7 @@ enum Command {
         #[command(subcommand)]
         action: brief::BriefAction,
     },
-    /// The designer's tools: init, check, lint, second-look, specimen, render, shoot, diff, critique, audit, direction, kept, flows
+    /// The designer's tools: init, check, lint, second-look, specimen, render, shoot, diff, critique, audit, direction, kept, flows, refs, palette, type, component
     Design {
         #[command(subcommand)]
         action: design::DesignAction,
@@ -665,7 +669,7 @@ async fn run(cli: Cli) -> ExitCode {
                 },
             }
         }
-        Command::Mcp { server, squad, member, role, home, helpers } => serve_mcp(&server, squad, member, role, home, helpers).await,
+        Command::Mcp { server, squad, member, role, home, helpers, branding } => serve_mcp(&server, squad, member, role, home, helpers, branding).await,
         // Answered in `main`, before anything starts.
         Command::Hook { .. } => Ok(()),
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
@@ -769,7 +773,7 @@ async fn run(cli: Cli) -> ExitCode {
 
 /// `equipe mcp`: a member's board tools, as a stdio MCP server. Every call goes
 /// to the daemon, which decides; stdout carries only the protocol.
-async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf, helpers: bool) -> CmdResult {
+async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf, helpers: bool, branding: bool) -> CmdResult {
     use equipe_core::mcp::{self, Step};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
@@ -781,13 +785,21 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
     } else if phone {
         (mcp::PHONE, equipe_core::phone::tools())
     } else {
-        (mcp::BOARD, equipe_core::helpers::with_board(&role, helpers))
+        let mut tools = equipe_core::helpers::with_board(&role, helpers);
+        if branding && role == "designer" {
+            tools.push(equipe_core::board::design_tools_tool());
+        }
+        (mcp::BOARD, tools)
     };
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
     while let Ok(Some(line)) = lines.next_line().await {
         let reply = match mcp::handle_for(&info, &line, &tools, VERSION) {
             Step::Reply(reply) => reply,
+            // A designer's reference tools run here, outside its engine's sandbox.
+            Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::DESIGN_TOOLS => {
+                mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, &arguments).await)
+            }
             Step::Call { id, name, arguments } => {
                 let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments };
                 let result = if desktop {

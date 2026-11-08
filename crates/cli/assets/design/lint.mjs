@@ -5,7 +5,8 @@
 //   lint.mjs <url|file> --widths 360,1280 --out <dir> --json <file>
 //     at each width: the page's width against the window's, what reaches
 //     past the edge, text cut off by its box, each text's colour and what it
-//     sits on, whether focus shows as Tab moves through the controls, where
+//     sits on (in its dark scheme too, where it has one, at the narrowest
+//     and widest widths), whether focus shows as Tab moves through the controls, where
 //     the elements marked data-primary are, how much text is centred, the
 //     radius and shadow of raised blocks, line lengths and target sizes; and
 //     a picture, whole (<width>.png) and the first screenful (<width>.first.png).
@@ -44,8 +45,8 @@ const url = /^(https?|file|data):/.test(target) ? target : pathToFileURL(resolve
 const heightFor = (w) => (w <= 480 ? 844 : w <= 800 ? 1024 : w <= 1100 ? 768 : w <= 1300 ? 800 : w <= 1600 ? 900 : 1080);
 const TALLEST = 16384;
 
-const open = async (browser, width) => {
-  const context = await browser.newContext({ viewport: { width, height: heightFor(width) }, deviceScaleFactor: 1, locale: 'en-US', colorScheme: 'light' });
+const open = async (browser, width, colorScheme = 'light') => {
+  const context = await browser.newContext({ viewport: { width, height: heightFor(width) }, deviceScaleFactor: 1, locale: 'en-US', colorScheme });
   const page = await context.newPage();
   await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => page.waitForLoadState('load'));
   await page.evaluate(() => document.fonts && document.fonts.ready);
@@ -225,9 +226,18 @@ try {
   } else {
     mkdirSync(out, { recursive: true });
     const result = { url, widths: [] };
-    for (const width of widths) {
+    for (const [i, width] of widths.entries()) {
       const { context, page } = await open(browser, width);
       const m = await page.evaluate(measure);
+      // A page with a dark scheme is read in it too, at the narrowest and
+      // widest widths: a colour that reads in light can fail in dark.
+      if (i === 0 || i === widths.length - 1) {
+        const dark = await open(browser, width, 'dark');
+        const d = await dark.page.evaluate(measure);
+        const pairs = (ts) => JSON.stringify(ts.map((t) => [t.fg, t.bg]));
+        if (pairs(d.texts) !== pairs(m.texts)) m.texts.push(...d.texts.map((t) => ({ ...t, selector: `${t.selector} (dark)` })));
+        await dark.context.close();
+      }
       m.focus = await focusCheck(page);
       await page.evaluate(() => {
         if (document.activeElement) document.activeElement.blur();

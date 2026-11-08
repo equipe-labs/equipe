@@ -167,6 +167,9 @@ impl Daemon {
         let out = std::fs::File::create(log).unwrap();
         let bin = home.parent().unwrap_or(home).join("bin");
         let path = variant_path(binary, &bin, std::env::var_os("PATH").as_deref());
+        if std::env::var("EQUIPE_EVAL_CRITIC").as_deref() == Ok("codex") {
+            codex_critic(&bin);
+        }
         let own = std::env::var_os("ZDOTDIR").filter(|d| !d.is_empty()).or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default();
         let zdot = variant_zdotdir(&bin, &home.parent().unwrap_or(home).join("zdot"), &own);
         // Run from the run's own folder: a member's command that loses its
@@ -225,6 +228,39 @@ pub fn variant_path(binary: &Path, bin: &Path, path: Option<&std::ffi::OsStr>) -
     std::os::unix::fs::symlink(&target, &link).unwrap();
     let rest: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
     std::env::join_paths(std::iter::once(bin.to_owned()).chain(rest)).unwrap()
+}
+
+/// `EQUIPE_EVAL_CRITIC=codex`: a `claude` first on the members' `PATH` that
+/// answers a critic's one-shot `claude -p <prompt>` with a fresh, read-only
+/// `codex exec` — its pictures attached, its last message printed — so a
+/// run spends no Claude plan, for A and B alike (an older variant knows no
+/// setting of its own). It answers nothing else.
+pub fn codex_critic(bin: &Path) {
+    let script = r#"#!/bin/sh
+# The eval's stand-in for `claude -p <prompt>` (a critic): the same prompt to a fresh, read-only Codex.
+prompt=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-p) prompt=$2; shift 2 ;;
+	*) shift ;;
+	esac
+done
+[ -n "$prompt" ] || { echo "only a one-shot critic (claude -p) is answered here" >&2; exit 2; }
+out=$(mktemp)
+set -- exec --sandbox read-only --skip-git-repo-check --ephemeral --color never --output-last-message "$out"
+for f in $(printf '%s' "$prompt" | grep -oE '[^ "`()]+\.(png|jpg|jpeg|webp)' | sort -u); do
+	[ -f "$f" ] && set -- "$@" --image "$f"
+done
+codex "$@" "$prompt" >/dev/null 2>&1
+status=$?
+cat "$out" 2>/dev/null
+rm -f "$out"
+exit $status
+"#;
+    let file = bin.join("claude");
+    std::fs::create_dir_all(bin).unwrap();
+    std::fs::write(&file, script).unwrap();
+    std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 }
 
 /// A zsh startup folder that reads the person's own files and then puts

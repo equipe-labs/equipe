@@ -228,6 +228,45 @@ say when (`crates/core/skills/design-tools/` and the rest).
 | `second-look <flow/screen> [--first] [--criteria …]` | A fresh, read-only reviewer judges the checked pictures, given only them, the brief and criteria, and the system's guidelines and tokens; its verdict is kept on the screen's record. `--prompt` / `--answer <file>` for a fresh subagent when no engine can run. |
 | `direction propose\|choose\|list` | The directions proposed and chosen (`design/directions/log.json`) by layout, type, palette, density and motion; a proposal that repeats a recent chosen one in every dimension the brand leaves free, or differs from its fellow options only in colour, is refused. |
 | `kept record\|check <files\|url> --screen …` | A screen's links, fields, actions and headings, recorded before a redesign (`design/kept/`) and checked after; a removal only where the brief or a decision says `Remove <kind>: <item>`. |
+| `refs sources\|search\|shoot\|add\|board\|list` | A brief's reference board, below. |
+| `palette <Name=text-bg-primary-secondary-accent[/dark]>… [--fonts H/B] [--page file\|address]` | One to four palettes on the page being designed (`--page`, else `./index.html` when there is one), light and dark (dark derived when not given) — its own colour variables set to each palette's roles by their names, or its page, links and buttons coloured directly where it has none — and on a page of our own where there is no page yet; the WCAG contrast of each pair text is set in (text on background and on the secondary surface, the primary as a link, a button's label on it, the accent as a graphic at 3:1); each palette's tokens in this document's format in `design/palettes/<name>.tokens.json`, and one comparison sheet `palettes.{html,png}`. |
+| `type <Heading/Body>… [--locales en,ko,…\|all]` | One to four Google Fonts pairs set as a specimen — headline at 56, 36 and 24, lede, body, UI labels, figures — and each other language's headline and body; what each family lacks of each language (from the `unicode-range`s Google Fonts serves), its licence (from its folder in Google Fonts' repository) and what the specimen loaded of it. `design/type/specimen.{html,png}`. |
+| `component <page \| registry item \| npx shadcn add line>` | A public component's source into `design/vendor/<name>/` with a `SOURCE.md`: where it came from, when, its licence and dependencies, and every colour, palette class, family and remote picture to restyle to the tokens. A registry its site closes to tools (robots.txt) or that wants a key is not fetched: its page and licence are recorded, and that is said. |
+
+### References and taste — `equipe design refs`
+
+These are for brand work — a brand, a rebrand, a new visual direction — and
+only brand work changes what a designer is told: every other ticket's charter,
+skills and board tools are exactly as before (`members_without_phone` pins
+them). A ticket is brand work when its body has a line `Design: brand` (or
+`Design: rebrand`, `Design: new direction`), the PM's explicit flag, or when
+its title or body asks for one in so many words — a rebrand, a brand or visual
+identity, a new visual direction (`design::brand::is_branding`). On such a
+ticket the designer's first prompt carries the full pass
+(`crates/core/assets/brand-pass.md`: brief, a board of five or more references
+from two sources or more, two or three directions pictured, the critic, the
+person's pick with a recommendation, the chosen tokens at AA, the build), and
+its board server is started with `--branding`, which adds the `design_tools`
+tool: `equipe design refs | palette | type | component` run for it outside
+its engine's sandbox, in its worktree, reading only the listed sites.
+
+References are studied for their patterns and layouts, never taken for a
+brand: a reference's "what to learn" line that says to take another company's
+logo, name, marks or words is refused (`refs::learn_problems`). Each reference
+is kept in `design/references/` — `board.json` with its address, site, source,
+date, aspects (pattern, layout, rhythm, type, colour) and the line, and its
+pictures in `R<n>/` — and directions cite them (`direction propose --ref R2`).
+`refs board` draws the contact sheet (`board.{html,png}`) and says what the
+board still needs: five references or more, from two sources or more, each
+pictured and said.
+
+| Source | How it is read |
+|---|---|
+| Lapa Ninja, Mobbin | In the designer's own browser (the squad's), its screenshot recorded with `refs add`. Lapa Ninja shows automated readers a check; Mobbin needs the person's own sign-in and plan, and is offered only when the squad's browser holds one. |
+| Fontpair, 21st.dev, Google Fonts, any public site | `refs shoot`: at most 8 pages a call at one or two widths, 5 s between two pages of one site, what robots.txt disallows left alone, Chrome's own user agent (nothing hides that it is automated). A page that asks whether a person is there is reported and its picture dropped — a tool never answers it. `refs search 21st <pattern>` lists a category's components from its markdown twin. |
+
+Nothing here signs up, signs in, accepts terms, holds a key or gets round a
+paywall or a check.
 
 The scripts and the one npm package they import (`playwright`, no browser
 download) live in `~/.equipe/design-kit`, set up on first use.

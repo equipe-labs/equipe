@@ -32,6 +32,10 @@ pub struct Direction {
     pub palette: String,
     pub density: String,
     pub motion: String,
+    /// The references on the board it draws on (`R1`, `R3`), from
+    /// `design/references/board.json`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
 }
 
 impl Direction {
@@ -162,6 +166,7 @@ mod tests {
             palette: dims[2].into(),
             density: dims[3].into(),
             motion: dims[4].into(),
+            references: Vec::new(),
         }
     }
 

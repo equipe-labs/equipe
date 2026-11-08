@@ -136,6 +136,17 @@ pub enum DesignAction {
         #[command(subcommand)]
         action: FlowsAction,
     },
+    /// A brief's reference board: pages from galleries and tools, each with what to learn from it, as one contact sheet
+    Refs {
+        #[command(subcommand)]
+        action: crate::design_taste::RefsAction,
+    },
+    /// Two to four palettes on a real layout, light and dark, with their contrast, as tokens
+    Palette(crate::design_taste::PaletteArgs),
+    /// Type pairs set side by side as a specimen, in the product's languages, with coverage, licence and weight
+    Type(crate::design_taste::TypeArgs),
+    /// A public component's source pulled in as a starting point, with its source and licence, to restyle to our tokens
+    Component(crate::design_taste::ComponentArgs),
 }
 
 #[derive(Subcommand)]
@@ -294,6 +305,10 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
         DesignAction::SecondLook(args) => crate::design_lint::second_look(args).await,
         DesignAction::Direction { action } => crate::design_lint::direction(action),
         DesignAction::Kept { action } => crate::design_lint::kept(action).await,
+        DesignAction::Refs { action } => crate::design_taste::refs_command(action).await,
+        DesignAction::Palette(args) => crate::design_taste::palette_command(args).await,
+        DesignAction::Type(args) => crate::design_taste::type_command(args).await,
+        DesignAction::Component(args) => crate::design_taste::component_command(args).await,
     }
 }
 
@@ -1218,6 +1233,8 @@ fn node_tools() -> Result<(PathBuf, PathBuf), String> {
 async fn ensure_kit() -> Result<PathBuf, String> {
     let dir = kit_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // Two first runs at once (a member's parallel commands) installed over each other.
+    let _installing = crate::design_taste::Lock::take(dir.join(".install.lock"), Duration::from_secs(300)).await;
     if !dir.join("node_modules").join("playwright").join("package.json").is_file() {
         let (_, npm) = node_tools()?;
         eprintln!("Setting up the design tools once (Playwright, using this Mac's Chrome)…");
@@ -1240,6 +1257,7 @@ async fn ensure_kit() -> Result<PathBuf, String> {
         ("diff.mjs", include_str!("../assets/design/diff.mjs")),
         ("record.mjs", include_str!("../assets/design/record.mjs")),
         ("lint.mjs", include_str!("../assets/design/lint.mjs")),
+        ("refs.mjs", include_str!("../assets/design/refs.mjs")),
     ] {
         std::fs::write(dir.join(name), body).map_err(|e| e.to_string())?;
     }
