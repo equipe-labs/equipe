@@ -101,6 +101,10 @@ pub fn reads(command: &Command) -> bool {
         | C::SideChatSubmit { .. }
         | C::CloseSideChat { .. }
         | C::Say { .. }
+        // A call starts and steers the squad; snapshots must never do either.
+        | C::CallStart { .. }
+        | C::CallUtterance { .. }
+        | C::CallEnd { .. }
         | C::UndoWords { .. }
         | C::ClearWordsLog { .. }
         | C::SetWordsAll { .. }
@@ -562,6 +566,9 @@ mod tests {
             Command::DiskScan,
             Command::PlanUse { engine: Engine::Claude, span: equipe_core::protocol::plan_use::Span::Week },
             Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None },
+            Command::CallStart { squad: s() },
+            Command::CallUtterance { squad: s(), call: "c".into(), text: "x".into(), via: Default::default() },
+            Command::CallEnd { squad: s(), call: "c".into() },
             Command::UndoWords { squad: s(), id: 1 },
             Command::WordsLog { squad: s() },
             Command::ClearWordsLog { squad: s() },

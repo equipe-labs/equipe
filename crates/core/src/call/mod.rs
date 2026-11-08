@@ -39,6 +39,10 @@ pub struct Turn {
 }
 
 /// What the loop asks its driver to do.
+///
+/// Effects are short-lived driver messages, so keeping `Event` inline is
+/// simpler than adding allocation to every published call update.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Effect {
     /// Send `text` to the member as an ordinary submit (from the phone).
