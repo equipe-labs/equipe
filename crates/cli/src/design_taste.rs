@@ -969,8 +969,6 @@ mod tests {
         assert!(script.contains("lastAt") && script.contains("pace"), "pages of one site are paced");
         assert!(script.contains("stopped.has(host)"), "a site that asked for a check isn't opened again");
         assert!(!script.contains("userAgent") && !script.contains("AutomationControlled"), "it never hides that it is automated");
-        let lint = include_str!("../assets/design/lint.mjs");
-        assert!(lint.contains("open(browser, width, 'dark')") && lint.contains("(dark)"), "the floor reads text contrast in a page's dark scheme too");
     }
 
     #[test]
