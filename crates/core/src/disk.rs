@@ -273,11 +273,10 @@ impl Budget {
 /// The bytes under `path` on disk, links not followed; `false` when the
 /// budget ran out before the end.
 fn measure(path: &Path, budget: &mut Budget) -> (u64, bool) {
-    use std::os::unix::fs::MetadataExt as _;
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return (0, true);
     };
-    let mut total = meta.blocks() * 512;
+    let mut total = allocated_bytes(&meta);
     if !meta.is_dir() {
         return (total, true);
     }
@@ -291,7 +290,7 @@ fn measure(path: &Path, budget: &mut Budget) -> (u64, bool) {
                 return (total, false);
             }
             let Ok(meta) = entry.metadata() else { continue };
-            total += meta.blocks() * 512;
+            total += allocated_bytes(&meta);
             if meta.is_dir() {
                 stack.push(entry.path());
             }
@@ -299,6 +298,11 @@ fn measure(path: &Path, budget: &mut Budget) -> (u64, bool) {
     }
     (total, budget.left() || stack.is_empty())
 }
+
+#[cfg(unix)]
+fn allocated_bytes(meta: &std::fs::Metadata) -> u64 { use std::os::unix::fs::MetadataExt as _; meta.blocks() * 512 }
+#[cfg(windows)]
+fn allocated_bytes(meta: &std::fs::Metadata) -> u64 { meta.len() }
 
 /// `path` with its folders' links resolved, `path` itself as it is: what a
 /// removal would act on.

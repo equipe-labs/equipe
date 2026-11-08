@@ -212,13 +212,16 @@ pub fn connections(home: &Path) -> Vec<Connection> {
 }
 
 fn private_write(path: &Path, text: &str) -> Result<(), String> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    #[cfg(unix)]
     let _ = std::fs::set_permissions(dir_root(path), std::fs::Permissions::from_mode(0o700));
     let partial = path.with_extension("json.partial");
     std::fs::write(&partial, text).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
     let _ = std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o600));
     std::fs::rename(&partial, path).map_err(|e| e.to_string())
 }

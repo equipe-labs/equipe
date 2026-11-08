@@ -24,6 +24,7 @@ pub const BUNDLE_ID: &str = "im.equipe.desktop-helper";
 pub const LABEL: &str = BUNDLE_ID;
 pub const APP_NAME: &str = "equipe Desktop Helper";
 pub const EXECUTABLE: &str = "equipe-desktop-helper";
+#[cfg(target_os = "macos")]
 const CERT_NAME: &str = "equipe Desktop Helper (self-signed)";
 
 /// How the helper is signed.
@@ -66,6 +67,7 @@ fn signer_file(home: &Path) -> PathBuf {
     helper::dir(home).join("signer")
 }
 
+#[cfg(target_os = "macos")]
 fn signing_dir(home: &Path) -> PathBuf {
     helper::dir(home).join("signing")
 }

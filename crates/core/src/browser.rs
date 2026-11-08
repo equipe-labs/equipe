@@ -38,8 +38,10 @@ fn ensure_state(home: &Path) -> PathBuf {
     let state = state_file(home);
     if !state.is_file() {
         let _ = std::fs::create_dir_all(&dir);
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
         let _ = std::fs::write(&state, r#"{"cookies":[],"origins":[]}"#);
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     }
     state
@@ -946,14 +948,11 @@ pub fn launch(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
         .collect();
     // Every turn's connection shares the one browser — its tabs and sign-ins.
     args.extend(["--port".into(), port.to_string(), "--host".into(), "localhost".into(), "--shared-browser-context".into()]);
-    let child = tokio::process::Command::new(npx)
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()?;
+    let mut command = tokio::process::Command::new(npx);
+    command.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command.kill_on_drop(true).spawn()?;
     Ok(Running { kind: Kind::Own(child), port, shown, last_used: std::time::Instant::now() })
 }
 
