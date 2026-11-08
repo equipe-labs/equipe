@@ -227,6 +227,7 @@ one person does, so give the busiest roles to the plan with the most room.
 | [docs/TELEMETRY.md](docs/TELEMETRY.md) | Exactly what opt-in telemetry sends |
 | [docs/remote-protocol.md](docs/remote-protocol.md) | How a phone reaches the daemon through the relay |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is built and what is next |
+| [docs/RELEASING.md](docs/RELEASING.md) | How releases are cut, including the fast path |
 
 ## Contributing
 

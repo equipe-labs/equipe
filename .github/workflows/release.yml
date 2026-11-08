@@ -4,6 +4,12 @@ name: Release
 # macOS and Linux and publish a GitHub Release with the binaries, their
 # checksums and install.sh, and the desktop app (equipe.dmg, with the appcast
 # its updates come from). Run it by hand to build without publishing.
+#
+# Fast release: when the tagged commit's message contains `[fast]`, only the
+# command line is built and published. The desktop app, its notarization and
+# the clean-machine install check are skipped, and the release carries the
+# previous release's equipe.dmg and appcast.xml unchanged, so the app keeps
+# its current version and downloads keep working. See docs/RELEASING.md.
 
 on:
   push:
@@ -25,6 +31,24 @@ env:
 # already publishing finishes, and an older run whose build was cancelled
 # skips its publish (it needs the build).
 jobs:
+  # Normal or fast (see the top of this file).
+  mode:
+    runs-on: ubuntu-24.04
+    outputs:
+      fast: ${{ steps.mode.outputs.fast }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - id: mode
+        run: |
+          if git log -1 --format=%B | grep -qF '[fast]'; then
+            echo "fast=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Fast release: command line only; the desktop app stays at the previous release"
+          else
+            echo "fast=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: build (${{ matrix.target }})
     concurrency:
@@ -103,6 +127,8 @@ jobs:
   # other they made the release wait about fifteen minutes.
   desktop-bin:
     name: desktop (${{ matrix.arch }})
+    needs: mode
+    if: needs.mode.outputs.fast != 'true'
     concurrency:
       group: release-desktop-bin-${{ matrix.arch }}
       cancel-in-progress: true
@@ -244,7 +270,8 @@ jobs:
 
   # The install script against the archive just built, on a clean machine.
   try-install:
-    needs: build
+    needs: [mode, build]
+    if: needs.mode.outputs.fast != 'true'
     strategy:
       matrix:
         include:
@@ -268,9 +295,15 @@ jobs:
           # Again over the top, as an update would.
           EQUIPE_DOWNLOAD_BASE="file://$PWD/dist" EQUIPE_NO_MODIFY_PATH=1 sh install.sh
 
+  # A fast release skips try-install and desktop; anything else they end in
+  # (failed, cancelled) holds the release back.
   publish:
-    needs: [build, try-install, desktop]
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [mode, build, try-install, desktop]
+    if: >-
+      !cancelled() && startsWith(github.ref, 'refs/tags/') &&
+      needs.build.result == 'success' &&
+      (needs.try-install.result == 'success' || (needs.mode.outputs.fast == 'true' && needs.try-install.result == 'skipped')) &&
+      (needs.desktop.result == 'success' || (needs.mode.outputs.fast == 'true' && needs.desktop.result == 'skipped'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -282,6 +315,16 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # Fast: the app as the newest release has it. Its appcast still names
+      # that version and that release's DMG, so no app update is offered.
+      - name: The previous release's app
+        if: needs.mode.outputs.fast == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "${GITHUB_REPOSITORY}" -D dist \
+            --pattern equipe.dmg --pattern equipe.dmg.sha256 --pattern appcast.xml
+          ls -l dist/equipe.dmg dist/appcast.xml
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -311,10 +354,13 @@ jobs:
           git push --dry-run origin HEAD:refs/heads/access-check
 
   homebrew:
-    needs: publish
-    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    needs: [mode, publish]
+    if: >-
+      !cancelled() && needs.publish.result == 'success' &&
+      startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
     runs-on: ubuntu-24.04
     env:
+      FAST: ${{ needs.mode.outputs.fast }}
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
@@ -372,6 +418,8 @@ jobs:
           # equipe-labs/tap/equipe. It updates itself (Sparkle), so brew
           # leaves its updates to it.
           mkdir -p tap/Casks
+          # Fast: the app didn't change, nor does its cask.
+          if [ "$FAST" != "true" ]; then
           cat > tap/Casks/equipe.rb <<EOF
           cask "equipe" do
             version "${version}"
@@ -396,6 +444,7 @@ jobs:
           end
           EOF
           sed -i 's/^          //' tap/Casks/equipe.rb
+          fi
           cd tap
           git config user.name "equipe release"
           git config user.email "release@equipe.im"
