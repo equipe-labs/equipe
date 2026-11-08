@@ -537,6 +537,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         subscribers: vec![(None, evt_tx)],
         internal: internal_tx,
         sessions: HashMap::new(),
+        dispatch_deferred: std::collections::HashSet::new(),
         journals: HashMap::new(),
         next_join: 1,
         pending: HashMap::new(),
@@ -999,6 +1000,9 @@ struct Runtime {
     subscribers: Vec<(Option<String>, UnboundedSender<Event>)>,
     internal: UnboundedSender<Internal>,
     sessions: HashMap<SessionId, Session>,
+    /// Starts made as one approved team change wait for its preferred-ticket
+    /// pass instead of taking ordinary work one member at a time.
+    dispatch_deferred: std::collections::HashSet<SessionId>,
     /// One journal per squad, opened on first use.
     journals: HashMap<String, Journal>,
     /// The next session's place in its team.
@@ -3312,7 +3316,9 @@ runbooks and reports live there, and work across the projects or on running them
             self.publish(Event::Notice { undo: None, session: id, text });
         }
         // A new member may be just who a waiting ticket needs.
-        if let Some(squad) = squad {
+        if let Some(squad) = squad
+            && !self.dispatch_deferred.remove(&id)
+        {
             self.dispatch(&squad).await;
         }
     }
@@ -4957,9 +4963,17 @@ for one project goes to it as tickets for its owners, with that project — and 
 
     /// Hand every ready ticket to a free member who owns it.
     async fn dispatch(&mut self, squad: &str) {
+        self.dispatch_to(squad, &[], &[]).await;
+    }
+
+    /// Hand ready tickets to `only` (or every member when empty), considering
+    /// `first` before the board's normal order. Readiness stays in `board`;
+    /// runtime-only engine and room holds are applied here as usual.
+    async fn dispatch_to(&mut self, squad: &str, only: &[String], first: &[TicketId]) {
         // A member moving engines moves before it picks up its next ticket.
         self.apply_engine_moves(squad).await;
-        let tickets = self.tickets(squad);
+        let mut tickets = self.tickets(squad);
+        tickets.retain(|ticket| !self.held_for_room(ticket.kind));
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
@@ -4967,16 +4981,13 @@ for one project goes to it as tickets for its owners, with that project — and 
             .sessions
             .iter()
             .filter(|(id, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && !helpers.contains(id))
+            .filter(|(_, s)| only.is_empty() || s.name().is_some_and(|name| only.iter().any(|only| only == name)))
             // An engine out of its plan, or waited for, takes no new ticket.
             .filter_map(|(_, s)| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free() && !self.engines.held(squad, s.engine))))
             .collect();
         let candidates: Vec<Candidate> =
             members.iter().map(|(name, role, free)| Candidate { name, role, free: *free }).collect();
-        for (ticket, name) in board::assignments(&tickets, &candidates, single_project) {
-            // Short of room: code work, which builds, waits; the PM was told.
-            if tickets.iter().find(|t| t.id == ticket).is_some_and(|t| self.held_for_room(t.kind)) {
-                continue;
-            }
+        for (ticket, name) in board::assignments_prioritizing(&tickets, &candidates, single_project, first) {
             if let Some(id) = self.member_id(squad, &name) {
                 self.begin_work(id, ticket);
             }

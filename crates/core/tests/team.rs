@@ -67,9 +67,27 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
 fn squad_home() -> (PathBuf, PathBuf) {
     let project = scratch("site").join("site");
     std::fs::create_dir_all(&project).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "--allow-empty", "-q", "-m", "start"]);
     let home = scratch("home");
     squads::create(&home, "acme", &project).unwrap();
     (home, project)
+}
+
+async fn pm_squad(home: &Path, project: &Path) -> (Handle, UnboundedReceiver<Event>) {
+    let (handle, mut events) = runtime::start(config(&busy_claude(), home, false));
+    add(&handle, &mut events, 1, member(project, "pm")).await;
+    (handle, events)
 }
 
 async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool) -> Vec<Event> {
@@ -171,6 +189,76 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     handle.send(Command::DeclineTeamChange { squad: "acme".into(), id: change.id });
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(names(&handle).await, ["pm", "qa", "qa-2"]);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn approval_prioritizes_ready_unblocks_for_several_new_members_then_uses_board_order() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = pm_squad(&home, &project).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Old frontend work", "body": "-", "owner": "frontend" })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Wrong role", "body": "-", "owner": "backend" })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Explicit unblock", "body": "-", "owner": "frontend" })).await;
+    tool(&handle, "pm", "propose_team_change", json!({
+        "change": "add", "role": "frontend", "count": 2, "reason": "two tickets wait", "unblocks": [2, 3], "asked": true
+    })).await;
+    let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
+
+    handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
+    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    let started: Vec<(u64, u32)> = seen
+        .iter()
+        .filter_map(|event| match event {
+            Event::WorkStarted { session, ticket, .. } => Some((*session, *ticket)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started.iter().map(|(_, ticket)| *ticket).collect::<Vec<_>>(), [3, 1], "{seen:#?}");
+    assert_ne!(started[0].0, started[1].0, "each member takes one ticket");
+    let snapshot = handle.snapshot("acme").await;
+    for id in [1, 3] {
+        let ticket = snapshot.tickets.iter().find(|ticket| ticket.id == id).unwrap();
+        assert_eq!(ticket.status, equipe_core::protocol::TicketStatus::InProgress);
+        assert!(ticket.assignee.as_deref().is_some_and(|name| name.starts_with("frontend")));
+        assert!(ticket.branch.is_some());
+    }
+    assert_eq!(snapshot.tickets.iter().find(|ticket| ticket.id == 2).unwrap().status, equipe_core::protocol::TicketStatus::Todo);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn approval_skips_an_unready_unblock_and_starts_the_next_ready_one() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = pm_squad(&home, &project).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Blocker", "body": "-", "owner": "backend" })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Still waiting", "body": "-", "owner": "frontend", "depends_on": [1] })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Ready", "body": "-", "owner": "frontend" })).await;
+    tool(&handle, "pm", "propose_team_change", json!({
+        "change": "add", "role": "frontend", "reason": "work waits", "unblocks": [2, 3], "asked": true
+    })).await;
+    let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
+
+    handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
+    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    assert!(seen.iter().any(|event| matches!(event, Event::WorkStarted { ticket: 3, .. })), "{seen:#?}");
+    assert!(!seen.iter().any(|event| matches!(event, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn removal_approval_redispatches_returned_work_to_an_idle_teammate() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = pm_squad(&home, &project).await;
+    add(&handle, &mut events, 2, member(&project, "qa")).await;
+    add(&handle, &mut events, 3, member(&project, "qa")).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "QA work", "body": "-", "owner": "qa" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    tool(&handle, "pm", "propose_team_change", json!({ "change": "remove", "name": "qa", "reason": "handoff" })).await;
+    let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
+
+    handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
+    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    assert!(seen.iter().any(|event| matches!(event, Event::WorkStarted { session: 3, ticket: 1, .. })), "{seen:#?}");
     handle.shutdown().await;
 }
 
