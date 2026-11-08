@@ -1294,6 +1294,7 @@ mod tests {
             depends_on: vec![],
             branch: Some("equipe/backend-t42".into()),
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None,

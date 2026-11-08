@@ -204,6 +204,17 @@ pub fn check(args: &Value, team: &[Mate<'_>], tickets: &[Ticket], waiting: &[Tea
         Some("codex") => Some(Engine::Codex),
         Some(other) => return Err(format!("No engine called {other}: claude or codex.")),
     };
+    if change == Change::Add
+        && let Some(ticket) = unblocks.iter().filter_map(|id| tickets.iter().find(|t| t.id == *id)).find(|t| {
+            t.owner.as_deref().is_some_and(|owner| owner != role && !team.iter().any(|m| m.name == owner && m.role == role))
+        })
+    {
+        let owner = ticket.owner.as_deref().unwrap_or_default();
+        return Err(format!(
+            "T-{} has explicit owner {owner}, so a new {role} would not unblock it. Change the owner in the proposal/approval hand-off before proposing it.",
+            ticket.id
+        ));
+    }
     let model = board::arg_str(args, "model").map(str::to_owned);
     let effort = match board::arg_str(args, "effort").map(str::to_lowercase) {
         Some(e) if !EFFORTS.contains(&e.as_str()) => return Err(format!("No effort called {e}: {}.", EFFORTS.join(", "))),
@@ -260,6 +271,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,

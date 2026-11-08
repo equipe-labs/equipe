@@ -98,6 +98,7 @@ fn ticket(home: &Path, repo: &Path, status: TicketStatus, branch: &str) {
             depends_on: Vec::new(),
             branch: Some(branch.to_owned()),
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,

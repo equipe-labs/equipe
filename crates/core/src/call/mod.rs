@@ -40,6 +40,9 @@ pub struct Turn {
 
 /// What the loop asks its driver to do.
 #[derive(Debug, Clone)]
+// Publish is passed straight through the runtime; boxing every event here
+// would only move the already-bounded protocol value to the heap.
+#[allow(clippy::large_enum_variant)]
 pub enum Effect {
     /// Send `text` to the member as an ordinary submit (from the phone).
     Submit { session: SessionId, text: String },

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use equipe_protocol::{Access, Engine, Entry, Member, Mode, Priority, SessionId, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus};
 use rusqlite::{Connection, OptionalExtension as _, params};
+use equipe_protocol::{ExecutionState, TicketExecution};
 
 pub use rusqlite::Error;
 pub type Result<T> = std::result::Result<T, Error>;
@@ -438,7 +439,20 @@ impl Journal {
                created_at INTEGER NOT NULL,
                updated_at INTEGER NOT NULL,
                cwd TEXT
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS ticket_executions (
+               ticket INTEGER PRIMARY KEY,
+               state TEXT NOT NULL,
+               session INTEGER NOT NULL,
+               operation TEXT NOT NULL UNIQUE,
+               generation INTEGER NOT NULL,
+               heartbeat_at INTEGER NOT NULL,
+               lease_expires_at INTEGER NOT NULL,
+               reason TEXT,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS ticket_executions_lease
+               ON ticket_executions(state, lease_expires_at);",
         )?;
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
@@ -794,6 +808,162 @@ impl Journal {
         rows.collect()
     }
 
+    /// The latest durable runtime generation for a ticket.
+    pub fn execution(&self, ticket: TicketId) -> Result<Option<TicketExecution>> {
+        self.conn
+            .query_row(
+                "SELECT state, session, operation, generation, heartbeat_at, lease_expires_at, reason
+                 FROM ticket_executions WHERE ticket = ?1",
+                [ticket],
+                |r| {
+                    let state = match r.get::<_, String>(0)?.as_str() {
+                        "active" => ExecutionState::Active,
+                        "waiting" => ExecutionState::Waiting,
+                        "stalled" => ExecutionState::Stalled,
+                        _ => ExecutionState::Stopped,
+                    };
+                    Ok(TicketExecution {
+                        state,
+                        session: r.get::<_, i64>(1)?.max(0) as u64,
+                        operation: r.get(2)?,
+                        generation: r.get::<_, i64>(3)?.max(0) as u64,
+                        heartbeat_at: r.get::<_, i64>(4)?.max(0) as u64,
+                        lease_expires_at: r.get::<_, i64>(5)?.max(0) as u64,
+                        reason: r.get(6)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    /// Reserve a new generation. Replaying `operation` is a no-op; a valid
+    /// active lease prevents a second scheduler from starting the ticket.
+    pub fn acquire_execution(&self, ticket: TicketId, session: SessionId, operation: &str, at: u64, lease_for: u64) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some((same_ticket, state)) = tx
+            .query_row("SELECT ticket, state FROM ticket_executions WHERE operation = ?1", [operation], |r| Ok((r.get::<_, TicketId>(0)?, r.get::<_, String>(1)?)))
+            .optional()?
+        {
+            if same_ticket == ticket && state == "waiting" {
+                let changed = tx.execute(
+                    "UPDATE ticket_executions SET state = 'active', session = ?1, heartbeat_at = ?2,
+                       lease_expires_at = ?3, reason = NULL, updated_at = ?2
+                     WHERE ticket = ?4 AND operation = ?5 AND state = 'waiting'",
+                    params![session as i64, at as i64, at.saturating_add(lease_for) as i64, ticket, operation],
+                )? == 1;
+                tx.commit()?;
+                return Ok(changed);
+            }
+            tx.commit()?;
+            return Ok(false);
+        }
+        let busy = tx
+            .query_row(
+                "SELECT 1 FROM ticket_executions WHERE ticket = ?1 AND state = 'active' AND lease_expires_at > ?2",
+                params![ticket, at as i64],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if busy {
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO ticket_executions
+               (ticket, state, session, operation, generation, heartbeat_at, lease_expires_at, reason, updated_at)
+             VALUES (?1, 'active', ?2, ?3,
+               COALESCE((SELECT generation + 1 FROM ticket_executions WHERE ticket = ?1), 1), ?4, ?5, NULL, ?4)
+             ON CONFLICT(ticket) DO UPDATE SET state = excluded.state, session = excluded.session,
+               operation = excluded.operation, generation = excluded.generation,
+               heartbeat_at = excluded.heartbeat_at, lease_expires_at = excluded.lease_expires_at,
+               reason = NULL, updated_at = excluded.updated_at",
+            params![ticket, session as i64, operation, at as i64, at.saturating_add(lease_for) as i64],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Atomically reserve a person-approved requeue. Replaying the operation
+    /// changes nothing. The scheduler later binds the reservation to a fresh
+    /// runtime session with [`Self::acquire_execution`].
+    pub fn reserve_requeue(&self, ticket: TicketId, operation: &str, owner: Option<&str>, at: u64) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        if tx.query_row("SELECT 1 FROM ticket_executions WHERE operation = ?1", [operation], |_| Ok(())).optional()?.is_some() {
+            tx.commit()?;
+            return Ok(false);
+        }
+        let state: Option<String> = tx.query_row("SELECT state FROM ticket_executions WHERE ticket = ?1", [ticket], |r| r.get(0)).optional()?;
+        if !matches!(state.as_deref(), Some("stalled") | Some("waiting") | Some("stopped")) {
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE ticket_executions SET state = 'waiting', session = 0, operation = ?1,
+               generation = generation + 1, heartbeat_at = ?2, lease_expires_at = 0,
+               reason = 'approved requeue pending dispatch', updated_at = ?2 WHERE ticket = ?3",
+            params![operation, at as i64, ticket],
+        )?;
+        tx.execute(
+            "UPDATE tickets SET status = 'todo', assignee = NULL,
+               owner = COALESCE(?1, owner), note = 'Requeued: approved recovery on the existing ticket and worktree.', updated_at = ?2
+             WHERE id = ?3",
+            params![owner, at as i64, ticket],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Renew only the exact generation/session that emitted the heartbeat.
+    pub fn heartbeat_execution(&self, ticket: TicketId, generation: u64, session: SessionId, at: u64, lease_for: u64) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET heartbeat_at = ?1, lease_expires_at = ?2, updated_at = ?1
+             WHERE ticket = ?3 AND generation = ?4 AND session = ?5 AND state = 'active'",
+            params![at as i64, at.saturating_add(lease_for) as i64, ticket, generation as i64, session as i64],
+        )? == 1)
+    }
+
+    pub fn finish_execution(&self, ticket: TicketId, generation: u64, state: ExecutionState, reason: Option<&str>) -> Result<bool> {
+        let state = match state {
+            ExecutionState::Active => "active",
+            ExecutionState::Waiting => "waiting",
+            ExecutionState::Stalled => "stalled",
+            ExecutionState::Stopped => "stopped",
+        };
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET state = ?1, lease_expires_at = 0, reason = ?2, updated_at = ?3
+             WHERE ticket = ?4 AND generation = ?5",
+            params![state, reason, now(), ticket, generation as i64],
+        )? == 1)
+    }
+
+    /// On restart/tick, stall leases whose runtime session is not present.
+    /// Ticket work and its checkout are deliberately untouched.
+    pub fn recover_executions(&self, live: &[SessionId], at: u64) -> Result<usize> {
+        let live = live.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+        self.conn.execute(
+            "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0,
+               reason = 'runtime session ended without closing its lease', updated_at = ?1
+             WHERE state = 'active'
+               AND instr(',' || ?2 || ',', ',' || session || ',') = 0",
+            params![at as i64, live],
+        )
+    }
+
+    /// Existing databases had workflow state but no runtime state. Preserve
+    /// their ticket/worktree and classify in-progress rows conservatively.
+    pub fn migrate_legacy_executions(&self, at: u64) -> Result<usize> {
+        self.conn.execute(
+            "INSERT INTO ticket_executions
+               (ticket, state, session, operation, generation, heartbeat_at, lease_expires_at, reason, updated_at)
+             SELECT id, 'stalled', 0, 'migration:' || id, 0, ?1, 0,
+               'migrated in-progress ticket has no live runtime session', ?1
+             FROM tickets WHERE status = 'in_progress'
+               AND NOT EXISTS (SELECT 1 FROM ticket_executions e WHERE e.ticket = tickets.id)",
+            [at as i64],
+        )
+    }
+
     pub fn allow(&self, rule: &str, by: &str) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO allowed (rule, by, added_at) VALUES (?1, ?2, ?3)",
@@ -1050,6 +1220,7 @@ impl Journal {
                 created_by: r.get(9)?,
                 note: r.get(10)?,
                 worktree: r.get::<_, Option<String>>(11)?.map(PathBuf::from),
+                execution: None,
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
                 asks: Vec::new(),
@@ -1066,7 +1237,11 @@ impl Journal {
             t.asks = t.asks();
             Ok(t)
         })?;
-        rows.collect()
+        let mut tickets: Vec<Ticket> = rows.collect::<Result<_>>()?;
+        for ticket in &mut tickets {
+            ticket.execution = self.execution(ticket.id)?.map(Box::new);
+        }
+        Ok(tickets)
     }
 
     pub fn ticket_work(&self, id: TicketId) -> Result<TicketWork> {
@@ -1916,6 +2091,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,
@@ -2196,6 +2372,43 @@ mod tests {
         let home = Path::new("/h");
         assert_eq!(squad_dir(home, "acme"), PathBuf::from("/h/squads/acme"));
         assert_eq!(member_memory_dir(home, "acme", "frontend"), PathBuf::from("/h/squads/acme/members/frontend/memory"));
+    }
+
+    #[test]
+    fn execution_generation_fences_late_heartbeats_and_requeue_is_idempotent() {
+        let j = Journal::for_squad(&temp_home(), "lease").unwrap();
+        j.conn.execute(
+            "INSERT INTO tickets (id,title,body,status,depends_on,created_by,created_at,updated_at,kind)
+             VALUES (7,'recover','', 'in_progress','', 'you',1,1,'code')",
+            [],
+        ).unwrap();
+        assert!(j.acquire_execution(7, 11, "start:one", 100, 30).unwrap());
+        assert!(!j.acquire_execution(7, 12, "start:two", 101, 30).unwrap(), "valid lease prevents duplicate work");
+        let first = j.execution(7).unwrap().unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(j.recover_executions(&[], 102).unwrap(), 1, "a daemon restart has no live runtime session");
+        assert!(j.reserve_requeue(7, "approved:one", None, 103).unwrap());
+        assert!(!j.reserve_requeue(7, "approved:one", None, 104).unwrap(), "same approval is harmless");
+        assert!(j.acquire_execution(7, 22, "approved:one", 105, 30).unwrap());
+        let second = j.execution(7).unwrap().unwrap();
+        assert_eq!(second.generation, 2);
+        assert!(!j.heartbeat_execution(7, first.generation, 11, 106, 30).unwrap(), "old runtime cannot extend the new lease");
+        assert!(j.heartbeat_execution(7, second.generation, 22, 106, 30).unwrap());
+        assert_eq!(j.recover_executions(&[22], 200).unwrap(), 0, "an observed live session is never called stale");
+    }
+
+    #[test]
+    fn legacy_in_progress_ticket_migrates_without_touching_ticket_work() {
+        let j = Journal::for_squad(&temp_home(), "migration").unwrap();
+        j.conn.execute(
+            "INSERT INTO tickets (id,title,body,status,depends_on,branch,base,worktree,created_by,created_at,updated_at,kind)
+             VALUES (8,'old','', 'in_progress','','topic','main','/tmp/kept','you',1,1,'code')",
+            [],
+        ).unwrap();
+        assert_eq!(j.migrate_legacy_executions(50).unwrap(), 1);
+        assert_eq!(j.execution(8).unwrap().unwrap().state, ExecutionState::Stalled);
+        assert_eq!(j.ticket_work(8).unwrap(), TicketWork { base: Some("main".into()), worktree: Some("/tmp/kept".into()), engine_session: None });
+        assert_eq!(j.migrate_legacy_executions(60).unwrap(), 0, "migration is safe to rerun");
     }
 
     #[test]

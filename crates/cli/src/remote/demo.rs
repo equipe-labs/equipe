@@ -117,6 +117,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         depends_on: vec![],
         branch: None,
         worktree: None,
+        execution: None,
         merged: (status == TicketStatus::Done).then_some(true),
         off_main: None,
         design_qa: None, plan: None,

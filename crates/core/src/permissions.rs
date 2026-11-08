@@ -36,6 +36,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::KeepOnBranch { .. }
         | C::Reopen { .. }
         | C::Resume { .. }
+        | C::Requeue { .. }
         | C::Cancel { .. }
         | C::ProposeAccept { .. }
         | C::ConfirmAccept { .. }

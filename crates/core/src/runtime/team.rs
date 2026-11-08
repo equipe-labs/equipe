@@ -91,6 +91,19 @@ proposes it to the person."
                 }
             }
         }
+        // An approved add that explicitly unblocks stalled work is also the
+        // person's approval to hand that same ticket to the new member and
+        // requeue it. Both changes are one journal transaction.
+        if change.change == Change::Add
+            && let Some(owner) = members.first()
+            && let Some(journal) = self.journal(squad)
+        {
+            for ticket in &change.unblocks {
+                let operation = format!("team-change:{}:{ticket}", change.id);
+                let _ = journal.reserve_requeue(*ticket, &operation, Some(owner), now_secs());
+            }
+            self.dispatch(squad).await;
+        }
         self.publish(Event::TeamChangeClosed { squad: squad.to_owned(), id, approved: true, members: members.clone() });
         let names = members.join(", ");
         let (line, shown) = match (change.change, members.is_empty()) {

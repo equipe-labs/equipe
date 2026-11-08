@@ -337,6 +337,9 @@ pub struct Ticket {
     /// Its checkout, while there is one — the person can look at the work there.
     #[serde(default)]
     pub worktree: Option<PathBuf>,
+    /// The ticket's runtime lifecycle, independent of its workflow column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Box<TicketExecution>>,
     /// Whether its branch is in the project's main branch, as of its acceptance
     /// or merge — `Some(false)`: accepted, but not on main yet. `None`: unknown.
     #[serde(default)]
@@ -388,6 +391,29 @@ pub struct Ticket {
     /// an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+}
+
+/// A durable run of a ticket. A newer generation supersedes late messages
+/// from every older runtime session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketExecution {
+    pub state: ExecutionState,
+    pub session: SessionId,
+    pub operation: String,
+    pub generation: u64,
+    pub heartbeat_at: u64,
+    pub lease_expires_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionState {
+    Active,
+    Waiting,
+    Stalled,
+    Stopped,
 }
 
 /// The gap between two tickets' ranks when they are spread out again.
@@ -704,6 +730,9 @@ pub enum Command {
     /// The person did what a `waiting` ticket needed: it goes back to its
     /// member, in the same worktree, with `note` (what was done) to go on from.
     Resume { squad: SquadName, ticket: TicketId, note: String },
+    /// The person approved a fresh runtime session for a stalled ticket.
+    /// `operation` makes retries idempotent.
+    Requeue { squad: SquadName, ticket: TicketId, operation: String },
     /// The person drops a ticket.
     Cancel { squad: SquadName, ticket: TicketId },
     /// The person puts a ticket of their own on the board, ready (`todo`).
@@ -1828,6 +1857,9 @@ fn claude() -> Engine {
 /// Core → screen: "this happened".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// Events are an in-process/wire sum type; boxing its common TicketChanged
+// payload would add allocations across every board update.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     SessionStarted {
         session: SessionId,
@@ -3063,6 +3095,7 @@ mod tests {
             depends_on: vec![1],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,
@@ -3315,6 +3348,24 @@ mod tests {
         let b = new_session_id();
         assert_ne!(a, b);
         assert!(a < (1 << 53) && a > 0);
+    }
+
+    #[test]
+    fn requeue_and_execution_lifecycle_are_stable_on_the_wire() {
+        let command = Command::Requeue { squad: "acme".into(), ticket: 7, operation: "approve:9".into() };
+        assert_eq!(serde_json::to_value(&command).unwrap(), json!({
+            "type": "requeue", "squad": "acme", "ticket": 7, "operation": "approve:9"
+        }));
+        let execution = TicketExecution {
+            state: ExecutionState::Stalled,
+            session: 11,
+            operation: "start:1".into(),
+            generation: 2,
+            heartbeat_at: 100,
+            lease_expires_at: 0,
+            reason: Some("runtime ended".into()),
+        };
+        assert_eq!(serde_json::from_value::<TicketExecution>(serde_json::to_value(&execution).unwrap()).unwrap(), execution);
     }
 
     #[test]

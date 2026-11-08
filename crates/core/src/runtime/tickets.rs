@@ -170,6 +170,7 @@ impl Runtime {
             depends_on: draft.depends_on,
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,
