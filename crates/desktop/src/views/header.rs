@@ -452,7 +452,9 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
     div().relative().flex_shrink(0.4).min_w(px(64.)).child(button).children(open.then(|| list(shell, cx))).into_any_element()
 }
 
-fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+/// The project list and its "Add a project…" (or the path box, adding), as
+/// a popover under whatever opened it.
+pub(crate) fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let names = model.project_names();

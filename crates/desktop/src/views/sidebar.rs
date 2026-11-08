@@ -545,6 +545,7 @@ fn projects_heading(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     h_flex()
         .id("projects-heading")
         .group("projects-heading")
+        .relative()
         .h(px(26.))
         .mt(px(14.))
         .mx_2()
@@ -571,12 +572,16 @@ fn projects_heading(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                     if local {
                         this.pick_project_folder(cx);
                     } else {
+                        // Another machine's squad: its path, typed in a box
+                        // that opens right here — the header's project pill
+                        // isn't on screen outside a project's conversation.
                         this.board.popover = Some(super::board::Popover::Projects);
-                        this.board.slice_place = "chat";
+                        this.board.slice_place = "sidebar";
                         this.start_adding_project(window, cx);
                     }
                 })),
         )
+        .children((shell.board.popover == Some(super::board::Popover::Projects) && shell.board.slice_place == "sidebar").then(|| div().absolute().top_0().left_0().w_full().child(super::header::list(shell, cx))))
         .into_any_element()
 }
 
