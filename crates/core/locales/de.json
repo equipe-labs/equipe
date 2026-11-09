@@ -501,6 +501,7 @@
   "control.pm_accepts_off": "Jede Abnahme der Teamarbeit bleibt bei dir",
   "control.idle_wake": "Den PM wecken, wenn das Board {hours} h leer ist",
   "control.idle_wake_off": "Den PM bei leerem Board nicht wecken",
+  "control.subagents_at_once": "Jedes Mitglied bis zu {at_once} Subagenten gleichzeitig ausführen lassen",
   "control.model": "Das Modell von {member} auf {model} setzen",
   "control.effort": "Den Denkaufwand von {member} auf {effort} setzen",
   "control.engine": "{members} zu {engine} umziehen",

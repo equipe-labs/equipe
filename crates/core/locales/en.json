@@ -501,6 +501,7 @@
   "control.pm_accepts_off": "Keep every acceptance of the team's work for you",
   "control.idle_wake": "Wake the PM when the board has been empty for {hours} h",
   "control.idle_wake_off": "Don't wake the PM when the board is empty",
+  "control.subagents_at_once": "Let each member run up to {at_once} subagents at once",
   "control.model": "Set {member}'s model to {model}",
   "control.effort": "Set {member}'s effort to {effort}",
   "control.engine": "Move {members} to {engine}",

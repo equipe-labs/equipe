@@ -2221,6 +2221,48 @@ async fn the_pm_changes_what_the_person_asks_and_only_their_tap_widens_what_the_
 }
 
 #[tokio::test]
+async fn the_pm_reads_and_changes_subagents_at_once_with_a_card_only_for_an_increase() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("subagents_at_once): default — Claude 20, Codex 6"), "{}", read.text);
+
+    let refused = tool(&handle, "frontend", "change_setting", serde_json::json!({ "setting": "subagents_at_once", "value": "5" })).await;
+    assert!(refused.is_error && refused.text.contains("Only the PM"), "{}", refused.text);
+    let out_of_range = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "subagents_at_once", "value": "51" })).await;
+    assert!(out_of_range.is_error && out_of_range.text.contains("1 through 50"), "{}", out_of_range.text);
+
+    // Five narrows both engine defaults, so it applies immediately and emits
+    // the same event as the desktop setting.
+    let narrowed = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "subagents_at_once", "value": "5" })).await;
+    assert!(!narrowed.is_error && narrowed.text.starts_with("Done:"), "{}", narrowed.text);
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: Some(5), .. })).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().subagents_at_once(), Some(5));
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("subagents_at_once): 5"), "{}", read.text);
+
+    // Raising it waits on the person's card; the command is only applied on yes.
+    let handle2 = handle.clone();
+    let asking = tokio::spawn(async move {
+        tool(&handle2, "pm", "change_setting", serde_json::json!({ "setting": "subagents_at_once", "value": "50", "why": "run more work in parallel" })).await
+    });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.tool, "Change setting");
+    assert!(approval.action.contains("50 subagents"), "{}", approval.action);
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().subagents_at_once(), Some(5), "not before the tap");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: Some(50), .. })).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().subagents_at_once(), Some(50));
+    assert!(asking.await.unwrap().text.starts_with("The person said yes"));
+}
+
+#[tokio::test]
 async fn the_pm_moves_members_to_another_engine_only_on_the_persons_tap_and_never_through_their_model() {
     use equipe_core::protocol::Engine;
     use equipe_core::protocol::engines::Why;

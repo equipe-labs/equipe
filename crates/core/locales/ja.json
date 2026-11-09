@@ -497,6 +497,7 @@
   "control.pm_accepts_off": "チームの作業の受け入れはすべてあなたが行います",
   "control.idle_wake": "ボードが {hours} 時間空いたら PM を起こします",
   "control.idle_wake_off": "ボードが空でも PM を起こしません",
+  "control.subagents_at_once": "各メンバーが同時に実行できるサブエージェントを最大 {at_once} 件にします",
   "control.model": "{member} のモデルを {model} にします",
   "control.effort": "{member} の思考の深さを {effort} にします",
   "control.engine": "{members} を {engine} に移します",

@@ -501,6 +501,7 @@
   "control.pm_accepts_off": "Toutes les acceptations du travail de l’équipe restent les vôtres",
   "control.idle_wake": "Réveiller le PM quand le tableau est vide depuis {hours} h",
   "control.idle_wake_off": "Ne pas réveiller le PM quand le tableau est vide",
+  "control.subagents_at_once": "Permettre à chaque membre d’exécuter jusqu’à {at_once} sous-agents à la fois",
   "control.model": "Passer le modèle de {member} à {model}",
   "control.effort": "Passer l’effort de {member} à {effort}",
   "control.engine": "Passer {members} sur {engine}",

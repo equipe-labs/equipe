@@ -501,6 +501,7 @@
   "control.pm_accepts_off": "Todas las aceptaciones del trabajo del equipo quedan para ti",
   "control.idle_wake": "Despertar al PM cuando el tablero lleve {hours} h vacío",
   "control.idle_wake_off": "No despertar al PM cuando el tablero esté vacío",
+  "control.subagents_at_once": "Permitir que cada miembro ejecute hasta {at_once} subagentes a la vez",
   "control.model": "Poner el modelo de {member} en {model}",
   "control.effort": "Poner el esfuerzo de {member} en {effort}",
   "control.engine": "Pasar {members} a {engine}",
