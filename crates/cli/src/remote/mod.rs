@@ -177,6 +177,7 @@ pub async fn register(home: &Path) -> Result<Config, String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn the_config_is_kept_where_only_the_person_reads_it() {
         use std::os::unix::fs::PermissionsExt as _;

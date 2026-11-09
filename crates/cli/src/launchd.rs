@@ -683,11 +683,13 @@ mod tests {
 
     /// launchd itself, with a throwaway job of its own — never the person's
     /// daemon: its daemon "answers" when its process is there.
+    #[cfg(unix)]
     struct Throwaway {
         real: Launchd,
         target: String,
     }
 
+    #[cfg(unix)]
     impl Host for Throwaway {
         fn launchctl(&mut self, args: &[&str]) -> Ran {
             assert!(!args.iter().any(|a| a.ends_with(LABEL)), "never the person's service: {args:?}");
@@ -705,11 +707,13 @@ mod tests {
     }
 
     /// Takes the throwaway job out of launchd, and its folder away, however the test ends.
+    #[cfg(unix)]
     struct Cleanup {
         target: String,
         dir: std::path::PathBuf,
     }
 
+    #[cfg(unix)]
     impl Drop for Cleanup {
         fn drop(&mut self) {
             let _ = std::process::Command::new("launchctl").args(["bootout", &self.target]).output();
@@ -717,6 +721,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn throwaway_plist(label: &str, script: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -738,6 +743,7 @@ mod tests {
     /// The whole flow against the real launchd, on a job named
     /// `im.equipe.test-<pid>` that only sleeps (and is slow to stop, as a
     /// daemon is), then one that exits 78. `cargo test -- --ignored real_launchd`.
+    #[cfg(unix)]
     #[tokio::test]
     #[ignore = "loads and removes a throwaway launchd job in this user's session"]
     async fn real_launchd_restarts_in_place_reloads_through_error_5_and_gives_up_on_exit_78() {

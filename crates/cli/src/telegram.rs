@@ -1237,6 +1237,7 @@ mod tests {
         assert_eq!(token_in("12:34"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_connection_is_kept_where_only_the_person_reads_it() {
         use std::os::unix::fs::PermissionsExt as _;

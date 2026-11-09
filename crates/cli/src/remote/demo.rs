@@ -672,6 +672,7 @@ mod tests {
         assert!(demo.scenes["a"].later.len() <= LATER + 20);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_code_is_kept_and_its_picture_is_a_qr_code() {
         let home = std::env::temp_dir().join(format!("equipe-demo-{}", std::process::id()));

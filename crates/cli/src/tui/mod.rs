@@ -534,6 +534,7 @@ fn query_background() -> Option<(u8, u8, u8)> {
 }
 
 /// `…]11;rgb:1e1e/1e1e/2020…` → (30, 30, 32): channels of one to four hex digits.
+#[cfg(any(unix, test))]
 fn parse_background(answer: &str) -> Option<(u8, u8, u8)> {
     let rgb = answer.split("rgb:").nth(1)?;
     let mut parts = rgb.split(['/', '\x07', '\x1b']);
