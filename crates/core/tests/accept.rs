@@ -53,7 +53,7 @@ fn claude() -> PathBuf {
     #[cfg(unix)]
     let bin = scratch("bin").join("claude");
     #[cfg(windows)]
-    let bin = scratch("bin").join("claude.cmd");
+    let bin = scratch("bin").join("claude.exe");
     #[cfg(unix)]
     {
     let answer = r#"cat <<EOF
@@ -68,24 +68,28 @@ EOF"#;
     }
     #[cfg(windows)]
     {
-        // Match npm's layout so Windows exercises the same `.cmd` -> Node path
-        // as the real Claude Code package, including arguments containing JSON.
-        write_script(&bin, "@echo off\r\nexit /b 1\r\n");
-        let entry = bin.parent().unwrap().join("node_modules/@anthropic-ai/claude-code/cli.js");
-        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
-        write_script(
-            &entry,
-            r#"const fs = require('fs');
-if (process.argv[2] === 'auth') {
-  console.log('{"loggedIn":true,"authMethod":"claude.ai"}');
-  process.exit(0);
+        // A native fake keeps TP-5 independent of cmd.exe quoting. The real
+        // npm `.cmd` launchers are exercised separately by the Windows job.
+        let source = bin.with_extension("rs");
+        std::fs::write(
+            &source,
+            r##"fn main() {
+    if std::env::args().nth(1).as_deref() == Some("auth") {
+        println!(r#"{{"loggedIn":true,"authMethod":"claude.ai"}}"#);
+        return;
+    }
+    if std::fs::metadata(".git").is_ok_and(|m| m.is_file()) {
+        std::fs::write("HERO.md", "made by the squad\n").unwrap();
+    }
+    println!(r#"{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}"#);
+    println!(r#"{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"ok"}}}}}}"#);
+    println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":3,"output_tokens":1}}}}"#);
 }
-if (fs.statSync('.git').isFile()) fs.writeFileSync('HERO.md', 'made by the squad\n');
-console.log('{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}');
-console.log('{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}');
-console.log('{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":3,"output_tokens":1}}');
-"#,
-        );
+"##,
+        )
+        .unwrap();
+        let built = Process::new("rustc").args(["--edition=2024", "-o"]).arg(&bin).arg(&source).status().unwrap();
+        assert!(built.success(), "build the Windows fake engine");
     }
     bin
 }
