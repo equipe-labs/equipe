@@ -317,7 +317,7 @@ pub fn begin() -> Option<&'static Look> {
     LOOK.get_or_init(|| {
         on().then(|| {
             let home = equipe_providers::credentials::equipe_home();
-            let look = Look::choose(person_look(&home.join("equipe.sock")), || Look::read(&home, &mac_languages()));
+            let look = Look::choose(person_look(&equipe_core::gateway::socket_path(&home)), || Look::read(&home, &mac_languages()));
             match &look.from {
                 Some(from) => eprintln!("equipe readonly: the person's look, from their screen on {} ({}): {}", from.machine, from.version, look.steps()),
                 None => eprintln!("equipe readonly: the person's look, from this Mac's own state (no screen ever told one): {}", look.steps()),
@@ -355,8 +355,30 @@ pub fn person_look(socket: &Path) -> Option<SeenLook> {
 }
 
 #[cfg(windows)]
-pub fn person_look(_socket: &Path) -> Option<SeenLook> {
-    None
+pub fn person_look(socket: &Path) -> Option<SeenLook> {
+    if !lets_method(rpc::PERSON_LOOK) {
+        return None;
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+    runtime.block_on(async {
+        tokio::time::timeout(ASK_WAIT, async {
+            use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+            let stream = equipe_core::gateway::connect(socket).await.ok()?;
+            let (reader, mut writer) = stream.into_split();
+            writer.write_all(rpc::Message::request(1, rpc::PERSON_LOOK, serde_json::json!({})).to_line().as_bytes()).await.ok()?;
+            let mut lines = tokio::io::BufReader::new(reader).lines();
+            while let Some(line) = lines.next_line().await.ok()? {
+                let message = rpc::Message::from_line(&line).ok()?;
+                if message.id == Some(1) {
+                    return message.result_as::<PersonLook>()?.look;
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    })
 }
 
 /// The person's look, once [`begin`] read it.

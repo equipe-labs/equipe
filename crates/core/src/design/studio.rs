@@ -719,6 +719,7 @@ mod tests {
         assert_eq!(cut("abcdef", 3), "abc…");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tickets_design_folder_is_read_whole_from_inside_it_only() {
         let root = dir("whole");
@@ -900,4 +901,3 @@ mod tests {
         assert_eq!(design_of(&root), Some(root.join("design")));
     }
 }
-

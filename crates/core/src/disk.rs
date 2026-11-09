@@ -1469,6 +1469,7 @@ mod tests {
         assert!(!crate::kept::names(home).contains(old.file_name().unwrap().to_str().unwrap()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn links_out_of_equipes_folders_are_never_followed() {
         let tree = Tree::new();
@@ -1491,6 +1492,7 @@ mod tests {
         assert!(tree.outside.join("blob").exists(), "the person's files stay");
     }
 
+    #[cfg(unix)]
     #[test]
     fn nothing_outside_equipes_folders_is_removable() {
         let tree = Tree::new();

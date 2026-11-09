@@ -13,7 +13,6 @@ use std::process::ExitCode;
 use equipe_core::gateway;
 use equipe_core::protocol::rpc::{self, Attached, Message};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::UnixStream;
 
 use crate::daemon;
 
@@ -55,7 +54,7 @@ async fn bridge(no_start: bool) -> io::Result<()> {
         daemon: version.map(|v| v.version),
         started,
     };
-    let stream = UnixStream::connect(&socket).await?;
+    let stream = gateway::connect(&socket).await?;
     let (mut from_daemon, mut to_daemon) = stream.into_split();
 
     let mut stdout = tokio::io::stdout();

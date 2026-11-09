@@ -944,6 +944,11 @@ pub async fn run_turn(
             _ => err.into(),
         })?;
 
+    // Windows has no `sandbox-exec`. Claude Code's filesystem policy limits
+    // writes, while this Job Object keeps the engine's entire process tree
+    // attached to the turn and kills stragglers when the turn ends.
+    let _child_job = child.id().map(crate::child_job::ChildJob::assign).transpose()?;
+
     if let Some(pid) = child.id() {
         on_activity(Activity::Engine { pid });
     }

@@ -328,6 +328,7 @@ mod tests {
         assert_eq!(keep(&home, &tag(&big)), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn nothing_outside_the_uploads_is_read_or_kept() {
         use std::os::unix::fs::symlink;
@@ -345,6 +346,7 @@ mod tests {
         assert!(!names(&home).contains("credentials.txt"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn old_kept_attachments_go_only_when_asked_and_their_names_with_them() {
         let home = home("old");

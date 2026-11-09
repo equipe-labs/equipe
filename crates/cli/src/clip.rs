@@ -10,11 +10,20 @@ use equipe_core::t;
 /// Where attached images are kept: a temp folder only the person can read,
 /// which members may read without asking.
 pub fn pastes_dir() -> Result<PathBuf, String> {
+    #[cfg(unix)]
+    {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = std::env::temp_dir().join("equipe-pastes");
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     Ok(dir)
+    }
+    #[cfg(windows)]
+    {
+        let dir = std::env::temp_dir().join("equipe-pastes");
+        std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+        Ok(dir)
+    }
 }
 
 /// Where `equipe send-image` on another machine drops images for the console

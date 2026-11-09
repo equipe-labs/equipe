@@ -500,6 +500,7 @@ mod tests {
         assert_eq!(pasted("a\nb"), None);
     }
 
+    #[cfg(unix)]
     fn script(dir: &Path, body: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
         let bin = dir.join("claude");
@@ -515,6 +516,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_code_the_person_pastes_reaches_the_tools_prompt_and_signs_it_in() {
         let dir = scratch("login");

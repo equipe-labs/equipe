@@ -1655,6 +1655,7 @@ pub(crate) mod tests {
     /// The whole way, against a relay running locally (`npx wrangler dev` in
     /// `relay/`) and a daemon with its own home pointed at it:
     /// `EQUIPE_E2E_RELAY=http://localhost:8787 EQUIPE_E2E_HOME=/tmp/eqt cargo test -p equipe e2e -- --ignored`
+    #[cfg(unix)]
     #[tokio::test]
     #[ignore]
     async fn e2e_a_phone_pairs_through_the_relay_and_reads_the_squads() {
@@ -1747,4 +1748,3 @@ pub(crate) mod tests {
         assert!(tokio_tungstenite::connect_async(again).await.is_err());
     }
 }
-

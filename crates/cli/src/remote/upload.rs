@@ -215,13 +215,18 @@ impl Uploads {
     }
 
     fn start(&self, device: &str, upload_id: &str) -> Result<PathBuf, String> {
+        #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt as _;
         let dir = partial_dir(&self.home);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         restrict(&gateway::uploads_dir(&self.home))?;
         restrict(&dir)?;
         let path = dir.join(format!("{device}-{upload_id}"));
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        options.open(&path).map_err(|e| e.to_string())?;
         Ok(path)
     }
 
@@ -359,8 +364,13 @@ fn partial_dir(home: &Path) -> PathBuf {
 }
 
 fn restrict(dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())
+    }
+    #[cfg(windows)]
+    { let _ = dir; Ok(()) }
 }
 
 fn valid_id(id: &str) -> bool {
@@ -508,6 +518,7 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(bytes)
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
@@ -515,6 +526,7 @@ mod tests {
 
     /// `ffmpeg` and `ffprobe` that only pretend: a 42-second 1920×1080 video,
     /// each frame a few bytes.
+    #[cfg(unix)]
     fn fake_tools(home: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = home.with_extension("tools");
@@ -540,6 +552,7 @@ mod tests {
         assert_eq!(result["snapshot"]["squad"], "acme");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_photo_reaches_the_member_as_an_image_tag() {
         let mut rig = Rig::new("photo", vec![]);
@@ -600,6 +613,7 @@ mod tests {
         assert_eq!(tags::find(done["tag"].as_str().unwrap()).len(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_video_becomes_frames_and_a_transcript() {
         let home = std::env::temp_dir().join(format!("equipe-phone-uploads-video-{}", std::process::id()));

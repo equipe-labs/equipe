@@ -30,6 +30,8 @@ mod telegram;
 mod telemetry;
 mod tui;
 mod ui;
+#[cfg(any(windows, test))]
+mod windows_scheduler;
 
 use std::io::{IsTerminal as _, Write as _};
 use std::process::ExitCode;
@@ -871,6 +873,7 @@ async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     let npx = browser::find_npx().ok_or_else(|| Failure::new(t!("main.no_node")).next("brew install node"))?;
     let dir = state.parent().expect("the state file has a folder");
     std::fs::create_dir_all(dir).map_err(|err| Failure::new(t!("main.mkdir_failed", dir = dir.display(), err = err)))?;
+    #[cfg(unix)]
     let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
 
     println!("{}\n", p.kicker(t!("main.browser_kicker")));
@@ -890,6 +893,7 @@ async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
         .arg(&state)
         .arg(url.unwrap_or_else(start_page));
     let status = open.status().map_err(|err| Failure::new(t!("main.browser_open_failed", err = err)))?;
+    #[cfg(unix)]
     let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     if !status.success() {
         return Err(Failure::new(t!("main.browser_error")).next("equipe browser"));

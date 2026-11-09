@@ -2257,6 +2257,7 @@ dependencies = [
  "sys-locale",
  "tokio",
  "whatlang",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2334,6 +2335,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

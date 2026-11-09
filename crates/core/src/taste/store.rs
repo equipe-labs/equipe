@@ -362,6 +362,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_projects_notes_and_decisions_are_in_its_design_folder_read_from_inside_only() {
         use std::os::unix::fs::symlink;

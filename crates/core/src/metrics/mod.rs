@@ -97,8 +97,20 @@ pub trait Keys: Send {
     fn delete(&mut self, id: &str) -> Result<(), String>;
 }
 
-/// The daemon machine's Keychain.
-pub struct Keychain;
+/// The daemon machine's system credential store.
+pub struct Keychain {
+    #[cfg(windows)]
+    home: PathBuf,
+}
+
+impl Keychain {
+    pub fn new(_home: &Path) -> Self {
+        Self {
+            #[cfg(windows)]
+            home: _home.to_owned(),
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 impl Keys for Keychain {
@@ -122,7 +134,27 @@ impl Keys for Keychain {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+impl Keys for Keychain {
+    fn set(&mut self, id: &str, keys: &BTreeMap<String, String>) -> Result<(), String> {
+        let text = serde_json::to_vec(keys).map_err(|e| e.to_string())?;
+        let account = equipe_providers::windows_credentials::scoped_account(&self.home, id);
+        equipe_providers::windows_credentials::set(SERVICE, &account, &text).map_err(|e| e.to_string())
+    }
+
+    fn get(&self, id: &str) -> Result<BTreeMap<String, String>, String> {
+        let account = equipe_providers::windows_credentials::scoped_account(&self.home, id);
+        let bytes = equipe_providers::windows_credentials::get(SERVICE, &account).map_err(|e| e.to_string())?.ok_or_else(|| "no keys kept".to_owned())?;
+        serde_json::from_slice(&bytes).map_err(|_| "the kept keys aren't readable".into())
+    }
+
+    fn delete(&mut self, id: &str) -> Result<(), String> {
+        let account = equipe_providers::windows_credentials::scoped_account(&self.home, id);
+        equipe_providers::windows_credentials::delete(SERVICE, &account).map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 impl Keys for Keychain {
     fn set(&mut self, _: &str, _: &BTreeMap<String, String>) -> Result<(), String> {
         Err("metrics keys need macOS's Keychain, which this machine doesn't have".into())
@@ -303,7 +335,7 @@ impl Metrics {
 
     /// The daemon's: keys in the Keychain.
     pub fn open(home: &Path) -> Self {
-        Self::new(home, Box::new(Keychain))
+        Self::new(home, Box::new(Keychain::new(home)))
     }
 
     fn change<T>(&self, f: impl FnOnce(&mut Vec<Connection>) -> Result<T, Refused>) -> Result<T, Refused> {

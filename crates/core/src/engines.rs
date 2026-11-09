@@ -324,6 +324,7 @@ mod tests {
         assert!(matches!(install_with("sleep 5", Duration::from_millis(100)).await, InstallStep::Failed { .. }), "the wait runs out");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_installed_claude_code_updates_itself_rather_than_being_installed_again() {
         use equipe_protocol::InstallStep;
@@ -406,6 +407,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     fn script(dir: &std::path::Path, name: &str, body: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
         let bin = dir.join(name);
@@ -414,6 +416,7 @@ mod tests {
         bin.to_string_lossy().into_owned()
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn claude_code_stands_as_it_says_of_itself() {
         let dir = scratch("claude");
@@ -425,6 +428,7 @@ mod tests {
         assert_eq!(claude(&script(&dir, "out", r#"echo '{"loggedIn":false}'"#)).await.state, EngineState::SignedOut);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn codex_missing_says_so_and_equipes_older_login_shows_beside_it() {
         let dir = scratch("codex");
@@ -437,6 +441,7 @@ mod tests {
         assert_eq!((out.state, out.legacy), (EngineState::SignedOut, true));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_device_sign_in_runs_the_tool_and_tells_the_code_before_it_ends() {
         let dir = scratch("login");
