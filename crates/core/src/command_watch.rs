@@ -427,6 +427,7 @@ mod tests {
         assert_eq!(w.look(&asking, Instant::now()).state, WatchState::AwaitingYou);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_systems_own_ps_lists_a_command_under_its_parent_and_stopping_ends_it() {
         let marker = "sleep 30; echo command-watch-marker";

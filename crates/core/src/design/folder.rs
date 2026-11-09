@@ -449,6 +449,7 @@ pub fn shown(home: &Path, squad: &str) -> (Vec<String>, Vec<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     fn dir(name: &str) -> PathBuf {
@@ -465,6 +466,7 @@ mod tests {
 
     const TOKENS_JSON: &str = r##"{ "color": { "$type": "color", "bg": { "$value": "#F6F5F1" } } }"##;
 
+    #[cfg(unix)]
     #[test]
     fn a_folder_counts_with_tokens_or_guidelines_and_only_pictures_inside_it_show() {
         let root = dir("assets");
@@ -501,6 +503,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn tokens_and_guidelines_are_read_from_inside_only_and_cut_when_long() {
         let root = dir("read");
