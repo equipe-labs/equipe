@@ -25,6 +25,11 @@ fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("equipe-accept-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    // Windows canonicalization adds the verbatim `\\?\` prefix, which Git for
+    // Windows does not accept as a `worktree add` destination.
+    #[cfg(windows)]
+    return dir;
+    #[cfg(not(windows))]
     dir.canonicalize().unwrap()
 }
 
