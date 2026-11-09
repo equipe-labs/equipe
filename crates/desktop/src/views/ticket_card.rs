@@ -484,10 +484,13 @@ pub fn layer(cx: &mut Context<Shell>) -> AnyView {
         return layer.0.clone().into();
     }
     let shell = cx.entity().downgrade();
+    let hover_shell = shell.clone();
     let card = cx.new(|_| TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) });
     cx.set_global(Layer(card.clone()));
-    gpui_kit::base::text::on_link_hover(cx, |url, bounds, _, cx| {
-        if let Some(id) = url.strip_prefix(crate::convo::TICKET_SCHEME).and_then(|n| n.parse().ok()) {
+    gpui_kit::base::text::on_link_hover(cx, move |url, bounds, _, cx| {
+        if let Some(id) = url.strip_prefix(crate::convo::TICKET_SCHEME).and_then(|n| n.parse().ok())
+            && hover_shell.upgrade().is_some_and(|shell| shell.read(cx).model.tickets.iter().any(|ticket| ticket.id == id))
+        {
             enter(id, bounds, Side::Below, cx);
         }
     });
