@@ -69,7 +69,7 @@ jobs:
           New-Item -ItemType Directory -Force "$env:USERPROFILE\.local\bin" | Out-Null
           $probe = (Resolve-Path ".\target\debug\examples\remote_probe.exe").Path.Replace('\', '/')
           Set-Content -Path "$env:USERPROFILE\.local\bin\equipe" -NoNewline -Value "#!/bin/sh`n`"$probe`" --print-bridge-fixture`n"
-          $env:EQUIPE_SSH_OPTIONS = "-i `"$env:USERPROFILE\.ssh\t516_ed25519`" -o UserKnownHostsFile=`"$env:RUNNER_TEMP\t516-known-hosts`" -o StrictHostKeyChecking=no -o BatchMode=yes"
+          $env:EQUIPE_SSH_OPTIONS = "-i $env:USERPROFILE\.ssh\t516_ed25519 -o UserKnownHostsFile=$env:RUNNER_TEMP\t516-known-hosts -o StrictHostKeyChecking=no -o BatchMode=yes"
           ssh -vvv -i "$env:USERPROFILE\.ssh\t516_ed25519" -o UserKnownHostsFile="$env:RUNNER_TEMP\t516-known-hosts" -o StrictHostKeyChecking=no -o BatchMode=yes "$env:USERNAME@127.0.0.1" whoami
           $output = & ".\target\debug\examples\remote_probe.exe" "$env:USERNAME@127.0.0.1" --trust --seconds 8 2>&1 | Tee-Object -Variable lines
           $output | Out-Host
