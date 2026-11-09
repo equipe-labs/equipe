@@ -1,0 +1,45 @@
+[
+  {
+    "name": "same-header",
+    "ticket": "T-617",
+    "at": 1794203523,
+    "chosen": false,
+    "layout": "현재 문서 헤더를 전체 폭에 그대로 늘리고 같은 자리의 아이콘으로 종료",
+    "type": "기존 제목·본문 위계 유지",
+    "palette": "기존 warm neutral 토큰만",
+    "density": "가장 조밀함",
+    "motion": "surface 폭 180ms, reduce-motion 즉시",
+    "references": [
+      "R1"
+    ]
+  },
+  {
+    "name": "return-header",
+    "ticket": "T-617",
+    "at": 1794203523,
+    "chosen": true,
+    "layout": "선두 대화로 복귀 행동 + 문서 식별 + 후행 유틸리티의 단일 헤더",
+    "type": "복귀 라벨과 문서 제목을 분리",
+    "palette": "기존 warm neutral 토큰만",
+    "density": "조밀하되 760pt에서 두 줄 허용",
+    "motion": "surface 폭 180ms, 종료 시 원래 포커스 복원",
+    "references": [
+      "R1",
+      "R2"
+    ]
+  },
+  {
+    "name": "focus-strip",
+    "ticket": "T-617",
+    "at": 1794203523,
+    "chosen": false,
+    "layout": "집중 상태·Esc 안내 띠와 문서 유틸리티 헤더를 두 층으로 분리",
+    "type": "상태 라벨을 별도 층으로 강조",
+    "palette": "기존 warm neutral + 브랜드 점 토큰",
+    "density": "대담한 이중 헤더",
+    "motion": "상태 띠 fade + surface 폭 180ms",
+    "references": [
+      "R2"
+    ]
+  }
+]
