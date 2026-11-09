@@ -10,6 +10,7 @@ use equipe_core::protocol::Event;
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message as Ws;
@@ -528,6 +529,7 @@ fn show_code(home: &Path, url: &str) {
 }
 
 /// `equipe demo reset`'s socket: one JSON object per line each way.
+#[cfg(unix)]
 fn listen_demo(home: &Path, input: UnboundedSender<Input>) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     let path = home.join("demo.sock");
@@ -555,6 +557,11 @@ fn listen_demo(home: &Path, input: UnboundedSender<Input>) -> std::io::Result<()
             });
         }
     });
+    Ok(())
+}
+
+#[cfg(windows)]
+fn listen_demo(_home: &Path, _input: UnboundedSender<Input>) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -594,6 +601,7 @@ async fn connect(config: &super::Config, input: UnboundedSender<Input>) -> Resul
 }
 
 /// The local socket: one JSON object per line each way.
+#[cfg(unix)]
 fn listen(home: &Path, input: UnboundedSender<Input>) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     let path = super::local_socket(home);
@@ -609,6 +617,12 @@ fn listen(home: &Path, input: UnboundedSender<Input>) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn listen(_home: &Path, _input: UnboundedSender<Input>) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
 async fn serve_local(stream: UnixStream, input: UnboundedSender<Input>) {
     let (reader, mut writer) = stream.into_split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
@@ -646,7 +660,7 @@ async fn serve_local(stream: UnixStream, input: UnboundedSender<Input>) {
     let _ = writer_task.await;
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

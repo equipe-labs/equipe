@@ -4,30 +4,45 @@
 use equipe_core::t;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 
-async fn open() -> Result<(tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>, tokio::net::unix::OwnedWriteHalf), String> {
+#[cfg(unix)]
+type LocalStream = tokio::net::UnixStream;
+#[cfg(windows)]
+type LocalStream = equipe_core::gateway::UnixStream;
+type LocalRead = tokio::io::ReadHalf<LocalStream>;
+type LocalWrite = tokio::io::WriteHalf<LocalStream>;
+
+async fn connect_local(path: &std::path::Path) -> std::io::Result<LocalStream> {
+    #[cfg(unix)]
+    { UnixStream::connect(path).await }
+    #[cfg(windows)]
+    { equipe_core::gateway::connect(path).await }
+}
+
+async fn open() -> Result<(tokio::io::Lines<BufReader<LocalRead>>, LocalWrite), String> {
     crate::daemon::ensure_running().await.map_err(|err| t!("pair.daemon_didnt_start", err = err))?;
     let path = super::local_socket(&equipe_providers::credentials::equipe_home());
     // A daemon just started opens its socket a moment later.
     let mut stream = None;
     for _ in 0..40 {
-        if let Ok(s) = UnixStream::connect(&path).await {
+        if let Ok(s) = connect_local(&path).await {
             stream = Some(s);
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let stream = stream.ok_or(t!("pair.daemon_not_answering"))?;
-    let (reader, writer) = stream.into_split();
+    let (reader, writer) = tokio::io::split(stream);
     Ok((BufReader::new(reader).lines(), writer))
 }
 
-async fn send(writer: &mut tokio::net::unix::OwnedWriteHalf, value: Value) -> Result<(), String> {
+async fn send(writer: &mut LocalWrite, value: Value) -> Result<(), String> {
     writer.write_all(format!("{value}\n").as_bytes()).await.map_err(|err| err.to_string())
 }
 
-async fn next(lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>) -> Result<Value, String> {
+async fn next(lines: &mut tokio::io::Lines<BufReader<LocalRead>>) -> Result<Value, String> {
     let line = lines.next_line().await.map_err(|err| err.to_string())?.ok_or(t!("pair.daemon_closed"))?;
     serde_json::from_str(&line).map_err(|err| err.to_string())
 }
@@ -125,8 +140,8 @@ pub fn demo_code(home: &std::path::Path) -> Result<String, String> {
 /// `equipe demo reset`: forget every demo phone and start the script over —
 /// through the running `equipe demo serve`, or on disk when none runs.
 pub async fn demo_reset(home: &std::path::Path, new_code: bool) -> Result<String, String> {
-    if let Ok(stream) = UnixStream::connect(home.join("demo.sock")).await {
-        let (reader, mut writer) = stream.into_split();
+    if let Ok(stream) = connect_local(&home.join("demo.sock")).await {
+        let (reader, mut writer) = tokio::io::split(stream);
         writer.write_all(format!("{}\n", json!({ "op": "reset", "new_code": new_code })).as_bytes()).await.map_err(|err| err.to_string())?;
         let mut lines = BufReader::new(reader).lines();
         let said = next(&mut lines).await?;

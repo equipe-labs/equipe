@@ -78,11 +78,16 @@ pub fn load(home: &Path) -> Option<Config> {
 
 pub fn save(home: &Path, config: &Config) -> std::io::Result<()> {
     use std::io::Write as _;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt as _;
     std::fs::create_dir_all(home)?;
     let path = config_path(home);
     let part = path.with_extension("json.part");
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&part)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&part)?;
     file.write_all(&serde_json::to_vec_pretty(config).expect("config serializes"))?;
     std::fs::rename(part, path)
 }
