@@ -671,6 +671,7 @@ mod tests {
     fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead, String> {
         serve_with(home, ask, cap, &[])
     }
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     fn dir(name: &str) -> PathBuf {
@@ -693,6 +694,7 @@ mod tests {
         image::load_from_memory(&base64::engine::general_purpose::STANDARD.decode(&read.data).unwrap()).unwrap()
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_a_picture_inside_the_worktree_or_the_squads_folder_is_given() {
         let root = dir("check");
@@ -849,6 +851,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_screen_gets_a_design_systems_pictures_and_nothing_else_of_its_folder() {
         let home = dir("design");
@@ -885,6 +888,7 @@ mod tests {
         Entry::Reply { text: text.into() }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_reply_shows_the_pictures_it_embeds_and_nothing_it_doesnt() {
         let home = dir("said");

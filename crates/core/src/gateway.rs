@@ -1547,6 +1547,7 @@ mod upload_tests {
         assert!(upload_name("clip.mov", Some(K::Video)).is_ok());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_line_upload_is_kept_private_under_its_name() {
         use base64::Engine as _;
@@ -1570,6 +1571,7 @@ mod upload_tests {
         Ok(base64::engine::general_purpose::STANDARD.decode(read.data.unwrap()).unwrap())
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_a_file_in_the_uploads_folder_is_read_back() {
         use std::os::unix::fs::symlink;
@@ -1602,6 +1604,7 @@ mod upload_tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_uploads_folder_reached_through_a_link_still_reads_its_own_files() {
         let real = home("linked-real");
