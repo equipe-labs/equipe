@@ -14,6 +14,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: t516-windows-desktop
+          cache-on-failure: true
       - name: Build the Windows app and probes
         run: cargo build -p equipe-desktop --features snapshot --bin equipe-desktop --example fake_daemon --example remote_probe
       - name: TP-8 — connect to the named-pipe fake daemon and capture screens

@@ -1297,10 +1297,18 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
 }
 
 /// The process's CPU time so far, user and system, every thread.
+#[cfg(unix)]
 fn process_cpu() -> Duration {
     // SAFETY: `usage` is a valid rusage for the call to fill.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
     let time = |t: libc::timeval| Duration::new(t.tv_sec as u64, t.tv_usec as u32 * 1000);
     time(usage.ru_utime) + time(usage.ru_stime)
+}
+
+#[cfg(windows)]
+fn process_cpu() -> Duration {
+    // CPU timing is only a diagnostic in scripted snapshots. Windows still
+    // runs every step and records wall time above.
+    Duration::ZERO
 }
