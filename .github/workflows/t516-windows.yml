@@ -1,0 +1,72 @@
+name: T-516 Windows verification
+
+on:
+  push:
+    branches: [equipe/t516-windows-runner]
+
+jobs:
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: t516-windows-desktop
+      - name: Build the Windows app and probes
+        run: cargo build -p equipe-desktop --features snapshot --bin equipe-desktop --example fake_daemon --example remote_probe
+      - name: TP-8 — connect to the named-pipe fake daemon and capture screens
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          $env:EQUIPE_HOME = "$env:RUNNER_TEMP\t516-home"
+          $env:EQUIPE_SQUAD = "demo"
+          $env:EQUIPE_SNAPSHOT_HIDDEN = "1"
+          $daemonLog = "$env:RUNNER_TEMP\t516-fake-daemon.log"
+          $daemon = Start-Process -FilePath ".\target\debug\examples\fake_daemon.exe" -PassThru -RedirectStandardError $daemonLog
+          Start-Sleep -Seconds 2
+          try {
+            foreach ($theme in @("light", "dark")) {
+              foreach ($zoom in @(100, 200)) {
+                $prefix = "artifacts/$theme-$zoom"
+                $env:EQUIPE_SCRIPT = "wait:1200;size:1200x760;theme:$theme;zoom:$zoom;chat;wait:250;shot:$prefix-chat.png;board;wait:250;shot:$prefix-board.png;settings:general;wait:250;shot:$prefix-settings.png;quit"
+                & ".\target\debug\equipe-desktop.exe"
+                if ($LASTEXITCODE -ne 0) { throw "desktop snapshot exited $LASTEXITCODE" }
+              }
+            }
+          } finally {
+            Stop-Process -Id $daemon.Id -Force -ErrorAction SilentlyContinue
+          }
+          $shots = Get-ChildItem artifacts -Filter *.png
+          if ($shots.Count -ne 12) { Get-Content $daemonLog; throw "expected 12 screenshots, got $($shots.Count)" }
+      - name: TP-9 — run a command through ConPTY
+        run: cargo test -p equipe-desktop conpty_starts_powershell_draws_and_echoes -- --nocapture
+      - name: Named-pipe askpass round trip
+        run: cargo test -p equipe-desktop a_secret_round_trips_over_the_named_pipe -- --nocapture
+      - name: TP-10 — attach over OpenSSH loopback
+        shell: pwsh
+        run: |
+          $capability = Get-WindowsCapability -Online | Where-Object Name -Like 'OpenSSH.Server*'
+          if ($capability.State -ne 'Installed') {
+            Add-WindowsCapability -Online -Name $capability.Name | Out-Host
+          }
+          Set-Service -Name sshd -StartupType Manual
+          Start-Service sshd
+          New-Item -ItemType Directory -Force "$env:USERPROFILE\.ssh" | Out-Null
+          ssh-keygen -q -t ed25519 -N '""' -f "$env:USERPROFILE\.ssh\t516_ed25519"
+          Copy-Item "$env:USERPROFILE\.ssh\t516_ed25519.pub" "C:\ProgramData\ssh\administrators_authorized_keys" -Force
+          icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F" | Out-Host
+          New-Item -ItemType Directory -Force "$env:USERPROFILE\.local\bin" | Out-Null
+          $probe = (Resolve-Path ".\target\debug\examples\remote_probe.exe").Path.Replace('\', '/')
+          Set-Content -Path "$env:USERPROFILE\.local\bin\equipe" -NoNewline -Value "#!/bin/sh`n`"$probe`" --print-bridge-fixture`n"
+          $env:EQUIPE_SSH_OPTIONS = "-i `"$env:USERPROFILE\.ssh\t516_ed25519`" -o UserKnownHostsFile=`"$env:RUNNER_TEMP\t516-known-hosts`" -o StrictHostKeyChecking=no -o BatchMode=yes"
+          $output = & ".\target\debug\examples\remote_probe.exe" "$env:USERNAME@127.0.0.1" --trust --seconds 8 2>&1 | Tee-Object -Variable lines
+          $output | Out-Host
+          if (($lines -join "`n") -notmatch "attached: daemon fixture squad demo") { throw "OpenSSH probe did not attach" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: t516-windows-screens
+          path: artifacts/*.png
+          if-no-files-found: error
