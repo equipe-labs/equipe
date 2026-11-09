@@ -799,7 +799,7 @@ mod tests {
         use std::os::windows::ffi::OsStrExt as _;
 
         let repo = repo();
-        let segment = "긴 경로 with spaces ".repeat(4);
+        let segment = ["긴 경로 with spaces"; 4].join(" ");
         let home = scratch("윈도우 사용자").join(&segment).join(&segment).join(&segment);
         assert!(home.as_os_str().encode_wide().count() > 260, "{}", home.display());
         let sandbox = create(&repo, &home, "t4-한글", "backend").unwrap();
