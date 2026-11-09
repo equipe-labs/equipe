@@ -42,8 +42,16 @@ jobs:
       - name: TP-5 fake engine ticket and accept_work
         run: cargo test -p equipe-core --test accept the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_themselves --locked
       - run: cargo test -p equipe-desktop-control --locked
-      - run: cargo check -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
-      - run: cargo build -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
+      - run: cargo check -p equipe -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
+      # Windows daemon acceptance coverage: named-pipe/SID IPC, Unicode homes
+      # and worktrees, sandbox policy, Credential Manager/DPAPI persistence,
+      # plus Task Scheduler's CRLF/XML cases.
+      - name: TP-3 named-pipe byte stream and SID-scoped name
+        run: cargo test -p equipe-core per_user_pipe_is_a_byte_stream --locked
+      - name: TP-4 Unicode, spaces, CRLF, and long worktree paths
+        run: cargo test -p equipe-core windows_worktree_handles_unicode_spaces_and_more_than_max_path --locked
+      - run: cargo test -p equipe --bin equipe windows_scheduler --locked
+      - run: cargo build -p equipe -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
       - run: cargo clippy -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked -- -D warnings
 
   test:

@@ -439,6 +439,7 @@ fn secret_path(home: &Path) -> PathBuf {
 /// The standing code's secret: made once, kept where only its owner reads it.
 pub fn secret(home: &Path, renew: bool) -> std::io::Result<[u8; 32]> {
     use std::io::Write as _;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt as _;
     let path = secret_path(home);
     if !renew
@@ -451,7 +452,11 @@ pub fn secret(home: &Path, renew: bool) -> std::io::Result<[u8; 32]> {
     let secret = super::random::<32>();
     std::fs::create_dir_all(home)?;
     let part = path.with_extension("json.part");
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&part)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&part)?;
     file.write_all(serde_json::json!({ "secret": super::b64(&secret) }).to_string().as_bytes())?;
     std::fs::rename(part, path)?;
     Ok(secret)
@@ -667,6 +672,7 @@ mod tests {
         assert!(demo.scenes["a"].later.len() <= LATER + 20);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_code_is_kept_and_its_picture_is_a_qr_code() {
         let home = std::env::temp_dir().join(format!("equipe-demo-{}", std::process::id()));

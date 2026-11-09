@@ -122,7 +122,7 @@ type Writer = Box<dyn AsyncWrite + Unpin + Send>;
 async fn connect(endpoint: &Endpoint) -> std::io::Result<(Reader, Writer, Option<crate::ssh::Process>)> {
     let (reader, mut writer, process): (Reader, Writer, _) = match endpoint {
         Endpoint::Local { socket } => {
-            let (r, w) = tokio::net::UnixStream::connect(socket).await?.into_split();
+            let (r, w) = equipe_core::gateway::connect(socket).await?.into_split();
             (Box::new(r), Box::new(w), None)
         }
         Endpoint::Ssh(host) => {

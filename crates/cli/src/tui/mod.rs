@@ -499,6 +499,7 @@ fn first_time(name: &str) -> bool {
 
 /// Ask the terminal for its background colour (OSC 11) and wait a moment for the
 /// answer. Raw mode must be on, and nothing else reading the input yet.
+#[cfg(unix)]
 fn query_background() -> Option<(u8, u8, u8)> {
     use std::io::Write as _;
     use std::os::fd::AsRawFd as _;
@@ -527,7 +528,13 @@ fn query_background() -> Option<(u8, u8, u8)> {
     parse_background(&String::from_utf8_lossy(&answer))
 }
 
+#[cfg(windows)]
+fn query_background() -> Option<(u8, u8, u8)> {
+    None
+}
+
 /// `…]11;rgb:1e1e/1e1e/2020…` → (30, 30, 32): channels of one to four hex digits.
+#[cfg(any(unix, test))]
 fn parse_background(answer: &str) -> Option<(u8, u8, u8)> {
     let rgb = answer.split("rgb:").nth(1)?;
     let mut parts = rgb.split(['/', '\x07', '\x1b']);

@@ -1207,6 +1207,7 @@ pub fn recording(design: &Path, flow: &str, lang: Lang) -> Result<Recording, Str
 mod tests {
     use super::*;
     use equipe_protocol::design::{Flow, Mark, Picture, Screen, ScreenState, Setup};
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use std::time::{Duration, SystemTime};
 
@@ -1251,6 +1252,7 @@ mod tests {
       { "id": "onboarding", "title": "Twice" },
       { "title": "No id" } ] }"#;
 
+    #[cfg(unix)]
     #[test]
     fn the_map_is_read_with_its_pictures_what_is_missing_and_a_line_for_each_bad_entry() {
         let root = dir("read");
@@ -1299,6 +1301,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_file_that_cant_be_read_says_why_and_one_that_is_a_link_out_isnt_read() {
         let root = dir("broken");
@@ -1320,6 +1323,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_screen_is_stale_when_its_code_changed_after_its_newest_picture_and_only_code_in_the_repository_counts() {
         let repo = dir("stale");
@@ -1677,6 +1681,7 @@ mod tests {
         std::fs::remove_dir_all(design).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_flows_walkthroughs_are_read_newest_first_with_where_each_screen_starts() {
         let root = dir("videos");

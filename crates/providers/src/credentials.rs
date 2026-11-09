@@ -3,6 +3,7 @@
 //! The JSON shape matches what the TypeScript CLI wrote, so a login made with
 //! either build keeps working. Files are 0600 inside a 0700 directory, and are
 //! replaced by rename so a concurrent reader never sees a half-written token.
+//! Windows encrypts the file bytes for the current user with DPAPI.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -71,7 +72,8 @@ impl CredentialStore {
         let path = self.path(&cred.provider);
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_vec_pretty(cred).map_err(io::Error::other)?;
-        write_private(&tmp, &json)?;
+        let bytes = protect(&json)?;
+        write_private(&tmp, &bytes)?;
         fs::rename(&tmp, &path)?;
         Ok(path)
     }
@@ -84,9 +86,12 @@ impl CredentialStore {
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err),
         };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+        let (plain, legacy) = unprotect(&bytes)?;
+        let credential: Credentials = serde_json::from_slice(&plain).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        if legacy {
+            self.save(&credential)?;
+        }
+        Ok(Some(credential))
     }
 
     /// Forget `provider`'s login: true when there was one.
@@ -97,6 +102,62 @@ impl CredentialStore {
             Err(err) => Err(err),
         }
     }
+}
+
+#[cfg(not(windows))]
+fn protect(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    Ok(bytes.to_vec())
+}
+
+#[cfg(not(windows))]
+fn unprotect(bytes: &[u8]) -> io::Result<(Vec<u8>, bool)> {
+    Ok((bytes.to_vec(), false))
+}
+
+#[cfg(windows)]
+const DPAPI_MAGIC: &[u8] = b"EQUIPE-DPAPI\0";
+
+#[cfg(windows)]
+fn protect(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData};
+    let size = bytes.len().try_into().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "credential is too large"))?;
+    let input = CRYPT_INTEGER_BLOB { cbData: size, pbData: bytes.as_ptr().cast_mut() };
+    let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    // SAFETY: input borrows `bytes`; DPAPI allocates output, copied and freed below.
+    if unsafe { CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CryptProtectData returned a valid LocalAlloc allocation.
+    let encrypted = unsafe {
+        let mut kept = Vec::with_capacity(DPAPI_MAGIC.len() + output.cbData as usize);
+        kept.extend_from_slice(DPAPI_MAGIC);
+        kept.extend_from_slice(std::slice::from_raw_parts(output.pbData, output.cbData as usize));
+        LocalFree(output.pbData.cast());
+        kept
+    };
+    Ok(encrypted)
+}
+
+#[cfg(windows)]
+fn unprotect(bytes: &[u8]) -> io::Result<(Vec<u8>, bool)> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData};
+    let Some(encrypted) = bytes.strip_prefix(DPAPI_MAGIC) else { return Ok((bytes.to_vec(), true)) };
+    let size = encrypted.len().try_into().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "encrypted credential is too large"))?;
+    let input = CRYPT_INTEGER_BLOB { cbData: size, pbData: encrypted.as_ptr().cast_mut() };
+    let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    // SAFETY: input borrows `encrypted`; DPAPI allocates output, copied and freed below.
+    if unsafe { CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CryptUnprotectData returned a valid LocalAlloc allocation.
+    let plain = unsafe {
+        let plain = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        LocalFree(output.pbData.cast());
+        plain
+    };
+    Ok((plain, false))
 }
 
 #[cfg(unix)]
@@ -159,9 +220,20 @@ mod tests {
 
     #[test]
     fn save_then_load_round_trips() {
-        let store = CredentialStore::new(temp_home("roundtrip"));
+        let home = temp_home("roundtrip");
+        let store = CredentialStore::new(&home);
         store.save(&sample()).unwrap();
-        assert_eq!(store.load("openai").unwrap(), Some(sample()));
+        assert_eq!(CredentialStore::new(home).load("openai").unwrap(), Some(sample()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn credential_file_is_dpapi_ciphertext() {
+        let store = CredentialStore::new(temp_home("dpapi"));
+        let path = store.save(&sample()).unwrap();
+        let bytes = fs::read(path).unwrap();
+        assert!(bytes.starts_with(DPAPI_MAGIC));
+        assert!(!bytes.windows(b"tok".len()).any(|part| part == b"tok"));
     }
 
     #[test]

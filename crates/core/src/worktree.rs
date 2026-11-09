@@ -37,6 +37,10 @@ pub fn use_git(program: PathBuf) {
 /// A git command for `dir`.
 pub(crate) fn git_command(dir: &Path) -> Command {
     let mut command = Command::new(GIT.get().map_or(Path::new("git"), PathBuf::as_path));
+    // Git for Windows otherwise keeps its legacy MAX_PATH checks even though
+    // Rust passes Unicode paths to Win32's wide APIs.
+    #[cfg(windows)]
+    command.args(["-c", "core.longpaths=true"]);
     command.arg("-C").arg(dir);
     // Nobody is at the daemon's terminal: a prompt for credentials fails rather than waits.
     command.env("GIT_TERMINAL_PROMPT", "0");
@@ -164,6 +168,41 @@ pub struct Sandbox {
     pub base: String,
 }
 
+#[cfg(windows)]
+fn filesystem_path(path: &Path) -> PathBuf {
+    let text = path.as_os_str().to_string_lossy();
+    if text.starts_with(r"\\?\") {
+        return path.to_owned();
+    }
+    if let Some(unc) = text.strip_prefix(r"\\") {
+        PathBuf::from(format!(r"\\?\UNC\{unc}"))
+    } else if path.is_absolute() {
+        PathBuf::from(format!(r"\\?\{text}"))
+    } else {
+        path.to_owned()
+    }
+}
+
+#[cfg(not(windows))]
+fn filesystem_path(path: &Path) -> PathBuf {
+    path.to_owned()
+}
+
+#[cfg(windows)]
+fn git_path(path: &Path) -> String {
+    let text = path.as_os_str().to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
+    }
+}
+
+#[cfg(not(windows))]
+fn git_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
 /// Cut a new branch from `HEAD` — `equipe/<label>-<id>` — and check it out in a
 /// worktree under `home`.
 pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox> {
@@ -171,12 +210,9 @@ pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox
         .map_err(|_| "the repository has no commits yet — commit something first".to_owned())?;
     let path = home.join("worktrees").join(folder_name(repo)).join(id);
     let branch = format!("equipe/{label}-{id}");
-    std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
+    std::fs::create_dir_all(filesystem_path(path.parent().expect("worktree path has a parent")))
         .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
-    git(
-        repo,
-        &["worktree", "add", "-q", "-b", &branch, &path.to_string_lossy(), &base],
-    )?;
+    git(repo, &["worktree", "add", "-q", "-b", &branch, &git_path(&path), &base])?;
     Ok(Sandbox {
         repo: repo.to_owned(),
         path,
@@ -189,9 +225,9 @@ pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox
 /// removed — in a fresh worktree under `home`.
 pub fn resume(repo: &Path, home: &Path, id: &str, branch: &str, base: &str) -> Result<Sandbox> {
     let path = home.join("worktrees").join(folder_name(repo)).join(id);
-    std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
+    std::fs::create_dir_all(filesystem_path(path.parent().expect("worktree path has a parent")))
         .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
-    git(repo, &["worktree", "add", "-q", &path.to_string_lossy(), branch])?;
+    git(repo, &["worktree", "add", "-q", &git_path(&path), branch])?;
     Ok(Sandbox { repo: repo.to_owned(), path, branch: branch.to_owned(), base: base.to_owned() })
 }
 
@@ -755,6 +791,23 @@ mod tests {
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-q", "-m", "init"]).unwrap();
         dir
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_worktree_handles_unicode_spaces_and_more_than_max_path() {
+        use std::os::windows::ffi::OsStrExt as _;
+
+        let repo = repo();
+        let segment = ["긴 경로 with spaces"; 4].join(" ");
+        let home = scratch("윈도우 사용자 with spaces");
+        let sandbox = create(&repo, &home, "t4-한글", "backend").unwrap();
+        let deep = sandbox.path.join(&segment).join(&segment).join(&segment);
+        assert!(deep.as_os_str().encode_wide().count() > 260, "{}", deep.display());
+        std::fs::create_dir_all(filesystem_path(&deep)).unwrap();
+        std::fs::write(filesystem_path(&deep.join("한글 file.txt")), "works\r\n").unwrap();
+        assert!(sandbox.commit_all("unicode long path").unwrap().is_some());
+        sandbox.remove_worktree().unwrap();
     }
 
     #[test]

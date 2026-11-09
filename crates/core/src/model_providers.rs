@@ -59,6 +59,9 @@ pub const NEBIUS: &str = "nebius";
 /// Google Gemini's id: its models asked for by bare ids.
 pub const GEMINI: &str = "gemini";
 
+#[cfg(windows)]
+const WINDOWS_SERVICE: &str = "equipe.model-provider";
+
 /// The providers a screen offers, in its order. Each base URL is the one
 /// the provider's own documentation gives for its OpenAI-compatible API;
 /// all are asked in Chat Completions, which every one documents.
@@ -123,11 +126,24 @@ pub fn key_path(home: &Path, id: &str) -> PathBuf {
 
 /// The saved key of provider `id`, if there is one.
 pub fn saved_key(home: &Path, id: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let account = equipe_providers::windows_credentials::scoped_account(home, id);
+        equipe_providers::windows_credentials::get(WINDOWS_SERVICE, &account).ok().flatten().and_then(|bytes| String::from_utf8(bytes).ok()).map(|key| key.trim().to_owned()).filter(|key| !key.is_empty())
+    }
+    #[cfg(not(windows))]
     std::fs::read_to_string(key_path(home, id)).ok().map(|k| k.trim().to_owned()).filter(|k| !k.is_empty())
 }
 
 /// Save `key` for provider `id`, readable and writable by the person alone (the folder too).
 pub fn save_key(home: &Path, id: &str, key: &str) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let account = equipe_providers::windows_credentials::scoped_account(home, id);
+        equipe_providers::windows_credentials::set(WINDOWS_SERVICE, &account, key.trim().as_bytes())
+    }
+    #[cfg(not(windows))]
+    {
     let path = key_path(home, id);
     let dir = path.parent().unwrap_or(home);
     std::fs::create_dir_all(dir)?;
@@ -143,10 +159,17 @@ pub fn save_key(home: &Path, id: &str, key: &str) -> std::io::Result<()> {
     #[cfg(not(unix))]
     std::fs::write(&tmp, key.trim())?;
     std::fs::rename(&tmp, &path)
+    }
 }
 
 /// Forget provider `id`'s saved key. Whether there was one.
 pub fn forget_key(home: &Path, id: &str) -> std::io::Result<bool> {
+    #[cfg(windows)]
+    {
+        let account = equipe_providers::windows_credentials::scoped_account(home, id);
+        equipe_providers::windows_credentials::delete(WINDOWS_SERVICE, &account)
+    }
+    #[cfg(not(windows))]
     match std::fs::remove_file(key_path(home, id)) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),

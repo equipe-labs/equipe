@@ -984,18 +984,29 @@ const SAID_LINES: usize = 12;
 /// seconds on — so what it started stops too.
 async fn run_command(command: &str, cwd: &Path, env: &[(String, String)], limit: Duration) -> Result<Ran, String> {
     use tokio::io::AsyncReadExt;
-    let mut child = tokio::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(command)
+    #[cfg(unix)]
+    let mut process = {
+        let mut process = tokio::process::Command::new("/bin/sh");
+        process.arg("-c").arg(command);
+        process.process_group(0);
+        process
+    };
+    #[cfg(windows)]
+    let mut process = {
+        let mut process = tokio::process::Command::new("cmd.exe");
+        process.args(["/D", "/S", "/C", command]);
+        process
+    };
+    let mut child = process
         .current_dir(cwd)
         .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .process_group(0)
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("sh: {e}"))?;
+    #[cfg(unix)]
     let group = child.id().map(|id| id as libc::pid_t);
     let mut stderr = child.stderr.take();
     let mut reader = tokio::spawn(async move {
@@ -1017,6 +1028,8 @@ async fn run_command(command: &str, cwd: &Path, env: &[(String, String)], limit:
     let ended = match tokio::time::timeout(limit, child.wait()).await {
         Ok(status) => Ended::Exited(status.map_err(|e| format!("sh: {e}"))?),
         Err(_) => {
+            #[cfg(unix)]
+            {
             let signal = |sig| {
                 if let Some(group) = group {
                     // SAFETY: killpg only sends a signal; the group is the child's own, and the child isn't reaped yet.
@@ -1028,6 +1041,12 @@ async fn run_command(command: &str, cwd: &Path, env: &[(String, String)], limit:
                 signal(libc::SIGKILL);
             }
             let _ = child.wait().await;
+            }
+            #[cfg(windows)]
+            {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
             Ended::TimedOut
         }
     };

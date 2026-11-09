@@ -447,6 +447,54 @@ background by `equipe` when none is answering and detached from the terminal
   (`equipe daemon restart`).
 - `equipe try` stays a standalone, in-process runtime for scripts and CI.
 
+#### Windows daemon boundary
+
+The Windows daemon keeps the protocol and the one-daemon-per-user model, but
+uses the platform's user-session facilities:
+
+- The local door is `\\.\pipe\equipe-<user SID>` rather than a filesystem
+  socket. Its protected DACL grants the current user SID access and denies
+  another signed-in user before any JSON-RPC message is read. `attach --stdio`
+  still copies the same newline-delimited JSON-RPC stream, so SSH clients do
+  not need a Windows-specific protocol.
+- `equipe daemon install` registers a per-user Task Scheduler task triggered at
+  logon; `uninstall` removes it. The daemon also owns a per-user single-instance
+  guard, so a task and an interactive start racing after login cannot leave two
+  runtimes. No administrator right or Windows service is involved.
+- Provider credentials use Windows Credential Manager. Secret-bearing files
+  under `credentials/` are DPAPI-protected for the current user before they are
+  written; copying one to another Windows account does not make it readable.
+  Paths and command arguments are passed as UTF-16/`OsStr` values, not reparsed
+  command strings, so spaces and Hangul in `%USERPROFILE%` remain intact.
+
+**Member isolation on Windows.** Every Claude Code or Codex engine process is
+assigned to a fresh Job Object with `KILL_ON_JOB_CLOSE`. Descendants inherit the
+job, cannot survive the turn as detached background processes, and are torn
+down with the engine. The engine's own OS sandbox supplies the filesystem
+write allowlist: the ticket worktree plus that member's explicit build-cache
+root. Read-only project directories and other squad homes are not writable;
+Claude's policy additionally denies reading other squad homes and equipe's
+credential and browser-profile directories. Edit/auto modes keep that policy,
+and a command which asks to leave it runs only after the person's approval.
+
+The boundary is deliberately narrower than an AppContainer or a separate
+Windows account. A Job Object controls process lifetime, not file ACLs or
+network access. Full-access mode, and a command the person explicitly allows
+outside the sandbox, may write anywhere the person's Windows account can.
+The child also shares that account's readable files and credentials except
+where the engine sandbox has an explicit read denial. Windows signals remain
+disabled because their macOS `sandbox-exec` scratch-only profile has no
+equivalent here. T-516 reviews whether a restricted token/AppContainer should
+replace this first release's engine-enforced path boundary.
+
+Windows tests create their temporary home beneath a directory containing both
+spaces and Hangul. Git commands receive paths as individual arguments, accept
+CRLF output with `str::lines`, and use extended-length absolute paths plus
+Git's `core.longpaths` for files deeper than the legacy 260-character parser
+limit. The worktree root itself stays below Git for Windows' separate
+`$GIT_DIR` length limit; Git cannot create a worktree whose metadata path
+exceeds that limit even when Win32 extended paths are enabled.
+
 Events fold into a conversation through one shared function
 (`equipe_protocol::Transcript`), used by the journal and every screen alike, so a
 screen that attaches later sees exactly what a screen that watched live saw.
