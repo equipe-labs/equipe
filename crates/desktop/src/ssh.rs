@@ -2,8 +2,8 @@
 //!
 //! The person's own SSH setup applies untouched — `~/.ssh/config` (ProxyJump,
 //! port, IdentityFile, agents, 1Password's agent, …) is read by `ssh` itself.
-//! The app only adds: no terminal (`-T`), keep-alives, one shared connection
-//! (`ControlMaster`) so a second command costs no second sign-in, and
+//! The app only adds: no terminal (`-T`), keep-alives, and on Unix one shared
+//! connection (`ControlMaster`) so a second command costs no second sign-in, and
 //! `SSH_ASKPASS` pointing back at itself for the questions `ssh` asks
 //! (see `askpass.rs`). It never auto-accepts a host key and stores no password.
 
@@ -56,6 +56,7 @@ pub struct Askpass {
 pub struct Launcher {
     pub program: PathBuf,
     /// Where the shared connections' sockets live: short and private.
+    #[cfg_attr(windows, allow(dead_code))]
     pub control_dir: PathBuf,
     pub askpass: Option<Askpass>,
     /// Extra `ssh` options from `$EQUIPE_SSH_OPTIONS` (e.g. `-F /path/config`), for
@@ -75,21 +76,27 @@ impl Launcher {
 
     /// The options every run gets, before the host.
     pub fn options(&self) -> Vec<String> {
-        let control = self.control_dir.join("c-%C");
-        let mut options: Vec<String> = [
-            "-T",
+        let mut options = vec!["-T".to_owned()];
+        options.extend(self.connection_options());
+        // With no box to ask in, never let ssh ask on a terminal that may be there.
+        if self.askpass.is_none() {
+            options.extend(["-o".to_owned(), "BatchMode=yes".to_owned()]);
+        }
+        options.extend(self.extra.iter().cloned());
+        options
+    }
+
+    /// Connection options also used by the terminal's interactive `ssh -t`.
+    /// Windows OpenSSH does not implement ControlMaster/ControlPath, so every
+    /// connection there is deliberately independent.
+    pub fn connection_options(&self) -> Vec<String> {
+        let options: Vec<String> = [
             "-o",
             "ServerAliveInterval=15",
             "-o",
             "ServerAliveCountMax=3",
             "-o",
             "ConnectTimeout=15",
-            "-o",
-            "ControlMaster=auto",
-            "-o",
-            &format!("ControlPath={}", control.display()),
-            "-o",
-            "ControlPersist=600",
             // One question at a time; a wrong password ends in "Permission
             // denied" (a guide) rather than the same box again and again.
             "-o",
@@ -98,11 +105,20 @@ impl Launcher {
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
-        // With no box to ask in, never let ssh ask on a terminal that may be there.
-        if self.askpass.is_none() {
-            options.extend(["-o".to_owned(), "BatchMode=yes".to_owned()]);
-        }
-        options.extend(self.extra.iter().cloned());
+        #[cfg(unix)]
+        let options = {
+            let mut options = options;
+            let control = self.control_dir.join("c-%C");
+            options.extend([
+                "-o".to_owned(),
+                "ControlMaster=auto".to_owned(),
+                "-o".to_owned(),
+                format!("ControlPath={}", control.display()),
+                "-o".to_owned(),
+                "ControlPersist=600".to_owned(),
+            ]);
+            options
+        };
         options
     }
 
@@ -211,6 +227,13 @@ impl Launcher {
     /// Close the shared connection to `host` (a dead one after the network
     /// changed or the Mac slept would otherwise be reused until it times out).
     pub async fn drop_shared_connection(&self, host: &SshHost) {
+        #[cfg(windows)]
+        {
+            let _ = host;
+            return;
+        }
+        #[cfg(unix)]
+        {
         let mut command = Command::new(&self.program);
         command
             .args(["-O", "exit", "-o"])
@@ -222,6 +245,7 @@ impl Launcher {
             .kill_on_drop(true);
         if let Ok(mut child) = command.spawn() {
             let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+        }
         }
     }
 }
@@ -369,6 +393,7 @@ pub fn safe_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::process::Command as Std;
 
     fn host() -> SshHost {
@@ -381,8 +406,13 @@ mod tests {
         let command = launcher.command(&host(), "REMOTE");
         let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(args[0], "-T");
-        assert!(args.windows(2).any(|w| w == ["-o", "ControlMaster=auto"]));
-        assert!(args.windows(2).any(|w| w == ["-o", "ControlPath=/tmp/x/c-%C"]));
+        #[cfg(unix)]
+        {
+            assert!(args.windows(2).any(|w| w == ["-o", "ControlMaster=auto"]));
+            assert!(args.windows(2).any(|w| w == ["-o", "ControlPath=/tmp/x/c-%C"]));
+        }
+        #[cfg(windows)]
+        assert!(!args.iter().any(|arg| arg.starts_with("ControlMaster=") || arg.starts_with("ControlPath=")));
         assert!(args.contains(&"BatchMode=yes".to_owned()), "with no box to ask in, ssh must not ask on a terminal");
         assert!(!args.iter().any(|a| a.contains("StrictHostKeyChecking")), "the person's host-key policy stays theirs");
         assert_eq!(args[args.len() - 5..args.len() - 1], ["-p", "2222", "--", "me@mini"]);
@@ -418,6 +448,7 @@ mod tests {
     /// `ssh` stand-in runs the remote line here, and a stand-in `equipe`
     /// keeps what arrives and says where.
     #[tokio::test(flavor = "multi_thread")]
+    #[cfg(unix)]
     async fn a_file_streams_into_equipe_receive_and_its_path_comes_back() {
         use std::os::unix::fs::PermissionsExt as _;
         let home = std::env::temp_dir().join(format!("eq-send-{}", std::process::id()));
@@ -450,6 +481,7 @@ mod tests {
     /// through every shell on this machine, with a stand-in `equipe` that only
     /// reports what it got, and a PATH that lacks it except via `~/.cargo/bin`.
     #[test]
+    #[cfg(unix)]
     fn the_remote_line_means_the_same_in_every_login_shell() {
         let home = std::env::temp_dir().join(format!("eq-shells-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);

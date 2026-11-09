@@ -24,10 +24,13 @@
 //! never shown and nothing of the screen is captured.
 
 use std::path::Path;
+#[cfg(unix)]
 use std::time::Duration;
 
 use equipe_core::i18n::Lang;
-use equipe_core::protocol::look::{PersonLook, SeenLook, Theme};
+#[cfg(unix)]
+use equipe_core::protocol::look::PersonLook;
+use equipe_core::protocol::look::{SeenLook, Theme};
 use equipe_core::protocol::Command;
 use equipe_core::protocol::metrics;
 use equipe_core::protocol::rpc;
@@ -329,6 +332,7 @@ pub fn begin() -> Option<&'static Look> {
 }
 
 /// How long the daemon may take to say the person's look.
+#[cfg(unix)]
 const ASK_WAIT: Duration = Duration::from_secs(5);
 
 /// The look of the screen the person used last, asked of the daemon at
@@ -771,6 +775,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn the_daemon_is_asked_for_the_persons_look_and_a_daemon_that_cant_say_is_none() {
         use std::io::{BufRead as _, Write as _};
         let socket = std::path::PathBuf::from(format!("/tmp/eqro-{}.sock", std::process::id()));

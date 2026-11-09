@@ -145,7 +145,7 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
         .when(openable, |chip| {
             chip.cursor_pointer().hover(move |s| s.underline().text_decoration_color(accent)).on_click(move |event, _, cx| {
                 let how = match event.modifiers() {
-                    m if m.platform => Open::Edit,
+                    m if m.secondary() => Open::Edit,
                     m if m.alt => Open::Reveal,
                     _ => Open::Look,
                 };

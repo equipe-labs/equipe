@@ -22,7 +22,10 @@ use std::time::{Duration, SystemTime};
 use equipe_core::protocol::rpc::{Attached, Hello, Squads};
 use equipe_core::protocol::telemetry::TelemetryStatus;
 use equipe_core::protocol::{Command, Event};
-use tokio::net::UnixStream;
+#[cfg(unix)]
+use tokio::net::UnixStream as LocalStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeClient as LocalStream;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -505,6 +508,20 @@ async fn follow(
     Followed::Ended(failure)
 }
 
+#[cfg(unix)]
+async fn local_connect(path: &std::path::Path) -> std::io::Result<LocalStream> {
+    LocalStream::connect(path).await
+}
+
+#[cfg(windows)]
+async fn local_connect(path: &std::path::Path) -> std::io::Result<LocalStream> {
+    tokio::net::windows::named_pipe::ClientOptions::new().open(path)
+}
+
+fn local_off(err: &std::io::Error) -> bool {
+    matches!(err.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::BrokenPipe)
+}
+
 async fn attach(target: &Target, side: Option<&SshSide>, updates: &UnboundedSender<Update>) -> Result<Connected, Failure> {
     let opts = |bridged| Opts {
         version: target.version.clone(),
@@ -517,24 +534,27 @@ async fn attach(target: &Target, side: Option<&SshSide>, updates: &UnboundedSend
         (Endpoint::Local { socket }, _) => {
             // Off on this Mac: started (once per launch), with the app's own
             // `equipe` when the Mac has none — then looked for again.
+            #[allow(unused_mut)] // Mutated only in non-test builds while the daemon wakes.
+            let mut stream = local_connect(socket).await;
             #[cfg(not(test))]
-            if !socket.exists() && tokio::task::spawn_blocking(crate::install::wake_daemon).await.unwrap_or(false) {
+            if stream.as_ref().is_err_and(local_off) && tokio::task::spawn_blocking(crate::install::wake_daemon).await.unwrap_or(false) {
                 for _ in 0..40 {
-                    if socket.exists() {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    stream = local_connect(socket).await;
+                    if stream.is_ok() {
                         break;
                     }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
             }
-            if !socket.exists() {
-                return Err(not_running(socket));
-            }
-            let stream = match UnixStream::connect(socket).await {
+            let stream = match stream {
                 Ok(stream) => stream,
-                Err(err) if matches!(err.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => return Err(not_running(socket)),
+                Err(err) if local_off(&err) => return Err(not_running(socket)),
                 Err(err) => return Err(Failure::Other(err.to_string())),
             };
+            #[cfg(unix)]
             let (reader, writer) = stream.into_split();
+            #[cfg(windows)]
+            let (reader, writer) = tokio::io::split(stream);
             match wire::connect(reader, writer, &opts(false)).await {
                 Ok((greeting, wire)) => Ok(Connected { greeting, wire, process: None }),
                 Err(Stop::Eof) => Err(Failure::Closed),
@@ -581,7 +601,7 @@ fn not_running(socket: &std::path::Path) -> Failure {
     Failure::LocalDaemonOff { socket: socket.display().to_string() }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use equipe_core::protocol::Snapshot;

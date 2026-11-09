@@ -187,7 +187,7 @@ impl Shell {
         if self.doc.as_ref().and_then(|d| d.presenting).is_none() {
             return false;
         }
-        if m.platform && key == "w" {
+        if m.secondary() && key == "w" {
             self.close_deck(cx);
             return true;
         }

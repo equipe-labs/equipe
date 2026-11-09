@@ -188,7 +188,7 @@ impl Shell {
         let boxes: Vec<Entity<TextareaState>> = self.asklist.form.iter().flat_map(|form| form.fields.iter().chain(std::iter::once(&form.note))).cloned().collect();
         if let Some(at) = boxes.iter().position(|f| f.read(cx).focus_handle(cx).is_focused(window)) {
             return match key {
-                "tab" if !m.platform => {
+                "tab" if !m.secondary() => {
                     let next = if m.shift { (at + boxes.len() - 1) % boxes.len() } else { (at + 1) % boxes.len() };
                     boxes[next].update(cx, |s, cx| s.focus(window, cx));
                     Took::Taken
@@ -200,7 +200,7 @@ impl Shell {
                 _ => Took::Typing,
             };
         }
-        if key != "enter" || m.shift || m.platform || !self.composer.is_focused(window, cx) {
+        if key != "enter" || m.shift || m.secondary() || !self.composer.is_focused(window, cx) {
             return Took::Pass;
         }
         // The Enter that ends a composition is only that.

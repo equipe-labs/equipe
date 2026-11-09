@@ -207,7 +207,6 @@ impl Drafts {
 
 /// Write `text` at `path`, readable by its owner only, replacing what was there whole.
 pub fn write_private(path: &Path, text: &str) {
-    use std::os::unix::fs::OpenOptionsExt as _;
     if crate::readonly::blocked(&path.display().to_string()) {
         return;
     }
@@ -215,7 +214,14 @@ pub fn write_private(path: &Path, text: &str) {
         let _ = std::fs::create_dir_all(dir);
     }
     let tmp = path.with_extension("tmp");
-    let written = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let written = options.open(&tmp).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
     if written.is_ok() {
         let _ = std::fs::rename(&tmp, path);
     }
@@ -1682,8 +1688,11 @@ mod tests {
         let again = Drafts::load(path.clone());
         assert_eq!(again.get(&site), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")], replies: vec![] });
         assert_eq!(again.recent, vec![PathBuf::from("/x/a.png"), PathBuf::from("/x/b.png")]);
-        use std::os::unix::fs::PermissionsExt as _;
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         d.put(all.clone(), Draft::default());
         assert_eq!(d.get(&all), Draft::default(), "an empty draft is forgotten");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

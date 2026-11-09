@@ -1028,7 +1028,7 @@ impl BrowserPanel {
             cx.stop_propagation();
             return;
         }
-        if m.platform && !m.control && !m.alt {
+        if m.secondary() && m.number_of_modifiers() == 1 + u8::from(m.shift) {
             match (stroke.key.as_str(), m.shift) {
                 ("w", false) => {
                     self.close_selected(cx);
@@ -2489,7 +2489,7 @@ pub mod keys {
         if m.control {
             out |= bits::CTRL;
         }
-        if m.platform {
+        if m.secondary() {
             out |= bits::META;
         }
         if m.shift {

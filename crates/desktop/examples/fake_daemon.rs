@@ -148,8 +148,39 @@ use equipe_core::protocol::rpc::{self, Hello, Message};
 use equipe_core::protocol::{Access, Approval, Command, CompactTrigger, CompactingInfo, Engine, Entry, Estimate, Event, Member, Priority, SessionId, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketEntry, TicketStatus, TurnOutcome, Usage, WorkInfo};
 use equipe_providers::credentials::equipe_home;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{NamedPipeServer as LocalStream, ServerOptions};
+#[cfg(unix)]
+use tokio::net::{UnixListener as LocalListener, UnixStream as LocalStream};
 use tokio::sync::{Mutex, broadcast};
+
+#[cfg(unix)]
+fn bind(path: &std::path::Path) -> std::io::Result<LocalListener> {
+    LocalListener::bind(path)
+}
+
+#[cfg(windows)]
+struct LocalListener {
+    path: std::path::PathBuf,
+    next: Option<LocalStream>,
+}
+
+#[cfg(windows)]
+impl LocalListener {
+    async fn accept(&mut self) -> std::io::Result<(LocalStream, ())> {
+        let server = self.next.take().ok_or_else(|| std::io::Error::other("named pipe listener stopped"))?;
+        server.connect().await?;
+        self.next = Some(ServerOptions::new().create(&self.path)?);
+        Ok((server, ()))
+    }
+}
+
+#[cfg(windows)]
+fn bind(path: &std::path::Path) -> std::io::Result<LocalListener> {
+    let mut options = ServerOptions::new();
+    let first = options.first_pipe_instance(true).create(path)?;
+    Ok(LocalListener { path: path.to_owned(), next: Some(first) })
+}
 
 /// The language the daemon's own words are in: `EQUIPE_LANG`, as the screen
 /// is run with, else English.
@@ -1253,7 +1284,7 @@ async fn main() {
     let socket = gateway::socket_path(&home);
     let _ = std::fs::create_dir_all(&home);
     let _ = std::fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
+    let mut listener = bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
     design::seed();
     studio::seed();
@@ -1273,8 +1304,11 @@ async fn main() {
     }
 }
 
-async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turns, routes: Shared, seconds: f32) {
+async fn serve(stream: LocalStream, events: broadcast::Sender<Event>, turns: Turns, routes: Shared, seconds: f32) {
+    #[cfg(unix)]
     let (reader, mut writer) = stream.into_split();
+    #[cfg(windows)]
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut lines = BufReader::new(reader).lines();
     let mut feed = events.subscribe();
     loop {

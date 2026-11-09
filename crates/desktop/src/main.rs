@@ -2560,6 +2560,7 @@ fn app_menu(cx: &mut App) {
             let _ = window.update(cx, |_, window, _| window.zoom_window());
         }
     });
+    #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
@@ -2574,19 +2575,23 @@ static CAN_UPDATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 
 /// The menu bar, in the language in use: at start, and again when it changes.
 pub fn set_menus(cx: &mut App) {
+    #[cfg(target_os = "macos")]
     let can_update = CAN_UPDATE.load(std::sync::atomic::Ordering::Relaxed);
-    cx.set_menus(vec![Menu::new("equipe").items([
+    let mut app_items = vec![
         MenuItem::action(t!("main.menu_choose_target"), ChooseTarget),
         MenuItem::action(t!("pair.menu_item"), PairPhone),
         MenuItem::action(t!("settings.menu_item"), OpenSettings),
+    ];
+    #[cfg(target_os = "macos")]
+    app_items.extend([
         MenuItem::action(t!("main.menu_check_updates"), CheckForUpdates).disabled(!can_update),
         MenuItem::separator(),
         MenuItem::action(t!("main.menu_hide"), Hide),
         MenuItem::action(t!("main.menu_hide_others"), HideOthers),
         MenuItem::action(t!("main.menu_show_all"), ShowAll),
-        MenuItem::separator(),
-        MenuItem::action(t!("main.menu_quit"), Quit),
-    ]), edit_menu(), squad_menu(), member_menu(), view_menu(), window_menu(), help_menu()]);
+    ]);
+    app_items.extend([MenuItem::separator(), MenuItem::action(t!("main.menu_quit"), Quit)]);
+    cx.set_menus(vec![Menu::new("equipe").items(app_items), edit_menu(), squad_menu(), member_menu(), view_menu(), window_menu(), help_menu()]);
     // The Mac lists the windows under it, by their titles ("equipe-squad · Mac mini").
     windows::windows_menu_at(WINDOW_MENU_AT);
 }
@@ -2642,42 +2647,42 @@ fn view_menu() -> Menu {
 /// project slices are ⌃0–⌃9. ⌘+ comes first: the menu shows the first.
 fn window_bindings() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("cmd-b", ToggleBoard, None),
-        KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
-        KeyBinding::new("cmd-shift-f", ToggleDocFocus, None),
-        KeyBinding::new("cmd-shift-l", ShowOrchestration, None),
+        KeyBinding::new("secondary-b", ToggleBoard, None),
+        KeyBinding::new("secondary-shift-b", ToggleBrowser, None),
+        KeyBinding::new("secondary-shift-f", ToggleDocFocus, None),
+        KeyBinding::new("secondary-shift-l", ShowOrchestration, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
-        KeyBinding::new("cmd-\\", ToggleSidebar, None),
-        KeyBinding::new("cmd-n", NewMessage, None),
-        KeyBinding::new("cmd-k", SearchAll, None),
-        KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("cmd-+", ZoomIn, None),
-        KeyBinding::new("cmd-=", ZoomIn, None),
-        KeyBinding::new("cmd-shift-=", ZoomIn, None),
-        KeyBinding::new("cmd--", ZoomOut, None),
-        KeyBinding::new("cmd-0", ActualSize, None),
-        KeyBinding::new("ctrl-0", AllProjects, None),
-        KeyBinding::new("ctrl-1", Project1, None),
-        KeyBinding::new("ctrl-2", Project2, None),
-        KeyBinding::new("ctrl-3", Project3, None),
-        KeyBinding::new("ctrl-4", Project4, None),
-        KeyBinding::new("ctrl-5", Project5, None),
-        KeyBinding::new("ctrl-6", Project6, None),
-        KeyBinding::new("ctrl-7", Project7, None),
-        KeyBinding::new("ctrl-8", Project8, None),
-        KeyBinding::new("ctrl-9", Project9, None),
-        KeyBinding::new("cmd-shift-o", ToggleFolds, None),
-        KeyBinding::new("cmd-f", FindInConversation, None),
+        KeyBinding::new("secondary-\\", ToggleSidebar, None),
+        KeyBinding::new("secondary-n", NewMessage, None),
+        KeyBinding::new("secondary-k", SearchAll, None),
+        KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new("secondary-+", ZoomIn, None),
+        KeyBinding::new("secondary-=", ZoomIn, None),
+        KeyBinding::new("secondary-shift-=", ZoomIn, None),
+        KeyBinding::new("secondary--", ZoomOut, None),
+        KeyBinding::new("secondary-0", ActualSize, None),
+        KeyBinding::new(if cfg!(windows) { "alt-0" } else { "ctrl-0" }, AllProjects, None),
+        KeyBinding::new(if cfg!(windows) { "alt-1" } else { "ctrl-1" }, Project1, None),
+        KeyBinding::new(if cfg!(windows) { "alt-2" } else { "ctrl-2" }, Project2, None),
+        KeyBinding::new(if cfg!(windows) { "alt-3" } else { "ctrl-3" }, Project3, None),
+        KeyBinding::new(if cfg!(windows) { "alt-4" } else { "ctrl-4" }, Project4, None),
+        KeyBinding::new(if cfg!(windows) { "alt-5" } else { "ctrl-5" }, Project5, None),
+        KeyBinding::new(if cfg!(windows) { "alt-6" } else { "ctrl-6" }, Project6, None),
+        KeyBinding::new(if cfg!(windows) { "alt-7" } else { "ctrl-7" }, Project7, None),
+        KeyBinding::new(if cfg!(windows) { "alt-8" } else { "ctrl-8" }, Project8, None),
+        KeyBinding::new(if cfg!(windows) { "alt-9" } else { "ctrl-9" }, Project9, None),
+        KeyBinding::new("secondary-shift-o", ToggleFolds, None),
+        KeyBinding::new("secondary-f", FindInConversation, None),
         KeyBinding::new("escape", CloseFind, Some("FindBar")),
-        KeyBinding::new("cmd-shift-k", ChooseTarget, None),
-        KeyBinding::new("cmd-shift-p", CommandPalette, None),
-        KeyBinding::new("cmd-u", ShowUsage, None),
-        KeyBinding::new("cmd-/", ShowHelp, None),
-        KeyBinding::new("cmd-shift-h", OpenSquadFolder, None),
-        KeyBinding::new("cmd-shift-e", ExportConversation, None),
-        KeyBinding::new("cmd-shift-n", NewWindow, None),
-        KeyBinding::new("alt-cmd-n", AddMembers, None),
-        KeyBinding::new("cmd-m", MinimizeWindow, None),
+        KeyBinding::new("secondary-shift-k", ChooseTarget, None),
+        KeyBinding::new("secondary-shift-p", CommandPalette, None),
+        KeyBinding::new("secondary-u", ShowUsage, None),
+        KeyBinding::new("secondary-/", ShowHelp, None),
+        KeyBinding::new("secondary-shift-h", OpenSquadFolder, None),
+        KeyBinding::new("secondary-shift-e", ExportConversation, None),
+        KeyBinding::new("secondary-shift-n", NewWindow, None),
+        KeyBinding::new("alt-secondary-n", AddMembers, None),
+        KeyBinding::new("secondary-m", MinimizeWindow, None),
         // ⌥⏎ and ⌃J break the line like ⇧⏎ (T-54 §8).
         KeyBinding::new("alt-enter", Enter { secondary: false, shift: true }, Some("Input")),
         KeyBinding::new("ctrl-j", Enter { secondary: false, shift: true }, Some("Input")),
@@ -2893,7 +2898,7 @@ pub fn open_app_window(opening: windows::Opening, cx: &mut App) -> (AnyWindowHan
             titlebar: Some(TitlebarOptions {
                 title: Some("equipe".into()),
                 appears_transparent: true,
-                traffic_light_position: Some(point(px(views::sidebar::LIGHTS_AT.0), px(views::sidebar::LIGHTS_AT.1))),
+                traffic_light_position: if cfg!(target_os = "macos") { Some(point(px(views::sidebar::LIGHTS_AT.0), px(views::sidebar::LIGHTS_AT.1))) } else { None },
             }),
             tabbing_identifier: Some("equipe".to_owned()),
             ..Default::default()
@@ -2915,6 +2920,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn zoom_has_the_macs_keys_and_the_slices_moved_to_control() {
         assert_eq!(bound("cmd-0"), ["equipe::ActualSize"], "⌘0 is actual size, as everywhere on the Mac");
         assert_eq!(bound("cmd-="), ["equipe::ZoomIn"]);
@@ -2929,6 +2935,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn a_new_window_has_the_macs_keys() {
         assert_eq!(bound("cmd-shift-n"), ["equipe::NewWindow"], "⌘⇧N: one more window, as browsers and editors open one");
         assert_eq!(bound("alt-cmd-n"), ["equipe::AddMembers"], "adding members moved over for it");
@@ -2937,6 +2944,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn orchestration_has_a_key_of_its_own() {
         assert_eq!(bound("cmd-shift-l"), ["equipe::ShowOrchestration"]);
     }
@@ -2952,6 +2960,16 @@ mod tests {
         }
         // The menu shows the first binding of each: ⌘+, not ⌘=.
         let first_zoom_in = bindings.iter().find(|b| b.action().name() == "equipe::ZoomIn").unwrap();
-        assert_eq!(first_zoom_in.keystrokes()[0].unparse(), "cmd-+");
+        assert_eq!(first_zoom_in.keystrokes()[0].unparse(), if cfg!(windows) { "ctrl-+" } else { "cmd-+" });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_uses_control_and_keeps_project_slices_on_alt() {
+        assert_eq!(bound("ctrl-k"), ["equipe::SearchAll"]);
+        assert_eq!(bound("ctrl-0"), ["equipe::ActualSize"]);
+        assert_eq!(bound("alt-0"), ["equipe::AllProjects"]);
+        assert_eq!(bound("ctrl-shift-n"), ["equipe::NewWindow"]);
+        assert_eq!(bound("ctrl-shift-l"), ["equipe::ShowOrchestration"]);
     }
 }

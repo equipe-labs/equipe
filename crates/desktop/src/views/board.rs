@@ -1149,7 +1149,7 @@ impl Shell {
             }
             _ => {}
         }
-        if m.platform && key == "a" && !m.shift {
+        if m.secondary() && key == "a" && !m.shift {
             let list: BTreeSet<TicketId> = board::items(&self.board_rows()).into_iter().filter_map(|n| if let Need::Ticket(id) = n { Some(id) } else { None }).collect();
             self.board.view.chosen = list;
             cx.notify();
@@ -1372,8 +1372,8 @@ fn btn_key(key: &'static str) -> Div {
     div().text_size(px(11.)).opacity(0.6).font_features(key_face()).child(key)
 }
 
-pub fn kbd(p: Palette, key: &'static str) -> Div {
-    div().px(px(5.)).h(px(18.)).flex().items_center().rounded(px(4.)).border_1().border_color(p.hair).text_size(px(11.)).text_color(p.muted).font_features(key_face()).child(key)
+pub fn kbd(p: Palette, key: impl Into<SharedString>) -> Div {
+    div().px(px(5.)).h(px(18.)).flex().items_center().rounded(px(4.)).border_1().border_color(p.hair).text_size(px(11.)).text_color(p.muted).font_features(key_face()).child(key.into())
 }
 
 pub fn member_color(p: Palette, model: &Model, who: &str) -> Rgba {
@@ -2449,4 +2449,3 @@ fn keys_sheet(p: Palette, cx: &mut Context<Shell>) -> AnyElement {
     )
     .into_any_element()
 }
-

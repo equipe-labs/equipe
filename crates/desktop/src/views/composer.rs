@@ -55,13 +55,13 @@ pub enum AttachTo {
 /// The composer's own keys (main.rs binds them with the app's).
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("cmd-u", OpenAttach, None),
-        KeyBinding::new("cmd-.", StopMember, None),
-        KeyBinding::new("cmd-shift-i", OpenModels, None),
-        KeyBinding::new("cmd-shift-e", OpenEffort, None),
-        KeyBinding::new("cmd-shift-m", OpenModes, None),
-        KeyBinding::new("cmd-shift-v", PasteInline, Some("Input")),
-        KeyBinding::new("cmd-shift-enter", SendInverted, Some("Input")),
+        KeyBinding::new("secondary-u", OpenAttach, None),
+        KeyBinding::new("secondary-.", StopMember, None),
+        KeyBinding::new("secondary-shift-i", OpenModels, None),
+        KeyBinding::new("secondary-shift-e", OpenEffort, None),
+        KeyBinding::new("secondary-shift-m", OpenModes, None),
+        KeyBinding::new("secondary-shift-v", PasteInline, Some("Input")),
+        KeyBinding::new("secondary-shift-enter", SendInverted, Some("Input")),
     ]);
 }
 
@@ -1529,7 +1529,7 @@ impl Shell {
                     self.withdraw_pending(picked, window, cx);
                     return true;
                 }
-                "enter" if modifiers.platform && !modifiers.shift => {
+                "enter" if modifiers.secondary() && !modifiers.shift => {
                     self.send_pending_now(cx);
                     return true;
                 }
@@ -1546,7 +1546,7 @@ impl Shell {
             }
         }
         // ⌘↵ on an empty box: what waits goes now.
-        if key == "enter" && modifiers.platform && !modifiers.shift && text.trim().is_empty() && self.composer.strip.is_empty() && self.model.convo().is_some_and(|c| !c.queue.is_empty()) {
+        if key == "enter" && modifiers.secondary() && !modifiers.shift && text.trim().is_empty() && self.composer.strip.is_empty() && self.model.convo().is_some_and(|c| !c.queue.is_empty()) {
             self.send_pending_now(cx);
             return true;
         }
@@ -2158,13 +2158,13 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
 
     // "+" wears a hairline, as Claude's does: its edge is where the text above starts.
     let plus_open = open(MenuKind::Attach);
-    let plus = anchored(icon_button(shell, "attach", Icon::Plus, t!("composer.tip_attach"), Some("⌘U"), |this, window, cx| this.open_menu(MenuKind::Attach, window, cx), cx), &anchors, MenuKind::Attach)
+    let plus = anchored(icon_button(shell, "attach", Icon::Plus, t!("composer.tip_attach"), Some(crate::theme::platform_key("⌘U", "Ctrl+U")), |this, window, cx| this.open_menu(MenuKind::Attach, window, cx), cx), &anchors, MenuKind::Attach)
         .border_1()
         .border_color(p.hair);
     let plus = motion::hover_fill(plus, "attach-fill", p.wash, plus_open);
 
     let listening = composer.dictating.is_some();
-    let mic = composer.speech.read(cx).is_available(cx).then(|| {
+    let mic = (!cfg!(windows) && composer.speech.read(cx).is_available(cx)).then(|| {
         let label = if listening { t!("composer.tip_mic_stop") } else { t!("composer.tip_mic") };
         let b = tip(
             button("mic", label, |this, window, cx| this.toggle_dictation(window, cx), cx)
@@ -2221,12 +2221,12 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         cx,
     );
     let mode_word = label::mode(crate::i18n::lang(), model.mode);
-    let mode_pill = member.map(|_| picker("mode", t!("composer.aria_mode", mode = mode_word), mode_word.to_owned(), p.muted, MenuKind::Mode, Some((t!("composer.tip_mode"), "⌘⇧M")), cx));
-    let model_pill = member.and_then(|m| m.model.clone()).map(|m| picker("model", t!("composer.aria_model", model = m.clone()), short_model(&m), p.text2, MenuKind::Model, Some((t!("composer.tip_model"), "⌘⇧I")), cx));
+    let mode_pill = member.map(|_| picker("mode", t!("composer.aria_mode", mode = mode_word), mode_word.to_owned(), p.muted, MenuKind::Mode, Some((t!("composer.tip_mode"), crate::theme::platform_key("⌘⇧M", "Ctrl+Shift+M"))), cx));
+    let model_pill = member.and_then(|m| m.model.clone()).map(|m| picker("model", t!("composer.aria_model", model = m.clone()), short_model(&m), p.text2, MenuKind::Model, Some((t!("composer.tip_model"), crate::theme::platform_key("⌘⇧I", "Ctrl+Shift+I"))), cx));
     let effort_pill = member.map(|m| {
         let now = model.efforts.get(&m.session).cloned();
         let label = now.clone().unwrap_or_else(|| t!("composer.effort_short").to_owned());
-        picker("effort", t!("composer.aria_effort", effort = label.clone()), label, if now.is_some() { p.text2 } else { p.muted }, MenuKind::Effort, Some((t!("composer.tip_effort"), "⌘⇧E")), cx)
+        picker("effort", t!("composer.aria_effort", effort = label.clone()), label, if now.is_some() { p.text2 } else { p.muted }, MenuKind::Effort, Some((t!("composer.tip_effort"), crate::theme::platform_key("⌘⇧E", "Ctrl+Shift+E"))), cx)
     });
     let ring = member.and_then(|m| m.context).map(|used| {
         let is_open = open(MenuKind::Context);
@@ -2285,7 +2285,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             .border_1()
             .border_color(p.hair)
             .child(div().size(px(10.)).rounded(px(2.)).bg(if stopping { p.muted } else { p.text }));
-        motion::hover_fill(tip(b, p, label, Some("⌘.")), "stop-fill", p.wash, false)
+        motion::hover_fill(tip(b, p, label, Some(crate::theme::platform_key("⌘.", "Ctrl+."))), "stop-fill", p.wash, false)
     };
 
     // How wide each would be, to leave out the least needed when the bar is narrow.

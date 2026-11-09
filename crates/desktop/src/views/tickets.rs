@@ -827,12 +827,12 @@ impl Shell {
             return true;
         }
         if self.board.tk.sheet.is_some() {
-            if m.platform && key == "enter" {
+            if m.secondary() && key == "enter" {
                 self.create_from_sheet(window, cx);
             }
             return key != "escape";
         }
-        if m.platform && key == "enter" && self.board.tk.body_edit.is_some() {
+        if m.secondary() && key == "enter" && self.board.tk.body_edit.is_some() {
             self.save_body(window, cx);
             return true;
         }
@@ -1169,7 +1169,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
         .when(yours, |r| r.child(div().absolute().left_0().top(px(8.)).bottom(px(8.)).w(px(2.)).rounded(px(1.)).bg(p.accent)))
         .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-            if e.modifiers().platform {
+            if e.modifiers().secondary() {
                 if !this.board.view.chosen.remove(&id) {
                     this.board.view.chosen.insert(id);
                 }
@@ -1646,7 +1646,7 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
                 .hover(move |s| s.border_color(p.muted))
                 .on_drag(drag, |d, _, _, cx| cx.new(|_| Ghost(d.clone())))
                 .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-                    if e.modifiers().platform {
+                    if e.modifiers().secondary() {
                         if !this.board.view.chosen.remove(&id) {
                             this.board.view.chosen.insert(id);
                         }

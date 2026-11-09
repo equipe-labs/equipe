@@ -498,6 +498,10 @@ pub fn bundle() -> Option<PathBuf> {
 
 /// Whether this app, as it runs, can't update itself (asked once).
 pub fn misplaced() -> Option<Misplaced> {
+    #[cfg(not(target_os = "macos"))]
+    return None;
+    #[cfg(target_os = "macos")]
+    {
     static WHERE: OnceLock<Option<Misplaced>> = OnceLock::new();
     *WHERE.get_or_init(|| {
         let bundle = bundle()?;
@@ -505,6 +509,7 @@ pub fn misplaced() -> Option<Misplaced> {
         let writable = std::ffi::CString::new(parent.as_os_str().as_encoded_bytes()).is_ok_and(|p| unsafe { libc::access(p.as_ptr(), libc::W_OK) } == 0);
         misplaced_at(&bundle.to_string_lossy(), writable)
     })
+    }
 }
 
 /// "Show in Finder": the app in its folder — or, translocated (where it

@@ -442,11 +442,11 @@ impl Shell {
         }
         let plain = !(m.platform || m.control || m.alt || m.shift || m.function);
         match key {
-            "r" if m.platform && m.shift && !m.control && !m.alt => {
+            "r" if m.secondary() && m.shift && m.number_of_modifiers() == 2 => {
                 self.quote_open(window, cx);
                 Took::Taken
             }
-            "j" if m.platform && m.shift && !m.control && !m.alt => {
+            "j" if m.secondary() && m.shift && m.number_of_modifiers() == 2 => {
                 self.side_chat_start(window, cx);
                 Took::Taken
             }

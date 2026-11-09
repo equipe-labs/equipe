@@ -265,7 +265,11 @@ fn browser_button(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + 
     let p = shell.palette;
     let on = shell.browser.read(cx).open;
     super::sidebar::icon_button(p, "header-browser", IconName::Globe, true, None)
-        .tip(p, t!("header.browser"), Some("⌘⇧B"))
+        .tip(
+            p,
+            t!("header.browser"),
+            Some(crate::theme::platform_key("⌘⇧B", "Ctrl+Shift+B")),
+        )
         .when(on, |b| b.bg(p.wash))
         .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)))
 }

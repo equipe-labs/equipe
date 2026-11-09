@@ -122,7 +122,10 @@ type Writer = Box<dyn AsyncWrite + Unpin + Send>;
 async fn connect(endpoint: &Endpoint) -> std::io::Result<(Reader, Writer, Option<crate::ssh::Process>)> {
     let (reader, mut writer, process): (Reader, Writer, _) = match endpoint {
         Endpoint::Local { socket } => {
+            #[cfg(unix)]
             let (r, w) = tokio::net::UnixStream::connect(socket).await?.into_split();
+            #[cfg(windows)]
+            let (r, w) = tokio::io::split(tokio::net::windows::named_pipe::ClientOptions::new().open(socket)?);
             (Box::new(r), Box::new(w), None)
         }
         Endpoint::Ssh(host) => {

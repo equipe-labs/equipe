@@ -235,9 +235,14 @@ pub fn avatar(p: Palette, role: &str, name: &str, size: f32) -> gpui_kit::Div {
         .child(crate::icons::icon(mark, (size * 0.62).round(), color))
 }
 
-/// The Mac's own interface face (SF): drawn for the screen at every size, in
-/// every weight. Helvetica Neue, the brand's, stays with the brand's moments.
+/// The platform's own interface face: SF on macOS, Segoe UI Variable on
+/// Windows. Helvetica Neue, the brand's, stays with the brand's moments.
+#[cfg(target_os = "macos")]
 pub const SANS: &str = ".SystemUIFont";
+#[cfg(windows)]
+pub const SANS: &str = "Segoe UI Variable";
+#[cfg(not(any(target_os = "macos", windows)))]
+pub const SANS: &str = "sans-serif";
 
 /// The Mac's faces for what SF doesn't draw — Korean, Japanese, Chinese —
 /// the app's language's first: Han characters are shared, and each language
@@ -245,6 +250,24 @@ pub const SANS: &str = ".SystemUIFont";
 /// first of these the Mac's own languages name leads, else Simplified
 /// Chinese's. All come with every Mac, in every weight.
 pub fn fallbacks(lang: equipe_core::i18n::Lang) -> FontFallbacks {
+    #[cfg(windows)]
+    {
+        use equipe_core::i18n::Lang;
+        let first = match lang {
+            Lang::Ko => "Malgun Gothic",
+            Lang::Ja => "Yu Gothic UI",
+            Lang::ZhHans => "Microsoft YaHei UI",
+            Lang::ZhHant => "Microsoft JhengHei UI",
+            _ => "Segoe UI Variable",
+        };
+        let faces = std::iter::once(first)
+            .chain(["Segoe UI Variable", "Malgun Gothic", "Yu Gothic UI", "Microsoft YaHei UI", "Microsoft JhengHei UI"].into_iter().filter(|face| *face != first))
+            .map(str::to_owned)
+            .collect();
+        return FontFallbacks::from_fonts(faces);
+    }
+    #[cfg(not(windows))]
+    {
     use equipe_core::i18n::Lang;
     static BY_LANG: std::sync::OnceLock<Vec<(Lang, FontFallbacks)>> = std::sync::OnceLock::new();
     const KO: &str = "Apple SD Gothic Neo";
@@ -270,6 +293,7 @@ pub fn fallbacks(lang: equipe_core::i18n::Lang) -> FontFallbacks {
             .collect()
     });
     all.iter().find(|(l, _)| *l == lang).map_or_else(|| all[0].1.clone(), |(_, f)| f.clone())
+    }
 }
 
 /// The interface's face, and the faces for the scripts it lacks.
@@ -283,6 +307,11 @@ pub trait Sans: Styled + Sized {
 }
 
 impl<E: Styled> Sans for E {}
+
+/// A shortcut label in the convention users see on this platform.
+pub const fn platform_key(mac: &'static str, windows: &'static str) -> &'static str {
+    if cfg!(windows) { windows } else { mac }
+}
 
 // ── type ──
 //
@@ -325,7 +354,12 @@ pub const LINK_UNDERLINE_ALPHA: f32 = 0.35;
 /// The room under the conversation's last line, over the composer.
 pub const TAIL_ROOM: f32 = 20.;
 
+#[cfg(target_os = "macos")]
 pub const MONO: &str = ".AppleSystemUIFontMonospaced";
+#[cfg(windows)]
+pub const MONO: &str = "Cascadia Mono";
+#[cfg(not(any(target_os = "macos", windows)))]
+pub const MONO: &str = "monospace";
 
 // ── one scale for everything ──
 //
@@ -565,6 +599,7 @@ mod tests {
     /// Neo's; a Latin UI the first the Mac's languages name, else PingFang SC
     /// — never Korean's for everyone.
     #[test]
+    #[cfg(not(windows))]
     fn each_language_draws_cjk_in_its_own_faces_first() {
         use equipe_core::i18n::Lang;
         let latin = equipe_core::i18n::preferred()
@@ -586,6 +621,17 @@ mod tests {
                 assert!(faces.iter().any(|f| f == face), "{lang:?} lacks {face}");
             }
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_uses_segoe_and_keeps_malgun_for_hangul() {
+        use equipe_core::i18n::Lang;
+        assert_eq!(super::SANS, "Segoe UI Variable");
+        let faces = super::fallbacks(Lang::Ko);
+        let faces = faces.fallback_list();
+        assert_eq!(faces[0], "Malgun Gothic");
+        assert!(faces.iter().any(|face| face == "Segoe UI Variable"));
     }
 
     #[test]

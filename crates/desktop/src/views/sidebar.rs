@@ -113,6 +113,7 @@ pub fn settle(width: f32) -> f32 {
 /// How near the usual width a drag settles on it.
 const SETTLE: f32 = 8.;
 
+#[cfg(target_os = "macos")]
 pub fn lights_at(zoom: f32) -> (f32, f32) {
     (LIGHTS_AT.0, (STRIP * zoom - LIGHT) / 2.)
 }
@@ -120,6 +121,9 @@ pub fn lights_at(zoom: f32) -> (f32, f32) {
 /// Where the strip's buttons start, in the window's (zoomed) points: after
 /// the lights — which don't zoom — and the same air as at actual size.
 pub fn lights_end(zoom: f32) -> f32 {
+    if cfg!(windows) {
+        return 8.;
+    }
     (LIGHTS_AT.0 + LIGHTS_SPAN) / zoom + (LIGHTS - LIGHTS_AT.0 - LIGHTS_SPAN)
 }
 
@@ -264,7 +268,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .gap(px(1.))
         .child(
             nav("nav-new", glyph(IconName::Plus, new_on), t!("sidebar.new_conversation").into(), 0, 0, false, new_on)
-                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘N"))
+                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child(crate::theme::platform_key("⌘N", "Ctrl+N")))
                 .on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))),
         )
         .child(nav("nav-inbox", glyph(IconName::Inbox, on_board && menu == Menu::Inbox), t!("board.menu_inbox").into(), needs, 0, false, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
@@ -283,7 +287,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         // Who does what and waits on whom, beside the work's progress.
         .child(
             nav("nav-orchestra", glyph(IconName::Network, orchestra_on), t!("orchestra.title").into(), 0, 0, false, orchestra_on)
-                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘⇧L"))
+                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child(crate::theme::platform_key("⌘⇧L", "Ctrl+Shift+L")))
                 .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
                     if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Orchestration, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
                         this.open_orchestra(cx);
@@ -2540,4 +2544,3 @@ mod tests {
         assert!(m.arriving(t2).is_empty() && m.leaving(t2 + Duration::from_millis(10)).is_empty());
     }
 }
-
