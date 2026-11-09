@@ -20,12 +20,12 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::Shell;
 use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::theme::{CONTROL, ICON, MEASURE, MONO, Palette, R_LG, R_MD, R_SM};
 use crate::tips::tip;
 use crate::visuals::{self as rules, Listing, Look, Owner, Shot, Size, Viewer, Visuals};
-use crate::Shell;
 
 /// How long a picture that just came fades in.
 const FADE: Duration = Duration::from_millis(240);
@@ -43,7 +43,12 @@ pub struct Shots {
 
 impl Shots {
     pub fn of(shell: &Shell, handle: WeakEntity<Shell>, cx: &App) -> Self {
-        Self { p: shell.palette, shots: shell.shots.clone(), handle, reduce: cx.reduce_motion() }
+        Self {
+            p: shell.palette,
+            shots: shell.shots.clone(),
+            handle,
+            reduce: cx.reduce_motion(),
+        }
     }
 
     /// What `path` shows at `size`; the first time, it is asked for — once
@@ -110,7 +115,10 @@ impl Shots {
         use gpui_kit::base::ElementExt as _;
         let shots = self.shots.clone();
         el.on_prepaint(move |bounds, window, _| {
-            if shots.borrow_mut().set_width(key, f32::from(bounds.size.width)) {
+            if shots
+                .borrow_mut()
+                .set_width(key, f32::from(bounds.size.width))
+            {
                 window.request_animation_frame();
             }
         })
@@ -129,15 +137,29 @@ type Boards = HashMap<(u32, u32, bool), Arc<Image>>;
 /// tones — made once for each size and theme.
 fn checker(p: Palette, w: f32, h: f32) -> Option<Arc<Image>> {
     static MADE: OnceLock<Mutex<Boards>> = OnceLock::new();
-    let (w, h, dark) = (w.round().max(1.) as u32, h.round().max(1.) as u32, is_dark(p));
+    let (w, h, dark) = (
+        w.round().max(1.) as u32,
+        h.round().max(1.) as u32,
+        is_dark(p),
+    );
     let made = MADE.get_or_init(Default::default);
     if let Some(image) = made.lock().ok()?.get(&(w, h, dark)) {
         return Some(image.clone());
     }
     // Light in both themes, as paper is: most marks are drawn dark on nothing, and must
     // read; in the dark a step dimmer, so a tile doesn't glare.
-    let (a, b) = if dark { ([0xDA, 0xDA, 0xDF], [0xCC, 0xCC, 0xD3]) } else { ([0xFF, 0xFF, 0xFF], [0xEF, 0xEF, 0xF3]) };
-    let board = image::RgbImage::from_fn(w * 2, h * 2, |x, y| image::Rgb(if (x / (SQUARE * 2) + y / (SQUARE * 2)).is_multiple_of(2) { a } else { b }));
+    let (a, b) = if dark {
+        ([0xDA, 0xDA, 0xDF], [0xCC, 0xCC, 0xD3])
+    } else {
+        ([0xFF, 0xFF, 0xFF], [0xEF, 0xEF, 0xF3])
+    };
+    let board = image::RgbImage::from_fn(w * 2, h * 2, |x, y| {
+        image::Rgb(if (x / (SQUARE * 2) + y / (SQUARE * 2)).is_multiple_of(2) {
+            a
+        } else {
+            b
+        })
+    });
     let mut png = std::io::Cursor::new(Vec::new());
     board.write_to(&mut png, image::ImageFormat::Png).ok()?;
     let image = Arc::new(Image::from_bytes(ImageFormat::Png, png.into_inner()));
@@ -156,7 +178,14 @@ fn waiting(p: Palette, id: ElementId, reduce: bool) -> AnyElement {
     if reduce {
         return base.into_any_element();
     }
-    base.with_animation(id, Animation::new(Duration::from_millis(1400)).repeat().with_easing(bounce(ease_in_out)), |el, t| el.opacity(0.35 + 0.4 * t)).into_any_element()
+    base.with_animation(
+        id,
+        Animation::new(Duration::from_millis(1400))
+            .repeat()
+            .with_easing(bounce(ease_in_out)),
+        |el, t| el.opacity(0.35 + 0.4 * t),
+    )
+    .into_any_element()
 }
 
 /// Why a picture couldn't be had, in calm words.
@@ -180,8 +209,20 @@ fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool) -> AnyElement {
         .justify_center()
         .text_color(p.muted)
         .child(icon(Icon::File, ICON, p.muted))
-        .when(roomy, |c| c.child(div().max_w_full().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).child(rules::name_of(path).to_owned())))
-        .when(roomy, |c| c.child(div().text_size(px(11.)).child(why_words(why))))
+        .when(roomy, |c| {
+            c.child(
+                div()
+                    .max_w_full()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(11.5))
+                    .child(rules::name_of(path).to_owned()),
+            )
+        })
+        .when(roomy, |c| {
+            c.child(div().text_size(px(11.)).child(why_words(why)))
+        })
         .into_any_element()
 }
 
@@ -189,46 +230,109 @@ fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool) -> AnyElement {
 /// clear of its edge; `top_only` rounds only its top corners (a tile's,
 /// with its caption under it).
 #[allow(clippy::too_many_arguments)]
-pub fn picture(shots: &Shots, id: u64, path: &str, look: Look, w: f32, h: f32, radius: f32, top_only: bool, pad: f32) -> Div {
+pub fn picture(
+    shots: &Shots,
+    id: u64,
+    path: &str,
+    look: Look,
+    w: f32,
+    h: f32,
+    radius: f32,
+    top_only: bool,
+    pad: f32,
+) -> Div {
     let p = shots.p;
-    let corners = |el: Div| if top_only { el.rounded_t(px(radius)) } else { el.rounded(px(radius)) };
+    let corners = |el: Div| {
+        if top_only {
+            el.rounded_t(px(radius))
+        } else {
+            el.rounded(px(radius))
+        }
+    };
     let board = checker(p, w, h).map(|board| {
-        let board = img(board).absolute().top_0().left_0().w(px(w)).h(px(h)).object_fit(ObjectFit::Fill);
-        if top_only { board.rounded_t(px(radius)) } else { board.rounded(px(radius)) }
+        let board = img(board)
+            .absolute()
+            .top_0()
+            .left_0()
+            .w(px(w))
+            .h(px(h))
+            .object_fit(ObjectFit::Fill);
+        if top_only {
+            board.rounded_t(px(radius))
+        } else {
+            board.rounded(px(radius))
+        }
     });
     let face: AnyElement = match &look {
         Look::Ready(shot) => {
             let (iw, ih) = ((w - 2. * pad).max(1.), (h - 2. * pad).max(1.));
-            let image = img(shot.image.clone()).absolute().top(px(pad)).left(px(pad)).w(px(iw)).h(px(ih)).object_fit(ObjectFit::Contain);
+            let image = img(shot.image.clone())
+                .absolute()
+                .top(px(pad))
+                .left(px(pad))
+                .w(px(iw))
+                .h(px(ih))
+                .object_fit(ObjectFit::Contain);
             // Rounded itself where it reaches the corners: overflow clips square.
             let inner = px((radius - pad).max(0.));
-            let image = if top_only { image.rounded_t(inner) } else { image.rounded(inner) };
+            let image = if top_only {
+                image.rounded_t(inner)
+            } else {
+                image.rounded(inner)
+            };
             if !shots.reduce && shot.at.elapsed() < FADE * 2 {
-                motion::fade(image, ElementId::NamedInteger("shot-in".into(), id), FADE).into_any_element()
+                motion::fade(image, ElementId::NamedInteger("shot-in".into(), id), FADE)
+                    .into_any_element()
             } else {
                 image.into_any_element()
             }
         }
         Look::Gone(why) => gone(p, path, *why, w >= 100.),
-        Look::Loading => waiting(p, ElementId::NamedInteger("shot-wait".into(), id), shots.reduce),
+        Look::Loading => waiting(
+            p,
+            ElementId::NamedInteger("shot-wait".into(), id),
+            shots.reduce,
+        ),
     };
-    corners(div().relative().flex_none().w(px(w)).h(px(h)).overflow_hidden().bg(p.wash)).children(board).child(face)
+    corners(
+        div()
+            .relative()
+            .flex_none()
+            .w(px(w))
+            .h(px(h))
+            .overflow_hidden()
+            .bg(p.wash),
+    )
+    .children(board)
+    .child(face)
 }
 
 /// The big view opens at `path` among `viewer`'s pictures.
-fn opens(handle: &WeakEntity<Shell>, viewer: Option<Viewer>) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+fn opens(
+    handle: &WeakEntity<Shell>,
+    viewer: Option<Viewer>,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
     let handle = handle.clone();
     move |_, _, cx| {
         cx.stop_propagation();
         if let Some(viewer) = viewer.clone() {
-            handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+            handle
+                .update(cx, |shell, cx| shell.open_viewer(viewer, cx))
+                .ok();
         }
     }
 }
 
 /// A hand-in's pictures over its note: a grid of tiles, each its file's
 /// name under it; one opens big. `guess`: how wide it is before it was drawn.
-pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], guess: f32, cx: &mut Context<Shell>) -> Option<AnyElement> {
+pub fn gallery(
+    shell: &Shell,
+    key: u64,
+    ticket: TicketId,
+    images: &[String],
+    guess: f32,
+    cx: &mut Context<Shell>,
+) -> Option<AnyElement> {
     if images.is_empty() {
         return None;
     }
@@ -240,8 +344,15 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
         work = std::mem::take(&mut assets);
     }
     let unfolded = shell.shots.borrow().unfolded.contains(&key);
-    let shown: Vec<String> = work.iter().chain(assets.iter().filter(|_| unfolded)).cloned().collect();
-    let looks: Vec<Look> = shown.iter().map(|path| shots.ask(path, Size::Thumb, cx)).collect();
+    let shown: Vec<String> = work
+        .iter()
+        .chain(assets.iter().filter(|_| unfolded))
+        .cloned()
+        .collect();
+    let looks: Vec<Look> = shown
+        .iter()
+        .map(|path| shots.ask(path, Size::Thumb, cx))
+        .collect();
     // Every one failed: one calm line, and a way to ask again — not a wall of the same card.
     if let Some(why) = rules::all_failed(&looks.iter().map(Some).collect::<Vec<_>>()) {
         let all = shown.clone();
@@ -266,7 +377,9 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 let all = all.clone();
-                handle.update(cx, |shell, cx| shell.retry_shots(&all, cx)).ok();
+                handle
+                    .update(cx, |shell, cx| shell.retry_shots(&all, cx))
+                    .ok();
             });
         return Some(
             h_flex()
@@ -287,7 +400,11 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(div().text_color(p.text2).child(t!("visuals.all_failed", count = images.len())))
+                        .child(
+                            div()
+                                .text_color(p.text2)
+                                .child(t!("visuals.all_failed", count = images.len())),
+                        )
                         .child(div().text_size(px(11.5)).child(why_words(why))),
                 )
                 .child(retry)
@@ -301,7 +418,15 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
     let rows_of = |tiles: Vec<AnyElement>| {
         let n = tiles.len();
         let mut tiles = tiles.into_iter();
-        let rows: Vec<AnyElement> = rules::balance(n, rules::per_row(width, w)).into_iter().map(|k| h_flex().gap(px(rules::GAP)).children(tiles.by_ref().take(k).collect::<Vec<_>>()).into_any_element()).collect();
+        let rows: Vec<AnyElement> = rules::balance(n, rules::per_row(width, w))
+            .into_iter()
+            .map(|k| {
+                h_flex()
+                    .gap(px(rules::GAP))
+                    .children(tiles.by_ref().take(k).collect::<Vec<_>>())
+                    .into_any_element()
+            })
+            .collect();
         v_flex().w_full().gap(px(rules::GAP)).children(rows)
     };
     let tile = |path: &String, look: Look| -> AnyElement {
@@ -318,19 +443,46 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
             .overflow_hidden()
             .cursor_pointer()
             .child(face)
-            .child(div().px_2().py(px(6.)).border_t_1().border_color(p.hair).overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(11.)).text_color(p.text2).child(rules::name_of(path).to_owned()))
-            .on_click(opens(&shots.handle, Viewer::of_ticket(ticket, &shown, path)));
+            .child(
+                div()
+                    .px_2()
+                    .py(px(6.))
+                    .border_t_1()
+                    .border_color(p.hair)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .font_family(MONO)
+                    .text_size(px(11.))
+                    .text_color(p.text2)
+                    .child(rules::name_of(path).to_owned()),
+            )
+            .on_click(opens(
+                &shots.handle,
+                Viewer::of_ticket(ticket, &shown, path),
+            ));
         lift(tile, ("hand-in-lift", id), p).into_any_element()
     };
     let mut looks = looks.into_iter();
-    let work_tiles: Vec<AnyElement> = work.iter().map(|path| tile(path, looks.next().unwrap_or(Look::Loading))).collect();
-    let asset_tiles: Vec<AnyElement> = assets.iter().filter(|_| unfolded).map(|path| tile(path, looks.next().unwrap_or(Look::Loading))).collect();
+    let work_tiles: Vec<AnyElement> = work
+        .iter()
+        .map(|path| tile(path, looks.next().unwrap_or(Look::Loading)))
+        .collect();
+    let asset_tiles: Vec<AnyElement> = assets
+        .iter()
+        .filter(|_| unfolded)
+        .map(|path| tile(path, looks.next().unwrap_or(Look::Loading)))
+        .collect();
     let grid = rows_of(work_tiles);
     let grid = shots.measured(grid, key);
     // The assets: under a hairline, folded until asked for.
     let fold = (!assets.is_empty()).then(|| {
         let handle = shots.handle();
-        let words = if unfolded { t!("visuals.fewer_assets").to_owned() } else { t!("visuals.more_assets", count = assets.len()) };
+        let words = if unfolded {
+            t!("visuals.fewer_assets").to_owned()
+        } else {
+            t!("visuals.more_assets", count = assets.len())
+        };
         let toggle = h_flex()
             .id(("hand-in-assets", key))
             .flex_none()
@@ -341,20 +493,42 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
             .text_color(p.muted)
             .hover(move |s| s.text_color(p.text2))
             .child(words)
-            .child(icon(if unfolded { Icon::ChevronUp } else { Icon::ChevronDown }, 11., p.muted))
+            .child(icon(
+                if unfolded {
+                    Icon::ChevronUp
+                } else {
+                    Icon::ChevronDown
+                },
+                11.,
+                p.muted,
+            ))
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
-                handle.update(cx, |shell, cx| shell.toggle_assets(key, cx)).ok();
+                handle
+                    .update(cx, |shell, cx| shell.toggle_assets(key, cx))
+                    .ok();
             });
         v_flex()
             .gap_1p5()
-            .child(h_flex().gap_2().items_center().child(toggle).child(div().flex_1().h(px(1.)).bg(p.hair)))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(toggle)
+                    .child(div().flex_1().h(px(1.)).bg(p.hair)),
+            )
             .when(unfolded, |c| c.child(rows_of(asset_tiles)))
     });
     Some(
         v_flex()
             .gap_1p5()
-            .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("visuals.pictures", count = work.len() + assets.len())))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.muted)
+                    .child(t!("visuals.pictures", count = work.len() + assets.len())),
+            )
             .child(grid)
             .children(fold)
             .into_any_element(),
@@ -371,17 +545,33 @@ const ICON_SMALL: f32 = 14.;
 /// clicked. Opened big among the reply's `pictures`. While the reply still
 /// streams, it waits to be asked for.
 #[allow(clippy::too_many_arguments)]
-pub fn inline(shots: &Shots, row: u64, path: &str, alt: &str, pictures: &[(String, String)], live: bool, cx: &mut App) -> AnyElement {
+pub fn inline(
+    shots: &Shots,
+    row: u64,
+    path: &str,
+    alt: &str,
+    pictures: &[(String, String)],
+    live: bool,
+    cx: &mut App,
+) -> AnyElement {
     let p = shots.p;
     let column = shots.column();
     shots.in_row(path, row);
-    let look = if live { shots.known(path, Size::Inline).unwrap_or(Look::Loading) } else { shots.ask(path, Size::Inline, cx) };
+    let look = if live {
+        shots.known(path, Size::Inline).unwrap_or(Look::Loading)
+    } else {
+        shots.ask(path, Size::Inline, cx)
+    };
     let id = row ^ rules_hash(path);
     let name = rules::name_of(path).to_owned();
     if let Look::Gone(why) = look {
         let handle = shots.handle();
         let again = vec![path.to_owned()];
-        let label = if alt.trim().is_empty() { name.clone() } else { format!("{alt} · {name}") };
+        let label = if alt.trim().is_empty() {
+            name.clone()
+        } else {
+            format!("{alt} · {name}")
+        };
         return h_flex()
             .id(("inline-gone", id))
             .my_1()
@@ -396,17 +586,44 @@ pub fn inline(shots: &Shots, row: u64, path: &str, alt: &str, pictures: &[(Strin
             .border_color(p.hair)
             .cursor_pointer()
             .hover(move |s| s.bg(p.wash))
-            .child(div().flex_none().size(px(28.)).flex().items_center().justify_center().rounded(px(R_SM)).bg(p.wash).child(icon(Icon::Camera, ICON_SMALL, p.muted)))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(R_SM))
+                    .bg(p.wash)
+                    .child(icon(Icon::Camera, ICON_SMALL, p.muted)),
+            )
             .child(
                 v_flex()
                     .min_w_0()
-                    .child(div().text_size(px(13.)).line_height(px(18.)).text_color(p.text2).child(t!("visuals.inline_failed")))
-                    .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).line_height(px(16.)).text_color(p.muted).child(format!("{label} · {}", why_words(why)))),
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(p.text2)
+                            .child(t!("visuals.inline_failed")),
+                    )
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(11.5))
+                            .line_height(px(16.))
+                            .text_color(p.muted)
+                            .child(format!("{label} · {}", why_words(why))),
+                    ),
             )
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 let again = again.clone();
-                handle.update(cx, |shell, cx| shell.retry_shots(&again, cx)).ok();
+                handle
+                    .update(cx, |shell, cx| shell.retry_shots(&again, cx))
+                    .ok();
             })
             .into_any_element();
     }
@@ -419,10 +636,28 @@ pub fn inline(shots: &Shots, row: u64, path: &str, alt: &str, pictures: &[(Strin
     let face = picture(shots, id, path, look, w, h, R_MD, false, 0.);
     let viewer = Viewer::of_reply(row, pictures, path);
     let accent = p.hair;
-    let frame = div().id(("inline-shot", id)).flex_none().w(px(w)).h(px(h)).rounded(px(R_MD)).border_1().border_color(accent).overflow_hidden().cursor_pointer().child(face).on_click(opens(&shots.handle, viewer));
+    let frame = div()
+        .id(("inline-shot", id))
+        .flex_none()
+        .w(px(w))
+        .h(px(h))
+        .rounded(px(R_MD))
+        .border_1()
+        .border_color(accent)
+        .overflow_hidden()
+        .cursor_pointer()
+        .child(face)
+        .on_click(opens(&shots.handle, viewer));
     // What it is called shows under the pointer and in the big view, not under it: a reply names it already.
-    let label = if alt.trim().is_empty() { name } else { alt.to_owned() };
-    div().py_1().child(tip(frame, p, label, None)).into_any_element()
+    let label = if alt.trim().is_empty() {
+        name
+    } else {
+        alt.to_owned()
+    };
+    div()
+        .py_1()
+        .child(tip(frame, p, label, None))
+        .into_any_element()
 }
 
 /// A small button over a picture (a card's "View larger", a diagram's source
@@ -439,11 +674,31 @@ impl Reveal {
     /// The state of one picture's buttons: `id` tells the picture, `held`
     /// keeps them up (the way back from a view of the source).
     pub fn of(name: &'static str, id: u64, held: bool, window: &mut Window, cx: &mut App) -> Self {
-        let hovered = window.use_keyed_state(ElementId::NamedInteger(format!("{name}-hover").into(), id), cx, |_, _| false);
-        let focus = window.use_keyed_state(ElementId::NamedInteger(format!("{name}-focus").into(), id), cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
+        let hovered = window.use_keyed_state(
+            ElementId::NamedInteger(format!("{name}-hover").into(), id),
+            cx,
+            |_, _| false,
+        );
+        let focus = window
+            .use_keyed_state(
+                ElementId::NamedInteger(format!("{name}-focus").into(), id),
+                cx,
+                |_, cx| cx.focus_handle().tab_stop(true),
+            )
+            .read(cx)
+            .clone();
         let on = *hovered.read(cx) || held || focus.is_focused(window);
-        let shown = motion::openness(ElementId::NamedInteger(format!("{name}-fade").into(), id), on, window, cx);
-        Self { hovered, focus, shown }
+        let shown = motion::openness(
+            ElementId::NamedInteger(format!("{name}-fade").into(), id),
+            on,
+            window,
+            cx,
+        );
+        Self {
+            hovered,
+            focus,
+            shown,
+        }
     }
 
     /// For the picture's frame: it tells when the pointer is on it.
@@ -460,8 +715,18 @@ impl Reveal {
     }
 
     /// One button; its own `focus` when the picture has several.
-    pub fn button(&self, p: Palette, id: ElementId, label: &'static str, name: String, focus: Option<&FocusHandle>) -> Stateful<Div> {
-        let ring = Rgba { a: 0.55, ..p.accent };
+    pub fn button(
+        &self,
+        p: Palette,
+        id: ElementId,
+        label: &'static str,
+        name: String,
+        focus: Option<&FocusHandle>,
+    ) -> Stateful<Div> {
+        let ring = Rgba {
+            a: 0.55,
+            ..p.accent
+        };
         let focus = focus.unwrap_or(&self.focus).clone();
         div()
             .id(id)
@@ -479,7 +744,15 @@ impl Reveal {
             .opacity(self.shown)
             .hover(move |s| s.text_color(p.text))
             .track_focus(&focus)
-            .focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]))
+            .focus_visible(move |s| {
+                s.shadow(vec![BoxShadow {
+                    color: ring.into(),
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(2.),
+                    inset: false,
+                }])
+            })
             .role(Role::Button)
             .aria_label(name)
             .child(label)
@@ -510,23 +783,19 @@ pub fn card_title(source: &str) -> Option<String> {
 
 /// A diagram's title for a screen reader: its `title` line or front matter.
 pub fn diagram_title(source: &str) -> Option<String> {
-    let line = source.lines().map(str::trim).find_map(|l| l.strip_prefix("title:").or_else(|| l.strip_prefix("title ")))?;
+    let line = source.lines().map(str::trim).find_map(|l| {
+        l.strip_prefix("title:")
+            .or_else(|| l.strip_prefix("title "))
+    })?;
     let line = line.trim().trim_matches(|c| c == '"' || c == '\'');
     (!line.is_empty()).then(|| line.to_owned())
 }
 
-/// An HTML card's page as a `data:` URL, which the browser panel opens
-/// wherever the app runs (a `file://` it won't). `None`: the page can't be
-/// read here, or is past what a URL should carry.
-pub fn page_url(page: &str) -> Option<String> {
-    use base64::Engine as _;
-    const MOST: u64 = 1 << 20;
-    let file = std::fs::File::open(page).ok()?;
-    if file.metadata().ok()?.len() > MOST {
-        return None;
-    }
-    let bytes = std::fs::read(page).ok()?;
-    Some(format!("data:text/html;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+/// An HTML card's page, as the daemon's `read_image` gave it, made into the
+/// `data:` URL the browser panel opens. The bytes are already base64 there;
+/// keeping them so also works when the daemon is on another Mac.
+pub fn page_url(read: &equipe_core::protocol::rpc::ImageRead) -> Option<String> {
+    (read.mime == "text/html").then(|| format!("data:text/html;base64,{}", read.data))
 }
 
 /// An HTML card the daemon drew, in the tone the window is in: as wide as
@@ -534,29 +803,52 @@ pub fn page_url(page: &str) -> Option<String> {
 /// page in the browser panel (the big view when it has none); "View larger",
 /// under the pointer or at the keys, opens the picture big. `None`: the
 /// picture can't be had (the card's source is shown instead).
-pub fn card(shots: &Shots, row: u64, drawn: &equipe_core::protocol::Rendered, title: Option<String>, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+pub fn card(
+    shots: &Shots,
+    row: u64,
+    drawn: &equipe_core::protocol::Rendered,
+    title: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
     let p = shots.p;
-    let tone = if is_dark(p) { &drawn.dark } else { &drawn.light };
+    let tone = if is_dark(p) {
+        &drawn.dark
+    } else {
+        &drawn.light
+    };
     shots.in_row(&tone.path, row);
     let look = shots.ask(&tone.path, Size::Full, cx);
     if matches!(look, Look::Gone(_)) {
         return None;
     }
     let column = shots.column();
-    let natural = (tone.width.max(1) as f32 / 2., tone.height.max(1) as f32 / 2.);
+    let natural = (
+        tone.width.max(1) as f32 / 2.,
+        tone.height.max(1) as f32 / 2.,
+    );
     let w = natural.0.min(column).max(80.);
     let h = (natural.1 * w / natural.0).max(1.);
     let id = row ^ rules_hash(&tone.path);
     let face: AnyElement = match &look {
         Look::Ready(shot) => {
-            let image = img(shot.image.clone()).w(px(w)).h(px(h)).object_fit(ObjectFit::Fill).rounded(px(R_LG));
+            let image = img(shot.image.clone())
+                .w(px(w))
+                .h(px(h))
+                .object_fit(ObjectFit::Fill)
+                .rounded(px(R_LG));
             if !shots.reduce && shot.at.elapsed() < FADE * 2 {
-                motion::fade(image, ElementId::NamedInteger("card-in".into(), id), FADE).into_any_element()
+                motion::fade(image, ElementId::NamedInteger("card-in".into(), id), FADE)
+                    .into_any_element()
             } else {
                 image.into_any_element()
             }
         }
-        _ => waiting(p, ElementId::NamedInteger("card-wait".into(), id), shots.reduce),
+        _ => waiting(
+            p,
+            ElementId::NamedInteger("card-wait".into(), id),
+            shots.reduce,
+        ),
     };
     let handle = shots.handle();
     let page = drawn.page.clone();
@@ -570,7 +862,13 @@ pub fn card(shots: &Shots, row: u64, drawn: &equipe_core::protocol::Rendered, ti
     let big = {
         let (handle, viewer) = (handle.clone(), viewer.clone());
         reveal
-            .button(p, ElementId::NamedInteger("card-big".into(), id), t!("render.card_big"), format!("{}: {}", t!("render.card_big"), name), None)
+            .button(
+                p,
+                ElementId::NamedInteger("card-big".into(), id),
+                t!("render.card_big"),
+                format!("{}: {}", t!("render.card_big"), name),
+                None,
+            )
             .absolute()
             .bottom(px(8.))
             .right(px(8.))
@@ -586,53 +884,110 @@ pub fn card(shots: &Shots, row: u64, drawn: &equipe_core::protocol::Rendered, ti
         .overflow_hidden()
         .cursor_pointer()
         .role(Role::Image)
-        .aria_label(name)
+        .aria_label(name.clone())
         .child(face)
         .child(big)
         .on_click(move |_, window, cx| {
-            let url = page.as_deref().and_then(page_url);
-            match url {
-                Some(url) => {
-                    handle.update(cx, |shell, cx| shell.open_in_panel(&url, window, cx)).ok();
-                }
-                None => {
-                    if let Some(viewer) = viewer.clone() {
-                        handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+            cx.stop_propagation();
+            handle
+                .update(cx, |shell, cx| match page.clone() {
+                    Some(page) => shell.open_card_page(page, viewer.clone(), window, cx),
+                    None => {
+                        if let Some(viewer) = viewer.clone() {
+                            shell.open_viewer(viewer, cx);
+                        }
                     }
-                }
-            }
+                })
+                .ok();
         });
-    let label = if drawn.page.is_some() { t!("render.card_open") } else { t!("render.card_big") };
-    Some(reveal.watch(div().id(("card-row", id)).py_1().child(tip(frame, p, label, None))).into_any_element())
+    let label = if drawn.page.is_some() {
+        t!("render.card_open")
+    } else {
+        t!("render.card_big")
+    };
+    Some(
+        reveal
+            .watch(
+                div()
+                    .id(("card-row", id))
+                    .py_1()
+                    .child(tip(frame, p, label, None).aria_label(name)),
+            )
+            .into_any_element(),
+    )
 }
 
 /// The strip under a reply that names a folder of pictures: "N images",
 /// the folder's name, and its first pictures small — none of it when the
 /// folder isn't one of pictures the squad shows, or every one already shows
 /// in the reply. Opened big among the reply's `pictures` and the folder's.
-pub fn folder_strip(shots: &Shots, row: u64, folder: &str, pictures: &[(String, String)], cx: &mut App) -> Option<AnyElement> {
+pub fn folder_strip(
+    shots: &Shots,
+    row: u64,
+    folder: &str,
+    pictures: &[(String, String)],
+    cx: &mut App,
+) -> Option<AnyElement> {
     shots.in_row(folder, row);
-    let Listing::Ready(list) = shots.listing(folder, cx) else { return None };
+    let Listing::Ready(list) = shots.listing(folder, cx) else {
+        return None;
+    };
     let embedded = |path: &String| pictures.iter().any(|(p, _)| p == path);
-    if list.images.is_empty() || (list.images.iter().all(embedded) && list.total as usize <= list.images.len()) {
+    if list.images.is_empty()
+        || (list.images.iter().all(embedded) && list.total as usize <= list.images.len())
+    {
         return None;
     }
     let p = shots.p;
-    let (w, h) = (rules::FOLDER_TILE, (rules::FOLDER_TILE * rules::RATIO).floor());
+    let (w, h) = (
+        rules::FOLDER_TILE,
+        (rules::FOLDER_TILE * rules::RATIO).floor(),
+    );
     let mut all: Vec<(String, String)> = pictures.to_vec();
-    all.extend(list.images.iter().map(|i| (i.clone(), rules::name_of(i).to_owned())));
+    all.extend(
+        list.images
+            .iter()
+            .map(|i| (i.clone(), rules::name_of(i).to_owned())),
+    );
     let tiles: Vec<AnyElement> = list
         .images
         .iter()
         .map(|path| {
             let id = row ^ rules_hash(path) ^ 0x5157;
-            let face = picture(shots, id, path, shots.ask(path, Size::Thumb, cx), w, h, R_SM, false, 0.);
-            let tile = div().id(("folder-shot", id)).flex_none().rounded(px(R_SM)).border_1().border_color(p.hair).overflow_hidden().cursor_pointer().child(face).on_click(opens(&shots.handle, Viewer::of_reply(row, &all, path)));
+            let face = picture(
+                shots,
+                id,
+                path,
+                shots.ask(path, Size::Thumb, cx),
+                w,
+                h,
+                R_SM,
+                false,
+                0.,
+            );
+            let tile = div()
+                .id(("folder-shot", id))
+                .flex_none()
+                .rounded(px(R_SM))
+                .border_1()
+                .border_color(p.hair)
+                .overflow_hidden()
+                .cursor_pointer()
+                .child(face)
+                .on_click(opens(&shots.handle, Viewer::of_reply(row, &all, path)));
             tip(tile, p, rules::name_of(path).to_owned(), None).into_any_element()
         })
         .collect();
     let more = (list.total as usize).saturating_sub(list.images.len());
-    let place: String = folder.trim_end_matches('/').rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+    let place: String = folder
+        .trim_end_matches('/')
+        .rsplit('/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("/");
     Some(
         v_flex()
             .id(("folder-strip", row ^ rules_hash(folder)))
@@ -644,10 +999,43 @@ pub fn folder_strip(shots: &Shots, row: u64, folder: &str, pictures: &[(String, 
                     .items_center()
                     .text_size(px(11.5))
                     .child(icon(Icon::Folder, 12., p.muted))
-                    .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t!("visuals.folder", count = list.total)))
-                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(11.)).text_color(p.muted).child(place)),
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text2)
+                            .child(t!("visuals.folder", count = list.total)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_family(MONO)
+                            .text_size(px(11.))
+                            .text_color(p.muted)
+                            .child(place),
+                    ),
             )
-            .child(h_flex().flex_wrap().gap(px(6.)).children(tiles).when(more > 0, |r| r.child(div().h(px(h)).px_1().flex().items_center().text_size(px(11.5)).text_color(p.muted).child(format!("+{more}")))))
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .children(tiles)
+                    .when(more > 0, |r| {
+                        r.child(
+                            div()
+                                .h(px(h))
+                                .px_1()
+                                .flex()
+                                .items_center()
+                                .text_size(px(11.5))
+                                .text_color(p.muted)
+                                .child(format!("+{more}")),
+                        )
+                    }),
+            )
             .into_any_element(),
     )
 }
@@ -656,7 +1044,13 @@ pub fn folder_strip(shots: &Shots, row: u64, folder: &str, pictures: &[(String, 
 /// "+n" past [`rules::STRIP_MAX`]; one opens the big view. Without `cx`
 /// (a view drawn while the window's state is read), what it asks for waits
 /// for [`flush`].
-pub fn strip(shots: &Shots, key: u64, ticket: TicketId, images: &[String], mut cx: Option<&mut App>) -> Option<AnyElement> {
+pub fn strip(
+    shots: &Shots,
+    key: u64,
+    ticket: TicketId,
+    images: &[String],
+    mut cx: Option<&mut App>,
+) -> Option<AnyElement> {
     if images.is_empty() {
         return None;
     }
@@ -673,7 +1067,17 @@ pub fn strip(shots: &Shots, key: u64, ticket: TicketId, images: &[String], mut c
                 None => shots.shots.borrow_mut().look(path, Size::Thumb),
             };
             let face = picture(shots, id, path, look, w, h, R_SM, false, 4.);
-            let tile = div().id(("strip-shot", id)).rounded(px(R_SM)).border_1().border_color(p.hair).cursor_pointer().child(face).on_click(opens(&shots.handle, Viewer::of_ticket(ticket, images, path)));
+            let tile = div()
+                .id(("strip-shot", id))
+                .rounded(px(R_SM))
+                .border_1()
+                .border_color(p.hair)
+                .cursor_pointer()
+                .child(face)
+                .on_click(opens(
+                    &shots.handle,
+                    Viewer::of_ticket(ticket, images, path),
+                ));
             tip(tile, p, rules::name_of(path).to_owned(), None).into_any_element()
         })
         .collect();
@@ -682,14 +1086,28 @@ pub fn strip(shots: &Shots, key: u64, ticket: TicketId, images: &[String], mut c
             .gap_1p5()
             .items_center()
             .children(tiles)
-            .when(more > 0, |r| r.child(div().text_size(px(11.5)).text_color(p.muted).child(format!("+{more}"))))
+            .when(more > 0, |r| {
+                r.child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(p.muted)
+                        .child(format!("+{more}")),
+                )
+            })
             .into_any_element(),
     )
 }
 
 /// A phone's frames in a row, standing up as a phone's screen does: `height`
 /// tall, each opening big (←/→ through them) on a click. Up to six.
-pub fn phone_strip(shots: &Shots, key: u64, ticket: TicketId, frames: &[String], height: f32, cx: &mut App) -> Option<AnyElement> {
+pub fn phone_strip(
+    shots: &Shots,
+    key: u64,
+    ticket: TicketId,
+    frames: &[String],
+    height: f32,
+    cx: &mut App,
+) -> Option<AnyElement> {
     if frames.is_empty() {
         return None;
     }
@@ -703,11 +1121,27 @@ pub fn phone_strip(shots: &Shots, key: u64, ticket: TicketId, frames: &[String],
             let id = key ^ rules_hash(path);
             let look = shots.ask(path, Size::Thumb, cx);
             let face = picture(shots, id, path, look, w, height, R_SM, false, 0.);
-            let tile = div().id(("phone-frame", id)).rounded(px(R_SM)).border_1().border_color(p.hair).cursor_pointer().child(face).on_click(opens(&shots.handle, Viewer::of_ticket(ticket, frames, path)));
+            let tile = div()
+                .id(("phone-frame", id))
+                .rounded(px(R_SM))
+                .border_1()
+                .border_color(p.hair)
+                .cursor_pointer()
+                .child(face)
+                .on_click(opens(
+                    &shots.handle,
+                    Viewer::of_ticket(ticket, frames, path),
+                ));
             tip(tile, p, rules::name_of(path).to_owned(), None).into_any_element()
         })
         .collect();
-    Some(h_flex().gap_2().items_center().children(tiles).into_any_element())
+    Some(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .children(tiles)
+            .into_any_element(),
+    )
 }
 
 /// What was asked for without a context, loaded: `shots` is the window's.
@@ -730,14 +1164,24 @@ fn rules_hash(path: &str) -> u64 {
 
 /// A tile under the pointer: its shadow deepens — paint only, so nothing
 /// beside it moves, and it doesn't grow or rise.
-pub fn lift<E: IntoElement + Styled + 'static>(el: E, id: impl Into<ElementId>, p: Palette) -> motion::Hover<E> {
+pub fn lift<E: IntoElement + Styled + 'static>(
+    el: E,
+    id: impl Into<ElementId>,
+    p: Palette,
+) -> motion::Hover<E> {
     let dark = is_dark(p);
     motion::hover_with(el, id, false, move |el, t| {
         if t <= 0. {
             return el;
         }
         let ink = if dark { 0.45 } else { 0.14 };
-        el.shadow(vec![BoxShadow { color: hsla(0., 0., 0., ink * t), offset: point(px(0.), px(6. * t)), blur_radius: px(16. * t), spread_radius: px(-4.), inset: false }])
+        el.shadow(vec![BoxShadow {
+            color: hsla(0., 0., 0., ink * t),
+            offset: point(px(0.), px(6. * t)),
+            blur_radius: px(16. * t),
+            spread_radius: px(-4.),
+            inset: false,
+        }])
     })
 }
 
@@ -745,7 +1189,12 @@ pub fn lift<E: IntoElement + Styled + 'static>(el: E, id: impl Into<ElementId>, 
 /// (`radius`: its corners within the border), `width` points — it takes no
 /// room, so picking moves nothing.
 pub fn ring(p: Palette, radius: f32, width: f32) -> Div {
-    div().absolute().inset_0().rounded(px(radius)).border(px(width)).border_color(p.accent)
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(radius))
+        .border(px(width))
+        .border_color(p.accent)
 }
 
 // ── the big view ──
@@ -766,14 +1215,23 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
     };
     let shown: Option<Shot> = shell.shots.borrow().best(&item.path);
     let viewport = window.viewport_size();
-    let room = ((f32::from(viewport.width) - 96.).max(120.), (f32::from(viewport.height) - 150.).max(120.));
+    let room = (
+        (f32::from(viewport.width) - 96.).max(120.),
+        (f32::from(viewport.height) - 150.).max(120.),
+    );
     let size = match shown.as_ref().and_then(|s| s.dims) {
         // A tall one (a long card) is shown as wide as the room, and the wheel scrolls it: fitted whole it would be smaller than it was in the conversation.
         Some(dims) if tall(dims, room) => {
             let w = room.0.min(dims.0 as f32 / 2. * 1.5).max(240.);
             (w, w * dims.1 as f32 / dims.0.max(1) as f32)
         }
-        Some(dims) => rules::contain(dims, (room.0.min(dims.0 as f32 / 2. * 1.5).max(240.), room.1.min(dims.1 as f32 / 2. * 1.5).max(180.))),
+        Some(dims) => rules::contain(
+            dims,
+            (
+                room.0.min(dims.0 as f32 / 2. * 1.5).max(240.),
+                room.1.min(dims.1 as f32 / 2. * 1.5).max(180.),
+            ),
+        ),
         None => {
             let side = room.0.min(room.1).min(720.);
             (side, side)
@@ -793,7 +1251,16 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             // a new (and, far in, a huge) picture each frame.
             let board = checker(p, size.0, size.1);
             let size = zoomed;
-            let board = board.map(|b| img(b).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Fill).rounded(px(10.)));
+            let board = board.map(|b| {
+                img(b)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w(px(size.0))
+                    .h(px(size.1))
+                    .object_fit(ObjectFit::Fill)
+                    .rounded(px(10.))
+            });
             div()
                 .relative()
                 .w(px(size.0))
@@ -801,33 +1268,139 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 .rounded(px(10.))
                 .overflow_hidden()
                 .children(board)
-                .child(img(shot.image.clone()).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Contain).rounded(px(10.)))
+                .child(
+                    img(shot.image.clone())
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(px(size.0))
+                        .h(px(size.1))
+                        .object_fit(ObjectFit::Contain)
+                        .rounded(px(10.)),
+                )
                 // The whole picture still coming: a turning mark in its corner.
-                .when(matches!(whole, Look::Loading), |d| d.child(div().absolute().right(px(10.)).bottom(px(10.)).child(motion::spinner(14., rgba(0x00000080)))))
+                .when(matches!(whole, Look::Loading), |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .right(px(10.))
+                            .bottom(px(10.))
+                            .child(motion::spinner(14., rgba(0x00000080))),
+                    )
+                })
                 .into_any_element()
         }
-        (None, Look::Gone(why)) => v_flex().size(px(220.)).gap_2().rounded(px(R_LG)).bg(rgba(0xFFFFFF14)).items_center().justify_center().text_size(px(13.)).text_color(rgba(0xFFFFFFB3)).child(icon(Icon::Camera, 28., rgba(0xFFFFFFB3))).child(why_words(*why)).into_any_element(),
-        _ => div().size(px(220.)).flex().items_center().justify_center().child(motion::spinner(20., rgba(0xFFFFFFB3))).into_any_element(),
+        (None, Look::Gone(why)) => v_flex()
+            .size(px(220.))
+            .gap_2()
+            .rounded(px(R_LG))
+            .bg(rgba(0xFFFFFF14))
+            .items_center()
+            .justify_center()
+            .text_size(px(13.))
+            .text_color(rgba(0xFFFFFFB3))
+            .child(icon(Icon::Camera, 28., rgba(0xFFFFFFB3)))
+            .child(why_words(*why))
+            .into_any_element(),
+        _ => div()
+            .size(px(220.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(motion::spinner(20., rgba(0xFFFFFFB3)))
+            .into_any_element(),
     };
     let round = |b: Stateful<Div>, glyph: Icon, label: &'static str, keys: &'static str| {
-        tip(b.size(px(CONTROL)).flex().items_center().justify_center().rounded_full().cursor_pointer().hover(|s| s.bg(rgba(0xFFFFFF1F))).child(icon(glyph, ICON, rgb(0xFFFFFF))), p, label, Some(keys))
+        tip(
+            b.size(px(CONTROL))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(0xFFFFFF1F)))
+                .child(icon(glyph, ICON, rgb(0xFFFFFF))),
+            p,
+            label,
+            Some(keys),
+        )
     };
     // A decision's option: its number, what it is called, and its pick.
     let decision = match (&viewer.owner, item.choice) {
-        (Owner::Decision { set, step }, Some(choice)) => shell.model.asked.get(*set).and_then(|s| s.questions.get(*step)).map(|q| (*set, *step, choice, q.multi_select, q.options.get(choice).is_some_and(|o| rules::recommended(&o.label).1))),
+        (Owner::Decision { set, step }, Some(choice)) => shell
+            .model
+            .asked
+            .get(*set)
+            .and_then(|s| s.questions.get(*step))
+            .map(|q| {
+                (
+                    *set,
+                    *step,
+                    choice,
+                    q.multi_select,
+                    q.options
+                        .get(choice)
+                        .is_some_and(|o| rules::recommended(&o.label).1),
+                )
+            }),
         _ => None,
     };
-    let picked = decision.is_some_and(|(set, step, choice, ..)| shell.decide.drafts.get(&set).is_some_and(|d| d.step == step && d.picked(choice)));
+    let picked = decision.is_some_and(|(set, step, choice, ..)| {
+        shell
+            .decide
+            .drafts
+            .get(&set)
+            .is_some_and(|d| d.step == step && d.picked(choice))
+    });
     let label = h_flex()
         .gap_2()
         .items_center()
         .min_w_0()
-        .children(decision.map(|(_, _, choice, ..)| div().flex_none().min_w(px(20.)).h(px(20.)).px(px(5.)).flex().items_center().justify_center().rounded(px(5.)).border_1().border_color(rgba(0xFFFFFF4D)).font_family(MONO).text_size(px(11.)).text_color(rgb(0xFFFFFF)).child((choice + 1).to_string())))
-        .child(div().min_w_0().max_w(px(360.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(rgb(0xFFFFFF)).child(item.label.clone()))
+        .children(decision.map(|(_, _, choice, ..)| {
+            div()
+                .flex_none()
+                .min_w(px(20.))
+                .h(px(20.))
+                .px(px(5.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(5.))
+                .border_1()
+                .border_color(rgba(0xFFFFFF4D))
+                .font_family(MONO)
+                .text_size(px(11.))
+                .text_color(rgb(0xFFFFFF))
+                .child((choice + 1).to_string())
+        }))
+        .child(
+            div()
+                .min_w_0()
+                .max_w(px(360.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(0xFFFFFF))
+                .child(item.label.clone()),
+        )
         .when(decision.is_some_and(|d| d.4), |r| r.child(badge(p, true)))
-        .when(n > 1, |r| r.child(div().flex_none().text_size(px(12.)).text_color(rgba(0xFFFFFFB3)).child(format!("{}/{n}", at + 1))));
+        .when(n > 1, |r| {
+            r.child(
+                div()
+                    .flex_none()
+                    .text_size(px(12.))
+                    .text_color(rgba(0xFFFFFFB3))
+                    .child(format!("{}/{n}", at + 1)),
+            )
+        });
     let pick = decision.map(|(set, _, choice, multi, _)| {
-        let label = if picked { t!("visuals.picked") } else { t!("visuals.pick") };
+        let label = if picked {
+            t!("visuals.picked")
+        } else {
+            t!("visuals.pick")
+        };
         div()
             .id("viewer-pick")
             .flex_none()
@@ -840,10 +1413,25 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             .cursor_pointer()
             .text_size(px(12.5))
             .font_weight(FontWeight::MEDIUM)
-            .map(|b| if picked { b.bg(p.accent).text_color(p.on_accent) } else { b.bg(rgb(0xFFFFFF)).text_color(rgb(0x111114)).hover(|s| s.bg(rgba(0xFFFFFFE0))) })
+            .map(|b| {
+                if picked {
+                    b.bg(p.accent).text_color(p.on_accent)
+                } else {
+                    b.bg(rgb(0xFFFFFF))
+                        .text_color(rgb(0x111114))
+                        .hover(|s| s.bg(rgba(0xFFFFFFE0)))
+                }
+            })
             .when(picked, |b| b.child(icon(Icon::Check, 13., p.on_accent)))
             .child(label)
-            .child(div().font_family(MONO).font_features(crate::theme::key_face()).text_size(px(11.)).opacity(0.6).child("⏎"))
+            .child(
+                div()
+                    .font_family(MONO)
+                    .font_features(crate::theme::key_face())
+                    .text_size(px(11.))
+                    .opacity(0.6)
+                    .child("⏎"),
+            )
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.viewer_pick(set, choice, multi, window, cx);
@@ -861,7 +1449,16 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             .flex_none()
             .gap_1()
             .items_center()
-            .child(round(div().id("viewer-zoom-out").on_click(cx.listener(move |this, _, _, cx| this.viewer_zoom_step(&path_out, false, (0., 0.), cx))), Icon::Minus, t!("visuals.zoom_out"), "−"))
+            .child(round(
+                div()
+                    .id("viewer-zoom-out")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.viewer_zoom_step(&path_out, false, (0., 0.), cx)
+                    })),
+                Icon::Minus,
+                t!("visuals.zoom_out"),
+                "−",
+            ))
             .child(
                 div()
                     .id("viewer-zoom-fit")
@@ -875,13 +1472,26 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                     .hover(|s| s.bg(rgba(0xFFFFFF1F)))
                     .text_size(px(12.))
                     .text_color(rgba(0xFFFFFFB3))
-                    .child(if scale > 1. { format!("{:.0}%", scale * 100.) } else { t!("visuals.zoom_fit").to_owned() })
+                    .child(if scale > 1. {
+                        format!("{:.0}%", scale * 100.)
+                    } else {
+                        t!("visuals.zoom_fit").to_owned()
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.viewer_zoom.set(&path_fit, 1., (0., 0.));
                         cx.notify();
                     })),
             )
-            .child(round(div().id("viewer-zoom-in").on_click(cx.listener(move |this, _, _, cx| this.viewer_zoom_step(&path_in, true, (0., 0.), cx))), Icon::Plus, t!("visuals.zoom_in"), "+"))
+            .child(round(
+                div()
+                    .id("viewer-zoom-in")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.viewer_zoom_step(&path_in, true, (0., 0.), cx)
+                    })),
+                Icon::Plus,
+                t!("visuals.zoom_in"),
+                "+",
+            ))
     });
     let bar = h_flex()
         .id("viewer-bar")
@@ -897,17 +1507,33 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
         .border_color(rgba(0xFFFFFF1F))
         .on_click(|_, _, cx| cx.stop_propagation())
         .when(n > 1, |b| {
-            let prev = div().id("viewer-prev").on_click(cx.listener(|this, _, _, cx| this.step_viewer(false, cx)));
-            b.child(round(prev, Icon::ArrowLeft, t!("composer.aria_previous"), "←"))
+            let prev = div()
+                .id("viewer-prev")
+                .on_click(cx.listener(|this, _, _, cx| this.step_viewer(false, cx)));
+            b.child(round(
+                prev,
+                Icon::ArrowLeft,
+                t!("composer.aria_previous"),
+                "←",
+            ))
         })
         .child(label)
         .children(zoom)
         .children(pick)
         .when(n > 1, |b| {
-            let next = div().id("viewer-next").on_click(cx.listener(|this, _, _, cx| this.step_viewer(true, cx)));
+            let next = div()
+                .id("viewer-next")
+                .on_click(cx.listener(|this, _, _, cx| this.step_viewer(true, cx)));
             b.child(round(next, Icon::ArrowRight, t!("composer.aria_next"), "→"))
         })
-        .child(round(div().id("viewer-close").on_click(cx.listener(|this, _, _, cx| this.close_viewer(cx))), Icon::X, t!("composer.aria_close"), "Esc"));
+        .child(round(
+            div()
+                .id("viewer-close")
+                .on_click(cx.listener(|this, _, _, cx| this.close_viewer(cx))),
+            Icon::X,
+            t!("composer.aria_close"),
+            "Esc",
+        ));
     let backdrop = div()
         .id("viewer")
         .absolute()
@@ -922,7 +1548,17 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
         .occlude()
         .on_click(cx.listener(|this, _, _, cx| this.close_viewer(cx)))
         .child(motion::rise(
-            div().id("viewer-picture").flex_1().min_h_0().w_full().flex().items_center().justify_center().child(stage(shell, &item.path, face, zoomed, room, scale, pan, viewport, cx)),
+            div()
+                .id("viewer-picture")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(stage(
+                    shell, &item.path, face, zoomed, room, scale, pan, viewport, cx,
+                )),
             ElementId::Name(format!("viewer-{}", item.path).into()),
         ))
         .child(bar);
@@ -943,12 +1579,31 @@ fn tall(dims: (u32, u32), room: (f32, f32)) -> bool {
 /// zooms with ⌘ or Ctrl toward the pointer and otherwise moves a zoomed
 /// picture; a drag moves it; a double-click goes to 2× there, or whole again.
 #[allow(clippy::too_many_arguments)]
-fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f32, f32), scale: f32, pan: (f32, f32), viewport: gpui_kit::Size<Pixels>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+fn stage(
+    shell: &Shell,
+    path: &str,
+    face: AnyElement,
+    size: (f32, f32),
+    room: (f32, f32),
+    scale: f32,
+    pan: (f32, f32),
+    viewport: gpui_kit::Size<Pixels>,
+    cx: &mut Context<Shell>,
+) -> impl IntoElement + use<> {
     let _ = shell;
     // The room's centre in the window: the big view's padding, the bar under it.
-    let centre = (f32::from(viewport.width) / 2., 32. + (f32::from(viewport.height) - 64. - 44. - 16.) / 2.);
-    let from_centre = move |at: Point<Pixels>| (f32::from(at.x) - centre.0, f32::from(at.y) - centre.1);
-    let (wheel_path, pinch_path, down_path, click_path) = (path.to_owned(), path.to_owned(), path.to_owned(), path.to_owned());
+    let centre = (
+        f32::from(viewport.width) / 2.,
+        32. + (f32::from(viewport.height) - 64. - 44. - 16.) / 2.,
+    );
+    let from_centre =
+        move |at: Point<Pixels>| (f32::from(at.x) - centre.0, f32::from(at.y) - centre.1);
+    let (wheel_path, pinch_path, down_path, click_path) = (
+        path.to_owned(),
+        path.to_owned(),
+        path.to_owned(),
+        path.to_owned(),
+    );
     let room_now = room;
     // The picture whole: the same however far it is zoomed, so it holds for
     // every event this frame sends, however many come before the next.
@@ -963,14 +1618,21 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
         .h(px(room.1))
         .overflow_hidden()
         .when(scale > 1. || scrolls, |s| s.cursor_grab())
-        .child(div().absolute().left(px((room.0 - size.0) / 2. + pan.0)).top(px((room.1 - size.1) / 2. + pan.1)).child(face))
+        .child(
+            div()
+                .absolute()
+                .left(px((room.0 - size.0) / 2. + pan.0))
+                .top(px((room.1 - size.1) / 2. + pan.1))
+                .child(face),
+        )
         .on_scroll_wheel(cx.listener(move |this, e: &ScrollWheelEvent, window, cx| {
             let delta = e.delta.pixel_delta(window.line_height());
             let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
             let (now, _) = this.viewer_zoom.of(&wheel_path);
             if e.modifiers.platform || e.modifiers.control {
                 let next = (now * (1. + dy / 300.)).clamp(1., 12.);
-                this.viewer_zoom.set(&wheel_path, next, from_centre(e.position));
+                this.viewer_zoom
+                    .set(&wheel_path, next, from_centre(e.position));
             } else if now > 1. || scrolls {
                 if this.viewer_zoom.path != wheel_path {
                     this.viewer_zoom.path = wheel_path.clone();
@@ -987,35 +1649,53 @@ fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f
         }))
         // Each frame of the pinch, as it comes: no steps between.
         .on_pinch(cx.listener(move |this, e: &PinchEvent, _, cx| {
-            this.viewer_zoom.pinch(&pinch_path, e.delta, from_centre(e.position), e.phase == TouchPhase::Ended);
+            this.viewer_zoom.pinch(
+                &pinch_path,
+                e.delta,
+                from_centre(e.position),
+                e.phase == TouchPhase::Ended,
+            );
             this.viewer_zoom.clamp(fit, room_now);
             this.viewer_zoom.drag = None;
             cx.stop_propagation();
             cx.notify();
         }))
-        .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-            cx.stop_propagation();
-            let (now, mut pan) = this.viewer_zoom.of(&down_path);
-            if this.viewer_zoom.path != down_path && scrolls {
-                pan.1 = top_pan;
-            }
-            if e.click_count >= 2 {
-                let next = if now > 1. { 1. } else { 2. };
-                this.viewer_zoom.set(&down_path, next, from_centre(e.position));
-                this.viewer_zoom.clamp(fit, room_now);
-                this.viewer_zoom.drag = None;
-                cx.notify();
-                return;
-            }
-            this.viewer_zoom.drag = (now > 1. || scrolls).then_some(((f32::from(e.position.x), f32::from(e.position.y)), pan, false));
-        }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                let (now, mut pan) = this.viewer_zoom.of(&down_path);
+                if this.viewer_zoom.path != down_path && scrolls {
+                    pan.1 = top_pan;
+                }
+                if e.click_count >= 2 {
+                    let next = if now > 1. { 1. } else { 2. };
+                    this.viewer_zoom
+                        .set(&down_path, next, from_centre(e.position));
+                    this.viewer_zoom.clamp(fit, room_now);
+                    this.viewer_zoom.drag = None;
+                    cx.notify();
+                    return;
+                }
+                this.viewer_zoom.drag = (now > 1. || scrolls).then_some((
+                    (f32::from(e.position.x), f32::from(e.position.y)),
+                    pan,
+                    false,
+                ));
+            }),
+        )
         .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
-            let Some((from, pan0, _)) = this.viewer_zoom.drag else { return };
+            let Some((from, pan0, _)) = this.viewer_zoom.drag else {
+                return;
+            };
             if e.pressed_button != Some(MouseButton::Left) {
                 this.viewer_zoom.drag = None;
                 return;
             }
-            let moved = (f32::from(e.position.x) - from.0, f32::from(e.position.y) - from.1);
+            let moved = (
+                f32::from(e.position.x) - from.0,
+                f32::from(e.position.y) - from.1,
+            );
             this.viewer_zoom.pan = (pan0.0 + moved.0, pan0.1 + moved.1);
             this.viewer_zoom.drag = Some((from, pan0, moved.0.abs() + moved.1.abs() > 3.));
             this.viewer_zoom.clamp(fit, room_now);
@@ -1046,7 +1726,11 @@ pub fn badge(p: Palette, on_dark: bool) -> impl IntoElement {
         .flex()
         .items_center()
         .rounded(px(9.))
-        .bg(if on_dark { Rgba { a: 0.9, ..p.accent } } else { p.accent })
+        .bg(if on_dark {
+            Rgba { a: 0.9, ..p.accent }
+        } else {
+            p.accent
+        })
         .text_size(px(10.5))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(p.on_accent)
@@ -1077,6 +1761,41 @@ pub fn release(images: Vec<Arc<Image>>, cx: &mut App) {
 }
 
 impl Shell {
+    /// Ask the daemon for a card's kept HTML page and open it in the browser
+    /// panel. `read_image` is deliberate: the page can live on another Mac,
+    /// and the daemon alone decides whether this squad may receive it.
+    fn open_card_page(
+        &mut self,
+        page: String,
+        fallback: Option<Viewer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(uploader) = self.link.as_ref().map(|l| l.uploader()) else {
+            if let Some(viewer) = fallback {
+                self.open_viewer(viewer, cx);
+            }
+            return;
+        };
+        let squad = self.model.squad.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { uploader.read_image(&squad, &page, None) });
+        cx.spawn_in(window, async move |this, cx| {
+            let url = read.await.ok().and_then(|read| page_url(&read));
+            this.update_in(cx, |this, window, cx| match url {
+                Some(url) => this.open_in_panel(&url, window, cx),
+                None => {
+                    if let Some(viewer) = fallback {
+                        this.open_viewer(viewer, cx);
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Load what was asked about: each picture off the UI thread, from the
     /// daemon on this Mac or another — it gives only what the squad shows.
     pub fn load_shots(&mut self, cx: &mut Context<Self>) {
@@ -1103,41 +1822,73 @@ impl Shell {
         let here = !self.model.remote;
         for folder in folders {
             let (uploader, squad, asked) = (uploader.clone(), squad.clone(), folder.clone());
-            let listed = cx.background_spawn(async move { uploader.list_images(&squad, &asked).map_or(Listing::Gone, Listing::Ready) });
+            let listed = cx.background_spawn(async move {
+                uploader
+                    .list_images(&squad, &asked)
+                    .map_or(Listing::Gone, Listing::Ready)
+            });
             cx.spawn(async move |this, cx| {
                 let listing = listed.await;
-                this.update(cx, |this, cx| this.listing_arrived(generation, &folder, listing, cx)).ok();
+                this.update(cx, |this, cx| {
+                    this.listing_arrived(generation, &folder, listing, cx)
+                })
+                .ok();
             })
             .detach();
         }
         for (path, size) in wanted {
             let (uploader, squad, asked) = (uploader.clone(), squad.clone(), path.clone());
             let loaded = cx.background_spawn(async move {
-                let read = uploader.read_image(&squad, &asked, Some(size.side())).or_else(|why| match here && size == Size::Inline && std::path::Path::new(&asked).is_file() {
-                    true => equipe_core::visuals::read(std::path::Path::new(&asked), &[std::path::PathBuf::from("/")], Some(size.side())),
-                    false => Err(why),
-                });
+                let read = uploader
+                    .read_image(&squad, &asked, Some(size.side()))
+                    .or_else(|why| {
+                        match here && size == Size::Inline && std::path::Path::new(&asked).is_file()
+                        {
+                            true => equipe_core::visuals::read(
+                                std::path::Path::new(&asked),
+                                &[std::path::PathBuf::from("/")],
+                                Some(size.side()),
+                            ),
+                            false => Err(why),
+                        }
+                    });
                 match read {
-                    Ok(read) => rules::shot(&read).map_or(Look::Gone(ImageWhy::Unreadable), Look::Ready),
+                    Ok(read) => {
+                        rules::shot(&read).map_or(Look::Gone(ImageWhy::Unreadable), Look::Ready)
+                    }
                     Err(why) => Look::Gone(ImageWhy::of(&why)),
                 }
             });
             cx.spawn(async move |this, cx| {
                 let look = loaded.await;
-                this.update(cx, |this, cx| this.shot_arrived(generation, &path, size, look, cx)).ok();
+                this.update(cx, |this, cx| {
+                    this.shot_arrived(generation, &path, size, look, cx)
+                })
+                .ok();
             })
             .detach();
         }
     }
 
-    fn shot_arrived(&mut self, generation: u64, path: &str, size: Size, look: Look, cx: &mut Context<Self>) {
+    fn shot_arrived(
+        &mut self,
+        generation: u64,
+        path: &str,
+        size: Size,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) {
         let mut shots = self.shots.borrow_mut();
         if shots.generation != generation {
             return;
         }
         shots.put(path, size, look);
         // A reply's picture: its row is measured again, its size known now.
-        let rows = if size == Size::Inline { shots.rows_of(path) } else { Vec::new() };
+        let rows = if size == Size::Inline {
+            shots.rows_of(path)
+        } else {
+            Vec::new()
+        };
         let past = shots.trim() && !std::mem::replace(&mut shots.trimming, true);
         let released = shots.take_released();
         drop(shots);
@@ -1158,7 +1909,9 @@ impl Shell {
     fn trim_shots_later(&mut self, generation: u64, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(rules::DRAWN_LATELY + Duration::from_secs(1)).await;
+                cx.background_executor()
+                    .timer(rules::DRAWN_LATELY + Duration::from_secs(1))
+                    .await;
                 let again = this.update(cx, |this, cx| {
                     let mut shots = this.shots.borrow_mut();
                     if shots.generation != generation {
@@ -1181,7 +1934,13 @@ impl Shell {
         .detach();
     }
 
-    fn listing_arrived(&mut self, generation: u64, folder: &str, listing: Listing, cx: &mut Context<Self>) {
+    fn listing_arrived(
+        &mut self,
+        generation: u64,
+        folder: &str,
+        listing: Listing,
+        cx: &mut Context<Self>,
+    ) {
         let mut shots = self.shots.borrow_mut();
         if shots.generation != generation {
             return;
@@ -1229,10 +1988,19 @@ impl Shell {
     #[cfg(feature = "snapshot")]
     pub fn view_script(&mut self, ticket: Option<TicketId>, n: usize, cx: &mut Context<Self>) {
         let viewer = match ticket {
-            Some(id) => self.model.tickets.iter().find(|t| t.id == id).and_then(|t| Viewer::of_ticket(id, &t.images, t.images.get(n.saturating_sub(1))?)),
+            Some(id) => self
+                .model
+                .tickets
+                .iter()
+                .find(|t| t.id == id)
+                .and_then(|t| Viewer::of_ticket(id, &t.images, t.images.get(n.saturating_sub(1))?)),
             None => {
                 let id = match self.picked_need() {
-                    Some(crate::state::Need::Questions(id)) if self.screen == crate::Screen::Board => Some(id),
+                    Some(crate::state::Need::Questions(id))
+                        if self.screen == crate::Screen::Board =>
+                    {
+                        Some(id)
+                    }
                     _ => self.decide_shown(),
                 };
                 id.and_then(|id| {
@@ -1253,7 +2021,12 @@ impl Shell {
     #[cfg(feature = "snapshot")]
     pub fn reply_view_script(&mut self, n: usize, cx: &mut Context<Self>) {
         let base = crate::render::base_dir(self);
-        let viewer = self.chat.latest_pictures(&base).and_then(|(row, pictures)| Viewer::of_reply(row, &pictures, &pictures.get(n.saturating_sub(1))?.0));
+        let viewer = self
+            .chat
+            .latest_pictures(&base)
+            .and_then(|(row, pictures)| {
+                Viewer::of_reply(row, &pictures, &pictures.get(n.saturating_sub(1))?.0)
+            });
         if let Some(viewer) = viewer {
             self.open_viewer(viewer, cx);
         }
@@ -1265,7 +2038,13 @@ impl Shell {
     }
 
     /// One step in or out on the picture shown, at `at` (px from the view's centre).
-    pub fn viewer_zoom_step(&mut self, path: &str, inward: bool, at: (f32, f32), cx: &mut Context<Self>) {
+    pub fn viewer_zoom_step(
+        &mut self,
+        path: &str,
+        inward: bool,
+        at: (f32, f32),
+        cx: &mut Context<Self>,
+    ) {
         self.viewer_zoom.step(path, inward, at);
         cx.notify();
     }
@@ -1279,9 +2058,19 @@ impl Shell {
 
     /// The option on show picked from the big view — the person's click or
     /// key, never anyone else's. One pick only: the view closes on it.
-    pub fn viewer_pick(&mut self, set: u64, choice: usize, multi: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn viewer_pick(
+        &mut self,
+        set: u64,
+        choice: usize,
+        multi: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let on_step = self.decide.drafts.get(&set).map(|d| d.step);
-        let Some(Owner::Decision { step, .. }) = self.viewer.as_ref().map(|v| v.owner.clone()) else { return };
+        let Some(Owner::Decision { step, .. }) = self.viewer.as_ref().map(|v| v.owner.clone())
+        else {
+            return;
+        };
         if on_step != Some(step) {
             return;
         }
@@ -1300,13 +2089,27 @@ impl Shell {
     /// others (zoomed in: the arrows move it), + and − zoom, 0 shows it
     /// whole, ⏎ or a number picks a decision's option, Esc and Space close.
     /// Every plain key is taken, so nothing is typed underneath.
-    pub fn on_viewer_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(viewer) = self.viewer.clone() else { return false };
+    pub fn on_viewer_key(
+        &mut self,
+        key: &str,
+        m: &Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(viewer) = self.viewer.clone() else {
+            return false;
+        };
         if m.platform || m.control || m.alt {
             return false;
         }
         let pick = |n: usize| match viewer.owner {
-            Owner::Decision { set, step } => self.model.asked.get(set).and_then(|s| s.questions.get(step)).filter(|q| n < q.options.len()).map(|q| (set, n, q.multi_select)),
+            Owner::Decision { set, step } => self
+                .model
+                .asked
+                .get(set)
+                .and_then(|s| s.questions.get(step))
+                .filter(|q| n < q.options.len())
+                .map(|q| (set, n, q.multi_select)),
             Owner::Ticket(_) | Owner::Reply(_) => None,
         };
         let path = viewer.item().path.clone();
@@ -1336,7 +2139,11 @@ impl Shell {
                     self.viewer_pick(set, n, multi, window, cx);
                 }
             }
-            digit if digit.len() == 1 && digit.chars().all(|c| c.is_ascii_digit()) && digit != "0" => {
+            digit
+                if digit.len() == 1
+                    && digit.chars().all(|c| c.is_ascii_digit())
+                    && digit != "0" =>
+            {
                 let n = digit.parse::<usize>().unwrap_or(1) - 1;
                 if let Some((set, n, multi)) = pick(n) {
                     if let Some(viewer) = self.viewer.as_mut() {
@@ -1348,5 +2155,55 @@ impl Shell {
             _ => {}
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{card_title, diagram_title, page_url, tall};
+    use equipe_core::protocol::rpc::ImageRead;
+
+    #[test]
+    fn card_and_diagram_accessibility_names_come_from_their_source() {
+        assert_eq!(
+            card_title("<article><h1>4개 <em>프로젝트</em></h1></article>").as_deref(),
+            Some("4개 프로젝트")
+        );
+        assert_eq!(
+            card_title("<title>이번 주 상태</title><h1>다른 제목</h1>").as_deref(),
+            Some("이번 주 상태")
+        );
+        assert_eq!(
+            diagram_title("---\ntitle: 배포 순서\n---\nflowchart LR\nA-->B").as_deref(),
+            Some("배포 순서")
+        );
+        assert_eq!(
+            diagram_title("sequenceDiagram\ntitle 로그인 흐름\nA->>B: 열기").as_deref(),
+            Some("로그인 흐름")
+        );
+    }
+
+    #[test]
+    fn a_card_page_uses_the_daemons_base64_only_when_it_is_html() {
+        let mut read = ImageRead {
+            mime: "text/html".into(),
+            size: 12,
+            width: None,
+            height: None,
+            data: "PGgxPuyViOuFlezwL2gxPg==".into(),
+            scaled: false,
+        };
+        assert_eq!(
+            page_url(&read).as_deref(),
+            Some("data:text/html;base64,PGgxPuyViOuFlezwL2gxPg==")
+        );
+        read.mime = "image/png".into();
+        assert_eq!(page_url(&read), None);
+    }
+
+    #[test]
+    fn a_tall_card_opens_at_width_instead_of_fitting_whole() {
+        assert!(tall((1280, 2400), (900., 600.)));
+        assert!(!tall((1280, 720), (900., 600.)));
     }
 }

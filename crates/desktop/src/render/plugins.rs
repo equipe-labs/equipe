@@ -436,7 +436,7 @@ impl MarkdownPlugin for Mermaid {
             .then(|| MarkdownNode::new("mermaid", code.value.clone()).text(code.value.clone()).markdown(format!("```mermaid\n{}\n```", code.value)))
     }
 
-    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement {
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let source = node.data::<String>().cloned().unwrap_or_default();
         let p = self.p;
         let key = hash_of(&source);
@@ -526,7 +526,7 @@ impl MarkdownPlugin for Cards {
         (card && fence_closed(node, cx)).then(|| MarkdownNode::new("html-card", code.value.clone()).text(code.value.clone()).markdown(format!("```html card\n{}\n```", code.value)))
     }
 
-    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement {
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let source = node.data::<String>().cloned().unwrap_or_default();
         let p = self.p;
         let key = equipe_core::visuals::diagram::key(&source);
