@@ -34,17 +34,13 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// Write an executable script without holding it open for writing (see tests/runtime.rs).
+#[cfg(unix)]
 fn write_script(path: &Path, script: &str) {
-    #[cfg(unix)]
-    {
     use std::os::unix::fs::PermissionsExt as _;
     let draft = path.with_extension("draft");
     std::fs::write(&draft, script).unwrap();
     assert!(Process::new("cp").arg(&draft).arg(path).status().unwrap().success());
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    #[cfg(windows)]
-    std::fs::write(path, script).unwrap();
 }
 
 /// A stand-in `claude`, signed in: a ticket's turn takes a moment and writes
@@ -78,6 +74,7 @@ EOF"#;
         println!(r#"{{"loggedIn":true,"authMethod":"claude.ai"}}"#);
         return;
     }
+    std::thread::sleep(std::time::Duration::from_secs(1));
     if std::fs::metadata(".git").is_ok_and(|m| m.is_file()) {
         std::fs::write("HERO.md", "made by the squad\n").unwrap();
     }
