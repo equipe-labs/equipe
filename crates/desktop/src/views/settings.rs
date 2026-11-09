@@ -1068,16 +1068,15 @@ fn intro(category: Category) -> &'static str {
 
 // ── drawing ──
 
-fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
+fn draw_line(p: Palette, line: Line, first: bool, narrow: bool) -> AnyElement {
     let compact = line.compact;
     let below = line.below;
-    let row = h_flex()
+    let row = if narrow { v_flex().items_start() } else { h_flex().items_center() }
         .w_full()
         .min_h(px(if compact { 40. } else if line.desc.is_some() { 60. } else { 48. }))
         .px_4()
         .py(px(if compact { 6. } else { 10. }))
         .gap_4()
-        .items_center()
         .when(!first, |r| r.border_t_1().border_color(p.hair))
         .child(
             v_flex()
@@ -1087,20 +1086,20 @@ fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
                 .child(div().text_size(px(if compact { SMALL } else { UI })).text_color(p.text).child(line.label))
                 .children(line.desc.map(|(desc, warn)| div().text_size(px(12.5)).line_height(px(18.)).text_color(if warn { p.danger() } else { p.muted }).child(desc))),
         )
-        .children(line.control.map(|c| div().flex_none().flex().items_center().child(c)));
+        .children(line.control.map(|c| div().flex_none().flex().items_center().when(narrow, |control| control.w_full().pt_2()).child(c)));
     match below {
         None => row.into_any_element(),
         Some(below) => v_flex().w_full().when(!first, |r| r.border_t_1().border_color(p.hair)).child(row.border_t_0()).child(div().w_full().px_4().pb(px(12.)).child(below)).into_any_element(),
     }
 }
 
-fn draw_section(p: Palette, section: Section) -> AnyElement {
+fn draw_section(p: Palette, section: Section, narrow: bool) -> AnyElement {
     let card_bg = p.raised;
     v_flex()
         .w_full()
         .gap_2()
         .children(section.title.map(|t| div().px_1().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t)))
-        .child(v_flex().w_full().rounded(px(R_LG)).border_1().border_color(p.hair).bg(card_bg).overflow_hidden().children(section.lines.into_iter().enumerate().map(|(ix, line)| draw_line(p, line, ix == 0))))
+        .child(v_flex().w_full().rounded(px(R_LG)).border_1().border_color(p.hair).bg(card_bg).overflow_hidden().children(section.lines.into_iter().enumerate().map(|(ix, line)| draw_line(p, line, ix == 0, narrow))))
         .children(section.foot.map(|f| div().px_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(f)))
         .into_any_element()
 }
@@ -1191,6 +1190,7 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
 
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
+    let narrow = shell.remembered.zoom.0 >= 175;
     let query = shell.settings.query(cx);
     let searching = !query.is_empty();
     // While searching, every category's rows; found ones under their category.
@@ -1237,7 +1237,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                     .child(icon(Icon::ChevronRight, ICON_SM, p.muted))
                     .into_any_element(),
             );
-            page.extend(kept.into_iter().map(|s| draw_section(p, s)));
+            page.extend(kept.into_iter().map(|s| draw_section(p, s, narrow)));
         }
         (counts, page)
     } else {
@@ -1247,7 +1247,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .child(div().text_size(px(22.)).line_height(px(30.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(category.label()))
             .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(intro(category)))
             .into_any_element()];
-        page.extend(sections(shell, category, cx).into_iter().map(|s| draw_section(p, s)));
+        page.extend(sections(shell, category, cx).into_iter().map(|s| draw_section(p, s, narrow)));
         (Vec::new(), page)
     };
     let column = v_flex().w_full().max_w(px(PAGE)).gap_6().children(page);
@@ -1258,7 +1258,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .h_full()
         .bg(p.bg)
         .child(ui::title_bar(div().h(px(super::sidebar::STRIP)).flex_none().w_full()))
-        .child(div().id("settings-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&shell.settings.scroll).child(div().w_full().flex().justify_center().px_8().pt_2().pb(px(48.)).child(column)));
+        .child(div().id("settings-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&shell.settings.scroll).child(div().w_full().flex().justify_center().when(narrow, |page| page.px_3()).when(!narrow, |page| page.px_8()).pt_2().pb(px(48.)).child(column)));
     h_flex().size_full().sans().text_color(p.text).child(nav(shell, &found, searching, cx)).child(main).children(pop_menu(shell, cx)).into_any_element()
 }
 
