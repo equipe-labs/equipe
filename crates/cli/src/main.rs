@@ -30,6 +30,8 @@ mod telegram;
 mod telemetry;
 mod tui;
 mod ui;
+#[cfg(any(windows, test))]
+mod windows_scheduler;
 
 use std::io::{IsTerminal as _, Write as _};
 use std::process::ExitCode;

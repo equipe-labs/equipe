@@ -344,8 +344,13 @@ impl Host for Launchd {
 
 /// The user this runs as.
 pub fn uid() -> u32 {
+    #[cfg(unix)]
+    {
     // SAFETY: getuid has no preconditions and cannot fail.
     unsafe { libc::getuid() }
+    }
+    #[cfg(windows)]
+    { 0 }
 }
 
 #[cfg(test)]

@@ -22,7 +22,6 @@ use std::time::{Duration, SystemTime};
 use equipe_core::protocol::rpc::{Attached, Hello, Squads};
 use equipe_core::protocol::telemetry::TelemetryStatus;
 use equipe_core::protocol::{Command, Event};
-use tokio::net::UnixStream;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -518,18 +517,15 @@ async fn attach(target: &Target, side: Option<&SshSide>, updates: &UnboundedSend
             // Off on this Mac: started (once per launch), with the app's own
             // `equipe` when the Mac has none — then looked for again.
             #[cfg(not(test))]
-            if !socket.exists() && tokio::task::spawn_blocking(crate::install::wake_daemon).await.unwrap_or(false) {
+            if !equipe_core::gateway::is_running(socket).await && tokio::task::spawn_blocking(crate::install::wake_daemon).await.unwrap_or(false) {
                 for _ in 0..40 {
-                    if socket.exists() {
+                    if equipe_core::gateway::is_running(socket).await {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
             }
-            if !socket.exists() {
-                return Err(not_running(socket));
-            }
-            let stream = match UnixStream::connect(socket).await {
+            let stream = match equipe_core::gateway::connect(socket).await {
                 Ok(stream) => stream,
                 Err(err) if matches!(err.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => return Err(not_running(socket)),
                 Err(err) => return Err(Failure::Other(err.to_string())),

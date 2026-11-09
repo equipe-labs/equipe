@@ -1,9 +1,8 @@
-//! The daemon's door: the runtime served over a Unix socket.
+//! The daemon's door: the runtime served over local IPC.
 //!
-//! One daemon per user, at `~/.equipe/equipe.sock`. The socket is a file only
-//! its owner can open, so no network port is involved and nothing else on the
-//! machine can drive the squad. Messages are the protocol's Commands and Events
-//! in JSON-RPC 2.0, one per line (see `equipe_protocol::rpc`).
+//! One daemon per user, at `~/.equipe/equipe.sock` on Unix or a named pipe
+//! protected by the user's SID on Windows. No network port is involved.
+//! Messages are JSON-RPC 2.0, one per line (see `equipe_protocol::rpc`).
 //!
 //! Screens come and go; the runtime — and the agents it runs, which are the
 //! daemon's children, not any terminal's — keeps going.
@@ -20,18 +19,27 @@ use tokio::net::unix::OwnedWriteHalf;
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 #[cfg(windows)]
-use tokio::net::tcp::OwnedWriteHalf;
-#[cfg(windows)]
-use tokio::net::{TcpListener as UnixListener, TcpStream as UnixStream};
+use tokio::io::WriteHalf as OwnedWriteHalf;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
 use crate::runtime::{self, Handle};
 
 /// Where the daemon listens.
+#[cfg(unix)]
 pub fn socket_path(home: &Path) -> PathBuf {
     home.join("equipe.sock")
 }
+
+#[cfg(windows)]
+pub fn socket_path(_home: &Path) -> PathBuf {
+    PathBuf::from(windows_pipe::name())
+}
+
+#[cfg(windows)]
+pub use windows_pipe::LocalStream as UnixStream;
+#[cfg(windows)]
+use windows_pipe::LocalListener as UnixListener;
 
 /// Serve the runtime on `socket` until a client asks it to shut down.
 /// Fails with `AddrInUse` when a daemon is already answering there.
@@ -136,7 +144,8 @@ async fn serve_until(
     metrics: std::sync::Arc<crate::metrics::Metrics>,
     leave: Leave,
 ) -> io::Result<()> {
-    let listener = bind(socket).await?;
+    #[allow(unused_mut)] // named-pipe accept advances to the next server instance.
+    let mut listener = bind(socket).await?;
     let home = config.home.clone();
     // Each connection's numbers, once a day.
     let daily = tokio::spawn(metrics.clone().daily());
@@ -221,18 +230,18 @@ async fn bind(socket: &Path) -> io::Result<UnixListener> {
 }
 
 #[cfg(windows)]
-async fn bind(_socket: &Path) -> io::Result<UnixListener> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "daemon IPC is unsupported on Windows yet"))
+async fn bind(socket: &Path) -> io::Result<UnixListener> {
+    UnixListener::bind(socket)
 }
 
 #[cfg(unix)]
-async fn connect(socket: &Path) -> io::Result<UnixStream> {
+pub async fn connect(socket: &Path) -> io::Result<UnixStream> {
     UnixStream::connect(socket).await
 }
 
 #[cfg(windows)]
-async fn connect(_socket: &Path) -> io::Result<UnixStream> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "daemon IPC is unsupported on Windows yet"))
+pub async fn connect(socket: &Path) -> io::Result<UnixStream> {
+    windows_pipe::connect(socket).await
 }
 
 #[cfg(unix)]
@@ -1211,11 +1220,255 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
     u32::try_from(pid).ok()
 }
 
-// The TCP compatibility listener is only a compile-time bridge. T-514
-// replaces it with named pipes and their client-process identity.
 #[cfg(windows)]
-fn peer_pid(_stream: &UnixStream) -> Option<u32> {
-    None
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    stream.peer_pid()
+}
+
+#[cfg(windows)]
+mod windows_pipe {
+    use std::ffi::{c_void, OsStr, OsString};
+    use std::io;
+    use std::os::windows::io::AsRawHandle as _;
+    use std::path::Path;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_BUSY, HLOCAL, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows_sys::Win32::Security::{EqualSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    pub enum LocalStream {
+        Server(NamedPipeServer),
+        Client(NamedPipeClient),
+    }
+
+    impl LocalStream {
+        pub fn into_split(self) -> (tokio::io::ReadHalf<Self>, tokio::io::WriteHalf<Self>) {
+            tokio::io::split(self)
+        }
+
+        pub fn peer_pid(&self) -> Option<u32> {
+            let mut pid = 0;
+            // SAFETY: each variant is a connected named-pipe handle and `pid`
+            // lives through the call. A client asks for the daemon (server),
+            // while the daemon asks for the connecting screen (client).
+            let ok = unsafe {
+                match self {
+                    Self::Server(pipe) => GetNamedPipeClientProcessId(pipe.as_raw_handle() as _, &mut pid),
+                    Self::Client(pipe) => GetNamedPipeServerProcessId(pipe.as_raw_handle() as _, &mut pid),
+                }
+            };
+            (ok != 0).then_some(pid)
+        }
+    }
+
+    impl AsyncRead for LocalStream {
+        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+            match &mut *self {
+                Self::Server(pipe) => Pin::new(pipe).poll_read(cx, buf),
+                Self::Client(pipe) => Pin::new(pipe).poll_read(cx, buf),
+            }
+        }
+    }
+
+    impl AsyncWrite for LocalStream {
+        fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+            match &mut *self {
+                Self::Server(pipe) => Pin::new(pipe).poll_write(cx, buf),
+                Self::Client(pipe) => Pin::new(pipe).poll_write(cx, buf),
+            }
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            match &mut *self {
+                Self::Server(pipe) => Pin::new(pipe).poll_flush(cx),
+                Self::Client(pipe) => Pin::new(pipe).poll_flush(cx),
+            }
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            match &mut *self {
+                Self::Server(pipe) => Pin::new(pipe).poll_shutdown(cx),
+                Self::Client(pipe) => Pin::new(pipe).poll_shutdown(cx),
+            }
+        }
+    }
+
+    pub struct LocalListener {
+        name: OsString,
+        next: NamedPipeServer,
+    }
+
+    impl LocalListener {
+        pub fn bind(path: &Path) -> io::Result<Self> {
+            let name = path.as_os_str().to_owned();
+            let next = create(&name, true)?;
+            Ok(Self { name, next })
+        }
+
+        pub async fn accept(&mut self) -> io::Result<(LocalStream, ())> {
+            self.next.connect().await?;
+            let allowed = same_user(&self.next);
+            if !matches!(allowed, Ok(true)) {
+                let _ = self.next.disconnect();
+                self.next = create(&self.name, false)?;
+                return match allowed {
+                    Ok(false) => Err(io::Error::new(io::ErrorKind::PermissionDenied, "named-pipe client belongs to another user")),
+                    Err(error) => Err(error),
+                    Ok(true) => unreachable!(),
+                };
+            }
+            let replacement = create(&self.name, false)?;
+            let connected = std::mem::replace(&mut self.next, replacement);
+            Ok((LocalStream::Server(connected), ()))
+        }
+    }
+
+    pub async fn connect(path: &Path) -> io::Result<LocalStream> {
+        for attempt in 0..50 {
+            match ClientOptions::new().read(true).write(true).open(path) {
+                Ok(pipe) => return Ok(LocalStream::Client(pipe)),
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) && attempt < 49 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!()
+    }
+
+    fn create(name: &OsStr, first: bool) -> io::Result<NamedPipeServer> {
+        let sid = current_user_sid()?;
+        let sid_text = sid_string(token_user_sid(&sid))?;
+        let descriptor = SecurityDescriptor::from_sddl(&format!("D:P(A;;GA;;;{sid_text})"))?;
+        let mut attrs = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        let mut options = ServerOptions::new();
+        options.first_pipe_instance(first).reject_remote_clients(true);
+        // SAFETY: the attributes and descriptor live through CreateNamedPipeW.
+        unsafe { options.create_with_security_attributes_raw(name, (&mut attrs as *mut _) as *mut c_void) }
+    }
+
+    fn same_user(pipe: &NamedPipeServer) -> io::Result<bool> {
+        let mut pid = 0;
+        // SAFETY: valid connected server handle and output pointer.
+        if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle() as _, &mut pid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let ours = current_user_sid()?;
+        let theirs = process_user_sid(pid)?;
+        // SAFETY: both SID pointers stay valid through the call.
+        Ok(unsafe { EqualSid(token_user_sid(&ours), token_user_sid(&theirs)) } != 0)
+    }
+
+    fn process_user_sid(pid: u32) -> io::Result<TokenUserBuffer> {
+        // SAFETY: only query rights are requested; the handle is closed below.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let result = token_sid_for_process(process);
+        unsafe { CloseHandle(process) };
+        result
+    }
+
+    fn current_user_sid() -> io::Result<TokenUserBuffer> {
+        token_sid_for_process(unsafe { GetCurrentProcess() })
+    }
+
+    fn token_sid_for_process(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<TokenUserBuffer> {
+        let mut token = std::ptr::null_mut();
+        // SAFETY: the token output pointer is valid and closed below.
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut needed = 0;
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
+        let words = (needed as usize).div_ceil(std::mem::size_of::<usize>());
+        let mut data = TokenUserBuffer(vec![0usize; words]);
+        let ok = unsafe { GetTokenInformation(token, TokenUser, data.0.as_mut_ptr().cast(), needed, &mut needed) };
+        unsafe { CloseHandle(token) };
+        if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(data) }
+    }
+
+    struct TokenUserBuffer(Vec<usize>);
+
+    fn token_user_sid(data: &TokenUserBuffer) -> *mut c_void {
+        // SAFETY: GetTokenInformation wrote TOKEN_USER at this aligned address.
+        unsafe { (*(data.0.as_ptr() as *const TOKEN_USER)).User.Sid }
+    }
+
+    fn sid_string(sid: *mut c_void) -> io::Result<String> {
+        let mut raw = std::ptr::null_mut();
+        if unsafe { ConvertSidToStringSidW(sid, &mut raw) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut len = 0;
+        unsafe { while *raw.add(len) != 0 { len += 1; } }
+        let text = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(raw, len) });
+        unsafe { LocalFree(raw as HLOCAL) };
+        Ok(text)
+    }
+
+    pub fn name() -> OsString {
+        let suffix = current_user_sid()
+            .and_then(|sid| sid_string(token_user_sid(&sid)))
+            .unwrap_or_else(|_| std::env::var("USERNAME").unwrap_or_else(|_| "current-user".to_owned()));
+        OsString::from(format!(r"\\.\pipe\equipe-{suffix}"))
+    }
+
+    struct SecurityDescriptor(*mut c_void);
+
+    impl SecurityDescriptor {
+        fn from_sddl(sddl: &str) -> io::Result<Self> {
+            let wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+            let mut descriptor = std::ptr::null_mut();
+            if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(wide.as_ptr(), SDDL_REVISION_1, &mut descriptor, std::ptr::null_mut()) } == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(Self(descriptor))
+            }
+        }
+    }
+
+    impl Drop for SecurityDescriptor {
+        fn drop(&mut self) {
+            unsafe { LocalFree(self.0 as HLOCAL) };
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        #[tokio::test]
+        async fn per_user_pipe_is_a_byte_stream() {
+            let name = name();
+            assert!(name.to_string_lossy().starts_with(r"\\.\pipe\equipe-S-1-"));
+            let mut listener = LocalListener::bind(Path::new(&name)).unwrap();
+            let client = connect(Path::new(&name)).await.unwrap();
+            let server = listener.accept().await.unwrap().0;
+            let (mut server_read, mut server_write) = tokio::io::split(server);
+            let (mut client_read, mut client_write) = tokio::io::split(client);
+            client_write.write_all(b"hello\r\n").await.unwrap();
+            let mut request = [0; 7];
+            server_read.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"hello\r\n");
+            server_write.write_all(b"snapshot\n").await.unwrap();
+            let mut response = [0; 9];
+            client_read.read_exact(&mut response).await.unwrap();
+            assert_eq!(&response, b"snapshot\n");
+        }
+    }
 }
 
 #[cfg(test)]

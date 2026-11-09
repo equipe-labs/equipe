@@ -22,8 +22,20 @@ pub trait Secrets: Send {
     fn delete(&mut self, id: u32) -> Result<(), String>;
 }
 
-/// The daemon machine's Keychain.
-pub struct Keychain;
+/// The daemon machine's system credential store.
+pub struct Keychain {
+    #[cfg(windows)]
+    home: PathBuf,
+}
+
+impl Keychain {
+    pub fn new(_home: &Path) -> Self {
+        Self {
+            #[cfg(windows)]
+            home: _home.to_owned(),
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 impl Secrets for Keychain {
@@ -46,7 +58,26 @@ impl Secrets for Keychain {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+impl Secrets for Keychain {
+    fn set(&mut self, id: u32, password: &str) -> Result<(), String> {
+        let account = equipe_providers::windows_credentials::scoped_account(&self.home, &id.to_string());
+        equipe_providers::windows_credentials::set(SERVICE, &account, password.as_bytes()).map_err(|e| e.to_string())
+    }
+
+    fn get(&self, id: u32) -> Result<String, String> {
+        let account = equipe_providers::windows_credentials::scoped_account(&self.home, &id.to_string());
+        let bytes = equipe_providers::windows_credentials::get(SERVICE, &account).map_err(|e| e.to_string())?.ok_or_else(|| "no password kept".to_owned())?;
+        String::from_utf8(bytes).map_err(|_| "the kept password isn't text".into())
+    }
+
+    fn delete(&mut self, id: u32) -> Result<(), String> {
+        let account = equipe_providers::windows_credentials::scoped_account(&self.home, &id.to_string());
+        equipe_providers::windows_credentials::delete(SERVICE, &account).map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 impl Secrets for Keychain {
     fn set(&mut self, _: u32, _: &str) -> Result<(), String> {
         Err("logins need macOS's Keychain, which this machine doesn't have".into())
@@ -326,5 +357,17 @@ mod tests {
         assert!(script.contains(r#"const U = "a\"b", P = "p'w\\</script>";"#), "{script}");
         assert!(script.contains("requestSubmit"));
         assert!(script.contains("JSON.stringify({ filled, submitted"), "only what it did comes back");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn credential_manager_password_survives_a_new_store() {
+        let home = home();
+        let mut first = Keychain::new(&home);
+        first.set(42, "restart-secret").unwrap();
+        let second = Keychain::new(&home);
+        assert_eq!(second.get(42).unwrap(), "restart-secret");
+        first.delete(42).unwrap();
+        assert!(second.get(42).is_err());
     }
 }

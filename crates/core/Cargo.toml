@@ -32,6 +32,9 @@ whatlang = "0.18.0"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Threading"] }
+
 # Logins' passwords, in the Keychain only (`vault`).
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
