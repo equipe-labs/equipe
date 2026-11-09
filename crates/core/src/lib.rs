@@ -17,6 +17,7 @@ pub mod briefs;
 pub mod by_words;
 pub mod call;
 pub mod command_watch;
+pub mod conversation_title;
 pub mod controls;
 pub mod design_qa;
 pub mod taste;

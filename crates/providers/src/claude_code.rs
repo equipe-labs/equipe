@@ -1082,6 +1082,28 @@ pub async fn suggest(binary: &str, cwd: &Path, conversation: &str) -> Option<Str
     parse_suggestion(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Name one conversation without touching its real thread or tools. The core
+/// validates and bounds the returned text before it becomes permanent.
+pub async fn conversation_title(binary: &str, cwd: &Path, prompt: &str) -> Option<String> {
+    let args: Vec<String> = ["-p", prompt, "--model", "haiku", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--no-session-persistence"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let output = tokio::process::Command::new(binary)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), output).await.ok()?.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+    (value.get("is_error").and_then(Value::as_bool) != Some(true)).then(|| value.get("result").and_then(Value::as_str).map(str::to_owned)).flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
