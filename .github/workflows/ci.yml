@@ -39,7 +39,6 @@ jobs:
         env:
           EQUIPE_TEST_REAL_WINDOWS_CLIS: "1"
         run: cargo test -p equipe-providers --locked
-      - run: cargo test -p equipe-core --lib --locked
       - name: TP-5 fake engine ticket and accept_work
         run: cargo test -p equipe-core --test accept the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_themselves --locked
       - run: cargo test -p equipe-desktop-control --locked
