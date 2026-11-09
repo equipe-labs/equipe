@@ -331,6 +331,7 @@ const ASK_WAIT: Duration = Duration::from_secs(5);
 /// The look of the screen the person used last, asked of the daemon at
 /// `socket` (`person_look`, which reads): `None` when no screen ever told one
 /// — or the daemon can't say (one older than this).
+#[cfg(unix)]
 pub fn person_look(socket: &Path) -> Option<SeenLook> {
     use std::io::{BufRead as _, Write as _};
     if !lets_method(rpc::PERSON_LOOK) {
@@ -346,6 +347,11 @@ pub fn person_look(socket: &Path) -> Option<SeenLook> {
             return message.result_as::<PersonLook>()?.look;
         }
     }
+    None
+}
+
+#[cfg(windows)]
+pub fn person_look(_socket: &Path) -> Option<SeenLook> {
     None
 }
 

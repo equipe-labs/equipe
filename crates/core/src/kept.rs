@@ -85,8 +85,11 @@ fn add(home: &Path, names: impl IntoIterator<Item = String>) -> usize {
         return 0;
     }
     let lines: String = new.iter().map(|n| format!("{n}\n")).collect();
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let written = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(index(home)).and_then(|mut f| f.write_all(lines.as_bytes()));
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt as _; options.mode(0o600); }
+    let written = options.open(index(home)).and_then(|mut f| f.write_all(lines.as_bytes()));
     match written {
         Ok(()) => new.len(),
         Err(err) => {
@@ -100,9 +103,12 @@ fn add(home: &Path, names: impl IntoIterator<Item = String>) -> usize {
 fn forget(home: &Path, gone: &HashSet<String>) -> std::io::Result<()> {
     let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let left: String = std::fs::read_to_string(index(home)).unwrap_or_default().lines().map(str::trim).filter(|n| !n.is_empty() && !gone.contains(*n)).map(|n| format!("{n}\n")).collect();
-    use std::os::unix::fs::OpenOptionsExt as _;
     let tmp = home.join(format!("{INDEX}.tmp"));
-    std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&tmp)?.write_all(left.as_bytes())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt as _; options.mode(0o600); }
+    options.open(&tmp)?.write_all(left.as_bytes())?;
     std::fs::rename(&tmp, index(home))
 }
 
@@ -155,7 +161,6 @@ pub struct Usage {
 /// The kept files there are, each with the room it takes on disk and
 /// whether it is old.
 fn kept_files(home: &Path, now: SystemTime) -> Vec<(String, u64, bool)> {
-    use std::os::unix::fs::MetadataExt as _;
     let kept = names(home);
     let Ok(entries) = std::fs::read_dir(gateway::uploads_dir(home)) else { return Vec::new() };
     entries
@@ -165,11 +170,16 @@ fn kept_files(home: &Path, now: SystemTime) -> Vec<(String, u64, bool)> {
             let meta = entry.metadata().ok().filter(|m| m.file_type().is_file())?;
             kept.contains(&name).then(|| {
                 let old = meta.modified().ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age > OLD_AFTER);
-                (name, meta.blocks() * 512, old)
+                (name, allocated_bytes(&meta), old)
             })
         })
         .collect()
 }
+
+#[cfg(unix)]
+fn allocated_bytes(meta: &std::fs::Metadata) -> u64 { use std::os::unix::fs::MetadataExt as _; meta.blocks() * 512 }
+#[cfg(windows)]
+fn allocated_bytes(meta: &std::fs::Metadata) -> u64 { meta.len() }
 
 pub fn usage(home: &Path, now: SystemTime) -> Usage {
     let mut usage = Usage::default();

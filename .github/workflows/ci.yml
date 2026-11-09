@@ -20,6 +20,22 @@ permissions:
   contents: read
 
 jobs:
+  windows:
+    name: Windows core + providers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo check -p equipe-core -p equipe-providers -p equipe-protocol --locked
+      - run: cargo build -p equipe-core -p equipe-providers -p equipe-protocol --locked
+      - run: cargo clippy -p equipe-core -p equipe-providers -p equipe-protocol --locked -- -D warnings
+
   test:
     name: test (${{ matrix.os }})
     strategy:

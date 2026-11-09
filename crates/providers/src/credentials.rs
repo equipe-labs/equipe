@@ -40,12 +40,7 @@ pub struct Credentials {
 
 /// `$EQUIPE_HOME`, or `~/.equipe`.
 pub fn equipe_home() -> PathBuf {
-    match std::env::var_os("EQUIPE_HOME") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".equipe"),
-    }
+    crate::platform::equipe_home()
 }
 
 #[derive(Clone)]

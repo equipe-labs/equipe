@@ -28,7 +28,7 @@ pub fn is_full(err: &Error) -> bool {
             e.code == rusqlite::ErrorCode::DiskFull || message.as_deref().is_some_and(|m| m.contains("disk is full"))
         }
         Error::ToSqlConversionFailure(e) => {
-            e.downcast_ref::<std::io::Error>().is_some_and(|e| e.raw_os_error() == Some(libc::ENOSPC))
+            e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::StorageFull)
         }
         _ => false,
     }

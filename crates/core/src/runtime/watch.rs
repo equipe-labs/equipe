@@ -173,12 +173,12 @@ impl Runtime {
             let names: Vec<String> = stopping.iter().map(Proc::name).collect();
             crate::daemon_log!("stopping {who}'s command at the person's word: {}", names.join(", "));
             for p in &stopping {
-                crate::group::end(p.pid, libc::SIGTERM);
+                crate::group::end(p.pid, crate::group::Signal::Terminate);
             }
             tokio::time::sleep(STOP_GRACE).await;
             let Some(after) = list_processes().await else { return };
             for pid in command_watch::survivors(&stopping, &after) {
-                crate::group::end(pid, libc::SIGKILL);
+                crate::group::end(pid, crate::group::Signal::Kill);
             }
         });
     }

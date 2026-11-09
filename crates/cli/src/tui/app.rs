@@ -125,15 +125,7 @@ pub struct SideGroup {
 
 /// The start of the local day `unix` falls in, in unix seconds.
 pub fn local_midnight(unix: u64) -> u64 {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    tm.tm_hour = 0;
-    tm.tm_min = 0;
-    tm.tm_sec = 0;
-    tm.tm_isdst = -1;
-    let midnight = unsafe { libc::mktime(&mut tm) };
-    if midnight < 0 || midnight as u64 > unix { unix - unix % 86_400 } else { midnight as u64 }
+    equipe_providers::platform::local_midnight(unix).filter(|midnight| *midnight <= unix).unwrap_or(unix - unix % 86_400)
 }
 
 /// The side list's groups.
@@ -2441,7 +2433,7 @@ impl App {
             if key.code == KeyCode::Char('o')
                 && let Some(preview) = &approval.preview
             {
-                let _ = std::process::Command::new("open").arg(preview).spawn();
+                let _ = equipe_providers::platform::open(preview);
                 return Vec::new();
             }
         }

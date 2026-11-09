@@ -511,8 +511,8 @@ pub fn misplaced() -> Option<Misplaced> {
 /// runs is a copy), the Applications folder to move it to.
 pub fn reveal() {
     let _ = match (misplaced(), bundle()) {
-        (Some(Misplaced::Translocated) | None, _) | (_, None) => std::process::Command::new("open").arg("/Applications").spawn(),
-        (_, Some(bundle)) => std::process::Command::new("open").arg("-R").arg(bundle).spawn(),
+        (Some(Misplaced::Translocated) | None, _) | (_, None) => equipe_providers::platform::open("/Applications"),
+        (_, Some(bundle)) => equipe_providers::platform::reveal(bundle),
     };
 }
 
@@ -559,7 +559,7 @@ pub fn open_log() {
         if !path.exists() {
             log("(opened from settings)");
         }
-        let _ = std::process::Command::new("open").arg(path).spawn();
+        let _ = equipe_providers::platform::open(path);
     }
 }
 

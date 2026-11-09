@@ -24,6 +24,7 @@ pub const BUNDLE_ID: &str = "im.equipe.desktop-helper";
 pub const LABEL: &str = BUNDLE_ID;
 pub const APP_NAME: &str = "equipe Desktop Helper";
 pub const EXECUTABLE: &str = "equipe-desktop-helper";
+#[cfg(target_os = "macos")]
 const CERT_NAME: &str = "equipe Desktop Helper (self-signed)";
 
 /// How the helper is signed.
@@ -66,6 +67,7 @@ fn signer_file(home: &Path) -> PathBuf {
     helper::dir(home).join("signer")
 }
 
+#[cfg(target_os = "macos")]
 fn signing_dir(home: &Path) -> PathBuf {
     helper::dir(home).join("signing")
 }
@@ -291,6 +293,7 @@ fn sign(home: &Path, app: &Path, signer: &Signer) -> Result<(), String> {
 
 /// The self-signed certificate's keychain and SHA-1, made on first use. The
 /// key never leaves the keychain; nothing is marked trusted.
+#[cfg(target_os = "macos")]
 fn self_signed(home: &Path) -> Result<(String, String), String> {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = signing_dir(home);
@@ -343,6 +346,11 @@ fn self_signed(home: &Path) -> Result<(String, String), String> {
         .ok_or("The signing certificate has no SHA-1 hash")?
         .to_owned();
     Ok((keychain_s, hash))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn self_signed(_home: &Path) -> Result<(String, String), String> {
+    Err("desktop control signing unsupported on Windows yet".into())
 }
 
 #[cfg(test)]

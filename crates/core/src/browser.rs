@@ -38,8 +38,10 @@ fn ensure_state(home: &Path) -> PathBuf {
     let state = state_file(home);
     if !state.is_file() {
         let _ = std::fs::create_dir_all(&dir);
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
         let _ = std::fs::write(&state, r#"{"cookies":[],"origins":[]}"#);
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     }
     state
@@ -120,6 +122,7 @@ pub struct Running {
     pub last_used: std::time::Instant,
 }
 
+#[cfg_attr(windows, allow(clippy::large_enum_variant))]
 enum Kind {
     /// A Chrome of its own, with a profile of its own.
     Own(tokio::process::Child),
@@ -135,7 +138,7 @@ impl Drop for Running {
         match &self.kind {
             Kind::Own(child) => {
                 if let Some(pid) = child.id() {
-                    crate::group::end(pid, libc::SIGTERM);
+                    crate::group::end(pid, crate::group::Signal::Terminate);
                 }
             }
             Kind::Lane { id, host } => {
@@ -413,7 +416,6 @@ impl Host {
     /// the sign-ins members' own browsers kept. What it says comes on
     /// `events`; its pictures go to `hub`.
     pub fn start(npx: &Path, home: &Path, hub: &std::sync::Arc<Hub>, events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> std::io::Result<SharedHost> {
-        use std::os::unix::process::CommandExt as _;
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
         let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE);
@@ -423,7 +425,8 @@ impl Host {
         let profile = host_profile(home);
         std::fs::create_dir_all(&profile)?;
         let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join("browser").join("host.log"))?;
-        let mut child = std::process::Command::new(npx)
+        let mut command = std::process::Command::new(npx);
+        command
             .args(["-y", "-p", PLAYWRIGHT_PACKAGE, "node"])
             .arg(&script)
             .arg(&profile)
@@ -431,9 +434,13 @@ impl Host {
             .env("EQUIPE_FIRST_PAGE", first_page_id(std::time::SystemTime::now()).to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(log)
-            .process_group(0)
-            .spawn()?;
+            .stderr(log);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let hub = hub.clone();
@@ -530,7 +537,7 @@ fn read_host(mut out: impl std::io::Read, hub: &Hub, events: &tokio::sync::mpsc:
 
 impl Drop for Host {
     fn drop(&mut self) {
-        crate::group::end(self.child.id(), libc::SIGTERM);
+        crate::group::end(self.child.id(), crate::group::Signal::Terminate);
     }
 }
 
@@ -942,14 +949,11 @@ pub fn launch(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
         .collect();
     // Every turn's connection shares the one browser — its tabs and sign-ins.
     args.extend(["--port".into(), port.to_string(), "--host".into(), "localhost".into(), "--shared-browser-context".into()]);
-    let child = tokio::process::Command::new(npx)
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()?;
+    let mut command = tokio::process::Command::new(npx);
+    command.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command.kill_on_drop(true).spawn()?;
     Ok(Running { kind: Kind::Own(child), port, shown, last_used: std::time::Instant::now() })
 }
 

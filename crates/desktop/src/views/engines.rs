@@ -756,6 +756,6 @@ fn open_terminal(command: &str) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     }
-    let opened = std::process::Command::new("open").arg(&file).status().map_err(|e| e.to_string())?;
+    let opened = equipe_providers::platform::open_status(&file).map_err(|e| e.to_string())?;
     if opened.success() { Ok(()) } else { Err(format!("open {}", opened)) }
 }
