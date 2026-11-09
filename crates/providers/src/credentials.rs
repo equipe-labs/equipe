@@ -122,10 +122,10 @@ fn protect(bytes: &[u8]) -> io::Result<Vec<u8>> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData};
     let size = bytes.len().try_into().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "credential is too large"))?;
-    let mut input = CRYPT_INTEGER_BLOB { cbData: size, pbData: bytes.as_ptr().cast_mut() };
+    let input = CRYPT_INTEGER_BLOB { cbData: size, pbData: bytes.as_ptr().cast_mut() };
     let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
     // SAFETY: input borrows `bytes`; DPAPI allocates output, copied and freed below.
-    if unsafe { CryptProtectData(&mut input, std::ptr::null(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) } == 0 {
+    if unsafe { CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) } == 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: CryptProtectData returned a valid LocalAlloc allocation.
@@ -145,10 +145,10 @@ fn unprotect(bytes: &[u8]) -> io::Result<(Vec<u8>, bool)> {
     use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData};
     let Some(encrypted) = bytes.strip_prefix(DPAPI_MAGIC) else { return Ok((bytes.to_vec(), true)) };
     let size = encrypted.len().try_into().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "encrypted credential is too large"))?;
-    let mut input = CRYPT_INTEGER_BLOB { cbData: size, pbData: encrypted.as_ptr().cast_mut() };
+    let input = CRYPT_INTEGER_BLOB { cbData: size, pbData: encrypted.as_ptr().cast_mut() };
     let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
     // SAFETY: input borrows `encrypted`; DPAPI allocates output, copied and freed below.
-    if unsafe { CryptUnprotectData(&mut input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) } == 0 {
+    if unsafe { CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) } == 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: CryptUnprotectData returned a valid LocalAlloc allocation.
