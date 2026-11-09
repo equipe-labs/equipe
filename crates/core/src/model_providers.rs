@@ -129,7 +129,7 @@ pub fn saved_key(home: &Path, id: &str) -> Option<String> {
     #[cfg(windows)]
     {
         let account = equipe_providers::windows_credentials::scoped_account(home, id);
-        return equipe_providers::windows_credentials::get(WINDOWS_SERVICE, &account).ok().flatten().and_then(|bytes| String::from_utf8(bytes).ok()).map(|key| key.trim().to_owned()).filter(|key| !key.is_empty());
+        equipe_providers::windows_credentials::get(WINDOWS_SERVICE, &account).ok().flatten().and_then(|bytes| String::from_utf8(bytes).ok()).map(|key| key.trim().to_owned()).filter(|key| !key.is_empty())
     }
     #[cfg(not(windows))]
     std::fs::read_to_string(key_path(home, id)).ok().map(|k| k.trim().to_owned()).filter(|k| !k.is_empty())
@@ -140,7 +140,7 @@ pub fn save_key(home: &Path, id: &str, key: &str) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         let account = equipe_providers::windows_credentials::scoped_account(home, id);
-        return equipe_providers::windows_credentials::set(WINDOWS_SERVICE, &account, key.trim().as_bytes());
+        equipe_providers::windows_credentials::set(WINDOWS_SERVICE, &account, key.trim().as_bytes())
     }
     #[cfg(not(windows))]
     {
@@ -167,7 +167,7 @@ pub fn forget_key(home: &Path, id: &str) -> std::io::Result<bool> {
     #[cfg(windows)]
     {
         let account = equipe_providers::windows_credentials::scoped_account(home, id);
-        return equipe_providers::windows_credentials::delete(WINDOWS_SERVICE, &account);
+        equipe_providers::windows_credentials::delete(WINDOWS_SERVICE, &account)
     }
     #[cfg(not(windows))]
     match std::fs::remove_file(key_path(home, id)) {
