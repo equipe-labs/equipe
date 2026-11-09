@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   windows:
-    name: Windows core + providers
+    name: Windows engines + tools
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -32,9 +32,19 @@ jobs:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo check -p equipe-core -p equipe-providers -p equipe-protocol --locked
-      - run: cargo build -p equipe-core -p equipe-providers -p equipe-protocol --locked
-      - run: cargo clippy -p equipe-core -p equipe-providers -p equipe-protocol --locked -- -D warnings
+      - name: Install real Windows engine CLIs
+        run: npm install --global @anthropic-ai/claude-code @openai/codex
+      - name: Detect fake launchers and the real CLIs
+        env:
+          EQUIPE_TEST_REAL_WINDOWS_CLIS: "1"
+        run: cargo test -p equipe-providers --locked
+      - run: cargo test -p equipe-core --lib --locked
+      - name: TP-5 fake engine ticket and accept_work
+        run: cargo test -p equipe-core --test accept the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_themselves --locked
+      - run: cargo test -p equipe-desktop-control --locked
+      - run: cargo check -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
+      - run: cargo build -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
+      - run: cargo clippy -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})

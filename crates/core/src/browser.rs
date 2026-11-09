@@ -93,6 +93,14 @@ fn max_file(home: &Path) -> PathBuf {
 }
 
 fn memory_gb() -> usize {
+    #[cfg(windows)]
+    let bytes = std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    #[cfg(not(windows))]
     let bytes = std::process::Command::new("sysctl")
         .args(["-n", "hw.memsize"])
         .output()
@@ -431,6 +439,7 @@ impl Host {
             .arg(&script)
             .arg(&profile)
             .arg(&state)
+            .env("EQUIPE_BROWSER_CHANNEL", browser_channel())
             .env("EQUIPE_FIRST_PAGE", first_page_id(std::time::SystemTime::now()).to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -1104,12 +1113,70 @@ pub fn server(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
 /// automation switch and with automation hidden from pages, which Google
 /// otherwise answers by refusing to sign anyone in; `--test-type` keeps Chrome
 /// from warning about that flag in a bar across every window.
-const MCP_CONFIG: &str = r#"{"browser":{"browserName":"chromium","launchOptions":{"channel":"chrome","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled","--test-type"]}}}"#;
+fn browser_channel() -> &'static str {
+    if std::env::var("EQUIPE_BROWSER_CHANNEL").is_ok_and(|v| v.eq_ignore_ascii_case("msedge")) {
+        return "msedge";
+    }
+    #[cfg(windows)]
+    if installed_browsers().iter().all(|(channel, _)| *channel != "chrome")
+        && installed_browsers().iter().any(|(channel, _)| *channel == "msedge")
+    {
+        return "msedge";
+    }
+    "chrome"
+}
+
+/// Chrome and Edge executables in Windows' per-machine and per-user install
+/// locations. Playwright receives the channel name; these paths let equipe
+/// choose Edge when Chrome is absent without borrowing either browser's live
+/// profile.
+pub fn installed_browsers() -> Vec<(&'static str, PathBuf)> {
+    #[cfg(windows)]
+    {
+        let mut roots = Vec::new();
+        for key in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
+            if let Some(root) = std::env::var_os(key).filter(|p| !p.is_empty()) {
+                roots.push(PathBuf::from(root));
+            }
+        }
+        let mut found = Vec::new();
+        for root in roots {
+            for (channel, suffix) in [
+                ("chrome", "Google/Chrome/Application/chrome.exe"),
+                ("msedge", "Microsoft/Edge/Application/msedge.exe"),
+            ] {
+                let path = root.join(suffix);
+                if path.is_file() && !found.iter().any(|(_, p)| p == &path) {
+                    found.push((channel, path));
+                }
+            }
+        }
+        found
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// The browsers' normal Windows profile roots. equipe deliberately uses its
+/// own profile below `EQUIPE_HOME/browser`: opening a browser's live Default
+/// profile concurrently can corrupt it and would bypass equipe's sign-in gate.
+#[cfg(windows)]
+pub fn windows_profile_roots() -> Vec<(&'static str, PathBuf)> {
+    let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|p| !p.is_empty()).map(PathBuf::from) else { return Vec::new() };
+    vec![
+        ("chrome", local.join("Google/Chrome/User Data")),
+        ("msedge", local.join("Microsoft/Edge/User Data")),
+    ]
+}
 
 fn mcp_config(home: &Path) -> PathBuf {
     let path = home.join("browser").join("mcp-config.json");
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(MCP_CONFIG) {
-        let _ = std::fs::write(&path, MCP_CONFIG);
+    let config = format!(
+        r#"{{"browser":{{"browserName":"chromium","launchOptions":{{"channel":"{}","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled","--test-type"]}}}}}}"#,
+        browser_channel()
+    );
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(config.as_str()) {
+        let _ = std::fs::write(&path, config);
     }
     path
 }
@@ -1128,8 +1195,7 @@ pub fn sign_in_script(home: &Path) -> PathBuf {
 
 /// `npx` on PATH: the browser needs Node.js.
 pub fn find_npx() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join("npx")).find(|p| p.is_file())
+    equipe_providers::tools_path::find("npx")
 }
 
 /// The sites in a storage state the person is signed in to, by domain.

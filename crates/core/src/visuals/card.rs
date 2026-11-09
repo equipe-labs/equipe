@@ -384,8 +384,14 @@ pub fn chrome() -> Option<PathBuf> {
     if let Some(given) = std::env::var_os("EQUIPE_CHROME") {
         return Some(PathBuf::from(given)).filter(|p| p.is_file());
     }
+    #[cfg(windows)]
+    {
+        return crate::browser::installed_browsers().into_iter().map(|(_, path)| path).next();
+    }
+    #[cfg(not(windows))]
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    [
+    #[cfg(not(windows))]
+    return [
         PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
         home.join("Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
         PathBuf::from("/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
@@ -395,7 +401,9 @@ pub fn chrome() -> Option<PathBuf> {
         PathBuf::from("/usr/bin/chromium-browser"),
     ]
     .into_iter()
-    .find(|p| p.is_file())
+    .find(|p| p.is_file());
+    #[allow(unreachable_code)]
+    None
 }
 
 /// How Chrome is started to draw: headless, a fresh profile (given apart),
