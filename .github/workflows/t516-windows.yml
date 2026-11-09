@@ -32,7 +32,8 @@ jobs:
             foreach ($theme in @("light", "dark")) {
               foreach ($zoom in @(100, 200)) {
                 $prefix = "artifacts/$theme-$zoom"
-                $env:EQUIPE_SCRIPT = "wait:1200;size:1200x760;theme:$theme;zoom:$zoom;chat;wait:250;shot:$prefix-chat.png;board;wait:250;shot:$prefix-board.png;settings:general;wait:250;shot:$prefix-settings.png;quit"
+                $large = if ($zoom -eq 200) { "sidebar;wait:250;" } else { "" }
+                $env:EQUIPE_SCRIPT = "wait:1200;size:1200x760;theme:$theme;zoom:$zoom;$($large)chat;wait:250;shot:$prefix-chat.png;board;wait:250;shot:$prefix-board.png;settings:general;wait:250;shot:$prefix-settings.png;quit"
                 & ".\target\debug\equipe-desktop.exe"
                 if ($LASTEXITCODE -ne 0) { throw "desktop snapshot exited $LASTEXITCODE" }
               }
