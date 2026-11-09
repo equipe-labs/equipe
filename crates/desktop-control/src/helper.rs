@@ -273,7 +273,7 @@ pub async fn call(home: &Path, member: &str, tool: &str, arguments: &Value) -> T
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
 
