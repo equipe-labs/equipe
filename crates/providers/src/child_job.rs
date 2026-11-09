@@ -10,6 +10,11 @@ use std::io;
 #[cfg(windows)]
 pub(crate) struct ChildJob(windows_sys::Win32::Foundation::HANDLE);
 
+// A Job Object handle is an owned kernel handle. Windows permits using and
+// closing it from any thread; this wrapper never exposes or aliases it.
+#[cfg(windows)]
+unsafe impl Send for ChildJob {}
+
 #[cfg(not(windows))]
 pub(crate) struct ChildJob;
 

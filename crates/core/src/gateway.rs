@@ -15,11 +15,7 @@ use equipe_protocol::rpc::{self, Hello, HelloParams, Message, ToolCall, ToolResu
 use equipe_protocol::{Command, Event};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
-use tokio::net::unix::OwnedWriteHalf;
-#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
-#[cfg(windows)]
-use tokio::io::WriteHalf as OwnedWriteHalf;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
@@ -253,7 +249,10 @@ fn restrict(path: &Path, mode: u32) -> io::Result<()> {
 #[cfg(windows)]
 fn restrict(_path: &Path, _mode: u32) -> io::Result<()> { Ok(()) }
 
-async fn write_line(writer: &mut OwnedWriteHalf, message: &Message) -> io::Result<()> {
+async fn write_line<W>(writer: &mut W, message: &Message) -> io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
     writer.write_all(message.to_line().as_bytes()).await
 }
 
@@ -681,9 +680,10 @@ async fn serve_client(
 /// A browser panel's stream (`equipe_protocol::stream`): frames of the page it
 /// watches, as fast as it draws them and no faster than it asks; its input,
 /// straight to the page.
-async fn serve_stream<R>(mut reader: R, mut writer: OwnedWriteHalf, hub: std::sync::Arc<crate::browser::Hub>, quality: u8)
+async fn serve_stream<R, W>(mut reader: R, mut writer: W, hub: std::sync::Arc<crate::browser::Hub>, quality: u8)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin,
 {
     use equipe_protocol::stream::{self, Pacer, StreamIn};
     use tokio::io::AsyncReadExt as _;
