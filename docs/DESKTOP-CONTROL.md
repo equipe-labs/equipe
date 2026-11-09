@@ -1,5 +1,11 @@
 # Desktop control
 
+> **Windows (first port):** desktop control is deliberately unavailable. The
+> CLI and daemon return “Desktop control isn't available on Windows yet” rather
+> than showing macOS Accessibility instructions or silently doing nothing.
+> Implementing capture, input, window targeting, and the send gate with Windows
+> UI Automation is follow-up work; browser control is available independently.
+
 Members working desktop apps (Microsoft Teams, say) the way they work the
 browser: see the screen, click and type, open apps. This is the T-20 spike
 (ROADMAP principle 2): before building the tools, learn whether equipe's daemon,

@@ -28,8 +28,16 @@ pub const SIGN_IN_WAIT: Duration = Duration::from_secs(15 * 60);
 pub const INSTALL_WAIT: Duration = Duration::from_secs(10 * 60);
 
 /// The line that installs `engine`'s tool: its maker's own installer, which
-/// needs no Node (a new Mac has none) and puts it in `~/.local/bin`.
+/// Windows installers are PowerShell; Unix installers are sh.
 pub fn installer(engine: Engine) -> &'static str {
+    #[cfg(windows)]
+    return match engine {
+        Engine::Claude => "irm https://claude.ai/install.ps1 | iex",
+        // Codex's standalone installer is currently documented for macOS and
+        // Linux; npm is the official Windows installation path.
+        Engine::Codex => "npm install -g @openai/codex",
+    };
+    #[cfg(not(windows))]
     match engine {
         Engine::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
         Engine::Codex => "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
@@ -48,7 +56,7 @@ pub async fn install(engine: Engine) -> equipe_protocol::InstallStep {
 /// the one equipe runs; when it isn't there, the installer puts it in.
 pub async fn install_or_update(engine: Engine, claude_binary: &str) -> equipe_protocol::InstallStep {
     if engine == Engine::Claude {
-        let mut update = Command::new(claude_binary);
+        let mut update = Command::new(equipe_providers::tools_path::resolved(claude_binary));
         update.arg("update");
         if let Some(step) = run_with(update, INSTALL_WAIT).await {
             return step;
@@ -57,12 +65,23 @@ pub async fn install_or_update(engine: Engine, claude_binary: &str) -> equipe_pr
     install(engine).await
 }
 
-/// Run `line` in `sh`: done when it exits well, else failed with its last
+/// Run `line` in the platform's installer shell: done when it exits well,
+/// else failed with its last
 /// words (or the wait run out).
 pub async fn install_with(line: &str, wait: Duration) -> equipe_protocol::InstallStep {
-    let mut sh = Command::new("/bin/sh");
-    sh.args(["-c", line]);
-    run_with(sh, wait).await.unwrap_or_else(|| equipe_protocol::InstallStep::Failed { detail: "/bin/sh not found".into() })
+    #[cfg(windows)]
+    let (shell, missing) = {
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", line]);
+        (command, "PowerShell not found")
+    };
+    #[cfg(not(windows))]
+    let (shell, missing) = {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", line]);
+        (command, "/bin/sh not found")
+    };
+    run_with(shell, wait).await.unwrap_or_else(|| equipe_protocol::InstallStep::Failed { detail: missing.into() })
 }
 
 /// Run `command` to its end: done when it exits well, else failed with its
@@ -93,7 +112,8 @@ const ASK_WAIT: Duration = Duration::from_secs(20);
 /// The `codex` to run: `$EQUIPE_CODEX` (tests, an install off the PATH), else
 /// the one on the PATH.
 pub fn codex_binary() -> String {
-    std::env::var("EQUIPE_CODEX").ok().filter(|b| !b.is_empty()).unwrap_or_else(|| "codex".to_owned())
+    let binary = std::env::var("EQUIPE_CODEX").ok().filter(|b| !b.is_empty()).unwrap_or_else(|| "codex".to_owned());
+    equipe_providers::tools_path::resolved(&binary).to_string_lossy().into_owned()
 }
 
 /// Claude Code: what `claude auth status` says of itself.
@@ -113,7 +133,7 @@ pub async fn claude(binary: &str) -> EngineStatus {
 /// login (`equipe login codex`) is kept too.
 pub async fn codex(binary: &str, store: &CredentialStore) -> EngineStatus {
     let legacy = matches!(store.load("openai"), Ok(Some(cred)) if cred.method == AuthMethod::OauthSubscription);
-    let asked = Command::new(binary).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    let asked = Command::new(equipe_providers::tools_path::resolved(binary)).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
     let mut status = match tokio::time::timeout(ASK_WAIT, asked).await {
         Err(_) => EngineStatus { detail: Some(format!("`{binary} login status` didn't answer in {}s", ASK_WAIT.as_secs())), ..EngineStatus::new(Engine::Codex, EngineState::Unknown) },
         Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => EngineStatus::new(Engine::Codex, EngineState::NotInstalled),
@@ -262,7 +282,7 @@ impl LoginOutput {
 /// each step as it comes; the last step is how it ended. Dropped, the
 /// process goes with it.
 pub async fn codex_login(binary: &str, device: bool, tell: impl Fn(SignInStep)) -> SignInStep {
-    let mut command = Command::new(binary);
+    let mut command = Command::new(equipe_providers::tools_path::resolved(binary));
     command.arg("login");
     if device {
         command.arg("--device-auth");
@@ -302,7 +322,7 @@ pub async fn codex_login(binary: &str, device: bool, tell: impl Fn(SignInStep)) 
 
 /// `codex logout`: the tool forgets its own login.
 pub async fn codex_logout(binary: &str) -> Result<(), String> {
-    let run = Command::new(binary).arg("logout").stdin(Stdio::null()).kill_on_drop(true).output();
+    let run = Command::new(equipe_providers::tools_path::resolved(binary)).arg("logout").stdin(Stdio::null()).kill_on_drop(true).output();
     match tokio::time::timeout(ASK_WAIT, run).await {
         Err(_) => Err(format!("`{binary} logout` didn't answer in {}s", ASK_WAIT.as_secs())),
         Ok(Err(err)) => Err(err.to_string()),
@@ -350,9 +370,15 @@ mod tests {
 
     #[test]
     fn engines_install_with_their_makers_installers_never_npm() {
+        #[cfg(not(windows))]
         for engine in [Engine::Claude, Engine::Codex] {
             assert!(installer(engine).starts_with("curl -fsSL https://"), "{}", installer(engine));
             assert!(!installer(engine).contains("npm"));
+        }
+        #[cfg(windows)]
+        {
+            assert!(installer(Engine::Claude).contains("install.ps1"));
+            assert_eq!(installer(Engine::Codex), "npm install -g @openai/codex");
         }
     }
 

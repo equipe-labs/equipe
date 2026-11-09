@@ -211,7 +211,7 @@ pub async fn call(home: &Path, member: &str, tool: &str, arguments: &Value) -> T
 
 #[cfg(windows)]
 pub async fn call(_home: &Path, _member: &str, _tool: &str, _arguments: &Value) -> ToolResult {
-    ToolResult::error("desktop control unsupported on Windows yet")
+    ToolResult::error(crate::WINDOWS_UNAVAILABLE)
 }
 
 #[cfg(all(test, unix))]

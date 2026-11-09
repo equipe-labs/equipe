@@ -12,7 +12,7 @@ const { chromium } = require(require.resolve('playwright', { paths: roots }));
 
 (async () => {
   const browser = await chromium.launch({
-    channel: 'chrome',
+    channel: process.env.EQUIPE_BROWSER_CHANNEL || 'chrome',
     headless: process.env.EQUIPE_SIGN_IN_HEADLESS === '1',
     ignoreDefaultArgs: ['--enable-automation'],
     // The second keeps Chrome from warning about the first in a bar.

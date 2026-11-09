@@ -353,7 +353,7 @@ fn self_signed(_home: &Path) -> Result<(String, String), String> {
     Err("desktop control signing unsupported on Windows yet".into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
