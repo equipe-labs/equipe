@@ -215,13 +215,18 @@ impl Uploads {
     }
 
     fn start(&self, device: &str, upload_id: &str) -> Result<PathBuf, String> {
+        #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt as _;
         let dir = partial_dir(&self.home);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         restrict(&gateway::uploads_dir(&self.home))?;
         restrict(&dir)?;
         let path = dir.join(format!("{device}-{upload_id}"));
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        options.open(&path).map_err(|e| e.to_string())?;
         Ok(path)
     }
 
@@ -359,8 +364,13 @@ fn partial_dir(home: &Path) -> PathBuf {
 }
 
 fn restrict(dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())
+    }
+    #[cfg(windows)]
+    { let _ = dir; Ok(()) }
 }
 
 fn valid_id(id: &str) -> bool {
