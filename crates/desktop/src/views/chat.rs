@@ -12,10 +12,12 @@
 //! `crate::render`'s; this file lays the rows out.
 
 use equipe_core::t;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(feature = "snapshot")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use equipe_core::protocol::{Engine, SessionId};
 use gpui_kit::base::SelectableText;
@@ -74,6 +76,114 @@ const PART_ROW: u32 = 1 << 21;
 /// The side panel's width; the conversation keeps the rest.
 const SIDE: f32 = 420.;
 
+#[cfg(feature = "snapshot")]
+static CONVERSATION_RENDERS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "snapshot")]
+static BLOCK_DERIVATIONS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "snapshot")]
+pub(crate) fn perf_counts() -> (u64, u64, u64) {
+    (
+        CONVERSATION_RENDERS.load(Ordering::Relaxed),
+        BLOCK_DERIVATIONS.load(Ordering::Relaxed),
+        crate::chapters::builds(),
+    )
+}
+
+struct ConversationDerived {
+    blocks_working: bool,
+    replying: bool,
+    retry_at: Option<usize>,
+    latest_reply: Option<usize>,
+    turn_ends: Rc<HashSet<usize>>,
+    chapters: Rc<Vec<crate::chapters::Chapter>>,
+    said_at: Rc<Vec<u64>>,
+    said_wake_at: Cell<Option<u64>>,
+    background: Option<String>,
+    hand_overs: Rc<Vec<String>>,
+    sign_in: Option<(usize, Engine, bool)>,
+    turns: Rc<Vec<u32>>,
+}
+
+impl Default for ConversationDerived {
+    fn default() -> Self {
+        Self {
+            blocks_working: false,
+            replying: false,
+            retry_at: None,
+            latest_reply: None,
+            turn_ends: Rc::default(),
+            chapters: Rc::default(),
+            said_at: Rc::default(),
+            said_wake_at: Cell::new(None),
+            background: None,
+            hand_overs: Rc::default(),
+            sign_in: None,
+            turns: Rc::default(),
+        }
+    }
+}
+
+impl ConversationDerived {
+    fn of(blocks: &[Block], at: &[Option<u64>], now: u64) -> Self {
+        #[cfg(feature = "snapshot")]
+        BLOCK_DERIVATIONS.fetch_add(1, Ordering::Relaxed);
+        let blocks_working = blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. } | Block::Thinking(_)));
+        let retry_at = (!blocks_working)
+            .then(|| blocks.iter().rposition(|b| matches!(b, Block::Reply { .. })))
+            .flatten()
+            .filter(|&ix| blocks[..ix].iter().any(|b| matches!(b, Block::User(_))));
+        let latest_reply = blocks.iter().rposition(|b| matches!(b, Block::Reply { live: false, .. }));
+        let turn_ends = Rc::new(turn_ends(blocks));
+        let said_at: Rc<Vec<u64>> = Rc::new((0..blocks.len()).filter_map(|ix| said_of(blocks, at, &turn_ends, ix)).collect());
+        let said_wake_at = Cell::new(said_change_at(&said_at, now));
+        let background = blocks
+            .iter()
+            .filter_map(|b| if let Block::Steps(lines) = b { Some(lines) } else { None })
+            .flatten()
+            .filter(|line| line.background && line.status == Status::Running)
+            .map(|line| line.text())
+            .next_back();
+        let hand_overs = Rc::new(
+            blocks
+                .iter()
+                .filter_map(|b| if let Block::HandOver { name, live: true, .. } = b { Some(name.clone()) } else { None })
+                .collect(),
+        );
+        let sign_in = super::signin::live(blocks).map(|(ix, engine)| {
+            let went_on = blocks[ix + 1..].iter().any(|b| matches!(b, Block::Reply { .. }));
+            (ix, engine, went_on)
+        });
+        let turns = Rc::new(
+            blocks
+                .iter()
+                .filter_map(|b| if let Block::YourTurn { ticket, live: true, .. } = b { Some(*ticket) } else { None })
+                .collect(),
+        );
+        Self {
+            blocks_working,
+            replying: blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. })),
+            retry_at,
+            latest_reply,
+            turn_ends,
+            chapters: Rc::new(crate::chapters::of(blocks)),
+            said_at,
+            said_wake_at,
+            background,
+            hand_overs,
+            sign_in,
+            turns,
+        }
+    }
+
+    fn said_changes_in(&self, now: u64) -> Option<u64> {
+        if self.said_wake_at.get().is_some_and(|at| at <= now) {
+            self.said_wake_at.set(said_change_at(&self.said_at, now));
+        }
+        self.said_wake_at.get().map(|at| at.saturating_sub(now).max(1))
+    }
+}
+
 /// Whose conversation, the ticket it shows the work of, and the project's
 /// slice of it on screen (`Model::chat_slice`).
 type Shown = (SessionId, Option<u32>, Option<Option<String>>);
@@ -88,6 +198,7 @@ pub struct Chat {
     /// the others, unless a more pressing one is there.
     pub dock_bring: std::cell::Cell<bool>,
     pub blocks: Rc<Vec<Block>>,
+    derived: ConversationDerived,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
     /// the slice of it.
     shown: Option<Shown>,
@@ -190,6 +301,7 @@ impl Chat {
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
             rail_open: false,
             blocks: Rc::new(Vec::new()),
+            derived: ConversationDerived::default(),
             shown: None,
             about: Rc::default(),
             at: Rc::default(),
@@ -233,6 +345,7 @@ impl Chat {
         self.about = Rc::new(view.about);
         self.at = Rc::new(view.at);
         let old = std::mem::replace(&mut self.blocks, Rc::new(view.blocks));
+        self.derived = ConversationDerived::of(&self.blocks, &self.at, crate::state::now_unix());
         self.seen_revision = model.revision;
         let folds_changed = self.expanded != self.shown_expanded;
         self.shown_expanded = self.expanded;
@@ -283,6 +396,10 @@ impl Chat {
             }
             cx.notify();
         });
+    }
+
+    pub(crate) fn chapters(&self) -> &[crate::chapters::Chapter] {
+        &self.derived.chapters
     }
 
     /// Back to the end, following it again.
@@ -692,7 +809,7 @@ struct Rows {
     /// The latest finished reply: its actions stay in sight.
     latest_reply: Option<usize>,
     /// Replies that end a turn: the actions go under them.
-    turn_ends: HashSet<usize>,
+    turn_ends: Rc<HashSet<usize>>,
     /// Since when the call under way has run.
     step_since: Option<std::time::Instant>,
     /// What runs for the command under way, as the daemon last looked.
@@ -806,10 +923,18 @@ const SAID_LOOKED_AT_LEAST: u64 = 5 * 60;
 
 /// When the times the rows say next read differently (`Just now` becoming
 /// `1 minute ago`, today's becoming `Yesterday`), in seconds from `now`.
+#[cfg(test)]
 fn said_changes_in(blocks: &[Block], at: &[Option<u64>], turn_ends: &HashSet<usize>, now: u64) -> Option<u64> {
     (0..blocks.len())
         .filter_map(|ix| said_of(blocks, at, turn_ends, ix))
         .map(|said| crate::activity::said_when_changes(said, now).saturating_sub(now).clamp(1, SAID_LOOKED_AT_LEAST))
+        .min()
+}
+
+fn said_change_at(said_at: &[u64], now: u64) -> Option<u64> {
+    said_at
+        .iter()
+        .map(|&said| now + crate::activity::said_when_changes(said, now).saturating_sub(now).clamp(1, SAID_LOOKED_AT_LEAST))
         .min()
 }
 
@@ -874,19 +999,19 @@ pub fn conversation_pane(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 }
 
 fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    #[cfg(feature = "snapshot")]
+    CONVERSATION_RENDERS.fetch_add(1, Ordering::Relaxed);
     let p = shell.palette;
     let blocks = shell.chat.blocks.clone();
-    let working = blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. } | Block::Thinking(_)))
-        || shell.model.selected_member().is_some_and(|m| m.presence == Presence::Working);
-    let retry_at = (!working).then(|| blocks.iter().rposition(|b| matches!(b, Block::Reply { .. }))).flatten().filter(|&ix| blocks[..ix].iter().any(|b| matches!(b, Block::User(_))));
-    let latest_reply = blocks.iter().rposition(|b| matches!(b, Block::Reply { live: false, .. }));
-    let turn_ends = turn_ends(&blocks);
+    let derived = &shell.chat.derived;
+    let working = derived.blocks_working || shell.model.selected_member().is_some_and(|m| m.presence == Presence::Working);
+    let retry_at = (!working).then_some(derived.retry_at).flatten();
     // When it was said, under the rows: drawn again when one would read differently.
     let now = crate::state::now_unix();
-    if let Some(secs) = said_changes_in(&blocks, &shell.chat.at, &turn_ends, now) {
+    if let Some(secs) = derived.said_changes_in(now) {
         shell.wake_at(std::time::Instant::now() + std::time::Duration::from_secs(secs), cx);
     }
-    let replying = blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. }));
+    let replying = derived.replying;
     // The conversation sliced, of several projects: each message not of the
     // project in focus says which it was about.
     let names = shell.model.project_names();
@@ -909,8 +1034,8 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         views: shell.chat.views.clone(),
         handle: cx.entity().downgrade(),
         retry_at,
-        latest_reply,
-        turn_ends,
+        latest_reply: derived.latest_reply,
+        turn_ends: derived.turn_ends.clone(),
         step_since: shell.model.convo().and_then(|c| c.step_since()),
         watch,
         base: render::base_dir(shell),
@@ -926,21 +1051,17 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         asking: super::asklist::shown(shell, cx),
         held: {
             let browser = shell.browser.read(cx);
-            shell.chat.blocks.iter().filter_map(|b| if let Block::HandOver { name, live: true, .. } = b { Some(name.clone()) } else { None }).filter(|name| browser.held_by_person(&format!("{}/{name}", shell.model.squad))).collect()
+            derived.hand_overs.iter().filter(|name| browser.held_by_person(&format!("{}/{name}", shell.model.squad))).cloned().collect()
         },
         squad: shell.model.squad.clone(),
         picked: shell.chat.picked.clone(),
         leaving: shell.chat.leaving.clone(),
         side_mark: super::side_chat::marked_row(shell),
         waiting: shell.model.convo().map_or(0, |c| c.queue.items().len()),
-        sign_in: super::signin::live(&shell.chat.blocks).map(|(ix, engine)| (ix, Rc::new(super::signin::Card::of(shell, &shell.chat.blocks, ix, engine)))),
-        turns: shell
-            .chat
-            .blocks
-            .iter()
-            .filter_map(|b| if let Block::YourTurn { ticket, live: true, .. } = b { Some(*ticket) } else { None })
-            .filter_map(|id| yourturn::Card::of(shell, id, cx).map(|c| (id, c)))
-            .collect(),
+        sign_in: derived
+            .sign_in
+            .map(|(ix, engine, went_on)| (ix, Rc::new(super::signin::Card::of(shell, &shell.chat.blocks, ix, engine, went_on)))),
+        turns: derived.turns.iter().filter_map(|&id| yourturn::Card::of(shell, id, cx).map(|card| (id, card))).collect(),
     });
     // While a reply streams: a small pulse over the composer, where the jump
     // button would be (which has the place while you read back).
@@ -949,7 +1070,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // Its words: what it is doing while nothing shows it — a command left
     // running in the background it waits on, or how long the turn has run.
     let doing = {
-        let waiting_on = shell.chat.blocks.iter().filter_map(|b| if let Block::Steps(lines) = b { Some(lines) } else { None }).flatten().filter(|l| l.background && l.status == Status::Running).map(|l| l.text()).next_back();
+        let waiting_on = derived.background.clone();
         let took = shell.model.convo().and_then(|c| c.working_for()).map(crate::convo::elapsed);
         match (waiting_on, took) {
             (Some(what), Some(took)) => t!("chat.doing_waiting_background", what = what, took = took),
@@ -963,7 +1084,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // same word on it, in its own white, over the conversation.
     let jump = (!following).then(|| jump_pill(p, shell.chat.scroller.clone()));
     // The rows' room at each side: wider while the chapter rail shows in it.
-    let side = if super::chapters::shows(&shell.chat.blocks) { super::chapters::GUTTER.max(16. + TEXT_INSET) } else { 16. + TEXT_INSET };
+    let side = if super::chapters::shows(shell.chat.chapters()) { super::chapters::GUTTER.max(16. + TEXT_INSET) } else { 16. + TEXT_INSET };
     // Words selected in it are offered to quote (`views/quote.rs`).
     let scroller = div()
         .flex_1()
@@ -2925,6 +3046,37 @@ mod tests {
     }
 
     #[test]
+    fn a_revision_derives_the_whole_conversations_row_metadata_once() {
+        let now = 1_000_000;
+        let blocks = vec![
+            Block::User("대화 성능을 확인해 줘".into()),
+            reply("확인했어요.", false),
+            Block::HandOver { name: "frontend".into(), why: "브라우저를 봐 주세요".into(), live: true },
+            Block::YourTurn { ticket: 582, news: "검토해 주세요".into(), live: true, look: 0 },
+        ];
+        let derived = super::ConversationDerived::of(&blocks, &[Some(now - 30), Some(now - 5), None, None], now);
+        assert!(!derived.blocks_working && !derived.replying);
+        assert_eq!(derived.retry_at, Some(1));
+        assert_eq!(derived.latest_reply, Some(1));
+        assert!(derived.turn_ends.contains(&1));
+        assert_eq!(derived.chapters.len(), 1);
+        assert_eq!(&*derived.hand_overs, &["frontend"]);
+        assert_eq!(&*derived.turns, &[582]);
+        assert_eq!(&*derived.said_at, &[now - 30, now - 5]);
+
+        let live = super::ConversationDerived::of(&[Block::User("go".into()), reply("working", true)], &[None, None], now);
+        assert!(live.blocks_working && live.replying);
+        assert_eq!(live.retry_at, None);
+
+        let signed_out = [
+            Block::Error { message: "signed out".into(), next: Some(equipe_core::engine_auth::CLAUDE_HINT.into()) },
+            reply("carried on", false),
+        ];
+        let signed_out = super::ConversationDerived::of(&signed_out, &[None, None], now);
+        assert_eq!(signed_out.sign_in, Some((0, equipe_core::protocol::Engine::Claude, true)));
+    }
+
+    #[test]
     fn your_messages_and_a_turns_last_reply_say_when_and_are_looked_at_again_when_that_reads_differently() {
         use super::{said_changes_in, said_of};
         let reply = |t: &str| Block::Reply { text: t.into(), first: false, live: false, worked: None };
@@ -2935,6 +3087,8 @@ mod tests {
         let said: Vec<Option<u64>> = (0..blocks.len()).map(|ix| said_of(&blocks, &at, &ends, ix)).collect();
         assert_eq!(said, [Some(now - 30), None, None, Some(now - 5)], "a reply mid-turn and the steps say nothing");
         assert_eq!(said_changes_in(&blocks, &at, &ends, now), Some(30), "`Just now` until the message is a minute old");
+        let derived = super::ConversationDerived::of(&blocks, &at, now);
+        assert_eq!(derived.said_changes_in(now), said_changes_in(&blocks, &at, &ends, now));
         // Days old: looked at again within minutes all the same — a timer
         // for midnight runs late across the Mac's sleep.
         let old = vec![Some(now - 3 * 86_400); 4];
