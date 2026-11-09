@@ -22,12 +22,12 @@ impl ChildJob {
         use std::ptr::null;
         use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
         use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
             SetInformationJobObject,
         };
         use windows_sys::Win32::System::Threading::{
-            CreateJobObjectW, OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
         };
 
         // SAFETY: all handles and pointers below are created by Win32, checked
