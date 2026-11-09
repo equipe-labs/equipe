@@ -23,7 +23,6 @@ jobs:
           New-Item -ItemType Directory -Force artifacts | Out-Null
           $env:EQUIPE_HOME = "$env:RUNNER_TEMP\t516-home"
           $env:EQUIPE_SQUAD = "demo"
-          $env:EQUIPE_SNAPSHOT_HIDDEN = "1"
           $daemonLog = "$env:RUNNER_TEMP\t516-fake-daemon.log"
           $daemon = Start-Process -FilePath ".\target\debug\examples\fake_daemon.exe" -PassThru -RedirectStandardError $daemonLog
           Start-Sleep -Seconds 2
