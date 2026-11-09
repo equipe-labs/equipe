@@ -22,6 +22,19 @@ fn metrics(home: &Path) -> Metrics {
     m
 }
 
+#[cfg(windows)]
+#[test]
+fn credential_manager_keys_survive_a_new_store() {
+    let home = scratch("credential-manager-restart");
+    let keys = BTreeMap::from([("token".to_owned(), "restart-secret".to_owned())]);
+    let mut first = Keychain::new(&home);
+    first.set("m42", &keys).unwrap();
+    let second = Keychain::new(&home);
+    assert_eq!(second.get("m42").unwrap(), keys);
+    first.delete("m42").unwrap();
+    assert!(second.get("m42").is_err());
+}
+
 fn fake(extra: &[(&str, &str)]) -> ConnectParams {
     let mut settings = BTreeMap::from([("token".to_owned(), TOKEN.to_owned())]);
     settings.extend(extra.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));

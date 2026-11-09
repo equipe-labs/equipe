@@ -37,6 +37,10 @@ pub fn use_git(program: PathBuf) {
 /// A git command for `dir`.
 pub(crate) fn git_command(dir: &Path) -> Command {
     let mut command = Command::new(GIT.get().map_or(Path::new("git"), PathBuf::as_path));
+    // Git for Windows otherwise keeps its legacy MAX_PATH checks even though
+    // Rust passes Unicode paths to Win32's wide APIs.
+    #[cfg(windows)]
+    command.args(["-c", "core.longpaths=true"]);
     command.arg("-C").arg(dir);
     // Nobody is at the daemon's terminal: a prompt for credentials fails rather than waits.
     command.env("GIT_TERMINAL_PROMPT", "0");
@@ -755,6 +759,21 @@ mod tests {
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-q", "-m", "init"]).unwrap();
         dir
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_worktree_handles_unicode_spaces_and_more_than_max_path() {
+        use std::os::windows::ffi::OsStrExt as _;
+
+        let repo = repo();
+        let segment = "긴 경로 with spaces ".repeat(4);
+        let home = scratch("윈도우 사용자").join(&segment).join(&segment).join(&segment);
+        assert!(home.as_os_str().encode_wide().count() > 260, "{}", home.display());
+        let sandbox = create(&repo, &home, "t4-한글", "backend").unwrap();
+        std::fs::write(sandbox.path.join("한글 file.txt"), "works\r\n").unwrap();
+        assert!(sandbox.commit_all("unicode long path").unwrap().is_some());
+        sandbox.remove_worktree().unwrap();
     }
 
     #[test]

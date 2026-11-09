@@ -238,10 +238,23 @@ pub async fn restart(ended: impl FnOnce(u32)) -> io::Result<Restarted> {
 /// Wait for process `pid` to have exited, `wait` at most.
 async fn gone_within(pid: u32, wait: Duration) {
     let deadline = tokio::time::Instant::now() + wait;
-    // SAFETY: kill with signal 0 only asks; `pid` is a single process (> 1).
-    while unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 && tokio::time::Instant::now() < deadline {
+    while process_exists(pid) && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    // SAFETY: kill with signal 0 only asks; `pid` is a single process (> 1).
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn process_exists(pid: u32) -> bool {
+    std::process::Command::new("tasklist.exe")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .is_ok_and(|out| out.status.success() && String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")))
 }
 
 /// What the person is told when the login service couldn't bring the
@@ -306,7 +319,7 @@ pub async fn whereabouts() -> Whereabouts {
     let runs = tokio::time::timeout(ANSWER_WAIT, gateway::runs(&socket)).await.ok().flatten();
     let pid = gateway::daemon_pid(&socket).await;
     let installed = service::installed() && own_home();
-    let job = if installed { service::job() } else { None };
+    let job = if installed { service::job(pid) } else { None };
     Whereabouts {
         how: how_runs(trial(), installed, job.as_ref().and_then(|j| j.pid), pid, runs.as_ref()),
         runs,
@@ -356,6 +369,7 @@ pub fn log_path() -> PathBuf {
 }
 
 fn spawn_detached() -> io::Result<()> {
+    #[cfg(unix)]
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
 
@@ -372,15 +386,21 @@ fn spawn_detached() -> io::Result<()> {
         .stdin(Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out);
-    // SAFETY: setsid is async-signal-safe and touches no memory of ours; it runs
-    // in the child between fork and exec.
+    #[cfg(unix)]
     unsafe {
+        // SAFETY: setsid is async-signal-safe and touches no memory of ours; it
+        // runs in the child between fork and exec.
         command.pre_exec(|| {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
         });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000 | 0x0000_0008 | 0x0000_0200);
     }
     command.spawn().map(|_| ())
 }
@@ -452,6 +472,17 @@ pub async fn stop() -> io::Result<Stopped> {
 
 /// End process `pid`: TERM, and KILL when it is still there a few seconds on.
 async fn end(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        return;
+    }
+    #[cfg(unix)]
+    {
     let pid = pid as libc::pid_t;
     // SAFETY: kill has no memory preconditions; `pid` is a single process (> 1).
     let gone = || unsafe { libc::kill(pid, 0) } != 0;
@@ -469,9 +500,11 @@ async fn end(pid: u32) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    }
 }
 
-/// The daemon as a login service — launchd on macOS, systemd on Linux — so it
+/// The daemon as a login service — launchd on macOS, systemd on Linux, and a
+/// per-user Task Scheduler entry on Windows — so it
 /// starts when the person logs in, comes back if it crashes, and outlives the
 /// terminal or SSH session it was started from. `equipe daemon stop` exits
 /// cleanly, which the service leaves stopped.
@@ -495,7 +528,14 @@ pub mod service {
     }
 
     pub fn installed() -> bool {
-        if cfg!(target_os = "macos") { plist_path().is_file() } else { unit_path().is_file() }
+        #[cfg(target_os = "macos")]
+        return plist_path().is_file();
+        #[cfg(target_os = "linux")]
+        return unit_path().is_file();
+        #[cfg(windows)]
+        return crate::windows_scheduler::installed();
+        #[allow(unreachable_code)]
+        false
     }
 
     /// The executable the service runs: one that survives updates — Homebrew's
@@ -594,11 +634,13 @@ pub mod service {
     /// build would install: another executable, other arguments, another
     /// log. Its PATH isn't asked: the one it was installed from stays.
     pub fn changed(exe: &Path, log: &Path) -> bool {
-        if !cfg!(target_os = "macos") {
-            return false;
-        }
+        #[cfg(not(target_os = "macos"))]
+        return { let _ = (exe, log); false };
+        #[cfg(target_os = "macos")]
+        {
         let Ok(text) = std::fs::read_to_string(plist_path()) else { return true };
         is_changed(&text, &stable_exe(exe), log)
+        }
     }
 
     fn is_changed(text: &str, exe: &Path, log: &Path) -> bool {
@@ -610,16 +652,28 @@ pub mod service {
 
     /// Write the service's file for this build.
     pub fn write(exe: &Path, log: &Path) -> io::Result<()> {
+        #[cfg(windows)]
+        return crate::windows_scheduler::install(exe, &equipe_providers::credentials::equipe_home().join("scheduler-task.xml"));
+        #[cfg(unix)]
+        {
         let exe = stable_exe(exe);
         let path = service_path(std::env::var("PATH").unwrap_or_default(), dirs::home_dir());
         let (file, text) = if cfg!(target_os = "macos") { (plist_path(), plist(&exe, &path, log)) } else { (unit_path(), unit(&exe, &path, log)) };
         std::fs::create_dir_all(file.parent().expect("the service's folder has a parent"))?;
         std::fs::write(&file, text)
+        }
     }
 
     /// Write the service and load it afresh, until its daemon answers. The
     /// running daemon must be stopped first.
     pub async fn install(exe: &Path, log: &Path) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            write(exe, log)?;
+            return crate::windows_scheduler::start();
+        }
+        #[cfg(unix)]
+        {
         write(exe, log)?;
         if cfg!(target_os = "macos") {
             bring_up(crate::launchd::Kick::Restart, true).await.map(drop)
@@ -628,6 +682,7 @@ pub mod service {
         } else {
             Err(io::Error::other(equipe_core::t!("daemon.systemctl_failed")))
         }
+        }
     }
 
     /// Have the service bring the daemon up ([`crate::launchd::bring_up`]),
@@ -635,6 +690,18 @@ pub mod service {
     /// it couldn't. It never starts one on its own.
     pub async fn bring_up(kick: crate::launchd::Kick, changed: bool) -> io::Result<crate::launchd::Up> {
         let socket = super::socket();
+        #[cfg(windows)]
+        {
+            let _ = changed;
+            let started = if kick == crate::launchd::Kick::Restart { crate::windows_scheduler::restart() } else { crate::windows_scheduler::start() };
+            if started.is_ok() && super::answers_within(&socket, std::time::Duration::from_secs(15)).await {
+                let pid = equipe_core::gateway::daemon_pid(&socket).await.unwrap_or_default();
+                return Ok(crate::launchd::Up { pid, reloaded: None, domain: "Task Scheduler".into() });
+            }
+            return Err(started.err().unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, equipe_core::t!("daemon.didnt_start", log = super::log_path().display()))));
+        }
+        #[cfg(unix)]
+        {
         if !cfg!(target_os = "macos") {
             let verb = if kick == crate::launchd::Kick::Restart { "restart" } else { "start" };
             if run("systemctl", &["--user", verb, "equipe"]) && super::answers_within(&socket, std::time::Duration::from_secs(15)).await {
@@ -652,10 +719,25 @@ pub mod service {
                 super::note_in_log(&format!("equipe: the login service didn't bring the daemon up, and none was started on its own: {down:?}"));
                 io::Error::other(super::down_message(&down, super::over_ssh()))
             })
+        }
     }
 
     /// The service's job as its manager tells it, when it holds it.
-    pub fn job() -> Option<crate::launchd::Job> {
+    pub fn job(daemon_pid: Option<u32>) -> Option<crate::launchd::Job> {
+        #[cfg(windows)]
+        {
+            if !crate::windows_scheduler::installed() {
+                return None;
+            }
+            return Some(crate::launchd::Job {
+                state: if daemon_pid.is_some() { "running".into() } else { "ready".into() },
+                pid: daemon_pid,
+                ..Default::default()
+            });
+        }
+        #[cfg(unix)]
+        {
+        let _ = daemon_pid;
         if cfg!(target_os = "macos") {
             let mut launchd = crate::launchd::Launchd { socket: super::socket() };
             return crate::launchd::find(&mut launchd, crate::launchd::uid(), LABEL).map(|(_, job)| job);
@@ -663,6 +745,7 @@ pub mod service {
         let out = Command::new("systemctl").args(["--user", "show", "-p", "MainPID", "--value", "equipe"]).stderr(std::process::Stdio::null()).output().ok()?;
         let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().ok().filter(|p| *p > 0)?;
         Some(crate::launchd::Job { state: "running".into(), pid: Some(pid), ..Default::default() })
+        }
     }
 
     /// Stop the service and remove it. `Ok(false)` when there was none.
@@ -670,12 +753,17 @@ pub mod service {
         if !installed() {
             return Ok(false);
         }
-        if cfg!(target_os = "macos") {
+        #[cfg(windows)]
+        crate::windows_scheduler::uninstall()?;
+        #[cfg(target_os = "macos")]
+        {
             for domain in domains() {
                 let _ = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
             }
             std::fs::remove_file(plist_path())?;
-        } else {
+        }
+        #[cfg(target_os = "linux")]
+        {
             let _ = run("systemctl", &["--user", "disable", "--now", "equipe"]);
             std::fs::remove_file(unit_path())?;
             let _ = run("systemctl", &["--user", "daemon-reload"]);
@@ -724,6 +812,7 @@ pub mod service {
             assert!(is_changed("not a plist", Path::new("/x/a&b/equipe"), log));
         }
 
+        #[cfg(unix)]
         #[test]
         fn a_link_to_the_same_build_is_the_same_program() {
             let dir = std::env::temp_dir().join(format!("eq-svc-link-{}", std::process::id()));

@@ -1213,6 +1213,7 @@ fn incoming(message: Value) -> Option<Incoming> {
 /// One `codex app-server`, spoken to over its standard input and output.
 struct Server {
     child: Child,
+    _child_job: Option<crate::child_job::ChildJob>,
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
     stderr: tokio::task::JoinHandle<String>,
@@ -1241,6 +1242,10 @@ impl Server {
                 )),
                 _ => err.into(),
             })?;
+        // Codex's `workspaceWrite` policy supplies the path allowlist on
+        // Windows; the Job Object makes all of the engine's descendants share
+        // one lifetime and prevents detached commands surviving the turn.
+        let child_job = child.id().map(crate::child_job::ChildJob::assign).transpose()?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let lines = BufReader::new(child.stdout.take().expect("stdout is piped")).lines();
         let mut stderr = child.stderr.take().expect("stderr is piped");
@@ -1249,7 +1254,7 @@ impl Server {
             let _ = stderr.read_to_string(&mut text).await;
             text
         });
-        let mut server = Server { child, stdin, lines, stderr, next_id: 1, early: Vec::new(), stray: Vec::new() };
+        let mut server = Server { child, _child_job: child_job, stdin, lines, stderr, next_id: 1, early: Vec::new(), stray: Vec::new() };
         let hello = json!({
             "clientInfo": { "name": CLIENT_NAME, "title": "equipe", "version": env!("CARGO_PKG_VERSION") },
             "capabilities": { "experimentalApi": false, "requestAttestation": false },
