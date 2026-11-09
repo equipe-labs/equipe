@@ -99,7 +99,7 @@ impl Runtime {
     async fn call_effects(&mut self, id: &str, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
-                Effect::Publish(event) => self.publish(event),
+                Effect::Publish(event) => self.publish(*event),
                 // Exactly what the phone's own submit does (`Command::OnPhone`
                 // around `Command::Submit`) — never read for a decision in words.
                 Effect::Submit { session, text } => {

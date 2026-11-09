@@ -48,7 +48,7 @@ pub enum Effect {
     /// Send `text` to the member as an ordinary submit (from the phone).
     Submit { session: SessionId, text: String },
     /// Tell the screens.
-    Publish(Event),
+    Publish(Box<Event>),
     /// Judge this off the loop, then hand the answer to [`Call::judged`].
     Judge(JudgeInput),
     /// Read the board, put it in words ([`status::speak`]) and hand them to [`Call::tell`].
@@ -102,7 +102,7 @@ impl Call {
             asked: false,
             ended: false,
         };
-        (call, vec![Effect::Publish(started), Effect::Status(status::Ask::Briefing)])
+        (call, vec![Effect::Publish(Box::new(started)), Effect::Status(status::Ask::Briefing)])
     }
 
     pub fn ended(&self) -> bool {
@@ -169,7 +169,7 @@ impl Call {
             self.dispatched.push(Dispatched { to: route.to.clone(), text: route.text.clone(), at: now_ms });
         }
         let reply = j.reply.clone().filter(|r| !r.trim().is_empty()).unwrap_or_else(|| sent_to(&j.routes));
-        out.push(Effect::Publish(Event::CallRoute { squad: self.squad.clone(), call: self.id.clone(), routes: j.routes, by: j.by }));
+        out.push(Effect::Publish(Box::new(Event::CallRoute { squad: self.squad.clone(), call: self.id.clone(), routes: j.routes, by: j.by })));
         out.push(self.say(&reply, SayKind::Reply));
         out
     }
@@ -213,12 +213,12 @@ impl Call {
     }
 
     fn summary_event(&self, ended: CallEnded) -> Effect {
-        Effect::Publish(Event::CallSummary { squad: self.squad.clone(), call: self.id.clone(), dispatched: self.dispatched.clone(), ended })
+        Effect::Publish(Box::new(Event::CallSummary { squad: self.squad.clone(), call: self.id.clone(), dispatched: self.dispatched.clone(), ended }))
     }
 
     fn say(&mut self, text: &str, kind: SayKind) -> Effect {
         self.push(Who::Equipe, text);
-        Effect::Publish(Event::CallSay { squad: self.squad.clone(), call: self.id.clone(), text: text.to_owned(), kind })
+        Effect::Publish(Box::new(Event::CallSay { squad: self.squad.clone(), call: self.id.clone(), text: text.to_owned(), kind }))
     }
 
     /// Keep the last [`TURNS`]; fold the rest into the summary.
@@ -315,7 +315,7 @@ mod tests {
     }
 
     fn events(effects: &[Effect]) -> Vec<&Event> {
-        effects.iter().filter_map(|e| if let Effect::Publish(e) = e { Some(e) } else { None }).collect()
+        effects.iter().filter_map(|e| if let Effect::Publish(e) = e { Some(&**e) } else { None }).collect()
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
     fn opens_with_a_briefing_and_answers_a_question_without_sending() {
         let r = roster();
         let (mut call, started) = Call::new("c".into(), "acme".into(), 0);
-        assert!(matches!(started[..], [Effect::Publish(Event::CallStarted { .. }), Effect::Status(status::Ask::Briefing)]));
+        assert!(matches!(&started[..], [Effect::Publish(e), Effect::Status(status::Ask::Briefing)] if matches!(**e, Event::CallStarted { .. })));
         call.hear("Where are we?", r, 1);
         let fx = call.judged(judged(Intent::Question, vec![]), 2);
         assert!(matches!(fx[..], [Effect::Status(status::Ask::Status)]), "{fx:?}");
