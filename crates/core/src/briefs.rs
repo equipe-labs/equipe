@@ -912,6 +912,7 @@ mod tests {
         crate::squad_home::path(&home, "acme")
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_projects_briefs_then_plans_are_listed_from_the_squads_folder_newest_first_and_nothing_from_outside() {
         let root = scratch("list");
@@ -1001,6 +1002,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(folder.parent().unwrap().parent().unwrap().parent().unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_folder_on_the_way_that_is_a_link_elsewhere_is_refused() {
         let root = scratch("linked");
@@ -1075,6 +1077,7 @@ mod tests {
         std::fs::write(at, text).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn every_project_and_the_squads_own_are_listed_and_found_by_title_or_words() {
         let folder = scratch("all");
@@ -1170,6 +1173,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(folder.parent().unwrap().parent().unwrap().parent().unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_copy_that_is_a_link_out_is_never_removed_and_nothing_else_is_either() {
         let folder = scratch("keep-link");
