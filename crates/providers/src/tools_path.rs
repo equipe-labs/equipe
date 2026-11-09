@@ -19,11 +19,16 @@ const SHELL_WAIT: Duration = Duration::from_secs(3);
 /// The folders installers put tools in: Claude Code's and Codex's own
 /// installers (`~/.local/bin`), Homebrew's, cargo's.
 pub fn usual_dirs(home: &Path) -> Vec<PathBuf> {
-    #[allow(unused_mut)] // extended only by the Windows-specific block below
-    let mut dirs = vec![
+    #[cfg(not(windows))]
+    return vec![
         home.join(".local/bin"),
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
+        home.join(".cargo/bin"),
+    ];
+    #[cfg(windows)]
+    let mut dirs = vec![
+        home.join(".local/bin"),
         home.join(".cargo/bin"),
     ];
     #[cfg(windows)]
@@ -34,6 +39,7 @@ pub fn usual_dirs(home: &Path) -> Vec<PathBuf> {
             dirs.push(PathBuf::from(appdata).join("npm"));
         }
     }
+    #[cfg(windows)]
     dirs
 }
 
@@ -185,6 +191,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn a_bare_finder_path_gains_where_installers_put_tools() {
         let home = Path::new("/Users/someone");
         let path = widened(Some(OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")), &usual_dirs(home));
@@ -195,6 +202,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn each_folder_is_there_once_and_empty_ones_not_at_all() {
         let more = [PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/x/bin"), PathBuf::from("/x/bin")];
         let path = widened(Some(OsStr::new("/opt/homebrew/bin::/usr/bin")), &more);
