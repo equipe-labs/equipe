@@ -3,8 +3,8 @@
 
 #![cfg(windows)]
 
-#[test]
-fn installed_claude_and_codex_are_detected() {
+#[tokio::test]
+async fn installed_claude_and_codex_are_detected_and_started() {
     if std::env::var_os("EQUIPE_TEST_REAL_WINDOWS_CLIS").is_none() {
         eprintln!("skipped: EQUIPE_TEST_REAL_WINDOWS_CLIS isn't set");
         return;
@@ -18,5 +18,11 @@ fn installed_claude_and_codex_are_detected() {
             "Windows launcher: {}",
             found.display()
         );
+        let output = equipe_providers::tools_path::command(binary)
+            .arg("--version")
+            .output()
+            .await
+            .unwrap_or_else(|err| panic!("the installed {binary} CLI did not start: {err}"));
+        assert!(output.status.success(), "{binary} --version: {}", String::from_utf8_lossy(&output.stderr));
     }
 }

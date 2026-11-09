@@ -70,6 +70,30 @@ pub fn resolved(binary: impl AsRef<OsStr>) -> PathBuf {
     find(binary).unwrap_or_else(|| PathBuf::from(binary))
 }
 
+/// Start an installed tool without asking Rust to execute an npm `.cmd`
+/// launcher directly. Recent Rust versions reject some perfectly valid CLI
+/// arguments for batch files; npm's launcher is only a shim around Node, so
+/// invoke the package entry point instead.
+pub fn command(binary: impl AsRef<OsStr>) -> tokio::process::Command {
+    let binary = resolved(binary);
+    #[cfg(windows)]
+    if binary.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("cmd")) {
+        let package = match binary.file_stem().and_then(OsStr::to_str) {
+            Some("claude") => Some(Path::new("node_modules/@anthropic-ai/claude-code/cli.js")),
+            Some("codex") => Some(Path::new("node_modules/@openai/codex/bin/codex.js")),
+            _ => None,
+        };
+        if let Some(entry) = package.map(|entry| binary.parent().unwrap_or_else(|| Path::new("")).join(entry)).filter(|entry| entry.is_file())
+            && let Some(node) = find("node")
+        {
+            let mut command = tokio::process::Command::new(node);
+            command.arg(entry);
+            return command;
+        }
+    }
+    tokio::process::Command::new(binary)
+}
+
 fn find_in(binary: &OsStr, path_env: Option<&OsStr>) -> Option<PathBuf> {
     let path = Path::new(binary);
     let explicit = path.components().count() > 1 || path.is_absolute();

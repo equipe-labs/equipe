@@ -67,17 +67,26 @@ EOF"#;
     write_script(&bin, &script);
     }
     #[cfg(windows)]
-    write_script(
-        &bin,
-        r#"@echo off
-if "%1"=="auth" echo {"loggedIn":true,"authMethod":"claude.ai"} & exit /b 0
-rem A ticket runs in a linked worktree (.git is a file); the PM runs in main.
-if not exist ".git\" echo made by the squad>HERO.md
-echo {"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
-echo {"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}
-echo {"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":3,"output_tokens":1}}
+    {
+        // Match npm's layout so Windows exercises the same `.cmd` -> Node path
+        // as the real Claude Code package, including arguments containing JSON.
+        write_script(&bin, "@echo off\r\nexit /b 1\r\n");
+        let entry = bin.parent().unwrap().join("node_modules/@anthropic-ai/claude-code/cli.js");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        write_script(
+            &entry,
+            r#"const fs = require('fs');
+if (process.argv[2] === 'auth') {
+  console.log('{"loggedIn":true,"authMethod":"claude.ai"}');
+  process.exit(0);
+}
+if (fs.statSync('.git').isFile()) fs.writeFileSync('HERO.md', 'made by the squad\n');
+console.log('{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}');
+console.log('{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}');
+console.log('{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":3,"output_tokens":1}}');
 "#,
-    );
+        );
+    }
     bin
 }
 
