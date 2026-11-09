@@ -1286,6 +1286,7 @@ mod tests {
     }
 
     /// The host's requests, as a hub sends them: a fake host that writes them down.
+    #[cfg(unix)]
     fn recording_hub() -> (std::sync::Arc<Hub>, PathBuf) {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let hub = Hub::new();
@@ -1302,6 +1303,7 @@ mod tests {
     }
 
     /// The sizes the host was asked for, once `wait_for` of them came.
+    #[cfg(unix)]
     fn sizes_sent(log: &Path, wait_for: usize) -> Vec<Value> {
         let read = || -> Vec<Value> {
             let text = std::fs::read_to_string(log).unwrap_or_default();
@@ -1316,6 +1318,7 @@ mod tests {
         read()
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_watched_members_page_is_laid_out_at_the_largest_panel_and_its_own_size_once_unwatched() {
         let small = Fit { w: 520, h: 640, dpr: 2. };

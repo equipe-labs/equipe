@@ -200,6 +200,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn values_land_in_their_file_for_its_owner_alone_and_other_lines_stay() {
         use std::os::unix::fs::PermissionsExt as _;

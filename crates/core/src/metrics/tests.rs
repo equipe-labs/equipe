@@ -170,6 +170,7 @@ async fn a_key_is_never_written_logged_or_answered() {
     assert_eq!(metrics.lock_keys().get("m1").unwrap().get("token").map(String::as_str), Some(TOKEN));
 }
 
+#[cfg(unix)]
 #[test]
 fn the_files_are_the_persons_only() {
     use std::os::unix::fs::PermissionsExt as _;
