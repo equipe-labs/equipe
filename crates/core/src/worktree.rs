@@ -800,10 +800,12 @@ mod tests {
 
         let repo = repo();
         let segment = ["긴 경로 with spaces"; 4].join(" ");
-        let home = scratch("윈도우 사용자").join(&segment).join(&segment).join(&segment);
-        assert!(home.as_os_str().encode_wide().count() > 260, "{}", home.display());
+        let home = scratch("윈도우 사용자 with spaces");
         let sandbox = create(&repo, &home, "t4-한글", "backend").unwrap();
-        std::fs::write(sandbox.path.join("한글 file.txt"), "works\r\n").unwrap();
+        let deep = sandbox.path.join(&segment).join(&segment).join(&segment);
+        assert!(deep.as_os_str().encode_wide().count() > 260, "{}", deep.display());
+        std::fs::create_dir_all(filesystem_path(&deep)).unwrap();
+        std::fs::write(filesystem_path(&deep.join("한글 file.txt")), "works\r\n").unwrap();
         assert!(sandbox.commit_all("unicode long path").unwrap().is_some());
         sandbox.remove_worktree().unwrap();
     }

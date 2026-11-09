@@ -489,8 +489,11 @@ replace this first release's engine-enforced path boundary.
 
 Windows tests create their temporary home beneath a directory containing both
 spaces and Hangul. Git commands receive paths as individual arguments, accept
-CRLF output with `str::lines`, and use extended-length absolute paths for deep
-worktrees rather than depending on the legacy 260-character parser limit.
+CRLF output with `str::lines`, and use extended-length absolute paths plus
+Git's `core.longpaths` for files deeper than the legacy 260-character parser
+limit. The worktree root itself stays below Git for Windows' separate
+`$GIT_DIR` length limit; Git cannot create a worktree whose metadata path
+exceeds that limit even when Win32 extended paths are enabled.
 
 Events fold into a conversation through one shared function
 (`equipe_protocol::Transcript`), used by the journal and every screen alike, so a
