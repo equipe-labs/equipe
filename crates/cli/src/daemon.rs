@@ -602,6 +602,7 @@ pub mod service {
         Command::new(program).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
     }
 
+    #[cfg(target_os = "macos")]
     fn domains() -> [String; 2] {
         let (gui, user) = crate::launchd::domains(crate::launchd::uid());
         [gui, user]
@@ -610,6 +611,7 @@ pub mod service {
     /// What the service runs, and where it writes, as `program` and `log`
     /// would have it: the executable as the system resolves it, so a link
     /// to the same build (Homebrew's `bin/equipe`, an app's) is the same.
+    #[cfg(any(target_os = "macos", test))]
     fn runs(text: &str) -> Option<(PathBuf, Vec<String>, String)> {
         let unescape = |s: &str| s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
         let strings = |within: &str| -> Vec<String> {
@@ -626,6 +628,7 @@ pub mod service {
         Some((exe, args, log))
     }
 
+    #[cfg(any(target_os = "macos", test))]
     fn same_file(a: &Path, b: &Path) -> bool {
         a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
     }
@@ -643,6 +646,7 @@ pub mod service {
         }
     }
 
+    #[cfg(any(target_os = "macos", test))]
     fn is_changed(text: &str, exe: &Path, log: &Path) -> bool {
         match runs(text) {
             Some((installed, args, logged)) => !(same_file(&installed, exe) && args == ["daemon", "run"] && logged == log.to_string_lossy()),
