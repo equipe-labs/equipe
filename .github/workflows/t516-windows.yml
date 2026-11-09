@@ -55,8 +55,13 @@ jobs:
           Start-Service sshd
           New-Item -ItemType Directory -Force "$env:USERPROFILE\.ssh" | Out-Null
           ssh-keygen -q -t ed25519 -N '""' -f "$env:USERPROFILE\.ssh\t516_ed25519"
-          Copy-Item "$env:USERPROFILE\.ssh\t516_ed25519.pub" "C:\ProgramData\ssh\administrators_authorized_keys" -Force
-          icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F" | Out-Host
+          Copy-Item "$env:USERPROFILE\.ssh\t516_ed25519.pub" "$env:USERPROFILE\.ssh\authorized_keys" -Force
+          icacls "$env:USERPROFILE\.ssh\authorized_keys" /inheritance:r /grant "$env:USERNAME`:F" /grant "SYSTEM:F" | Out-Host
+          $config = "C:\ProgramData\ssh\sshd_config"
+          (Get-Content $config) | ForEach-Object {
+            if ($_ -match '^Match Group administrators' -or $_ -match '^\s+AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys') { "# $_" } else { $_ }
+          } | Set-Content $config
+          Restart-Service sshd
           New-Item -ItemType Directory -Force "$env:USERPROFILE\.local\bin" | Out-Null
           $probe = (Resolve-Path ".\target\debug\examples\remote_probe.exe").Path.Replace('\', '/')
           Set-Content -Path "$env:USERPROFILE\.local\bin\equipe" -NoNewline -Value "#!/bin/sh`n`"$probe`" --print-bridge-fixture`n"
