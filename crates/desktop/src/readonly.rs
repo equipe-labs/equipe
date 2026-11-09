@@ -24,11 +24,9 @@
 //! never shown and nothing of the screen is captured.
 
 use std::path::Path;
-#[cfg(unix)]
 use std::time::Duration;
 
 use equipe_core::i18n::Lang;
-#[cfg(unix)]
 use equipe_core::protocol::look::PersonLook;
 use equipe_core::protocol::look::{SeenLook, Theme};
 use equipe_core::protocol::Command;
@@ -329,7 +327,6 @@ pub fn begin() -> Option<&'static Look> {
 }
 
 /// How long the daemon may take to say the person's look.
-#[cfg(unix)]
 const ASK_WAIT: Duration = Duration::from_secs(5);
 
 /// The look of the screen the person used last, asked of the daemon at
