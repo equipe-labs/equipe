@@ -84,7 +84,10 @@ impl Setup {
     }
 
     pub fn cancel(&mut self) {
+        #[cfg(unix)]
         let pid = self.pid.swap(0, Ordering::SeqCst);
+        #[cfg(not(unix))]
+        self.pid.store(0, Ordering::SeqCst);
         self.cancelled = true;
         #[cfg(unix)]
         if pid != 0 {

@@ -458,8 +458,11 @@ fn put_local(home: &Path, payload: &Payload, kind: Kind) -> Result<String, Strin
             if !clone(from, &path) {
                 std::fs::copy(from, &path).map_err(|_| t!("attach.unreadable_file").to_owned())?;
             }
-            use std::os::unix::fs::PermissionsExt as _;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
             let _ = std::fs::File::options().write(true).open(&path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
         }
     }

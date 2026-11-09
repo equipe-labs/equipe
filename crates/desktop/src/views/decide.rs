@@ -327,10 +327,10 @@ impl Shell {
                 return Took::Pass;
             }
         }
-        let Some(k) = rules::key_of(key, m.platform, m.shift) else {
+        let Some(k) = rules::key_of(key, m.secondary(), m.shift) else {
             return if in_other { Took::Typing } else { Took::Pass };
         };
-        if m.platform && k != Key::Next {
+        if m.secondary() && k != Key::Next {
             return Took::Pass;
         }
         if peek && matches!(k, Key::Up | Key::Down | Key::Enter | Key::Esc | Key::Back | Key::Card(_)) && !in_other {

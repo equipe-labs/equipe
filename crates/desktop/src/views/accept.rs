@@ -72,7 +72,7 @@ impl Shell {
     /// ⌘⏎ confirms the card on show: above an empty composer when no other
     /// card has the keys, or picked in the Inbox's peek. True when taken.
     pub fn on_accept_key(&mut self, key: &str, m: &Modifiers, cx: &mut Context<Self>) -> bool {
-        if key != "enter" || !m.platform || m.shift || m.control || m.alt || !self.can_act() {
+        if key != "enter" || !m.secondary() || m.number_of_modifiers() != 1 || !self.can_act() {
             return false;
         }
         let id = match self.screen {

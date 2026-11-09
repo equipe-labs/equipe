@@ -111,7 +111,7 @@ pub fn search<T: Clone>(query: &str, rows: &[(Category, String, T)]) -> Vec<(Cat
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shortcut {
     pub area: &'static str,
-    pub keys: &'static str,
+    pub keys: String,
     pub what: &'static str,
 }
 
@@ -122,7 +122,11 @@ pub fn shortcuts() -> Vec<Shortcut> {
     let compose = t!("settings.keys_compose");
     let requests = t!("settings.keys_requests");
     let board = t!("settings.keys_board");
-    let s = |area, keys, what| Shortcut { area, keys, what };
+    let s = |area, keys, what| Shortcut {
+        area,
+        keys: platform_keys(keys),
+        what,
+    };
     vec![
         s(window, "⌘,", t!("settings.key_settings")),
         s(window, "⌘N", t!("sidebar.new_conversation")),
@@ -132,7 +136,15 @@ pub fn shortcuts() -> Vec<Shortcut> {
         s(window, "⌘⇧B", t!("settings.key_browser")),
         s(window, "⌘⇧L", t!("orchestra.title")),
         s(window, "⌘F", t!("chat.find_placeholder")),
-        s(window, "⌃0–9", t!("board.key_projects")),
+        s(
+            window,
+            if cfg!(windows) {
+                "Alt+0–9"
+            } else {
+                "⌃0–9"
+            },
+            t!("board.key_projects"),
+        ),
         s(window, "⌘+ · ⌘-", t!("settings.key_zoom")),
         s(window, "⌘0", t!("main.menu_actual_size")),
         s(window, "⌘⇧O", t!("settings.key_folds")),
@@ -172,6 +184,21 @@ pub fn shortcuts() -> Vec<Shortcut> {
         s(board, "?", t!("board.keys_title")),
         s(board, "Esc", t!("board.key_back")),
     ]
+}
+
+/// The same semantic shortcut in the convention drawn by this platform.
+pub fn platform_keys(mac: &str) -> String {
+    if cfg!(windows) {
+        mac.replace("⌥⌘", "Ctrl+Alt+")
+            .replace("⇧⌘", "Ctrl+Shift+")
+            .replace("⌘⇧", "Ctrl+Shift+")
+            .replace('⌘', "Ctrl+")
+            .replace('⌃', "Ctrl+")
+            .replace('⌥', "Alt+")
+            .replace('⇧', "Shift+")
+    } else {
+        mac.to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +246,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn every_shortcut_says_what_it_does_and_the_list_has_the_windows_keys() {
         let keys = shortcuts();
         assert!(keys.iter().all(|k| !k.keys.is_empty() && !k.what.is_empty() && !k.area.is_empty()));
@@ -228,5 +256,15 @@ mod tests {
         assert!(!keys.iter().any(|k| k.keys == "⌘0–9"), "⌘0 is actual size; the slices are ⌃0–9");
         // Searchable like any row: by what it does, or by the key itself.
         assert!(keys.iter().any(|k| matches("보드", &format!("{} {}", k.keys, k.what))));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_shortcuts_use_control_and_keep_project_slices_distinct() {
+        let keys = shortcuts();
+        for key in ["Ctrl+,", "Ctrl+K", "Ctrl+B", "Ctrl+Shift+B", "Ctrl+0", "Alt+0–9"] {
+            assert!(keys.iter().any(|shortcut| shortcut.keys == key), "{key} is listed");
+        }
+        assert!(!keys.iter().any(|shortcut| shortcut.keys.contains('⌘')));
     }
 }

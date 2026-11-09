@@ -310,15 +310,15 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .items_center()
         .rounded(px(R_MD))
         .bg(if p.is_dark() { p.wash } else { p.code_bg })
-        .child(step("zoom-out", Icon::Minus, Step::Out, t!("main.menu_zoom_out"), "⌘-", cx))
+        .child(step("zoom-out", Icon::Minus, Step::Out, t!("main.menu_zoom_out"), crate::theme::platform_key("⌘-", "Ctrl+-"), cx))
         .child(div().min_w(px(48.)).text_center().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(zoom::label(now)))
-        .child(step("zoom-in", Icon::Plus, Step::In, t!("main.menu_zoom_in"), "⌘+", cx));
+        .child(step("zoom-in", Icon::Plus, Step::In, t!("main.menu_zoom_in"), crate::theme::platform_key("⌘+", "Ctrl++"), cx));
     h_flex()
         .flex_none()
         .gap_2()
         .items_center()
         .when(now != zoom::ACTUAL, |row| {
-            row.child(ui::button(p, "zoom-actual", Kind::Ghost, t!("main.menu_actual_size")).key("⌘0").on_click(cx.listener(|this, _, window, cx| this.zoom(Step::Actual, window, cx))))
+            row.child(ui::button(p, "zoom-actual", Kind::Ghost, t!("main.menu_actual_size")).key(crate::theme::platform_key("⌘0", "Ctrl+0")).on_click(cx.listener(|this, _, window, cx| this.zoom(Step::Actual, window, cx))))
         })
         .child(pill)
         .into_any_element()
@@ -540,8 +540,9 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx),
     ];
     let telemetry = telemetry_line(shell, cx);
+    let look = if cfg!(target_os = "macos") { dictation_rows(shell, language, dictation, appearance, zoom, cx) } else { vec![language, appearance, zoom] };
     vec![
-        Section::new(t!("settings.section_look"), dictation_rows(shell, language, dictation, appearance, zoom, cx)).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
+        Section::new(t!("settings.section_look"), look).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
         Section::new(t!("settings.section_conversation"), vec![follow, links]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
@@ -948,7 +949,7 @@ fn browser(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let shown = Line::new(t!("settings.browsers_shown"), t!("settings.browsers_shown_desc")).words("headless window").switch(shell, "browsers", shell.model.browsers_shown, connected, |this, on, _, _| this.set_browsers_shown(on), cx);
     let panel = Line::new(t!("settings.browser_panel"), t!("settings.browser_panel_desc"))
         .words("panel ⌘⇧B")
-        .control(ui::button(p, "open-panel", Kind::Secondary, t!("settings.open_panel")).key("⌘⇧B").on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx))));
+        .control(ui::button(p, "open-panel", Kind::Secondary, t!("settings.open_panel")).key(crate::theme::platform_key("⌘⇧B", "Ctrl+Shift+B")).on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx))));
     let sign_in = Line::new(t!("settings.sign_in"), t!("settings.sign_in_desc")).words("login account equipe browser").control(command_chip(p, "copy-browser", "equipe browser"));
     let pop_out = Line::new(t!("settings.pop_out"), t!("settings.pop_out_desc")).words("chrome passkey");
     vec![
@@ -962,8 +963,8 @@ fn keys(shell: &Shell) -> Vec<Section> {
     let p = shell.palette;
     let mut sections: Vec<Section> = Vec::new();
     for key in rules::shortcuts() {
-        let chips = h_flex().flex_none().gap_1().children(key.keys.split(" · ").map(|k| kbd(p, k).h(px(22.)).px(px(7.)).text_size(px(12.)).text_color(p.text2)));
-        let mut line = Line::new(key.what, "").words(key.keys).control(chips);
+        let chips = h_flex().flex_none().gap_1().children(key.keys.split(" · ").map(|k| kbd(p, k.to_owned()).h(px(22.)).px(px(7.)).text_size(px(12.)).text_color(p.text2)));
+        let mut line = Line::new(key.what, "").words(key.keys.clone()).control(chips);
         line.compact = true;
         match sections.last_mut().filter(|s| s.title.as_deref() == Some(key.area)) {
             Some(section) => section.lines.push(line),
@@ -984,7 +985,9 @@ fn about(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .words("version")
         .control(h_flex().gap_1().items_center().child(value(p, version)).child(ui::icon_button(p, "copy-version", Icon::Copy, t!("settings.copy_version"), None).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(version.to_owned())))));
     let mut updates = vec![this_version];
-    // Where the update stands, as the sidebar's pill says it.
+    // Sparkle is a macOS facility. Windows releases are installed by their
+    // installer, so no disabled or misleading update controls are drawn.
+    if cfg!(target_os = "macos") {
     match &shell.update {
         crate::relaunch::Update::Ready(ready) => {
             updates.push(Line::new(crate::relaunch::label(ready), t!("settings.update_ready_desc")).words("update").control(ui::button(p, "relaunch-now", Kind::Secondary, t!("settings.relaunch")).on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))));
@@ -1019,6 +1022,7 @@ fn about(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .words("update automatic")
             .switch(shell, "auto-update", can && crate::relaunch::automatic(cx), can, |_, on, _, cx| crate::relaunch::set_automatic(on, cx), cx),
     );
+    }
     let link = |id: &'static str, label: &'static str, desc: &'static str, url: &'static str| {
         Line::new(label, desc).words(url).control(ui::button(p, id, Kind::Ghost, t!("settings.open")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(url)))
     };
@@ -1519,7 +1523,7 @@ impl Shell {
                 let next = self.settings.category.step(key == "down");
                 self.settings_go(next, cx);
             }
-            "f" if modifiers.platform => self.settings.search.update(cx, |s, cx| s.focus(window, cx)),
+            "f" if modifiers.secondary() => self.settings.search.update(cx, |s, cx| s.focus(window, cx)),
             // Tab walks the page's buttons and switches.
             "tab" if !typing && !modifiers.control && !modifiers.alt && !modifiers.platform => {
                 if modifiers.shift {

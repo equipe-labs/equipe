@@ -20,7 +20,9 @@ use crate::windows::Opening;
 /// Whether a click's keys ask for a window of its own: ⌘ (as a link opens
 /// elsewhere on the Mac), ⇧ (Chrome) or ⌥⌘ (Safari).
 pub fn wants_window(m: &Modifiers) -> bool {
-    !m.control && !m.function && (m.platform || m.shift)
+    !m.function
+        && (m.secondary() || m.shift)
+        && (cfg!(target_os = "windows") || !m.control)
 }
 
 /// What to show there.

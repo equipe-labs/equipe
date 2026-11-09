@@ -355,7 +355,7 @@ fn pending(card: &Card, d: &Draw<'_>, cx: &mut App) -> AnyElement {
         // Tab and ⇧Tab go through the card's boxes and choices; ⌘↵ sends from any of them.
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
             let k = &event.keystroke;
-            if k.key == "enter" && k.modifiers.platform {
+            if k.key == "enter" && k.modifiers.secondary() {
                 handle.update(cx, |shell, cx| shell.turn_send(id, window, cx)).ok();
                 cx.stop_propagation();
                 return;

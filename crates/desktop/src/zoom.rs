@@ -62,8 +62,11 @@ pub fn label(pct: u16) -> String {
 pub fn apply(pct: u16, window: &mut Window) {
     let zoom = factor(pct);
     window.set_content_zoom(zoom);
-    let (x, y) = crate::views::sidebar::lights_at(zoom);
-    window.set_traffic_light_position(point(px(x), px(y)));
+    #[cfg(target_os = "macos")]
+    {
+        let (x, y) = crate::views::sidebar::lights_at(zoom);
+        window.set_traffic_light_position(point(px(x), px(y)));
+    }
 }
 
 // ── the chip ──

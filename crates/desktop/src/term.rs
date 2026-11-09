@@ -96,10 +96,8 @@ pub fn program(endpoint: &Endpoint, dir: Option<&Path>) -> Option<tty::Shell> {
         Endpoint::Local { .. } => None,
         Endpoint::Ssh(host) => {
             let launcher = crate::ssh::Launcher::system(None);
-            let control = launcher.control_dir.join("c-%C");
-            let mut args: Vec<String> = ["-t", "-o", "ControlMaster=auto", "-o"].iter().map(|s| (*s).to_owned()).collect();
-            args.push(format!("ControlPath={}", control.display()));
-            args.extend(["-o".to_owned(), "ControlPersist=600".to_owned()]);
+            let mut args = vec!["-t".to_owned()];
+            args.extend(launcher.connection_options());
             args.extend(launcher.extra.iter().cloned());
             args.extend(host.args());
             let into = dir.map(|d| format!("cd {} 2>/dev/null; ", crate::ssh::quote(&d.to_string_lossy()))).unwrap_or_default();
@@ -134,7 +132,7 @@ impl Terminal {
         if let Some(lang) = utf8_locale(var("LANG").as_deref(), var("LC_ALL").as_deref(), var("LC_CTYPE").as_deref()) {
             env.insert("LANG".to_owned(), lang);
         }
-        let options = tty::Options { shell: program, working_directory: dir.filter(|d| d.is_dir()).map(Path::to_owned), drain_on_exit: true, env };
+        let options = tty::Options { shell: program, working_directory: dir.filter(|d| d.is_dir()).map(Path::to_owned), drain_on_exit: true, env, ..Default::default() };
         let pty = tty::new(&options, size.window(), 0)?;
         let (tx, rx) = unbounded_channel();
         let writer_slot = Arc::new(std::sync::Mutex::new(None));
@@ -1006,6 +1004,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_shell_starts_draws_and_echoes() {
         let size = Size { cols: 40, lines: 6, cell_w: 8, cell_h: 16 };
         let (mut term, mut rx) = Terminal::start(Some(tty::Shell::new("/bin/sh".into(), vec![])), None, size).unwrap();
@@ -1025,5 +1024,41 @@ mod tests {
         }
         term.resize(Size { cols: 60, ..size });
         assert_eq!(term.size.cols, 60);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn conpty_starts_powershell_draws_and_echoes() {
+        let size = Size {
+            cols: 50,
+            lines: 8,
+            cell_w: 8,
+            cell_h: 16,
+        };
+        let shell = tty::Shell::new(
+            "powershell.exe".into(),
+            vec!["-NoLogo".into(), "-NoProfile".into()],
+        );
+        let (mut term, mut rx) = Terminal::start(Some(shell), None, size).unwrap();
+        term.write("$v='equipe-conpty'; Write-Output ($v + '-42')\r");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let colors = Colors::dark();
+        loop {
+            while let Ok(happened) = rx.try_recv() {
+                term.heard(&happened);
+            }
+            let text = term
+                .screen(&colors)
+                .lines
+                .iter()
+                .map(|line| line.iter().map(|run| run.text.as_str()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.contains("equipe-conpty-42") {
+                break;
+            }
+            assert!(std::time::Instant::now() < until, "{text}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }

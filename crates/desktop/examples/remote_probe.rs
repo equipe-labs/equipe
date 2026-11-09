@@ -8,7 +8,11 @@
 //! adds `ssh` options (e.g. `-o UserKnownHostsFile=/tmp/probe-known-hosts`).
 #![allow(dead_code)]
 
+#[cfg(unix)]
 #[path = "../src/askpass.rs"]
+mod askpass;
+#[cfg(windows)]
+#[path = "../src/askpass_windows.rs"]
 mod askpass;
 #[path = "../src/daemon.rs"]
 mod daemon;

@@ -318,7 +318,7 @@ pub fn panel(shell: &Shell, window: &mut Window, cx: &mut Context<Shell>) -> Opt
             let Some(ui) = this.terminal.as_ref() else { return };
             let k = &e.keystroke;
             let m = k.modifiers;
-            if m.platform && !m.shift && !m.alt && !m.control {
+            if m.secondary() && m.number_of_modifiers() == 1 {
                 let handled = match k.key.as_str() {
                     "v" => {
                         ui.paste(cx);
