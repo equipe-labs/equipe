@@ -477,7 +477,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let p = shell.palette;
     let mut language = Line::new(t!("sidebar.language"), t!("settings.language_desc"))
         .words(Lang::ALL.iter().map(|l| l.native_name()).collect::<Vec<_>>().join(" ") + " language");
-    language.control = Some(picker(shell, Pop::Language, t!("sidebar.language"), language_label(shell), 0., cx));
+    language.control = Some(picker(shell, Pop::Language, t!("sidebar.language"), language_label(shell), 132., cx));
     // Dictation's language, apart from the app's: what this Mac can hear on the device.
     let listening = shell.composer.listening;
     let dictation_label = match shell.remembered.dictation.as_deref().and_then(Lang::parse) {

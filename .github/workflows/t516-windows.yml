@@ -23,6 +23,8 @@ jobs:
           New-Item -ItemType Directory -Force artifacts | Out-Null
           $env:EQUIPE_HOME = "$env:RUNNER_TEMP\t516-home"
           $env:EQUIPE_SQUAD = "demo"
+          New-Item -ItemType Directory -Force $env:EQUIPE_HOME | Out-Null
+          Set-Content -Path "$env:EQUIPE_HOME\telemetry.json" -Value '{"consent":"off"}'
           $daemonLog = "$env:RUNNER_TEMP\t516-fake-daemon.log"
           $daemon = Start-Process -FilePath ".\target\debug\examples\fake_daemon.exe" -PassThru -RedirectStandardError $daemonLog
           Start-Sleep -Seconds 2
@@ -54,18 +56,21 @@ jobs:
           Set-Service -Name sshd -StartupType Manual
           Start-Service sshd
           New-Item -ItemType Directory -Force "$env:USERPROFILE\.ssh" | Out-Null
-          ssh-keygen -q -t ed25519 -N '""' -f "$env:USERPROFILE\.ssh\t516_ed25519"
+          ssh-keygen -q -t ed25519 -N "" -f "$env:USERPROFILE\.ssh\t516_ed25519"
+          icacls "$env:USERPROFILE\.ssh\t516_ed25519" /inheritance:r /grant "$env:USERNAME`:F" | Out-Host
           Copy-Item "$env:USERPROFILE\.ssh\t516_ed25519.pub" "$env:USERPROFILE\.ssh\authorized_keys" -Force
           icacls "$env:USERPROFILE\.ssh\authorized_keys" /inheritance:r /grant "$env:USERNAME`:F" /grant "SYSTEM:F" | Out-Host
           $config = "C:\ProgramData\ssh\sshd_config"
           (Get-Content $config) | ForEach-Object {
             if ($_ -match '^Match Group administrators' -or $_ -match '^\s+AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys') { "# $_" } else { $_ }
           } | Set-Content $config
+          Add-Content $config "`nPubkeyAuthentication yes`nStrictModes no"
           Restart-Service sshd
           New-Item -ItemType Directory -Force "$env:USERPROFILE\.local\bin" | Out-Null
           $probe = (Resolve-Path ".\target\debug\examples\remote_probe.exe").Path.Replace('\', '/')
           Set-Content -Path "$env:USERPROFILE\.local\bin\equipe" -NoNewline -Value "#!/bin/sh`n`"$probe`" --print-bridge-fixture`n"
           $env:EQUIPE_SSH_OPTIONS = "-i `"$env:USERPROFILE\.ssh\t516_ed25519`" -o UserKnownHostsFile=`"$env:RUNNER_TEMP\t516-known-hosts`" -o StrictHostKeyChecking=no -o BatchMode=yes"
+          ssh -vvv -i "$env:USERPROFILE\.ssh\t516_ed25519" -o UserKnownHostsFile="$env:RUNNER_TEMP\t516-known-hosts" -o StrictHostKeyChecking=no -o BatchMode=yes "$env:USERNAME@127.0.0.1" whoami
           $output = & ".\target\debug\examples\remote_probe.exe" "$env:USERNAME@127.0.0.1" --trust --seconds 8 2>&1 | Tee-Object -Variable lines
           $output | Out-Host
           if (($lines -join "`n") -notmatch "attached: daemon fixture squad demo") { throw "OpenSSH probe did not attach" }
