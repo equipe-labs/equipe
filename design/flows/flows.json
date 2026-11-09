@@ -361,7 +361,8 @@
             "default",
             "empty",
             "loading",
-            "long"
+            "long",
+            "success"
           ],
           "states": [
             {
@@ -381,6 +382,36 @@
               "label": "Loading / under way",
               "kind": "loading",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=12 FAKE_ASKS=0; script `chat;say:Where are you up to?;wait:1500`"
+            },
+            {
+              "id": "activity-running",
+              "label": "One running work-details row with elapsed time",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 7;wait:1800`"
+            },
+            {
+              "id": "activity-done",
+              "label": "Folded work details after a recovered failure",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 9;wait:2500`"
+            },
+            {
+              "id": "activity-open",
+              "label": "Opened work details with the recovered failure",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 9;wait:2500;turn:5;wait:500`"
+            },
+            {
+              "id": "activity-done-ko",
+              "label": "Folded work details · Korean",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 9;wait:2500`; EQUIPE_LANG=ko"
+            },
+            {
+              "id": "activity-large",
+              "label": "Folded work details · 150% text",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;zoom:150;say:torture 9;wait:2500`"
             },
             {
               "id": "long",

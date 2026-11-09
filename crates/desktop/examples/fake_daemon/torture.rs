@@ -221,14 +221,15 @@ pub async fn turn(session: SessionId, part: usize, events: broadcast::Sender<Eve
         5 => stream(session, PART5, &events, seconds).await,
         6 => activity(session, &events, seconds).await,
         8 => stream(session, LONG, &events, seconds).await,
+        9 => compact_activity(session, &events, seconds).await,
         7 => {
             send(tool(session, "Read", &format!("{SITE}/src/main.rs")));
             pause(100).await;
             send(done(session, "Read", &format!("{SITE}/src/main.rs"), ok(30)));
             send(tool(session, "Bash", "cargo build --release -p equipe-desktop"));
-            pause(6000).await;
-            send(done(session, "Bash", "cargo build --release -p equipe-desktop", ToolOutcome { ok: true, exit: Some(0), ms: Some(6000), output: "   Compiling equipe-desktop v0.38.1
-    Finished `release` profile [optimized] target(s) in 6.02s".into(), ..Default::default() }));
+            pause(12000).await;
+            send(done(session, "Bash", "cargo build --release -p equipe-desktop", ToolOutcome { ok: true, exit: Some(0), ms: Some(12000), output: "   Compiling equipe-desktop v0.38.1
+    Finished `release` profile [optimized] target(s) in 12.02s".into(), ..Default::default() }));
             stream(session, "The build is done.", &events, seconds).await;
         }
         _ => {
@@ -238,6 +239,40 @@ pub async fn turn(session: SessionId, part: usize, events: broadcast::Sender<Eve
     }
     let usage = Usage { input_tokens: Some(1200), output_tokens: Some(340), context_tokens: Some(420), context_window: Some(1000), ..Default::default() };
     send(Event::TurnEnded { session, outcome: TurnOutcome::Completed, usage: Some(usage) });
+}
+
+/// A short turn for the conversation activity's visual checks: thoughts
+/// alternate with calls, a failed test is recovered, and the final answer is
+/// short enough that the folded work-details row remains in the viewport.
+async fn compact_activity(session: SessionId, events: &broadcast::Sender<Event>, seconds: f32) {
+    let send = |event: Event| {
+        let _ = events.send(event);
+    };
+    send(Event::Thinking { session, text: "Read the transcript first.".into() });
+    pause(120).await;
+    send(tool(session, "Read", &format!("{SITE}/src/convo.rs")));
+    send(done(session, "Read", &format!("{SITE}/src/convo.rs"), ok(45)));
+    send(Event::Thinking { session, text: "Run the focused test.".into() });
+    pause(120).await;
+    send(tool(session, "Bash", "cargo test compact_activity"));
+    send(done(
+        session,
+        "Bash",
+        "cargo test compact_activity",
+        ToolOutcome { ok: false, exit: Some(101), ms: Some(900), output: "test compact_activity ... FAILED".into(), ..Default::default() },
+    ));
+    send(Event::Thinking { session, text: "Use the turn boundary instead.".into() });
+    pause(120).await;
+    send(tool(session, "Bash", "cargo test compact_activity --fixed"));
+    send(done(
+        session,
+        "Bash",
+        "cargo test compact_activity --fixed",
+        ToolOutcome { ok: true, exit: Some(0), ms: Some(780), output: "test compact_activity ... ok".into(), ..Default::default() },
+    ));
+    send(tool(session, "Grep", "completion event T-561"));
+    send(done(session, "Grep", "completion event T-561", ok(35)));
+    stream(session, "The transcript now keeps one folded work-details row.", events, seconds).await;
 }
 
 const PS: &str = "/usr/local/bin/equipe daemon --squad demo";

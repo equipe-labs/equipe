@@ -432,6 +432,8 @@
   "chat.side_back": "Back",
   "chat.side_close": "Close",
   "chat.side_expand": "Open on the board",
+  "chat.activity.one": "Work details · {count} step",
+  "chat.activity.other": "Work details · {count} steps",
   "chat.sum_board.one": "{count} board action",
   "chat.sum_board.other": "{count} board actions",
   "chat.sum_browse.one": "{count} browser step",
