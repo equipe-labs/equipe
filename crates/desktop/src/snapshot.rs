@@ -94,7 +94,7 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
         if hidden {
             let _ = cx.update_window(handle, |_, window, cx| {
                 window.refresh();
-                window.draw(cx).clear(cx);
+                window.draw_profiled(cx).clear(cx);
             });
         }
     };
@@ -143,7 +143,8 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
             // with the process's CPU time so far and the clock, to divide one by the other.
             if verb == "mark" {
                 let mb = crate::mem::phys_footprint_bytes().map_or(0., |b| b as f64 / 1_048_576.);
-                eprintln!("perf mark {arg} cpu {}ms at {}ms mem {mb:.1}MB", process_cpu().as_millis(), started.elapsed().as_millis());
+                let (renders, derived, chapters) = crate::views::chat::perf_counts();
+                eprintln!("perf mark {arg} cpu {}ms at {}ms mem {mb:.1}MB chat renders {renders} derived {derived} chapters {chapters}", process_cpu().as_millis(), started.elapsed().as_millis());
                 continue;
             }
             // `scroll:<n>,<dy>`: n turns of the wheel, a frame apart, by dy points

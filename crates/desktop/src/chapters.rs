@@ -5,6 +5,16 @@
 //! chapter it answers rather than starting one. No UI types here.
 
 use crate::convo::Block;
+#[cfg(feature = "snapshot")]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "snapshot")]
+static BUILDS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "snapshot")]
+pub(crate) fn builds() -> u64 {
+    BUILDS.load(Ordering::Relaxed)
+}
 
 /// A chapter: the row its message is on, and what it is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +35,8 @@ pub const MOST: usize = 14;
 
 /// The chapters of `blocks`, in order.
 pub fn of(blocks: &[Block]) -> Vec<Chapter> {
+    #[cfg(feature = "snapshot")]
+    BUILDS.fetch_add(1, Ordering::Relaxed);
     let mut out: Vec<Chapter> = Vec::new();
     for (row, block) in blocks.iter().enumerate() {
         match block {

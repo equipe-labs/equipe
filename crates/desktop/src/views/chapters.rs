@@ -30,18 +30,18 @@ pub const GUTTER: f32 = LEFT + LONG + CLEAR;
 const _: () = assert!(GUTTER - (LEFT + LONG) >= 12.);
 
 /// Whether the rail shows: two things asked or more.
-pub fn shows(blocks: &[crate::convo::Block]) -> bool {
-    chapters::of(blocks).len() >= 2
+pub fn shows(chapters: &[Chapter]) -> bool {
+    chapters.len() >= 2
 }
 
 pub fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
-    if !shows(&shell.chat.blocks) {
+    let all = shell.chat.chapters();
+    if !shows(all) {
         return None;
     }
-    let all = chapters::of(&shell.chat.blocks);
     let p = shell.palette;
     let top = shell.chat.top_row(cx);
-    let current = chapters::current(&all, top);
+    let current = chapters::current(all, top);
     let open = shell.chat.rail_open;
     let bars = chapters::barred(all.len(), current).map(|i| {
         let here = Some(i) == current;
