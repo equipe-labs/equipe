@@ -497,6 +497,7 @@
   "control.pm_accepts_off": "팀이 끝낸 작업은 모두 직접 수락해요",
   "control.idle_wake": "보드가 {hours}시간 비어 있으면 PM을 깨워요",
   "control.idle_wake_off": "보드가 비어 있어도 PM을 깨우지 않아요",
+  "control.subagents_at_once": "멤버마다 서브에이전트를 동시에 최대 {at_once}개 실행하게 해요",
   "control.model": "{member}의 모델을 {model}(으)로 바꿔요",
   "control.effort": "{member}의 생각 깊이를 {effort}(으)로 바꿔요",
   "control.engine": "{members}을(를) {engine}(으)로 옮겨요",

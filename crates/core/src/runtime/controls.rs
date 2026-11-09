@@ -11,7 +11,14 @@ impl Runtime {
     pub(super) fn settings_text(&mut self, squad: &str) -> String {
         let projects = self.projects(squad);
         let Some(journal) = self.journal(squad) else { return format!("No squad {squad}.") };
-        let (mode, pm_accepts, idle, switching, hq) = (journal.mode(), journal.pm_accepts(), journal.idle_wake_hours(), journal.engine_switching(), journal.hq());
+        let (mode, pm_accepts, idle, switching, hq, subagents_at_once) = (
+            journal.mode(),
+            journal.pm_accepts(),
+            journal.idle_wake_hours(),
+            journal.engine_switching(),
+            journal.hq(),
+            journal.subagents_at_once(),
+        );
         let reviewer = journal.design_reviewer();
         let (routines, signals, allowed) = (journal.routines(), journal.signals(), journal.allowed().unwrap_or_default());
         let on = |b: bool| if b { "on" } else { "off" };
@@ -32,6 +39,14 @@ impl Runtime {
         }
         out.push(format!("You accept the team's handed-in work yourself (pm_accepts): {}.", on(pm_accepts)));
         out.push(format!("An empty board wakes you after (idle_wake_hours): {}.", if idle == 0 { "off".to_owned() } else { format!("{idle} h") }));
+        out.push(match subagents_at_once {
+            Some(at_once) => format!("Subagents at once (subagents_at_once): {at_once}."),
+            None => format!(
+                "Subagents at once (subagents_at_once): default — Claude {}, Codex {}.",
+                crate::protocol::CLAUDE_SUBAGENTS_AT_ONCE,
+                crate::protocol::CODEX_SUBAGENTS_AT_ONCE
+            ),
+        });
         out.push(format!("Engine switching: {}.", format!("{switching:?}").to_lowercase()));
         out.push(format!(
             "Who reviews the designer's work (design_reviewer): {}.",
@@ -89,7 +104,16 @@ impl Runtime {
         };
         let now = self.mode_now(&squad, &change);
         let action = self.describe_change(&squad, &change);
-        if !change.needs_yes(now) {
+        let needs_yes = match change {
+            Change::SubagentsAtOnce(at_once) => {
+                // With no squad override, an increase for either engine widens
+                // its parallel work. Codex has the smaller built-in default.
+                let current = self.subagents_at_once(Some(&squad)).unwrap_or(crate::protocol::CODEX_SUBAGENTS_AT_ONCE);
+                at_once > current
+            }
+            _ => change.needs_yes(now),
+        };
+        if !needs_yes {
             crate::daemon_log!("equipe: {squad}'s PM changed a setting the person asked for: {action}");
             Box::pin(self.handle(command)).await;
             self.audit(&squad, None, &call.member, "changed", &action);
@@ -154,6 +178,7 @@ impl Runtime {
             }
             Change::PmAccepts(on) => Command::SetPmAccepts { squad: squad_name, on },
             Change::IdleWake(hours) => Command::SetIdleWake { squad: squad_name, hours },
+            Change::SubagentsAtOnce(at_once) => Command::SetSubagentsAtOnce { squad: squad_name, at_once: Some(at_once) },
             Change::Model { member, model } => Command::SetModel { session: session(&member)?, model },
             Change::Engine { members, engine, model, effort, now } => {
                 for name in &members {
@@ -330,6 +355,7 @@ impl Runtime {
             Change::PmAccepts(false) => say!(self, "control.pm_accepts_off"),
             Change::IdleWake(0) => say!(self, "control.idle_wake_off"),
             Change::IdleWake(hours) => say!(self, "control.idle_wake", hours = hours),
+            Change::SubagentsAtOnce(at_once) => say!(self, "control.subagents_at_once", at_once = at_once),
             Change::Model { member, model } => say!(self, "control.model", member = member, model = model),
             Change::Engine { members, engine, model, effort, now } => {
                 let model = model.as_deref().map(|m| self.model_label(m));

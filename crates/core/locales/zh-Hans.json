@@ -497,6 +497,7 @@
   "control.pm_accepts_off": "团队工作的验收全部由你来做",
   "control.idle_wake": "看板空闲 {hours} 小时后唤醒 PM",
   "control.idle_wake_off": "看板空闲时不唤醒 PM",
+  "control.subagents_at_once": "允许每位成员同时运行最多 {at_once} 个子代理",
   "control.model": "将 {member} 的模型设为 {model}",
   "control.effort": "将 {member} 的思考强度设为 {effort}",
   "control.engine": "把 {members} 移到 {engine}",

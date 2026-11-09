@@ -34,6 +34,8 @@ pub enum Change {
     PmAccepts(bool),
     /// Hours the board may lie empty before the PM is woken; 0 off.
     IdleWake(u32),
+    /// How many subagents each member may run at once.
+    SubagentsAtOnce(u32),
     /// A member's model, within the engine it runs on.
     Model { member: String, model: String },
     /// Members moved to another engine — on `model` and at `effort` there,
@@ -119,6 +121,14 @@ impl Change {
             }
             "pm_accepts" => Change::PmAccepts(on(&value()?)?),
             "idle_wake_hours" => Change::IdleWake(value()?.parse().map_err(|_| "`value` is a number of hours; 0 turns it off.")?),
+            "subagents_at_once" => {
+                let value = value()?;
+                let at_once: u32 = value.parse().map_err(|_| "`value` must be a whole number from 1 through 50.")?;
+                if !(1..=crate::protocol::MOST_SUBAGENTS_AT_ONCE).contains(&at_once) {
+                    return Err(format!("`value` must be from 1 through {}, not {value:?}.", crate::protocol::MOST_SUBAGENTS_AT_ONCE));
+                }
+                Change::SubagentsAtOnce(at_once)
+            }
             // The model named as `model` rather than `value`: read as meant.
             "model" => Change::Model { member: member()?, model: s("value").or_else(|| s("model")).ok_or("Give the new `value`.")? },
             "engine" => {
@@ -260,7 +270,8 @@ pub fn tools() -> Vec<Value> {
             "name": SETTINGS,
             "description": "Read the squad's settings, as the person sees them on their screen: its projects and HQ, \
 how much members may do on their own (the squad's mode and each member's), each member's engine, model and effort, \
-whether you accept the team's work yourself, how long an empty board waits before you are woken, engine switching, \
+whether you accept the team's work yourself, how long an empty board waits before you are woken, how many subagents \
+members run at once, engine switching, \
 who reviews the designer's work, routines, signals, and the \"always allow\" rules. Read it before you change one, and to answer what is set.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
@@ -268,10 +279,11 @@ who reviews the designer's work, routines, signals, and the \"always allow\" rul
             "name": CHANGE_SETTING,
             "description": "Change one of the squad's settings, only when the person asked for that change. One that \
 only narrows what the squad does happens at once. One that widens it — a mode that lets members do more on their own, \
+raising how many subagents members run at once, \
 you accepting the team's work, engine switching on auto, a signal on again, a merge, a move to another engine — is put \
 to the person as an approval card saying exactly what changes; it happens only if they tap yes, and this call waits for \
 their answer. Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default \
-with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), model (member, value: a model of the engine \
+with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), subagents_at_once (value 1 through 50), model (member, value: a model of the engine \
 the member runs on), effort (member, value, or default), engine (members — every one in one call — value claude | \
 codex, optionally model and effort there, and when: next_ticket — the default: one on a ticket finishes it where it is and \
 moves before its next — or now: at the end of each one's current turn, a ticket in progress handed over, same branch, and \
@@ -285,7 +297,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "model", "effort", "engine", "engine_switching", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort and engine." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -351,10 +363,14 @@ mod tests {
         assert_eq!(change(json!({ "setting": "effort", "member": "qa", "value": "default" })), Change::Effort { member: "qa".into(), effort: None });
         assert_eq!(change(json!({ "setting": "hq", "project": "site" })), Change::Hq(Some("site".into())));
         assert_eq!(change(json!({ "setting": "design_reviewer", "value": "same" })), Change::DesignReviewer(Reviewer::Same));
+        assert_eq!(change(json!({ "setting": "subagents_at_once", "value": "50" })), Change::SubagentsAtOnce(50));
         assert_eq!(change(json!({ "setting": "merge", "ticket": 4, "push": false })), Change::Merge { ticket: 4, push: false });
         let err = |args: Value| Change::parse(&args).unwrap_err();
         assert!(err(json!({ "setting": "mode", "value": "default" })).contains("default puts a member"), "the squad has no default but its own");
         assert!(err(json!({ "setting": "idle_wake_hours", "value": "soon" })).contains("hours"));
+        assert!(err(json!({ "setting": "subagents_at_once", "value": "0" })).contains("1 through 50"));
+        assert!(err(json!({ "setting": "subagents_at_once", "value": "51" })).contains("1 through 50"));
+        assert!(err(json!({ "setting": "subagents_at_once", "value": "many" })).contains("whole number"));
         assert!(err(json!({ "setting": "model", "value": "opus" })).contains("member"));
         assert!(err(json!({ "setting": "colour" })).contains("`settings`"));
         assert!(err(json!({ "setting": "design_reviewer", "value": "gemini" })).contains("auto, same"));
