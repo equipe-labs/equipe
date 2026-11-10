@@ -4940,16 +4940,37 @@ for one project goes to it as tickets for its owners, with that project — and 
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
-        let members: Vec<(String, String, bool)> = self
+        let members: Vec<(String, String, bool, Option<Engine>)> = self
             .sessions
             .iter()
             .filter(|(id, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && !helpers.contains(id))
             // An engine out of its plan, or waited for, takes no new ticket.
-            .filter_map(|(_, s)| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free() && !self.engines.held(squad, s.engine))))
+            .filter_map(|(_, s)| {
+                s.member.as_ref().map(|m| {
+                    let held = s.is_free() && self.engines.held(squad, s.engine);
+                    (m.name.clone(), m.role.clone(), s.is_free() && !held, held.then_some(s.engine))
+                })
+            })
             .collect();
         let candidates: Vec<Candidate> =
-            members.iter().map(|(name, role, free)| Candidate { name, role, free: *free }).collect();
-        for (ticket, name) in board::assignments(&tickets, &candidates, single_project) {
+            members.iter().map(|(name, role, free, _)| Candidate { name, role, free: *free }).collect();
+        let assigned = board::assignments(&tickets, &candidates, single_project);
+        // What a hold keeps from starting: what free members would take but for it.
+        if members.iter().any(|m| m.3.is_some()) {
+            let unheld: Vec<Candidate> =
+                members.iter().map(|(name, role, free, held)| Candidate { name, role, free: *free || held.is_some() }).collect();
+            let mut waiting: Vec<(Engine, TicketId)> = board::assignments(&tickets, &unheld, single_project)
+                .into_iter()
+                .filter(|(t, _)| !assigned.iter().any(|(a, _)| a == t))
+                .filter_map(|(t, name)| members.iter().find(|m| m.0 == name).and_then(|m| m.3).map(|e| (e, t)))
+                .collect();
+            waiting.sort_by_key(|(_, t)| *t);
+            for engine in [Engine::Claude, Engine::Codex] {
+                let ids: Vec<TicketId> = waiting.iter().filter(|(e, _)| *e == engine).map(|(_, t)| *t).collect();
+                self.tell_held(squad, engine, &ids);
+            }
+        }
+        for (ticket, name) in assigned {
             // Short of room: code work, which builds, waits; the PM was told.
             if tickets.iter().find(|t| t.id == ticket).is_some_and(|t| self.held_for_room(t.kind)) {
                 continue;

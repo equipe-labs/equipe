@@ -29,8 +29,10 @@
 //!   under 75%: waited for rather than moved — a new engine reads everything
 //!   again, which costs more than half an hour.
 //! - The other engine must be no worse than Watch and have 30 points more room;
-//!   when both run low, nothing moves: a lighter model or less thinking on the
-//!   same engine, and no new tickets.
+//!   when both run low, nothing moves, and the work goes on: a lighter model or
+//!   less thinking on the same engine is offered on a card, never made on its
+//!   own (quality is the person's call), and tickets keep starting until the
+//!   engine is actually out.
 //! - Back when the original engine's five hours are under 50% and its week
 //!   under 75% for ten minutes.
 //! - A member stays at least an hour, moves at most once in three; batches
@@ -562,8 +564,8 @@ pub fn decide(squad: &Squad<'_>, memory: &mut Memory) -> Decision {
             continue;
         }
         if !fits {
-            // Both run low: lighter on the same engine, and nothing new to start.
-            out.hold.push(Hold { engine: source.engine, until: source.resets_at });
+            // Both run low: the work goes on (holding it would idle the squad
+            // for days on a plan with room left); a lighter setting is offered.
             if memory.stepped.contains(&(source.engine, source.resets_at)) {
                 continue;
             }
