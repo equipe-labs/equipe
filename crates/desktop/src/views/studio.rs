@@ -131,7 +131,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let working = member.is_some_and(|m| m.presence == crate::state::Presence::Working && m.ticket == Some(id));
     // Waiting for the person exactly as the sidebar weighs it (`Model::status`).
     let permission = member.and_then(|m| shell.model.approvals.first_for(m.session)).map(|a| format!("{} · {}", a.tool, rules::command_words(&a.action)));
-    let question = member.and_then(|m| shell.model.asked.from(&m.name)).map(|s| {
+    // The member's questions in the order its conversation offers them: the card names the first, which is the one the conversation opens on.
+    let sets = member.map(|m| shell.model.questions_waiting().into_iter().filter(|(s, _)| s.member == m.name).map(|(s, _)| s).collect::<Vec<_>>()).unwrap_or_default();
+    let question = sets.first().copied().map(|s| {
         let q = s.questions.first();
         (q.map(|q| if q.header.trim().is_empty() { q.question.clone() } else { q.header.clone() }).unwrap_or_default(), s.ticket)
     });
@@ -214,10 +216,35 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .when(pending > 0, |row| row.child(div().flex_none().text_size(px(META)).text_color(p.muted).child(t!("studio.pending", count = pending))))
         .children(member.and_then(|m| m.engine).map(|e| super::switching::label(p, e)));
 
+    // The decision card for this ticket's direction question: the member's own question set, else the ticket's row.
+    let pick_need = sets.iter().find(|s| s.ticket == Some(id)).map(|s| crate::state::Need::Questions(s.id)).unwrap_or(crate::state::Need::Ticket(id));
+    // Waiting on the person: what to answer and the way to it, next to the status line, above the log.
+    shell.studio.wait_button.set(false);
+    let wait_card = match &status.presence {
+        rules::Presence::Waiting(wait) => Some(wait_card(p, wait, files, member, pick_need, &shell.studio.wait_button, shell.studio.wait_focus.as_ref(), cx)),
+        _ => None,
+    };
+
+    if !shell.studio.wait_button.get() {
+        shell.studio.wait_tab_used.set(false);
+    }
     let mut body = v_flex().id("studio-body").flex_1().min_h_0().w_full().overflow_y_scroll().track_scroll(&shell.studio.scroll).px(px(PAD)).pt_4().pb_10().gap_5();
-    body = body.child(feed_card(p, &feed, now));
-    body = body.child(rail(p, &steps, narrow, now));
-    body = body.child(stage(shell, id, files, &items, now, cx));
+    // Waiting on the person: what to answer comes before the log of what was done; a pick has its directions' stage right under it.
+    let waiting_now = wait_card.is_some();
+    let picking = matches!(status.presence, rules::Presence::Waiting(rules::WaitFor::Pick));
+    body = body.children(wait_card);
+    if picking {
+        body = body.child(stage(shell, id, files, &items, now, cx));
+    } else if !waiting_now {
+        body = body.child(feed_card(p, &feed, now));
+    }
+    body = body.child(rail(p, &steps, narrow, now, waiting_now));
+    if waiting_now {
+        body = body.child(feed_card(p, &feed, now));
+    }
+    if !picking {
+        body = body.child(stage(shell, id, files, &items, now, cx));
+    }
     if let Some(f) = files {
         body = body.children(recent_strip(shell, id, f, now, cx));
     }
@@ -372,15 +399,68 @@ fn who(p: Palette, m: &Member) -> impl IntoElement + use<> {
     h_flex().flex_none().gap_1p5().items_center().child(crate::theme::avatar(p, &m.role, &m.name, 18.)).child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.member(hue)).child(m.name.clone()))
 }
 
+/// The card for what the person is waited on for: what to answer, where, and the way there.
+fn wait_card(p: Palette, wait: &rules::WaitFor, files: Option<&Studio>, member: Option<&Member>, pick_need: crate::state::Need, wait_button: &std::cell::Cell<bool>, focus: Option<&gpui_kit::FocusHandle>, cx: &mut Context<Shell>) -> AnyElement {
+    use rules::WaitFor;
+    let mut names: Vec<String> = Vec::new();
+    let words = match wait {
+        WaitFor::Pick => {
+            names = files.map(|f| f.directions.iter().map(|d| d.name.clone()).collect()).unwrap_or_default();
+            if names.is_empty() { t!("studio.wait_pick_plain").to_owned() } else { t!("studio.wait_pick", count = names.len()) }
+        }
+        WaitFor::Answer { what, ticket: None } => t!("studio.wait_question", what = what),
+        WaitFor::Answer { what, ticket: Some(id) } => t!("studio.wait_question_elsewhere", id = id, what = what),
+        WaitFor::Permission(what) => t!("studio.wait_ok", what = what),
+        WaitFor::Ticket(id) => t!("studio.wait_ticket", id = id),
+        WaitFor::Something => t!("studio.wait_this").to_owned(),
+    };
+    // A pick is made in the inbox's decision card; the rest is answered in the member's conversation.
+    let go = if matches!(wait, WaitFor::Pick) {
+        Some((t!("studio.wait_go_pick"), None))
+    } else {
+        member.map(|m| (if matches!(wait, WaitFor::Permission(_)) { t!("studio.wait_go_ok") } else { t!("studio.wait_go") }, Some(m.session)))
+    }
+    .map(|(label, session)| {
+        wait_button.set(true);
+        let mut button = ui::button(p, "studio-wait-go", ui::Kind::Primary, label).icon(if session.is_none() { Icon::Inbox } else { Icon::Message });
+        if let Some(focus) = focus {
+            button = button.focus(focus);
+        }
+        button.on_click(cx.listener(move |this, _, window, cx| match session {
+            Some(session) => this.select_member(session, window, cx),
+            None => {
+                this.open_side_menu(crate::board::Menu::Inbox, cx);
+                this.board_pick(pick_need, cx);
+            }
+        }))
+    });
+    h_flex()
+        .id("studio-wait")
+        .w_full()
+        .flex_wrap()
+        .gap_x_3()
+        .gap_y_2()
+        .items_center()
+        .p_3()
+        .rounded(px(R_LG))
+        .bg(p.raised)
+        .border_1()
+        .border_color(p.orange)
+        .child(div().min_w_0().flex_grow(1.).flex_shrink(1.).flex_basis(px(160.)).text_size(px(SMALL)).line_height(px(SMALL_LINE)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(v_flex().gap_1().child(div().child(words)).when(!names.is_empty(), |c| c.child(h_flex().flex_wrap().gap_x_3().text_color(p.text2).font_weight(FontWeight::NORMAL).children(names.into_iter().map(|n| div().child(n)))))))
+        .children(go)
+        .into_any_element()
+}
+
 /// The steps, left to right; in a narrow room, two to a row.
-fn rail(p: Palette, steps: &[Step], narrow: bool, now: u64) -> AnyElement {
+fn rail(p: Palette, steps: &[Step], narrow: bool, now: u64, waiting_card: bool) -> AnyElement {
     let mut row = h_flex().id("studio-rail").w_full().gap_2().flex_wrap().items_stretch().role(Role::List).aria_label(t!("studio.steps"));
     for (n, s) in steps.iter().enumerate() {
         let (fill, edge, ink) = match s.mark {
             Mark::Done => (p.raised, p.hair, p.text),
             Mark::Now => (p.accent_bg, p.accent, p.text),
             Mark::Attention => (p.danger_bg(), p.danger(), p.text),
-            Mark::Waiting => (p.raised, p.orange, p.text),
+            // The wait card above carries the orange edge; the step keeps its dot.
+            Mark::Waiting => (p.raised, if waiting_card { p.hair } else { p.orange }, p.text),
             Mark::Ahead | Mark::Skipped => (p.bg, p.hair, p.muted),
         };
         let glyph: AnyElement = match s.mark {
@@ -662,6 +742,8 @@ impl Shell {
     /// conversation beside it the member's.
     pub fn open_studio(&mut self, ticket: TicketId, window: &mut Window, cx: &mut Context<Self>) {
         self.studio.watch(ticket);
+        self.studio.wait_focus.get_or_insert_with(|| cx.focus_handle().tab_stop(true));
+        self.studio.wait_tab_used.set(false);
         self.show(Screen::Studio, cx);
         self.studio_ask(cx);
         if self.design_talk_open(window, cx) {
@@ -849,7 +931,7 @@ mod tests {
     fn its_wait_is_read_from_what_the_sidebar_reads() {
         let source = include_str!("studio.rs");
         let code = &source[..source.find("#[cfg(test)]").unwrap()];
-        for read in ["approvals.first_for(", "asked.from(", "TicketStatus::Waiting && t.owner"] {
+        for read in ["approvals.first_for(", "questions_waiting(", "TicketStatus::Waiting && t.owner"] {
             assert!(code.contains(read), "the studio reads {read}");
         }
     }

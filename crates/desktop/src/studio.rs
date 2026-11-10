@@ -49,6 +49,12 @@ pub struct StudioUi {
     pub scroll: gpui_kit::ScrollHandle,
     /// The studio's own width as last drawn: beside the sidebar, less the conversation docked.
     pub room: f32,
+    /// The wait card's action as a Tab stop, kept across draws.
+    pub wait_focus: Option<gpui_kit::FocusHandle>,
+    /// Whether the last draw had the wait card's action (set while drawing).
+    pub wait_button: std::cell::Cell<bool>,
+    /// The first Tab of this wait went to the card's action; the rest follow the usual order.
+    pub wait_tab_used: std::cell::Cell<bool>,
 }
 
 impl StudioUi {

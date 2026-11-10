@@ -234,7 +234,27 @@ impl RenderOnce for Button {
                 // A 2px ring, 3px off the button: the surface is drawn between,
                 // so the words never sit on the accent.
                 let shadow = |color: Rgba, spread: f32| BoxShadow { color: color.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset: false };
-                b.track_focus(&focus).focus_visible(move |s| s.shadow(vec![shadow(ring, 5.), shadow(gap, 3.)]))
+                let press = self.on_click.clone();
+                b.track_focus(&focus)
+                    .focus_visible(move |s| s.shadow(vec![shadow(ring, 5.), shadow(gap, 3.)]))
+                    // Tab moves on from a button as it does from a switch; Enter and Space press it.
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        let k = &event.keystroke;
+                        if k.modifiers.platform || k.modifiers.control || k.modifiers.alt {
+                            return;
+                        }
+                        match k.key.as_str() {
+                            "tab" if k.modifiers.shift => window.focus_prev(cx),
+                            "tab" => window.focus_next(cx),
+                            "enter" | "space" if !k.modifiers.shift => {
+                                if let Some(f) = &press {
+                                    f(&ClickEvent::default(), window, cx);
+                                }
+                            }
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    })
             })
             .when_some(self.on_click.filter(|_| live), |b, f| b.on_click(move |e, w, cx| f(e, w, cx)));
         let b = match self.tip {
