@@ -35,8 +35,9 @@
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all);
 //! `FAKE_KEPT=<words>` a voice memo whose files are gone, its words kept with it.
-//! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
-//! (no such ticket), to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
+//! `FAKE_CARDS=1` ends it on a person's Markdown naming T-42 and T-51, then a
+//! multiline reply naming emphasized T-42, T-117 and T-999 (no such ticket),
+//! to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
 //! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
 //! the reply names T-4 too — its pictures and all, a card taller than a small window.
 //! `FAKE_REVIEW=1` gives T-42 and T-71 a made-up Nemotron review (canned, not a model's).
@@ -1300,9 +1301,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
                         // long gone, for the tickets' cards on the pointer.
                         if std::env::var_os("FAKE_CARDS").is_some() {
-                            history.push(Entry::User { text: "Anything for me to look at?".into(), kept: Vec::new() });
+                            history.push(Entry::User { text: "Can you compare **T-42** with T-51 before I review it?".into(), kept: Vec::new() });
                             let pictures = if replies::on() { " Have a look at T-4's pictures too." } else { "" };
-                            history.push(Entry::Reply { text: format!("T-42 is waiting for review. T-117 is your turn, and the old T-999 is gone.{pictures}") });
+                            history.push(Entry::Reply { text: format!("## What needs attention\n\n- **T-42** is waiting for review; T-51 is the related follow-up.\n- T-117 is your turn, and the old T-999 is gone.{pictures}") });
                         }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { undo: None, text: "frontend handed in T-63 for your review · Competitor onboarding research.".into() });
