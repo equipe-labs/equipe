@@ -1074,6 +1074,10 @@ impl Shell {
                             {
                                 cx.open_url(&url);
                             }
+                            // A note that goes (a sign-in just finished): drawn again once it has.
+                            if let Some(wait) = effect.later {
+                                this.engines_later(wait, cx);
+                            }
                             // Installed as the person asked: straight on to its sign-in.
                             if let Some(engine) = effect.sign_in
                                 && !cfg!(feature = "snapshot")

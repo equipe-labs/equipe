@@ -22,7 +22,7 @@ use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
 
 /// Focus slots per card: its buttons, in the order Tab reaches them.
-pub const KEYS: usize = 4;
+pub const KEYS: usize = 5;
 
 /// Where the daemon is, as a card says it: "this Mac", or the host.
 fn host(shell: &Shell) -> String {
@@ -112,59 +112,65 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
         h_flex().gap_2().items_center().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(platform.name)).child(pill(p, tone, said.clone())),
     );
     let installing = shell.engines.installing(engine) == Some(&engines::Install::Running);
-    let action: Option<AnyElement> = match (&card, status.map(|s| s.state), platform.signs_in) {
-        (Card::Idle, Some(EngineState::NotInstalled), _) if installing => Some(h_flex().gap_2().items_center().child(crate::motion::spinner(14., p.text2)).child(value(p, t!("engines.installing"))).into_any_element()),
-        (Card::Idle, Some(EngineState::NotInstalled), _) => Some(
+    // What it offers follows from where the engine stands; a sign-in or sign-out
+    // on its way only disables buttons (`engines::offers`).
+    let offers = engines::offers(status, &card, installing, connected);
+    let action: Option<AnyElement> = match offers.head {
+        engines::Head::Installing => Some(h_flex().gap_2().items_center().child(crate::motion::spinner(14., p.text2)).child(value(p, t!("engines.installing"))).into_any_element()),
+        engines::Head::Install => Some(
             button(shell, at, 0, "engine-install", Kind::Primary, t!("engines.install"))
                 .icon(Icon::ArrowDown)
                 .disabled(!connected)
                 .on_click(cx.listener(move |this, _, _, cx| this.engine_install(engine, cx)))
                 .into_any_element(),
         ),
-        (Card::Idle, Some(EngineState::SignedIn), SignsIn::FromApp) => Some(
+        engines::Head::SignOut { enabled } => Some(
             button(shell, at, 0, "engine-sign-out", Kind::Secondary, t!("engines.sign_out"))
-                .disabled(!connected)
+                .disabled(!enabled)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.engines.ask_sign_out(engine);
                     cx.notify();
                 }))
                 .into_any_element(),
         ),
-        (Card::Idle, Some(_), SignsIn::FromApp) => Some(
+        engines::Head::SignIn { enabled } => Some(
             button(shell, at, 0, "engine-sign-in", Kind::Primary, t!("engines.sign_in"))
-                .disabled(!connected)
-                .on_click(cx.listener(move |this, _, _, cx| this.engine_sign_in(engine, cx)))
+                .disabled(!enabled)
+                .on_click(cx.listener(move |this, _, window, cx| this.engine_sign_in_any(engine, window, cx)))
                 .into_any_element(),
         ),
-        (Card::Idle, Some(EngineState::SignedOut | EngineState::Unknown), SignsIn::InTerminal { .. }) if !shell.endpoint.is_remote() => Some(
-            button(shell, at, 0, "engine-terminal", Kind::Primary, t!("engines.terminal_sign_in"))
-                .icon(Icon::Terminal)
-                .on_click(cx.listener(move |this, _, _, cx| this.engine_terminal(engine, cx)))
-                .into_any_element(),
-        ),
-        _ => None,
+        engines::Head::None => None,
     };
     let mut lines = vec![Line::new(platform.name, (platform.who)()).label_el(head).words(words.clone()).control_opt(action)];
 
-    // Signed in from here: who as and on what plan, and the way to another account.
-    if card == Card::Idle && signed_in && platform.signs_in == SignsIn::FromApp {
+    // Signed in: who as and on what plan, and the way to another account.
+    if offers.account {
         let who = status.and_then(|s| s.account.clone());
         let plan = status.and_then(|s| s.plan.clone()).map(|plan| engines::title_case(&plan));
+        let per_token = status.is_some_and(|s| s.per_token);
         let said = match (who, plan) {
             (Some(who), Some(plan)) => t!("engines.account_on", account = who, plan = plan),
             (Some(who), None) => who,
             (None, Some(plan)) => t!("engines.account_plan_only", plan = plan),
+            (None, None) if per_token => t!("engines.per_token").to_owned(),
             (None, None) => t!("engines.account_unknown").to_owned(),
         };
+        let tip = if platform.signs_in == SignsIn::FromApp { t!("engines.switch_account_tip") } else { t!("engines.switch_account_tip_claude") };
         let switch = button(shell, at, 1, "engine-switch-account", Kind::Ghost, t!("engines.switch_account"))
-            .tip(t!("engines.switch_account_tip"), None)
-            .disabled(!connected)
-            .on_click(cx.listener(move |this, _, _, cx| this.engine_sign_in(engine, cx)));
+            .tip(tip, None)
+            .disabled(!offers.switch)
+            .on_click(cx.listener(move |this, _, window, cx| this.engine_sign_in_any(engine, window, cx)));
         lines.push(
             Line::new(t!("engines.row_account"), "")
                 .words(format!("{words} account plan email switch"))
                 .control(h_flex().gap_3().items_center().child(value(p, said)).child(switch).into_any_element()),
         );
+    }
+
+    // A sign-in followed here just finished: said a moment.
+    if signed_in && shell.engines.signed_in_lately(engine, now) {
+        let label = h_flex().gap_2().items_center().child(icon(Icon::Check, ICON_SM, p.accent)).child(t!("engines.signed_in_now"));
+        lines.push(Line::new(t!("engines.signed_in_now"), t!("engines.signed_in_now_desc")).label_el(label).words(words.clone()));
     }
 
     // An install that failed, in the installer's words.
@@ -189,8 +195,16 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
         } else if let SignsIn::InTerminal { command } = platform.signs_in {
             let desc = if shell.endpoint.is_remote() { t!("engines.terminal_remote", host = host(shell), command = command) } else { t!("engines.terminal_desc", tool = platform.tool) };
             pitch = Line::new((platform.pitch)(), desc).words(words.clone()).when_remote(shell.endpoint.is_remote(), |l| l.control(command_chip(p, SharedString::from(format!("engine-login-{at}")), command)));
-            if shell.engines.terminal.is_some() && !shell.endpoint.is_remote() {
+            let local = !shell.endpoint.is_remote();
+            if local && shell.engines.terminal.is_some() {
                 pitch = pitch.control(h_flex().gap_2().items_center().child(crate::motion::spinner(12., p.muted)).child(value(p, t!("engines.terminal_waiting"))));
+            } else if local {
+                // The tool's own sign-in in a terminal, beside "Sign in" at the top.
+                pitch = pitch.control(
+                    button(shell, at, 1, "engine-terminal", Kind::Ghost, t!("engines.terminal_sign_in"))
+                        .icon(Icon::Terminal)
+                        .on_click(cx.listener(move |this, _, _, cx| this.engine_terminal(engine, cx))),
+                );
             }
         }
         let said = h_flex().gap_2().items_center().text_color(p.text2).child(icon(Icon::Lightbulb, ICON_SM, p.amber)).child((platform.pitch)());
@@ -453,7 +467,7 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
     let p = shell.palette;
     let engine = platform.engine;
     let waiting = |label: String| h_flex().gap_2().items_center().child(crate::motion::spinner(14., p.text2)).child(label);
-    let cancel = |cx: &mut Context<Shell>| button(shell, at, 1, "engine-cancel", Kind::Ghost, t!("engines.cancel")).on_click(cx.listener(move |this, _, _, cx| this.engine_cancel(engine, cx)));
+    let cancel = |cx: &mut Context<Shell>| button(shell, at, 2, "engine-cancel", Kind::Ghost, t!("engines.cancel")).on_click(cx.listener(move |this, _, _, cx| this.engine_cancel(engine, cx)));
     let copied = shell.engines.copied.is_some_and(|(e, at)| e == engine && at.elapsed() < std::time::Duration::from_millis(1600));
     let line = match card {
         Card::Idle => return None,
@@ -461,15 +475,17 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
         Card::Elsewhere => Line::new(t!("engines.elsewhere"), "").label_el(waiting(t!("engines.elsewhere").to_owned())).control(cancel(cx)),
         // Claude Code's page, from a conversation's card: its code is pasted there.
         Card::Paste { url } => {
-            let open = url.clone();
-            let controls = h_flex().gap_2().items_center().child(button(shell, at, 3, "engine-open-page", Kind::Ghost, t!("engines.open_page")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(&open)));
-            Line::new(t!("signin.paste_settings"), "").label_el(waiting(t!("signin.paste_settings").to_owned())).control(controls.child(cancel(cx)))
+            let line = Line::new(t!("signin.paste_settings"), "").label_el(waiting(t!("signin.paste_settings").to_owned())).control(cancel(cx));
+            match shell.signin_code.clone() {
+                Some(code) => line.below(paste_box(shell, at, engine, &code, url, cx)),
+                None => line,
+            }
         }
         Card::Browser { url } => {
             let mut controls = h_flex().gap_2().items_center();
             if let Some(url) = url.clone() {
                 let label = if copied { t!("engines.copied") } else { t!("engines.copy_link") };
-                controls = controls.child(button(shell, at, 2, "engine-copy-link", Kind::Ghost, label).icon(Icon::Copy).on_click(cx.listener(move |this, _, _, cx| this.engine_copy(engine, &url, cx))));
+                controls = controls.child(button(shell, at, 3, "engine-copy-link", Kind::Ghost, label).icon(Icon::Copy).on_click(cx.listener(move |this, _, _, cx| this.engine_copy(engine, &url, cx))));
             }
             Line::new(t!("engines.browser_wait"), t!("engines.browser_desc", host = host(shell))).label_el(waiting(t!("engines.browser_wait").to_owned())).control(controls.child(cancel(cx)))
         }
@@ -493,8 +509,8 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
                         .text_color(p.text)
                         .child(code.clone()),
                 )
-                .child(button(shell, at, 2, "engine-copy-code", Kind::Secondary, if copied { t!("engines.copied") } else { t!("engines.copy_code") }).icon(Icon::Copy).on_click(cx.listener(move |this, _, _, cx| this.engine_copy(engine, &copy, cx))))
-                .child(button(shell, at, 3, "engine-open-page", Kind::Ghost, t!("engines.open_page")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(&open)));
+                .child(button(shell, at, 3, "engine-copy-code", Kind::Secondary, if copied { t!("engines.copied") } else { t!("engines.copy_code") }).icon(Icon::Copy).on_click(cx.listener(move |this, _, _, cx| this.engine_copy(engine, &copy, cx))))
+                .child(button(shell, at, 4, "engine-open-page", Kind::Ghost, t!("engines.open_page")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(&open)));
             Line::new(t!("engines.code_title"), t!("engines.code_desc", url = shown)).label_el(waiting(t!("engines.code_title").to_owned())).control(cancel(cx)).below(code_el)
         }
         Card::Failed { problem, detail } => {
@@ -503,13 +519,13 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
             let said = (!detail.is_empty()).then(|| div().font_family(MONO).text_size(px(11.5)).line_height(px(17.)).text_color(p.muted).child(detail.clone()));
             let mut controls = h_flex().gap_2().items_center();
             if matches!(problem, engines::Problem::Daemon(equipe_core::protocol::SignInFailure::DeviceCodeOff)) {
-                controls = controls.child(button(shell, at, 2, "engine-chatgpt", Kind::Ghost, t!("engines.open_chatgpt_settings")).icon(Icon::External).on_click(|_, _, cx| cx.open_url("https://chatgpt.com/#settings/Security")));
+                controls = controls.child(button(shell, at, 3, "engine-chatgpt", Kind::Ghost, t!("engines.open_chatgpt_settings")).icon(Icon::External).on_click(|_, _, cx| cx.open_url("https://chatgpt.com/#settings/Security")));
             }
-            let dismiss = button(shell, at, 3, "engine-dismiss", Kind::Ghost, t!("engines.dismiss")).on_click(cx.listener(move |this, _, _, cx| {
+            let dismiss = button(shell, at, 4, "engine-dismiss", Kind::Ghost, t!("engines.dismiss")).on_click(cx.listener(move |this, _, _, cx| {
                 this.engines.keep(engine);
                 cx.notify();
             }));
-            let retry = button(shell, at, 1, "engine-retry", Kind::Secondary, t!("engines.retry")).icon(Icon::Retry).on_click(cx.listener(move |this, _, _, cx| this.engine_sign_in(engine, cx)));
+            let retry = button(shell, at, 2, "engine-retry", Kind::Secondary, t!("engines.retry")).icon(Icon::Retry).on_click(cx.listener(move |this, _, window, cx| this.engine_sign_in_any(engine, window, cx)));
             let label = h_flex().gap_2().items_center().child(icon(Icon::Warning, ICON_SM, p.danger())).child(t!("engines.failed_title"));
             let line = Line::new(t!("engines.failed_title"), desc).label_el(label).warn(true).control(controls.child(dismiss).child(retry));
             match said {
@@ -518,16 +534,50 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
             }
         }
         Card::ConfirmSignOut => {
-            let keep = button(shell, at, 1, "engine-keep", Kind::Ghost, t!("engines.keep")).on_click(cx.listener(move |this, _, _, cx| {
+            let keep = button(shell, at, 2, "engine-keep", Kind::Ghost, t!("engines.keep")).on_click(cx.listener(move |this, _, _, cx| {
                 this.engines.keep(engine);
                 cx.notify();
             }));
-            let out = button(shell, at, 2, "engine-sign-out-sure", Kind::Danger, t!("engines.sign_out")).on_click(cx.listener(move |this, _, _, cx| this.engine_sign_out(engine, cx)));
-            Line::new(t!("engines.confirm_sign_out", name = platform.name), t!("engines.confirm_sign_out_desc", host = host(shell), tool = platform.tool, name = platform.name)).warn(true).control(h_flex().gap_2().items_center().child(keep).child(out))
+            let out = button(shell, at, 3, "engine-sign-out-sure", Kind::Danger, t!("engines.sign_out")).on_click(cx.listener(move |this, _, _, cx| this.engine_sign_out(engine, cx)));
+            let mut desc = t!("engines.confirm_sign_out_desc", host = host(shell), tool = platform.tool, name = platform.name);
+            // Who is working on it now, so the person knows whose work this stops.
+            if let Some(members) = shell.engines.status(engine).and_then(|s| engines::members_line(s, &shell.model.squad)) {
+                desc = format!("{desc} {}", t!("engines.confirm_sign_out_members", members = members));
+            }
+            Line::new(t!("engines.confirm_sign_out", name = platform.name), desc).warn(true).control(h_flex().gap_2().items_center().child(keep).child(out))
         }
         Card::SigningOut => Line::new(t!("engines.signing_out"), "").label_el(waiting(t!("engines.signing_out").to_owned())),
     };
     Some(line)
+}
+
+/// Claude Code's page: open it, and the box its code is pasted into with Send.
+fn paste_box(shell: &Shell, at: usize, engine: Engine, code: &Entity<gpui_kit::component::input::InputState>, url: &str, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let open = url.to_owned();
+    h_flex()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(px(CONTROL + 4.))
+                .px_3()
+                .flex()
+                .items_center()
+                .rounded(px(R_MD))
+                .border_1()
+                .border_color(p.hair)
+                .bg(p.code_bg)
+                .font_family(MONO)
+                .text_size(px(13.))
+                .child(Input::new(code).appearance(false).bordered(false)),
+        )
+        .child(button(shell, at, 4, "engine-open-page", Kind::Ghost, t!("engines.open_page")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(&open)))
+        .child(button(shell, at, 3, "engine-paste-send", Kind::Primary, t!("signin.paste_send")).on_click(cx.listener(move |this, _, window, cx| this.signin_paste(engine, window, cx))))
+        .into_any_element()
 }
 
 /// Usage: the plan's windows where they are known; room for the rest.
@@ -669,6 +719,15 @@ impl Shell {
         }
         self.engines_later(engines::NO_ANSWER, cx);
         cx.notify();
+    }
+
+    /// "Sign in", "Use another account", "Retry": the platform's own sign-in —
+    /// Codex's from here, Claude Code's page with a box for the code it shows.
+    pub fn engine_sign_in_any(&mut self, engine: Engine, window: &mut Window, cx: &mut Context<Self>) {
+        match engines::platform(engine).signs_in {
+            SignsIn::FromApp => self.engine_sign_in(engine, cx),
+            SignsIn::InTerminal { .. } => self.signin_start(engine, window, cx),
+        }
     }
 
     pub fn engine_install(&mut self, engine: Engine, cx: &mut Context<Self>) {

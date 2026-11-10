@@ -176,6 +176,54 @@ async fn codex_signs_in_with_its_own_tool_on_the_daemons_machine_and_out_again()
     assert!(matches!(sign_in(&mut events).await, SignInStep::Failed { why: SignInFailure::Unsupported, .. }));
 }
 
+/// A `claude` that keeps its login as a file in `dir` and writes down how it
+/// was run: `auth status --json` says it (with the account's email), `auth
+/// logout` forgets it. Never the person's own Claude Code.
+fn fake_claude_login(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("claude");
+    let (login, calls) = (dir.join("login"), dir.join("calls"));
+    std::fs::write(&login, "").unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+echo "$*" >> '{calls}'
+case "$*" in
+  "auth status --json") if [ -f '{login}' ]; then echo '{{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max","email":"someone@example.com"}}'; else echo '{{"loggedIn":false}}'; exit 1; fi;;
+  "auth logout") rm -f '{login}'; echo 'Successfully logged out from your Anthropic account.';;
+  *) exit 2;;
+esac
+"#,
+        login = login.display(),
+        calls = calls.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// "Sign out" on Claude Code's card: the daemon runs `claude auth logout` —
+/// the tool's own command, nothing else — and every screen hears it signed out.
+#[tokio::test]
+async fn claude_code_signs_out_with_its_own_tool_when_asked_on_its_card() {
+    use_fake_codex();
+    let home = scratch("home");
+    let dir = scratch("claude-login");
+    let (core, mut events) = runtime::start(config(&home, &fake_claude_login(&dir)));
+    core.send(Command::Engines);
+    let before = engines(&mut events).await;
+    let claude = before.iter().find(|e| e.engine == Engine::Claude).unwrap();
+    assert_eq!((claude.state, claude.plan.as_deref(), claude.account.as_deref()), (EngineState::SignedIn, Some("max"), Some("someone@example.com")));
+
+    core.send(Command::SignOut { engine: Engine::Claude });
+    let signed_out = |e: &Event| matches!(e, Event::Engines { engines } if engines.iter().any(|s| s.engine == Engine::Claude && s.state == EngineState::SignedOut));
+    let Event::Engines { engines: out } = next(&mut events, signed_out).await else { unreachable!() };
+    let claude = out.iter().find(|e| e.engine == Engine::Claude).unwrap();
+    assert_eq!(claude.account, None, "no account once signed out");
+    let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
+    let auth: Vec<&str> = calls.lines().filter(|l| l.starts_with("auth") && *l != "auth status --json").collect();
+    assert_eq!(auth, vec!["auth logout"], "only the tool's own logout is run, once: {calls}");
+}
+
 /// Nebius Token Factory's status, as every screen hears it.
 async fn nebius(events: &mut UnboundedReceiver<Event>) -> equipe_core::protocol::NebiusStatus {
     match next(events, |e| matches!(e, Event::Nebius { .. })).await {

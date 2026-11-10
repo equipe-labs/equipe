@@ -122,7 +122,9 @@ pub async fn claude(binary: &str) -> EngineStatus {
         Ok(None) => EngineStatus::new(Engine::Claude, EngineState::NotInstalled),
         Ok(Some(status)) if status.logged_in => {
             let plan = if status.uses_subscription() { status.subscription_type.clone() } else { None };
-            EngineStatus { plan, per_token: !status.uses_subscription(), ..EngineStatus::new(Engine::Claude, EngineState::SignedIn) }
+            // Who as: the email Claude Code prints about itself — never anything it keeps.
+            let account = status.email.clone().filter(|e| !e.trim().is_empty());
+            EngineStatus { plan, account, per_token: !status.uses_subscription(), ..EngineStatus::new(Engine::Claude, EngineState::SignedIn) }
         }
         Ok(Some(_)) => EngineStatus::new(Engine::Claude, EngineState::SignedOut),
         Err(err) => EngineStatus { detail: Some(err.to_string()), ..EngineStatus::new(Engine::Claude, EngineState::Unknown) },
@@ -331,6 +333,17 @@ pub async fn codex_logout(binary: &str) -> Result<(), String> {
     }
 }
 
+/// `claude auth logout`: Claude Code forgets its own login.
+pub async fn claude_logout(binary: &str) -> Result<(), String> {
+    let run = equipe_providers::tools_path::command(binary).args(["auth", "logout"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    match tokio::time::timeout(ASK_WAIT, run).await {
+        Err(_) => Err(format!("`{binary} auth logout` didn't answer in {}s", ASK_WAIT.as_secs())),
+        Ok(Err(err)) => Err(err.to_string()),
+        Ok(Ok(out)) if out.status.success() => Ok(()),
+        Ok(Ok(out)) => Err(short(plain(&String::from_utf8_lossy(&out.stderr)).trim())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,5 +489,8 @@ mod tests {
         assert!(matches!(none, SignInStep::Failed { why: SignInFailure::NotInstalled, .. }));
         let bye = script(&dir, "bye", "[ \"$1\" = logout ] && echo 'Successfully logged out' >&2");
         assert_eq!(codex_logout(&bye).await, Ok(()));
+        let out = script(&dir, "claude-out", "[ \"$1 $2\" = 'auth logout' ]");
+        assert_eq!(claude_logout(&out).await, Ok(()));
+        assert!(claude_logout(dir.join("nope").to_str().unwrap()).await.is_err());
     }
 }
