@@ -304,6 +304,7 @@
   "card.done_taken": "Übernommen · zu den Aufgaben hinzugefügt",
   "card.files.one": "{count} Datei",
   "card.files.other": "{count} Dateien",
+  "card.loading": "Wird gesucht …",
   "card.not_found": "Nicht gefunden",
   "card.open": "Öffnen",
   "card.plan": "Plan",

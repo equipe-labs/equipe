@@ -304,6 +304,7 @@
   "card.done_taken": "Pris · ajouté aux tâches",
   "card.files.one": "{count} fichier",
   "card.files.other": "{count} fichiers",
+  "card.loading": "Recherche…",
   "card.not_found": "Introuvable",
   "card.open": "Ouvrir",
   "card.plan": "Plan",

@@ -4385,6 +4385,11 @@ async fn the_persons_edits_are_checked_then_told_to_the_pm_and_the_members_conce
     let Some(Event::TicketHistory { ticket: 1, entries, .. }) = history.last() else { panic!("{history:#?}") };
     let kinds: Vec<(&str, &str)> = entries.iter().map(|e| (e.by.as_str(), e.kind.as_str())).collect();
     assert!(kinds.contains(&("you", "edited")) && kinds.contains(&("you", "reassigned")), "{kinds:?}");
+    // The read sends the ticket itself first, so a screen that missed it mends its list; a number never on the board gets its record alone.
+    assert!(ticket_changed(&history).iter().any(|t| t.id == 1), "{history:#?}");
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 99 });
+    let none = until(&mut events, |e| matches!(e, Event::TicketHistory { ticket: 99, .. })).await;
+    assert!(ticket_changed(&none).is_empty(), "{none:#?}");
     handle.shutdown().await;
 }
 

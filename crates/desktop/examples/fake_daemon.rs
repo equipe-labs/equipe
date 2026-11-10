@@ -981,9 +981,14 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
             let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
             Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
         }
+        // `FAKE_NO_LOOKUP=1`: a daemon slow to answer, to shoot a card that is still looking.
+        Command::TicketHistory { .. } if std::env::var_os("FAKE_NO_LOOKUP").is_some() => Some(Vec::new()),
         Command::TicketHistory { ticket, .. } => {
             let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
-            Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
+            // As the daemon does: the ticket first, if it has it.
+            let mut out: Vec<Event> = all.iter().find(|t| t.id == *ticket).map(|t| Event::TicketChanged { squad: squad(), ticket: t.clone() }).into_iter().collect();
+            out.push(Event::TicketHistory { squad: squad(), ticket: *ticket, entries });
+            Some(out)
         }
         _ => None,
     }
@@ -1524,7 +1529,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             idle_wake_hours: Some(routine::idle_wake_hours()),
                             signals: signals::signals(),
                             accepts: accept::cards(),
-                            tickets: tickets().lock().unwrap().clone(),
+                            // `FAKE_STALE=117`: the snapshot lacks that ticket (as a missed sync would), the board still has it.
+                            tickets: {
+                                let stale: Option<u32> = std::env::var("FAKE_STALE").ok().and_then(|v| v.parse().ok());
+                                tickets().lock().unwrap().iter().filter(|t| Some(t.id) != stale).cloned().collect()
+                            },
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             disk: disk::status(),

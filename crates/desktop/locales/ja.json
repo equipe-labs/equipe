@@ -300,6 +300,7 @@
   "card.done_pushed": "mainにマージしてpushしました",
   "card.done_taken": "受け取りました · やることに追加しました",
   "card.files.other": "{count}ファイル",
+  "card.loading": "確認中…",
   "card.not_found": "見つかりません",
   "card.open": "開く",
   "card.plan": "計画",

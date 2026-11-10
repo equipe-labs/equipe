@@ -3,7 +3,7 @@
 //! No UI types here, so the rules can be tested without a window.
 
 use equipe_core::t;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -430,6 +430,9 @@ pub struct Model {
     browser_tabs: HashMap<String, LaneTabs>,
     /// Tickets' records, as the daemon last sent them (a ticket page asks).
     pub histories: HashMap<TicketId, Vec<TicketEntry>>,
+    /// Tickets the daemon was asked about and answered that it has none of
+    /// (a card's number that is not on the board): only these read "Not found".
+    pub absent: HashSet<TicketId>,
     /// Nemotron's reviews of handed-in work, by ticket (Nebius Token Factory).
     pub reviews: HashMap<TicketId, equipe_core::protocol::review::CodeReview>,
     /// Bumped whenever a ticket or a record changes, so the screens draw again.
@@ -561,6 +564,7 @@ impl Model {
             browser_asked: HashMap::new(),
             browser_tabs: HashMap::new(),
             histories: HashMap::new(),
+            absent: HashSet::new(),
             reviews: HashMap::new(),
             board_rev: 0,
             squad_errors: 0,
@@ -1086,6 +1090,7 @@ impl Model {
             }
         }
         self.tickets = snapshot.tickets.clone();
+        self.absent.clear();
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
         self.pm_accepts = snapshot.pm_accepts;
@@ -1354,6 +1359,10 @@ impl Model {
         match event {
             Event::TicketChanged { ticket, .. } => self.on_ticket(&ticket),
             Event::TicketHistory { squad, ticket, entries } if squad == self.squad => {
+                // The ticket itself comes before its record: still not here, it is not on the board.
+                if !self.tickets.iter().any(|t| t.id == ticket) {
+                    self.absent.insert(ticket);
+                }
                 if self.histories.get(&ticket) != Some(&entries) {
                     self.histories.insert(ticket, entries);
                     self.board_rev += 1;
@@ -1643,6 +1652,7 @@ impl Model {
     }
 
     fn on_ticket(&mut self, ticket: &Ticket) {
+        self.absent.remove(&ticket.id);
         let was = self.tickets.iter().find(|t| t.id == ticket.id).map(|t| t.status);
         // Past its design QA: ready for the person now, as if just handed in.
         let qa_passed = ticket.ready_for_review() && self.tickets.iter().any(|t| t.id == ticket.id && t.in_design_qa());
@@ -2859,6 +2869,29 @@ mod tests {
 
     fn ticket(id: u32, status: &str, note: Option<&str>) -> Ticket {
         serde_json::from_value(serde_json::json!({"id": id, "title": "t", "body": "", "status": status, "owner": "backend", "assignee": null, "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": note})).unwrap()
+    }
+
+    #[test]
+    fn a_ticket_missing_from_the_snapshot_is_found_again_by_its_lookup_and_only_a_real_absence_reads_not_found() {
+        let mut model = Model::new("acme");
+        let tickets = |ids: &[u32]| Update::Attached(Hello { version: "x".into(), snapshot: Snapshot { squad: "acme".into(), tickets: ids.iter().map(|i| ticket(*i, "todo", None)).collect(), ..Default::default() } });
+        // The first snapshot lacks T-513, which the board has.
+        model.apply(tickets(&[1]), T0);
+        assert!(model.tickets.iter().all(|t| t.id != 513) && !model.absent.contains(&513), "not yet asked: not 'gone'");
+        // The daemon's answer to the lookup: the ticket, then its record. Mended without a reattach.
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(513, "review", None) }), T0);
+        model.apply(Update::Event(Event::TicketHistory { squad: "acme".into(), ticket: 513, entries: Vec::new() }), T0);
+        assert!(model.tickets.iter().any(|t| t.id == 513) && !model.absent.contains(&513));
+        // A number the board never had: the record comes alone, and that is "Not found".
+        model.apply(Update::Event(Event::TicketHistory { squad: "acme".into(), ticket: 999, entries: Vec::new() }), T0);
+        assert!(model.absent.contains(&999));
+        // It turns up later (created): found, no longer absent.
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(999, "todo", None) }), T0);
+        assert!(!model.absent.contains(&999) && model.tickets.iter().any(|t| t.id == 999));
+        // A snapshot that comes later and stale again lacks 513: the next lookup mends it, absence is forgotten.
+        model.apply(Update::Event(Event::TicketHistory { squad: "acme".into(), ticket: 7, entries: Vec::new() }), T0);
+        model.apply(tickets(&[1]), T0);
+        assert!(model.absent.is_empty() && model.tickets.iter().all(|t| t.id != 513));
     }
 
     #[test]

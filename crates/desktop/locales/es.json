@@ -304,6 +304,7 @@
   "card.done_taken": "Aceptada · añadida a pendientes",
   "card.files.one": "{count} archivo",
   "card.files.other": "{count} archivos",
+  "card.loading": "Buscando…",
   "card.not_found": "No encontrado",
   "card.open": "Abrir",
   "card.plan": "Plan",

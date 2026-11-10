@@ -401,6 +401,54 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
             },
             {
+              "id": "ticket-card-missing",
+              "label": "A ticket card for a number not on the board: Not found",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-missing-long",
+              "label": "A ticket card for a number not on the board, in German",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`; EQUIPE_LANG=de"
+            },
+            {
+              "id": "ticket-card-recovered",
+              "label": "A ticket card for a ticket the list missed: looked up, shown",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-large",
+              "label": "Large text",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800;zoom:in;zoom:in;wait:600;hover:398,535;wait:1500`"
+            },
+            {
+              "id": "ticket-card-zoomed",
+              "label": "Zoomed to 150%, narrowest width: the card keeps its gap over the link",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800;zoom:150;wait:600`"
+            },
+            {
+              "id": "ticket-card-zoomed-missing",
+              "label": "Zoomed to 150%: Not found, with its mark",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800;zoom:150;wait:600`"
+            },
+            {
+              "id": "ticket-card-looking",
+              "label": "A ticket card the list missed, while the daemon is still asked",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;hover:421,432;wait:700`"
+            },
+            {
+              "id": "ticket-card-looking-narrow",
+              "label": "The same, at the narrowest width",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800`"
+            },
+            {
               "id": "ask-list",
               "label": "A reply asking a numbered list",
               "kind": "default",
