@@ -125,11 +125,15 @@ const measure = () => {
     for (const c of layers.reverse()) bg = { r: c.r * c.a + bg.r * (1 - c.a), g: c.g * c.a + bg.g * (1 - c.a), b: c.b * c.a + bg.b * (1 - c.a) };
     return `rgb(${Math.round(bg.r)}, ${Math.round(bg.g)}, ${Math.round(bg.b)})`;
   };
+  // Native :disabled includes fieldset inheritance and its first-legend exception.
+  // Do not exempt a whole fieldset: its prose, links and first legend stay active.
+  // ARIA/data attributes and CSS alone do not prove behavioral inactivity.
+  const inactiveText = (el) => !!el.closest(':disabled:not(fieldset)');
   const texts = [];
   for (const el of all) {
     if (texts.length >= 400) break;
     const text = ownText(el);
-    if (!text || !shown(el)) continue;
+    if (!text || !shown(el) || inactiveText(el)) continue;
     const st = getComputedStyle(el);
     texts.push({ selector: name(el), text: text.slice(0, 60), fg: st.color, bg: backdrop(el), size: parseFloat(st.fontSize), weight: parseInt(st.fontWeight, 10) || 400 });
   }
