@@ -254,6 +254,17 @@ so the daemon finds a `claude` installed after it started. `EQUIPE_SCRIPT=setup:
 a state: `nogit · gitasked · missing · confirm · installing · signedout · waiting · ready · failed` (step 1),
 `squad · creating · error` (step 2).
 
+**Deleting a squad** (`views/delete_squad.rs`): "Delete <squad>…" at the foot of the squad
+switcher, and Settings › Squad & machine, act on the window's squad. The question is the one
+every destructive action asks (`sheet::Ask`, its yes in red and never answered by ⏎): it names
+the squad and says what happens — how many members stop and tickets are open, that the folder
+moves to `~/.equipe/deleted/` on the daemon's machine, that projects aren't touched, and, for
+the only squad, that a new one comes next. Yes sends `Command::DeleteSquad` over the window's
+connection, so a squad on another machine is deleted by that machine's daemon. Every window
+hears `SquadDeleted`: the squad leaves its switcher, and a window on it attaches to the squad
+the daemon names next, or to the first-run screen when none is left. `EQUIPE_SCRIPT=popup:account`
+shows the item; `delsquad[:far]`, the question.
+
 **Trying it.** `cargo run -p equipe-desktop --example remote_probe -- user@host[:port]
 [--trust]` runs the same link without a window and prints what it says (a password from
 `EQUIPE_PROBE_PASSWORD`, `--trust` to accept a first-seen host key; `local` for this

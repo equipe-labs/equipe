@@ -475,6 +475,7 @@
   "squad_memory.index_title": "스쿼드 기억",
   "squad_memory.index_intro": "스쿼드가 함께 아는 것들이에요. 파일 하나에 사실 하나이고, 이 목록은 equipe가 파일들로 만들어요. 파일을 고치거나 지우면 다음 대화부터 모든 멤버에게 반영돼요. 직접 고친 내용이 우선해요.",
   "error.project_not_removed": "프로젝트를 빼지 못했어요: {why}",
+  "error.squad_not_deleted": "스쿼드를 삭제하지 못했어요: {why}. 멤버는 데몬을 다시 시작하면 돌아와요.",
   "error.push_conflicts.one": "{branch}에 합쳤지만 원격 저장소에는 올리지 못했어요. 원격 {branch}에 이 컴퓨터에 없는 커밋이 있는데, 파일 {count}개가 충돌해요: {files}. PM에게 충돌을 풀어 달라고 하면 돼요.",
   "error.push_conflicts.other": "{branch}에 합쳤지만 원격 저장소에는 올리지 못했어요. 원격 {branch}에 이 컴퓨터에 없는 커밋이 있는데, 파일 {count}개가 충돌해요: {files}. PM에게 충돌을 풀어 달라고 하면 돼요.",
   "news.routine_declined": "정기 업무 제안을 거절했어요 · {title}",
