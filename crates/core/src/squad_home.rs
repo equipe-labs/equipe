@@ -71,24 +71,45 @@ pub fn ensure(home: &Path, squad: &str, language: Option<&str>) -> Result<bool, 
 /// No signing and no hooks, in the home's own settings too: tickets' worktrees of
 /// it commit and merge with plain git, which reads them.
 fn quiet(dir: &Path) -> Result<(), String> {
+    exclude_recordings(dir);
     git(dir, &["config", "commit.gpgsign", "false"])?;
     git(dir, &["config", "core.hooksPath", "/dev/null"]).map(|_| ())
 }
 
-fn readme_text(squad: &str, language: Option<&str>) -> String {
-    if language == Some("Korean") {
-        format!(
-            "# {squad} 스쿼드 폴더\n\n스쿼드가 함께 쓰는 폴더입니다. 멤버들은 여기서 일을 시작하고, 코드가 아닌 결과물은 여기에 남깁니다.\n\n\
-- `notes/` — 조사, 메모, 참고 자료\n- `outputs/` — 맡긴 일의 결과물 (`outputs/T-12 제목/…`)\n\n\
-파일을 직접 고치거나 넣어도 됩니다. equipe가 바뀐 내용을 모두 기억하므로 언제든 되돌릴 수 있습니다(`/home undo`).\n"
-        )
-    } else {
-        format!(
-            "# The {squad} squad's folder\n\nWhere the squad works together: members start here, and work that isn't code lands here.\n\n\
-- `notes/` — research, findings, references\n- `outputs/` — what tasks hand over (`outputs/T-12 title/…`)\n\n\
-You may edit or drop files here yourself. equipe remembers every change, so any of them can be taken back (`/home undo`).\n"
-        )
+/// Phone recordings (`crate::phone`) live in the folder, for members and the
+/// person to open, but never in its history: videos are big and go with their
+/// ticket. Kept out in git's own local list (`.git/info/exclude`), not the
+/// `.gitignore` the person sees and every ticket's worktree shares.
+fn exclude_recordings(dir: &Path) {
+    let file = dir.join(".git").join("info").join("exclude");
+    let line = format!("/{}/", crate::phone::RECORDINGS);
+    let now = std::fs::read_to_string(&file).unwrap_or_default();
+    if now.lines().any(|l| l.trim() == line) {
+        return;
     }
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let sep = if now.is_empty() || now.ends_with('\n') { "" } else { "\n" };
+    let _ = std::fs::write(&file, format!("{now}{sep}{line}\n"));
+}
+
+fn readme_text(squad: &str, language: Option<&str>) -> String {
+    let words = crate::i18n::core(named(language));
+    format!(
+        "# {}\n\n{}\n\n- `notes/` — {}\n- `outputs/` — {}\n\n{}\n",
+        words.fill("squad_home.readme_title", &[("squad", squad.to_owned())]),
+        words.get("squad_home.readme_intro"),
+        words.get("squad_home.readme_notes"),
+        words.get("squad_home.readme_outputs"),
+        words.get("squad_home.readme_edit"),
+    )
+}
+
+/// The language a squad's `language` (its English name: `French`) names; English when none,
+/// or when equipe doesn't speak it.
+pub(crate) fn named(language: Option<&str>) -> crate::i18n::Lang {
+    language.and_then(crate::i18n::Lang::from_english_name).unwrap_or(crate::i18n::Lang::En)
 }
 
 /// One saved change to the home.
@@ -213,6 +234,23 @@ pub fn undo(dir: &Path, nth: usize) -> Result<Change, String> {
     let Some(target) = recent.get(nth.max(1) - 1).cloned() else {
         return Err("There is no such change to take back.".into());
     };
+    take_back(dir, &target)
+}
+
+/// How far back a change may be named to take it back.
+const UNDO_REACH: usize = 200;
+
+/// Take back the change `id` — one of the latest [`changes`] lists, never any
+/// other revision — as [`undo`] does. Returns the change taken back and the
+/// person's change that took it back.
+pub fn undo_change(dir: &Path, id: &str) -> Result<(Change, Change), String> {
+    save_persons(dir)?;
+    let target = changes(dir, UNDO_REACH)?.into_iter().find(|c| c.id == id).ok_or("There is no such change to take back.")?;
+    let undo = take_back(dir, &target)?;
+    Ok((target, undo))
+}
+
+fn take_back(dir: &Path, target: &Change) -> Result<Change, String> {
     if git(dir, &["revert", "--no-commit", &target.id]).is_err() {
         let _ = git(dir, &["revert", "--abort"]);
         let _ = git(dir, &["reset", "-q", "--hard", "HEAD"]);
@@ -316,6 +354,21 @@ mod tests {
         assert!(changes(&dir, 10).unwrap().is_empty(), "making the folder isn't a change to show");
         assert_eq!(squad_of(&home, &dir.join("notes")).as_deref(), Some("acme"));
         assert_eq!(squad_of(&home, &home.join("squads/acme/members")), None);
+    }
+
+    #[test]
+    fn phone_recordings_stay_out_of_the_folders_history() {
+        let home = home();
+        ensure(&home, "acme", None).unwrap();
+        let dir = path(&home, "acme");
+        std::fs::create_dir_all(dir.join("recordings/T-3/checkout")).unwrap();
+        std::fs::write(dir.join("recordings/T-3/checkout.mp4"), b"video").unwrap();
+        std::fs::write(dir.join("recordings/T-3/checkout/01-0.0s.jpg"), b"frame").unwrap();
+        assert_eq!(save(&dir, "qa", "test checkout").unwrap(), None, "nothing to save: recordings aren't the folder's history");
+        assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), ".DS_Store\n*.tmp\n", "the person's .gitignore is left as it was");
+        ensure(&home, "acme", None).unwrap();
+        let exclude = std::fs::read_to_string(dir.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches("/recordings/").count(), 1, "said once: {exclude}");
     }
 
     #[test]

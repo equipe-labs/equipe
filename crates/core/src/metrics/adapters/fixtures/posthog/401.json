@@ -1,0 +1,1 @@
+{"type":"authentication_error","code":"authentication_failed","detail":"Personal API key found in request Authorization header is invalid.","attr":null}

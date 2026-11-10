@@ -24,13 +24,96 @@ use tokio::process::Command;
 /// How long a sign-in may wait for the person (`codex login --device-auth`'s
 /// own code lasts as long).
 pub const SIGN_IN_WAIT: Duration = Duration::from_secs(15 * 60);
+/// How long an engine's installer may take.
+pub const INSTALL_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// The line that installs `engine`'s tool: its maker's own installer, which
+/// Windows installers are PowerShell; Unix installers are sh.
+pub fn installer(engine: Engine) -> &'static str {
+    #[cfg(windows)]
+    return match engine {
+        Engine::Claude => "irm https://claude.ai/install.ps1 | iex",
+        // Codex's standalone installer is currently documented for macOS and
+        // Linux; npm is the official Windows installation path.
+        Engine::Codex => "npm install -g @openai/codex",
+    };
+    #[cfg(not(windows))]
+    match engine {
+        Engine::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
+        Engine::Codex => "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+    }
+}
+
+/// Install `engine`'s tool here with [`installer`], as the person asked.
+pub async fn install(engine: Engine) -> equipe_protocol::InstallStep {
+    install_with(installer(engine), INSTALL_WAIT).await
+}
+
+/// Install `engine`'s tool, or bring the one already here up to date. Claude
+/// Code that is already installed updates itself (`claude update`) wherever
+/// it came from — its installer, npm or Homebrew — rather than the installer
+/// laying a second copy beside one put there another way. `claude_binary` is
+/// the one equipe runs; when it isn't there, the installer puts it in.
+pub async fn install_or_update(engine: Engine, claude_binary: &str) -> equipe_protocol::InstallStep {
+    if engine == Engine::Claude {
+        let mut update = Command::new(equipe_providers::tools_path::resolved(claude_binary));
+        update.arg("update");
+        if let Some(step) = run_with(update, INSTALL_WAIT).await {
+            return step;
+        }
+    }
+    install(engine).await
+}
+
+/// Run `line` in the platform's installer shell: done when it exits well,
+/// else failed with its last
+/// words (or the wait run out).
+pub async fn install_with(line: &str, wait: Duration) -> equipe_protocol::InstallStep {
+    #[cfg(windows)]
+    let (shell, missing) = {
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", line]);
+        (command, "PowerShell not found")
+    };
+    #[cfg(not(windows))]
+    let (shell, missing) = {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", line]);
+        (command, "/bin/sh not found")
+    };
+    run_with(shell, wait).await.unwrap_or_else(|| equipe_protocol::InstallStep::Failed { detail: missing.into() })
+}
+
+/// Run `command` to its end: done when it exits well, else failed with its
+/// last words (or the wait run out); `None` when its program isn't there.
+async fn run_with(mut command: Command, wait: Duration) -> Option<equipe_protocol::InstallStep> {
+    use equipe_protocol::InstallStep;
+    let run = command.stdin(Stdio::null()).kill_on_drop(true).output();
+    Some(match tokio::time::timeout(wait, run).await {
+        Ok(Ok(out)) if out.status.success() => InstallStep::Done,
+        Ok(Ok(out)) => {
+            let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            InstallStep::Failed { detail: last_words(&said) }
+        }
+        Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Ok(Err(err)) => InstallStep::Failed { detail: err.to_string() },
+        Err(_) => InstallStep::Failed { detail: String::new() },
+    })
+}
+
+/// The last few lines of what a tool said, for a screen.
+fn last_words(said: &str) -> String {
+    let lines: Vec<&str> = said.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(4)..].join("\n")
+}
 /// How long `codex login status` and `codex logout` may take.
 const ASK_WAIT: Duration = Duration::from_secs(20);
 
 /// The `codex` to run: `$EQUIPE_CODEX` (tests, an install off the PATH), else
 /// the one on the PATH.
 pub fn codex_binary() -> String {
-    std::env::var("EQUIPE_CODEX").ok().filter(|b| !b.is_empty()).unwrap_or_else(|| "codex".to_owned())
+    let binary = std::env::var("EQUIPE_CODEX").ok().filter(|b| !b.is_empty()).unwrap_or_else(|| "codex".to_owned());
+    equipe_providers::tools_path::resolved(&binary).to_string_lossy().into_owned()
 }
 
 /// Claude Code: what `claude auth status` says of itself.
@@ -39,7 +122,9 @@ pub async fn claude(binary: &str) -> EngineStatus {
         Ok(None) => EngineStatus::new(Engine::Claude, EngineState::NotInstalled),
         Ok(Some(status)) if status.logged_in => {
             let plan = if status.uses_subscription() { status.subscription_type.clone() } else { None };
-            EngineStatus { plan, per_token: !status.uses_subscription(), ..EngineStatus::new(Engine::Claude, EngineState::SignedIn) }
+            // Who as: the email Claude Code prints about itself — never anything it keeps.
+            let account = status.email.clone().filter(|e| !e.trim().is_empty());
+            EngineStatus { plan, account, per_token: !status.uses_subscription(), ..EngineStatus::new(Engine::Claude, EngineState::SignedIn) }
         }
         Ok(Some(_)) => EngineStatus::new(Engine::Claude, EngineState::SignedOut),
         Err(err) => EngineStatus { detail: Some(err.to_string()), ..EngineStatus::new(Engine::Claude, EngineState::Unknown) },
@@ -50,7 +135,7 @@ pub async fn claude(binary: &str) -> EngineStatus {
 /// login (`equipe login codex`) is kept too.
 pub async fn codex(binary: &str, store: &CredentialStore) -> EngineStatus {
     let legacy = matches!(store.load("openai"), Ok(Some(cred)) if cred.method == AuthMethod::OauthSubscription);
-    let asked = Command::new(binary).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    let asked = Command::new(equipe_providers::tools_path::resolved(binary)).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
     let mut status = match tokio::time::timeout(ASK_WAIT, asked).await {
         Err(_) => EngineStatus { detail: Some(format!("`{binary} login status` didn't answer in {}s", ASK_WAIT.as_secs())), ..EngineStatus::new(Engine::Codex, EngineState::Unknown) },
         Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => EngineStatus::new(Engine::Codex, EngineState::NotInstalled),
@@ -199,7 +284,7 @@ impl LoginOutput {
 /// each step as it comes; the last step is how it ended. Dropped, the
 /// process goes with it.
 pub async fn codex_login(binary: &str, device: bool, tell: impl Fn(SignInStep)) -> SignInStep {
-    let mut command = Command::new(binary);
+    let mut command = Command::new(equipe_providers::tools_path::resolved(binary));
     command.arg("login");
     if device {
         command.arg("--device-auth");
@@ -239,9 +324,20 @@ pub async fn codex_login(binary: &str, device: bool, tell: impl Fn(SignInStep)) 
 
 /// `codex logout`: the tool forgets its own login.
 pub async fn codex_logout(binary: &str) -> Result<(), String> {
-    let run = Command::new(binary).arg("logout").stdin(Stdio::null()).kill_on_drop(true).output();
+    let run = Command::new(equipe_providers::tools_path::resolved(binary)).arg("logout").stdin(Stdio::null()).kill_on_drop(true).output();
     match tokio::time::timeout(ASK_WAIT, run).await {
         Err(_) => Err(format!("`{binary} logout` didn't answer in {}s", ASK_WAIT.as_secs())),
+        Ok(Err(err)) => Err(err.to_string()),
+        Ok(Ok(out)) if out.status.success() => Ok(()),
+        Ok(Ok(out)) => Err(short(plain(&String::from_utf8_lossy(&out.stderr)).trim())),
+    }
+}
+
+/// `claude auth logout`: Claude Code forgets its own login.
+pub async fn claude_logout(binary: &str) -> Result<(), String> {
+    let run = equipe_providers::tools_path::command(binary).args(["auth", "logout"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    match tokio::time::timeout(ASK_WAIT, run).await {
+        Err(_) => Err(format!("`{binary} auth logout` didn't answer in {}s", ASK_WAIT.as_secs())),
         Ok(Err(err)) => Err(err.to_string()),
         Ok(Ok(out)) if out.status.success() => Ok(()),
         Ok(Ok(out)) => Err(short(plain(&String::from_utf8_lossy(&out.stderr)).trim())),
@@ -251,6 +347,53 @@ pub async fn codex_logout(binary: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_installer_that_works_is_done_and_one_that_fails_says_its_last_words() {
+        use equipe_protocol::InstallStep;
+        assert_eq!(install_with("true", Duration::from_secs(5)).await, InstallStep::Done);
+        let failed = install_with("echo one; echo two; echo 'no curl here' >&2; exit 3", Duration::from_secs(5)).await;
+        assert_eq!(failed, InstallStep::Failed { detail: "one\ntwo\nno curl here".into() });
+        assert!(matches!(install_with("sleep 5", Duration::from_millis(100)).await, InstallStep::Failed { .. }), "the wait runs out");
+    }
+
+    #[tokio::test]
+    async fn an_installed_claude_code_updates_itself_rather_than_being_installed_again() {
+        use equipe_protocol::InstallStep;
+        let dir = std::env::temp_dir().join(format!("equipe-claude-update-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A Claude Code put here some other way (npm, Homebrew): asked to
+        // update itself, it does — and remembers that it was asked.
+        let claude = dir.join("claude");
+        let asked = dir.join("asked");
+        std::fs::write(&claude, format!("#!/bin/sh\necho \"$@\" > '{}'\n", asked.display())).unwrap();
+        std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert_eq!(install_or_update(Engine::Claude, &claude.to_string_lossy()).await, InstallStep::Done);
+        assert_eq!(std::fs::read_to_string(&asked).unwrap().trim(), "update");
+        // Its own update failing says so; the installer isn't run behind it.
+        std::fs::write(&claude, "#!/bin/sh\necho 'cannot update a managed install' >&2\nexit 1\n").unwrap();
+        let failed = install_or_update(Engine::Claude, &claude.to_string_lossy()).await;
+        assert_eq!(failed, InstallStep::Failed { detail: "cannot update a managed install".into() });
+        // Not there at all: nothing to update — `run_with` says so, and the installer would put it in.
+        let mut missing = Command::new(dir.join("no-claude-here"));
+        missing.arg("update");
+        assert_eq!(run_with(missing, Duration::from_secs(5)).await, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn engines_install_with_their_makers_installers_never_npm() {
+        #[cfg(not(windows))]
+        for engine in [Engine::Claude, Engine::Codex] {
+            assert!(installer(engine).starts_with("curl -fsSL https://"), "{}", installer(engine));
+            assert!(!installer(engine).contains("npm"));
+        }
+        #[cfg(windows)]
+        {
+            assert!(installer(Engine::Claude).contains("install.ps1"));
+            assert_eq!(installer(Engine::Codex), "npm install -g @openai/codex");
+        }
+    }
 
     /// What `codex login --device-auth` 0.154 prints, colours and all.
     const DEVICE: &str = "\nWelcome to Codex [v\u{1b}[90m0.154.0\u{1b}[0m]\n\u{1b}[90mOpenAI's command-line coding agent\u{1b}[0m\n\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \u{1b}[94mhttps://auth.openai.com/codex/device\u{1b}[0m\n\n2. Enter this one-time code \u{1b}[90m(expires in 15 minutes)\u{1b}[0m\n   \u{1b}[94mABCD-EFGH2\u{1b}[0m\n\n\u{1b}[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\u{1b}[0m\n";
@@ -346,5 +489,8 @@ mod tests {
         assert!(matches!(none, SignInStep::Failed { why: SignInFailure::NotInstalled, .. }));
         let bye = script(&dir, "bye", "[ \"$1\" = logout ] && echo 'Successfully logged out' >&2");
         assert_eq!(codex_logout(&bye).await, Ok(()));
+        let out = script(&dir, "claude-out", "[ \"$1 $2\" = 'auth logout' ]");
+        assert_eq!(claude_logout(&out).await, Ok(()));
+        assert!(claude_logout(dir.join("nope").to_str().unwrap()).await.is_err());
     }
 }

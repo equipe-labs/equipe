@@ -2,4 +2,4 @@
 "CFBundleDisplayName" = "equipe";
 "CFBundleName" = "equipe";
 "NSMicrophoneUsageDescription" = "你用語音輸入訊息時，equipe 會使用麥克風。聲音不會離開這台 Mac。";
-"NSSpeechRecognitionUsageDescription" = "equipe 在這台 Mac 上把你說的話轉成文字，放進輸入框。";
+"NSSpeechRecognitionUsageDescription" = "equipe 在這台 Mac 上把你說的話或附加的錄音轉成文字。";

@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use equipe_core::protocol::rpc::{Attached, Hello, Squads};
+use equipe_core::protocol::telemetry::TelemetryStatus;
 use equipe_core::protocol::{Command, Event};
 use tokio::net::UnixStream;
 use tokio::sync::Notify;
@@ -52,6 +53,9 @@ impl Target {
 }
 
 /// What the link tells the window.
+// The hello is the big one, and there is one per connection; boxing it would
+// spare the events that follow a few hundred bytes each, in a channel.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Update {
     /// The squads on the daemon's machine; before each `Attached`.
@@ -67,6 +71,22 @@ pub enum Update {
     /// Not attached, and why. Retrying in the background — unless the cause is
     /// one the person has to fix.
     Down(Failure),
+    /// How far a connection over SSH has got; `Reaching` again on each try.
+    Leg(Leg),
+    /// Where that connection goes, as `ssh` resolved it: `110.66.18.3:22`.
+    Door(String),
+}
+
+/// How far a connection over SSH has got, for the screen that waits on it:
+/// `ssh` itself says nothing until it is through or has given up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Leg {
+    /// Finding the machine: its name looked up, its door knocked on.
+    Reaching,
+    /// It answered: signing in.
+    SigningIn,
+    /// Signed in: equipe there is starting and sending the squad.
+    Opening,
 }
 
 /// How long to wait between attempts: doubling from `min` up to `max`.
@@ -95,6 +115,8 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 /// How often the clock is looked at, to notice the Mac slept.
 const TICK: Duration = Duration::from_secs(2);
+/// How long a knock on the far door waits: as long as `ssh` does (`ConnectTimeout`).
+const KNOCK_WAIT: Duration = Duration::from_secs(15);
 /// A gap this much longer than a tick means the machine was asleep.
 const SLEPT: Duration = Duration::from_secs(10);
 
@@ -144,6 +166,16 @@ impl Uploader {
 }
 
 impl Uploader {
+    /// One request of the daemon's (`metrics.*`), its answer as JSON. Blocks:
+    /// call it off the UI thread.
+    pub fn call(&self, method: &str, params: impl serde::Serialize, wait: Duration) -> Result<serde_json::Value, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.ask(method, params).recv_timeout(wait) {
+            Ok(answer) => answer,
+            Err(_) => Err(t!("metrics.no_answer").into()),
+        }
+    }
+
     /// A member's picture, from the daemon — wherever it runs; it gives only
     /// what `squad` shows. Blocks: call it off the UI thread.
     pub fn read_image(&self, squad: &str, path: &str, max: Option<u32>) -> Result<equipe_core::protocol::rpc::ImageRead, String> {
@@ -165,6 +197,27 @@ impl Uploader {
     }
 }
 
+impl Uploader {
+    /// Where anonymous usage events stand on the daemon's machine
+    /// (docs/TELEMETRY.md). Blocks: call it off the UI thread.
+    pub fn telemetry(&self) -> Result<TelemetryStatus, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.telemetry().recv_timeout(Duration::from_secs(10)) {
+            Ok(answer) => answer.and_then(|v| serde_json::from_value(v).map_err(|_| t!("failure.answer_unreadable").into())),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
+        }
+    }
+
+    /// The person's answer, kept by the daemon. Blocks: call it off the UI thread.
+    pub fn telemetry_set(&self, on: bool) -> Result<TelemetryStatus, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.telemetry_set(on).recv_timeout(Duration::from_secs(10)) {
+            Ok(answer) => answer.and_then(|v| serde_json::from_value(v).map_err(|_| t!("failure.answer_unreadable").into())),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
+        }
+    }
+}
+
 impl Link {
     /// Send a command to the daemon. Dropped while not attached: what a screen
     /// asks for only makes sense against the snapshot it is looking at.
@@ -174,6 +227,18 @@ impl Link {
 
     pub fn uploader(&self) -> Uploader {
         Uploader(self.asking.clone())
+    }
+
+    /// Tell the daemon the look this screen shows (`screen_look.rs`):
+    /// `false` while not attached — the next hello carries it.
+    pub fn tell_look(&self, look: &equipe_core::protocol::look::ScreenLook) -> bool {
+        match self.asking.lock().unwrap().as_ref() {
+            Some(door) => {
+                door.tell(equipe_core::protocol::rpc::SCREEN_LOOK, look);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Try again now (after the person fixed what was wrong).
@@ -267,7 +332,7 @@ enum Followed {
 
 /// Connect, follow, reconnect — until the window goes away.
 async fn run(
-    target: Target,
+    mut target: Target,
     backoff: Backoff,
     mut commands: UnboundedReceiver<Command>,
     updates: UnboundedSender<Update>,
@@ -292,9 +357,12 @@ async fn run(
         if let Some(server) = side.as_ref().and_then(|s| s.server.as_ref()) {
             server.forget_cancelled();
         }
-        let failure = match attach(&target, side.as_ref()).await {
+        let failure = match attach(&target, side.as_ref(), &updates).await {
             Ok(mut conn) => {
                 wait = backoff.min;
+                // Back after a drop, on the squad it was on: never the one
+                // another window (or the terminal) opened last meanwhile.
+                target.prefer = Some(conn.greeting.squad.clone());
                 if let Some(bridge) = conn.greeting.bridge.clone()
                     && updates.send(Update::Bridge(bridge)).is_err()
                 {
@@ -339,7 +407,8 @@ async fn run(
             // Nothing to gain from another go until the person says so.
             loop {
                 tokio::select! {
-                    () = retry.notified() => break,
+                    // The person asked: what this try finds is news, even the same.
+                    () = retry.notified() => { down = None; break },
                     command = commands.recv() => if command.is_none() { return },
                     () = updates.closed() => return,
                 }
@@ -356,7 +425,7 @@ async fn run(
         loop {
             tokio::select! {
                 () = &mut nap => break,
-                () = retry.notified() => { wait = backoff.min; break },
+                () = retry.notified() => { wait = backoff.min; down = None; break },
                 _ = tick.tick() => if sleep.woke() && side.is_some() { woke = true; break },
                 command = commands.recv() => if command.is_none() { return },
                 () = updates.closed() => return,
@@ -436,7 +505,7 @@ async fn follow(
     Followed::Ended(failure)
 }
 
-async fn attach(target: &Target, side: Option<&SshSide>) -> Result<Connected, Failure> {
+async fn attach(target: &Target, side: Option<&SshSide>, updates: &UnboundedSender<Update>) -> Result<Connected, Failure> {
     let opts = |bridged| Opts {
         version: target.version.clone(),
         prefer: target.prefer.clone(),
@@ -473,8 +542,26 @@ async fn attach(target: &Target, side: Option<&SshSide>) -> Result<Connected, Fa
             }
         }
         (Endpoint::Ssh(_), Some(side)) => {
+            let _ = updates.send(Update::Leg(Leg::Reaching));
+            // Beside `ssh`: where it goes, and whether anything answers there.
+            let scout = side.launcher.knock.then(|| {
+                let (launcher, host, updates) = (side.launcher.clone(), side.host.clone(), updates.clone());
+                tokio::spawn(async move {
+                    let Some(door) = launcher.door(&host).await else { return };
+                    let _ = updates.send(Update::Door(door.label()));
+                    if !door.relayed && door.knock(KNOCK_WAIT).await {
+                        let _ = updates.send(Update::Leg(Leg::SigningIn));
+                    }
+                })
+            });
             let (mut process, stdout, stdin) = side.launcher.attach(&side.host).map_err(|e| Failure::Other(format!("ssh: {e}")))?;
-            match wire::connect(stdout, stdin, &opts(true)).await {
+            let heard = updates.clone();
+            let stdout = ssh::Heard::new(stdout, move || drop(heard.send(Update::Leg(Leg::Opening))));
+            let connected = wire::connect(stdout, stdin, &opts(true)).await;
+            if let Some(scout) = scout {
+                scout.abort();
+            }
+            match connected {
                 Ok((greeting, wire)) => Ok(Connected { greeting, wire, process: Some(process) }),
                 Err(Stop::Eof) => {
                     let cancelled = side.server.as_ref().is_some_and(askpass::Server::take_cancelled);
@@ -600,8 +687,14 @@ mod tests {
         }
     }
 
+    /// The next update but how far a connection got.
     async fn next(updates: &mut UnboundedReceiver<Update>) -> Update {
-        tokio::time::timeout(WAIT, updates.recv()).await.expect("an update in time").expect("the link is alive")
+        loop {
+            match tokio::time::timeout(WAIT, updates.recv()).await.expect("an update in time").expect("the link is alive") {
+                Update::Leg(_) | Update::Door(_) => {}
+                other => return other,
+            }
+        }
     }
 
     /// The next update that isn't the squad list or the bridge's greeting.
@@ -738,6 +831,88 @@ mod tests {
         let _ = std::fs::remove_file(&socket);
     }
 
+    /// A daemon with two squads whose "opened last" is `last` — what another
+    /// window or the terminal may change at any time — answering `hello` with
+    /// the squad asked for, and closing each connection after `hello` when
+    /// `drop_after_hello`.
+    fn two_squads(socket: &Path, last: Arc<std::sync::Mutex<String>>, drop_after_hello: bool) -> JoinHandle<()> {
+        let listener = UnixListener::bind(socket).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let last = last.clone();
+                // Each screen's connection on its own, as the daemon serves them.
+                tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut lines = BufReader::new(reader).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let message = Message::from_line(&line).unwrap();
+                    match (message.method.as_deref(), message.id) {
+                        (Some(rpc::SQUADS), Some(id)) => {
+                            let entry = |name: &str| SquadEntry { name: name.into(), projects: vec![], home: format!("/h/{name}").into() };
+                            let squads = Squads { squads: vec![entry("acme"), entry("beta")], last: Some(last.lock().unwrap().clone()) };
+                            writer.write_all(Message::response(id, squads).to_line().as_bytes()).await.unwrap();
+                        }
+                        (Some(rpc::HELLO), Some(id)) => {
+                            let asked: rpc::HelloParams = message.params_as().unwrap();
+                            let hello = Hello { version: "d".into(), snapshot: Snapshot { squad: asked.squad, ..Default::default() } };
+                            writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
+                            if drop_after_hello {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                });
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_keeps_the_squad_the_window_was_on() {
+        let socket = socket();
+        let last = Arc::new(std::sync::Mutex::new("acme".to_owned()));
+        let fake = two_squads(&socket, last.clone(), true);
+        // No squad asked for: the daemon's "opened last".
+        let mut spawned = spawn(Target { prefer: None, ..target(&socket) }, FAST);
+        let squad = |update: Update| match update {
+            Update::Attached(hello) => hello.snapshot.squad,
+            other => panic!("expected Attached, got {other:?}"),
+        };
+        assert_eq!(squad(next_main(&mut spawned.updates).await), "acme");
+        // Another window opened beta meanwhile; this one's connection drops.
+        *last.lock().unwrap() = "beta".into();
+        let mut update = next_main(&mut spawned.updates).await;
+        while matches!(update, Update::Down(_)) {
+            update = next_main(&mut spawned.updates).await;
+        }
+        assert_eq!(squad(update), "acme", "back on its own squad, not the one opened last elsewhere");
+        fake.abort();
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[tokio::test]
+    async fn two_windows_on_one_daemon_follow_their_own_squads() {
+        let socket = socket();
+        let last = Arc::new(std::sync::Mutex::new("acme".to_owned()));
+        let fake = two_squads(&socket, last, false);
+        let mut a = spawn(Target { prefer: None, ..target(&socket) }, FAST);
+        let mut b = spawn(Target { prefer: Some("beta".into()), ..target(&socket) }, FAST);
+        let squad = |update: Update| match update {
+            Update::Attached(hello) => hello.snapshot.squad,
+            other => panic!("expected Attached, got {other:?}"),
+        };
+        assert_eq!(squad(next_main(&mut b.updates).await), "beta");
+        assert_eq!(squad(next_main(&mut a.updates).await), "acme", "one window's squad is never another's");
+        // One window closes: the other's line is untouched.
+        drop(b);
+        a.link.send(Command::Focus { squad: "acme".into(), project: None });
+        assert!(tokio::time::timeout(Duration::from_millis(300), a.updates.recv()).await.is_err(), "nothing dropped, nothing re-sent");
+        fake.abort();
+        let _ = std::fs::remove_file(&socket);
+    }
+
     #[test]
     fn a_long_gap_between_ticks_means_the_mac_slept() {
         let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
@@ -765,7 +940,7 @@ mod tests {
             let program = dir.join("ssh");
             std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-            let launcher = Launcher { program, control_dir: dir.clone(), askpass: None, extra: vec![] };
+            let launcher = Launcher { program, control_dir: dir.clone(), askpass: None, extra: vec![], knock: false };
             Self { dir, launcher }
         }
 
@@ -834,15 +1009,17 @@ mod tests {
         // Commands go down the same line, as JSON-RPC lines.
         spawned.link.send(Command::Interrupt { session: 7 });
         let received = fake.dir.join("received");
+        // (The screen's look may go first: `screen_look.rs`.)
+        let command = |text: &str| text.lines().filter_map(|l| Message::from_line(l).ok()).find(|m| m.method.as_deref() == Some(rpc::COMMAND));
         let mut text = String::new();
         for _ in 0..100 {
             text = std::fs::read_to_string(&received).unwrap_or_default();
-            if !text.is_empty() {
+            if command(&text).is_some() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let message = Message::from_line(text.lines().next().expect("a line reached the far end")).unwrap();
+        let message = command(&text).expect("a command reached the far end");
         assert_eq!(message.params_as::<Command>(), Some(Command::Interrupt { session: 7 }));
     }
 
@@ -902,7 +1079,7 @@ mod tests {
         spawned.link.retry();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(fake.runs(), 2, "the person's click tries once");
-        assert!(spawned.updates.try_recv().is_err(), "the same failure is not news");
+        assert_eq!(next(&mut spawned.updates).await, Update::Down(failure), "the person's try is answered, even when the same");
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@
 // It drives equipe's browser host (crates/core/assets/browser-host.cjs) the
 // way the daemon and the panel do: a member's lane navigates there with its
 // tools, the panel watches it and lays it out at its box, the person takes it
-// (직접 하기), their pointer moves over the picture and clicks the box, then
+// (Take over), their pointer moves over the picture and clicks the box, then
 // hands it back. Every phase prints what the frames saw.
 //
 //   npx -y -p playwright@1.64.0 node scripts/browser-check-lab.cjs [path/to/browser-host.cjs]
@@ -256,14 +256,14 @@ const OBSERVER = (who) => `
   op({ op: 'fit', page, w: 560, h: 700, dpr: 2 });
   const watched = await phase('a member drives it, watched in the panel');
 
-  // 직접 하기: the person takes it.
+  // Take over: the person takes it.
   op({ op: 'control', lane, by: 'person' });
   await until('control to the person', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === 'person'));
   const held = await phase('the person has it in the panel');
   await clickBox(held.t);
   const clicked = await clickPhase('after the person\'s click in the panel');
 
-  // For comparison: the same page in a real window (Chrome에서 열기), clicked the same way.
+  // For comparison: the same page in a real window (Open in Chrome), clicked the same way.
   if (process.env.LAB_POPOUT) {
     op({ op: 'popout', page, bounds: { left: 80, top: 80, width: 700, height: 760 } });
     const out = await phase('in a real window (popout)');

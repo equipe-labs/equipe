@@ -16,7 +16,7 @@ pub fn ids(proposal: &AcceptProposal) -> String {
     proposal.tickets.iter().map(|id| format!("T-{id}")).collect::<Vec<_>>().join(", ")
 }
 
-/// What it does, in a few words: "T-42, T-71 수락".
+/// What it does, in a few words: "Accept T-42, T-71".
 pub fn describe(proposal: &AcceptProposal) -> String {
     let tickets = ids(proposal);
     match proposal.verdict {
@@ -75,7 +75,7 @@ impl App {
             KeyCode::Char('y') => {
                 let tickets = proposal.tickets.iter().map(|t| self.landing(&proposal, *t)).collect();
                 self.flash = Some(t!("app.accept_confirmed", what = describe(&proposal)));
-                Command::ConfirmAccept { squad, id: proposal.id, tickets }
+                Command::ConfirmAccept { squad, id: proposal.id, tickets, said: None }
             }
             KeyCode::Char('n') => Command::DeclineAccept { squad, id: proposal.id },
             _ => return None,

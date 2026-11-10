@@ -1,0 +1,21 @@
+{
+  "millis": 36000,
+  "marks": [
+    {
+      "screen": "git",
+      "at": 0
+    },
+    {
+      "screen": "ai",
+      "at": 6000
+    },
+    {
+      "screen": "squad",
+      "at": 24600
+    },
+    {
+      "screen": "usage-data",
+      "at": 31800
+    }
+  ]
+}

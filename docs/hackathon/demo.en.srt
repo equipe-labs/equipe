@@ -1,0 +1,87 @@
+1
+00:00:00,500 --> 00:00:07,000
+This is equipe: a squad of AI coding agents that works like a team —
+
+2
+00:00:07,000 --> 00:00:14,000
+a PM, engineers, a board of tickets, and you accepting the work.
+
+3
+00:00:14,000 --> 00:00:21,000
+Every member here runs on an NVIDIA Nemotron model on Nebius Token Factory —
+
+4
+00:00:21,000 --> 00:00:30,000
+no other AI subscription, just a Nebius key and the open-source Codex CLI as the agent loop.
+
+5
+00:00:30,000 --> 00:00:38,000
+I ask the PM for a small change; it writes a ticket and hands it to an engineer.
+
+6
+00:00:38,000 --> 00:00:46,000
+Nemotron decides what to do and Codex's tools do it, in the engineer's own git worktree:
+
+7
+00:00:46,000 --> 00:00:54,000
+it writes the code, runs the tests in a sandbox, and hands the work in.
+
+8
+00:00:54,000 --> 00:00:58,000
+My checkout is never touched.
+
+9
+00:00:58,000 --> 00:01:07,000
+Then a second Nemotron call reviews the hand-in.
+
+10
+00:01:07,000 --> 00:01:16,000
+It reads the diff against the ticket and comes back with a verdict, a short summary,
+
+11
+00:01:16,000 --> 00:01:25,000
+risks with the file and line, and the tests the change is missing —
+
+12
+00:01:25,000 --> 00:01:32,000
+in my language.
+
+13
+00:01:32,000 --> 00:01:41,000
+It's advice, not authority: the review goes on the ticket's record, and I still decide —
+
+14
+00:01:41,000 --> 00:01:50,000
+here I send it back with the risk it found.
+
+15
+00:01:50,000 --> 00:01:59,000
+Everything is on the record: equipe review lists the account's Nemotron models
+
+16
+00:01:59,000 --> 00:02:08,000
+and reviews any repository's changes,
+
+17
+00:02:08,000 --> 00:02:16,000
+and the daemon logs each member turn's Token Factory request ids and tokens.
+
+18
+00:02:16,000 --> 00:02:23,000
+Under the hood, members run Codex's agent with Token Factory's Responses API as its provider,
+
+19
+00:02:23,000 --> 00:02:30,000
+through a small relay that keeps every tool a plain function.
+
+20
+00:02:30,000 --> 00:02:36,000
+The key stays in the environment and never reaches the logs.
+
+21
+00:02:36,000 --> 00:02:42,000
+equipe is open source under MIT.
+
+22
+00:02:42,000 --> 00:02:48,000
+A whole team of agents, running on NVIDIA Nemotron on Nebius.

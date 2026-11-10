@@ -21,7 +21,7 @@ use equipe_core::board::{project_name, ticket_ref, ticket_ref_from};
 use equipe_core::i18n::label;
 use equipe_core::protocol::{Engine, Entry, Estimate, Priority, SessionId, TicketId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, BoardMenu, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
+use super::app::{Agent, AgentState, App, BoardMenu, Compacted, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
 use super::markdown;
 use crate::ui;
 use equipe_core::t;
@@ -30,6 +30,7 @@ mod accept;
 mod decide;
 mod engines;
 mod team;
+mod routine;
 mod turn;
 
 /// How many columns `text` takes on screen — a Korean letter takes two.
@@ -72,6 +73,8 @@ pub struct Theme {
     light: bool,
     /// The terminal's background colour, when it told us.
     background: Option<(u8, u8, u8)>,
+    /// The person asked for less motion: what would turn stands still.
+    still: bool,
 }
 
 impl Theme {
@@ -83,12 +86,12 @@ impl Theme {
             Some((r, g, b)) => (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0 > 0.5,
             None => light_background(),
         };
-        Self { color, truecolor, light, background }
+        Self { color, truecolor, light, background, still: reduce_motion() }
     }
 
     #[cfg(test)]
     pub fn plain() -> Self {
-        Self { color: false, truecolor: false, light: false, background: None }
+        Self { color: false, truecolor: false, light: false, background: None, still: false }
     }
 
     /// A faint wash over the background for the person's own messages: white at
@@ -116,6 +119,16 @@ impl Theme {
         let ms = Self::since_start(now);
         let frame = FRAMES[(ms / 120) as usize % FRAMES.len()];
         Span::styled(frame, self.breath(now))
+    }
+
+    /// The mark of a conversation being summarized: a braille dot turning,
+    /// or `…` standing still when the person asked for less motion.
+    fn turning(self, now: Instant) -> &'static str {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        if self.still {
+            return "…";
+        }
+        FRAMES[(Self::since_start(now) / 80) as usize % FRAMES.len()]
     }
 
     /// From dim to the accent and back every two seconds, on a sine — no
@@ -199,6 +212,31 @@ impl Theme {
         }
     }
 
+    /// The design system's `color.work`, `color.ok` and `color.err`
+    /// (`design/tokens/`), as a terminal can show them.
+    fn work(self) -> Style {
+        self.tone((226, 184, 101), (130, 86, 0), [178, 136], Style::new())
+    }
+
+    fn ok(self) -> Style {
+        self.tone((127, 203, 142), (31, 107, 51), [114, 28], self.bold())
+    }
+
+    fn err(self) -> Style {
+        self.tone((238, 123, 116), (173, 46, 39), [210, 124], self.bold())
+    }
+
+    /// One of those: on a dark or a light terminal, the nearest of 256 for
+    /// each without truecolor, `plain` without colour.
+    fn tone(self, dark: (u8, u8, u8), light: (u8, u8, u8), indexed: [u8; 2], plain: Style) -> Style {
+        match (self.color, self.truecolor, self.light) {
+            (true, true, false) => Style::new().fg(Color::Rgb(dark.0, dark.1, dark.2)),
+            (true, true, true) => Style::new().fg(Color::Rgb(light.0, light.1, light.2)),
+            (true, false, light) => Style::new().fg(Color::Indexed(indexed[usize::from(light)])),
+            _ => plain,
+        }
+    }
+
     fn dim(self) -> Style {
         match (self.color, self.truecolor, self.light) {
             (true, true, false) => Style::new().fg(Color::Rgb(124, 126, 133)),
@@ -226,6 +264,20 @@ impl Theme {
     fn markdown(self) -> markdown::Styles {
         markdown::Styles { plain: Style::new(), code: self.code(), dim: self.dim() }
     }
+}
+
+/// Whether the person asked for less motion: `EQUIPE_REDUCE_MOTION=1` (or
+/// `0` to turn it off), else macOS's Accessibility → Display → Reduce motion.
+fn reduce_motion() -> bool {
+    if let Ok(v) = std::env::var("EQUIPE_REDUCE_MOTION") {
+        return !matches!(v.trim(), "" | "0" | "false" | "no");
+    }
+    cfg!(target_os = "macos")
+        && std::process::Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "1")
 }
 
 /// Whether the terminal says its background is light (`COLORFGBG`, set by
@@ -352,7 +404,7 @@ impl Layouts {
 fn layout_key(agent: &Agent, width: usize, turns: u64) -> LayoutKey {
     let entries = agent.drawn();
     let last = entries.last().map_or(0, |entry| match entry.as_ref() {
-        Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
+        Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. } => text.len(),
         Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
@@ -391,6 +443,9 @@ fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     }
     if asking.is_empty() {
         asking = team::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
+    if asking.is_empty() {
+        asking = routine::lines(app, theme, area.width.saturating_sub(2) as usize);
     }
     if asking.is_empty() {
         asking = engines::lines(app, theme, area.width.saturating_sub(2) as usize);
@@ -434,10 +489,12 @@ fn watch_height(app: &App, agent: &Agent, room: u16) -> u16 {
 /// The conversation pane under its title: the conversation, then — when there
 /// is any — work waiting for the person, then the live row.
 fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> Areas {
+    let compact = compact_rows(agent, Instant::now()) as u16;
     let live = (agent.scroll_back > 0 && agent.unseen > 0)
         || agent.state == AgentState::Working
         || agent.estimate.as_ref().is_some_and(|e| e.live_at.is_some())
-        || ticket_hint(app).is_some();
+        || ticket_hint(app).is_some()
+        || compact > 0;
     let watch = watch_height(app, agent, area.height);
     // With the side list to its left, what waits and where each project
     // stands are there; without it — a narrow terminal — they show here.
@@ -452,7 +509,7 @@ fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> Areas {
         Constraint::Length(u16::from(card > 0)),
         Constraint::Length(card),
         Constraint::Length(u16::from(live)),
-        Constraint::Length(u16::from(live)),
+        Constraint::Length(if compact > 0 { compact } else { u16::from(live) }),
     ])
     .areas(area);
     Areas { watch, overview, text, card, live }
@@ -1213,6 +1270,8 @@ fn look(role: &str, name: &str) -> (&'static str, usize) {
         "qa" => ("◎", 4),
         "data" => ("▲", 5),
         "mobile" => ("◈", 6),
+        "security" => ("⬢", 7),
+        "marketing" => ("✺", 1),
         _ => {
             const MARKS: [&str; 4] = ["◇", "★", "▼", "✚"];
             let h = name.bytes().fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
@@ -1332,7 +1391,7 @@ fn side_lines(app: &App, theme: Theme, area: Rect) -> (Vec<(Line<'static>, Optio
                 lines.push((Line::from(vec![Span::raw("  "), Span::styled("+ ", theme.dim()), Span::styled(text, if today > 0 { Style::new() } else { theme.dim() })]), Some(side)));
             }
             Side::Menu(menu) => {
-                // 나에게 · 작업 중 · 모든 일, each with its count, as the desktop's menu.
+                // Inbox · In progress · All work, each with its count, as the desktop's menu.
                 let on = app.pane == Pane::Board && app.board_menu == menu;
                 let count = app.menu_count(menu);
                 let marker = if on { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
@@ -1365,8 +1424,8 @@ fn side_lines(app: &App, theme: Theme, area: Rect) -> (Vec<(Line<'static>, Optio
                         Some(side),
                     ));
                 }
-                // Its subagents, under it, while they work.
-                for text in subagent_rows(agent) {
+                // Its conversation being summarized, and its subagents, under it, while they work.
+                for text in working_rows(agent) {
                     let room = (area.width as usize).saturating_sub(6);
                     lines.push((Line::from(vec![Span::raw("    "), Span::styled(ui::fit(&text, room), theme.dim())]), Some(side)));
                 }
@@ -1479,17 +1538,60 @@ fn member_line(app: &App, agent: &Agent, open: bool, name_width: usize, area: Re
 /// Most subagents shown under a member before the rest are counted.
 const SUBAGENTS_SHOWN: usize = 3;
 
-/// The lines under a member for its subagents at work.
-fn subagent_rows(agent: &Agent) -> Vec<String> {
-    let mut rows: Vec<String> = agent
+/// Messages the person sent a member that wait for it: read, or delivered,
+/// once its conversation is summarized.
+fn waiting_messages(agent: &Agent) -> usize {
+    agent.steering.len() + agent.queued.len()
+}
+
+/// How many lines above the prompt its conversation's summary takes at `now`:
+/// the line, and one for messages waiting; or how it ended, while that shows.
+fn compact_rows(agent: &Agent, now: Instant) -> usize {
+    match (agent.compacting, agent.compacted) {
+        (Some(_), _) => 1 + usize::from(waiting_messages(agent) > 0),
+        (None, Some(end)) if end.showing(now) => 1,
+        _ => 0,
+    }
+}
+
+/// Above the prompt, its conversation being summarized — only how long so
+/// far, never a guess at what is left — and the messages waiting on it; then
+/// for a moment that it is done, or until the person speaks, that it failed.
+fn compact_lines(agent: &Agent, theme: Theme, now: Instant) -> Vec<Line<'static>> {
+    if let Some(since) = agent.compacting {
+        let so_far = elapsed(now.saturating_duration_since(since));
+        let mut text = t!("compact.tui.run", elapsed = so_far);
+        // Standing still, the mark is the ellipsis: once is enough.
+        if theme.still {
+            text = text.replacen('…', "", 1);
+        }
+        let mut lines = vec![Line::from(Span::styled(format!("{} {text}", theme.turning(now)), theme.work()))];
+        let waiting = waiting_messages(agent);
+        if waiting > 0 {
+            lines.push(Line::from(Span::styled(t!("compact.tui.queued", count = waiting), theme.dim())));
+        }
+        return lines;
+    }
+    match agent.compacted.filter(|end| end.showing(now)) {
+        Some(Compacted::Done(_)) => vec![Line::from(Span::styled(format!("✓ {}", t!("compact.tui.done")), theme.ok()))],
+        Some(Compacted::Failed) => vec![Line::from(Span::styled(format!("✕ {}", t!("compact.tui.fail")), theme.err()))],
+        None => Vec::new(),
+    }
+}
+
+/// The lines under a member while it works: its conversation being
+/// summarized, how long so far, then its subagents at work.
+fn working_rows(agent: &Agent) -> Vec<String> {
+    let compacting = agent.compacting.map(|since| format!("⟳ {}", t!("compact.sidebar", elapsed = crate::tui::app::elapsed(since.elapsed()))));
+    let mut rows: Vec<String> = compacting.into_iter().collect();
+    rows.extend(agent
         .subagents
         .iter()
         .take(SUBAGENTS_SHOWN)
         .map(|(_, what, step)| match step {
             Some(step) => format!("↳ {what} · {step}"),
             None => format!("↳ {what}"),
-        })
-        .collect();
+        }));
     if agent.subagents.len() > SUBAGENTS_SHOWN {
         rows.push(format!("↳ {}", t!("view.more_subagents", count = agent.subagents.len() - SUBAGENTS_SHOWN)));
     }
@@ -1609,7 +1711,7 @@ fn tool_run(run: Vec<ToolLine>, expanded: bool, theme: Theme, width: usize) -> V
 /// background when the terminal told us its colour.
 /// What the person attached, named rather than spelled out: each tag of a
 /// message (`[image: /…/uploads/1792073093606-paste.png]`) as its kind and
-/// name — `[이미지] paste.png`. The member still gets the tag as it is.
+/// name — `[Image] paste.png`. The member still gets the tag as it is.
 pub fn attachments_named(text: &str) -> String {
     use equipe_core::protocol::tags::{TagKind, compact};
     compact(text, |tag| {
@@ -1837,13 +1939,13 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
         match entry {
             Entry::Thread { .. } => {}
             // The person's answers to a member's questions: one line.
-            Entry::User { text } if decide::decided_line(text, theme, width).is_some() => {
+            Entry::User { text, .. } if decide::decided_line(text, theme, width).is_some() => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.extend(decide::decided_line(text, theme, width));
                 lines.push(Line::raw(""));
             }
-            Entry::User { text } => {
+            Entry::User { text, .. } => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.extend(user_message(&attachments_named(text), theme, width));
@@ -1868,14 +1970,14 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                 }
             }
             // Other projects' talk, folded: one quiet line saying how much.
-            Entry::Note { text } if text.starts_with(super::app::FOLDED) => {
+            Entry::Note { text, .. } if text.starts_with(super::app::FOLDED) => {
                 let said: usize = text[super::app::FOLDED.len_utf8()..].parse().unwrap_or(0);
                 begin(Block::Note, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.push(Line::from(Span::styled(format!("── {} ──", t!("view.elsewhere", count = said)), theme.dim())));
             }
             // A ticket still waiting for the person: its asks one under another.
-            Entry::Note { text } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
+            Entry::Note { text, .. } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
                 let id = equipe_core::i18n::waiting_ticket(text).unwrap_or_default();
                 if let Some((_, title, asks)) = turns.iter().find(|(t, ..)| *t == id) {
                     begin(Block::Note, &mut lines, &mut last);
@@ -1883,7 +1985,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                     lines.extend(your_turn_lines(id, title, asks, theme, width));
                 }
             }
-            Entry::Note { text } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
+            Entry::Note { text, .. } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
                 Some(news) => {
                     begin(Block::News, &mut lines, &mut last);
                     lines.extend(news);
@@ -2088,7 +2190,11 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     // At the bottom, when it applies: the live working row, or what arrived
     // while the person was scrolled up.
     let mut footer: Vec<Line<'static>> = Vec::new();
-    if agent.scroll_back > 0 && agent.unseen > 0 {
+    let compacting = compact_lines(agent, theme, Instant::now());
+    if !compacting.is_empty() {
+        // Its conversation being summarized, or how that ended, before all else.
+        footer = compacting;
+    } else if agent.scroll_back > 0 && agent.unseen > 0 {
         footer.push(Line::from(vec![
             Span::styled(t!("view.new_lines", count = agent.unseen), theme.accent()),
             Span::styled(" · End", theme.dim()),
@@ -2266,7 +2372,7 @@ fn for_you(t: &equipe_core::protocol::Ticket) -> bool {
 }
 
 /// A status as one ASCII mark, so it lines up in any terminal: proposed `.`,
-/// to do `o`, in progress `*`, 내 차례 `!`, 검토 `?`, done `+`, cancelled `x`.
+/// to do `o`, in progress `*`, your turn `!`, review `?`, done `+`, cancelled `x`.
 /// How pressing a ticket is, before its title: `!! ` urgent, `↑ ` high,
 /// `↓ ` low; normal says nothing.
 pub fn priority_mark(priority: Priority, theme: Theme) -> Span<'static> {
@@ -2281,6 +2387,7 @@ pub fn priority_mark(priority: Priority, theme: Theme) -> Span<'static> {
 pub fn status_mark(status: TicketStatus) -> &'static str {
     match status {
         TicketStatus::Proposed => ".",
+        TicketStatus::Idea => "~",
         TicketStatus::Todo => "o",
         TicketStatus::InProgress => "*",
         TicketStatus::Waiting => "!",
@@ -2335,7 +2442,7 @@ fn row_meta(app: &App, t: &equipe_core::protocol::Ticket, theme: Theme) -> (Vec<
     (flags, activity, style, eta)
 }
 
-/// The board's list, as the menu asks: 나에게 by section, 작업 중, or 모든 일
+/// The board's list, as the menu asks: the Inbox by section, In progress, or All work
 /// by status with the finished folded into one line (e). One row a ticket:
 /// its mark, number, project, title, flags, what is happening, when done, who.
 fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<u32>)> {
@@ -2457,7 +2564,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     if let Some(line) = current.as_deref().and_then(folded) {
         rows.push((line, None));
     }
-    // 모든 일: the finished, folded into one line until shown.
+    // All work: the finished, folded into one line until shown.
     if app.board_menu == BoardMenu::All && query.is_none() && !app.board_expanded {
         let done = app.tickets.iter().filter(|t| t.status.is_closed() && app.in_focus(t)).count();
         if done > 0 {
@@ -2547,6 +2654,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             actions.push(("a", t!("view.action_take").into()));
             actions.push(("n", t!("view.action_drop").into()));
         }
+        TicketStatus::Idea => actions.push(("n", t!("view.action_drop").into())),
         TicketStatus::Done => {
             if t.not_on_main() {
                 actions.push(("m", t!("view.action_merge").into()));
@@ -2970,7 +3078,7 @@ fn display_path(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::App;
-    use equipe_core::protocol::{Command, Engine, Event, Member, Snapshot, Ticket, TicketId, TurnOutcome, Usage, Workspace};
+    use equipe_core::protocol::{Command, CompactTrigger, Engine, Event, Member, Snapshot, Ticket, TicketId, TurnOutcome, Usage, Workspace};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -3012,9 +3120,9 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             squad: Some("acme".into()),
         });
-        app.on_event(Event::UserMessage { session: id, text: "fix the bug".into() });
+        app.on_event(Event::UserMessage { session: id, text: "fix the bug".into(), kept: Vec::new() });
         app.on_event(Event::TextDelta { session: id, text: "Looking **now**.".into() });
-        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/auth.rs".into()) });
+        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/auth.rs".into()), label: None, background: false });
         (app, id)
     }
 
@@ -3032,7 +3140,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -3115,6 +3223,7 @@ mod tests {
                 cache_tokens: Some(98_766),
                 context_tokens: Some(130_000),
                 context_window: Some(200_000),
+                ..Default::default()
             }),
         });
         let plan = equipe_core::protocol::PlanWindow { used_percent: 84, resets_at: 0 };
@@ -3181,14 +3290,14 @@ mod tests {
         let (mut app, id) = working();
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
         let said = "pair 가 잘 안되는데 [image: /Users/abel/.equipe/uploads/1792073093606-paste.png] [pdf: /Users/abel/.equipe/uploads/1792073093607-spec.pdf · 2 pages]";
-        app.on_event(Event::UserMessage { session: id, text: said.into() });
+        app.on_event(Event::UserMessage { session: id, text: said.into(), kept: Vec::new() });
         let shot = screen(&app, 100, 24);
         assert!(shot.contains("pair 가 잘 안되는데 [Image] paste.png [PDF]") && shot.contains("spec.pdf · 2 pages"), "{shot}");
         assert!(!shot.contains("uploads"), "{shot}");
         assert_eq!(app.agents[0].last_said().as_deref(), Some("pair 가 잘 안되는데 [Image] paste.png [PDF] spec.pdf · 2 pages"));
         assert_eq!(attachments_named("[video: /u/1792073093606-a.mov · 0:20 · frames: /u/f.jpg@0:05]"), "[Video] a.mov · 0:20");
         // What reaches the member is the tag as it was typed.
-        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == said)));
+        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text, .. } if text == said)));
     }
 
     #[test]
@@ -3264,7 +3373,7 @@ mod tests {
         assert!(shot.contains("(when done)"), "{shot}");
         assert!(!shot.contains("and the app icon"), "{shot}");
         // The turn ends: app's memo goes, into app's conversation; site's waits for the next.
-        app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into(), kept: Vec::new() });
         assert_eq!(app.agents[0].queued, ["and the site footer"]);
         assert_eq!(app.agents[0].queued_in, [Some("site".to_owned())]);
     }
@@ -3289,16 +3398,16 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             squad: Some("acme".into()),
         });
-        app.on_event(Event::LaneOpened { session: 77, of: pm, project: None });
+        app.on_event(Event::LaneOpened { session: 77, of: pm, project: None, kept: false });
         assert_eq!(app.agents.len(), 1);
-        app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into() });
+        app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into(), kept: Vec::new() });
         app.on_event(Event::TextDelta { session: 77, text: "The app is fine.".into() });
         assert_eq!(app.viewed().map(|a| a.id), Some(77));
         let shot = screen(&app, 110, 24);
         assert!(shot.contains("The app is fine.") && shot.contains("2 at once"), "{shot}");
         // Scrolling moves the conversation shown.
         for i in 0..60 {
-            app.on_event(Event::Notice { session: 77, text: format!("line {i}") });
+            app.on_event(Event::Notice { undo: None, session: 77, text: format!("line {i}") });
         }
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 24), &Layouts::default());
         app.set_extent(laid.page, laid.conversation_max, laid.board_max);
@@ -3399,10 +3508,10 @@ mod tests {
         assert!(shot.contains("› skip the footer") && shot.contains("(next step)"), "{shot}");
         assert!(shot.contains("1 unread"), "{shot}");
         // Read: it moves into the conversation, where it was read.
-        app.on_event(Event::Steered { session: pm, text: "skip the footer".into() });
+        app.on_event(Event::Steered { session: pm, text: "skip the footer".into(), kept: Vec::new() });
         let shot = screen(&app, 110, 24);
         assert!(!shot.contains("(next step)"), "{shot}");
-        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == "skip the footer")));
+        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text, .. } if text == "skip the footer")));
         // Tab: for after this turn.
         for c in "then the pricing page".chars() {
             app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
@@ -3460,9 +3569,9 @@ mod tests {
     fn looking_around_reads_as_one_line() {
         let (mut app, id) = working();
         for file in ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"] {
-            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some(format!("src/{file}")) });
+            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some(format!("src/{file}")), label: None, background: false });
         }
-        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/a.rs".into()) });
+        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/a.rs".into()), label: None, background: false });
         let shot = screen(&app, 100, 24);
         assert!(shot.contains("· read   src/a.rs, src/b.rs, src/c.rs, +2"), "{shot}");
         assert_eq!(shot.matches("✎ edit").count(), 2, "edits stay one per line:\n{shot}");
@@ -3631,11 +3740,13 @@ mod tests {
     #[test]
     fn engine_housekeeping_stays_out_and_memory_reads_as_memory() {
         let (mut app, id) = working();
-        app.on_event(Event::ToolUse { session: id, tool: "ToolSearch".into(), target: None });
+        app.on_event(Event::ToolUse { session: id, tool: "ToolSearch".into(), target: None, label: None, background: false });
         app.on_event(Event::ToolUse {
             session: id,
             tool: "Write".into(),
             target: Some("/Users/a/.equipe/squads/acme/members/pm/memory/site.md".into()),
+            label: None,
+            background: false,
         });
         let shot = screen(&app, 100, 22);
         assert!(!shot.contains("ToolSearch"), "{shot}");
@@ -3656,8 +3767,8 @@ mod tests {
         });
         app.on_event(Event::TextDelta { session: id, text: "T-8 is ready for you.".into() });
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
-        app.on_event(Event::Notice { session: id, text: "designer handed in T-8 for your review · Translations.".into() });
-        app.on_event(Event::Notice { session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "designer handed in T-8 for your review · Translations.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
         let shot = screen(&app, 140, 30);
         let lines: Vec<&str> = shot.lines().collect();
         let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("no {text:?} in:\n{shot}"));
@@ -3701,7 +3812,7 @@ mod tests {
         let reply = "In /Users/abel/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/ for T-2/T-3.\n\n\
                      Run `T-8 check`, see [the shots](outputs/T-9/a.png), https://x.y/?t=T-9 or (T-9).";
         app.on_event(Event::TextDelta { session: id, text: reply.into() });
-        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        let theme = Theme { color: true, truecolor: true, light: false, background: None, still: false };
         let laid = extent(&app, theme, Rect::new(0, 0, 160, 30), &Layouts::default());
         let shot = screen(&app, 160, 30);
         let row = |words: &str| shot.lines().position(|l| l.contains(words)).unwrap_or_else(|| panic!("{shot}")) as u16;
@@ -3779,7 +3890,7 @@ mod tests {
             "Check the shots in `outputs/T-117/shots/` and listing.json; if they're fine, just say OK.".into(),
         ];
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t.clone() });
-        app.on_event(Event::Notice { session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
         app.flash = None;
         let shot = screen(&app, 140, 40);
         let lines: Vec<&str> = shot.lines().collect();
@@ -4122,7 +4233,7 @@ mod tests {
     fn a_members_subagents_show_under_it_while_they_work() {
         let (mut app, pm) = working();
         for (sub, what) in [("t1", "Run the iOS tests"), ("t2", "Read the logs"), ("t3", "Survey the API")] {
-            app.on_event(Event::SubagentStarted { session: pm, id: sub.into(), what: what.into() });
+            app.on_event(Event::SubagentStarted { session: pm, id: sub.into(), what: what.into(), brief: String::new() });
         }
         app.on_event(Event::SubagentStep { session: pm, id: "t1".into(), step: "Bash xcodebuild test".into() });
         app.squad_width = Some(50);
@@ -4134,10 +4245,79 @@ mod tests {
         let pm_row = shot.lines().position(|l| l.contains("pm    haiku")).unwrap() as u16;
         assert!(laid.hits.iter().any(|h| h.2 == pm_row && h.3 == Hit::Side(Side::Pm)));
         // Done, gone; the turn's end takes the rest.
-        app.on_event(Event::SubagentEnded { session: pm, id: "t2".into() });
+        app.on_event(Event::SubagentEnded { session: pm, id: "t2".into(), result: None, failed: false });
         assert!(!screen(&app, 140, 30).contains("Read the logs"));
         app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
         assert!(!screen(&app, 140, 30).contains("↳"));
+    }
+
+    #[test]
+    fn a_member_summarizing_its_conversation_says_so_above_the_prompt() {
+        let (mut app, pm) = working();
+        app.on_event(Event::Compacting { session: pm, member: Some("pm".into()), project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 95_000 });
+        app.squad_width = Some(70);
+        // Under way: how long so far, never the guess at how long it takes.
+        let shot = screen(&app, 140, 30);
+        assert!(shot.contains("Summarizing… 0s"), "{shot}");
+        assert!(shot.contains("⟳ Summarizing · 0s"), "and under the member: {shot}");
+        assert!(!shot.contains("1m 35s") && !shot.contains("usually"), "{shot}");
+        let prompt = shot.lines().position(|l| l.contains("› Message pm")).unwrap();
+        let line = shot.lines().position(|l| l.contains("Summarizing…")).unwrap();
+        assert!(line < prompt && prompt - line <= 2, "just above the prompt: {shot}");
+        assert!(!shot.contains("esc to stop"), "it stands for the working line: {shot}");
+
+        // What the person says meanwhile waits for it.
+        app.on_event(Event::SteerQueued { session: pm, text: "and the footer".into(), project: None });
+        assert!(screen(&app, 140, 30).contains("1 message will be sent when it's done"));
+        app.on_event(Event::SteerQueued { session: pm, text: "the header too".into(), project: None });
+        let shot = screen(&app, 140, 30);
+        assert!(shot.contains("2 messages will be sent when it's done"), "{shot}");
+        let queued = shot.lines().position(|l| l.contains("2 messages")).unwrap();
+        assert_eq!(shot.lines().position(|l| l.contains("Summarizing…")), Some(queued - 1), "{shot}");
+
+        // Done: said for a moment, then the working line again.
+        app.on_event(Event::Compacted { session: pm, member: None, project: None, trigger: CompactTrigger::Auto, took_ms: 1 });
+        let shot = screen(&app, 140, 30);
+        assert!(shot.contains("✓ Summarized. You can keep chatting"), "{shot}");
+        assert!(!shot.contains("Summarizing") && !shot.contains("will be sent"), "{shot}");
+        assert!(app.ticking());
+        app.agents[0].compacted = Instant::now().checked_sub(crate::tui::app::COMPACTED_SHOWN).map(Compacted::Done);
+        let shot = screen(&app, 140, 30);
+        assert!(!shot.contains("Summarized"), "gone after a moment: {shot}");
+        assert!(shot.contains("esc to stop"), "{shot}");
+    }
+
+    #[test]
+    fn a_failed_summary_stays_until_the_person_speaks() {
+        let (mut app, pm) = working();
+        app.on_event(Event::Compacting { session: pm, member: None, project: None, trigger: CompactTrigger::Manual, started_at: 0, estimate_ms: 2_000 });
+        // The turn cut short: the daemon says it failed, then that the turn ended.
+        app.on_event(Event::CompactFailed { session: pm, member: None, project: None, trigger: CompactTrigger::Manual, message: "stopped".into() });
+        app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Interrupted, usage: None });
+        let fail = "✕ Couldn't summarize. The conversation is unchanged · retry with /compact";
+        assert!(screen(&app, 140, 30).contains(fail));
+        app.agents[0].compacted = Some(Compacted::Failed);
+        assert!(screen(&app, 140, 30).contains(fail), "it doesn't go by itself");
+        assert!(!app.ticking(), "nothing to count: no redraws for it");
+        app.on_event(Event::UserMessage { session: pm, text: "go on".into(), kept: Vec::new() });
+        assert!(!screen(&app, 140, 30).contains("Couldn't summarize"), "the person's next message takes it");
+    }
+
+    #[test]
+    fn less_motion_stills_the_summary_mark() {
+        let (mut app, pm) = working();
+        app.on_event(Event::Compacting { session: pm, member: None, project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 2_000 });
+        let agent = &app.agents[0];
+        let start = Instant::now();
+        let turning = Theme::plain();
+        let marks: Vec<String> = [0, 80, 160].iter().map(|ms| compact_lines(agent, turning, start + std::time::Duration::from_millis(*ms))[0].spans[0].content.to_string()).collect();
+        assert!(marks[0].starts_with(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']), "{marks:?}");
+        assert!(marks[0] != marks[1] || marks[1] != marks[2], "it turns: {marks:?}");
+        let still = Theme { still: true, ..Theme::plain() };
+        let line = |ms: u64| compact_lines(agent, still, start + std::time::Duration::from_millis(ms))[0].spans[0].content.to_string();
+        assert_eq!(line(0), line(80));
+        assert!(line(0).starts_with("… Summarizing "), "{}", line(0));
+        assert_eq!(line(0).matches('…').count(), 1, "{}", line(0));
     }
 
     #[test]
@@ -4203,7 +4383,7 @@ mod tests {
     fn a_long_run_of_tool_use_folds_and_o_unfolds_it() {
         let (mut app, id) = working();
         for i in 0..9 {
-            app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some(format!("src/f{i}.rs")) });
+            app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some(format!("src/f{i}.rs")), label: None, background: false });
         }
         let shot = screen(&app, 100, 30);
         // The edit from `working()` and nine more make a run of ten: three, the fold, two.
@@ -4218,7 +4398,7 @@ mod tests {
     #[test]
     fn the_persons_messages_sit_on_a_wash_of_the_terminals_background() {
         let (app, _) = working();
-        let theme = Theme { color: true, truecolor: true, light: false, background: Some((20, 20, 24)) };
+        let theme = Theme { color: true, truecolor: true, light: false, background: Some((20, 20, 24)), still: false };
         let mut terminal = Terminal::new(TestBackend::new(100, 22)).unwrap();
         terminal.draw(|f| render(f, &app, theme, &Layouts::default())).unwrap();
         let buffer = terminal.backend().buffer();
@@ -4242,13 +4422,13 @@ mod tests {
         // Anyone else is told apart from the built-in roles, and keeps theirs.
         assert!(look("writer", "writer").1 >= 6);
         assert_eq!(look("writer", "writer"), look("writer", "writer"));
-        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        let theme = Theme { color: true, truecolor: true, light: false, background: None, still: false };
         assert_ne!(theme.member(0), theme.member(2));
     }
 
     #[test]
     fn the_working_mark_turns_breathes_and_shimmers() {
-        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        let theme = Theme { color: true, truecolor: true, light: false, background: None, still: false };
         let start = Instant::now();
         let _ = Theme::since_start(start);
         let at = |ms: u64| start + std::time::Duration::from_millis(ms);
@@ -4311,9 +4491,9 @@ mod bench {
         let id = *id;
         app.on_event(Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) });
         for i in 0..200 {
-            app.on_event(Event::UserMessage { session: id, text: format!("question {i}") });
+            app.on_event(Event::UserMessage { session: id, text: format!("question {i}"), kept: Vec::new() });
             app.on_event(Event::TextDelta { session: id, text: "## Plan\n\n1. **designer**: 랜딩 페이지 카피와 디자인을 맡아요. equipe가 뭔지 담아요.\n2. **frontend**: 정적 사이트 프로젝트를 세팅해요 (Astro 제안).\n\n| 티켓 | 담당 | 내용 |\n|---|---|---|\n| T-1 | designer | 카피·디자인 |\n| T-2 | frontend | Astro 셋업 |\n\nSome `code` and more prose that goes on for a while to wrap across lines in the pane.".into() });
-            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some("src/a.rs".into()) });
+            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some("src/a.rs".into()), label: None, background: false });
             app.on_event(Event::TurnEnded { session: id, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None });
         }
         let mut layouts = Layouts::default();

@@ -1,8 +1,8 @@
-//! "휴대폰 연결": a sheet over the window with a QR code the equipe app scans,
-//! three short steps, the time the code has left, "링크 복사" for when a
-//! camera won't do, then the phone asking ("허용할까요?") and "연결됨". The
+//! "Connect a phone": a sheet over the window with a QR code the equipe app scans,
+//! three short steps, the time the code has left, "Copy link" for when a
+//! camera won't do, then the phone asking ("Allow it?") and "Connected". The
 //! daemon — on whichever machine the window is a window onto — does the
-//! pairing; the rules are `crate::pair`. Opened from settings (스쿼드와 기기),
+//! pairing; the rules are `crate::pair`. Opened from settings (Squad & machine),
 //! the account menu and the app menu.
 
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ const WIDTH: f32 = 560.;
 const QR: f32 = 216.;
 /// The body's height, the same at every stage so the sheet never jumps.
 const BODY: f32 = 236.;
-/// How long "복사됨" stays on the button.
+/// How long "Copied" stays on the button.
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 /// The phone's kind as people say it.
@@ -268,7 +268,7 @@ pub fn device_line(device: &equipe_core::protocol::PairedDevice, now_unix: u64) 
 // ── what the sheet does ──
 
 impl Shell {
-    /// "휴대폰 연결…": the sheet opens and asks the daemon for a code.
+    /// "Connect a phone…": the sheet opens and asks the daemon for a code.
     pub fn open_pairing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         crate::tips::hide(cx);
         self.board.popup = None;
@@ -278,7 +278,7 @@ impl Shell {
         for command in self.pairing.open(Instant::now()) {
             self.send_command(command);
         }
-        // The countdown, the code's renewal, the close after "연결됨".
+        // The countdown, the code's renewal, the close after "Connected".
         self._pair_tick = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(500)).await;
@@ -323,7 +323,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "링크 복사": the code as a link, for the app's "paste a link instead".
+    /// "Copy link": the code as a link, for the app's "paste a link instead".
     pub fn copy_pair_link(&mut self, cx: &mut Context<Self>) {
         if let Some(url) = self.pairing.url() {
             cx.write_to_clipboard(ClipboardItem::new_string(url.to_owned()));
@@ -349,7 +349,7 @@ impl Shell {
         }
     }
 
-    /// Settings' "연결 끊기": first a question on the row, then the daemon forgets it.
+    /// Settings' "Disconnect": first a question on the row, then the daemon forgets it.
     pub fn forget_device(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.forgetting.as_deref() == Some(id) {
             self.forgetting = None;

@@ -235,12 +235,12 @@ fn guide(status: &Value) {
     let mut step = 1;
     if !yes("screen") {
         println!("{}", p.note(2, &format!("{step}. System Settings › Privacy & Security › Screen & System Audio Recording: switch on \"equipe Desktop Helper\". If macOS asks whether it may bypass the private window picker, choose Allow.")));
-        let _ = std::process::Command::new("open").arg(SCREEN_PANE).status();
+        let _ = equipe_providers::platform::open_status(SCREEN_PANE);
         step += 1;
     }
     if !yes("accessibility") || !yes("post_events") {
         println!("{}", p.note(2, &format!("{step}. System Settings › Privacy & Security › Accessibility: switch on \"equipe Desktop Helper\". The switch only takes once you confirm with your password or Touch ID.")));
-        let _ = std::process::Command::new("open").arg(ACCESSIBILITY_PANE).status();
+        let _ = equipe_providers::platform::open_status(ACCESSIBILITY_PANE);
     }
     println!("{}", p.note(2, "Already listed and switched on, but still ✗? It was signed differently before: remove it with −, then run equipe desktop setup again."));
 }

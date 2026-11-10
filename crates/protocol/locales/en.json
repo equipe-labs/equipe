@@ -1,0 +1,23 @@
+{
+  "match.accept": "accept|approve",
+  "match.all_starts": "",
+  "match.all_words": "everything",
+  "match.allow": "allow|approve|permit|go ahead",
+  "match.always": "always|from now on|every time|forever",
+  "match.answers": "?|tell me|let me know|which|what |when |who |where |how many|how much|decide|choose|pick|provide|share|send me|give me|name the",
+  "match.branch": "on its branch|on the branch|on branch|leave it on",
+  "match.cancel": "cancel|stop|abort|halt|wait",
+  "match.confirms": "confirm|looks good|look over|check that|check the|review the|is it ok|ok?|approve",
+  "match.idea": "idea",
+  "match.merge": "merge",
+  "match.no": "no|nope|nah|not|don't|dont|do not|never|stop|wait|hold|hang on|cancel|later|not yet|abort|halt|wrong|isn't|shouldn't|won't|can't|cannot",
+  "match.number": "",
+  "match.push": "push",
+  "match.recommended": "recommended",
+  "match.run": "run",
+  "match.take_on": "take on|take it on|start|go with|make it real",
+  "match.undo": "undo|revert|take it back|roll back|rollback",
+  "match.unsure": "not |n't|dont|never|wait|later|hold|if |unless|after ",
+  "match.yes": "yes|yeah|yep|yup|ok|okay|sure|go|do|confirm|confirmed|approve|approved|proceed|alright|fine|good|great|perfect|absolutely|definitely|correct|right",
+  "match.yes_with": "please|ahead|it|that|now|then|thanks|thank|you|sounds|let's|lets|so|just|both|all|them|on"
+}

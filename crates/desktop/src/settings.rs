@@ -18,12 +18,14 @@ pub enum Category {
     Permissions,
     Projects,
     Browser,
+    /// The logins members sign in with (`views/accounts.rs`).
+    Accounts,
     Keys,
     About,
 }
 
 impl Category {
-    pub const ALL: [Category; 9] = [Category::General, Category::Engines, Category::Squad, Category::Team, Category::Permissions, Category::Projects, Category::Browser, Category::Keys, Category::About];
+    pub const ALL: [Category; 10] = [Category::General, Category::Engines, Category::Squad, Category::Team, Category::Permissions, Category::Projects, Category::Browser, Category::Accounts, Category::Keys, Category::About];
 
     /// As the snapshot tool names it (`settings:team`).
     pub fn code(self) -> &'static str {
@@ -35,6 +37,7 @@ impl Category {
             Category::Permissions => "permissions",
             Category::Projects => "projects",
             Category::Browser => "browser",
+            Category::Accounts => "accounts",
             Category::Keys => "keys",
             Category::About => "about",
         }
@@ -53,6 +56,7 @@ impl Category {
             Category::Permissions => t!("settings.cat_permissions"),
             Category::Projects => t!("settings.cat_projects"),
             Category::Browser => t!("settings.cat_browser"),
+            Category::Accounts => t!("settings.cat_accounts"),
             Category::Keys => t!("settings.cat_keys"),
             Category::About => t!("settings.cat_about"),
         }
@@ -67,6 +71,7 @@ impl Category {
             Category::Permissions => Icon::Shield,
             Category::Projects => Icon::Folder,
             Category::Browser => Icon::Globe,
+            Category::Accounts => Icon::Lock,
             Category::Keys => Icon::Keyboard,
             Category::About => Icon::Info,
         }
@@ -120,17 +125,19 @@ pub fn shortcuts() -> Vec<Shortcut> {
     let s = |area, keys, what| Shortcut { area, keys, what };
     vec![
         s(window, "⌘,", t!("settings.key_settings")),
-        s(window, "⌘N", t!("sidebar.new_message")),
+        s(window, "⌘N", t!("sidebar.new_conversation")),
         s(window, "⌘K", t!("settings.key_search_all")),
         s(window, "⌘\\", t!("settings.key_sidebar")),
         s(window, "⌘B", t!("settings.key_board")),
         s(window, "⌘⇧B", t!("settings.key_browser")),
+        s(window, "⌘⇧L", t!("orchestra.title")),
         s(window, "⌘F", t!("chat.find_placeholder")),
         s(window, "⌃0–9", t!("board.key_projects")),
         s(window, "⌘+ · ⌘-", t!("settings.key_zoom")),
         s(window, "⌘0", t!("main.menu_actual_size")),
         s(window, "⌘⇧O", t!("settings.key_folds")),
         s(window, "⌘⇧K", t!("settings.key_machine")),
+        s(window, "⌘⇧N", t!("menu.new_window")),
         s(compose, "⏎", t!("composer.tip_send")),
         s(compose, "⇧⏎ · ⌥⏎ · ⌃J", t!("settings.key_newline")),
         s(compose, "Tab", t!("composer.tip_memo")),
@@ -215,7 +222,7 @@ mod tests {
     fn every_shortcut_says_what_it_does_and_the_list_has_the_windows_keys() {
         let keys = shortcuts();
         assert!(keys.iter().all(|k| !k.keys.is_empty() && !k.what.is_empty() && !k.area.is_empty()));
-        for key in ["⌘,", "⌘\\", "⌘N", "⌘K", "⌘B", "⌘⇧B", "⏎", "⇧A", "J K · ↑ ↓", "⌘+ · ⌘-", "⌘0", "⌃0–9"] {
+        for key in ["⌘,", "⌘\\", "⌘N", "⌘K", "⌘B", "⌘⇧B", "⌘⇧L", "⏎", "⇧A", "J K · ↑ ↓", "⌘+ · ⌘-", "⌘0", "⌃0–9"] {
             assert!(keys.iter().any(|k| k.keys == key), "{key} is listed");
         }
         assert!(!keys.iter().any(|k| k.keys == "⌘0–9"), "⌘0 is actual size; the slices are ⌃0–9");

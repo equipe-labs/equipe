@@ -1,0 +1,71 @@
+/* equipe visual cards — only --eq-* tokens (build/css/tokens.css is inlined before this file). No literals except layout numbers. */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; padding: var(--eq-space-2); background: var(--eq-color-bg); color: var(--eq-color-text); font: var(--eq-type-ui); -webkit-font-smoothing: antialiased; word-break: keep-all; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.vc { container-type: inline-size; container-name: vc; }
+.vc-card { background: var(--eq-card-bg); border: var(--eq-card-border-width) solid var(--eq-card-border); border-radius: var(--eq-card-radius); padding: var(--eq-space-4); display: flex; flex-direction: column; gap: var(--eq-space-4); }
+.vc-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--eq-space-2) var(--eq-space-3); flex-wrap: wrap; }
+.vc-title { font: var(--eq-type-title); margin: 0; color: var(--eq-card-title-fg); }
+.vc-meta { font: var(--eq-type-small); color: var(--eq-card-meta-fg); margin: 0; }
+.vc-foot { font: var(--eq-type-meta); color: var(--eq-card-meta-fg); margin: 0; }
+.mono { font: var(--eq-type-code); font-size: 12px; line-height: 18px; }
+
+/* badge: symbol + word, never colour alone */
+.badge { display: inline-flex; align-items: center; gap: var(--eq-badge-gap); height: var(--eq-badge-height); padding: 0 var(--eq-badge-padding-x); border-radius: var(--eq-badge-radius); font: var(--eq-badge-font); font-weight: 600; white-space: nowrap; flex: none; background: var(--eq-badge-neutral-bg); color: var(--eq-badge-neutral-fg); }
+.badge.ok { background: var(--eq-badge-ok-bg); color: var(--eq-badge-ok-fg); }
+.badge.work { background: var(--eq-badge-work-bg); color: var(--eq-badge-work-fg); }
+.badge.wait { background: var(--eq-badge-wait-bg); color: var(--eq-badge-wait-fg); }
+.badge.err { background: var(--eq-badge-err-bg); color: var(--eq-badge-err-fg); }
+.badge.accent { background: var(--eq-chip-selected-bg); color: var(--eq-chip-selected-fg); }
+
+/* ---- board ---- */
+.bd-proj { border: var(--eq-border-1) solid var(--eq-color-line); border-radius: var(--eq-radius-md); overflow: hidden; }
+.bd-ph { display: flex; justify-content: space-between; align-items: center; gap: var(--eq-space-3); padding: var(--eq-space-3); background: var(--eq-color-sunken); }
+.bd-pn { font: var(--eq-type-label); margin: 0; }
+.bd-counts { font: var(--eq-type-meta); color: var(--eq-color-muted); text-align: right; }
+.bd-row { display: grid; grid-template-columns: 1fr; gap: var(--eq-space-2); padding: var(--eq-space-3); border-top: var(--eq-border-1) solid var(--eq-color-line); }
+.bd-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--eq-space-2); }
+.bd-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--eq-space-2); font: var(--eq-type-small); }
+.bd-item .mono { color: var(--eq-color-muted); }
+.bd-item .who { color: var(--eq-color-muted); }
+.bd-none { font: var(--eq-type-small); color: var(--eq-color-muted); margin: 0; }
+.bd-note { display: block; width: 100%; font: var(--eq-type-meta); color: var(--eq-color-muted); }
+@container vc (min-width: 560px) { .bd-row { grid-template-columns: 104px 1fr; } .vc-card { padding: var(--eq-space-5); } }
+
+/* ---- compare ---- */
+.cp { display: grid; border: var(--eq-border-1) solid var(--eq-color-line); border-radius: var(--eq-radius-md); overflow: hidden; }
+.cp-r { display: grid; grid-template-columns: 1fr; border-top: var(--eq-border-1) solid var(--eq-color-line); }
+.cp-r:first-child { border-top: 0; }
+.cp-c { padding: var(--eq-space-2) var(--eq-space-3); font: var(--eq-type-small); display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--eq-space-2); }
+.cp-c.k { font: var(--eq-type-small); font-weight: 600; background: var(--eq-color-sunken); }
+.cp-c .lab { font: var(--eq-type-meta); color: var(--eq-color-muted); flex-basis: 100%; }
+.cp-c.pick { background: var(--eq-color-accent-bg); }
+.cp-h .cp-c { font: var(--eq-type-label); align-items: center; }
+.cp-h .cp-c.k { display: none; }
+.cp-h { display: none; }
+.cp-why { font: var(--eq-type-small); margin: 0; padding: var(--eq-space-3); border-radius: var(--eq-radius-md); background: var(--eq-color-accent-bg); }
+.cp-why b { color: var(--eq-color-accent); }
+@container vc (min-width: 560px) {
+  .vc-card { padding: var(--eq-space-5); }
+  .cp-r, .cp-h { grid-template-columns: 148px repeat(var(--n), 1fr); }
+  .cp-h { display: grid; }
+  .cp-h .cp-c.k { display: flex; }
+  .cp-c .lab { display: none; }
+}
+
+/* ---- figure ---- */
+.fg { display: grid; grid-template-columns: 1fr; gap: var(--eq-space-3); }
+.fg-tile { border: var(--eq-border-1) solid var(--eq-color-line); border-radius: var(--eq-radius-md); padding: var(--eq-space-4); display: flex; flex-direction: column; gap: var(--eq-space-1); min-width: 0; }
+.fg-label { font: var(--eq-type-small); color: var(--eq-color-muted); margin: 0; }
+.fg-val { display: flex; align-items: baseline; gap: var(--eq-space-1) var(--eq-space-2); flex-wrap: wrap; }
+.fg-num { font: var(--eq-type-headline); letter-spacing: var(--eq-type-headline-tracking); font-weight: 700; }
+.fg-unit { font: var(--eq-type-small); color: var(--eq-color-muted); }
+.fg-delta { font: var(--eq-type-small); font-weight: 600; }
+.fg-delta.good { color: var(--eq-color-ok); } .fg-delta.bad { color: var(--eq-color-err); } .fg-delta.flat { color: var(--eq-color-muted); }
+.spark { display: block; width: 100%; height: 48px; margin-top: var(--eq-space-2); overflow: visible; }
+.spark .ln { fill: none; stroke: var(--eq-color-accent); stroke-width: var(--eq-border-2); stroke-linejoin: round; stroke-linecap: round; }
+.spark .ar { fill: var(--eq-color-accent-bg); stroke: none; }
+.spark .base { stroke: var(--eq-color-line); stroke-width: var(--eq-border-1); }
+.spark .dot { fill: var(--eq-color-accent); stroke: var(--eq-color-surface); stroke-width: var(--eq-border-2); }
+.fg-range { display: flex; justify-content: space-between; font: var(--eq-type-meta); color: var(--eq-color-muted); }
+@container vc (min-width: 560px) { .vc-card { padding: var(--eq-space-5); } .fg.n2 { grid-template-columns: repeat(2, 1fr); } .fg.n3 { grid-template-columns: repeat(3, 1fr); } }

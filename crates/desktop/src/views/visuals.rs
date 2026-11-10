@@ -90,9 +90,9 @@ impl Shots {
         self.shots.borrow_mut().in_row(path, row);
     }
 
-    /// The size of `path` as any copy of it that came says.
+    /// The size of `path` as any copy of it that came says — kept after it went.
     pub fn best_dims(&self, path: &str) -> Option<(u32, u32)> {
-        self.shots.borrow().best(path).and_then(|s| s.dims)
+        self.shots.borrow().dims(path)
     }
 
     /// The conversation's column, as wide as it was last drawn (at most the measure).
@@ -164,6 +164,7 @@ pub fn why_words(why: ImageWhy) -> &'static str {
     match why {
         ImageWhy::Missing => t!("visuals.why_missing"),
         ImageWhy::TooBig => t!("visuals.why_too_big"),
+        ImageWhy::Outside => t!("visuals.why_outside"),
         ImageWhy::Unreadable => t!("visuals.why_unreadable"),
     }
 }
@@ -199,6 +200,9 @@ pub fn picture(shots: &Shots, id: u64, path: &str, look: Look, w: f32, h: f32, r
         Look::Ready(shot) => {
             let (iw, ih) = ((w - 2. * pad).max(1.), (h - 2. * pad).max(1.));
             let image = img(shot.image.clone()).absolute().top(px(pad)).left(px(pad)).w(px(iw)).h(px(ih)).object_fit(ObjectFit::Contain);
+            // Rounded itself where it reaches the corners: overflow clips square.
+            let inner = px((radius - pad).max(0.));
+            let image = if top_only { image.rounded_t(inner) } else { image.rounded(inner) };
             if !shots.reduce && shot.at.elapsed() < FADE * 2 {
                 motion::fade(image, ElementId::NamedInteger("shot-in".into(), id), FADE).into_any_element()
             } else {
@@ -421,7 +425,7 @@ pub fn inline(shots: &Shots, row: u64, path: &str, alt: &str, pictures: &[(Strin
     div().py_1().child(tip(frame, p, label, None)).into_any_element()
 }
 
-/// The strip under a reply that names a folder of pictures: "이미지 N개",
+/// The strip under a reply that names a folder of pictures: "N images",
 /// the folder's name, and its first pictures small — none of it when the
 /// folder isn't one of pictures the squad shows, or every one already shows
 /// in the reply. Opened big among the reply's `pictures` and the folder's.
@@ -502,6 +506,29 @@ pub fn strip(shots: &Shots, key: u64, ticket: TicketId, images: &[String], mut c
     )
 }
 
+/// A phone's frames in a row, standing up as a phone's screen does: `height`
+/// tall, each opening big (←/→ through them) on a click. Up to six.
+pub fn phone_strip(shots: &Shots, key: u64, ticket: TicketId, frames: &[String], height: f32, cx: &mut App) -> Option<AnyElement> {
+    if frames.is_empty() {
+        return None;
+    }
+    let p = shots.p;
+    // An iPhone's screen, 402 × 874 points; a frame of another shape is fitted inside.
+    let w = (height * 0.46).floor();
+    let tiles: Vec<AnyElement> = frames
+        .iter()
+        .take(6)
+        .map(|path| {
+            let id = key ^ rules_hash(path);
+            let look = shots.ask(path, Size::Thumb, cx);
+            let face = picture(shots, id, path, look, w, height, R_SM, false, 0.);
+            let tile = div().id(("phone-frame", id)).rounded(px(R_SM)).border_1().border_color(p.hair).cursor_pointer().child(face).on_click(opens(&shots.handle, Viewer::of_ticket(ticket, frames, path)));
+            tip(tile, p, rules::name_of(path).to_owned(), None).into_any_element()
+        })
+        .collect();
+    Some(h_flex().gap_2().items_center().children(tiles).into_any_element())
+}
+
 /// What was asked for without a context, loaded: `shots` is the window's.
 pub fn flush(shots: &Rc<RefCell<Visuals>>, shell: &WeakEntity<Shell>, cx: &mut App) {
     let mut held = shots.borrow_mut();
@@ -566,9 +593,17 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             (side, side)
         }
     };
+    // Zoomed in: the picture bigger, moved by `pan`, within the view's room.
+    let (scale, pan) = shell.viewer_zoom.of(&item.path);
+    let zoomed = (size.0 * scale, size.1 * scale);
     let face: AnyElement = match (&shown, &thumb) {
         (Some(shot), _) => {
-            let board = checker(p, size.0, size.1).map(|b| img(b).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Fill).rounded(px(10.)));
+            // The board made once at the picture's whole size and stretched
+            // with it: one made at every scale a pinch passes through would be
+            // a new (and, far in, a huge) picture each frame.
+            let board = checker(p, size.0, size.1);
+            let size = zoomed;
+            let board = board.map(|b| img(b).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Fill).rounded(px(10.)));
             div()
                 .relative()
                 .w(px(size.0))
@@ -576,7 +611,7 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 .rounded(px(10.))
                 .overflow_hidden()
                 .children(board)
-                .child(img(shot.image.clone()).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Contain))
+                .child(img(shot.image.clone()).absolute().top_0().left_0().w(px(size.0)).h(px(size.1)).object_fit(ObjectFit::Contain).rounded(px(10.)))
                 // The whole picture still coming: a turning mark in its corner.
                 .when(matches!(whole, Look::Loading), |d| d.child(div().absolute().right(px(10.)).bottom(px(10.)).child(motion::spinner(14., rgba(0x00000080)))))
                 .into_any_element()
@@ -618,11 +653,45 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             .map(|b| if picked { b.bg(p.accent).text_color(p.on_accent) } else { b.bg(rgb(0xFFFFFF)).text_color(rgb(0x111114)).hover(|s| s.bg(rgba(0xFFFFFFE0))) })
             .when(picked, |b| b.child(icon(Icon::Check, 13., p.on_accent)))
             .child(label)
-            .child(div().font_family(MONO).text_size(px(11.)).opacity(0.6).child("⏎"))
+            .child(div().font_family(MONO).font_features(crate::theme::key_face()).text_size(px(11.)).opacity(0.6).child("⏎"))
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.viewer_pick(set, choice, multi, window, cx);
             }))
+    });
+    // Zoom: −, how far (a click: whole again), +. Drawn as icons like the
+    // arrows beside them: as text, "+" and "−" sat at the font's math axis,
+    // off the middle of their circles and of each other.
+    let can_zoom = shown.is_some();
+    let path_out = item.path.clone();
+    let path_in = item.path.clone();
+    let path_fit = item.path.clone();
+    let zoom = can_zoom.then(|| {
+        h_flex()
+            .flex_none()
+            .gap_1()
+            .items_center()
+            .child(round(div().id("viewer-zoom-out").on_click(cx.listener(move |this, _, _, cx| this.viewer_zoom_step(&path_out, false, (0., 0.), cx))), Icon::Minus, t!("visuals.zoom_out"), "−"))
+            .child(
+                div()
+                    .id("viewer-zoom-fit")
+                    .min_w(px(44.))
+                    .h(px(CONTROL))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(0xFFFFFF1F)))
+                    .text_size(px(12.))
+                    .text_color(rgba(0xFFFFFFB3))
+                    .child(if scale > 1. { format!("{:.0}%", scale * 100.) } else { t!("visuals.zoom_fit").to_owned() })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.viewer_zoom.set(&path_fit, 1., (0., 0.));
+                        cx.notify();
+                    })),
+            )
+            .child(round(div().id("viewer-zoom-in").on_click(cx.listener(move |this, _, _, cx| this.viewer_zoom_step(&path_in, true, (0., 0.), cx))), Icon::Plus, t!("visuals.zoom_in"), "+"))
     });
     let bar = h_flex()
         .id("viewer-bar")
@@ -642,6 +711,7 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             b.child(round(prev, Icon::ArrowLeft, t!("composer.aria_previous"), "←"))
         })
         .child(label)
+        .children(zoom)
         .children(pick)
         .when(n > 1, |b| {
             let next = div().id("viewer-next").on_click(cx.listener(|this, _, _, cx| this.step_viewer(true, cx)));
@@ -662,14 +732,102 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
         .occlude()
         .on_click(cx.listener(|this, _, _, cx| this.close_viewer(cx)))
         .child(motion::rise(
-            div().id("viewer-picture").flex_1().min_h_0().w_full().flex().items_center().justify_center().child(div().id("viewer-face").on_click(|_, _, cx| cx.stop_propagation()).child(face)),
+            div().id("viewer-picture").flex_1().min_h_0().w_full().flex().items_center().justify_center().child(stage(shell, &item.path, face, zoomed, room, scale, pan, viewport, cx)),
             ElementId::Name(format!("viewer-{}", item.path).into()),
         ))
         .child(bar);
     Some(motion::fade(backdrop, "viewer-in", motion::BASE).into_any_element())
 }
 
-/// The mark of the option a member recommends: "추천" — on a picture
+/// The room the picture is shown in: whole, it sits in the middle; zoomed in,
+/// it is clipped to the room and moved by `pan`. A trackpad's pinch zooms
+/// with the fingers, the point between them kept where it is; the wheel
+/// zooms with ⌘ or Ctrl toward the pointer and otherwise moves a zoomed
+/// picture; a drag moves it; a double-click goes to 2× there, or whole again.
+#[allow(clippy::too_many_arguments)]
+fn stage(shell: &Shell, path: &str, face: AnyElement, size: (f32, f32), room: (f32, f32), scale: f32, pan: (f32, f32), viewport: gpui_kit::Size<Pixels>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    let _ = shell;
+    // The room's centre in the window: the big view's padding, the bar under it.
+    let centre = (f32::from(viewport.width) / 2., 32. + (f32::from(viewport.height) - 64. - 44. - 16.) / 2.);
+    let from_centre = move |at: Point<Pixels>| (f32::from(at.x) - centre.0, f32::from(at.y) - centre.1);
+    let (wheel_path, pinch_path, down_path, click_path) = (path.to_owned(), path.to_owned(), path.to_owned(), path.to_owned());
+    let room_now = room;
+    // The picture whole: the same however far it is zoomed, so it holds for
+    // every event this frame sends, however many come before the next.
+    let fit = (size.0 / scale, size.1 / scale);
+    div()
+        .id("viewer-stage")
+        .relative()
+        .w(px(room.0))
+        .h(px(room.1))
+        .overflow_hidden()
+        .when(scale > 1., |s| s.cursor_grab())
+        .child(div().absolute().left(px((room.0 - size.0) / 2. + pan.0)).top(px((room.1 - size.1) / 2. + pan.1)).child(face))
+        .on_scroll_wheel(cx.listener(move |this, e: &ScrollWheelEvent, window, cx| {
+            let delta = e.delta.pixel_delta(window.line_height());
+            let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
+            let (now, _) = this.viewer_zoom.of(&wheel_path);
+            if e.modifiers.platform || e.modifiers.control {
+                let next = (now * (1. + dy / 300.)).clamp(1., 12.);
+                this.viewer_zoom.set(&wheel_path, next, from_centre(e.position));
+            } else if now > 1. {
+                this.viewer_zoom.pan = (this.viewer_zoom.pan.0 + dx, this.viewer_zoom.pan.1 + dy);
+            } else {
+                return;
+            }
+            this.viewer_zoom.clamp(fit, room_now);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        // Each frame of the pinch, as it comes: no steps between.
+        .on_pinch(cx.listener(move |this, e: &PinchEvent, _, cx| {
+            this.viewer_zoom.pinch(&pinch_path, e.delta, from_centre(e.position), e.phase == TouchPhase::Ended);
+            this.viewer_zoom.clamp(fit, room_now);
+            this.viewer_zoom.drag = None;
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+            cx.stop_propagation();
+            let (now, pan) = this.viewer_zoom.of(&down_path);
+            if e.click_count >= 2 {
+                let next = if now > 1. { 1. } else { 2. };
+                this.viewer_zoom.set(&down_path, next, from_centre(e.position));
+                this.viewer_zoom.clamp(fit, room_now);
+                this.viewer_zoom.drag = None;
+                cx.notify();
+                return;
+            }
+            this.viewer_zoom.drag = (now > 1.).then_some(((f32::from(e.position.x), f32::from(e.position.y)), pan, false));
+        }))
+        .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
+            let Some((from, pan0, _)) = this.viewer_zoom.drag else { return };
+            if e.pressed_button != Some(MouseButton::Left) {
+                this.viewer_zoom.drag = None;
+                return;
+            }
+            let moved = (f32::from(e.position.x) - from.0, f32::from(e.position.y) - from.1);
+            this.viewer_zoom.pan = (pan0.0 + moved.0, pan0.1 + moved.1);
+            this.viewer_zoom.drag = Some((from, pan0, moved.0.abs() + moved.1.abs() > 3.));
+            this.viewer_zoom.clamp(fit, room_now);
+            cx.notify();
+        }))
+        // A click outside a whole picture closes the view, as before; a drag
+        // that moved a zoomed one doesn't.
+        .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+            cx.stop_propagation();
+            let dragged = this.viewer_zoom.drag.take().is_some_and(|d| d.2);
+            let (now, pan) = this.viewer_zoom.of(&click_path);
+            let at = e.position();
+            let (x, y) = from_centre(at);
+            let on_picture = (x - pan.0).abs() <= size.0 / 2. && (y - pan.1).abs() <= size.1 / 2.;
+            if !dragged && now <= 1. && !on_picture && e.click_count() < 2 {
+                this.close_viewer(cx);
+            }
+        }))
+}
+
+/// The mark of the option a member recommends: "Recommended" — on a picture
 /// (`on_dark`: over the big view's dark) or a tile.
 pub fn badge(p: Palette, on_dark: bool) -> impl IntoElement {
     div()
@@ -684,6 +842,29 @@ pub fn badge(p: Palette, on_dark: bool) -> impl IntoElement {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(p.on_accent)
         .child(t!("visuals.recommended"))
+}
+
+/// Pictures the window let go (`Visuals::take_released`): what GPUI decoded
+/// of each, and its tiles in every window's atlas, go too — they stayed for
+/// good otherwise. Every window then draws anew, so no view drawn before
+/// shows a tile let go; one drawn again is asked for again.
+pub fn release(images: Vec<Arc<Image>>, cx: &mut App) {
+    if images.is_empty() {
+        return;
+    }
+    let windows = cx.windows();
+    for image in images {
+        let source = ImageSource::Image(image);
+        if let Some(decoded) = source.decoded(cx) {
+            for window in &windows {
+                let _ = window.update(cx, |_, window, _| window.drop_image(decoded.clone()));
+            }
+        }
+        source.remove_asset(cx);
+    }
+    for window in &windows {
+        let _ = window.update(cx, |_, window, _| window.refresh());
+    }
 }
 
 impl Shell {
@@ -748,11 +929,47 @@ impl Shell {
         shots.put(path, size, look);
         // A reply's picture: its row is measured again, its size known now.
         let rows = if size == Size::Inline { shots.rows_of(path) } else { Vec::new() };
+        let past = shots.trim() && !std::mem::replace(&mut shots.trimming, true);
+        let released = shots.take_released();
         drop(shots);
+        if !released.is_empty() {
+            cx.defer(move |cx| release(released, cx));
+        }
+        // Past the budget with what was drawn lately: looked at again once
+        // that is no longer lately, and again until back within it.
+        if past {
+            self.trim_shots_later(generation, cx);
+        }
         for row in rows {
             self.chat.remeasure_row(row, cx);
         }
         cx.notify();
+    }
+
+    fn trim_shots_later(&mut self, generation: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(rules::DRAWN_LATELY + Duration::from_secs(1)).await;
+                let again = this.update(cx, |this, cx| {
+                    let mut shots = this.shots.borrow_mut();
+                    if shots.generation != generation {
+                        return false;
+                    }
+                    let past = shots.trim();
+                    shots.trimming = past;
+                    let released = shots.take_released();
+                    drop(shots);
+                    if !released.is_empty() {
+                        cx.defer(move |cx| release(released, cx));
+                    }
+                    past
+                });
+                if !matches!(again, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn listing_arrived(&mut self, generation: u64, folder: &str, listing: Listing, cx: &mut Context<Self>) {
@@ -799,7 +1016,7 @@ impl Shell {
     }
 
     /// Dev tool (`snapshot.rs`): the big view at option `n`'s picture of the
-    /// card on show (or picked in 나에게), or at `ticket`'s nth hand-in picture.
+    /// card on show (or picked in the Inbox), or at `ticket`'s nth hand-in picture.
     #[cfg(feature = "snapshot")]
     pub fn view_script(&mut self, ticket: Option<TicketId>, n: usize, cx: &mut Context<Self>) {
         let viewer = match ticket {
@@ -838,6 +1055,12 @@ impl Shell {
         cx.notify();
     }
 
+    /// One step in or out on the picture shown, at `at` (px from the view's centre).
+    pub fn viewer_zoom_step(&mut self, path: &str, inward: bool, at: (f32, f32), cx: &mut Context<Self>) {
+        self.viewer_zoom.step(path, inward, at);
+        cx.notify();
+    }
+
     pub fn step_viewer(&mut self, forward: bool, cx: &mut Context<Self>) {
         if let Some(viewer) = self.viewer.as_mut() {
             viewer.step(forward);
@@ -865,7 +1088,8 @@ impl Shell {
     }
 
     /// While a picture is shown big, the keys are its own: ←/→ through the
-    /// others, ⏎ or a number picks a decision's option, Esc and Space close.
+    /// others (zoomed in: the arrows move it), + and − zoom, 0 shows it
+    /// whole, ⏎ or a number picks a decision's option, Esc and Space close.
     /// Every plain key is taken, so nothing is typed underneath.
     pub fn on_viewer_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(viewer) = self.viewer.clone() else { return false };
@@ -876,8 +1100,27 @@ impl Shell {
             Owner::Decision { set, step } => self.model.asked.get(set).and_then(|s| s.questions.get(step)).filter(|q| n < q.options.len()).map(|q| (set, n, q.multi_select)),
             Owner::Ticket(_) | Owner::Reply(_) => None,
         };
+        let path = viewer.item().path.clone();
         match key {
+            // Zoomed in, the arrows move the picture; whole, they go through them.
+            "left" | "right" | "up" | "down" if self.viewer_zoom.of(&path).0 > 1. => {
+                let step = 80.;
+                let (dx, dy) = match key {
+                    "left" => (step, 0.),
+                    "right" => (-step, 0.),
+                    "up" => (0., step),
+                    _ => (0., -step),
+                };
+                self.viewer_zoom.pan = (self.viewer_zoom.pan.0 + dx, self.viewer_zoom.pan.1 + dy);
+                cx.notify();
+            }
             "left" | "right" => self.step_viewer(key == "right", cx),
+            "=" | "+" => self.viewer_zoom_step(&path, true, (0., 0.), cx),
+            "-" => self.viewer_zoom_step(&path, false, (0., 0.), cx),
+            "0" => {
+                self.viewer_zoom.set(&path, 1., (0., 0.));
+                cx.notify();
+            }
             "escape" | "space" => self.close_viewer(cx),
             "enter" => {
                 if let Some((set, n, multi)) = viewer.item().choice.and_then(pick) {

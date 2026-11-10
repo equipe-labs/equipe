@@ -1,12 +1,12 @@
 //! The browser panel: the shared Chrome the members browse in, live, beside
-//! the conversation (⌘⇧B, or the header's 브라우저 button). Like Claude
+//! the conversation (⌘⇧B, or the header's Browser button). Like Claude
 //! Code's browser pane, but the browser is equipe's own — one Chrome on the
 //! daemon's machine, signed in once — so what shows here is exactly what the
 //! members see, sign-ins and all.
 //!
 //! A row of tabs grouped by whose they are (each member a dot and its name,
-//! then its tabs; the person's own, 내 탭, last); back, forward, reload, the
-//! address, 따라가기, and "Chrome에서 열기" for what a picture can't do (a
+//! then its tabs; the person's own, My tabs, last); back, forward, reload, the
+//! address, Follow, and "Open in Chrome" for what a picture can't do (a
 //! passkey, a permission prompt); the page itself; and a control bar saying
 //! who has it in hand, with one button to take it or give it back. It follows
 //! the conversation on screen — that member's browser, the tab it last worked
@@ -18,10 +18,10 @@
 //! (the daemon takes the largest of the panels watching it, and waits for a
 //! member's step under way); a frame of another size is fitted, its shape kept.
 //! The person's mouse and keys go back to the page, mapped through the
-//! picture's frame. Touching a member's page (or 직접 하기) takes it into the
-//! person's hands (its tools wait); 돌려주기, Esc, or two idle minutes give it
+//! picture's frame. Touching a member's page (or Take over) takes it into the
+//! person's hands (its tools wait); Give back, Esc, or two idle minutes give it
 //! back. A page that waits for a person — a "verify you are human" check, a
-//! sign-in, a code — says so over the picture, with 직접 하기 (`browse::Hand`).
+//! sign-in, a code — says so over the picture, with Take over (`browse::Hand`).
 //! The rules are `crate::browse`, tested without a window.
 
 use std::cell::RefCell;
@@ -45,7 +45,7 @@ use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::stream::{Link, Update};
 use crate::target::Endpoint;
-use crate::theme::{CONTROL, ICON_SM, Palette, R_LG, R_MD, R_SM, SANS, SMALL, UI};
+use crate::theme::{CONTROL, ICON_SM, Palette, R_LG, R_MD, R_SM, SMALL, Sans, UI};
 use crate::tips::tip;
 use crate::ui::{self, Kind};
 
@@ -59,12 +59,25 @@ pub const WIDTH: f32 = 560.;
 const MIN_WIDTH: f32 = 360.;
 /// Room the conversation keeps beside it.
 const CHAT_MIN: f32 = 420.;
+/// What the window needs beside the sidebar for the conversation and the panel at its least.
+pub const SQUEEZE_REST: f32 = CHAT_MIN + MIN_WIDTH;
 /// Mouse moves go no more often than this (60 a second).
 const MOVE_EVERY: Duration = Duration::from_millis(16);
 /// How long the word that the person took or gave back a browser stays; and
 /// the hint for a wheel over a page they don't drive.
 const TOAST_FOR: Duration = Duration::from_secs(4);
 const HINT_FOR: Duration = Duration::from_millis(1800);
+
+/// The widest the panel may be in a window this wide: the conversation and
+/// the sidebar keep their room.
+fn widest(window: f32) -> f32 {
+    (window - CHAT_MIN - 220.).max(MIN_WIDTH)
+}
+
+/// The width the panel is drawn at: the one kept, held within the window.
+fn fit_width(kept: f32, window: f32) -> f32 {
+    kept.clamp(MIN_WIDTH, widest(window))
+}
 
 fn hash_text(text: &str) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
@@ -121,6 +134,7 @@ struct Gone {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Who {
     pub name: String,
+    pub role: String,
     pub hue: usize,
     pub working: bool,
 }
@@ -138,6 +152,12 @@ pub struct BrowserPanel {
     /// The page whose address the field shows.
     url_of: Option<(u64, String)>,
     prompt: Entity<InputState>,
+    /// Words to the member whose browser is on screen: they reach it mid-work.
+    talk: Entity<InputState>,
+    /// Whom the words box's hint names now.
+    talk_to: Option<String>,
+    /// The handed-over card's words opened past their first lines.
+    handed_open: bool,
     lanes: BTreeMap<String, Lane>,
     /// Who has each member's browser in hand.
     hands: HashMap<String, Hand>,
@@ -152,9 +172,9 @@ pub struct BrowserPanel {
     /// The person closed this tab: its going is no news.
     closing: Option<u64>,
     gone: Option<Gone>,
-    /// The page's keys go to it at the next draw (the person chose 직접 하기).
+    /// The page's keys go to it at the next draw (the person chose Take over).
     focus_next: bool,
-    /// A page picked from 나에게 or a notification, shown at the next draw.
+    /// A page picked from the Inbox or a notification, shown at the next draw.
     pending_reveal: Option<(String, u64)>,
     /// Members' browsers handed to the person, opened for once each.
     handovers: browse::Handovers,
@@ -211,7 +231,15 @@ pub struct BrowserPanel {
 
 impl EventEmitter<PanelEvent> for BrowserPanel {}
 
+/// An ask longer than this shows its first two lines until opened.
+const LONG_ASK: usize = 110;
+
 impl BrowserPanel {
+    /// Whether page `page` is on screen now: the panel open on it.
+    pub fn showing(&self, page: u64) -> bool {
+        self.open && self.selected.as_ref().is_some_and(|(_, p)| *p == page)
+    }
+
     /// The language changed: the address box's hint follows.
     pub fn relocalize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.url.update(cx, |s, cx| s.set_placeholder(t!("browser.address_placeholder"), window, cx));
@@ -220,6 +248,7 @@ impl BrowserPanel {
     pub fn new(width: Option<f32>, palette: Palette, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let url = cx.new(|cx| InputState::new(window, cx).placeholder(t!("browser.address_placeholder")));
         let prompt = cx.new(|cx| InputState::new(window, cx));
+        let talk = cx.new(|cx| InputState::new(window, cx));
         let mut subscriptions = vec![cx.subscribe_in(&url, window, |this, input, event: &FieldEvent, window, cx| match event {
             FieldEvent::PressEnter { .. } => {
                 let text = input.read(cx).value().to_string();
@@ -243,6 +272,14 @@ impl BrowserPanel {
                 this.answer(true, Some(text), cx);
             }
         }));
+        subscriptions.push(cx.subscribe_in(&talk, window, |this, input, event: &FieldEvent, window, cx| {
+            if matches!(event, FieldEvent::PressEnter { .. }) {
+                let text = input.read(cx).value().trim().to_owned();
+                if !text.is_empty() {
+                    this.say_to_member(text, window, cx);
+                }
+            }
+        }));
         // Out of focus, the page streams slower; back in, at full speed.
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             this.rewatch(window, cx);
@@ -259,6 +296,9 @@ impl BrowserPanel {
             url,
             url_of: None,
             prompt,
+            talk,
+            talk_to: None,
+            handed_open: false,
             lanes: BTreeMap::new(),
             hands: HashMap::new(),
             dialogs: Vec::new(),
@@ -392,7 +432,7 @@ impl BrowserPanel {
                     return;
                 }
                 let before = self.lanes.get(lane).map(|l| l.agent_page);
-                let mine_before: std::collections::HashSet<u64> = self.lanes.get(MINE).map(|l| l.pages.iter().map(|p| p.id).collect()).unwrap_or_default();
+                let mine_before: std::collections::HashSet<u64> = self.lanes.get(lane).filter(|_| browse::mine(lane)).map(|l| l.pages.iter().map(|p| p.id).collect()).unwrap_or_default();
                 let name = self.member_name(lane);
                 let last_url = self.selected.as_ref().filter(|(l, _)| l == lane).and_then(|_| self.page()).map(|p| p.url.clone());
                 if pages.is_empty() {
@@ -404,18 +444,18 @@ impl BrowserPanel {
                     );
                 }
                 // What the lane's page waits for, for the hand on it.
-                if lane != MINE {
+                if !browse::mine(lane) {
                     let waiting = pages.iter().filter(|p| p.check.is_some()).min_by_key(|p| Some(p.id) != *agent_page).and_then(|p| p.check);
                     self.hands.entry(lane.clone()).or_default().on_page(waiting);
                 }
                 // A tab of the person's own just asked for: shown.
-                if lane == MINE
+                if browse::mine(lane)
                     && self.new_tab
                     && let Some(new) = pages.iter().find(|p| !mine_before.contains(&p.id))
                 {
                     self.new_tab = false;
                     self.follow = false;
-                    self.select(MINE.to_owned(), new.id, window, cx);
+                    self.select(lane.clone(), new.id, window, cx);
                 }
                 // Handed over before its tabs were told: shown, in their hands, now.
                 if let Some((lane, page)) = self.handovers.on_tabs(lane, self.lane_page(lane)) {
@@ -442,7 +482,7 @@ impl BrowserPanel {
                             let closed_here = self.closing == Some(page);
                             self.selected = None;
                             self.drop_pictures(window);
-                            if closed_here || sel_lane == MINE {
+                            if closed_here || browse::mine(&sel_lane) {
                                 self.follow = true;
                             } else {
                                 self.gone = Some(Gone { name, url: last_url });
@@ -609,7 +649,7 @@ impl BrowserPanel {
         self.rewatch(window, cx);
     }
 
-    /// 다시 시도: the line again, from nothing.
+    /// Try again: the line again, from nothing.
     fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.link = None;
         self._pump = None;
@@ -734,7 +774,7 @@ impl BrowserPanel {
         }
     }
 
-    /// 다시 시도 on a page whose pictures stopped: asked for from nothing.
+    /// Try again on a page whose pictures stopped: asked for from nothing.
     fn rewatch_fresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(link) = &self.link {
             link.send(StreamIn::Unwatch);
@@ -767,7 +807,7 @@ impl BrowserPanel {
         }
     }
 
-    /// 직접 하기: the member's browser into the person's hands, its keys to the page.
+    /// Take over: the member's browser into the person's hands, its keys to the page.
     fn take(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(lane) = self.lane_of_selected().filter(|l| !l.is_empty()).map(str::to_owned) {
             self.took(&lane);
@@ -895,7 +935,7 @@ impl BrowserPanel {
         };
         self.pointer_on_selected();
         // Moves never take a member's page: they go only once the person has
-        // it (직접 하기, a click, a key) — before that, the page never saw the
+        // it (Take over, a click, a key) — before that, the page never saw the
         // pointer, and the press that takes it moves it there first.
         if !self.drives_selected() {
             self.pointer.left();
@@ -927,7 +967,7 @@ impl BrowserPanel {
         let Some((x, y)) = self.to_page(e.position) else { return };
         // A member's page it drives: the wheel doesn't take it (only a click or a
         // key does), and goes nowhere — a word says how to.
-        if !browse::wheel_goes(self.lane_of_selected().is_some_and(|l| l != MINE), self.held()) {
+        if !browse::wheel_goes(self.lane_of_selected().is_some_and(|l| !browse::mine(l)), self.held()) {
             if self.toast.as_ref().is_none_or(|(text, _)| *text != t!("browser.wheel_hint")) {
                 self.toast_next = Some((t!("browser.wheel_hint").to_owned(), HINT_FOR));
                 cx.notify();
@@ -972,7 +1012,7 @@ impl BrowserPanel {
 
     /// The person drives the tab on screen: their own, or a member's in their hands.
     fn drives_selected(&self) -> bool {
-        self.lane_of_selected() == Some(MINE) || self.held()
+        self.lane_of_selected().is_some_and(browse::mine) || self.held()
     }
 
     fn held(&self) -> bool {
@@ -1055,9 +1095,21 @@ impl BrowserPanel {
         }
     }
 
+    /// A tab of the person's own at `url`, picked when it comes (a link from a reply).
+    pub fn open_tab(&mut self, url: &str, cx: &mut Context<Self>) {
+        self.new_tab(Some(url.to_owned()), cx);
+    }
+
     fn new_tab(&mut self, url: Option<String>, cx: &mut Context<Self>) {
+        // In the profile on screen: another person's tabs open beside theirs.
+        let profile = self.lane_of_selected().and_then(browse::profile_of).map(str::to_owned);
+        self.new_tab_in(url, profile, cx);
+    }
+
+    /// A tab of the person's own in browser profile `profile` (`None`: the main one), picked when it comes.
+    pub fn new_tab_in(&mut self, url: Option<String>, profile: Option<String>, cx: &mut Context<Self>) {
         self.new_tab = true;
-        self.command(Command::BrowserNewTab { url }, cx);
+        self.command(Command::BrowserNewTab { url, profile }, cx);
     }
 
     fn answer(&mut self, accept: bool, text: Option<String>, cx: &mut Context<Self>) {
@@ -1149,7 +1201,7 @@ impl BrowserPanel {
     /// On `page` of `lane`, the person driving.
     fn drive(&mut self, lane: String, page: u64, window: &mut Window, cx: &mut Context<Self>) {
         // Handed over by its member: the person drives it, the strip says what for.
-        // A page that waits for a person keeps its banner (직접 하기) until they act:
+        // A page that waits for a person keeps its banner (Take over) until they act:
         // a hold that came from detection alone never stops its member.
         let hand = self.hands.entry(lane.clone()).or_default();
         if hand.asked.is_some() {
@@ -1186,12 +1238,12 @@ impl BrowserPanel {
     }
 
     /// Close `pages` of `lane` — the person's own at once; a member's at work,
-    /// asked once first ("pm이 쓰는 중이에요. 닫을까요?"), its member told.
+    /// asked once first ("pm is using it. Close it?"), its member told.
     fn close_tabs(&mut self, lane: &str, pages: Vec<u64>, cx: &mut Context<Self>) {
         if pages.is_empty() {
             return;
         }
-        if browse::close_asks(lane != MINE, self.working(lane)) {
+        if browse::close_asks(!browse::mine(lane), self.working(lane)) {
             self.confirm_close = Some((lane.to_owned(), pages));
             cx.notify();
             return;
@@ -1211,7 +1263,7 @@ impl BrowserPanel {
         cx.notify();
     }
 
-    /// The tab picked, closed (⌘W, 확인 그만하고 탭 닫기).
+    /// The tab picked, closed (⌘W, Stop the check and close the tab).
     fn close_selected(&mut self, cx: &mut Context<Self>) {
         if let Some((lane, page)) = self.selected.clone() {
             self.close_tabs(&lane, vec![page], cx);
@@ -1224,7 +1276,7 @@ impl BrowserPanel {
         self.close_tabs(lane, others, cx);
     }
 
-    /// 돌려주기 from outside the panel (the conversation's row): back to its member.
+    /// Give back from outside the panel (the conversation's row): back to its member.
     pub fn give_back_lane(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.toast_next = Some((t!("browser.gave_toast", name = self.member_name(lane)), TOAST_FOR));
         self.hands.entry(lane.to_owned()).or_default().give_back();
@@ -1233,7 +1285,7 @@ impl BrowserPanel {
         cx.notify();
     }
 
-    /// A page waiting for a person, from 나에게 or a notification: the panel
+    /// A page waiting for a person, from the Inbox or a notification: the panel
     /// opens on it, in the person's hands, its keys to the page.
     pub fn reveal(&mut self, page: u64, cx: &mut Context<Self>) {
         let Some(lane) = self.lanes.iter().find(|(_, l)| l.pages.iter().any(|p| p.id == page)).map(|(lane, _)| lane.clone()) else { return };
@@ -1250,18 +1302,24 @@ impl BrowserPanel {
 
 impl BrowserPanel {
     fn lane_label(&self, lane: &str, l: &Lane) -> (String, Option<Rgba>) {
-        if lane == MINE {
-            return (t!("browser.my_tabs").to_owned(), None);
+        // Another browser profile's: its name beside whose it is.
+        let profiled = |label: String| match browse::profile_of(lane) {
+            Some(profile) => format!("{label} · {profile}"),
+            None => label,
+        };
+        if browse::mine(lane) {
+            return (profiled(t!("browser.my_tabs").to_owned()), None);
         }
         let p = self.palette;
         match l.session.and_then(|s| self.who.get(&s)) {
             Some(who) => {
-                let about = l.member.as_deref().and_then(|m| m.split_once(" (")).map(|(_, a)| a.trim_end_matches(')').to_owned());
+                let member = l.member.as_deref().map(|m| m.split_once(" · ").map_or(m, |(m, _)| m));
+                let about = member.and_then(|m| m.split_once(" (")).map(|(_, a)| a.trim_end_matches(')').to_owned());
                 let label = match about {
                     Some(about) if about != "the whole squad" => format!("{} · {about}", who.name),
                     _ => who.name.clone(),
                 };
-                (label, Some(p.member(who.hue)))
+                (profiled(label), Some(p.member(who.hue)))
             }
             None => (
                 l.member.as_deref().map(|m| m.split_once(" (").map_or(m, |(name, _)| name).to_owned()).unwrap_or_else(|| lane.rsplit('/').next().unwrap_or(lane).to_owned()),
@@ -1292,11 +1350,66 @@ impl BrowserPanel {
     /// What the bar and banner say of the tab on screen.
     fn mode(&self) -> Option<Mode> {
         let lane = self.lane_of_selected()?;
-        if lane == MINE {
+        if browse::mine(lane) {
             return Some(Mode::Mine);
         }
         let check = self.page().and_then(|p| p.check);
         Some(self.hands.get(lane).cloned().unwrap_or_default().mode(check, self.working(lane)))
+    }
+
+    /// Whether one of the panel's boxes has the keyboard — the address, a
+    /// page's question, the words to its member: what is typed is the box's.
+    pub fn typing(&self, window: &Window, cx: &App) -> bool {
+        [&self.url, &self.prompt, &self.talk].iter().any(|f| f.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    /// The member whose browser is on screen, to talk to: its conversation and name.
+    fn talk_target(&self) -> Option<(SessionId, String)> {
+        let lane = self.lane_of_selected().filter(|l| !browse::mine(l))?;
+        let session = self.lanes.get(lane)?.session?;
+        Some((session, self.member_name(lane)))
+    }
+
+    /// Send `text` to the member on screen: read at its next step when at
+    /// work, else it starts on it.
+    fn say_to_member(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((session, name)) = self.talk_target() else { return };
+        cx.emit(PanelEvent::Command(Command::Submit { session, text, about: None }));
+        self.talk.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+        self.toast_next = Some((t!("browser.talk_sent", name = name), TOAST_FOR));
+        cx.notify();
+    }
+
+    /// The words box under the page, when it is a member's browser.
+    fn talk_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = self.palette;
+        let (_, name) = self.talk_target()?;
+        if self.talk_to.as_deref() != Some(name.as_str()) {
+            self.talk.update(cx, |s, cx| s.set_placeholder(t!("browser.talk_placeholder", name = name), window, cx));
+            self.talk_to = Some(name);
+        }
+        Some(
+            h_flex()
+                .flex_none()
+                .px_3()
+                .pt_2()
+                .pb_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .h(px(34.))
+                        .pl(px(2.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(R_MD))
+                        .bg(p.code_bg)
+                        .border_1()
+                        .border_color(p.hair)
+                        .text_size(px(13.))
+                        .child(Input::new(&self.talk).appearance(false).bordered(false)),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The lanes in the strip's order.
@@ -1304,8 +1417,8 @@ impl BrowserPanel {
         let names: Vec<(String, Option<SessionId>, String)> = self
             .lanes
             .iter()
-            .filter(|(lane, l)| lane.as_str() == MINE || l.squad.as_deref() == Some(self.squad.as_str()))
-            .map(|(lane, l)| (lane.clone(), l.session, if lane == MINE { String::new() } else { self.member_name(lane) }))
+            .filter(|(lane, l)| browse::mine(lane) || l.squad.as_deref() == Some(self.squad.as_str()))
+            .map(|(lane, l)| (lane.clone(), l.session, if browse::mine(lane) { String::new() } else { self.member_name(lane) }))
             .collect();
         let refs = names.iter().map(|(lane, session, name)| LaneRef { lane, session: *session, name }).collect();
         browse::order(refs, self.viewed).into_iter().map(|l| l.lane.to_owned()).collect()
@@ -1332,7 +1445,11 @@ impl BrowserPanel {
                     .text_size(px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(p.text2)
-                    .child(div().size(px(7.)).flex_none().rounded_full().bg(dot))
+                    .child(match l.session.and_then(|s| self.who.get(&s)) {
+                        // A member's: its avatar, as everywhere else.
+                        Some(who) => crate::theme::avatar(p, &who.role, &who.name, 16.),
+                        None => div().size(px(7.)).flex_none().rounded_full().bg(dot),
+                    })
                     .child(div().whitespace_nowrap().child(label)),
             );
             for page in &l.pages {
@@ -1455,8 +1572,9 @@ impl BrowserPanel {
         let none = page.is_none();
         let typing = self.url.read(cx).focus_handle(cx).is_focused(window);
         let shown = page.as_ref().and_then(|pg| browse::address(&pg.url)).filter(|_| !typing);
-        // Room for the words beside the icons: 따라가기 from 420 points, Chrome에서 열기 from 640.
-        let (wide, wider) = (self.width >= 420., self.width >= 640.);
+        // Room for the words beside the icons: Follow from 420 points, Open in Chrome from 640.
+        let shown_width = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
+        let (wide, wider) = (shown_width >= 420., shown_width >= 640.);
         h_flex()
             .px_2()
             .pb_2()
@@ -1892,37 +2010,58 @@ impl BrowserPanel {
         let p = self.palette;
         let lane = self.lane_of_selected()?.to_owned();
         let name = self.member_name(&lane);
+        let hue = self.lane_color(&lane);
+        // Small, so the page keeps the room: who, and the one button, on one
+        // line; what it asks under it in two lines, the rest a click away.
+        let done = ui::button(p, "browser-handed-done", Kind::Primary, t!("browser.done_give_back_short"))
+            .icon(Icon::Check)
+            .tip(t!("browser.handed_then", name = name), Some("Esc"))
+            .on_click(cx.listener(|this, _, _, cx| this.give_back(cx)));
+        let head = h_flex()
+            .gap_2()
+            .items_center()
+            .child(div().size(px(8.)).flex_none().rounded_full().bg(hue))
+            .child(div().flex_none().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(hue).child(name.clone()))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.text2).child(t!("browser.handed_title")))
+            .child(div().flex_none().child(done));
+        let long = why.chars().count() > LONG_ASK;
+        let open = self.handed_open;
+        let ask = div()
+            .text_size(px(13.))
+            .line_height(px(19.))
+            .text_color(p.text)
+            .when(long && !open, |d| d.line_clamp(2).text_ellipsis())
+            .child(why);
+        let more = long.then(|| {
+            div()
+                .id("browser-handed-more")
+                .text_size(px(12.))
+                .text_color(p.muted)
+                .cursor_pointer()
+                .hover(move |s| s.text_color(p.text))
+                .child(if open { t!("browser.handed_less") } else { t!("browser.handed_more") })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.handed_open = !this.handed_open;
+                    cx.notify();
+                }))
+        });
         Some(
             motion::rise(
-                h_flex()
+                v_flex()
                     .id("browser-handed")
                     .mx_2()
                     .mb_2()
-                    .p_3()
-                    .gap_3()
-                    .items_start()
+                    .px_3()
+                    .py_2p5()
+                    .gap_1p5()
                     .rounded(px(R_LG))
-                    .bg(p.accent_bg)
+                    .bg(p.popover())
                     .border_1()
-                    .border_color(p.accent.alpha(0.35))
-                    .child(div().size(px(28.)).flex_none().rounded_full().bg(p.accent.alpha(0.16)).flex().items_center().justify_center().child(icon(Icon::Globe, ICON_SM, p.accent)))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(px(4.))
-                            .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.handed_title", name = name)))
-                            .child(div().text_size(px(SMALL)).line_height(px(19.)).text_color(p.text2).child(why))
-                            .child(
-                                h_flex()
-                                    .pt_1()
-                                    .gap_2()
-                                    .items_center()
-                                    .flex_wrap()
-                                    .child(ui::button(p, "browser-handed-done", Kind::Primary, t!("browser.done_give_back", name = name)).icon(Icon::Check).field().on_click(cx.listener(|this, _, _, cx| this.give_back(cx))))
-                                    .child(div().text_size(px(12.)).text_color(p.muted).child(t!("browser.handed_then", name = name))),
-                            ),
-                    ),
+                    .border_color(p.hair)
+                    .shadow_lg()
+                    .child(head)
+                    .child(ask)
+                    .children(more),
                 "browser-handed-rise",
             )
             .into_any_element(),
@@ -2003,10 +2142,8 @@ impl BrowserPanel {
                 .child(dot(p.accent))
                 .child(line(t!("browser.bar_mine_hand").to_owned(), p.accent))
                 .child(back(Kind::Secondary, t!("browser.give_back", name = name))),
-            Mode::Asked(why) => bar
-                .child(dot(color))
-                .child(line(t!("browser.status_asked", name = name, why = why), p.text))
-                .child(back(Kind::Secondary, t!("browser.give_back", name = name))),
+            // The card over the page has the ask and the button: here, only where things stand.
+            Mode::Asked(_) => bar.child(dot(color)).child(line(t!("browser.bar_asked", name = name), p.text2)),
             Mode::Waiting { touched, .. } => {
                 let b = bar
                     .child(dot(p.amber))
@@ -2067,7 +2204,7 @@ impl Render for BrowserPanel {
                 });
             }));
         }
-        // A page waiting for the person, picked from 나에게: on screen, in their hands.
+        // A page waiting for the person, picked from the Inbox: on screen, in their hands.
         if let Some((lane, page)) = self.pending_reveal.take() {
             self.ensure_link(window, cx);
             self.select(lane, page, window, cx);
@@ -2080,11 +2217,14 @@ impl Render for BrowserPanel {
         self.rewatch(window, cx);
         let p = self.palette;
         let dragging = self.drag.is_some();
+        // A window narrower than the width kept (or dragged wide before it
+        // shrank) holds the panel to what it can give: never past the edge.
+        let fit = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
         h_flex()
             .h_full()
-            .w(px(self.width))
+            .w(px(fit))
             .flex_none()
-            .font_family(SANS)
+            .sans()
             .child(
                 // The divider: drag to resize.
                 div()
@@ -2114,6 +2254,7 @@ impl Render for BrowserPanel {
                     .child(self.toolbar(window, cx))
                     .children(self.handed_strip(cx))
                     .child(self.viewport(cx))
+                    .children(self.talk_bar(window, cx))
                     .child(self.control_bar(cx)),
             )
     }
@@ -2151,17 +2292,13 @@ impl BrowserPanel {
         self.scroll(&e, cx);
     }
 
-    /// 직접 하기, or 돌려주기, as the bar's button.
+    /// Take over, or Give back, as the bar's button.
     pub fn hand(&mut self, take: bool, window: &mut Window, cx: &mut Context<Self>) {
         if take { self.take(window, cx) } else { self.give_back(cx) }
     }
 
-    /// A tab of the person's own at `url`, picked when it comes.
-    pub fn open_tab(&mut self, url: &str, cx: &mut Context<Self>) {
-        self.new_tab(Some(url.to_owned()), cx);
-    }
 
-    /// Compose each of `steps` in turn (`ㅎ`, `하`, `한`), then commit the last.
+    /// Compose each of `steps` in turn (an IME building a character in steps), then commit the last.
     pub fn compose(&mut self, steps: &[&str], window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         for step in steps {
@@ -2182,8 +2319,7 @@ impl BrowserPanel {
             self.drag = None;
             cx.emit(PanelEvent::Resized(self.width));
         } else {
-            let max = (f32::from(window.viewport_size().width) - CHAT_MIN - 220.).max(MIN_WIDTH);
-            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, max);
+            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, widest(f32::from(window.viewport_size().width) / window.content_zoom().max(0.01)));
         }
         cx.notify();
         true
@@ -2249,7 +2385,7 @@ impl EntityInputHandler for BrowserPanel {
     }
 }
 
-// ── in 나에게: a member's page waiting for the person ──
+// ── in the Inbox: a member's page waiting for the person ──
 
 /// The row's words: what waits, the member's name and colour.
 pub fn need_row(shell: &crate::Shell, page: u64) -> Option<(String, String, Rgba)> {
@@ -2284,7 +2420,7 @@ pub fn need_peek(shell: &crate::Shell, page: u64, cx: &mut Context<crate::Shell>
     let Some(wait) = shell.model.browser_waits.iter().find(|w| w.page == page).cloned() else { return div().into_any_element() };
     // Handed over: its member's own words say what to do; a page's check, equipe's.
     let (title, detail, why) = match (&wait.why, wait.check) {
-        (Some(asked), _) => (t!("browser.handed_title", name = wait.member), asked.clone(), t!("browser.handed_why", name = wait.member)),
+        (Some(asked), _) => (format!("{} · {}", wait.member, t!("browser.handed_title")), asked.clone(), t!("browser.handed_why", name = wait.member)),
         (None, Some(HumanCheck::SignIn)) => (t!("browser.check_title").to_owned(), t!("browser.check_sign_in", site = wait.site, name = wait.member), t!("browser.need_why").to_owned()),
         (None, Some(HumanCheck::TwoFactor)) => (t!("browser.check_title").to_owned(), t!("browser.check_code", site = wait.site, name = wait.member), t!("browser.need_why").to_owned()),
         (None, _) => (t!("browser.check_title").to_owned(), t!("browser.check_human", site = wait.site, name = wait.member), t!("browser.need_why").to_owned()),
@@ -2306,7 +2442,7 @@ pub fn need_peek(shell: &crate::Shell, page: u64, cx: &mut Context<crate::Shell>
 }
 
 impl crate::Shell {
-    /// A member's page waiting for the person (from 나에게, a notification):
+    /// A member's page waiting for the person (from the Inbox, a notification):
     /// the conversation with the browser panel beside it, on that page, in
     /// their hands.
     pub fn reveal_browser(&mut self, page: u64, cx: &mut Context<Self>) {
@@ -2315,7 +2451,7 @@ impl crate::Shell {
         cx.notify();
     }
 
-    /// 브라우저 열기 on a conversation's hand-over row: the panel beside it,
+    /// Open the browser on a conversation's hand-over row: the panel beside it,
     /// on that member's browser, in the person's hands.
     pub fn reveal_handed(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.show(crate::Screen::Chat, cx);
@@ -2323,7 +2459,7 @@ impl crate::Shell {
         cx.notify();
     }
 
-    /// 돌려주기 on a conversation's hand-over row: back to its member, which
+    /// Give back on a conversation's hand-over row: back to its member, which
     /// carries on.
     pub fn give_back_handed(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.browser.update(cx, |b, cx| b.give_back_lane(lane, cx));
@@ -2504,6 +2640,14 @@ pub mod keys {
 
     #[cfg(test)]
     mod tests {
+        use super::super::{MIN_WIDTH, fit_width};
+
+        #[test]
+        fn a_narrow_window_holds_the_panel_inside_it() {
+            assert_eq!(fit_width(560., 1200.), 560.);
+            assert_eq!(fit_width(560., 760.), MIN_WIDTH);
+            assert_eq!(fit_width(300., 1200.), MIN_WIDTH);
+        }
         use super::*;
 
         fn stroke(key: &str, key_char: Option<&str>, m: Modifiers) -> Keystroke {

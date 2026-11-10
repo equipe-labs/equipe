@@ -1,10 +1,55 @@
-//! Asking about a stretch of the conversation (`views/quote.rs`): the words
-//! the person selected, trimmed into a quote; the message that carries it — a
-//! Markdown blockquote, then the question — and that message read back for
-//! its bubble; where quoted words are in a text, for the way back to them; and
-//! where the button and the box float, by the selection's ends.
+//! Asking about — and replying to — stretches of the conversation
+//! (`views/quote.rs`): the words the person selected, trimmed into a quote;
+//! the cards over the composer, each a passage and what the person says to
+//! it; the message that carries them — each passage a Markdown blockquote
+//! under a `<!-- reply n -->` mark with the person's words after it, then the
+//! composer's own words under `<!-- reply -->` — and that message read back
+//! for its bubble; where quoted words are in a text, for the way back to
+//! them; and where the bar and the box float.
 
 use std::ops::Range;
+
+use serde::{Deserialize, Serialize};
+
+/// A passage of the conversation and what the person says to it: a card over
+/// the composer until sent. Without words it is only the passage, asked about
+/// ("Ask about this") — the composer's words are the question.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    pub quote: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub words: String,
+}
+
+impl Reply {
+    pub fn asked(quote: impl Into<String>) -> Self {
+        Self { quote: quote.into(), words: String::new() }
+    }
+
+    /// Whether the person said anything to it.
+    pub fn answered(&self) -> bool {
+        !self.words.trim().is_empty()
+    }
+}
+
+/// The line that opens a reply's block: `<!-- reply 1 -->`, `<!-- reply 2 -->`,
+/// …; the composer's own words after them open with `<!-- reply -->`.
+fn mark(n: Option<usize>) -> String {
+    match n {
+        Some(n) => format!("<!-- reply {n} -->"),
+        None => "<!-- reply -->".to_owned(),
+    }
+}
+
+/// `line` read as a mark: `Some(Some(n))` a reply's, `Some(None)` the rest's.
+fn read_mark(line: &str) -> Option<Option<usize>> {
+    let inner = line.trim().strip_prefix("<!--")?.strip_suffix("-->")?.trim();
+    let n = inner.strip_prefix("reply")?.trim();
+    if n.is_empty() {
+        return Some(None);
+    }
+    n.parse().ok().map(Some)
+}
 
 /// The most of a selection a quote keeps; past it, an ellipsis.
 pub const MAX_QUOTE: usize = 4000;
@@ -47,6 +92,94 @@ pub fn message(quote: &str, question: &str) -> String {
     let quoted = quote.lines().map(|l| if l.trim().is_empty() { ">".to_owned() } else { format!("> {l}") }).collect::<Vec<_>>().join("\n");
     let question = question.trim();
     if question.is_empty() { quoted } else { format!("{quoted}\n\n{question}") }
+}
+
+/// The message the cards and the composer's words make. Each passage
+/// replied to: its mark, its blockquote, the person's words to it — in the
+/// cards' order — then the composer's words under their own mark, so the
+/// member reads which words answer which passage. Passages only asked
+/// about: each its own blockquote, then the question, as plain Markdown.
+pub fn message_all(cards: &[Reply], rest: &str) -> String {
+    let rest = rest.trim();
+    if !cards.iter().any(Reply::answered) {
+        let quoted = cards.iter().map(|c| message(&c.quote, "")).filter(|q| !q.is_empty()).collect::<Vec<_>>().join("\n\n");
+        return match (quoted.is_empty(), rest.is_empty()) {
+            (true, _) => rest.to_owned(),
+            (false, true) => quoted,
+            (false, false) => format!("{quoted}\n\n{rest}"),
+        };
+    }
+    let mut blocks: Vec<String> = cards.iter().enumerate().map(|(n, c)| format!("{}\n{}", mark(Some(n + 1)), message(&c.quote, &c.words))).collect();
+    if !rest.is_empty() {
+        blocks.push(format!("{}\n{rest}", mark(None)));
+    }
+    blocks.join("\n\n")
+}
+
+/// A message read back for its bubble: the cards it carries — passages
+/// replied to (`<!-- reply n -->`), or quotes it starts with — and the rest.
+pub fn read(text: &str) -> (Vec<Reply>, String) {
+    if let Some(read) = read_marked(text) {
+        return read;
+    }
+    let (quotes, rest) = split_all(text);
+    (quotes.into_iter().map(Reply::asked).collect(), rest)
+}
+
+/// A message whose first line is a reply's mark, read block by block.
+fn read_marked(text: &str) -> Option<(Vec<Reply>, String)> {
+    let text = text.replace("\r\n", "\n");
+    let text = text.trim_start();
+    read_mark(text.lines().next()?)??;
+    let mut blocks: Vec<(Option<usize>, Vec<&str>)> = Vec::new();
+    for line in text.split('\n') {
+        match (read_mark(line), blocks.last_mut()) {
+            (Some(n), _) => blocks.push((n, Vec::new())),
+            (None, Some((_, lines))) => lines.push(line),
+            (None, None) => {}
+        }
+    }
+    let (mut cards, mut rest) = (Vec::new(), Vec::new());
+    for (n, lines) in blocks {
+        let body = lines.join("\n");
+        let body = body.trim_matches(['\n', ' ']);
+        match n {
+            Some(_) => match split(body) {
+                Some((quote, words)) => cards.push(Reply { quote, words }),
+                None if !body.is_empty() => cards.push(Reply { quote: String::new(), words: body.to_owned() }),
+                None => {}
+            },
+            None if !body.is_empty() => rest.push(body.to_owned()),
+            None => {}
+        }
+    }
+    Some((cards, rest.join("\n\n")))
+}
+
+/// Tab among the cards: from the box (`None`) to the first (back: the
+/// last), on to the next, and past either end back to the box.
+pub fn tab(at: Option<usize>, cards: usize, back: bool) -> Option<usize> {
+    if cards == 0 {
+        return None;
+    }
+    match (at.map(|i| i.min(cards - 1)), back) {
+        (None, false) => Some(0),
+        (None, true) => Some(cards - 1),
+        (Some(i), false) => (i + 1 < cards).then_some(i + 1),
+        (Some(i), true) => i.checked_sub(1),
+    }
+}
+
+/// A message read back: every quote it starts with, each a blockquote of
+/// its own, and the words after them.
+pub fn split_all(text: &str) -> (Vec<String>, String) {
+    let mut quotes = Vec::new();
+    let mut rest = text.to_owned();
+    while let Some((quote, after)) = split(rest.trim_start_matches(['\n', ' '])) {
+        quotes.push(quote);
+        rest = after;
+    }
+    (quotes, rest.trim().to_owned())
 }
 
 /// A message read back: the quote it starts with (its `>` lines, one level
@@ -114,18 +247,23 @@ impl Rect {
 /// How far what floats keeps from the window's edges.
 pub const EDGE: f32 = 12.;
 
-/// The small button: just under the selection's end, its left a little
-/// before the last character, kept inside the window.
-pub fn button_at(end: Rect, size: (f32, f32), window: (f32, f32)) -> (f32, f32) {
-    let x = (end.x - 10.).clamp(EDGE, (window.0 - size.0 - EDGE).max(EDGE));
-    let below = end.bottom() + 6.;
-    let y = if below + size.1 + EDGE <= window.1 { below } else { (end.y - size.1 - 6.).max(EDGE) };
+/// The small button: just over the selection's start, its left at it —
+/// never on the words being read; under the selection's end when there is
+/// no room above. Kept inside the window.
+pub fn button_at(start: Rect, end: Rect, size: (f32, f32), window: (f32, f32)) -> (f32, f32) {
+    let x = start.x.clamp(EDGE, (window.0 - size.0 - EDGE).max(EDGE));
+    let above = start.y - size.1 - 6.;
+    let y = if above >= EDGE { above } else { (end.bottom() + 6.).min(window.1 - size.1 - EDGE).max(EDGE) };
     (x, y)
 }
 
-/// The box: its width for the window, and where it goes — just above the
-/// selection, its left at the selection's start; under its end when there
-/// is no room above. The second value is whether it is above.
+/// The reply box's width, room permitting.
+pub const BOX_WIDTH: f32 = 380.;
+
+/// The reply box `height` tall, by what it answers (a selection's ends, or a
+/// card): its width, where it goes, and whether that is above — over the
+/// start, as the bar was; under the end when there is no room. Kept inside
+/// the window.
 pub fn box_at(start: Rect, end: Rect, height: f32, window: (f32, f32)) -> (f32, (f32, f32), bool) {
     let width = BOX_WIDTH.min(window.0 - 2. * EDGE).max(200.);
     let x = start.x.clamp(EDGE, (window.0 - width - EDGE).max(EDGE));
@@ -137,12 +275,26 @@ pub fn box_at(start: Rect, end: Rect, height: f32, window: (f32, f32)) -> (f32, 
     (width, (x, below), false)
 }
 
-/// The box's width, room permitting.
-pub const BOX_WIDTH: f32 = 380.;
+/// Where the bar's selection is: as drawn now; gone (a press cleared it, the
+/// bar's own included), where it was last drawn — the bar doesn't jump from
+/// under the pointer; never drawn (a double-clicked word), where the button
+/// let go.
+pub fn place(now: Option<(Rect, Rect)>, before: Option<(Rect, Rect)>, released: Rect) -> (Rect, Rect) {
+    now.or(before).unwrap_or((released, released))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bar_stays_where_it_was_when_a_press_clears_the_selection() {
+        let r = |x: f32| Rect { x, y: 10., w: 1., h: 1. };
+        let drawn = (r(100.), r(300.));
+        assert_eq!(place(Some(drawn), None, r(5.)), drawn, "as drawn now");
+        assert_eq!(place(None, Some(drawn), r(5.)), drawn, "cleared by the press: where it was, not where the button let go");
+        assert_eq!(place(None, None, r(5.)), (r(5.), r(5.)), "never drawn: where the button let go");
+    }
 
     #[test]
     fn a_selection_is_trimmed_to_its_words() {
@@ -202,25 +354,90 @@ mod tests {
     }
 
     #[test]
-    fn the_button_sits_under_the_selection_end_inside_the_window() {
-        let end = Rect { x: 300., y: 200., w: 1., h: 20. };
-        assert_eq!(button_at(end, (120., 28.), (1000., 700.)), (290., 226.));
-        // At the right edge it comes back in; at the foot it goes over the line.
-        assert_eq!(button_at(Rect { x: 990., ..end }, (120., 28.), (1000., 700.)), (868., 226.));
-        assert_eq!(button_at(Rect { y: 670., ..end }, (120., 28.), (1000., 700.)), (290., 636.));
+    fn the_button_sits_over_the_selection_never_on_the_words_read() {
+        let start = Rect { x: 100., y: 200., w: 8., h: 20. };
+        let end = Rect { x: 300., y: 240., w: 8., h: 20. };
+        assert_eq!(button_at(start, end, (120., 28.), (1000., 700.)), (100., 166.), "over its start");
+        assert_eq!(button_at(Rect { x: 990., ..start }, end, (120., 28.), (1000., 700.)), (868., 166.), "inside the window");
+        let top = Rect { y: 20., ..start };
+        assert_eq!(button_at(top, end, (120., 28.), (1000., 700.)), (100., 266.), "no room above: under its end");
+    }
+
+    fn reply(quote: &str, words: &str) -> Reply {
+        Reply { quote: quote.into(), words: words.into() }
     }
 
     #[test]
-    fn the_box_goes_above_the_selection_or_under_it() {
-        let start = Rect { x: 100., y: 400., w: 1., h: 20. };
-        let end = Rect { x: 300., y: 440., w: 1., h: 20. };
-        assert_eq!(box_at(start, end, 120., (1000., 700.)), (BOX_WIDTH, (100., 272.), true));
-        // No room above: under the end.
-        let top = Rect { y: 60., ..start };
-        assert_eq!(box_at(top, end, 120., (1000., 700.)), (BOX_WIDTH, (100., 468.), false));
-        // A narrow window: the box narrows and stays inside.
-        let (w, (x, _), _) = box_at(Rect { x: 300., ..start }, end, 120., (380., 700.));
-        assert_eq!(w, 356.);
-        assert_eq!(x, 12.);
+    fn replies_go_each_marked_with_its_passage_then_the_rest() {
+        let cards = vec![reply("T-12를 먼저\n처리하겠습니다", " 왜 먼저죠? "), reply("헤더 정리", "좋아요\n둘째 줄")];
+        assert_eq!(
+            message_all(&cards, " 나머지는 내일 봐요 "),
+            "<!-- reply 1 -->\n> T-12를 먼저\n> 처리하겠습니다\n\n왜 먼저죠?\n\n<!-- reply 2 -->\n> 헤더 정리\n\n좋아요\n둘째 줄\n\n<!-- reply -->\n나머지는 내일 봐요"
+        );
+        // Nothing typed in the composer itself: no block for the rest.
+        assert_eq!(message_all(&cards[..1], "  "), "<!-- reply 1 -->\n> T-12를 먼저\n> 처리하겠습니다\n\n왜 먼저죠?");
+        // A passage only asked about, among replies: its block is the passage alone.
+        assert_eq!(message_all(&[reply("a", ""), reply("b", "yes")], ""), "<!-- reply 1 -->\n> a\n\n<!-- reply 2 -->\n> b\n\nyes");
     }
+
+    #[test]
+    fn passages_only_asked_about_go_as_before() {
+        let asked = vec![reply("첫 인용", ""), reply("둘째", "  ")];
+        assert_eq!(message_all(&asked, "둘 다 왜요?"), "> 첫 인용\n\n> 둘째\n\n둘 다 왜요?");
+        assert_eq!(message_all(&[], "그냥 말"), "그냥 말");
+    }
+
+    #[test]
+    fn a_message_of_replies_reads_back_as_its_cards_and_the_rest() {
+        let cards = vec![reply("T-12를 먼저\n\n- 헤더 정리", "왜 먼저죠?"), reply("둘째", "네\n\n그리고"), reply("셋째", "")];
+        let sent = message_all(&cards, "끝으로 하나 더");
+        assert_eq!(read(&sent), (cards.clone(), "끝으로 하나 더".to_owned()));
+        assert_eq!(read(&message_all(&cards, "")), (cards, String::new()));
+        // As the person writes it by hand: spaces in the marks, CRLF, a passage that holds a mark.
+        let typed = "<!--reply 1-->\r\n> a\r\n> <!-- reply 2 -->\r\n\r\nmine\r\n<!-- reply -->\r\nrest";
+        assert_eq!(read(typed), (vec![reply("a\n<!-- reply 2 -->", "mine")], "rest".to_owned()));
+    }
+
+    #[test]
+    fn other_messages_read_back_as_before() {
+        assert_eq!(read("> 첫 인용\n\n둘 다 왜요?"), (vec![reply("첫 인용", "")], "둘 다 왜요?".to_owned()));
+        assert_eq!(read("그냥 말"), (Vec::new(), "그냥 말".to_owned()));
+        // A mark that isn't the message's first line is only words.
+        assert_eq!(read("hi\n<!-- reply 1 -->\n> a"), (Vec::new(), "hi\n<!-- reply 1 -->\n> a".to_owned()));
+        assert_eq!(read("<!-- replying -->\nx"), (Vec::new(), "<!-- replying -->\nx".to_owned()));
+    }
+
+    #[test]
+    fn tab_walks_the_cards_and_comes_back_to_the_box() {
+        assert_eq!(tab(None, 3, false), Some(0), "from the box, the first");
+        assert_eq!(tab(None, 3, true), Some(2), "back from the box, the last");
+        assert_eq!(tab(Some(0), 3, false), Some(1));
+        assert_eq!(tab(Some(2), 3, false), None, "past the last, the box");
+        assert_eq!(tab(Some(0), 3, true), None, "before the first, the box");
+        assert_eq!(tab(None, 0, false), None, "no cards");
+        assert_eq!(tab(Some(5), 2, true), Some(0), "a card gone meanwhile: from the last");
+    }
+
+    #[test]
+    fn the_reply_box_floats_over_what_it_answers_and_inside_the_window() {
+        let start = Rect { x: 100., y: 300., w: 8., h: 20. };
+        let end = Rect { x: 400., y: 340., w: 8., h: 20. };
+        assert_eq!(box_at(start, end, 90., (1000., 700.)), (BOX_WIDTH, (100., 202.), true), "above its start");
+        assert_eq!(box_at(Rect { y: 40., ..start }, end, 90., (1000., 700.)), (BOX_WIDTH, (100., 368.), false), "no room above: under its end");
+        let (w, (x, _), _) = box_at(Rect { x: 900., ..start }, end, 90., (1000., 700.));
+        assert_eq!(x + w, 1000. - EDGE, "kept inside the window");
+        assert_eq!(box_at(start, end, 90., (300., 700.)).0, 300. - 2. * EDGE, "narrower in a narrow window");
+    }
+
+    #[test]
+    fn several_quotes_go_as_blockquotes_of_their_own_and_read_back_so() {
+        let quotes = vec!["첫 인용".to_owned(), "둘째\n\n- 목록".to_owned()];
+        let sent = message_all(&quotes.iter().map(|q| reply(q, "")).collect::<Vec<_>>(), "둘 다 왜요?");
+        assert_eq!(sent, "> 첫 인용\n\n> 둘째\n>\n> - 목록\n\n둘 다 왜요?");
+        assert_eq!(split_all(&sent), (quotes.clone(), "둘 다 왜요?".to_owned()));
+        assert_eq!(split_all(&message_all(&[reply(&quotes[0], "")], "")), (vec!["첫 인용".to_owned()], String::new()));
+        assert_eq!(split_all("그냥 말"), (Vec::new(), "그냥 말".to_owned()));
+        assert_eq!(message_all(&[], "그냥 말"), "그냥 말");
+    }
+
 }

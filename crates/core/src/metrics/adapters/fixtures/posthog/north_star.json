@@ -1,0 +1,1 @@
+{"cache_key": "x", "columns": ["day", "n"], "types": [["day", "String"], ["n", "UInt64"]], "results": [["2026-11-01", 1], ["2026-11-02", 1]], "hasMore": false, "limit": 50000, "offset": 0, "is_cached": false, "query_status": null}

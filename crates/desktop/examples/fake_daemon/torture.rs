@@ -6,9 +6,9 @@
 //! table, CSV, math, a Mermaid diagram, images. `torture 6` is a PM's busy
 //! turn — long shell output, calls one after another, a failure, an edit,
 //! a comment, a subagent, news; `torture 7` holds a command running for a
-//! few seconds, to see a call under way; `torture 8` is a PM's long answer in
-//! Korean — paragraphs, a list, bold, ticket links — to read for wrapping and
-//! the measure.
+//! few seconds, to see a call under way; `torture 8` is a PM's long answer —
+//! paragraphs, a list, bold, ticket links — to read for wrapping and the
+//! measure.
 
 use std::time::Duration;
 
@@ -17,41 +17,41 @@ use tokio::sync::broadcast;
 
 const SITE: &str = "/tmp/fake/site";
 
-const PART1: &str = r#"## 헤더 정리 결과
+const PART1: &str = r#"## Header clean-up
 
-**요약**: 헤더 컴포넌트를 정리했고 `cargo test`가 한 번 실패한 뒤 통과했습니다. 자세한 건 [T-12](ticket:12)에 남겼습니다.
+**Summary**: I tidied the header component; `cargo test` failed once, then passed. The details are on [T-12](ticket:12).
 
-### 바뀐 파일
+### Files changed
 
-- `src/components/Header.tsx:42` — 로고 정렬
-- `crates/desktop/src/views/chat.rs` 와 `Cargo.toml`
-  - 중첩된 항목: `README.md` 링크 정리
-    - 더 깊은 항목 *기울임*과 ~~취소선~~
-- 바깥 링크: [GPUI 문서](https://www.gpui.rs) · 파일 링크: [main.rs](/tmp/fake/site/src/main.rs:12)
+- `src/components/Header.tsx:42` — logo alignment
+- `crates/desktop/src/views/chat.rs` and `Cargo.toml`
+  - A nested item: `README.md` links tidied
+    - A deeper item with *italics* and ~~strikethrough~~
+- An outside link: [GPUI docs](https://www.gpui.rs) · a file link: [main.rs](/tmp/fake/site/src/main.rs:12)
 
-### 할 일
+### To do
 
-- [x] 헤더 정렬
-- [x] 한글 입력 확인
-- [ ] 다크 모드 대비 점검
+- [x] Align the header
+- [x] Check IME input
+- [ ] Check dark-mode contrast
 
 > [!NOTE]
-> 이 변경은 **데스크톱 앱**에만 해당합니다. `equipe` CLI는 그대로입니다.
+> This change is for the **desktop app** only. The `equipe` CLI is unchanged.
 
 > [!WARNING]
-> 배포 전에 `npm run build`를 한 번 더 돌려 주세요.
+> Run `npm run build` once more before deploying.
 
-> 평범한 인용문은 그대로 보입니다.
+> A plain quote looks as it is.
 
-끝."#;
+Done."#;
 
-const PART2: &str = r#"코드 예시입니다.
+const PART2: &str = r#"Some code examples.
 
 ```rust
-/// 대화를 그립니다.
+/// Draws the conversation.
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement {
     let total: u32 = (1..=10).filter(|n| n % 2 == 0).sum();
-    println!("합계: {total}");
+    println!("total: {total}");
 }
 ```
 
@@ -64,7 +64,7 @@ export function Header({ title }: { title: string }) {
 
 ```python
 def fib(n: int) -> int:
-    """n번째 피보나치 수."""
+    """The nth Fibonacci number."""
     return n if n < 2 else fib(n - 1) + fib(n - 2)
 ```
 
@@ -87,21 +87,21 @@ diff --git a/src/a.rs b/src/a.rs
 ```
 "#;
 
-const PART4: &str = r#"넓은 표와 수식, 다이어그램입니다.
+const PART4: &str = r#"A wide table, math and a diagram.
 
-| 화면 | 상태 | 담당 | 마지막 변경 | 메모 | 브랜치 | 테스트 | 리뷰어 |
+| Screen | Status | Owner | Last change | Note | Branch | Tests | Reviewer |
 |---|---|---|---|---|---|---|---|
-| 헤더 | 진행 중 | frontend | 2026-10-15 14:02 | 로고 정렬과 메뉴 간격 조정 | feat/header-align | 통과 (128) | pm |
-| 입력창 | 대기 | frontend | 2026-10-14 09:30 | 한글 조합 중 Enter 처리 | fix/ime-enter | 실패 (2) | qa |
-| 데몬 연결 | 완료 | backend | 2026-10-13 18:45 | SSH 재연결 백오프 | feat/ssh-backoff | 통과 (64) | pm |
+| Header | In progress | frontend | 2026-10-15 14:02 | Logo alignment and menu spacing | feat/header-align | Pass (128) | pm |
+| Composer | Waiting | frontend | 2026-10-14 09:30 | Enter during an IME composition | fix/ime-enter | Fail (2) | qa |
+| Daemon link | Done | backend | 2026-10-13 18:45 | SSH reconnect backoff | feat/ssh-backoff | Pass (64) | pm |
 
 ```csv
-이름,역할,"메모, 쉼표 포함"
-pm,관리,"티켓 ""T-12"" 담당"
-frontend,화면,헤더
+name,role,"note, with a comma"
+pm,lead,"owns ticket ""T-12"""
+frontend,screens,header
 ```
 
-인라인 수식 $E = mc^2$ 와 $\alpha + \beta$, 그리고 돈 $5와 $10은 그대로입니다.
+Inline math $E = mc^2$ and $\alpha + \beta$, while money like $5 and $10 stays as written.
 
 $$
 \int_0^1 x^2 \, dx = \frac{1}{3}
@@ -109,23 +109,23 @@ $$
 
 ```mermaid
 flowchart LR
-    A[사람] --> B{PM}
-    B -->|티켓| C[frontend]
-    B -->|티켓| D[backend]
-    C --> E[리뷰]
+    A[Person] --> B{PM}
+    B -->|ticket| C[frontend]
+    B -->|ticket| D[backend]
+    C --> E[Review]
     D --> E
 ```
 
-로컬 이미지:
+A local image:
 
-![화면 캡처](/tmp/fake/site/shot.png)
+![Screen capture](/tmp/fake/site/shot.png)
 
-없는 파일의 이미지: ![원격 파일](/Users/nobody/missing.png)
+An image of a missing file: ![Remote file](/Users/nobody/missing.png)
 "#;
 
-const PART5: &str = r#"수식과 다이어그램만 따로:
+const PART5: &str = r#"Math and diagrams on their own:
 
-인라인 $\sqrt{a^2 + b^2}$ 그리고 $x_i$.
+Inline $\sqrt{a^2 + b^2}$ and $x_i$.
 
 $$
 \sum_{k=1}^{n} k = \frac{n(n+1)}{2}
@@ -133,30 +133,30 @@ $$
 
 ```mermaid
 sequenceDiagram
-    사람->>PM: 헤더 고쳐 줘
+    Person->>PM: Fix the header
     PM->>frontend: T-12
-    frontend-->>PM: 리뷰 요청
+    frontend-->>PM: Asks for review
 ```
 
 ```mermaid
 flowchart LR
-    A[사람] --> B{PM}
-    B -->|티켓| C[frontend]
-    B -->|티켓| D[backend]
+    A[Person] --> B{PM}
+    B -->|ticket| C[frontend]
+    B -->|ticket| D[backend]
 ```
 "#;
 
 fn long_block() -> String {
-    let mut out = String::from("긴 코드 블록은 처음 24줄만 보입니다.\n\n```rust\n");
+    let mut out = String::from("A long code block shows its first 24 lines only.\n\n```rust\n");
     for n in 1..=40 {
-        out.push_str(&format!("let line_{n} = compute({n}); // 한 줄씩 늘어나는 계산이 이어지고, 아주 긴 줄은 화면 폭을 넘으면 줄바꿈되어야 합니다 {n}\n"));
+        out.push_str(&format!("let line_{n} = compute({n}); // the computation goes on a line at a time, and a very long line has to wrap once it is wider than the screen {n}\n"));
     }
-    out.push_str("```\n\n끝까지 보려면 아래를 누르세요.");
+    out.push_str("```\n\nPress below to see it all.");
     out
 }
 
 fn tool(session: SessionId, tool: &str, target: &str) -> Event {
-    Event::ToolUse { session, tool: tool.into(), target: Some(target.into()) }
+    Event::ToolUse { session, tool: tool.into(), target: Some(target.into()), label: None, background: false }
 }
 
 fn done(session: SessionId, tool: &str, target: &str, outcome: ToolOutcome) -> Event {
@@ -188,7 +188,7 @@ pub async fn turn(session: SessionId, part: usize, events: broadcast::Sender<Eve
     pause(150).await;
     match part {
         1 => {
-            for thought in ["헤더를 먼저 보고, ", "테스트가 왜 실패하는지 확인한 뒤 ", "고치겠습니다."] {
+            for thought in ["I'll look at the header first, ", "check why the test fails, ", "then fix it."] {
                 send(Event::Thinking { session, text: thought.into() });
                 pause(400).await;
             }
@@ -220,7 +220,7 @@ pub async fn turn(session: SessionId, part: usize, events: broadcast::Sender<Eve
         3 => stream(session, &long_block(), &events, seconds).await,
         5 => stream(session, PART5, &events, seconds).await,
         6 => activity(session, &events, seconds).await,
-        8 => stream(session, KOREAN, &events, seconds).await,
+        8 => stream(session, LONG, &events, seconds).await,
         7 => {
             send(tool(session, "Read", &format!("{SITE}/src/main.rs")));
             pause(100).await;
@@ -229,7 +229,7 @@ pub async fn turn(session: SessionId, part: usize, events: broadcast::Sender<Eve
             pause(6000).await;
             send(done(session, "Bash", "cargo build --release -p equipe-desktop", ToolOutcome { ok: true, exit: Some(0), ms: Some(6000), output: "   Compiling equipe-desktop v0.38.1
     Finished `release` profile [optimized] target(s) in 6.02s".into(), ..Default::default() }));
-            stream(session, "빌드가 끝났습니다.", &events, seconds).await;
+            stream(session, "The build is done.", &events, seconds).await;
         }
         _ => {
             write_picture();
@@ -249,11 +249,11 @@ async fn activity(session: SessionId, events: &broadcast::Sender<Event>, seconds
     let send = |e: Event| {
         let _ = events.send(e);
     };
-    for thought in ["데몬이 두 번 떠 있는지 보고, ", "T-47 진행 상황을 확인하겠습니다."] {
+    for thought in ["I'll see whether the daemon is running twice, ", "then check how T-47 is going."] {
         send(Event::Thinking { session, text: thought.into() });
         pause(500).await;
     }
-    stream(session, "데몬 상태부터 확인해 보겠습니다.", events, seconds / 4.).await;
+    stream(session, "Checking the daemon first.", events, seconds / 4.).await;
     let ps = "ps -axo pid,lstart,command | grep -E 'equipe (daemon|agent)' | grep -v grep";
     send(tool(session, "Bash", ps));
     pause(150).await;
@@ -282,43 +282,43 @@ async fn activity(session: SessionId, events: &broadcast::Sender<Event>, seconds
     send(tool(session, "Bash", "cargo test -p equipe-core runtime::brief"));
     pause(200).await;
     send(done(session, "Bash", "cargo test -p equipe-core runtime::brief", ToolOutcome { ok: true, exit: Some(0), ms: Some(7_900), output: "running 4 tests\ntest result: ok. 4 passed; 0 failed".into(), ..Default::default() }));
-    let comment = "T-47 · PM: 갤러리 스와이프는 좋습니다. 확대했을 때 이미지가 화면 밖으로 밀리는 문제만 고쳐 주세요 — 모바일 Safari에서 재현됩니다. 고친 뒤 스크린샷 두 장(확대 전/후)을 붙여 주세요.";
+    let comment = "T-47 · PM: The gallery swipe is good. Please fix just the image being pushed off the screen when zoomed — it reproduces in mobile Safari. Once fixed, attach two screenshots (before and after zooming).";
     send(tool(session, "mcp__equipe__comment", comment));
     pause(80).await;
     send(done(session, "mcp__equipe__comment", comment, ok(40)));
-    send(tool(session, "Task", "사이드바 접기: 토글 위치 고정"));
+    send(tool(session, "Task", "Collapse the sidebar: pin the toggle's position"));
     pause(200).await;
-    send(done(session, "Task", "사이드바 접기: 토글 위치 고정", ok(42_000)));
+    send(done(session, "Task", "Collapse the sidebar: pin the toggle's position", ok(42_000)));
     for news in [
-        "backend handed in T-71 for your review · 요청 수 제한 미들웨어.",
-        "You accepted T-58 · 앱 아이콘 후보 세 가지.",
-        "designer이(가) T-64을(를) 제안했습니다: 빈 화면 일러스트 세트",
-        "frontend이(가) T-42을(를) 검토해 달라고 넘겼습니다 · 체크아웃 페이지 결제 수단 선택.",
+        "backend handed in T-71 for your review · Rate-limit middleware.",
+        "You accepted T-58 · Three app icon candidates.",
+        "designer proposed T-64: Empty-state illustration set",
+        "frontend handed in T-42 for your review · Checkout page payment method choice.",
     ] {
-        send(Event::Notice { session, text: news.into() });
+        send(Event::Notice { undo: None, session, text: news.into() });
     }
     stream(session, ACTIVITY, events, seconds).await;
 }
 
-const ACTIVITY: &str = "## 정리\n\n데몬은 하나만 떠 있고, PM 브리핑이 두 번 가던 문제는 `src/runtime.rs`에서 고쳤습니다. 로그는 `daemon.log`에 있고, 설정 이름은 `brief_pm` 그대로입니다.\n\n### 바뀐 점\n\n1. PM이 자기 일을 넘길 때는 브리핑을 보내지 않습니다\n2. 테스트 `runtime::brief::twice`가 이제 통과합니다 — 한 번 실패한 뒤 고쳐서 다시 돌렸고, 네 개 모두 통과했습니다\n\n---\n\n**T-47**에는 확대 문제를 고쳐 달라고 댓글을 남겼습니다.";
+const ACTIVITY: &str = "## Summary\n\nOnly one daemon is running, and the PM's briefing going out twice is fixed in `src/runtime.rs`. The log is in `daemon.log`, and the setting is still called `brief_pm`.\n\n### What changed\n\n1. The PM sends no briefing when it hands over its own work\n2. The test `runtime::brief::twice` passes now — it failed once, was fixed and run again, and all four pass\n\n---\n\nI left a comment on **T-47** asking for the zoom problem to be fixed.";
 
-/// A PM's long answer in Korean, as one came to the person: words that broke
-/// between syllables at the end of a line ("프로젝 / 트", "지 / 시하기").
-const KOREAN: &str = "좋은 질문이에요. 지금 구조에서는 사이드바에서 프로젝트를 누르면 PM이 그 프로젝트 이야기로 대화를 이어 가고, 다른 프로젝트 이야기는 접힌 줄로 따로 모입니다. 그래서 프로젝트마다 대화방을 따로 만들 필요는 없어요.
+/// A PM's long answer, as one came to the person: paragraphs, a list, bold
+/// and ticket links, a long word and an address with no spaces in it.
+const LONG: &str = "Good question. As things stand, clicking a project in the sidebar has the PM carry the conversation on about that project, and talk about other projects gathers on its own folded lines. So there's no need for a separate conversation per project.
 
-## 하고 싶은 것
+## What you want
 
-말씀하신 건 **매번 지시하지 않아도 PM이 알아서 다음 일을 고르는 흐름**을 만들고 싶은데, 그게 지금 어디까지 되는지 궁금하신 거죠? 정리하면 이렇습니다.
+What you describe is **a flow where the PM picks the next piece of work by itself, without being told each time**, and you'd like to know how far that works today — right? In short:
 
-- 보드에 할 일이 쌓여 있으면 PM이 우선순위대로 하나씩 멤버에게 넘깁니다. 넘길 때마다 대화에 짧게 알려 드려요.
-- 멤버가 일을 끝내면 [T-119](ticket:119)처럼 **검토할 일**로 올라오고, 받은편지함에서 바로 수락하거나 변경을 요청할 수 있습니다.
-- 결정이 필요한 일만 여러분 차례로 남고, 나머지는 기다리지 않고 계속 진행됩니다.
+- When work piles up on the board, the PM hands it to members one at a time, by priority, and tells you briefly in the conversation each time.
+- When a member finishes, it comes up as **something to review**, like [T-119](ticket:119), and you can accept it or ask for changes straight from the inbox.
+- Only what needs a decision is left as your turn; everything else carries on without waiting.
 
-### 아직 안 되는 것
+### What doesn't work yet
 
-다만 두 가지는 아직 손으로 하셔야 합니다. 첫째, 새 프로젝트의 방향을 정하는 일은 PM이 제안까지만 하고 확정은 여러분이 해 주셔야 하고, 둘째, 배포처럼 되돌리기 어려운 일은 항상 허락을 받고 진행합니다. Internationalization처럼 아주 긴 영어 단어나 https://example.com/very/long/path/that/keeps/going/without/any/spaces/at/all 같은 주소는 줄 끝에서 어쩔 수 없이 잘릴 수 있어요.
+Two things are still yours to do by hand. First, the PM only proposes a new project's direction — settling it is up to you; second, anything hard to undo, like a deploy, always waits for your yes. A very long word like Internationalization or an address like https://example.com/very/long/path/that/keeps/going/without/any/spaces/at/all may have to be cut at the end of a line.
 
-원하시면 **T-120**으로 \"자동으로 다음 일 고르기\" 설정을 만들어서, 켜 두면 PM이 하루에 한 번 보드를 훑고 할 일을 정리하도록 해 둘게요. 어떻게 할까요?";
+If you like, I'll make a setting for \"pick the next work automatically\" as **T-120**: switched on, the PM looks over the board once a day and sorts out what to do. Shall I?";
 
 /// A picture for the reply to show: a soft gradient with a frame.
 fn write_picture() {

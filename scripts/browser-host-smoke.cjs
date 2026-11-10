@@ -140,16 +140,15 @@ const freePort = () => new Promise((resolve) => {
   const first = await until('a first frame', () => frames.find((f) => f.header.page === page));
   check(first && first.jpeg[0] === 0xff && first.jpeg[1] === 0xd8 && first.header.w > 0 && first.header.cssW > 0, `a JPEG frame ${first?.header.w}×${first?.header.h} of a ${first?.header.cssW}×${first?.header.cssH} page`);
 
-  // The person's hand: a click into the field and Korean typed with composition.
+  // The person's hand: a click into the field and Japanese typed with composition.
   const before = frames.length;
   const box = { x: 40, y: 20 };
   op({ op: 'input', page, ev: { t: 'mouse', type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount: 1 } });
   op({ op: 'input', page, ev: { t: 'mouse', type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount: 1 } });
-  op({ op: 'input', page, ev: { t: 'ime', text: 'ㅎ' } });
-  op({ op: 'input', page, ev: { t: 'ime', text: '하' } });
-  op({ op: 'input', page, ev: { t: 'ime', text: '한' } });
-  op({ op: 'input', page, ev: { t: 'insert', text: '한' } });
-  op({ op: 'input', page, ev: { t: 'insert', text: '글' } });
+  op({ op: 'input', page, ev: { t: 'ime', text: 'k' } });
+  op({ op: 'input', page, ev: { t: 'ime', text: 'か' } });
+  op({ op: 'input', page, ev: { t: 'insert', text: 'か' } });
+  op({ op: 'input', page, ev: { t: 'insert', text: 'な' } });
   op({ op: 'input', page, ev: { t: 'key', type: 'keyDown', key: 'a', code: 'KeyA', vk: 65, text: 'a' } });
   op({ op: 'input', page, ev: { t: 'key', type: 'keyUp', key: 'a', code: 'KeyA', vk: 65 } });
   check(!!(await until('control goes to the person', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === 'person'))), 'the person\'s input takes the page');
@@ -178,8 +177,8 @@ const freePort = () => new Promise((resolve) => {
   await until('control given back', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === null));
   const typed = await mcp('browser_evaluate', { function: '() => document.getElementById("q").value' });
   const text = typed.content.map((c) => c.text).join('\n');
-  check(/한글a/.test(text), `what the person typed reached the page (${/"([^"]*)"/.exec(text)?.[1]})`);
-  if (!/한글a/.test(text)) console.log(text);
+  check(/かなa/.test(text), `what the person typed reached the page (${/"([^"]*)"/.exec(text)?.[1]})`);
+  if (!/かなa/.test(text)) console.log(text);
 
   // The pointer passing over a member's page (or a wheel) doesn't take it.
   messages.length = 0;

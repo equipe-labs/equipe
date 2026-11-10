@@ -325,7 +325,7 @@ impl<D: Desktop> Controller<D> {
         let q = query.trim().to_lowercase();
         let apps = self.desktop.apps();
         let by = |f: &dyn Fn(&App) -> bool| apps.iter().find(|a| f(a)).cloned();
-        // The name macOS shows is localised (TextEdit is "텍스트 편집기" on a Korean
+        // The name macOS shows is localised (TextEdit is "テキストエディット" on a Japanese
         // Mac); the bundle id's last part is the English name members write.
         let short = |a: &App| a.bundle_id.as_deref().and_then(|b| b.rsplit('.').next()).map(str::to_lowercase).unwrap_or_default();
         by(&|a| a.bundle_id.as_deref().is_some_and(|b| b.to_lowercase() == q))

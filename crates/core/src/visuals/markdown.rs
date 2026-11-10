@@ -1,7 +1,7 @@
 //! The pictures and folders a conversation's Markdown names: each image a
-//! member embeds (`![평면도](/…/images/plan.png)`, a path relative to where
+//! member embeds (`![Floor plan](/…/images/plan.png)`, a path relative to where
 //! it works, a title after it, spaces in it as members write them), and each
-//! folder it points at (`…/T-2 갤러리 디자인/images/`). The daemon reads
+//! folder it points at (`…/T-2 gallery design/images/`). The daemon reads
 //! them from what it recorded, for what a screen may then ask of it; a screen
 //! reads them from what it shows, for what to ask. Both read them here, so
 //! both name a picture by the same path.
@@ -240,7 +240,7 @@ pub fn local_images(text: &str) -> Vec<Embedded> {
 }
 
 /// `text` with each image's destination that holds a space put in `<…>`, so
-/// a Markdown reader takes it as one: members write `![a](/T-2 갤러리/a.png)`.
+/// a Markdown reader takes it as one: members write `![a](/T-2 gallery/a.png)`.
 pub fn bracketed(text: &str) -> Cow<'_, str> {
     let loose: Vec<Embedded> = images(text).into_iter().filter(|i| !i.bracketed && text[i.dest.clone()].contains(char::is_whitespace)).collect();
     if loose.is_empty() {
@@ -348,6 +348,12 @@ pub fn folders(text: &str) -> Vec<String> {
         }
     };
     let embedded = images(text);
+    // A folder put in a picture's place (`![drafts](/…/components)`): its pictures, as a strip.
+    for image in &embedded {
+        if !has_extension(&image.path) && !is_web(&image.path) {
+            add(&image.path, &mut out);
+        }
+    }
     for (start, line, code) in prose_lines(text) {
         let in_image = |at: usize| embedded.iter().any(|i| i.span.contains(&(start + at)));
         for span in &code {
@@ -389,6 +395,12 @@ mod tests {
 
     fn paths(text: &str) -> Vec<String> {
         images(text).into_iter().map(|i| i.path).collect()
+    }
+
+    #[test]
+    fn a_folder_put_where_a_picture_goes_is_its_pictures() {
+        let text = "컴포넌트 시안:\n\n![컴포넌트 시안](/w/t20/design/components)\n\n![대시보드](/w/t20/design/dashboard.png)";
+        assert_eq!(folders(text), vec!["/w/t20/design/components".to_owned()]);
     }
 
     #[test]
@@ -458,7 +470,7 @@ mod tests {
         // Two in a line stay two.
         assert_eq!(folders("/w/a/b/ 그리고 /w/c/d/"), ["/w/a/b/", "/w/c/d/"]);
         // Not folders: files, URLs, short or relative paths, images, code blocks.
-        for text in ["/w/a/b.png", "https://x.io/a/b/", "/a/", "images/", "`/w/a/b.md`", "![a](/w/a/b/)", "```\n/w/a/b/\n```"] {
+        for text in ["/w/a/b.png", "https://x.io/a/b/", "/a/", "images/", "`/w/a/b.md`", "```\n/w/a/b/\n```"] {
             assert!(folders(text).is_empty(), "{text}: {:?}", folders(text));
         }
         // The same folder once, and a few at most.

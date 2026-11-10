@@ -1,4 +1,4 @@
-//! Members working the Mac's desktop apps the way a person does: see the
+//! Members working desktop apps the way a person does: see the
 //! screen, click, type, open apps (docs/DESKTOP-CONTROL.md).
 //!
 //! The permissions this takes — Screen Recording, Accessibility — belong to a
@@ -19,6 +19,8 @@ pub mod install;
 pub mod keys;
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(windows)]
+mod windows;
 pub mod tools;
 
 /// Run the helper in this process until it ends: what the LaunchAgent starts
@@ -26,9 +28,11 @@ pub mod tools;
 pub fn serve(home: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     return mac::serve(home);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    return windows::serve(home);
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = home;
-        Err(std::io::Error::other("desktop control is macOS only"))
+        return Err(std::io::Error::other("desktop control is macOS only"));
     }
 }

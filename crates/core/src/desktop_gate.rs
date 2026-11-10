@@ -21,7 +21,7 @@ pub const SEND: &str = "Send";
 
 /// The squad's messaging apps until the person changes the list: by the name
 /// macOS shows. An entry may also be a bundle id.
-pub const DEFAULT_APPS: [&str; 14] = [
+pub const DEFAULT_APPS: [&str; 15] = [
     "Microsoft Teams",
     "Slack",
     "Mail",
@@ -33,6 +33,7 @@ pub const DEFAULT_APPS: [&str; 14] = [
     "Telegram",
     "WhatsApp",
     "LINE",
+    "WeChat",
     "Signal",
     "Spark",
     "Webex",
@@ -40,7 +41,7 @@ pub const DEFAULT_APPS: [&str; 14] = [
 
 /// Bundle ids of the defaults, so an app still counts when its shown name
 /// changes (Teams has been "Microsoft Teams (work or school)").
-const BUNDLES: [(&str, &str); 14] = [
+const BUNDLES: [(&str, &str); 15] = [
     ("com.microsoft.teams2", "Microsoft Teams"),
     ("com.tinyspeck.slackmacgap", "Slack"),
     ("com.apple.mail", "Mail"),
@@ -52,6 +53,7 @@ const BUNDLES: [(&str, &str); 14] = [
     ("ru.keepcoder.Telegram", "Telegram"),
     ("net.whatsapp.WhatsApp", "WhatsApp"),
     ("jp.naver.line.mac", "LINE"),
+    ("com.tencent.xinWeChat", "WeChat"),
     ("org.whispersystems.signal-desktop", "Signal"),
     ("com.readdle.SparkDesktop", "Spark"),
     ("Cisco-Systems.Spark", "Webex"),
@@ -71,45 +73,15 @@ const BLOCKED_APPS: [&str; 6] = [
 /// account, passwords, security settings. Matched in the window's title (outside
 /// messaging apps, where it is a conversation's name) and in the name of what
 /// is clicked or typed into.
-const BLOCKED_WORDS: [&str; 30] = [
-    "password",
-    "passcode",
-    "passkey",
-    "비밀번호",
-    "암호 변경",
-    "two-factor",
-    "2단계 인증",
-    "security settings",
-    "privacy & security",
-    "개인정보 보호 및 보안",
-    "보안 설정",
-    "touch id & password",
-    "users & groups",
-    "filevault",
-    "delete account",
-    "close account",
-    "delete my account",
-    "계정 삭제",
-    "회원 탈퇴",
-    "회원탈퇴",
-    "payment",
-    "checkout",
-    "pay now",
-    "buy now",
-    "place order",
-    "billing",
-    "결제",
-    "구매하기",
-    "주문하기",
-    "송금",
-];
+fn blocked_words() -> impl Iterator<Item = &'static str> {
+    crate::i18n::every("match.blocked_words").iter().copied().chain(["filevault"])
+}
 
 /// Names of buttons that reach someone: clicking one in a messaging app asks.
-/// English ones are whole words ("call", not "recall").
-const OUTWARD_WORDS: [&str; 26] = [
-    "send", "share", "invite", "accept", "join", "post", "submit", "publish", "call", "upload", "attach", "forward",
-    "보내기", "전송", "보냄", "공유", "초대", "수락", "참가", "참여", "게시", "제출", "통화", "업로드", "첨부", "전달",
-];
+/// ASCII ones are whole words ("call", not "recall").
+fn outward_words() -> &'static [&'static str] {
+    crate::i18n::every("match.outward_words")
+}
 
 /// AX roles of things a click acts on rather than places a cursor in.
 const PRESSABLE: [&str; 6] = ["AXButton", "AXMenuButton", "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXMenuItem"];
@@ -207,6 +179,18 @@ pub enum Verdict {
     Blocked(&'static str),
 }
 
+/// equipe's own windows — the app, the daemon, the desktop helper — by the
+/// bundle id prefix they share, or the app's name when the helper gives no
+/// bundle id. A member never clicks or types in them: equipe's own approval
+/// cards, accept and merge buttons and settings are decided by the person's
+/// own hands, never by a member driving the desktop to approve its own work.
+const OWN_BUNDLE_PREFIX: &str = "im.equipe.";
+
+/// Whether `app` is one of equipe's own windows.
+pub fn equipe_own(app: &App) -> bool {
+    app.bundle_id.as_deref().is_some_and(|id| id.to_ascii_lowercase().starts_with(OWN_BUNDLE_PREFIX)) || app.name.eq_ignore_ascii_case("equipe")
+}
+
 /// Whether `app` is one of the squad's messaging apps (`apps`, by name or
 /// bundle id, any case).
 pub fn messaging(app: &App, apps: &[String]) -> bool {
@@ -285,12 +269,19 @@ fn presses(keys: &str) -> bool {
 fn outward(name: &str) -> bool {
     let name = name.to_lowercase();
     let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).collect();
-    OUTWARD_WORDS.iter().any(|w| if w.is_ascii() { words.contains(w) } else { name.contains(w) })
+    outward_words().iter().any(|w| if w.is_ascii() { words.contains(w) } else { name.contains(w) })
 }
 
 /// Why no member may make this input, in any mode, if so.
 fn blocked(act: &Act, scene: &Scene, in_messaging: bool) -> Option<&'static str> {
     let app = &scene.app;
+    // equipe's own windows: a member looks (screenshots are free, judged
+    // before this), but never clicks, types or drags there — it can't drive
+    // equipe to approve, accept, merge, decide or change settings in the
+    // person's place. Only the person's own hands do that.
+    if equipe_own(app) {
+        return Some("equipe's own window is the person's: a member never clicks or types there.");
+    }
     if BLOCKED_APPS.iter().any(|b| b.eq_ignore_ascii_case(&app.name) || app.bundle_id.as_deref().is_some_and(|id| b.eq_ignore_ascii_case(id))) {
         return Some("Passwords are the person's: equipe never types or clicks there.");
     }
@@ -305,7 +296,7 @@ fn blocked(act: &Act, scene: &Scene, in_messaging: bool) -> Option<&'static str>
     let window = scene.window.as_deref().filter(|_| !in_messaging);
     let sensitive = |text: &str| {
         let text = text.to_lowercase();
-        BLOCKED_WORDS.iter().any(|w| text.contains(w))
+        blocked_words().any(|w| text.contains(w))
     };
     if window.into_iter().chain(on.into_iter().flat_map(Element::names)).any(sensitive) {
         return Some("Payment, account deletion, passwords and security settings are the person's to do: equipe never acts there.");
@@ -474,6 +465,58 @@ mod tests {
         assert!(asks(judge(&Act::Click, &with_target(teams(), unnamed), &all)), "an icon button with no name");
         assert!(asks(judge(&Act::Click, &teams(), &all)), "AX doesn't say what's there");
         assert!(asks(judge(&Act::Drag, &teams(), &all)));
+    }
+
+    fn equipe_app() -> Scene {
+        Scene {
+            app: App { name: "equipe".into(), bundle_id: Some("im.equipe.desktop".into()) },
+            window: Some("acme · board".into()),
+            target: None,
+            focused: None,
+        }
+    }
+
+    #[test]
+    fn a_member_never_clicks_or_types_in_equipes_own_window() {
+        let all = apps();
+        // The exact self-approval attack: clicking equipe's own approval card.
+        for name in ["Accept", "Always allow", "Approve", "Merge", "Yes", "보내기"] {
+            assert_eq!(
+                judge(&Act::Click, &with_target(equipe_app(), button(name)), &all),
+                Verdict::Blocked("equipe's own window is the person's: a member never clicks or types there."),
+                "click {name}",
+            );
+        }
+        // A bare click, a key, typing and a drag are all refused, in any app of equipe's own.
+        assert!(matches!(judge(&Act::Click, &equipe_app(), &all), Verdict::Blocked(_)), "bare click");
+        assert!(matches!(judge(&Act::Key("return".into()), &equipe_app(), &all), Verdict::Blocked(_)), "return");
+        assert!(matches!(judge(&Act::Key("space".into()), &equipe_app(), &all), Verdict::Blocked(_)), "space");
+        assert!(matches!(judge(&Act::Type("hi".into()), &equipe_app(), &all), Verdict::Blocked(_)), "typing a draft");
+        assert!(matches!(judge(&Act::Drag, &equipe_app(), &all), Verdict::Blocked(_)), "drag");
+        for id in ["im.equipe.daemon", "im.equipe.desktop-helper", "IM.EQUIPE.Desktop"] {
+            let mut scene = equipe_app();
+            scene.app = App { name: "whatever".into(), bundle_id: Some(id.into()) };
+            assert!(matches!(judge(&Act::Click, &scene, &all), Verdict::Blocked(_)), "{id}");
+        }
+        // No bundle id: the name alone names it.
+        let by_name = Scene { app: App { name: "Equipe".into(), bundle_id: None }, ..Default::default() };
+        assert!(matches!(judge(&Act::Click, &by_name, &all), Verdict::Blocked(_)), "by name");
+    }
+
+    #[test]
+    fn looking_at_equipes_own_window_is_still_free() {
+        let all = apps();
+        for tool in ["mcp__desktop__screenshot", "scroll", "elements", "ui_tree", "focus_window", "list_windows"] {
+            assert_eq!(judge(&Act::of(tool, &json!({})), &equipe_app(), &all), Verdict::Free, "{tool}");
+        }
+    }
+
+    #[test]
+    fn a_lookalike_app_is_not_equipes_own() {
+        let all = apps();
+        // A third-party app that merely mentions equipe is not equipe itself.
+        let other = Scene { app: App { name: "equipe-notes".into(), bundle_id: Some("com.example.equipe".into()) }, ..Default::default() };
+        assert_eq!(judge(&Act::Click, &other, &all), Verdict::Free, "name is not an exact match and bundle id is another vendor's");
     }
 
     #[test]

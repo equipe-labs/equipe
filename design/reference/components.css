@@ -18,6 +18,9 @@
 .eq-btn--secondary { background-color: var(--eq-button-secondary-bg); color: var(--eq-button-secondary-fg); border-color: var(--eq-button-secondary-border); }
 .eq-btn--ghost { background-color: var(--eq-button-ghost-bg); color: var(--eq-button-ghost-fg); }
 .eq-btn--danger { background-color: var(--eq-button-danger-bg); color: var(--eq-button-danger-fg); }
+.eq-btn--danger-soft { background-color: var(--eq-button-danger-soft-bg); color: var(--eq-button-danger-soft-fg); }
+.eq-btn--danger-soft:hover, .eq-btn--danger-soft.is-hover { background-color: var(--eq-button-danger-soft-bg-hover); }
+.eq-btn--danger-soft:active, .eq-btn--danger-soft.is-pressed { background-color: var(--eq-button-danger-soft-bg-pressed); }
 
 /* ── input ── */
 .eq-field { display: flex; flex-direction: column; gap: var(--eq-input-gap); }

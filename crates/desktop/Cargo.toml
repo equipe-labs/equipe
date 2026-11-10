@@ -35,16 +35,18 @@ gpui-kit = { version = "=0.7.1", features = [
 ] }
 # Images a reply points at on the web: GPUI fetches them through this client.
 gpui-pre-reqwest-client = "=0.3.8"
-# Math and diagrams in replies: drawn to SVG, which GPUI rasterizes (resvg) at 2x.
+# Math in replies (diagrams: core's `visuals::diagram`): drawn to SVG, which GPUI rasterizes (resvg) at 2x.
 latex-rust = { version = "2.1", default-features = false, features = ["std"] }
-mermaid-rs-renderer = { version = "0.3", default-features = false }
-libc = "0.2"
+# Canonical decomposition, for a past tense marked inside a letter (`asklist`); already in the tree through `idna`.
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Drafts and recent attachments, kept on disk between launches.
 serde = { version = "1.0.229", features = ["derive"] }
 # Drafts and recent attachments on disk; a JSON reply pretty-printed.
 serde_json = "1"
 # The daemon link runs its own small runtime on a thread off the UI.
 tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util", "process", "fs"] }
+# The terminal panel: its grid, its escape codes and its pty (as Zed's).
+alacritty_terminal = "0.26"
 
 # Attached screenshots: decoded, shrunk and thumbnailed off the UI thread.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
@@ -53,7 +55,7 @@ base64 = "0.23.1"
 qrcode = { version = "0.14.1", default-features = false }
 # `equipe send-image` drops files in an inbox; the folder is watched, not polled.
 # (Renamed: this crate has a module of its own called `notify`.)
-fs-notify = { package = "notify", version = "8", default-features = false, features = ["macos_fsevent"] }
+fs-notify = { package = "notify", version = "8", default-features = false }
 # Markdown parsed as the text view parses it (the version gpui-kit uses), so
 # ticket numbers are linked in text alone and emphasis next to Korean closes.
 markdown = "=1.0.0"
@@ -61,6 +63,8 @@ markdown = "=1.0.0"
 ropey = "=2.0.0-beta.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+fs-notify = { package = "notify", version = "8", default-features = false, features = ["macos_fsevent"] }
 # Notifications while the window is out of sight, through macOS's
 # UNUserNotificationCenter (src/notify/system.rs): the same crate and features
 # GPUI already builds.
@@ -71,12 +75,12 @@ objc2 = "0.6"
 block2 = "0.6"
 # Attachments: a video's frames (AVFoundation), a PDF's first page and page
 # count (CoreGraphics) — read on this Mac, off the UI thread (src/media.rs).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSValue", "NSError", "NSDictionary", "NSBundle", "NSSet"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSValue", "NSError", "NSDictionary", "NSBundle", "NSSet", "NSLocale"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFURL", "CFString", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGPDFDocument", "CGPDFPage", "CGAffineTransform", "CGGeometry"] }
 objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMTime", "CMTimeRange"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVAsset", "AVAssetImageGenerator", "AVAssetTrack", "AVMediaFormat", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "SFSpeechRecognizer", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFTranscription", "SFSpeechRecognitionTaskHint", "SFSpeechRecognitionMetadata"] }
 
 [features]
 snapshot = ["gpui-kit/test-support"]
-

@@ -1,6 +1,6 @@
 //! What typing into the conversation does, without a window: the history that
-//! ↑↓ walks, a draft kept per member and project, the guard that keeps a Korean
-//! composition's Enter from sending, completion from the squad's state, and what
+//! ↑↓ walks, a draft kept per member and project, the guard that keeps the Enter
+//! ending an input source's composition from sending, completion from the squad's state, and what
 //! a sent line turns into — a message to a member, or one of the person's
 //! commands. The same rules as the terminal console (`tui/app.rs` `submit`,
 //! `slash`); the daemon commands are the ones it sends.
@@ -116,8 +116,8 @@ impl History {
 
 // ── drafts ──
 
-/// What was half written to one member: the words, where the caret was, and
-/// what was attached.
+/// What was half written to one member: the words, where the caret was,
+/// what was attached, and the cards replying to the conversation.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Draft {
     #[serde(default)]
@@ -127,15 +127,18 @@ pub struct Draft {
     pub caret: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Saved>,
+    /// The cards over the box: passages replied to, or asked about.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<crate::quote::Reply>,
 }
 
 impl Draft {
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.attachments.is_empty()
+        self.text.is_empty() && self.attachments.is_empty() && self.replies.is_empty()
     }
 }
 
-/// How many files "최근 첨부" offers.
+/// How many files "Recent" offers.
 pub const RECENT: usize = 10;
 
 /// What was half written to each member, per squad and project in focus,
@@ -205,6 +208,9 @@ impl Drafts {
 /// Write `text` at `path`, readable by its owner only, replacing what was there whole.
 pub fn write_private(path: &Path, text: &str) {
     use std::os::unix::fs::OpenOptionsExt as _;
+    if crate::readonly::blocked(&path.display().to_string()) {
+        return;
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -215,11 +221,12 @@ pub fn write_private(path: &Path, text: &str) {
     }
 }
 
-// ── Korean composition ──
+// ── Input source composition ──
 
-/// Keeps the Enter that ends a Korean composition from also sending.
+/// Keeps the Enter that ends a composition (Korean, Japanese, Chinese input
+/// sources) from also sending.
 ///
-/// macOS's Korean input source, asked to finish a syllable with Enter, commits
+/// An input source such as macOS's Korean one, asked to finish with Enter, commits
 /// it and — depending on the app — hands the Enter on as well. Two rules
 /// (T-54 §3.5): while text is being composed an Enter only commits; and an
 /// Enter arriving in the same breath as the composition ending is that same
@@ -384,9 +391,13 @@ fn other_squads(model: &Model) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The models a member's engine takes, for `/model`'s completion: Claude
+/// Code's families' latest, then its models by id (`equipe_core::models`);
+/// for another engine, what it runs now. Any name its engine knows works.
 pub fn engine_models(engine: Option<Engine>, current: Option<&str>) -> Vec<String> {
+    use equipe_core::models::{CLAUDE_FAMILIES, CLAUDE_MODELS};
     let mut models: Vec<String> = match engine {
-        Some(Engine::Claude) => ["opus", "sonnet", "haiku"].iter().map(|m| (*m).to_owned()).collect(),
+        Some(Engine::Claude) => CLAUDE_FAMILIES.iter().map(|f| f.alias).chain(CLAUDE_MODELS.iter().map(|p| p.id)).map(str::to_owned).collect(),
         _ => Vec::new(),
     };
     if let Some(current) = current.filter(|m| !models.iter().any(|x| x == m)) {
@@ -403,8 +414,10 @@ pub enum Effect {
     /// Talk to this member (a bare `@name`).
     Select(SessionId),
     ShowBoard,
-    /// 디자인 시스템 (`/design`).
+    /// Design system (`/design`).
     ShowDesign,
+    /// Metrics (`/metrics`).
+    ShowMetrics,
     /// The board, narrowed to these words (`/find`).
     Find(String),
     /// Put this project (or all) in focus.
@@ -426,7 +439,7 @@ pub enum Effect {
     Ask(Ask),
     /// `/suggest` was switched.
     Suggest(bool),
-    /// The 디스크 panel (`/disk`).
+    /// The Disk panel (`/disk`).
     Disk,
 }
 
@@ -455,8 +468,8 @@ impl Plan {
 /// `later` (Tab, or the memo button) leaves a member at work a memo for when
 /// its turn ends instead of steering the work.
 ///
-/// Words that plainly accept or merge handed-in work ("전부 수락", "T-1
-/// 수락") also raise the card to confirm it in that conversation, at once —
+/// Words that plainly accept or merge handed-in work ("accept all", "accept
+/// T-1") also raise the card to confirm it in that conversation, at once —
 /// sent before the words, so the member there finds it up. Only a card: the
 /// person's click on it is what accepts (`crate::accept`).
 pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
@@ -465,12 +478,43 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
         Command::Submit { session, text, .. } | Command::SubmitLater { session, text, .. } => Some((*session, text.clone())),
         _ => None,
     });
-    if let Some((session, said)) = to
+    if let Some((session, said)) = to.clone()
         && let Some(raise) = crate::accept::raise(&model.squad, session, &said, &model.tickets)
     {
         out.commands.insert(0, raise);
     }
+    // The first message of a new conversation makes it.
+    if let (Some((draft, project)), Some((session, _))) = (&model.draft_talk, &to)
+        && draft == session
+    {
+        out.commands.insert(0, Command::NewConversation { squad: model.squad.clone(), session: *draft, project: project.clone() });
+    }
     out
+}
+
+/// An ask from the design screen (carry on with the setup, a video of a
+/// flow, a fix…): `to_designer` to the designer — at work on a ticket or
+/// not — else `to_pm` to the PM, about `project`, the design screen's
+/// (`None`: the squad's own). Always to that member's own conversation,
+/// whatever is open in view and whatever the box holds; a member at work
+/// has it as a line from the box would come (a steer, or a memo where it
+/// can't be steered). To the PM the words name the project, if they don't.
+pub fn ask(model: &Model, to_designer: &str, to_pm: &str, project: Option<String>) -> Plan {
+    let Some((member, pm)) = model.design_talker() else { return Plan::say(t!("design.no_one_to_ask")) };
+    let text = if pm { to_pm } else { to_designer }.trim();
+    if text.is_empty() {
+        return Plan::default();
+    }
+    let text = match &project {
+        Some(name) if pm && !text.contains(name.as_str()) => t!("design.ask_about_project", project = name, request = text),
+        _ => text.to_owned(),
+    };
+    let (session, about) = (member.session, Some(project));
+    match model.presence_to_talk(member) {
+        Presence::Closed => Plan::say(t!("compose.member_gone", name = member.name)),
+        Presence::Working if member.engine.is_none() => Plan::send(Command::SubmitLater { session, text, about }),
+        _ => Plan::send(Command::Submit { session, text, about }),
+    }
 }
 
 fn said(model: &Model, text: &str, later: bool) -> Plan {
@@ -517,6 +561,11 @@ fn said(model: &Model, text: &str, later: bool) -> Plan {
         _ => (target, text),
     };
     let away = target.session != selected.session;
+    // Said in a conversation the person opened with the PM: to that conversation.
+    let to = match model.talk {
+        Some(talk) if !away => talk,
+        _ => target.session,
+    };
     // What is said to the one in view goes to its conversation about the
     // project in focus: at work there or in a lane, or free if the member is
     // at work in another project's — the daemon then opens a lane beside it.
@@ -527,23 +576,24 @@ fn said(model: &Model, text: &str, later: bool) -> Plan {
         // Both engines read a steer at their next step (Codex through its own
         // CLI's `turn/steer`); a daemon that can't steer one leaves a memo.
         Presence::Working if later || target.engine.is_none() => Plan {
-            commands: vec![Command::SubmitLater { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
-            flash: Some(t!("compose.memo_left", name = target.name)),
+            commands: vec![Command::SubmitLater { session: to, text: text.to_owned(), about: Some(model.focus.clone()) }],
+            // In sight, its waiting bubble says so already; to someone else, a line.
+            flash: away.then(|| t!("compose.memo_left", name = target.name)),
             ..Plan::default()
         },
         // Steering: read at its next step, the work carrying on.
         Presence::Working => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
-            flash: Some(t!("compose.steered", name = target.name)),
+            commands: vec![Command::Submit { session: to, text: text.to_owned(), about: Some(model.focus.clone()) }],
+            flash: away.then(|| t!("compose.steered", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready if !away && model.opens_lane() => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
+            commands: vec![Command::Submit { session: to, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: Some(t!("compose.answers_alongside", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
+            commands: vec![Command::Submit { session: to, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: away.then(|| t!("compose.sent_to", name = target.name)),
             ..Plan::default()
         },
@@ -560,6 +610,7 @@ fn slash(model: &Model, command: &str) -> Plan {
         "board" => Plan { effect: Some(Effect::ShowBoard), ..Plan::default() },
         "disk" => Plan { effect: Some(Effect::Disk), ..Plan::default() },
         "design" => Plan { effect: Some(Effect::ShowDesign), ..Plan::default() },
+        "metrics" => Plan { effect: Some(Effect::ShowMetrics), ..Plan::default() },
         "find" => Plan { effect: Some(Effect::Find(rest.to_owned())), ..Plan::default() },
         "project" => {
             let wanted = rest;
@@ -592,9 +643,9 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         "close" => match model.selected_member().filter(|m| m.presence != Presence::Closed) {
             Some(m) => Plan {
                 effect: Some(Effect::Ask(Ask {
-                    title: format!("{}을(를) 스쿼드에서 내보낼까요?", m.name),
-                    body: m.ticket.map(|t| format!("맡고 있던 T-{t}는 보드로 돌아갑니다.")).into_iter().collect(),
-                    yes: "내보내기".into(),
+                    title: t!("compose.close_ask", name = m.name),
+                    body: m.ticket.map(|ticket| t!("compose.close_ticket_back", ticket = ticket)).into_iter().collect(),
+                    yes: t!("compose.close_yes").into(),
                     then: Then::Send(vec![Command::Close { session: m.session }]),
                 })),
                 ..Plan::default()
@@ -614,19 +665,19 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         },
         "compact" => match if rest.is_empty() { model.selected_member() } else { member_named(rest) } {
             Some(m) => Plan::send(Command::Refresh { session: m.session, summary: true }),
-            None => Plan::say("누구요? /compact <멤버>"),
+            None => Plan::say(t!("compose.compact_who")),
         },
         "clear" => match if rest.is_empty() { model.selected_member() } else { member_named(rest) } {
             Some(m) => Plan {
                 effect: Some(Effect::Ask(Ask {
-                    title: format!("{}의 다음 대화를 새로 시작할까요?", m.name),
-                    body: vec!["지금까지의 대화는 이어지지 않습니다. 기억과 보드는 그대로입니다.".into()],
-                    yes: "새로 시작".into(),
+                    title: t!("compose.clear_ask", name = m.name),
+                    body: vec![t!("compose.clear_body").into()],
+                    yes: t!("compose.clear_yes").into(),
                     then: Then::Send(vec![Command::Refresh { session: m.session, summary: false }]),
                 })),
                 ..Plan::default()
             },
-            None => Plan::say("누구요? /clear <멤버>"),
+            None => Plan::say(t!("compose.clear_who")),
         },
         "model" => {
             let words: Vec<&str> = rest.split_whitespace().collect();
@@ -645,9 +696,14 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             }
         }
         // `/engine codex` (the member in view), `/engine backend codex`,
-        // `/engine all claude`: moved at each one's next ticket boundary.
+        // `/engine all claude`: moved at each one's next ticket boundary —
+        // `/engine backend codex now`: at the end of its turn, mid-ticket.
         "engine" => {
-            let words: Vec<&str> = rest.split_whitespace().collect();
+            let mut words: Vec<&str> = rest.split_whitespace().collect();
+            let now = words.last().is_some_and(|w| w.eq_ignore_ascii_case("now"));
+            if now {
+                words.pop();
+            }
             let engine = words.last().and_then(|w| match w.to_ascii_lowercase().as_str() {
                 "claude" | "claude-code" | "claudecode" => Some(Engine::Claude),
                 "codex" => Some(Engine::Codex),
@@ -660,7 +716,8 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     Some(m) => vec![m.name.clone()],
                     None => return Plan::say(t!("compose.engine_usage")),
                 },
-                ["all"] | ["모두"] | ["전부"] => Vec::new(),
+                ["all"] => Vec::new(),
+                [word] if crate::i18n::every("match.all_members").contains(word) => Vec::new(),
                 names => {
                     if let Some(missing) = names.iter().find(|n| member_named(n).is_none()) {
                         return Plan::say(t!("compose.model_no_member", name = missing));
@@ -670,7 +727,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             };
             let who = if members.is_empty() { t!("compose.engine_everyone").to_owned() } else { members.join("·") };
             Plan {
-                commands: vec![Command::MoveEngine { squad, members, engine }],
+                commands: vec![Command::MoveEngine { squad, members, engine, model: None, effort: None, now }],
                 flash: Some(t!("compose.engine_moving", names = who, engine = crate::switching::engine_name(engine))),
                 ..Plan::default()
             }
@@ -696,7 +753,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             let words: Vec<&str> = rest.split_whitespace().collect();
             match words.as_slice() {
                 [] | ["signin"] => Plan {
-                    flash: Some("로그인 창을 엽니다 — 창을 열어 둔 채로 사이트에 로그인하세요 (데몬이 있는 맥의 화면에 뜹니다)".into()),
+                    flash: Some(t!("compose.browser_signin").into()),
                     effect: Some(Effect::Job(Job::BrowserSignin, After::Flash)),
                     ..Plan::default()
                 },
@@ -724,9 +781,9 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             Plan {
                 commands: vec![Command::Suggestions { squad, on }],
                 flash: Some(if on {
-                    "멤버가 답한 뒤 다음에 할 말을 입력창에 흐리게 추측해 둡니다 — → 로 받고, 그냥 쓰면 무시됩니다".into()
+                    t!("compose.suggest_on").into()
                 } else {
-                    "다음 말 추측을 끕니다 · /suggest on 으로 다시 켭니다".into()
+                    t!("compose.suggest_off").into()
                 }),
                 effect: Some(Effect::Suggest(on)),
                 ..Plan::default()
@@ -736,7 +793,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         "help" => Plan { effect: Some(Effect::Help), ..Plan::default() },
         "export" => Plan { effect: Some(Effect::Export), ..Plan::default() },
         "quit" | "exit" => Plan { effect: Some(Effect::Quit), ..Plan::default() },
-        "mouse" => Plan::say("/mouse는 터미널에서 마우스를 넘기는 명령이라 앱에는 없습니다 — 글은 그냥 드래그해서 ⌘C로 복사하세요"),
+        "mouse" => Plan::say(t!("compose.no_mouse")),
         "add" => add(model, rest),
         "home" => home(model, rest),
         "memory" => match rest {
@@ -744,14 +801,14 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "changes" | "recent" => Plan {
                 effect: Some(Effect::Job(
                     Job::Memory { squad, words: vec!["changes".into()] },
-                    After::Changes { title: "스쿼드 기억의 변경".into(), undo: false },
+                    After::Changes { title: t!("sheet.memory_changes").into(), undo: false },
                 )),
                 ..Plan::default()
             },
-            _ => Plan::say("/memory 는 스쿼드가 기억하는 것을 엽니다 · /memory changes"),
+            _ => Plan::say(t!("compose.memory_usage")),
         },
         "squad" => squad_command(model, rest),
-        other => Plan::say(format!("/{other}은(는) 없는 명령입니다 — /help에 목록이 있습니다")),
+        other => Plan::say(t!("compose.unknown_command", command = other)),
     }
 }
 
@@ -763,15 +820,15 @@ fn home(model: &Model, rest: &str) -> Plan {
     match words.as_slice() {
         [] => Plan { effect: Some(Effect::OpenHome), ..Plan::default() },
         ["changes"] | ["recent"] => Plan {
-            effect: Some(Effect::Job(Job::Home { squad, words: vec!["changes".into()] }, After::Changes { title: "스쿼드 폴더의 변경".into(), undo: true })),
+            effect: Some(Effect::Job(Job::Home { squad, words: vec!["changes".into()] }, After::Changes { title: t!("sheet.home_changes").into(), undo: true })),
             ..Plan::default()
         },
         ["undo"] => undo(squad, 1),
         ["undo", n] => match n.trim_start_matches('#').parse::<usize>() {
             Ok(n) if n >= 1 => undo(squad, n),
-            _ => Plan::say("어느 변경요? /home changes가 번호를 매깁니다: /home undo 2"),
+            _ => Plan::say(t!("compose.undo_which")),
         },
-        _ => Plan::say("/home 은 스쿼드 폴더를 엽니다 · /home changes · /home undo [n]"),
+        _ => Plan::say(t!("compose.home_usage")),
     }
 }
 
@@ -779,9 +836,9 @@ fn home(model: &Model, rest: &str) -> Plan {
 pub fn undo(squad: String, n: usize) -> Plan {
     Plan {
         effect: Some(Effect::Ask(Ask {
-            title: if n == 1 { "가장 최근 변경을 되돌릴까요?".into() } else { format!("{n}번 변경을 되돌릴까요?") },
-            body: vec!["스쿼드 폴더의 파일이 그 변경 이전으로 돌아갑니다. 되돌림도 변경으로 남아서 /home undo 로 다시 되돌릴 수 있습니다.".into()],
-            yes: "되돌리기".into(),
+            title: if n == 1 { t!("compose.undo_latest_ask").into() } else { t!("compose.undo_n_ask", n = n) },
+            body: vec![t!("compose.undo_body").into()],
+            yes: t!("sheet.undo").into(),
             then: Then::Job(Job::Home { squad, words: vec!["undo".into(), n.to_string()] }, After::Flash),
         })),
         ..Plan::default()
@@ -803,16 +860,16 @@ fn add(model: &Model, rest: &str) -> Plan {
     }
     let names = || roles::ROLES.iter().map(|r| r.id).collect::<Vec<_>>().join(" ");
     let wanted: Vec<String> = match words.as_slice() {
-        [] => return Plan::say(format!("누구요? /add designer frontend · 역할: {}, 또는 custom <이름>", names())),
-        ["custom"] => return Plan::say("역할 이름을 적어 주세요: /add custom writer"),
+        [] => return Plan::say(t!("compose.add_who", roles = names())),
+        ["custom"] => return Plan::say(t!("compose.add_custom_name")),
         ["custom", name, ..] => vec![name.to_lowercase()],
-        _ if custom_edits => return Plan::say("--edits는 custom 역할용입니다: /add custom writer --edits"),
+        _ if custom_edits => return Plan::say(t!("compose.add_edits_custom")),
         ids => {
             let mut wanted = Vec::new();
             for id in ids {
                 match roles::role(id) {
                     Some(role) => wanted.push(role.id.to_owned()),
-                    None => return Plan::say(format!("'{id}'라는 역할이 없습니다. 역할: {} — 또는 /add custom {id}", names())),
+                    None => return Plan::say(t!("compose.add_no_role", id = id, roles = names())),
                 }
             }
             wanted
@@ -820,9 +877,9 @@ fn add(model: &Model, rest: &str) -> Plan {
     };
     let commands = starts(model, &wanted, engine, custom_edits);
     if commands.is_empty() {
-        return Plan::say("이 스쿼드에는 프로젝트가 없습니다 — /squad add <폴더>로 먼저 넣으세요");
+        return Plan::say(t!("compose.add_no_project"));
     }
-    Plan { commands, flash: Some(format!("{}이(가) 합류합니다 · @이름으로 바로 말할 수 있습니다", wanted.join("·"))), ..Plan::default() }
+    Plan { commands, flash: Some(t!("compose.add_joining", names = wanted.join("·"))), ..Plan::default() }
 }
 
 /// Where a new member works: the squad's first project, else its folder.
@@ -873,37 +930,37 @@ fn squad_command(model: &Model, rest: &str) -> Plan {
         [] => {
             let others: Vec<String> = other_squads(model).into_iter().map(|(n, _)| n).collect();
             Plan::say(match others.as_slice() {
-                [] => format!("{squad}뿐입니다 · /squad new <이름> [폴더]로 새 스쿼드를 시작합니다"),
-                names => format!("지금 {squad} · 다른 스쿼드: {} · /squad <이름>으로 전환, /squad new로 새로 시작", names.join(", ")),
+                [] => t!("compose.squad_only", squad = squad),
+                names => t!("compose.squad_list", squad = squad, others = names.join(", ")),
             })
         }
         ["add", folder] => Plan {
             effect: Some(Effect::Job(
                 job(&["add", folder], true),
                 After::Confirm {
-                    title: format!("{squad}에 이 폴더를 추가할까요?"),
-                    yes: "추가".into(),
-                    then: Box::new((job(&["add", folder], false), After::Squads { open: None, say: format!("{squad}이(가) {folder}도 작업합니다 · 멤버는 다음 턴부터 봅니다"), })),
+                    title: t!("compose.squad_add_ask", squad = squad),
+                    yes: t!("compose.squad_add_yes").into(),
+                    then: Box::new((job(&["add", folder], false), After::Squads { open: None, say: t!("compose.squad_added", squad = squad, folder = folder) })),
                 },
             )),
             ..Plan::default()
         },
         ["remove", name] => {
             if !model.project_names().iter().any(|p| p == name) {
-                return Plan::say(format!("{squad}은(는) {name}을(를) 작업하지 않습니다 · {}", model.project_names().join(", ")));
+                return Plan::say(t!("compose.squad_not_working_on", squad = squad, name = name, projects = model.project_names().join(", ")));
             }
             Plan {
                 effect: Some(Effect::Ask(Ask {
-                    title: format!("{name}을(를) {squad}에서 뺄까요?"),
-                    body: vec!["티켓과 브랜치는 그대로 남습니다. 폴더는 지워지지 않습니다.".into()],
-                    yes: "빼기".into(),
-                    then: Then::Job(job(&["remove", name], false), After::Squads { open: None, say: format!("{squad}은(는) 이제 {name}을(를) 작업하지 않습니다 — 티켓과 브랜치는 남습니다") }),
+                    title: t!("compose.squad_remove_ask", name = name, squad = squad),
+                    body: vec![t!("compose.squad_remove_body").into()],
+                    yes: t!("compose.squad_remove_yes").into(),
+                    then: Then::Job(job(&["remove", name], false), After::Squads { open: None, say: t!("compose.squad_removed", squad = squad, name = name) }),
                 })),
                 ..Plan::default()
             }
         }
-        ["add"] | ["remove"] => Plan::say("/squad add <폴더> · /squad remove <프로젝트>"),
-        ["new"] => Plan::say("이름, 그리고 작업할 폴더가 있으면: /squad new shop ~/Projects/shop"),
+        ["add"] | ["remove"] => Plan::say(t!("compose.squad_folder_usage")),
+        ["new"] => Plan::say(t!("compose.squad_new_usage")),
         ["new", name, rest @ ..] if rest.len() <= 1 => {
             let mut args = vec!["new", name];
             args.extend(rest.iter().copied());
@@ -911,23 +968,23 @@ fn squad_command(model: &Model, rest: &str) -> Plan {
                 effect: Some(Effect::Job(
                     job(&args, true),
                     After::Confirm {
-                        title: format!("스쿼드 {name}을(를) 시작할까요?"),
-                        yes: "시작".into(),
-                        then: Box::new((job(&args, false), After::Squads { open: Some((*name).to_owned()), say: format!("{name} 스쿼드를 시작했습니다: PM이 먼저 합류하고 팀이 따라옵니다 · PM에게 만들 것을 말하세요") })),
+                        title: t!("compose.squad_new_ask", name = name),
+                        yes: t!("compose.squad_new_yes").into(),
+                        then: Box::new((job(&args, false), After::Squads { open: Some((*name).to_owned()), say: t!("compose.squad_started", name = name) })),
                     },
                 )),
                 ..Plan::default()
             }
         }
-        [name] if *name == squad => Plan::say(format!("이미 {name}입니다")),
+        [name] if *name == squad => Plan::say(t!("compose.squad_already", name = name)),
         [name] => {
             if model.squad_list.iter().any(|s| s.name == *name) {
                 Plan { effect: Some(Effect::SwitchSquad((*name).to_owned())), ..Plan::default() }
             } else {
-                Plan::say(format!("{name}라는 스쿼드가 없습니다 · /squad new {name}으로 시작합니다"))
+                Plan::say(t!("compose.squad_none", name = name))
             }
         }
-        _ => Plan::say("/squad <이름>으로 전환 · /squad new <이름> [폴더] · /squad add <폴더> · /squad remove <프로젝트>"),
+        _ => Plan::say(t!("compose.squad_usage")),
     }
 }
 
@@ -984,9 +1041,9 @@ fn decide(model: &Model, verb: &str, rest: &str) -> Plan {
             let title = model.tickets.iter().find(|t| t.id == ticket).map(|t| t.title.clone()).unwrap_or_default();
             Plan {
                 effect: Some(Effect::Ask(Ask {
-                    title: format!("T-{ticket}을(를) 취소할까요?"),
-                    body: vec![title, "맡은 멤버는 하던 일을 멈춥니다. 브랜치는 남습니다.".into()],
-                    yes: "취소하기".into(),
+                    title: t!("compose.cancel_ask", ticket = ticket),
+                    body: vec![title, t!("compose.cancel_body").into()],
+                    yes: t!("compose.cancel_yes").into(),
                     then: Then::Send(vec![Command::Cancel { squad, ticket }]),
                 })),
                 ..Plan::default()
@@ -1049,6 +1106,7 @@ mod tests {
             member: Some(Who { role: role.into(), name: role.into() }),
             engine: Engine::Claude,
             model: Some("opus".into()),
+            asked_model: None,
             access: Access::EditFiles,
             workspace: None,
             state,
@@ -1056,6 +1114,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             work: None,
             mode: None,
@@ -1067,6 +1126,8 @@ mod tests {
             steering_in: vec![],
             lane: None,
             estimate: None,
+            compacting: None,
+            visuals: Vec::new(),
         }
     }
 
@@ -1113,6 +1174,48 @@ mod tests {
     }
 
     #[test]
+    fn in_a_conversation_opened_with_the_pm_what_is_said_goes_there_and_the_pms_own_stays_its_own() {
+        let mut talk = session(50, "pm", SessionState::Ready);
+        talk.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("site".into()), kept: true });
+        talk.title = Some("login is broken".into());
+        let mut model = squad(vec![session(1, "pm", SessionState::Ready), talk, session(2, "frontend", SessionState::Ready)]);
+        assert_eq!(model.members.iter().map(|m| m.session).collect::<Vec<_>>(), [1, 2], "a conversation isn't a member");
+        assert_eq!(model.conversations().iter().map(|l| (l.session, l.title.as_deref())).collect::<Vec<_>>(), [(50, Some("login is broken"))]);
+        assert_eq!(model.viewed(), Some(1), "the PM's own shows until one is opened");
+
+        assert!(model.open(crate::state::Side::Conversation(50)));
+        assert_eq!((model.viewed(), model.side_open()), (Some(50), Some(crate::state::Side::Conversation(50))));
+        assert_eq!(plan(&model, "and the signup?").commands, vec![submit(50, "and the signup?")]);
+        assert_eq!(plan(&model, "@frontend the header").commands, vec![submit(2, "the header")], "someone named is still reached");
+
+        model.apply(Update::Event(Event::LaneMoved { session: 50, project: Some("app".into()) }), T0);
+        assert_eq!(model.talking().and_then(|l| l.project.as_deref()), Some("app"));
+        model.apply(Update::Event(Event::SessionClosed { session: 50 }), T0);
+        assert!(model.conversations().is_empty());
+        assert_eq!((model.viewed(), model.side_open()), (Some(1), Some(crate::state::Side::Pm)), "put away: back to the PM");
+        assert_eq!(plan(&model, "hi").commands, vec![submit(1, "hi")]);
+    }
+
+    #[test]
+    fn a_new_conversation_is_made_by_its_first_message_and_none_is_left_empty() {
+        let mut model = team();
+        model.draft_conversation(Some("site".into()));
+        let Some((id, _)) = model.draft_talk.clone() else { panic!("a draft") };
+        assert_eq!(model.viewed(), Some(id), "the empty conversation shows, not the PM's");
+        assert!(model.conversations().is_empty(), "nothing made yet");
+        assert_eq!(
+            plan(&model, "login is broken").commands,
+            vec![Command::NewConversation { squad: "acme".into(), session: id, project: Some("site".into()) }, submit(id, "login is broken")]
+        );
+        model.apply(Update::Event(Event::SessionStarted { session: id, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: id, of: 1, project: Some("site".into()), kept: true }), T0);
+        assert_eq!((model.draft_talk.clone(), model.viewed()), (None, Some(id)), "made, and still open");
+        assert_eq!(plan(&model, "and?").commands, vec![submit(id, "and?")]);
+        model.open(crate::state::Side::Pm);
+        assert_eq!(model.viewed(), Some(1));
+    }
+
+    #[test]
     fn a_line_goes_to_the_member_on_screen() {
         let model = team();
         assert_eq!(model.selected, Some(1), "the PM is where the window starts");
@@ -1120,11 +1223,93 @@ mod tests {
         assert_eq!(plan(&model, "   "), Plan::default());
     }
 
+    /// The PM's conversation about `app` open (a kept lane), and a designer
+    /// at work on a ticket — the person then on the design screen of `site`.
+    fn designing_while_a_conversation_is_open() -> Model {
+        let mut talk = session(50, "pm", SessionState::Ready);
+        talk.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: true });
+        talk.title = Some("how is the app going?".into());
+        let mut model = squad(vec![session(1, "pm", SessionState::Ready), talk, session(4, "designer", SessionState::Working)]);
+        model.members[1].ticket = Some(396);
+        model.focus = Some("app".into());
+        assert!(model.open(crate::state::Side::Conversation(50)));
+        model
+    }
+
+    #[test]
+    fn choosing_a_member_leaves_a_conversation_opened_with_the_pm_and_what_is_said_goes_to_that_member() {
+        let mut model = designing_while_a_conversation_is_open();
+        assert_eq!(model.viewed(), Some(50));
+        // What the design screen's asks did: choose the designer, then send.
+        assert!(model.select(4));
+        assert_eq!((model.viewed(), model.talk, model.side_open()), (Some(4), None, Some(crate::state::Side::Member(4))), "the designer's own, not the PM's conversation about app");
+        assert_eq!(plan(&model, "record the flow").commands, vec![Command::Submit { session: 4, text: "record the flow".into(), about: Some(Some("app".into())) }]);
+        // And the PM chosen: its own conversation, not the one opened beside it.
+        assert!(model.open(crate::state::Side::Conversation(50)));
+        assert!(model.select(1), "the PM's own is another conversation");
+        assert_eq!(model.viewed(), Some(1));
+        model.draft_conversation(Some("site".into()));
+        assert!(model.select(4));
+        assert_eq!((model.viewed(), model.draft_talk.clone()), (Some(4), None), "a new conversation not yet made is let go too");
+    }
+
+    fn ask_about(model: &Model, project: &str) -> Plan {
+        super::ask(model, "record the first visit flow", "we need a video of the first visit flow", Some(project.into()))
+    }
+
+    #[test]
+    fn a_design_ask_goes_to_the_designer_at_work_in_its_own_conversation_whatever_is_open() {
+        let mut model = designing_while_a_conversation_is_open();
+        let to_designer = |session| vec![Command::Submit { session, text: "record the first visit flow".into(), about: Some(Some("site".into())) }];
+        assert_eq!(ask_about(&model, "site").commands, to_designer(4), "on a ticket is no reason to go to the PM, nor to the conversation open");
+        assert_eq!(model.viewed(), Some(50), "nothing on screen moved for it");
+        model.open(crate::state::Side::Pm);
+        assert_eq!(ask_about(&model, "site").commands, to_designer(4));
+        model.members[1].ticket = None;
+        model.members[1].presence = Presence::Ready;
+        assert_eq!(ask_about(&model, "site").commands, to_designer(4), "free: the same");
+        // One that can't be steered: a memo for when its turn ends.
+        model.members[1].presence = Presence::Working;
+        model.members[1].engine = None;
+        assert_eq!(ask_about(&model, "site").commands, vec![Command::SubmitLater { session: 4, text: "record the first visit flow".into(), about: Some(Some("site".into())) }]);
+        // The squad's own system: about the whole squad.
+        assert!(matches!(&super::ask(&model, "go on", "pm", None).commands[..], [Command::SubmitLater { session: 4, about: Some(None), .. }]));
+    }
+
+    #[test]
+    fn with_no_designer_a_design_ask_goes_to_the_pm_about_the_design_screens_project_and_says_which() {
+        let mut model = designing_while_a_conversation_is_open();
+        model.members[1].presence = Presence::Closed;
+        let plan = ask_about(&model, "site");
+        let [Command::Submit { session: 1, text, about: Some(Some(about)) }] = &plan.commands[..] else { panic!("to the PM's own: {:?}", plan.commands) };
+        assert_eq!(about, "site", "the design screen's project, not the conversation open about app nor the focus");
+        assert!(text.contains("site") && text.contains("we need a video of the first visit flow"), "{text}");
+        // Words naming it already aren't told twice.
+        let plan = super::ask(&model, "x", "carry on the setup of site's design", Some("site".into()));
+        assert!(matches!(&plan.commands[..], [Command::Submit { session: 1, text, .. }] if text == "carry on the setup of site's design"));
+        // No one to ask at all: said so, nothing sent.
+        model.members.retain(|m| m.role != "pm");
+        let plan = ask_about(&model, "site");
+        assert!(plan.commands.is_empty() && plan.flash.is_some());
+    }
+
+    #[test]
+    fn a_design_ask_carries_only_its_own_words_and_nothing_for_a_box() {
+        let model = designing_while_a_conversation_is_open();
+        let plan = ask_about(&model, "site");
+        assert_eq!((plan.restore, plan.effect), (None, None), "no box filled or emptied, no view changed");
+        let said: Vec<&str> = plan.commands.iter().filter_map(|c| match c { Command::Submit { text, .. } | Command::SubmitLater { text, .. } => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(said, ["record the first visit flow"], "a draft half written anywhere isn't part of it");
+    }
+
     #[test]
     fn the_pm_on_a_ticket_of_its_own_answers_beside_it_and_others_are_steered() {
         let mut model = squad(vec![session(1, "pm", SessionState::Working), session(2, "frontend", SessionState::Working)]);
-        // The PM at work at its desk: steered.
-        assert!(plan(&model, "이거 해").flash.unwrap().contains("다음 단계에서 읽습니다"));
+        // The PM at work at its desk: steered — its bubble says "read at the
+        // next step" and the box says Tab leaves a memo: no third line saying it.
+        let p = plan(&model, "이거 해");
+        assert_eq!(p.commands, vec![submit(1, "이거 해")]);
+        assert_eq!(p.flash, None);
         // On a ticket of its own: free to talk, beside the work.
         model.members[0].ticket = Some(4);
         let p = plan(&model, "앱은?");
@@ -1133,7 +1318,11 @@ mod tests {
         // A member on a ticket: what is said steers it.
         model.members[1].ticket = Some(5);
         model.select(2);
-        assert!(plan(&model, "푸터는 빼").flash.unwrap().contains("다음 단계에서 읽습니다"));
+        let p = plan(&model, "푸터는 빼");
+        assert_eq!(p.commands, vec![submit(2, "푸터는 빼")]);
+        assert_eq!(p.flash, None);
+        // A memo to the one in view: its bubble says so too.
+        assert_eq!(super::plan(&model, "끝나면 이것도", true).flash, None);
     }
 
     #[test]
@@ -1141,7 +1330,7 @@ mod tests {
         let model = team();
         let p = plan(&model, "@frontend 헤더 고쳐 줘");
         assert_eq!(p.commands, vec![submit(2, "헤더 고쳐 줘")]);
-        assert_eq!(p.flash.as_deref(), Some("frontend에게 보냈습니다"));
+        assert_eq!(p.flash.as_deref(), Some("frontend에게 보냈어요"));
         assert_eq!(p.effect, None);
     }
 
@@ -1311,6 +1500,7 @@ mod tests {
         assert!(matches!(tidy.commands.as_slice(), [Command::Submit { session: 1, .. }]));
         assert_eq!(plan(&model, "/board").effect, Some(Effect::ShowBoard));
         assert_eq!(plan(&model, "/design").effect, Some(Effect::ShowDesign));
+        assert_eq!(plan(&model, "/metrics").effect, Some(Effect::ShowMetrics));
         assert_eq!(plan(&model, "/find 로그인 화면").effect, Some(Effect::Find("로그인 화면".into())));
         for (line, effect) in [("/usage", Effect::Usage), ("/help", Effect::Help), ("/export", Effect::Export), ("/quit", Effect::Quit), ("/home", Effect::OpenHome), ("/memory", Effect::OpenMemory)] {
             let p = plan(&model, line);
@@ -1363,7 +1553,7 @@ mod tests {
         assert!(matches!(&then.1, After::Squads { open: Some(name), .. } if name == "shop"));
         // Remove: asked, and only a project the squad works on.
         let remove = plan(&model, "/squad remove site");
-        assert_eq!(asked(&remove).then, Then::Job(Job::Squad { squad: "acme".into(), words: vec!["remove".into(), "site".into()], dry_run: false }, After::Squads { open: None, say: "acme은(는) 이제 site을(를) 작업하지 않습니다 — 티켓과 브랜치는 남습니다".into() }));
+        assert_eq!(asked(&remove).then, Then::Job(Job::Squad { squad: "acme".into(), words: vec!["remove".into(), "site".into()], dry_run: false }, After::Squads { open: None, say: "acme는 이제 site를 작업하지 않아요 — 티켓과 브랜치는 남아요".into() }));
         assert!(plan(&model, "/squad remove ghost").effect.is_none());
     }
 
@@ -1386,7 +1576,7 @@ mod tests {
         assert!(plan(&model, "/add --edits").commands.is_empty());
         assert!(plan(&model, "/add wizard").flash.unwrap().contains("wizard"));
         let nowhere = Model::new("empty");
-        assert!(plan(&nowhere, "/add qa").flash.unwrap().contains("프로젝트가 없습니다"));
+        assert!(plan(&nowhere, "/add qa").flash.unwrap().contains("프로젝트가 없어요"));
     }
 
     #[test]
@@ -1425,7 +1615,9 @@ mod tests {
         assert_eq!(texts("@f"), ["@frontend "]);
         assert_eq!(texts("/proj"), ["/project "]);
         assert_eq!(texts("/project "), ["/project site", "/project app", "/project all"]);
-        assert_eq!(texts("/model "), ["/model pm ", "/model frontend ", "/model backend ", "/model opus", "/model sonnet", "/model haiku"]);
+        // Each family's latest, then the models by id, newest first.
+        let models = ["pm ", "frontend ", "backend ", "fable", "opus", "sonnet", "haiku", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"];
+        assert_eq!(texts("/model "), models.map(|m| format!("/model {m}")));
         assert!(texts("hello").is_empty());
         assert!(texts("/mode\nx").is_empty(), "a multi-line draft is never a command");
     }
@@ -1479,8 +1671,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut d = Drafts::load(path.clone());
         let (all, site) = (Drafts::key("acme", "pm", None), Drafts::key("acme", "pm", Some("site")));
-        d.put(all.clone(), Draft { text: "all".into(), caret: 1, attachments: vec![] });
-        d.put(site.clone(), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")] });
+        d.put(all.clone(), Draft { text: "all".into(), caret: 1, attachments: vec![], replies: vec![] });
+        d.put(site.clone(), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")], replies: vec![] });
         assert_eq!(d.get(&all).text, "all");
         assert_eq!(d.get(&Drafts::key("acme", "frontend", None)), Draft::default());
         d.used(Path::new("/x/a.png"));
@@ -1488,12 +1680,38 @@ mod tests {
         d.used(Path::new("/x/a.png"));
         d.save();
         let again = Drafts::load(path.clone());
-        assert_eq!(again.get(&site), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")] });
+        assert_eq!(again.get(&site), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")], replies: vec![] });
         assert_eq!(again.recent, vec![PathBuf::from("/x/a.png"), PathBuf::from("/x/b.png")]);
         use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         d.put(all.clone(), Draft::default());
         assert_eq!(d.get(&all), Draft::default(), "an empty draft is forgotten");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_drafts_reply_cards_are_kept_with_it_in_order_and_survive_a_restart() {
+        use crate::quote::Reply;
+        let path = std::env::temp_dir().join(format!("equipe-drafts-cards-{}/composer.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut d = Drafts::load(path.clone());
+        let (pm, front) = (Drafts::key("acme", "pm", None), Drafts::key("acme", "frontend", None));
+        let cards = vec![Reply { quote: "T-12를 먼저".into(), words: "왜요?".into() }, Reply::asked("헤더 정리"), Reply { quote: "셋째".into(), words: "좋아요".into() }];
+        // Cards alone, nothing typed: still a draft.
+        let draft = Draft { replies: cards.clone(), ..Draft::default() };
+        assert!(!draft.is_empty());
+        d.put(pm.clone(), draft.clone());
+        d.put(front.clone(), Draft { text: "다른 사람".into(), caret: 0, ..Draft::default() });
+        d.save();
+        let again = Drafts::load(path.clone());
+        assert_eq!(again.get(&pm).replies, cards, "each member's own, in order");
+        assert!(again.get(&front).replies.is_empty());
+        // A draft written before cards existed reads as one without them.
+        std::fs::write(&path, r#"{"drafts":{"acme/pm/":{"text":"old","caret":3}},"recent":[]}"#).unwrap();
+        assert_eq!(Drafts::load(path.clone()).get(&pm), Draft { text: "old".into(), caret: 3, ..Draft::default() });
+        // Sent: the cards go with the words, and the draft with them.
+        d.put(pm.clone(), Draft::default());
+        assert_eq!(d.get(&pm), Draft::default());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

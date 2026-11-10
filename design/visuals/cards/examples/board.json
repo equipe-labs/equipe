@@ -1,0 +1,24 @@
+{
+  "title": "Where the squad stands",
+  "subtitle": "4 projects",
+  "asOf": "Nov 3",
+  "source": "equipe board",
+  "projects": [
+    { "name": "equipe",
+      "work": [{ "id": "T-312", "title": "Three metrics adapters", "who": "backend" }, { "id": "T-336", "title": "Diagram theme and HTML card templates", "who": "designer" }],
+      "next": [{ "id": "T-335", "title": "Pictures-in-conversation contract", "who": "backend" }, { "id": "T-337", "title": "Daemon renders HTML cards to PNG", "who": "backend" }],
+      "wait": [{ "id": "T-24", "title": "First demo", "who": "backend", "note": "Turn on the Accessibility switch, please" }] },
+    { "name": "equipe-app",
+      "work": [{ "id": "T-314", "title": "iOS·Android metrics summary card", "who": "mobile" }],
+      "next": [{ "id": "T-162", "title": "Apply design system v1 on Android", "who": "mobile" }, { "id": "T-339", "title": "Show diagrams·cards as pictures", "who": "mobile" }],
+      "wait": [] },
+    { "name": "equipe-design",
+      "work": [{ "id": "T-298", "title": "Accuracy evaluation harness", "who": "qa" }],
+      "next": [{ "id": "T-307", "title": "Library publish command + monthly re-extract", "who": "backend" }],
+      "wait": [{ "id": "T-297", "title": "Figma variables plugin", "who": "frontend", "note": "Needs a Figma sign-in and the plugin imported" }] },
+    { "name": "equipe-site",
+      "work": [],
+      "next": [{ "id": "T-320", "title": "Anonymous visitor ID + EU·UK consent banner", "who": "frontend" }],
+      "wait": [{ "id": "T-317", "title": "Auto deploy + per-PR previews", "who": "frontend", "note": "Needs a Vercel sign-in and the GitHub repository linked" }] }
+  ]
+}

@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -11,21 +12,56 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Smaller, quicker builds: no incremental caches (each run starts clean
+  # anyway) and line tables only, which keep a failing test's backtrace readable.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+permissions:
+  contents: read
 
 jobs:
+  windows:
+    name: Windows engines + tools
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install real Windows engine CLIs
+        run: npm install --global @anthropic-ai/claude-code @openai/codex
+      - name: Detect fake launchers and the real CLIs
+        env:
+          EQUIPE_TEST_REAL_WINDOWS_CLIS: "1"
+        run: cargo test -p equipe-providers --locked
+      - name: TP-5 fake engine ticket and accept_work
+        run: cargo test -p equipe-core --test accept the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_themselves --locked
+      - run: cargo test -p equipe-desktop-control --locked
+      - run: cargo check -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
+      - run: cargo build -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
+      - run: cargo clippy -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked -- -D warnings
+
   test:
     name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-24.04]
+        os: [macos-15, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The desktop app pulls in GPUI and its platform toolchain; the CLI is
       # what ships, so CI covers everything else.
       - run: cargo test --workspace --exclude equipe-desktop --locked
@@ -37,8 +73,10 @@ jobs:
       run:
         working-directory: relay
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
@@ -50,8 +88,17 @@ jobs:
   install-script:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - run: shellcheck -s sh install.sh paste-setup.sh
+      # Every action pinned to a full commit SHA: a tag can be moved under us.
+      - name: Actions are pinned
+        run: |
+          if grep -rnE '^\s*-?\s*uses:\s' .github/workflows | grep -vE 'uses:\s+(\./|[^@[:space:]]+@[0-9a-f]{40}(\s|$))'; then
+            echo "::error::Pin these actions to a full commit SHA (with the version in a comment)"
+            exit 1
+          fi
 
   # The release's builds, on main, so their caches live where tag runs can
   # read them: what a tag run saves stays with that tag and no later release
@@ -64,11 +111,11 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             package: equipe
             key: release-aarch64-apple-darwin
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             package: equipe
             key: release-x86_64-apple-darwin
           - target: x86_64-unknown-linux-musl
@@ -80,23 +127,26 @@ jobs:
             package: equipe
             key: release-aarch64-unknown-linux-musl
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             package: equipe-desktop
             key: release-desktop-aarch64
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             package: equipe-desktop
             key: release-desktop-x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: musl toolchain
         if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ${{ matrix.key }}
           cache-workspace-crates: ${{ matrix.package == 'equipe-desktop' }}

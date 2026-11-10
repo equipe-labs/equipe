@@ -179,7 +179,7 @@ impl Store {
             ("SQLite log store with paging", "backend", "in_progress"),
             ("Memory budget check in CI", "devops", "todo"),
             ("E2E: three agents streaming", "qa", "todo"),
-            ("Korean IME regression tests", "qa", "todo"),
+            ("IME regression tests (CJK input)", "qa", "todo"),
         ];
         let tx = self.conn.transaction()?;
         for (title, role, status) in seed {

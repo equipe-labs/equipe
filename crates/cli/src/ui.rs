@@ -123,25 +123,77 @@ pub fn pad(text: &str, width: usize) -> String {
 /// Word-wrap `text` to `width` columns. The first line starts at column `first`
 /// (text already printed before it); continuation lines are indented by `rest`.
 /// A word longer than a line — a URL — stays whole so it still copies cleanly.
+/// Japanese and Chinese, written without spaces, also break between two
+/// characters — never after an opening bracket nor before closing punctuation
+/// (kinsoku, as the desktop's `LineWrapper::may_break_between`). Hangul
+/// breaks only at spaces.
 pub fn wrap(text: &str, first: usize, rest: usize, width: usize) -> String {
     let mut out = String::new();
     let mut col = first;
     for (i, word) in text.split(' ').enumerate() {
-        let len = visible_len(word);
-        if i > 0 {
-            if col + 1 + len > width && col > rest {
-                out.push('\n');
-                out.push_str(&" ".repeat(rest));
-                col = rest;
-            } else {
-                out.push(' ');
-                col += 1;
+        for (j, piece) in pieces(word).into_iter().enumerate() {
+            let len = visible_len(piece);
+            if i > 0 || j > 0 {
+                let gap = usize::from(j == 0);
+                if col + gap + len > width && col > rest {
+                    out.push('\n');
+                    out.push_str(&" ".repeat(rest));
+                    col = rest;
+                } else if gap == 1 {
+                    out.push(' ');
+                    col += 1;
+                }
             }
+            out.push_str(piece);
+            col += len;
         }
-        out.push_str(word);
-        col += len;
     }
     out
+}
+
+/// A word cut where Japanese or Chinese may break inside it; style codes
+/// stay with the character after them.
+fn pieces(word: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut prev = None;
+    let mut code_from = None;
+    let mut in_code = false;
+    for (at, c) in word.char_indices() {
+        if in_code {
+            in_code = !c.is_ascii_alphabetic() && c != '~';
+            continue;
+        }
+        if c == '\x1b' {
+            in_code = true;
+            code_from.get_or_insert(at);
+            continue;
+        }
+        let cut = code_from.take().unwrap_or(at);
+        if let Some(p) = prev
+            && (breaks_inside(p) || breaks_inside(c))
+            && may_break_between(p, c)
+            && cut > start
+        {
+            out.push(&word[start..cut]);
+            start = cut;
+        }
+        prev = Some(c);
+    }
+    out.push(&word[start..]);
+    out
+}
+
+/// Kana, Han and full-width punctuation: written without spaces.
+fn breaks_inside(c: char) -> bool {
+    matches!(c, '\u{3000}'..='\u{30FF}' | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FF60}')
+}
+
+/// No break after an opening bracket nor before closing punctuation.
+fn may_break_between(prev: char, c: char) -> bool {
+    let opens = matches!(prev, '（' | '「' | '『' | '【' | '〈' | '《' | '〔' | '［' | '｛' | '〖' | '〘');
+    let closes = matches!(c, '）' | '」' | '』' | '】' | '〉' | '》' | '〕' | '］' | '｝' | '〗' | '〙' | '、' | '。' | '，' | '．' | '；' | '：' | '！' | '？' | '・');
+    !opens && !closes
 }
 
 #[derive(Clone, Copy)]
@@ -343,6 +395,33 @@ mod tests {
         for line in out.lines() {
             assert!(visible_len(line) <= 20, "{line:?} is {} columns", visible_len(line));
         }
+    }
+
+    #[test]
+    fn japanese_and_chinese_wrap_between_characters_keeping_brackets() {
+        let opens = ['（', '「'];
+        let closes = ['）', '」', '、', '。', '，', '；'];
+        for text in [
+            "自分のワークツリーのサンドボックス内で編集・インストール・ビルド・テストを自分で行い、それ以外（ネットワーク、プッシュ、あなたのアカウント）は先に確認する",
+            "在自己工作树的沙盒里自行编辑、安装、构建和测试；超出范围的事（网络、推送、你的账号）先询问",
+            "在自己工作樹的沙盒裡自行編輯、安裝、建置和測試；超出範圍的事（網路、推送、你的帳號）先詢問",
+        ] {
+            for width in [20, 31, 40, 57, 66, 80, 100, 140] {
+                let out = wrap(text, 4, 4, width);
+                assert_eq!(out.replace(['\n', ' '], ""), text);
+                let lines: Vec<&str> = out.lines().collect();
+                for (n, line) in lines.iter().enumerate() {
+                    assert!(visible_len(line) <= width, "at {width}: {line:?}");
+                    let body = line.trim_start();
+                    assert!(n == 0 || !closes.contains(&body.chars().next().unwrap()), "at {width}: {out}");
+                    assert!(n + 1 == lines.len() || !opens.contains(&body.chars().last().unwrap()), "at {width}: {out}");
+                }
+            }
+        }
+        // Hangul still breaks only at spaces; a style code stays with its word.
+        assert!(!wrap("가나다라마바사아자차카타파하", 0, 0, 10).contains('\n'));
+        let styled = "\x1b[1m確認\x1b[0mする";
+        assert_eq!(wrap(styled, 0, 0, 80), styled);
     }
 
     #[test]

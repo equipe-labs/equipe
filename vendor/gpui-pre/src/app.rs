@@ -2902,6 +2902,17 @@ impl App {
         self.loading_assets.contains_key(&asset_id)
     }
 
+    /// equipe: an asset's result if GPUI holds it loaded now — never starting a load, unlike
+    /// [`Self::fetch_asset`]. To let go of what an image decoded to (its atlas tiles, then the
+    /// asset) once the app no longer shows it.
+    pub fn peek_asset<A: Asset>(&self, source: &A::Source) -> Option<A::Output> {
+        let asset_id = (TypeId::of::<A>(), hash(source));
+        self.loading_assets
+            .get(&asset_id)?
+            .downcast_ref::<CachedLoad<A::Output>>()?
+            .get()
+    }
+
     /// Starts loading an uncached asset and returns its result once available.
     ///
     /// Pending loads and completed results are cached until [`Self::remove_asset`].

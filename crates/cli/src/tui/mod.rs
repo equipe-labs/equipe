@@ -187,7 +187,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     loop {
         tokio::select! {
             _ = clock.tick() => {
-                if app.working() == 0 {
+                if !app.ticking() {
                     continue;
                 }
             }

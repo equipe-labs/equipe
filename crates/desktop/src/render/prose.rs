@@ -7,11 +7,13 @@
 //!   around it.
 //! - Emphasis written against Korean, Chinese or Japanese closes as written.
 //!   CommonMark won't close `**` that follows punctuation and is followed by
-//!   a letter, so `**T-114(…)**를` showed its asterisks; the same holds for
-//!   `은**(…)` opening. Where the asterisks (or tildes) stayed literal for that
+//!   a letter, so a Korean or Japanese particle after `**T-114(…)**` (`**T-114(…)**の`)
+//!   showed its asterisks; the same holds for an opening `**(` after a letter. Where the asterisks (or tildes) stayed literal for that
 //!   reason alone, the pair is written as `<strong>`/`<em>`/`<del>`, which the
 //!   text view draws the same. Elsewhere — English, code — CommonMark's rule
 //!   stands.
+//!
+//! And the words as a screen reader says them (`spoken`): the marks gone.
 //!
 //! No UI types here.
 
@@ -45,6 +47,54 @@ pub fn fix(markdown: &str) -> String {
         done.insert(markdown.to_owned(), fixed.clone());
     });
     fixed
+}
+
+/// The words of `markdown` as a screen reader should say them: no marks,
+/// a block a sentence, a link by its words. Kept a while, as `fix` is.
+pub fn spoken(markdown: &str) -> String {
+    thread_local! {
+        static SAID: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    }
+    if let Some(said) = SAID.with_borrow(|said| said.get(markdown).cloned()) {
+        return said;
+    }
+    let mut out = String::new();
+    match to_mdast(markdown, &options()) {
+        Ok(root) => say(&root, &mut out),
+        Err(_) => out.push_str(markdown),
+    }
+    let said = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    SAID.with_borrow_mut(|done| {
+        if done.len() >= 256 {
+            done.clear();
+        }
+        done.insert(markdown.to_owned(), said.clone());
+    });
+    said
+}
+
+fn say(node: &Node, out: &mut String) {
+    match node {
+        Node::Text(t) => out.push_str(&t.value),
+        Node::InlineCode(c) => out.push_str(&c.value),
+        Node::InlineMath(m) => out.push_str(&m.value),
+        Node::Code(c) => {
+            out.push_str(&c.value);
+            out.push('\n');
+        }
+        Node::Image(i) => out.push_str(&i.alt),
+        Node::Break(_) => out.push(' '),
+        Node::Html(_) => {}
+        _ => {
+            for child in node.children().into_iter().flatten() {
+                say(child, out);
+            }
+            // A block ends as a line does, so its words don't run into the next.
+            if matches!(node, Node::Paragraph(_) | Node::Heading(_) | Node::ListItem(_) | Node::TableCell(_)) {
+                out.push(' ');
+            }
+        }
+    }
 }
 
 /// The text view's parse options: GFM, with math.
@@ -170,8 +220,8 @@ const MARK: char = '\u{200B}';
 const MARK_LEN: usize = MARK.len_utf8();
 
 /// Emphasis, strikethrough and bold that CommonMark leaves open next to
-/// Korean, Chinese or Japanese, closed. A closing `)**를` (or opening
-/// `은**(`) is retried with a zero-width space between the delimiter and the
+/// Korean, Chinese or Japanese, closed. A closing `)**` with a letter after it (or an
+/// opening `**(` after one) is retried with a zero-width space between the delimiter and the
 /// punctuation, which lets it close (open); a pair that forms only so is
 /// written as HTML tags, and the spaces go again. Repeated, for emphasis
 /// inside emphasis.
@@ -335,6 +385,13 @@ mod tests {
         options.constructs.math_text = true;
         options.constructs.math_flow = true;
         options
+    }
+
+    #[test]
+    fn a_reply_is_said_without_its_marks_a_block_at_a_time() {
+        assert_eq!(spoken("네, **T-9**부터 이어서 하겠습니다."), "네, T-9부터 이어서 하겠습니다.");
+        assert_eq!(spoken("# 결론\n\n`cargo test`를 [문서](https://x.y)대로 돌려요.\n\n- 하나\n- 둘"), "결론 cargo test를 문서대로 돌려요. 하나 둘");
+        assert_eq!(spoken("![구조도](a.png)"), "구조도");
     }
 
     /// What the text view shows for `markdown`, marks spelled out: `<b>`,

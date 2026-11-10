@@ -7,9 +7,10 @@ description = "Members working the Mac's desktop apps: the helper that holds the
 
 [dependencies]
 base64 = "0.23.1"
+getrandom = "0.4"
 equipe-protocol = { path = "../protocol" }
 serde_json = "1.0.154"
-tokio = { version = "1.53.2", features = ["net", "io-util", "time"] }
+tokio = { version = "1.53.2", features = ["net", "io-util", "time", "rt"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
@@ -26,6 +27,28 @@ objc2-screen-capture-kit = { version = "0.3", default-features = false, features
     "SCScreenshotManager",
     "SCStream",
 ] }
+
+[target.'cfg(windows)'.dependencies]
+# Windows Graphics Capture for pixels; UI Automation and SendInput for the
+# focus-safe element/input backend. Keep these target-only so Unix builds do
+# not pull in WinRT or Direct3D.
+windows-capture = "1.5.0"
+windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Graphics_Capture",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.2", features = ["rt", "macros"] }

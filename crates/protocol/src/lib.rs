@@ -14,16 +14,68 @@ use serde::{Deserialize, Serialize};
 
 pub mod accept;
 pub mod asks;
+pub mod briefs;
+pub mod by_words;
+pub mod call;
 pub mod decide;
 pub mod disk;
+pub mod metrics;
+pub mod plan_use;
 pub mod engines;
+pub mod harness;
 pub mod design;
+pub mod look;
+pub mod routines;
+pub mod secrets;
+pub mod side_chat;
+pub mod signals;
+
+/// How many subagents Claude Code runs at once on its own
+/// (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` unset): what a Claude Code member
+/// runs until the person sets it ([`Command::SetSubagentsAtOnce`]).
+pub const CLAUDE_SUBAGENTS_AT_ONCE: u32 = 20;
+/// …and Codex on its own (`agents.max_concurrent_threads_per_session` unset).
+pub const CODEX_SUBAGENTS_AT_ONCE: u32 = 6;
+
+/// How many subagents `engine` runs at once on its own.
+pub fn engine_subagents_at_once(engine: Engine) -> u32 {
+    match engine {
+        Engine::Claude => CLAUDE_SUBAGENTS_AT_ONCE,
+        Engine::Codex => CODEX_SUBAGENTS_AT_ONCE,
+    }
+}
+/// The most the person can set: past it, a plan's limits run out long before
+/// the work is done.
+pub const MOST_SUBAGENTS_AT_ONCE: u32 = 50;
+
+/// `n` subagents at once, as an engine takes it: at least one (neither
+/// engine takes 0), at most [`MOST_SUBAGENTS_AT_ONCE`].
+pub fn subagents_at_once(n: u32) -> u32 {
+    n.clamp(1, MOST_SUBAGENTS_AT_ONCE)
+}
+
+/// How a ticket that couldn't start says why, in its note.
+pub const COULD_NOT_START: &str = "Couldn't start: ";
+/// How an idea the PM put to the person says why its time has come, in its note.
+pub const WHY_NOW: &str = "Why now: ";
+/// How a started idea waits while the PM runs office hours with the person,
+/// in its note: equipe hands it to nobody until the PM releases it
+/// (`update_ticket`, status todo).
+pub const OFFICE_HOURS_FIRST: &str = "Office hours first: the PM releases it.";
 pub mod rpc;
 pub mod stream;
+pub mod studio;
 pub mod tags;
+pub mod telemetry;
 pub mod team;
 pub mod transcript;
+pub mod vault;
+pub mod review;
+pub mod watch;
+pub mod words;
 
+pub use briefs::ProjectDoc;
+pub use side_chat::SideChatId;
 pub use transcript::Transcript;
 
 /// One conversation with one agent. Chosen by the screen that opens it — at
@@ -108,6 +160,18 @@ impl Estimate {
     }
 }
 
+/// A conversation with the PM the person put away ([`Command::CloseConversation`]):
+/// off the list, its lines kept, to be opened again ([`Command::ReopenConversation`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PutAway {
+    pub session: SessionId,
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// When it was put away (unix seconds).
+    pub at: i64,
+}
+
 /// A member's conversation about one project (`None`: the whole squad's),
 /// with turns of its own beside the member's other conversations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +179,11 @@ pub struct Lane {
     /// The member's own session.
     pub of: SessionId,
     pub project: Option<String>,
+    /// A conversation the person opened with the PM ([`Command::NewConversation`]):
+    /// listed, kept through restarts, put away only by the person. Else one
+    /// the PM runs beside its work, folded back when idle.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept: bool,
 }
 
 /// A squad's name: lowercase letters, digits and dashes.
@@ -128,6 +197,9 @@ pub type TicketId = u32;
 pub enum TicketStatus {
     /// Suggested by a member; the PM or the person makes it real.
     Proposed,
+    /// The person's idea, kept for later: nothing starts it and nothing asks
+    /// about it, until the PM finds its time and puts it to them as a proposal.
+    Idea,
     /// Ready to be picked up once its dependencies are done.
     Todo,
     InProgress,
@@ -145,6 +217,7 @@ impl TicketStatus {
     pub fn label(self) -> &'static str {
         match self {
             TicketStatus::Proposed => "proposed",
+            TicketStatus::Idea => "idea",
             TicketStatus::Todo => "todo",
             TicketStatus::InProgress => "in progress",
             TicketStatus::Waiting => "waiting",
@@ -308,6 +381,13 @@ pub struct Ticket {
     /// out otherwise, and absent from an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub design_qa: Option<TicketId>,
+    /// The plan it was cut from, or reviews: its absolute path in the squad's
+    /// folder (`…/home/docs/web/plans/2026-11-04-sign-in.md`) — or, on a
+    /// ticket from before plans left the repositories, its path in the
+    /// ticket's project (`docs/plans/…`). Left out otherwise, and absent from
+    /// an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 /// The gap between two tickets' ranks when they are spread out again.
@@ -326,6 +406,23 @@ impl Ticket {
     }
 
     /// Handed in and ready for the person's review: past design QA, if it had one.
+    /// A started idea held for office hours: ready, but handed to nobody
+    /// until the PM releases it.
+    pub fn office_hours_first(&self) -> bool {
+        self.status == TicketStatus::Todo && self.note.as_deref() == Some(OFFICE_HOURS_FIRST)
+    }
+
+    /// An idea the PM put to the person as a proposal: why its time has come.
+    pub fn why_now(&self) -> Option<&str> {
+        self.note.as_deref().filter(|_| self.status == TicketStatus::Proposed)?.strip_prefix(WHY_NOW).map(str::trim)
+    }
+
+    /// A ticket that was taken on but couldn't start (its workplace couldn't
+    /// be made): back among the proposals, its reason in its note.
+    pub fn could_not_start(&self) -> bool {
+        self.status == TicketStatus::Proposed && self.note.as_deref().is_some_and(|n| n.starts_with(COULD_NOT_START))
+    }
+
     pub fn ready_for_review(&self) -> bool {
         self.status == TicketStatus::Review && self.design_qa.is_none()
     }
@@ -466,10 +563,10 @@ impl Mode {
     /// What it means, in full.
     pub fn summary(self) -> &'static str {
         match self {
-            Mode::ReadOnly => "reads and plans — changes nothing, runs nothing but looking around",
+            Mode::ReadOnly => "reads and plans; changes nothing, runs nothing but looking around",
             Mode::Ask => "asks you before every edit and every command",
-            Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond — network, pushes, your accounts",
-            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name",
+            Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond (network, pushes, your accounts)",
+            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name. In full access a member runs anything your account can, so equipe can't fully stop a determined one from acting as you through a process it doesn't see (auto is the safer default).",
         }
     }
 
@@ -571,6 +668,12 @@ pub enum Command {
         #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
         about: Option<Option<String>>,
     },
+    /// `command`, sent from the person's phone: what they say there is read
+    /// there, so the member hears so with it. The daemon wraps what a phone
+    /// sends (a screen that said hello with `phone`) — `Submit`,
+    /// `SubmitLater`, `SendNow` and `AnswerQuestions`; anything else inside
+    /// runs as it would on its own.
+    OnPhone { command: Box<Command> },
     /// A message for after the turn running now (a memo): it doesn't steer
     /// the work under way. With no turn running, the same as `Submit`.
     SubmitLater {
@@ -636,7 +739,20 @@ pub enum Command {
     /// member's (`member`); `mode: None` puts a member back on the squad's default.
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
-    Decide { squad: SquadName, approval: u64, decision: Decision },
+    Decide {
+        squad: SquadName,
+        approval: u64,
+        decision: Decision,
+        /// What the person wrote with their answer: why not, what instead, or
+        /// what to mind — the member reads it with the answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        words: Option<String>,
+        /// Decided in words on a device that made sure of them itself (a
+        /// phone's call mode): how, and the confirming words — kept in the
+        /// log, never what lets it through. Left out: a card's click.
+        #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+        said: Option<by_words::Said>,
+    },
     /// The person's answers to a member's questions ([`Event::QuestionsAsked`]),
     /// one per question in order — an empty one skips it. They go to the member
     /// as its next message. Answered by [`Event::QuestionsClosed`].
@@ -658,7 +774,7 @@ pub enum Command {
     ApproveTeamChange { squad: SquadName, id: u64 },
     /// The person says no to it: nothing changes, and the PM is told.
     DeclineTeamChange { squad: SquadName, id: u64 },
-    /// A screen read the person's own words ("전부 수락", "accept T-1 and
+    /// A screen read the person's own words ("accept them all", "accept T-1 and
     /// T-3") as plainly accepting, merging or sending back handed-in work:
     /// the card to confirm it goes up in the conversation `session` at once,
     /// as [`Event::AcceptProposed`] — before the member there even answers,
@@ -676,9 +792,57 @@ pub enum Command {
     /// the board's buttons send — [`Command::Accept`], then [`Command::Merge`]
     /// when `merge` says so, or [`Command::Reopen`] with its note. Only ever
     /// the person's: no agent sends it. Answered by [`Event::AcceptClosed`].
-    ConfirmAccept { squad: SquadName, id: u64, tickets: Vec<accept::Confirmed> },
+    /// `said` as [`Command::Decide`]'s.
+    ConfirmAccept {
+        squad: SquadName,
+        id: u64,
+        tickets: Vec<accept::Confirmed>,
+        #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+        said: Option<by_words::Said>,
+    },
     /// The person says no to it: nothing changes, and the PM is told.
     DeclineAccept { squad: SquadName, id: u64 },
+    /// The person's own message, from a composer of equipe's — typed,
+    /// dictated or said: read by equipe for a decision in words
+    /// ([`by_words`]) before it goes on, as [`Command::Submit`] (or, `later`,
+    /// [`Command::SubmitLater`]), to the member. An answer to a words request
+    /// waiting ([`Event::WordsLive`]) is equipe's and goes no further.
+    /// `all`: ignored — whether high risk goes by words is the daemon's own
+    /// setting ([`Command::SetWordsAll`]); kept on the wire for screens that
+    /// send it. `pasted`: some of the text was pasted, so none of it decides.
+    /// `device`: the paired phone it came from — set by the daemon's phone
+    /// link, never by the phone.
+    Say {
+        squad: SquadName,
+        session: SessionId,
+        text: String,
+        #[serde(default)]
+        via: by_words::Via,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        later: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pasted: bool,
+        #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
+        about: Option<Option<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+    },
+    /// The undo (or, counting down, the cancel) on a words request: nothing
+    /// of it happens. Answered by [`Event::WordsClosed`].
+    UndoWords { squad: SquadName, id: u64 },
+    /// The log of decisions made in words, newest first: answered by
+    /// [`Event::WordsLog`].
+    WordsLog { squad: SquadName },
+    /// The log of decisions made in words, emptied: answered by an empty
+    /// [`Event::WordsLog`]. The Mac's screens only.
+    ClearWordsLog { squad: SquadName },
+    /// "All by words" for the squad: the person's words decide high-risk
+    /// requests too, read back and confirmed. Kept by the daemon; the Mac's
+    /// screens only — never a phone, never a message. Answered by
+    /// [`Event::WordsAllChanged`].
+    SetWordsAll { squad: SquadName, on: bool },
     /// How many extra members of a role equipe may bring in when several of
     /// its tickets are ready at once; 0 brings in none.
     Scale { squad: SquadName, extra: usize },
@@ -689,12 +853,93 @@ pub enum Command {
     /// The project the person is looking at, by name — new work goes there
     /// unless they say otherwise; `None`: all of the squad's projects.
     Focus { squad: SquadName, project: Option<String> },
+    /// The person opens a new conversation with the squad's PM — its own,
+    /// beside the PM's others — about `project` (`None`: the whole squad).
+    /// `session` names it, as for [`Command::Start`]. Answered with
+    /// [`Event::LaneOpened`], `kept`.
+    NewConversation { squad: SquadName, session: SessionId, project: Option<String> },
+    /// A conversation with the PM moves to another project (`None`: the
+    /// whole squad): what is said there from now on is about it.
+    MoveConversation { session: SessionId, project: Option<String> },
+    /// A conversation with the PM is put away: it leaves the list.
+    CloseConversation { session: SessionId },
+    /// A conversation put away is taken up again, as it was left: answered
+    /// with [`Event::LaneOpened`] and [`Event::ConversationBack`].
+    ReopenConversation { squad: SquadName, session: SessionId },
+    /// The person adds a project to the squad: a folder on the daemon's
+    /// machine (a git repository; one with no history yet is started as one).
+    /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
+    AddProject { squad: SquadName, path: PathBuf },
+    /// The person takes a project off the squad: its folder, tickets and
+    /// branches stay where they are. Answered with [`Event::ProjectsChanged`].
+    RemoveProject { squad: SquadName, path: PathBuf },
+    /// The person makes one of the squad's projects its HQ — where the
+    /// operations across its products live — or none (`None`). Answered with
+    /// [`Event::ProjectsChanged`].
+    SetHq { squad: SquadName, path: Option<PathBuf> },
+    /// The person deletes the squad: its members stop, its journal closes,
+    /// the worktrees its tickets used and no other squad's ticket does are
+    /// removed (their branches stay), and its folder — board, history, home —
+    /// moves to `<equipe home>/deleted/<squad>-<YYYYMMDD-HHMMSS>`, from where
+    /// moving it back restores it. The projects' repositories are never
+    /// touched. Answered, to every screen, with [`Event::SquadDeleted`] or
+    /// [`Event::SquadNotDeleted`].
+    DeleteSquad { squad: SquadName },
+    /// The person makes a routine (`id` 0) or changes one: regular work the
+    /// PM is handed on its schedule. Answered with [`Event::RoutinesChanged`].
+    SaveRoutine { squad: SquadName, routine: routines::Routine },
+    DeleteRoutine { squad: SquadName, id: u32 },
+    /// The person runs a routine now, off its schedule.
+    RunRoutine { squad: SquadName, id: u32 },
+    /// The person turns on a routine the PM proposed
+    /// ([`Event::RoutineProposed`]): saved as their own [`Command::SaveRoutine`]
+    /// would save it. Only ever the person's: no agent sends it. Answered by
+    /// [`Event::RoutineProposalClosed`].
+    ApproveRoutine { squad: SquadName, id: u64 },
+    /// The person says no to it: nothing is saved, and the PM is told.
+    DeclineRoutine { squad: SquadName, id: u64 },
+    /// The person pauses one of the squad's signals (`on` false) or starts it
+    /// again. Only ever the person's. Answered by [`Event::SignalsChanged`].
+    SetSignalOn { squad: SquadName, project: String, name: String, on: bool },
+    /// How long the board may lie empty — nothing to do, under way or
+    /// waiting — before the PM is woken to propose what's next, in hours;
+    /// 0 turns it off. Answered by [`Event::IdleWakeChanged`].
+    SetIdleWake { squad: SquadName, hours: u32 },
+    /// The person saves a login for members to sign in with (new, or a
+    /// change): its password to the Keychain, the rest to every screen
+    /// ([`Event::Logins`]).
+    SaveLogin { draft: vault::LoginDraft },
+    DeleteLogin { id: u32 },
+    /// The person takes back a member's "always" for a login (`squad/member`).
+    ForgetLoginAllowance { id: u32, who: String },
+    /// Every screen's list of logins, again.
+    Logins,
+    /// The person adds a browser profile — another person's accounts in a
+    /// Chrome of their own — or names one again ([`Event::BrowserProfiles`]).
+    SaveBrowserProfile { profile: BrowserProfile },
+    /// The person drops a browser profile: members stop getting its browser.
+    DeleteBrowserProfile { name: String },
+    /// Every screen's list of browser profiles, again.
+    BrowserProfiles,
+    /// The person typed what a member asked for with `ask_secret`: saved to
+    /// its file on the daemon's machine, never shown to the member.
+    SaveSecret { squad: SquadName, id: u64, values: Vec<secrets::SecretValue> },
+    /// The person won't give it (now): the member is told.
+    DismissSecret { squad: SquadName, id: u64 },
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
     /// The model a member's turns run on from now — any its engine offers.
     /// Its conversation carries on.
     SetModel { session: SessionId, model: String },
+    /// The models `engine` offers on the daemon's machine, as its own tool
+    /// lists them: answered, to every screen, by [`Event::Models`]. A daemon
+    /// that predates it says nothing, and the screen offers what it knows.
+    Models { engine: Engine },
+    /// The model and effort a new member of a role starts with on an engine
+    /// (both `None`: equipe's recommendation again). Kept for the squad;
+    /// answered by [`Event::RoleModelsChanged`].
+    SetRoleModel { squad: SquadName, default: RoleModel },
     /// Members' browsers open on screen (`show`) or run hidden: one member's,
     /// or (`member: None`) everyone's. Kept for the squad.
     ShowBrowser { squad: SquadName, member: Option<String>, show: bool },
@@ -711,16 +956,44 @@ pub enum Command {
     /// read yet: the first one with this text. Answered by
     /// [`Event::MemoWithdrawn`]; nothing when it was delivered (or read) already.
     Unqueue { session: SessionId, text: String },
-    /// Send what waits for a member at work now: its turn stops (as
-    /// [`Command::Interrupt`]) and the steers it hasn't read and the memos
-    /// left — `texts` first, in that order, then any others — go to it at
-    /// once, together, as one message. Answered by [`Event::QueueSent`], then
-    /// the turn's end and the message.
+    /// Have what waits for a member read now — never by stopping its turn.
+    /// At work: its memos go in as steers (each [`Event::MemoWithdrawn`],
+    /// then [`Event::SteerQueued`]) — `texts` first, in that order, then any
+    /// others — read at its next step with the steers already sent, and a
+    /// command it runs now is stopped (as [`Command::StopCommand`]) so that
+    /// step comes at once; the member weighs what it reads and decides what
+    /// to do. An engine that can't read mid-turn keeps them for the turn's
+    /// end. With no turn under way, they go to it at once, together, as one
+    /// message: [`Event::QueueSent`], then the message.
     SendNow {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         texts: Vec<String>,
     },
+    /// Stop the command the member's engine runs now, as the daemon last
+    /// looked at it ([`Event::CommandWatch`]): its processes end, and only
+    /// those — never the engine, never anything not under it. The engine
+    /// hears the command failed and goes on with its turn, reading at its
+    /// next step what the person said meanwhile. Nothing when no command runs.
+    StopCommand { session: SessionId },
+    /// Stop one of the member's subagents — one the daemon watches: an
+    /// equipe helper, or a subagent of Codex's own — and only it. The member
+    /// hears it stopped (a helper hands in what it had) and goes on with its
+    /// turn. Nothing when it isn't at work, or its engine can't stop it alone.
+    StopSubagent { session: SessionId, id: String },
+    /// A side chat about `passage`, a stretch of `session`'s conversation the
+    /// person selected ([`side_chat`]): it knows the conversation so far and
+    /// the passage, reads the member's files and (where its engine can) the
+    /// web, changes nothing, and nothing said in it reaches the conversation.
+    /// `side` is the screen's own id for it. Answered by
+    /// [`Event::SideChatOpened`]; nothing runs until its first message.
+    StartSideChat { session: SessionId, side: SideChatId, passage: String },
+    /// The person's message in side chat `side`: its next turn. The
+    /// conversation and passage come again, so a side chat the daemon let go
+    /// (idle, or the daemon restarted) starts over from them.
+    SideChatSubmit { session: SessionId, side: SideChatId, passage: String, text: String },
+    /// The side chat is closed: its turn under way stops, and it is let go.
+    CloseSideChat { side: SideChatId },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -730,7 +1003,12 @@ pub enum Command {
     BrowserNav { page: u64, action: BrowserNavAction, url: Option<String> },
     /// A tab of the person's own in the shared Chrome, at `url` (blank without
     /// one). Answered by [`Event::BrowserTabs`] for the person's lane (`""`).
-    BrowserNewTab { url: Option<String> },
+    BrowserNewTab {
+        url: Option<String>,
+        /// In another browser profile's Chrome (its lane `#name`); `None`: the main one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+    },
     BrowserCloseTab { page: u64 },
     /// The person takes a member's browser (`lane`, as [`Event::BrowserTabs`]
     /// names it) into their own hands, or gives it back. While they have it the
@@ -764,20 +1042,29 @@ pub enum Command {
     Unpair { device: String },
     /// Look at what uses the disk ([`disk`]): answered by [`Event::DiskReport`].
     DiskScan,
+    /// Where an engine's plan went over `span` ([`plan_use`]): answered, to
+    /// every screen, by [`Event::PlanUse`]. Only reads.
+    PlanUse { engine: Engine, span: plan_use::Span },
     /// Give back the space of these items of the daemon's last look (their
     /// `id`s): only the ones it may remove, looked at again first. Answered by
     /// [`Event::DiskCleaned`], then a fresh [`Event::DiskReport`].
     DiskClean { ids: Vec<String> },
+    /// Clear one item of the daemon's last look that isn't equipe's (a cache
+    /// of the Mac's, a project's build output) with the command that look
+    /// lists for it — never a command the screen sends — as the person said
+    /// yes to. Answered by [`Event::DiskCleaned`], then a fresh report.
+    DiskRun { id: String },
     /// Where each engine stands on the daemon's machine: answered, to every
     /// screen, by [`Event::Engines`].
     Engines,
     /// Sign `engine` in on the daemon's machine, with its own command-line
-    /// tool (`codex login`), whose login it keeps and equipe never reads.
-    /// `device`: with a one-time code the screen shows, for a browser on
-    /// another machine (`codex login --device-auth`); else the browser opens
-    /// on the daemon's machine. Claude Code is signed in by the person
-    /// (`claude auth login` in a terminal). Answered, to every screen, by
-    /// [`Event::SignIn`].
+    /// tool (`codex login`, `claude auth login`), whose login it keeps and
+    /// equipe never reads. `device`: with a one-time code the screen shows,
+    /// for a browser on another machine (`codex login --device-auth`); else
+    /// the browser opens on the daemon's machine. Claude Code's sign-in opens
+    /// the browser there too and also gives a page to open anywhere, whose
+    /// code the person pastes back ([`SignInStep::Paste`]). Answered, to
+    /// every screen, by [`Event::SignIn`].
     SignIn {
         engine: Engine,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -785,6 +1072,52 @@ pub enum Command {
     },
     /// Stop the sign-in under way: answered by [`SignInStep::Cancelled`].
     SignInCancel { engine: Engine },
+    /// The code the sign-in page showed, as the person pasted it on a screen
+    /// ([`SignInStep::Paste`]): written once to the tool's own prompt, never
+    /// kept or logged.
+    SignInCode { engine: Engine, code: String },
+    /// Look again at why `engine` can't serve its members on the daemon's
+    /// machine: answered, to every screen, by [`Event::EngineAuth`].
+    CheckEngine { engine: Engine },
+    /// The daemon runs outside the Mac's login session
+    /// ([`AuthState::OutsideLogin`]): it stops, and its login service starts
+    /// it again inside, where the Keychain is. Only ever the person's.
+    MoveIntoLogin,
+    /// Install `engine`'s command-line tool on the daemon's machine with its
+    /// maker's own installer (no Node needed), as the person asked from a
+    /// screen. Answered, to every screen, by [`Event::EngineInstall`], then
+    /// [`Event::Engines`].
+    InstallEngine { engine: Engine },
+    /// Save the person's Nebius Token Factory key on the daemon's machine
+    /// (`None`: forget it), for members and reviews to use from now on.
+    /// Answered, to every screen, by [`Event::Nebius`] — never with the key.
+    SetNebiusKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    /// The model providers connected on the daemon's machine, each with the
+    /// models it lists: answered, to every screen, by [`Event::Providers`].
+    /// Each provider not looked at yet is asked for its models then.
+    Providers,
+    /// Connect a model provider on the daemon's machine: one of equipe's
+    /// presets (`openrouter`, `groq`, `ollama`…) or `other`, an
+    /// OpenAI-compatible server at `base_url`. Its key, when it needs one, is
+    /// kept in a file there only the person can read — never sent back,
+    /// never logged. Answered by [`Event::Providers`], then by
+    /// [`Event::ProviderTested`] once its models are listed.
+    AddProvider {
+        preset: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<secrets::SecretValue>,
+    },
+    /// List a connected provider's models again (`GET /models`): answered
+    /// by [`Event::ProviderTested`].
+    TestProvider { id: String },
+    /// Forget a provider and its saved key. Members set to one of its
+    /// models say so at their next turn.
+    RemoveProvider { id: String },
     /// Sign `engine` out with its own tool (`codex logout`). Claude Code's
     /// login is the person's own: equipe never touches it. Answered by
     /// [`Event::Engines`].
@@ -792,30 +1125,288 @@ pub enum Command {
     /// How the squad moves members between engines as their plans run low
     /// ([`engines::Switching`]). Answered by [`Event::EngineSwitchingChanged`].
     SetEngineSwitching { squad: SquadName, mode: engines::Switching },
+    /// The person lets the PM accept and merge the team's handed-in work
+    /// itself (`on`, the default), putting to them only what needs them — or
+    /// keeps every acceptance for themselves.
+    SetPmAccepts { squad: SquadName, on: bool },
+    /// How many subagents each member of the squad runs at once, where its
+    /// engine has them: given to the engine and said in its charter. `None`:
+    /// each engine's own ([`engine_subagents_at_once`]), nothing given to it.
+    /// Answered by [`Event::SubagentsAtOnceChanged`].
+    SetSubagentsAtOnce { squad: SquadName, at_once: Option<u32> },
+    /// Which engine reviews the designer's work ([`engines::Reviewer`]).
+    /// Answered by [`Event::DesignReviewerChanged`].
+    SetDesignReviewer { squad: SquadName, reviewer: engines::Reviewer },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
-    /// each at its member's next ticket boundary. Only ever the person's.
-    ApplyEngineProposal { squad: SquadName, id: u64 },
+    /// each at its member's next ticket boundary — or, `now`, at the end of
+    /// each one's current turn, a ticket in progress handed over. On a card
+    /// whose moves are made already (`auto`, or the person's own), `now`
+    /// hurries those still waiting for their member's next ticket. Only ever
+    /// the person's.
+    ApplyEngineProposal {
+        squad: SquadName,
+        id: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        now: bool,
+    },
     /// The person leaves things as they are — or, for moves already made,
     /// closes the card that told of them.
     DismissEngineProposal { squad: SquadName, id: u64 },
     /// The person takes back moves equipe made on its own: each member goes
     /// back to the engine and model it ran on, at its next ticket boundary.
     UndoEngineProposal { squad: SquadName, id: u64 },
+    /// The person takes back `change` to the squad's folder or memory — the
+    /// one an [`Event::Notice`]'s `undo` named — as `/home undo` does: as a
+    /// change of their own, so it can be taken back too. Told in `session`'s
+    /// conversation: a notice of what was taken back (its `undo` the new
+    /// change), or an error when later changes built on it.
+    UndoHomeChange { squad: SquadName, session: SessionId, change: String },
     /// Propose the squad's recommended setup for both engines again.
     ShowEngineSetup { squad: SquadName },
     /// The person moves `members` (none named: every member) to `engine`,
-    /// each at its next ticket boundary, its work handed over. Only ever the
-    /// person's; where they belong from then on.
+    /// each at its next ticket boundary, its work handed over — or, `now`,
+    /// at the end of its current turn even mid-ticket, the ticket handed over
+    /// and carried on there. Only ever the
+    /// person's; where they belong from then on. `model`: the one they run
+    /// there, as the person picked it (`None`: what the engine recommends for
+    /// each one's role); a daemon that predates it moves them all the same.
+    /// `effort`: the one they think at there (`None`: the engine's default).
     MoveEngine {
         squad: SquadName,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         members: Vec<String>,
         engine: Engine,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        now: bool,
     },
+    /// What member session `session` was handed when it took over from the
+    /// one before it on the other engine ([`engines::HandOver`]): the packet it
+    /// opened with and the conversation before it, as the journal keeps them —
+    /// answered by [`Event::HandOver`]. A read.
+    HandOver { squad: SquadName, session: SessionId },
     /// Show the squad's design systems (`design::DesignSystem`): answered by
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
     Design { squad: SquadName },
+    /// Show the squad's briefs and plans ([`briefs::ProjectDoc`]), each
+    /// project's and its own folder's: answered by [`Event::ProjectDocs`],
+    /// and sent again whenever the PM writes one.
+    ProjectDocs { squad: SquadName },
+    /// Find the squad's briefs and plans whose title or words hold `query`
+    /// (any case), read from the squad's folder as [`Command::ProjectDocs`]
+    /// lists them: answered by [`Event::DocsFound`]. Only reads.
+    SearchDocs { squad: SquadName, query: String },
+    /// A call begins ([`call`]): answered by [`Event::CallStarted`].
+    CallStart { squad: SquadName },
+    /// One finished utterance of call `call`. Never read for a decision in
+    /// words: what it says reaches members only as a submit.
+    CallUtterance {
+        squad: SquadName,
+        call: String,
+        text: String,
+        #[serde(default)]
+        via: call::CallVia,
+    },
+    /// The person hung up: answered by [`Event::CallSummary`] (`hangup`).
+    CallEnd { squad: SquadName, call: String },
+    /// The person keeps the copy at `keep` of a brief or plan saved under more
+    /// than one project ([`briefs::DocCopies`]): the other copies are removed
+    /// from the squad's folder — never from a repository — as one change of
+    /// theirs, which [`Command::UndoHomeChange`] takes back. Told in
+    /// `session`'s conversation (a notice whose `undo` is that change) and by
+    /// [`Event::DocCopyKept`]; the docs are sent again.
+    KeepDocCopy { squad: SquadName, session: SessionId, keep: String },
+    /// The accepted versions of a design system's folder — the squad's own
+    /// (`project: None`) or a project's — newest first, the last 30: answered
+    /// by [`Event::DesignVersions`]. Read from git when asked, not with
+    /// [`Event::Design`], which goes out on every save.
+    DesignVersions {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// The person asks for a design system's folder back as it was at one of
+    /// its versions (`commit`, one [`Event::DesignVersions`] listed): a
+    /// ticket for the designer, which restores it in its worktree and hands
+    /// it in for review like any other change. Nothing is rewritten. Only
+    /// ever the person's.
+    RestoreDesign {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        commit: String,
+    },
+    /// The person adds, rewrites or removes a note of their design taste:
+    /// the squad's (`project` none) or a project's. Answered by
+    /// [`Event::Design`] with the notes as they are now, or an error.
+    Taste {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        change: design::TasteChange,
+    },
+}
+
+/// Where the daemon's Nebius Token Factory key comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NebiusKey {
+    /// None: members can't run on Nebius, nor reviews.
+    #[default]
+    None,
+    /// `NEBIUS_API_KEY` in the daemon's environment.
+    Environment,
+    /// Saved on the daemon's machine from a screen or `equipe login nebius`.
+    Saved,
+}
+
+/// Nebius Token Factory on the daemon's machine ([`Event::Nebius`]): never the key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NebiusStatus {
+    pub key: NebiusKey,
+    /// The Codex CLI is installed: the agent members on Nebius run on.
+    pub codex: bool,
+    /// The model members start on, when set (`EQUIPE_NEBIUS_MODEL`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The provider's name: `Nebius Token Factory`, or another server's host.
+    #[serde(default)]
+    pub provider: String,
+}
+
+/// Where a model provider's key comes from ([`ProviderStatus`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKey {
+    /// None: it can't be used yet.
+    #[default]
+    None,
+    /// Its variable in the daemon's environment, which wins over a saved key.
+    Environment,
+    /// Saved on the daemon's machine from a screen (or `equipe login nebius`).
+    Saved,
+    /// A server on the daemon's machine (Ollama, LM Studio): it needs none.
+    NotNeeded,
+}
+
+/// What listing a provider's models found ([`Command::TestProvider`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProviderTest {
+    /// Not looked at yet.
+    #[default]
+    Untested,
+    /// Being listed now.
+    Testing,
+    /// It answered with `count` models members can be set to.
+    Ok { count: usize },
+    /// It couldn't be listed (or added): why, as a screen words it in its
+    /// own language (`problem`), and in the daemon's (`why`) for a screen
+    /// that doesn't know the problem.
+    Failed {
+        why: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<ProviderProblem>,
+    },
+}
+
+/// Why a provider couldn't be listed or added, for a screen to say in its
+/// own language ([`ProviderTest::Failed`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderProblem {
+    /// No key for it.
+    MissingKey,
+    /// It refused the key (401, 403).
+    Unauthorized,
+    /// Its rate limit, still there after trying again.
+    RateLimited,
+    /// No answer in time.
+    Timeout,
+    /// It lists no model a member can work with.
+    NoModels,
+    /// No model list at its address (404).
+    NotFound,
+    /// Another error, by its status.
+    Http { status: u16 },
+    /// Something answered, but not with a list of models.
+    BadOutput,
+    /// It couldn't be reached.
+    Network,
+    /// Not a provider equipe knows.
+    Unknown,
+    /// Not an address: `https://…/v1`.
+    BadUrl,
+    /// `http://` to another machine: the key would go unencrypted.
+    Insecure,
+    /// It needs a key and none was given.
+    NoKey,
+    /// What was pasted isn't a key.
+    BadKey,
+    /// Its key couldn't be saved: the system's words.
+    NotSaved { why: String },
+    /// One a newer daemon knows: the screen says `why`.
+    #[serde(other)]
+    Other,
+}
+
+/// A model provider connected on the daemon's machine ([`Event::Providers`]):
+/// never its key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderStatus {
+    /// Its id on that machine: a preset's (`openrouter`), or `other-<host>`.
+    /// A member's model on it reads `@<id>/<model>`.
+    pub id: String,
+    /// The preset it comes from (`openrouter`, `other`; `custom` for the
+    /// environment's `EQUIPE_MODEL_BASE_URL`).
+    pub preset: String,
+    pub name: String,
+    pub base_url: String,
+    pub key: ProviderKey,
+    /// Whether a screen can remove it: not one the environment sets.
+    #[serde(default)]
+    pub removable: bool,
+    /// The models members can be set to, by their `@<id>/<model>` ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelChoice>,
+    #[serde(default)]
+    pub test: ProviderTest,
+}
+
+/// A model an engine offers ([`Event::Models`]): its id, the name its tool
+/// gives it, and the efforts it takes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The efforts it takes, lowest first; empty: not said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    /// What its tool says it is for, in the tool's own words; `None`: not said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Its tool's default for the account.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
+}
+
+/// What a new member of `role` starts with on `engine`, as the person set it
+/// for the squad; `None`: equipe's recommendation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleModel {
+    pub role: String,
+    pub engine: Engine,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// Where an engine stands on the daemon's machine ([`Event::Engines`]).
@@ -879,6 +1470,12 @@ pub enum SignInStep {
     /// daemon's machine in to whoever enters it: shown to the person's screens
     /// only, never to a phone, never logged.
     DeviceCode { url: String, code: String },
+    /// Open `url` in any browser, approve, and paste the code the page then
+    /// shows ([`Command::SignInCode`]) — or approve in the browser that
+    /// opened on the daemon's machine, which needs no code. Like a device
+    /// code, a link that signs the daemon's machine in to whoever finishes
+    /// it: shown to the person's screens only, never logged.
+    Paste { url: String },
     /// Signed in; the tool keeps the login on the daemon's machine.
     Done,
     Failed {
@@ -889,6 +1486,59 @@ pub enum SignInStep {
     },
     /// Stopped before it finished.
     Cancelled,
+}
+
+/// Why an engine can't serve its members on the daemon's machine, as equipe
+/// found it after a turn failed for want of a sign-in ([`Event::EngineAuth`]).
+/// Looked at by equipe itself — the tool's own status, the session the
+/// daemon runs in, whether the login Keychain is locked — never by reading
+/// a credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthState {
+    /// Being looked at.
+    Checking,
+    /// The daemon runs outside the Mac's login session — started over SSH —
+    /// so the tools it runs can't reach the login Keychain, where Claude
+    /// Code keeps its sign-in. Signing in again wouldn't help.
+    /// `movable`: its login service is there to start it inside
+    /// ([`Command::MoveIntoLogin`]); else `equipe daemon install`, at the
+    /// Mac's own screen.
+    OutsideLogin {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        movable: bool,
+    },
+    /// Stopping, to start again inside the login session.
+    Moving,
+    /// The Mac's login Keychain is locked: unlocked, the sign-in in it works again.
+    KeychainLocked,
+    /// No working sign-in: the person signs in again ([`Command::SignIn`]).
+    SignedOut,
+    /// Its tool isn't on the daemon's machine.
+    NotInstalled,
+    /// Signed in: `resumed` conversations its sign-in had stopped carry on.
+    SignedIn {
+        #[serde(default, skip_serializing_if = "is_zero")]
+        resumed: u32,
+    },
+    /// Couldn't tell (the event's `detail` says why) — or a state this build doesn't know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// How installing an engine's tool goes ([`Event::EngineInstall`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InstallStep {
+    /// The installer runs.
+    Running,
+    /// Installed: the engine is there to sign in.
+    Done,
+    Failed {
+        /// The installer's last words, when it said any.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
+    },
 }
 
 /// Why a sign-in didn't finish.
@@ -971,6 +1621,18 @@ pub enum BrowserNavAction {
     Stop,
     /// To the `url` given.
     Go,
+}
+
+/// A browser profile besides the person's main one: a Chrome of its own with
+/// its own sign-ins — another person's accounts, to work or test as them.
+/// Members get its browser beside their own (`browser_<name>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserProfile {
+    /// Its name: lowercase letters, digits and `-`.
+    pub name: String,
+    /// Whose accounts it holds, in the person's words: `jhjung@atinuminvest.co.kr`.
+    #[serde(default)]
+    pub label: String,
 }
 
 /// One tab of the shared Chrome. `id` is the browser's own, stable while the
@@ -1065,6 +1727,18 @@ pub struct Usage {
     /// Input read from or written to the prompt cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_tokens: Option<u64>,
+    /// Of `cache_tokens`, what was read from the cache …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// … and what was written to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// Of `cache_write_tokens`, what was written to be kept an hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_long_tokens: Option<u64>,
+    /// How many requests the turn made of the model, subagents' included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<u64>,
     /// How full the conversation's context was at the end of the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
@@ -1091,6 +1765,28 @@ pub enum TurnOutcome {
     Interrupted,
     /// It failed; an [`Event::Error`] says why.
     Failed,
+}
+
+/// What started a conversation's compaction ([`Event::Compacting`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactTrigger {
+    /// The engine, its context nearly full (Claude Code's or Codex's own), or
+    /// equipe, a desk conversation grown full or gone cold.
+    Auto,
+    /// The person asked for it (`/compact`).
+    Manual,
+}
+
+/// A conversation being compacted, for a screen that attaches meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactingInfo {
+    pub trigger: CompactTrigger,
+    /// When it began, unix milliseconds.
+    pub started_at: u64,
+    /// How long it may take: how long the last ones of the same engine and
+    /// model took — a guess, not progress.
+    pub estimate_ms: u64,
 }
 
 /// The isolated place an editing session works in.
@@ -1138,6 +1834,9 @@ fn claude() -> Engine {
 }
 
 /// Core → screen: "this happened".
+// Windows lays this wire enum out above Clippy's size-ratio threshold. Keeping
+// the payloads unboxed preserves the existing public API and serialized shape.
+#[cfg_attr(windows, allow(clippy::large_enum_variant))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
@@ -1161,7 +1860,30 @@ pub enum Event {
     /// The session just started is a lane of member `of`: its conversation
     /// about `project` (`None`: the whole squad's), running beside the member's
     /// others — one turn at a time in each, any number of them at once.
-    LaneOpened { session: SessionId, of: SessionId, project: Option<String> },
+    LaneOpened {
+        session: SessionId,
+        of: SessionId,
+        project: Option<String>,
+        /// A conversation the person opened ([`Lane::kept`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kept: bool,
+    },
+    /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
+    LaneMoved { session: SessionId, project: Option<String> },
+    /// A conversation taken up again ([`Command::ReopenConversation`]): what
+    /// was said in it, after its [`Event::LaneOpened`].
+    ConversationBack {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default)]
+        lines: Vec<Entry>,
+        /// When each of `lines` was said, as [`SessionInfo::recent_at`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines_at: Vec<Option<u64>>,
+    },
+    /// The conversations put away, the latest first ([`Snapshot::put_away`]).
+    PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
     /// in `workspace` when it edits.
     WorkStarted {
@@ -1176,6 +1898,9 @@ pub enum Event {
     WorkEnded { session: SessionId, ticket: TicketId },
     /// A ticket was created or changed. Carries the whole ticket.
     TicketChanged { squad: SquadName, ticket: Ticket },
+    /// An NVIDIA Nemotron model on Nebius Token Factory read a handed-in
+    /// ticket's diff ([`review::CodeReview`]): what to look at before accepting.
+    CodeReviewed { squad: SquadName, review: review::CodeReview },
     /// A ticket's record, oldest first ([`Command::TicketHistory`]).
     TicketHistory { squad: SquadName, ticket: TicketId, entries: Vec<TicketEntry> },
     /// The squad's default mode, or one member's, changed. `mode: None`: the
@@ -1223,6 +1948,22 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tickets: Vec<TicketId>,
     },
+    /// A decision in the person's words waits on them — new, or a step on
+    /// (read back, chosen, counting down): above every composer of the squad.
+    WordsLive { squad: SquadName, live: by_words::Live },
+    /// It no longer waits: how it ended, and equipe's line on it.
+    WordsClosed {
+        squad: SquadName,
+        id: u64,
+        outcome: by_words::Outcome,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        text: String,
+    },
+    /// The decisions made in words ([`Command::WordsLog`]), newest first,
+    /// each flagged where it may have gone wrong.
+    WordsLog { squad: SquadName, entries: Vec<by_words::Entry> },
+    /// "All by words" turned on or off for the squad ([`Command::SetWordsAll`]).
+    WordsAllChanged { squad: SquadName, on: bool },
     /// The squad's "always allow" rules changed (one added by an answer of
     /// [`Decision::Always`], one taken back): all of them, oldest first.
     Allowed { squad: SquadName, rules: Vec<String> },
@@ -1239,7 +1980,14 @@ pub enum Event {
     /// Output a member's turn has produced so far, in tokens.
     Output { session: SessionId, tokens: u64 },
     /// What the person asked — sent to every screen, not only the one it was typed in.
-    UserMessage { session: SessionId, text: String },
+    UserMessage {
+        session: SessionId,
+        text: String,
+        /// The words of the text files it attached, kept with it
+        /// ([`tags::Kept`]); an older daemon's has none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
     /// A message left while the agent works. It becomes a [`Event::UserMessage`]
     /// when the turn ends; memos left in the meantime arrive together.
     MessageQueued {
@@ -1258,7 +2006,16 @@ pub enum Event {
     QueueSent { session: SessionId, texts: Vec<String> },
     /// A line from equipe for this session's conversation — e.g. the PM being
     /// told that the person spoke to a member directly.
-    Notice { session: SessionId, text: String },
+    ///
+    /// `undo`: the change to the squad's folder (or memory) this line tells
+    /// of, which [`Command::UndoHomeChange`] takes back — a screen may put a
+    /// button on the line. Absent for every other line.
+    Notice {
+        session: SessionId,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
     /// A fragment of the agent's answer.
     TextDelta { session: SessionId, text: String },
     /// The agent is using a tool, e.g. `Edit` on a file.
@@ -1266,6 +2023,14 @@ pub enum Event {
         session: SessionId,
         tool: String,
         target: Option<String>,
+        /// What it does, in the agent's own words — a command's description
+        /// ("Watch for a new commit or deployment") — shown over `target`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// It runs on in the background: its [`Event::ToolResult`] comes when
+        /// it finishes, which may be long after the call answered.
+        #[serde(default, skip_serializing_if = "is_false")]
+        background: bool,
     },
     /// A tool use came back: the latest [`Event::ToolUse`] with the same
     /// `tool` and `target` still open ended so. A screen that doesn't know
@@ -1280,8 +2045,15 @@ pub enum Event {
     /// of the conversation: a screen may show it while it comes.
     Thinking { session: SessionId, text: String },
     /// The engine named its model (Claude Code does on its first turn), or the
-    /// person changed it.
-    ModelKnown { session: SessionId, model: String },
+    /// person changed it. `model` is the one that runs; `asked`, what the
+    /// member is set to — an alias such as `opus` the engine resolved by its
+    /// own version, or the same id. `None` from a daemon that predates it.
+    ModelKnown {
+        session: SessionId,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asked: Option<String>,
+    },
     /// What a watched member's browser shows now: a picture (JPEG, or PNG from
     /// a browser of its own), base64, and the page.
     BrowserFrame { session: SessionId, image: String, url: Option<String> },
@@ -1333,12 +2105,68 @@ pub enum Event {
     /// refused for it — `action` `close`: the screen offers to let it, at
     /// one click (closing the tab), or keep using it.
     BrowserWants { squad: Option<SquadName>, lane: String, page: u64, action: String },
-    /// The member handed `what` to a subagent, which works alongside it.
-    SubagentStarted { session: SessionId, id: String, what: String },
+    /// The member handed `what` to a subagent, which works alongside it;
+    /// `brief`, the whole of what it was asked (an older daemon: empty).
+    SubagentStarted {
+        session: SessionId,
+        id: String,
+        what: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        brief: String,
+    },
     /// A subagent's latest step.
     SubagentStep { session: SessionId, id: String, step: String },
-    /// A subagent handed back what it found.
-    SubagentEnded { session: SessionId, id: String },
+    /// A step of a subagent's, done — a tool use with its outcome — or what
+    /// it said between them: for a screen to look inside it. Never part of the
+    /// member's conversation.
+    SubagentEntry { session: SessionId, id: String, entry: Entry },
+    /// A subagent handed back what it found (`result`), or `failed`.
+    SubagentEnded {
+        session: SessionId,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failed: bool,
+    },
+    /// A side chat ([`Command::StartSideChat`]) is open, on `session`'s
+    /// engine and model; `search`: it searches the web (not on another
+    /// provider through Codex, which has no search of its own).
+    SideChatOpened {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        session: SessionId,
+        side: SideChatId,
+        search: bool,
+    },
+    /// What happened in side chat `side`, as a conversation's own events say
+    /// it — the person's message, the answer's words, a tool's use and
+    /// result, the turn's end with its usage, an error — each with
+    /// `session` = `side`. Never part of `session`'s conversation.
+    SideChat {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        /// The conversation it is about.
+        session: SessionId,
+        side: SideChatId,
+        event: Box<Event>,
+    },
+    /// Side chat `side` was let go: closed, its conversation closed, or idle
+    /// too long ([`side_chat::IDLE_SECS`]).
+    SideChatClosed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        squad: Option<SquadName>,
+        side: SideChatId,
+    },
+    /// A subagent the daemon watches hasn't been heard from for `quiet_secs`
+    /// and looks stuck; `None`: it has been heard from since. Only the
+    /// person stops it ([`Command::StopSubagent`]). See [`SubagentInfo::stuck_secs`].
+    SubagentStuck {
+        session: SessionId,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quiet_secs: Option<u64>,
+    },
     /// What follows in the conversation is about `project` (`None`: the whole
     /// squad) — a message of the person's sent looking at it, news of its
     /// ticket, or a ticket's work. See [`transcript::scope`].
@@ -1357,7 +2185,60 @@ pub enum Event {
         project: Option<String>,
     },
     /// The member read a steering message, at this point of its turn.
-    Steered { session: SessionId, text: String },
+    Steered {
+        session: SessionId,
+        text: String,
+        /// As [`Event::UserMessage`]'s.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
+    /// What runs under the member's engine for its command under way, as the
+    /// daemon looked at it a moment ago — every few seconds while it runs —
+    /// or `None` once it no longer does. A screen that doesn't know this
+    /// event shows the step as before. See [`watch`].
+    CommandWatch {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        watch: Option<watch::CommandWatch>,
+    },
+    /// The member's conversation is being compacted — summarized to make room
+    /// — by its engine (mid-turn) or by equipe (a desk conversation starting
+    /// afresh). It works on once [`Event::Compacted`] or
+    /// [`Event::CompactFailed`] comes. `estimate_ms` is a guess from the
+    /// last compactions of the same engine and model, never progress.
+    Compacting {
+        session: SessionId,
+        /// The member's name; `None` for a plain session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        /// The project the conversation is about (`None`: the whole squad).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        /// Unix milliseconds.
+        started_at: u64,
+        estimate_ms: u64,
+    },
+    /// The compaction finished, `took_ms` after it began.
+    Compacted {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        took_ms: u64,
+    },
+    /// The compaction failed, or its turn ended before it finished.
+    CompactFailed {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        message: String,
+    },
     /// When the member expects its work done, and what it ships live — as it
     /// said, or nothing any more (`None`).
     Estimated { session: SessionId, estimate: Option<Estimate> },
@@ -1366,6 +2247,11 @@ pub enum Event {
         outcome: TurnOutcome,
         usage: Option<Usage>,
     },
+    /// Diagrams of a reply that just ended, drawn by the daemon as PNGs for a
+    /// screen that can't draw them (docs/VISUALS.md). Not a line: a screen
+    /// puts each in place of the block whose source has its `key`. A block
+    /// that didn't draw is not here; its source shows.
+    VisualsRendered { session: SessionId, visuals: Vec<Rendered> },
     /// An editing session closed with changes, committed to its branch.
     BranchLanded {
         session: SessionId,
@@ -1412,6 +2298,12 @@ pub enum Event {
     DiskLevel { status: disk::DiskStatus },
     /// What uses the disk, as [`Command::DiskScan`] asked.
     DiskReport { report: disk::DiskReport },
+    /// Where an engine's plan went, as [`Command::PlanUse`] asked.
+    PlanUse { report: Box<plan_use::Report> },
+    /// One ticket, or the use outside equipe, burned a large share of an
+    /// engine's week in a short time: told once each, and again to a screen
+    /// that attaches while it is recent.
+    PlanBurn { burn: plan_use::Burn },
     /// What a [`Command::DiskClean`] gave back.
     DiskCleaned { cleaned: disk::DiskCleaned },
     /// Where each engine stands on the daemon's machine ([`Command::Engines`]),
@@ -1422,6 +2314,37 @@ pub enum Event {
     },
     /// A sign-in to `engine` moved on ([`Command::SignIn`]).
     SignIn { engine: Engine, step: SignInStep },
+    /// Why `engine` can't serve its members on the daemon's machine, and how
+    /// its fix goes ([`AuthState`]): told when a turn fails for want of a
+    /// sign-in, as it is looked at again ([`Command::CheckEngine`]), and to
+    /// each screen as it attaches. `stopped`: the conversations whose turns
+    /// it stopped, carried on by equipe once it is signed in again.
+    EngineAuth {
+        engine: Engine,
+        state: AuthState,
+        /// More, in the tool's words, when there is any.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        stopped: Vec<SessionId>,
+    },
+    /// Installing `engine`'s tool moved on ([`Command::InstallEngine`]).
+    EngineInstall { engine: Engine, step: InstallStep },
+    /// The models `engine` offers on the daemon's machine ([`Command::Models`]),
+    /// its default first.
+    Models { engine: Engine, models: Vec<ModelChoice> },
+    /// Nebius Token Factory on the daemon's machine: sent with
+    /// [`Event::Engines`], and when its key is saved or forgotten.
+    Nebius { status: NebiusStatus },
+    /// The model providers connected on the daemon's machine
+    /// ([`Command::Providers`]), and whether the Codex CLI their members run on is there.
+    Providers {
+        providers: Vec<ProviderStatus>,
+        #[serde(default)]
+        codex: bool,
+    },
+    /// A provider's models were listed — or couldn't be ([`Command::TestProvider`]).
+    ProviderTested { id: String, test: ProviderTest },
     /// Moves between engines equipe proposes — or made on its own and tells
     /// of (`applied`), for the person to keep or undo.
     EngineProposed { squad: SquadName, proposal: engines::Proposal },
@@ -1433,8 +2356,76 @@ pub enum Event {
         #[serde(default)]
         applied: bool,
     },
+    /// A member moved to the other engine: its old session closed, a new one
+    /// opened under the same name, carrying on from the hand-over packet.
+    MemberMoved { squad: SquadName, hand_over: engines::HandOver },
+    /// What session `session` was handed ([`Command::HandOver`]): the packet
+    /// it opened with (empty when not kept) and the conversation before it,
+    /// its latest [`engines::EARLIER_LINES`] lines at most, each with when it
+    /// was said.
+    HandOver {
+        squad: SquadName,
+        session: SessionId,
+        #[serde(default)]
+        packet: String,
+        #[serde(default)]
+        lines: Vec<Entry>,
+        #[serde(default)]
+        lines_at: Vec<Option<u64>>,
+    },
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
+    /// Whether the PM accepts the team's work now ([`Command::SetPmAccepts`]).
+    PmAcceptsChanged { squad: SquadName, on: bool },
+    /// What new members of each role start with now ([`Command::SetRoleModel`]).
+    RoleModelsChanged { squad: SquadName, defaults: Vec<RoleModel> },
+    /// The squad's projects now ([`Command::AddProject`]): their folders.
+    /// The logins kept, without their passwords: every screen's.
+    Logins { logins: Vec<vault::Login> },
+    /// The browser profiles besides the main one: every screen's.
+    BrowserProfiles { profiles: Vec<BrowserProfile> },
+    /// A member asks the person for a secret on a card ([`Command::SaveSecret`]).
+    SecretAsked { squad: SquadName, ask: secrets::SecretAsk },
+    /// It was saved (`saved`) or turned down: the card closes everywhere.
+    SecretClosed { squad: SquadName, id: u64, saved: bool },
+    /// The squad's routines now, each with its next run.
+    RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
+    /// The PM proposes a routine (`propose_routine`): it waits for the
+    /// person's [`Command::ApproveRoutine`] or [`Command::DeclineRoutine`].
+    RoutineProposed { squad: SquadName, proposal: routines::RoutineProposal },
+    /// No longer waiting: turned on (`approved`) or declined.
+    RoutineProposalClosed { squad: SquadName, id: u64, approved: bool },
+    /// How long an empty board waits before the PM is woken now
+    /// ([`Command::SetIdleWake`]); 0: never.
+    IdleWakeChanged { squad: SquadName, hours: u32 },
+    /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]);
+    /// `None`: each engine's own.
+    SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
+    /// Which engine reviews the designer's work now ([`Command::SetDesignReviewer`]).
+    DesignReviewerChanged { squad: SquadName, reviewer: engines::Reviewer },
+    /// The squad's signals now, each with its latest readings: on a new
+    /// reading, one turned on or off, or paused.
+    SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
+    /// A squad was deleted ([`Command::DeleteSquad`]): told every screen. A
+    /// screen on it moves to `next` — the squad to open now, as the daemon's
+    /// machine remembers it — or, with none left, to starting a new one.
+    SquadDeleted {
+        squad: SquadName,
+        /// Where its folder went, on the daemon's machine.
+        moved_to: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<SquadName>,
+    },
+    /// A squad couldn't be deleted, and why: told every screen; the one that
+    /// asked says it.
+    SquadNotDeleted { squad: SquadName, why: String },
+    ProjectsChanged {
+        squad: SquadName,
+        projects: Vec<PathBuf>,
+        /// Which of them is the squad's HQ ([`Command::SetHq`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hq: Option<PathBuf>,
+    },
     /// The squad's design systems, as they are now ([`Command::Design`]):
     /// its own first, then each project's that has one, then the drafts
     /// tickets in review hand in. None: there is none yet, and `folder` is
@@ -1445,6 +2436,63 @@ pub enum Event {
         systems: Vec<design::DesignSystem>,
         #[serde(default)]
         folder: String,
+        /// The person's taste and the decisions made: the squad's first,
+        /// then each project's with a design system of its own.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        taste: Vec<design::Taste>,
+    },
+    /// The squad's briefs and plans as they are now ([`Command::ProjectDocs`]):
+    /// every project's, then its own folder's, newest first in each. Its own
+    /// event rather than a field of [`Event::ProjectsChanged`]: they are read
+    /// from files, off the daemon's loop, only for a screen that asks, and
+    /// change whenever one is written — the list of projects doesn't.
+    ProjectDocs {
+        squad: SquadName,
+        #[serde(default)]
+        docs: Vec<briefs::ProjectDoc>,
+        /// The ones saved under more than one project, each set once.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copies: Vec<briefs::DocCopies>,
+        /// Older copies equipe once committed into the projects' repositories,
+        /// still there — for the person to know of; nothing is done to them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        in_repos: Vec<briefs::InRepo>,
+    },
+    /// The briefs and plans [`Command::SearchDocs`] found for `query`: their
+    /// paths ([`briefs::ProjectDoc::path`]), in the order the docs are listed.
+    DocsFound {
+        squad: SquadName,
+        query: String,
+        #[serde(default)]
+        paths: Vec<String>,
+    },
+    /// A call began: `call` is its id.
+    CallStarted { squad: SquadName, call: String },
+    /// What the phone says aloud.
+    CallSay { squad: SquadName, call: String, text: String, kind: call::SayKind },
+    /// Where an utterance went.
+    CallRoute { squad: SquadName, call: String, routes: Vec<call::CallRoute>, by: call::RouteBy },
+    /// The call ended: everything sent in it.
+    CallSummary { squad: SquadName, call: String, dispatched: Vec<call::Dispatched>, ended: call::CallEnded },
+    /// One copy kept ([`Command::KeepDocCopy`]): `removed` went from the
+    /// squad's folder as the change `undo`, which [`Command::UndoHomeChange`]
+    /// takes back; `None` when nothing needed saving.
+    DocCopyKept {
+        squad: SquadName,
+        kept: String,
+        #[serde(default)]
+        removed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
+    /// A design system's accepted versions ([`Command::DesignVersions`]),
+    /// newest first; none when its folder has no history yet.
+    DesignVersions {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default)]
+        versions: Vec<design::DesignVersion>,
     },
 }
 
@@ -1453,6 +2501,7 @@ impl Event {
     pub fn squad(&self) -> Option<&str> {
         match self {
             Event::TicketChanged { squad, .. }
+            | Event::CodeReviewed { squad, .. }
             | Event::TicketHistory { squad, .. }
             | Event::ModeChanged { squad, .. }
             | Event::ApprovalRequested { squad, .. }
@@ -1463,12 +2512,40 @@ impl Event {
             | Event::TeamChangeClosed { squad, .. }
             | Event::AcceptProposed { squad, .. }
             | Event::AcceptClosed { squad, .. }
+            | Event::WordsLive { squad, .. }
+            | Event::WordsClosed { squad, .. }
+            | Event::WordsLog { squad, .. }
+            | Event::WordsAllChanged { squad, .. }
             | Event::Allowed { squad, .. }
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
-            | Event::Design { squad, .. } => Some(squad),
+            | Event::MemberMoved { squad, .. }
+            | Event::HandOver { squad, .. }
+            | Event::PmAcceptsChanged { squad, .. }
+            | Event::RoleModelsChanged { squad, .. }
+            | Event::SecretAsked { squad, .. }
+            | Event::SecretClosed { squad, .. }
+            | Event::ProjectsChanged { squad, .. }
+            | Event::RoutinesChanged { squad, .. }
+            | Event::RoutineProposed { squad, .. }
+            | Event::RoutineProposalClosed { squad, .. }
+            | Event::IdleWakeChanged { squad, .. }
+            | Event::SubagentsAtOnceChanged { squad, .. }
+            | Event::DesignReviewerChanged { squad, .. }
+            | Event::SignalsChanged { squad, .. }
+            | Event::PutAwayChanged { squad, .. }
+            | Event::Design { squad, .. }
+            | Event::ProjectDocs { squad, .. }
+            | Event::DocsFound { squad, .. }
+            | Event::CallStarted { squad, .. }
+            | Event::CallSay { squad, .. }
+            | Event::CallRoute { squad, .. }
+            | Event::CallSummary { squad, .. }
+            | Event::DocCopyKept { squad, .. }
+            | Event::DesignVersions { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
+            Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
             _ => None,
         }
     }
@@ -1491,13 +2568,22 @@ impl Event {
             | Event::Suggestion { session, .. }
             | Event::SteerQueued { session, .. }
             | Event::LaneOpened { session, .. }
+            | Event::LaneMoved { session, .. }
+            | Event::ConversationBack { session, .. }
             | Event::Steered { session, .. }
+            | Event::CommandWatch { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
+            | Event::Compacting { session, .. }
+            | Event::Compacted { session, .. }
+            | Event::CompactFailed { session, .. }
             | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
+            | Event::SubagentEntry { session, .. }
             | Event::SubagentEnded { session, .. }
+            | Event::SubagentStuck { session, .. }
             | Event::TurnEnded { session, .. }
+            | Event::VisualsRendered { session, .. }
             | Event::BranchLanded { session, .. }
             | Event::NothingChanged { session }
             | Event::SessionClosed { session }
@@ -1506,6 +2592,7 @@ impl Event {
             | Event::Output { session, .. } => Some(*session),
             Event::Error { session, .. } => *session,
             Event::TicketChanged { .. }
+            | Event::CodeReviewed { .. }
             | Event::TicketHistory { .. }
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
@@ -1516,11 +2603,42 @@ impl Event {
             | Event::TeamChangeClosed { .. }
             | Event::AcceptProposed { .. }
             | Event::AcceptClosed { .. }
+            | Event::WordsLive { .. }
+            | Event::WordsClosed { .. }
+            | Event::WordsLog { .. }
+            | Event::WordsAllChanged { .. }
             | Event::Allowed { .. }
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
+            | Event::MemberMoved { .. }
+            | Event::HandOver { .. }
+            | Event::PmAcceptsChanged { .. }
+            | Event::RoleModelsChanged { .. }
+            | Event::SecretAsked { .. }
+            | Event::SecretClosed { .. }
+            | Event::ProjectsChanged { .. }
+            | Event::SquadDeleted { .. }
+            | Event::SquadNotDeleted { .. }
+            | Event::PutAwayChanged { .. }
+            | Event::RoutinesChanged { .. }
+            | Event::RoutineProposed { .. }
+            | Event::RoutineProposalClosed { .. }
+            | Event::IdleWakeChanged { .. }
+            | Event::SubagentsAtOnceChanged { .. }
+            | Event::DesignReviewerChanged { .. }
+            | Event::SignalsChanged { .. }
+            | Event::Logins { .. }
+            | Event::BrowserProfiles { .. }
             | Event::Design { .. }
+            | Event::ProjectDocs { .. }
+            | Event::DocsFound { .. }
+            | Event::CallStarted { .. }
+            | Event::CallSay { .. }
+            | Event::CallRoute { .. }
+            | Event::CallSummary { .. }
+            | Event::DocCopyKept { .. }
+            | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
             // A browser's own: never part of a conversation.
@@ -1537,10 +2655,22 @@ impl Event {
             | Event::Devices { .. }
             | Event::DiskLevel { .. }
             | Event::DiskReport { .. }
-            | Event::DiskCleaned { .. } => None,
+            | Event::DiskCleaned { .. }
+            | Event::PlanUse { .. }
+            | Event::PlanBurn { .. } => None,
+            // A side chat's own: never part of the conversation it is about.
+            Event::SideChatOpened { .. }
+            | Event::SideChat { .. }
+            | Event::SideChatClosed { .. } => None,
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
-            | Event::SignIn { .. } => None,
+            | Event::Nebius { .. }
+            | Event::Providers { .. }
+            | Event::ProviderTested { .. }
+            | Event::SignIn { .. }
+            | Event::EngineAuth { .. }
+            | Event::EngineInstall { .. }
+            | Event::Models { .. } => None,
         }
     }
 
@@ -1553,9 +2683,21 @@ impl Event {
                 | Event::DiskLevel { .. }
                 | Event::DiskReport { .. }
                 | Event::DiskCleaned { .. }
+                | Event::PlanUse { .. }
+                | Event::PlanBurn { .. }
                 | Event::Engines { .. }
+                | Event::Nebius { .. }
+                | Event::Providers { .. }
+                | Event::ProviderTested { .. }
                 | Event::SignIn { .. }
+                | Event::EngineAuth { .. }
+                | Event::EngineInstall { .. }
+                | Event::Models { .. }
+                | Event::Logins { .. }
+                | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
+                | Event::SquadDeleted { .. }
+                | Event::SquadNotDeleted { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }
                 | Event::BrowserDialog { squad: None, .. }
@@ -1582,6 +2724,10 @@ pub struct ToolOutcome {
     /// An edit's or a write's change, as a unified diff headed `diff --git`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1628,7 +2774,13 @@ impl ToolOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entry {
-    User { text: String },
+    User {
+        text: String,
+        /// The words of the text files the message attached, kept with it:
+        /// they outlast the files ([`tags::Kept`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kept: Vec<tags::Kept>,
+    },
     Reply { text: String },
     Tool {
         tool: String,
@@ -1636,9 +2788,19 @@ pub enum Entry {
         /// How it ended, once it has (and the screen was told).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outcome: Option<Box<ToolOutcome>>,
+        /// What it does, in the agent's words ([`Event::ToolUse`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// Started to run on in the background ([`Event::ToolUse`]).
+        #[serde(default, skip_serializing_if = "is_false")]
+        background: bool,
     },
-    /// A quiet line from equipe itself.
-    Note { text: String },
+    /// A quiet line from equipe itself; `undo` as its [`Event::Notice`] had it.
+    Note {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+    },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
     /// What follows is about `project` — or, with `None`, about the whole
@@ -1662,7 +2824,12 @@ pub struct SessionInfo {
     #[serde(default)]
     pub member: Option<Member>,
     pub engine: Engine,
+    /// The model it runs — what its engine named, else what it is set to.
     pub model: Option<String>,
+    /// What it is set to, when that differs from `model`: an alias the engine
+    /// resolved (`opus` running as `claude-opus-4-8`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_model: Option<String>,
     pub access: Access,
     pub workspace: Option<Workspace>,
     pub state: SessionState,
@@ -1675,6 +2842,12 @@ pub struct SessionInfo {
     /// The latest part of the conversation, oldest first. A reply still
     /// streaming is its last `Reply`.
     pub recent: Vec<Entry>,
+    /// When each line of `recent` was said, in unix seconds, one per line in
+    /// the same order: a message when it came, a reply when it was done.
+    /// `None` where not known (kept before times were, or still streaming);
+    /// empty from a daemon that predates it — then no line has a time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_at: Vec<Option<u64>>,
     /// Memos waiting for the turn in progress to end.
     #[serde(default)]
     pub queued: Vec<String>,
@@ -1710,10 +2883,41 @@ pub struct SessionInfo {
     /// in the order they started ([`Event::SubagentStarted`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<SubagentInfo>,
+    /// Its conversation being compacted now ([`Event::Compacting`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacting: Option<CompactingInfo>,
+    /// The diagrams of `recent`'s replies drawn so far ([`Event::VisualsRendered`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visuals: Vec<Rendered>,
+}
+
+/// A block of a reply drawn by the daemon ([`Event::VisualsRendered`]): in
+/// light and dark, each a PNG a screen reads with `read_image`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rendered {
+    /// What the block was: `mermaid`, or `card` (an HTML card).
+    pub kind: String,
+    /// The first 8 bytes of the SHA-256 of its source, trimmed, in lowercase hex.
+    pub key: String,
+    pub light: RenderedImage,
+    pub dark: RenderedImage,
+    /// An HTML card's page, as drawn (`<key>.html` beside its PNGs): for a
+    /// screen that opens the card itself. Absent for a diagram.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderedImage {
+    /// On the daemon's machine.
+    pub path: String,
+    /// In pixels, drawn at twice the size it is meant to be shown at.
+    pub width: u32,
+    pub height: u32,
 }
 
 /// A subagent at work for a member, for a screen that attaches mid-turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentInfo {
     /// As its events name it.
     pub id: String,
@@ -1725,6 +2929,16 @@ pub struct SubagentInfo {
     /// How long it had been at it when the snapshot was taken, in seconds.
     #[serde(default)]
     pub secs: u64,
+    /// The whole of what it was asked.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub brief: String,
+    /// Its latest steps and words ([`Event::SubagentEntry`]), oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<Entry>,
+    /// It looks stuck: unheard from for this many seconds when the snapshot
+    /// was taken ([`Event::SubagentStuck`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stuck_secs: Option<u64>,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -1742,6 +2956,9 @@ pub struct Snapshot {
     /// The squad's projects (repositories), in the order they joined.
     #[serde(default)]
     pub projects: Vec<PathBuf>,
+    /// Which project is the squad's HQ, if one is ([`Command::SetHq`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hq: Option<PathBuf>,
     /// The members, the PM first.
     pub sessions: Vec<SessionInfo>,
     /// Open tickets and the latest closed ones.
@@ -1762,6 +2979,27 @@ pub struct Snapshot {
     /// Handed-in work put to the person to confirm accepting, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepts: Vec<accept::AcceptProposal>,
+    /// The squad's routines ([`Command::SaveRoutine`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routines: Vec<routines::Routine>,
+    /// Routines the PM proposed, waiting for the person, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routine_proposals: Vec<routines::RoutineProposal>,
+    /// Hours an empty board waits before the PM is woken ([`Command::SetIdleWake`]);
+    /// 0: never. `None` from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_wake_hours: Option<u32>,
+    /// How many subagents a member runs at once ([`Command::SetSubagentsAtOnce`]).
+    /// `None`: each engine's own — as on a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents_at_once: Option<u32>,
+    /// Which engine reviews the designer's work ([`Command::SetDesignReviewer`]);
+    /// auto from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "engines::Reviewer::is_default")]
+    pub design_reviewer: engines::Reviewer,
+    /// The squad's signals, each with its latest readings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<signals::SignalView>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -1777,6 +3015,21 @@ pub struct Snapshot {
     /// How the squad moves members between engines.
     #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
     pub engine_switching: engines::Switching,
+    /// The squad's latest moves to the other engine, oldest first: which
+    /// closed session each open member carries on from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hand_overs: Vec<engines::HandOver>,
+    /// Whether the PM accepts the team's work itself ([`Command::SetPmAccepts`]);
+    /// `false` from a daemon that predates it, where the person accepts all.
+    #[serde(default)]
+    pub pm_accepts: bool,
+    /// What new members of a role start with, where the person set it
+    /// ([`Command::SetRoleModel`]); every other role, equipe's recommendation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub role_models: Vec<RoleModel>,
+    /// Secrets members asked for that wait for the person.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_asks: Vec<secrets::SecretAsk>,
     /// Moves between engines waiting for the person, or made and not yet
     /// seen, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1794,6 +3047,20 @@ pub struct Snapshot {
     /// The disk's room, when it is short ([`disk::DiskLevel::Low`] or worse).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<disk::DiskStatus>,
+    /// Nemotron's reviews of the tickets in review ([`Event::CodeReviewed`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<review::CodeReview>,
+    /// Conversations with the PM put away, the latest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub put_away: Vec<PutAway>,
+    /// Decisions in words waiting on the person ([`Event::WordsLive`]).
+    /// `None` from a daemon that predates them: a screen sends it
+    /// [`Command::Submit`], not [`Command::Say`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<by_words::Live>>,
+    /// "All by words" is on for the squad ([`Command::SetWordsAll`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub words_all: bool,
 }
 
 #[cfg(test)]
@@ -1826,7 +3093,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -1917,6 +3184,42 @@ mod tests {
     }
 
     #[test]
+    fn a_move_and_its_hand_over_travel_as_the_squads_and_an_older_snapshot_has_none() {
+        let read = Command::HandOver { squad: "acme".into(), session: 12 };
+        assert_eq!(serde_json::to_value(&read).unwrap(), json!({ "type": "hand_over", "squad": "acme", "session": 12 }));
+        let moved = engines::HandOver { member: "backend".into(), from_session: 2, to_session: 12, from: Engine::Claude, to: Engine::Codex, why: engines::Why::Drain, at: 1_760_000_000, ticket: Some(42) };
+        let told = Event::MemberMoved { squad: "acme".into(), hand_over: moved.clone() };
+        let back = Event::HandOver { squad: "acme".into(), session: 12, packet: "[equipe] You are backend".into(), lines: vec![Entry::Reply { text: "on it".into() }], lines_at: vec![Some(1_759_999_000)] };
+        for event in [told, back] {
+            assert_eq!(event.squad(), Some("acme"));
+            assert_eq!(event.session(), None, "the squad's, not a conversation's own event");
+            assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&event).unwrap()).unwrap(), event);
+        }
+        // An older daemon's answer: nothing kept, nothing shown.
+        let bare: Event = serde_json::from_value(json!({ "type": "hand_over", "squad": "acme", "session": 12 })).unwrap();
+        assert_eq!(bare, Event::HandOver { squad: "acme".into(), session: 12, packet: String::new(), lines: vec![], lines_at: vec![] });
+        let snapshot: Snapshot = serde_json::from_value(json!({ "squad": "acme", "sessions": [] })).unwrap();
+        assert!(snapshot.hand_overs.is_empty());
+        let with = Snapshot { hand_overs: vec![moved], ..snapshot };
+        assert_eq!(serde_json::from_value::<Snapshot>(serde_json::to_value(&with).unwrap()).unwrap(), with);
+    }
+
+    #[test]
+    fn a_deleted_squad_is_told_every_screen_with_where_it_went_and_where_to_go() {
+        let cmd = Command::DeleteSquad { squad: "acme".into() };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "delete_squad", "squad": "acme" }));
+        let gone = Event::SquadDeleted { squad: "acme".into(), moved_to: "/h/.equipe/deleted/acme-20261110-090000".into(), next: Some("beta".into()) };
+        let failed = Event::SquadNotDeleted { squad: "acme".into(), why: "no such squad".into() };
+        for event in [gone, failed] {
+            assert!(event.for_everyone(), "screens on other squads drop it from their lists too");
+            assert_eq!(event.session(), None);
+            assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&event).unwrap()).unwrap(), event);
+        }
+        let last: Event = serde_json::from_value(json!({ "type": "squad_deleted", "squad": "acme", "moved_to": "/x" })).unwrap();
+        assert_eq!(last, Event::SquadDeleted { squad: "acme".into(), moved_to: "/x".into(), next: None }, "none left: no next");
+    }
+
+    #[test]
     fn only_the_person_accepts_and_it_travels_as_json() {
         let cmd = Command::Accept { squad: "acme".into(), ticket: 3 };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "accept", "squad": "acme", "ticket": 3 }));
@@ -1946,7 +3249,7 @@ mod tests {
         assert_eq!(Mode::parse("Ask"), Some(Mode::Ask));
         assert_eq!(Mode::parse("full-access"), Some(Mode::Full));
         assert_eq!(Mode::parse("yolo"), None);
-        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always };
+        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None, said: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "always" }));
         let event = Event::ApprovalRequested {
             squad: "acme".into(),
@@ -2017,9 +3320,9 @@ mod tests {
             Event::TicketChanged { squad: "acme".into(), ticket: ticket(3) },
             Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None },
             Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
-            Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
+            Event::Notice { undo: None, session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
-            Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()) },
+            Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()), label: None, background: false },
             Event::TurnEnded {
                 session: 1,
                 outcome: TurnOutcome::Interrupted,
@@ -2062,7 +3365,23 @@ mod tests {
         let snapshot = Snapshot {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
+            hq: Some("/repo".into()),
+            hand_overs: Vec::new(),
+            put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000 }],
+            words: None,
+            words_all: false,
+            routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
+            reviews: vec![review::CodeReview {
+                ticket: 1,
+                model: "nvidia/nemotron-test".into(),
+                verdict: review::ReviewVerdict::Risky,
+                summary: "The check is skipped on error.".into(),
+                risks: vec![review::ReviewPoint { file: "src/auth.rs".into(), line: Some(42), why: "An error lets the request through.".into() }],
+                missing_tests: vec!["A failed lookup is refused.".into()],
+                truncated: true,
+                at: 3,
+            }],
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
             questions: vec![decide::QuestionSet {
@@ -2078,6 +3397,8 @@ mod tests {
                     ..Default::default()
                 }],
                 asked_at: 1,
+                review: false,
+                retro: None,
             }],
             team_changes: vec![team::TeamChange {
                 id: 5,
@@ -2105,11 +3426,26 @@ mod tests {
                 session: 9,
                 proposed_at: 2,
             }],
+            routine_proposals: vec![routines::RoutineProposal {
+                id: 8,
+                routine: routines::Routine { id: 0, title: "Weekly check-in".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: None, next_run: None },
+                reason: "Nobody wakes the PM".into(),
+                by: "pm".into(),
+                session: 9,
+                proposed_at: 3,
+            }],
+            idle_wake_hours: Some(24),
+            subagents_at_once: Some(8),
+            design_reviewer: engines::Reviewer::Same,
+            signals: Vec::new(),
             scale: Some(2),
             suggestions_off: false,
             plan: None,
             plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
             engine_switching: engines::Switching::Auto,
+            pm_accepts: true,
+            role_models: vec![RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) }],
+            secret_asks: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {
@@ -2118,13 +3454,15 @@ mod tests {
                 member: Some(Member { role: "pm".into(), name: "pm".into() }),
                 engine: Engine::Codex,
                 model: Some("m".into()),
+                asked_model: None,
                 access: Access::ReadOnly,
                 workspace: None,
                 state: SessionState::Working,
                 title: Some("fix it".into()),
                 tokens: 12,
                 context: None,
-                recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+                recent: vec![Entry::User { text: "fix it".into(), kept: Vec::new() }, Entry::Reply { text: "on it".into() }],
+                recent_at: vec![Some(1_762_300_000), None],
                 queued: vec!["and the tests".into()],
                 queued_project: None,
                 queued_in: vec![None],
@@ -2135,7 +3473,9 @@ mod tests {
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
                 effort: Some("high".into()),
-                subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42 }],
+                subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42, ..Default::default() }],
+                compacting: None,
+                visuals: Vec::new(),
             }],
             allowed: vec!["Bash(npm install:*)".into()],
             browsers_shown: true,
@@ -2146,8 +3486,39 @@ mod tests {
     }
 
     #[test]
+    fn when_lines_were_said_travels_beside_them_and_older_peers_go_without() {
+        let info = |recent_at: Option<serde_json::Value>| {
+            let mut v = json!({
+                "session": 2, "project": "/repo", "engine": "claude", "model": null, "access": "read_only", "workspace": null,
+                "state": "ready", "title": null, "tokens": 0, "recent": [{ "kind": "user", "text": "hi" }, { "kind": "reply", "text": "hello" }],
+            });
+            if let Some(at) = recent_at {
+                v["recent_at"] = at;
+            }
+            v
+        };
+        // An older daemon's snapshot: no times, and none shown.
+        let old: SessionInfo = serde_json::from_value(info(None)).unwrap();
+        assert!(old.recent_at.is_empty());
+        // A newer one's: one per line, `null` where not known.
+        let new: SessionInfo = serde_json::from_value(info(Some(json!([1_762_300_000, null])))).unwrap();
+        assert_eq!(new.recent_at, vec![Some(1_762_300_000), None]);
+        let sent = serde_json::to_value(&new).unwrap();
+        assert_eq!(sent["recent_at"], json!([1_762_300_000, null]));
+        assert_eq!(sent["recent"], info(None)["recent"], "the lines themselves as before, for an older screen");
+        assert!(serde_json::to_value(&old).unwrap().get("recent_at").is_none(), "none known: not sent");
+
+        let back = json!({ "type": "conversation_back", "session": 5, "lines": [{ "kind": "user", "text": "hi" }] });
+        let Event::ConversationBack { lines_at, .. } = serde_json::from_value(back).unwrap() else { panic!("conversation back") };
+        assert!(lines_at.is_empty());
+        let back = Event::ConversationBack { session: 5, title: None, lines: vec![Entry::User { text: "hi".into(), kept: Vec::new() }], lines_at: vec![Some(9)] };
+        assert_eq!(serde_json::to_value(&back).unwrap()["lines_at"], json!([9]));
+        assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&back).unwrap()).unwrap(), back);
+    }
+
+    #[test]
     fn questions_are_asked_answered_and_closed_as_json_and_older_snapshots_have_none() {
-        let answers = vec![decide::Answer { picked: vec![0], other: None }, decide::Answer::skipped()];
+        let answers = vec![decide::Answer::pick(0), decide::Answer::skipped()];
         let cmd = Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: answers.clone(), about: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "answer_questions", "squad": "acme", "id": 7, "answers": [{ "picked": [0] }, {}] }));
         let dismiss = Command::DismissQuestions { squad: "acme".into(), id: 7 };
@@ -2155,7 +3526,7 @@ mod tests {
         for command in [cmd, dismiss] {
             assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&command).unwrap()).unwrap(), command);
         }
-        let set = decide::QuestionSet { id: 7, session: 2, member: "backend".into(), ticket: Some(3), questions: vec![], asked_at: 5 };
+        let set = decide::QuestionSet { id: 7, session: 2, member: "backend".into(), ticket: Some(3), questions: vec![], asked_at: 5, review: false, retro: None };
         let events = [
             Event::QuestionsAsked { squad: "acme".into(), questions: set },
             Event::QuestionsClosed { squad: "acme".into(), id: 7, answers: Some(answers) },
@@ -2173,11 +3544,47 @@ mod tests {
     }
 
     #[test]
+    fn decisions_in_words_go_on_the_wire_beside_what_older_phones_and_daemons_send() {
+        use by_words::{Said, Via};
+        // An older phone's decide and confirm_accept: no `via`, read as a card's.
+        let old: Command = serde_json::from_value(json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "allow" })).unwrap();
+        assert_eq!(old, Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None, said: None });
+        let old: Command = serde_json::from_value(json!({ "type": "confirm_accept", "squad": "acme", "id": 7, "tickets": [{ "ticket": 1 }] })).unwrap();
+        assert!(matches!(old, Command::ConfirmAccept { said: None, .. }));
+        // Call mode's: how it was said, and the words, beside the same fields.
+        let voiced = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None, said: Some(Said { via: Via::Voice, utterance: "응 해".into() }) };
+        let wire = json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "allow", "via": "voice", "utterance": "응 해" });
+        assert_eq!(serde_json::to_value(&voiced).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), voiced);
+        let confirmed = Command::ConfirmAccept { squad: "acme".into(), id: 7, tickets: vec![accept::Confirmed::only(1)], said: Some(Said { via: Via::Voice, utterance: "yes".into() }) };
+        let wire = serde_json::to_value(&confirmed).unwrap();
+        assert_eq!((wire["via"].clone(), wire["utterance"].clone()), (json!("voice"), json!("yes")));
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), confirmed);
+        // A message said: only what it has.
+        let say: Command = serde_json::from_value(json!({ "type": "say", "squad": "acme", "session": 3, "text": "merge T-12" })).unwrap();
+        assert_eq!(say, Command::Say { squad: "acme".into(), session: 3, text: "merge T-12".into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None });
+        let all = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None };
+        assert_eq!(serde_json::to_value(&all).unwrap(), json!({ "type": "say", "squad": "acme", "session": 3, "text": "ㄱㄱ", "via": "dictated", "all": true, "about": null }));
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&all).unwrap()).unwrap(), all);
+        // A daemon from before has no words in its snapshot: the screen sends `submit`.
+        let before: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert_eq!(before.words, None);
+        let now = Snapshot { words: Some(vec![]), ..Snapshot::default() };
+        assert_eq!(serde_json::to_value(&now).unwrap()["words"], json!([]));
+        assert!(!before.words_all, "off unless the person turned it on");
+        let set = Command::SetWordsAll { squad: "acme".into(), on: true };
+        assert_eq!(serde_json::to_value(&set).unwrap(), json!({ "type": "set_words_all", "squad": "acme", "on": true }));
+        let closed = Event::WordsClosed { squad: "acme".into(), id: 4, outcome: by_words::Outcome::Undone, text: String::new() };
+        assert_eq!(serde_json::to_value(&closed).unwrap(), json!({ "type": "words_closed", "squad": "acme", "id": 4, "outcome": "undone" }));
+    }
+
+    #[test]
     fn acceptances_are_proposed_confirmed_or_declined_as_json_and_older_snapshots_have_none() {
         let confirm = Command::ConfirmAccept {
             squad: "acme".into(),
             id: 7,
             tickets: vec![accept::Confirmed { ticket: 1, merge: Some(accept::Land::Merge) }, accept::Confirmed::only(3)],
+            said: None,
         };
         assert_eq!(
             serde_json::to_value(&confirm).unwrap(),
@@ -2286,7 +3693,7 @@ mod tests {
         let mut info: SessionInfo = serde_json::from_str(old).unwrap();
         assert!(info.subagents.is_empty(), "an older daemon's session has none");
         assert!(serde_json::to_value(&info).unwrap().get("subagents").is_none(), "none: the wire as before");
-        info.subagents.push(SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: None, secs: 3 });
+        info.subagents.push(SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: None, secs: 3, ..Default::default() });
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["subagents"], json!([{ "id": "toolu_1", "what": "Read the logs", "secs": 3 }]));
         assert_eq!(serde_json::from_value::<SessionInfo>(json).unwrap(), info);
@@ -2315,7 +3722,8 @@ mod tests {
         use engines::{Proposal, Switching, Why};
         let commands = [
             Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Auto },
-            Command::ApplyEngineProposal { squad: "acme".into(), id: 3 },
+            Command::ApplyEngineProposal { squad: "acme".into(), id: 3, now: false },
+            Command::ApplyEngineProposal { squad: "acme".into(), id: 3, now: true },
             Command::DismissEngineProposal { squad: "acme".into(), id: 3 },
             Command::UndoEngineProposal { squad: "acme".into(), id: 3 },
             Command::ShowEngineSetup { squad: "acme".into() },
@@ -2325,7 +3733,7 @@ mod tests {
             assert_eq!(serde_json::from_str::<Command>(&text).unwrap(), command, "{text}");
         }
         assert_eq!(serde_json::to_value(Command::SetEngineSwitching { squad: "a".into(), mode: Switching::Off }).unwrap(), json!({ "type": "set_engine_switching", "squad": "a", "mode": "off" }));
-        let proposal = Proposal { id: 3, why: Why::Setup, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![], applied: false, proposed_at: 1 };
+        let proposal = Proposal { id: 3, why: Why::Setup, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![], applied: false, proposed_at: 1, forecast: None };
         let events = [
             Event::EngineProposed { squad: "acme".into(), proposal },
             Event::EngineProposalClosed { squad: "acme".into(), id: 3, applied: true },
@@ -2418,6 +3826,45 @@ mod tests {
     }
 
     #[test]
+    fn an_engines_lost_sign_in_and_its_fix_travel_to_every_screen() {
+        let commands = [
+            Command::SignIn { engine: Engine::Claude, device: true },
+            Command::SignInCode { engine: Engine::Claude, code: "abc#def".into() },
+            Command::CheckEngine { engine: Engine::Claude },
+            Command::MoveIntoLogin,
+        ];
+        for command in commands {
+            let json = serde_json::to_string(&command).unwrap();
+            assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+        }
+        assert_eq!(serde_json::to_value(Command::MoveIntoLogin).unwrap(), json!({ "type": "move_into_login" }));
+        let states = [
+            AuthState::Checking,
+            AuthState::OutsideLogin { movable: true },
+            AuthState::OutsideLogin { movable: false },
+            AuthState::Moving,
+            AuthState::KeychainLocked,
+            AuthState::SignedOut,
+            AuthState::NotInstalled,
+            AuthState::SignedIn { resumed: 2 },
+            AuthState::Unknown,
+        ];
+        for state in states {
+            let event = Event::EngineAuth { engine: Engine::Claude, state, detail: "said".into(), stopped: vec![3, 4] };
+            assert_eq!((event.squad(), event.session(), event.for_everyone()), (None, None, true));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+        }
+        let quiet = serde_json::to_value(Event::EngineAuth { engine: Engine::Claude, state: AuthState::SignedIn { resumed: 0 }, detail: String::new(), stopped: vec![] }).unwrap();
+        assert_eq!(quiet, json!({ "type": "engine_auth", "engine": "claude", "state": { "kind": "signed_in" } }));
+        // A newer daemon's reason reads as one this build can't tell.
+        let newer: AuthState = serde_json::from_value(json!({ "kind": "disk_encrypted" })).unwrap();
+        assert_eq!(newer, AuthState::Unknown);
+        let paste = Event::SignIn { engine: Engine::Claude, step: SignInStep::Paste { url: "https://claude.com/cai/oauth/authorize?code=true".into() } };
+        assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&paste).unwrap()).unwrap(), paste);
+    }
+
+    #[test]
     fn a_newer_daemons_engines_and_reasons_dont_break_an_older_screen() {
         let said = json!({ "type": "engines", "engines": [
             { "engine": "gemini", "state": "signed_in" },
@@ -2428,5 +3875,68 @@ mod tests {
         assert_eq!(engines.iter().map(|e| (e.engine, e.state)).collect::<Vec<_>>(), [(Engine::Codex, EngineState::Unknown), (Engine::Claude, EngineState::SignedIn)]);
         let failed: SignInStep = serde_json::from_value(json!({ "kind": "failed", "why": "region_blocked" })).unwrap();
         assert_eq!(failed, SignInStep::Failed { why: SignInFailure::Failed, detail: String::new() });
+    }
+
+    #[test]
+    fn a_stuck_subagent_and_its_stop_travel_as_json_and_back() {
+        let stuck = Event::SubagentStuck { session: 3, id: "h1".into(), quiet_secs: Some(320) };
+        let text = serde_json::to_string(&stuck).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), stuck);
+        assert_eq!(stuck.session(), Some(3));
+        let moving = serde_json::to_string(&Event::SubagentStuck { session: 3, id: "h1".into(), quiet_secs: None }).unwrap();
+        assert!(!moving.contains("quiet_secs"), "{moving}");
+        let stop = Command::StopSubagent { session: 3, id: "thr-sub".into() };
+        assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&stop).unwrap()).unwrap(), stop);
+        let info: SubagentInfo = serde_json::from_value(json!({ "id": "h1", "what": "look" })).unwrap();
+        assert_eq!(info.stuck_secs, None, "an older daemon's says nothing of it");
+    }
+
+    #[test]
+    fn a_providers_key_goes_on_the_wire_but_never_in_a_log_and_its_status_never_carries_one() {
+        let add = Command::AddProvider { preset: "openrouter".into(), base_url: None, key: Some(secrets::SecretValue("sk-or-hunter2".into())) };
+        let wire = serde_json::to_value(&add).unwrap();
+        assert_eq!(wire, json!({ "type": "add_provider", "preset": "openrouter", "key": "sk-or-hunter2" }));
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), add);
+        assert!(!format!("{add:?}").contains("hunter2"));
+        let local: Command = serde_json::from_value(json!({ "type": "add_provider", "preset": "other", "base_url": "http://localhost:8000/v1" })).unwrap();
+        assert_eq!(local, Command::AddProvider { preset: "other".into(), base_url: Some("http://localhost:8000/v1".into()), key: None });
+        let status = ProviderStatus { id: "groq".into(), preset: "groq".into(), name: "Groq".into(), base_url: "https://api.groq.com/openai/v1".into(), key: ProviderKey::Saved, removable: true, models: vec![ModelChoice { id: "@groq/qwen/qwen3-32b".into(), ..Default::default() }], test: ProviderTest::Ok { count: 1 } };
+        let event = Event::Providers { providers: vec![status.clone()], codex: true };
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(text.contains(r#""state":"ok""#) && text.contains(r#""key":"saved""#), "{text}");
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), event);
+        // An older screen's minimum: what a newer daemon adds is optional.
+        let bare: ProviderStatus = serde_json::from_value(json!({ "id": "x", "preset": "other", "name": "x", "base_url": "http://localhost:1/v1", "key": "not_needed" })).unwrap();
+        assert_eq!((bare.test, bare.removable, bare.models.len()), (ProviderTest::Untested, false, 0));
+        assert!(event.for_everyone() && event.squad().is_none());
+        assert_eq!(serde_json::to_value(Command::Providers).unwrap(), json!({ "type": "providers" }));
+        // Why it failed goes as a problem a screen words in its own language.
+        let failed = ProviderTest::Failed { why: "Groq didn't accept the key.".into(), problem: Some(ProviderProblem::Http { status: 502 }) };
+        let wire = serde_json::to_value(&failed).unwrap();
+        assert_eq!(wire, json!({ "state": "failed", "why": "Groq didn't accept the key.", "problem": { "kind": "http", "status": 502 } }));
+        assert_eq!(serde_json::from_value::<ProviderTest>(wire).unwrap(), failed);
+        // A problem a newer daemon knows: the screen says its words as they came.
+        let newer: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w", "problem": { "kind": "quota_gone" } })).unwrap();
+        assert_eq!(newer, ProviderTest::Failed { why: "w".into(), problem: Some(ProviderProblem::Other) });
+        let older: ProviderTest = serde_json::from_value(json!({ "state": "failed", "why": "w" })).unwrap();
+        assert_eq!(older, ProviderTest::Failed { why: "w".into(), problem: None });
+    }
+
+    #[test]
+    fn a_move_carries_the_model_picked_and_a_listed_model_what_its_tool_says_of_it() {
+        let plain = Command::MoveEngine { squad: "acme".into(), members: vec!["pm".into()], engine: Engine::Codex, model: None, effort: None, now: false };
+        assert_eq!(serde_json::to_value(&plain).unwrap(), json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex" }), "as an older daemon reads it");
+        let picked: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "model": "gpt-6.1-sol" })).unwrap();
+        assert!(matches!(picked, Command::MoveEngine { model: Some(ref m), .. } if m == "gpt-6.1-sol"));
+        let thought: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "effort": "high" })).unwrap();
+        assert!(matches!(thought, Command::MoveEngine { effort: Some(ref e), model: None, .. } if e == "high"));
+        let now: Command = serde_json::from_value(json!({ "type": "move_engine", "squad": "acme", "members": ["pm"], "engine": "codex", "now": true })).unwrap();
+        assert!(matches!(now, Command::MoveEngine { now: true, .. }), "at the end of its turn, mid-ticket");
+        let older: Command = serde_json::from_value(json!({ "type": "apply_engine_proposal", "squad": "acme", "id": 3 })).unwrap();
+        assert!(matches!(older, Command::ApplyEngineProposal { now: false, .. }), "as an older screen sends it");
+        let older: ModelChoice = serde_json::from_value(json!({ "id": "gpt-6-luna" })).unwrap();
+        assert_eq!((older.description, older.default), (None, false), "from a daemon that predates them");
+        let said = ModelChoice { id: "gpt-6.1-sol".into(), description: Some("Frontier.".into()), default: true, ..Default::default() };
+        assert_eq!(serde_json::to_value(&said).unwrap(), json!({ "id": "gpt-6.1-sol", "description": "Frontier.", "default": true }));
     }
 }

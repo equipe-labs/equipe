@@ -1,10 +1,13 @@
 //! Requests for permission: the queue, the card's words, and the card — above
 //! the composer for the oldest one, and in the peek for the one picked in
-//! 나에게. Allow once is Y or A, always ⇧A, decline N. The queue and the card's
+//! the Inbox. Allow once is Y or A, always ⇧A, decline N. The queue and the card's
 //! text are plain code, tested without a window; the drawing is below them.
+
+use std::collections::HashMap;
 
 use equipe_core::t;
 use equipe_core::protocol::{Approval, Command, Decision, SessionId};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -86,18 +89,19 @@ impl Queue {
     /// can become a rule; elsewhere it is not an answer at all.
     pub fn answer(&mut self, squad: &str, decision: Decision) -> Option<Command> {
         let id = self.first()?.id;
-        self.answer_id(squad, id, decision)
+        self.answer_id(squad, id, decision, None)
     }
 
-    /// Answer one request, picked by its id.
-    pub fn answer_id(&mut self, squad: &str, id: u64, decision: Decision) -> Option<Command> {
+    /// Answer one request, picked by its id — with what the person wrote, if anything.
+    pub fn answer_id(&mut self, squad: &str, id: u64, decision: Decision, words: Option<String>) -> Option<Command> {
         let approval = self.get(id)?;
         if decision == Decision::Always && always_rule(approval).is_none() {
             return None;
         }
         let id = approval.id;
         self.answered.push(id);
-        Some(Command::Decide { squad: squad.to_owned(), approval: id, decision })
+        let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
+        Some(Command::Decide { squad: squad.to_owned(), approval: id, decision, words, said: None })
     }
 }
 
@@ -112,7 +116,32 @@ pub fn decision_for(key: &str, shift: bool) -> Option<Decision> {
     }
 }
 
+/// The boxes the person writes to a member in, on its request: open once
+/// "R Reply" is pressed, by request.
+#[derive(Default)]
+pub struct Words {
+    pub fields: HashMap<u64, Entity<TextareaState>>,
+    subscriptions: HashMap<u64, Subscription>,
+}
+
+impl Words {
+    /// Whether one of the boxes has the keyboard: what is typed is the box's.
+    pub fn typing(&self, window: &Window, cx: &App) -> bool {
+        self.fields.values().any(|f| f.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    /// What is written for request `id`, if its box is open.
+    fn take(&mut self, id: u64, cx: &App) -> Option<String> {
+        self.subscriptions.remove(&id);
+        self.fields.remove(&id).map(|f| f.read(cx).value().to_string())
+    }
+}
+
 // ── the card's words ──
+
+/// A member signing in with a kept login (`equipe_core::vault`): "always"
+/// lets that member use it without asking.
+pub const SIGN_IN: &str = "Sign in";
 
 /// What kind of thing is asked, as a noun phrase.
 pub fn noun(tool: &str) -> &'static str {
@@ -122,6 +151,9 @@ pub fn noun(tool: &str) -> &'static str {
         "WebFetch" => t!("approvals.noun_web_fetch"),
         equipe_core::desktop_gate::SEND => t!("approvals.noun_send"),
         equipe_core::permissions::BROWSER_CODE => t!("approvals.noun_browser_code"),
+        SIGN_IN => t!("approvals.noun_sign_in"),
+        equipe_core::phone::INSTALL => t!("approvals.noun_install"),
+        equipe_core::controls::ENGINE_TOOL => t!("approvals.noun_engine"),
         _ => t!("approvals.noun_other"),
     }
 }
@@ -168,19 +200,21 @@ pub fn files_written(script: &str) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Card {
     pub noun: &'static str,
-    /// The start of the action: 12 lines of browser code, 8 of a message, 3 otherwise.
+    /// The start of the action: 12 lines of browser code, 8 of a message or
+    /// an engine move (who moves, then when each one does), 3 otherwise.
     pub lines: Vec<String>,
     pub more: usize,
     pub writes: Vec<String>,
     pub always: Option<String>,
     pub is_send: bool,
+    pub is_sign_in: bool,
 }
 
 impl Card {
     pub fn of(approval: &Approval) -> Self {
         let shown = match approval.tool.as_str() {
             equipe_core::permissions::BROWSER_CODE => 12,
-            equipe_core::desktop_gate::SEND => 8,
+            equipe_core::desktop_gate::SEND | equipe_core::controls::ENGINE_TOOL => 8,
             _ => 3,
         };
         let all: Vec<&str> = approval.action.lines().collect();
@@ -189,8 +223,9 @@ impl Card {
             lines: all.iter().take(shown).map(|l| (*l).to_owned()).collect(),
             more: all.len().saturating_sub(shown),
             writes: files_written(&approval.action),
-            always: always_rule(approval).map(|r| always_label(&r)),
+            always: if approval.tool == SIGN_IN { Some(approval.member.clone()) } else { always_rule(approval).map(|r| always_label(&r)) },
             is_send: approval.tool == equipe_core::desktop_gate::SEND,
+            is_sign_in: approval.tool == SIGN_IN,
         }
     }
 }
@@ -205,13 +240,67 @@ impl Shell {
         }
     }
 
-    /// Answer one request.
+    /// Answer one request, with what is written in its box.
     pub fn decide_on(&mut self, id: u64, decision: Decision, cx: &mut Context<Self>) {
         let squad = self.model.squad.clone();
-        if let Some(command) = self.model.approvals.answer_id(&squad, id, decision) {
+        let words = self.approval_words.fields.get(&id).map(|f| f.read(cx).value().to_string());
+        if let Some(command) = self.model.approvals.answer_id(&squad, id, decision, words) {
+            self.approval_words.take(id, cx);
             self.send_command(command);
             cx.notify();
         }
+    }
+
+    /// Open the box to write to the member on request `id` — why not, what
+    /// instead, what to mind — and put the keyboard in it. ⏎ declines with
+    /// the words, ⌘⏎ allows with them.
+    pub fn open_words(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.approvals.get(id).is_none() {
+            return;
+        }
+        let field = match self.approval_words.fields.get(&id) {
+            Some(field) => field.clone(),
+            None => {
+                let field = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 6).submit_on_enter(true).placeholder(t!("approvals.words_placeholder")));
+                let subscription = cx.subscribe_in(&field, window, move |shell, _, event: &InputEvent, _, cx| {
+                    // Words in the box turn the buttons into "… and send".
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                    if let InputEvent::PressEnter { secondary, shift: false } = event {
+                        let typed = shell.approval_words.fields.get(&id).is_some_and(|f| !f.read(cx).value().trim().is_empty());
+                        if typed {
+                            shell.decide_on(id, if *secondary { Decision::Allow } else { Decision::Deny }, cx);
+                        }
+                    }
+                });
+                self.approval_words.fields.insert(id, field.clone());
+                self.approval_words.subscriptions.insert(id, subscription);
+                field
+            }
+        };
+        field.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Close request `id`'s box, what was written dropped.
+    pub fn close_words(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.approval_words.take(id, cx);
+        if self.screen == Screen::Chat {
+            self.composer.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// A key while a request's box has the keyboard: Esc closes it; the rest
+    /// are the box's — never an answer by letter. True when taken.
+    pub fn on_words_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> Option<bool> {
+        let id = self.approval_words.fields.iter().find(|(_, f)| f.read(cx).focus_handle(cx).is_focused(window)).map(|(id, _)| *id)?;
+        if key == "escape" {
+            self.close_words(id, window, cx);
+            return Some(true);
+        }
+        Some(false)
     }
 
     /// Open the screen a send would go from.
@@ -224,12 +313,19 @@ impl Shell {
     /// The keys that answer: only on the conversation, with nothing typed — on
     /// the work screens the same letters act on what is picked. True when the
     /// key was taken.
-    pub fn on_approval_key(&mut self, key: &str, shift: bool, cx: &mut Context<Self>) -> bool {
+    pub fn on_approval_key(&mut self, key: &str, shift: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.screen != Screen::Chat || !self.composer.text(cx).is_empty() || self.model.approvals.first().is_none() {
             return false;
         }
         if let Some(decision) = decision_for(key, shift) {
             self.decide(decision, cx);
+            return true;
+        }
+        // R: write to the member instead of — or with — a yes or a no.
+        if key == "r" && !shift {
+            if let Some(id) = self.model.approvals.first().map(|a| a.id) {
+                self.open_words(id, window, cx);
+            }
             return true;
         }
         if key == "o" && !shift && self.model.approvals.first().is_some_and(|a| a.preview.is_some()) {
@@ -266,7 +362,8 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
     let model = &shell.model;
     let approval = model.approvals.get(id)?;
     let card = Card::of(approval);
-    let (mark, hue) = look(model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str()), &approval.member);
+    let role = model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str());
+    let (_, hue) = look(role, &approval.member);
     let waiting = model.approvals.len();
     let handle = cx.entity().downgrade();
     let for_decisions = handle.clone();
@@ -277,18 +374,63 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
         }
     };
     let preview = approval.preview.clone();
+    // The box to write to the member in, once R opened it: its words go with the answer.
+    let words = shell.approval_words.fields.get(&id).cloned();
+    let typed = words.as_ref().is_some_and(|f| !f.read(cx).value().trim().is_empty());
+    let (allow_label, allow_key, deny_label, deny_key) = if typed {
+        (t!("approvals.allow_with_words"), "⌘⏎", t!("approvals.deny_with_words"), "⏎")
+    } else {
+        (t!("approvals.allow_once"), "A", t!("approvals.deny"), "N")
+    };
+    let words_box = words.map(|field| {
+        let close = handle.clone();
+        v_flex()
+            .gap_1()
+            .child(
+                h_flex()
+                    .items_start()
+                    .gap_2()
+                    .px_3()
+                    .py(px(6.))
+                    .rounded(px(R_MD))
+                    .bg(p.bg)
+                    .border_1()
+                    .border_color(p.accent)
+                    .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(21.)).child(Textarea::new(&field).appearance(false).bordered(false)))
+                    .child(
+                        crate::ui::x_box(("words-close", id), p.muted, t!("composer.aria_close"))
+                            .mt(px(2.))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(p.wash))
+                            .on_click(move |_, window, cx| {
+                                close.update(cx, |shell, cx| shell.close_words(id, window, cx)).ok();
+                            }),
+                    ),
+            )
+            .child(div().text_size(px(12.)).text_color(p.muted).child(t!("approvals.words_hint")))
+    });
+    let opened = words_box.is_some();
+    let open_words = handle.clone();
+    // To a screen reader: who asks what, then what it would run.
+    let asked = format!("{}: {}", approval.member, t!("approvals.allow_question", what = card.noun));
+    let detail = card.lines.iter().cloned().chain(approval.reason.clone()).collect::<Vec<_>>().join("\n");
     Some(
         v_flex()
+            .id(("approval-card", id))
+            .role(Role::Group)
+            .aria_label(asked)
+            .aria_description(detail)
             .w_full()
             .gap_2()
             .child(
                 h_flex()
                     .gap_2()
+                    .overflow_hidden()
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(div().text_color(p.accent).child(t!("approvals.waiting_on_you_mark")))
-                    .child(div().text_color(p.member(hue)).child(format!("{mark} {}", approval.member)))
-                    .children(approval.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}"))))
+                    .child(h_flex().flex_none().gap_1().text_color(p.accent).child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)).child(t!("approvals.waiting_on_you_mark")))
+                    .child(h_flex().min_w_0().flex_shrink(1.).overflow_hidden().gap_1().items_center().text_color(p.member(hue)).child(div().flex_none().child(crate::theme::avatar(p, role, &approval.member, 15.))).child(div().min_w_0().truncate().child(approval.member.clone())))
+                    .children(approval.ticket.map(|t| div().flex_none().text_color(p.muted).child(format!("T-{t}"))))
                     .child(div().flex_1())
                     .when(queue_line && waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting)))),
             )
@@ -325,27 +467,34 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     },
                 ))
             }))
+            .children(words_box)
             .child(
                 h_flex()
                     .flex_wrap()
                     .gap_2()
                     .items_center()
-                    .child(button(p, ("allow", id), t!("approvals.allow_once"), "A", true, act(Decision::Allow)))
-                    .when(card.always.is_some(), |h| h.child(button(p, ("always", id), t!("approvals.always"), "⇧A", false, act(Decision::Always))))
-                    .child(button(p, ("deny", id), t!("approvals.deny"), "N", false, act(Decision::Deny)))
+                    .child(button(p, ("allow", id), allow_label, allow_key, true, act(Decision::Allow)))
+                    .when(card.always.is_some() && !typed, |h| h.child(button(p, ("always", id), t!("approvals.always"), "⇧A", false, act(Decision::Always))))
+                    .child(button(p, ("deny", id), deny_label, deny_key, false, act(Decision::Deny)))
+                    .when(!opened, |h| {
+                        h.child(button(p, ("words", id), t!("approvals.reply"), "R", false, move |window, cx| {
+                            open_words.update(cx, |shell, cx| shell.open_words(id, window, cx)).ok();
+                        }))
+                    })
                     .child(div().flex_1())
-                    .child(div().text_size(px(12.)).text_color(p.muted).child(match &card.always {
+                    .when(!typed, |h| h.child(div().text_size(px(12.)).text_color(p.muted).child(match &card.always {
+                        Some(member) if card.is_sign_in => t!("approvals.sign_in_always", member = member),
                         Some(label) => t!("approvals.always_rule", label = label),
                         None if card.is_send => t!("approvals.send_always_asks").to_owned(),
                         None => t!("approvals.once_only").to_owned(),
-                    })),
+                    }))),
             )
             .into_any_element(),
     )
 }
 
 /// The card of work waiting for the person above the composer gave way to
-/// 나에게 in the sidebar, which holds the same list with its keys: nothing here.
+/// The Inbox in the sidebar, which holds the same list with its keys: nothing here.
 pub fn for_you(_shell: &Shell, _cx: &mut Context<Shell>) -> Option<AnyElement> {
     None
 }
@@ -370,15 +519,40 @@ mod tests {
     fn the_oldest_request_is_the_one_answered() {
         let mut q = queue(vec![approval(1, 2, "Bash", "ls"), approval(2, 3, "Bash", "pwd")]);
         assert_eq!(q.len(), 2);
-        assert_eq!(q.answer("acme", Decision::Allow), Some(Command::Decide { squad: "acme".into(), approval: 1, decision: Decision::Allow }));
+        assert_eq!(q.answer("acme", Decision::Allow), Some(Command::Decide { squad: "acme".into(), approval: 1, decision: Decision::Allow, words: None, said: None }));
         // Answered: hidden at once, so the next key is for the next request.
         assert_eq!(q.first().map(|a| a.id), Some(2));
-        assert_eq!(q.answer("acme", Decision::Deny), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny }));
+        assert_eq!(q.answer("acme", Decision::Deny), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None, said: None }));
         assert_eq!(q.answer("acme", Decision::Allow), None);
         // The daemon's word clears them; a lost link shows the unresolved again.
         q.resolve(1);
         q.forget_answers();
         assert_eq!(q.ids(), vec![2]);
+    }
+
+    #[test]
+    fn installing_a_tool_is_named_and_never_allowed_always() {
+        let install = approval(1, 2, equipe_core::phone::INSTALL, "Install AXe 1.8.0 …");
+        let card = Card::of(&install);
+        assert_eq!(card.noun, equipe_core::t!("approvals.noun_install"));
+        assert_eq!(card.always, None, "asked each time it comes up, which is once");
+    }
+
+    #[test]
+    fn an_engine_move_the_pm_asked_for_shows_who_moves_and_when_each_one_does_and_is_never_always() {
+        use equipe_core::controls::{Mover, move_words};
+        use equipe_core::protocol::Engine;
+        let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket, now: false };
+        let action = move_words(equipe_core::i18n::Lang::En, &[mover("designer", false, true), mover("mobile", true, false), mover("mobile-2", false, false)], Engine::Codex, Some("GPT-6.1 Sol"), Some("high"));
+        let card = Card::of(&approval(1, 2, equipe_core::controls::ENGINE_TOOL, &action));
+        assert_eq!(card.noun, equipe_core::t!("approvals.noun_engine"));
+        assert_eq!((card.lines.len(), card.more), (6, 0), "every line on the card: {:?}", card.lines);
+        assert_eq!(card.lines[0], "Move designer, mobile, mobile-2 to Codex");
+        assert!(card.lines[3].starts_with("designer keeps Claude for the ticket in progress"));
+        assert_eq!(card.always, None, "a move is asked each time");
+        let mut q = queue(vec![approval(1, 2, equipe_core::controls::ENGINE_TOOL, &action)]);
+        assert_eq!(q.answer("acme", Decision::Always), None, "no rule to keep");
+        assert!(q.answer("acme", Decision::Allow).is_some());
     }
 
     #[test]
@@ -412,7 +586,7 @@ mod tests {
     #[test]
     fn a_request_is_answered_by_its_id_too() {
         let mut q = queue(vec![approval(1, 2, "Bash", "ls"), approval(2, 3, "Bash", "pwd")]);
-        assert_eq!(q.answer_id("acme", 2, Decision::Deny), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny }));
+        assert_eq!(q.answer_id("acme", 2, Decision::Deny, None), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None, said: None }));
         assert_eq!(q.open_items().map(|a| a.id).collect::<Vec<_>>(), vec![1]);
         assert!(q.get(2).is_none());
     }

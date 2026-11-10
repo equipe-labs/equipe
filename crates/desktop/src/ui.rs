@@ -29,7 +29,7 @@ use gpui_kit::base::h_flex;
 
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{CONTROL, FIELD, ICON, Palette, R_MD, SMALL, mix};
+use crate::theme::{CONTROL, FIELD, ICON, Palette, R_MD, R_SM, SMALL, key_face, mix};
 
 /// The narrowest the words of a card's footer or a banner get beside its
 /// buttons; narrower (a panel beside the conversation), the buttons go on a
@@ -86,17 +86,18 @@ pub struct Button {
     disabled: bool,
     selected: bool,
     focus: Option<FocusHandle>,
+    width: Option<f32>,
     on_click: Option<OnClick>,
 }
 
 /// A button with words.
 pub fn button(p: Palette, id: impl Into<ElementId>, kind: Kind, label: impl Into<SharedString>) -> Button {
-    Button { id: id.into(), p, kind, label: Some(label.into()), icon: None, key: None, tip: None, height: CONTROL, disabled: false, selected: false, focus: None, on_click: None }
+    Button { id: id.into(), p, kind, label: Some(label.into()), icon: None, key: None, tip: None, height: CONTROL, disabled: false, selected: false, focus: None, width: None, on_click: None }
 }
 
 /// A square button with only an icon; its name shows as a tooltip.
 pub fn icon_button(p: Palette, id: impl Into<ElementId>, glyph: Icon, name: impl Into<SharedString>, keys: Option<&'static str>) -> Button {
-    Button { id: id.into(), p, kind: Kind::Ghost, label: None, icon: Some(glyph), key: None, tip: Some((name.into(), keys)), height: CONTROL, disabled: false, selected: false, focus: None, on_click: None }
+    Button { id: id.into(), p, kind: Kind::Ghost, label: None, icon: Some(glyph), key: None, tip: Some((name.into(), keys)), height: CONTROL, disabled: false, selected: false, focus: None, width: None, on_click: None }
 }
 
 impl Button {
@@ -114,6 +115,12 @@ impl Button {
     /// On a text field's line: as tall as the field.
     pub fn field(mut self) -> Self {
         self.height = FIELD;
+        self
+    }
+
+    /// At least this wide, so choices side by side weigh the same.
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.width = Some(width);
         self
     }
 
@@ -166,6 +173,12 @@ impl RenderOnce for Button {
         }
         let ring = Rgba { a: 0.55, ..p.accent };
         let square = self.label.is_none();
+        // What a screen reader says of it: the tooltip's name and keys (see
+        // `tips::Spoken`), or its words when it has them, the tooltip then
+        // saying more after them.
+        let said = self.label.clone();
+        let more = self.tip.as_ref().filter(|_| said.is_some()).map(|(text, _)| SharedString::from(crate::tips::Spoken::of(text, None).name)).filter(|text| Some(text) != said.as_ref());
+        let shortcut = self.key.clone();
         let b = h_flex()
             .id(self.id.clone())
             .h(px(self.height))
@@ -181,13 +194,14 @@ impl RenderOnce for Button {
             .whitespace_nowrap()
             .when(square, |b| b.w(px(self.height)))
             .when(!square, |b| b.px_3())
+            .when_some(self.width, |b, w| b.min_w(px(w)))
             .when(self.kind == Kind::Primary || self.selected, |b| b.font_weight(FontWeight::SEMIBOLD))
             .when_some(look.fill, |b, fill| b.bg(fill))
             .when(faded, |b| b.opacity(0.4))
             .when(live, |b| b.cursor_pointer().active(move |s| s.bg(look.press)))
             .children(self.icon.map(|g| icon(g, ICON, look.text)))
             .children(self.label)
-            .children(self.key.map(|k| div().text_size(px(12.)).font_weight(FontWeight::NORMAL).text_color(look.key).child(k)))
+            .children(self.key.map(|k| div().text_size(px(12.)).font_weight(FontWeight::NORMAL).font_features(key_face()).text_color(look.key).child(k)))
             .when_some(self.focus.filter(|_| live), |b, focus| {
                 b.track_focus(&focus).focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]))
             })
@@ -196,6 +210,13 @@ impl RenderOnce for Button {
             Some((name, keys)) => crate::tips::tip(b, p, name, keys),
             None => b,
         };
+        let b = b
+            .role(Role::Button)
+            .aria_disabled(!live)
+            .when_some(said, |b, said| b.aria_label(said))
+            .when_some(more, |b, more| b.aria_description(more))
+            .when_some(shortcut, |b, keys| b.aria_keyshortcuts(keys))
+            .when(self.selected, |b| b.aria_selected(true));
         // Under the pointer the fill eases toward the hover fill (a filled
         // button) or the wash eases in (the others); disabled, nothing.
         motion::hover_with(b, self.id, false, move |b, t| match look.fill {
@@ -204,6 +225,14 @@ impl RenderOnce for Button {
             None => b.bg(Rgba { a: look.hover.a * t, ..look.hover }),
         })
     }
+}
+
+/// The ✕ of a small control that takes one thing away (a quote, a chip, a
+/// line), in a square of its own: typed as text, the font's metrics set the
+/// mark off the middle of its box and of the words beside it. `name` is what
+/// a screen reader calls it ("Close", "Remove").
+pub fn x_box(id: impl Into<ElementId>, color: impl Into<Hsla>, name: &str) -> Stateful<Div> {
+    div().id(id).role(Role::Button).aria_label(name.to_owned()).size(px(18.)).flex_none().flex().items_center().justify_center().rounded(px(R_SM)).child(icon(Icon::X, 12., color))
 }
 
 // ── the switch ──
@@ -222,18 +251,26 @@ pub struct Switch {
     p: Palette,
     on: bool,
     disabled: bool,
+    name: Option<SharedString>,
     on_flip: Option<OnFlip>,
 }
 
 /// On or off. `id` must be unique on screen: it keys the slide and the focus.
 pub fn switch(p: Palette, id: impl Into<SharedString>, on: bool) -> Switch {
-    Switch { id: id.into(), p, on, disabled: false, on_flip: None }
+    Switch { id: id.into(), p, on, disabled: false, name: None, on_flip: None }
 }
 
 impl Switch {
     /// At 40%, deaf to clicks and skipped by Tab.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// What it turns on or off, as a screen reader says it: the words of
+    /// its row, which a switch has none of its own.
+    pub fn name(mut self, name: impl Into<SharedString>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -276,6 +313,10 @@ impl RenderOnce for Switch {
             .h(px(SWITCH_H))
             .rounded_full()
             .bg(track(&p, t))
+            .role(Role::Switch)
+            .aria_toggled(if on { Toggled::True } else { Toggled::False })
+            .aria_disabled(!live)
+            .when_some(self.name, |d, name| d.aria_label(name))
             .when(!live, |d| d.opacity(0.4))
             .when(live, |d| {
                 let clicked = focus.clone();
@@ -308,6 +349,29 @@ impl RenderOnce for Switch {
     }
 }
 
+/// Whether a press on the title bar's empty room is the double-click macOS
+/// gives a title bar (a third click of the same press is not another one).
+pub fn title_double_click(click_count: usize) -> bool {
+    click_count == 2
+}
+
+/// A strip of the window's own title bar: it drags the window, and a
+/// double-click does what macOS does with a title bar's — zoom, minimize or
+/// nothing, as System Settings › Desktop & Dock says (the platform reads it).
+pub fn title_bar(strip: Div) -> Div {
+    strip.window_control_area(WindowControlArea::Drag).on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, _| {
+        if title_double_click(event.click_count) {
+            window.titlebar_double_click();
+        }
+    })
+}
+
+/// The empty room of a title bar with controls in it: taking what is left
+/// beside them, so a double-click on a control stays the control's.
+pub fn title_gap() -> Div {
+    title_bar(div().flex_1().h_full().min_w(px(8.)))
+}
+
 /// Words that grow heavier when their control is the one in use, as wide
 /// either way: a hidden copy at the heavy weight holds the room, so picking
 /// a tab or a segment moves nothing beside it. `cut`: one line, an ellipsis
@@ -325,7 +389,14 @@ pub fn steady(label: impl Into<SharedString>, heavy: FontWeight, on: bool, cut: 
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, SWITCH_W, knob_left, track};
+    use super::{Kind, SWITCH_W, knob_left, title_double_click, track};
+
+    #[test]
+    fn the_title_bar_acts_on_a_double_click_only() {
+        assert!(!title_double_click(1), "one click drags or does nothing");
+        assert!(title_double_click(2), "a double-click: zoom, minimize or nothing, as macOS says");
+        assert!(!title_double_click(3), "a third click of the same press isn't another");
+    }
     use crate::theme::{Palette, contrast, mix};
     use gpui_kit::WindowAppearance;
 
@@ -361,13 +432,19 @@ mod tests {
         }
     }
 
-    /// The main button is calm in the dark: no lighter than the text it
-    /// carries is dark, and nowhere near the white slab it was.
+    /// The main button is the text colour inverted, in both appearances: no
+    /// hue of its own (a deep slate read as a button switched off, and took
+    /// colour from what waits on the person), plainly apart from the cards.
     #[test]
-    fn the_dark_primary_is_a_fill_not_a_slab() {
-        let p = Palette::new(WindowAppearance::Dark);
-        assert!(contrast(p.primary, p.bg) < 3., "the main button glares: {:.2}", contrast(p.primary, p.bg));
-        assert!(contrast(p.primary, p.raised) > 1.3, "the main button vanishes into the card");
+    fn the_main_button_carries_no_hue() {
+        for p in [Palette::new(WindowAppearance::Dark), Palette::new(WindowAppearance::Light)] {
+            // The brand's warm neutral at most: its channels a few steps apart.
+            let c = p.primary;
+            let spread = c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b);
+            assert!(spread <= 12. / 255., "the main button has a hue: {c:?}");
+            assert!(contrast(p.primary, p.raised) >= 3., "the main button sinks into the card: {:.2}", contrast(p.primary, p.raised));
+            assert!(contrast(p.on_primary, p.primary) >= 4.5);
+        }
     }
 
     /// The knob reads on the track when on (3:1, a control's part), and the

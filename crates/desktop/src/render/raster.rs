@@ -1,5 +1,6 @@
 //! Math and diagrams drawn as pictures: LaTeX through latex-rust, Mermaid
-//! through mermaid-rs-renderer, each to SVG, rasterized by GPUI's SVG renderer
+//! through mermaid-rs-renderer (in core's `visuals::diagram`, which draws the
+//! same for a phone), each to SVG, rasterized by GPUI's SVG renderer
 //! (resvg, at twice the size, so it is sharp on a Retina screen) and kept by
 //! their source, so a formula is drawn once however often its row is.
 
@@ -50,7 +51,7 @@ pub fn draw(kind: Kind, source: &str, size: f32, color: u32, dark: bool, cx: &Ap
     }
     let drawn = match kind {
         Kind::InlineMath | Kind::DisplayMath => math_svg(source, size, color, kind == Kind::DisplayMath),
-        Kind::Mermaid => mermaid_svg(source, dark).map(|svg| (svg, None)),
+        Kind::Mermaid => equipe_core::visuals::diagram::svg(source, dark).map(|svg| (svg, None)),
     }
     .and_then(|(svg, baseline)| rasterize(&svg, baseline, cx));
     DRAWN.with(|d| {
@@ -89,29 +90,6 @@ fn math_svg(source: &str, size: f32, color: u32, display: bool) -> Result<(Strin
         let baseline = (height + depth > 0.).then(|| height / (height + depth));
         Ok((svg, baseline))
     })
-}
-
-/// The diagram's SVG, in colours that sit on the conversation's background.
-fn mermaid_svg(source: &str, dark: bool) -> Result<String, Failed> {
-    use mermaid_rs_renderer::{RenderOptions, Theme, render_with_options};
-    let mut theme = if dark { Theme::dark() } else { Theme::modern() };
-    theme.font_family = "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif".into();
-    theme.font_size = 14.;
-    if dark {
-        theme.background = "transparent".into();
-        theme.primary_color = "#1b1d22".into();
-        theme.primary_border_color = "#7c7e85".into();
-        theme.primary_text_color = "#efede7".into();
-        theme.text_color = "#cfccc4".into();
-        theme.line_color = "#9a9ca3".into();
-        theme.cluster_background = "#141417".into();
-        theme.edge_label_background = "#141417".into();
-    } else {
-        theme.background = "transparent".into();
-    }
-    let options = RenderOptions { theme, ..RenderOptions::default() };
-    // The renderer panics on some malformed input; a bad diagram is its source.
-    std::panic::catch_unwind(|| render_with_options(source, options)).map_err(|_| "mermaid failed".to_owned())?.map_err(|e| e.to_string())
 }
 
 fn rasterize(svg: &str, baseline: Option<f32>, cx: &App) -> Result<Picture, Failed> {

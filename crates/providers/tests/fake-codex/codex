@@ -9,12 +9,23 @@ What a turn does depends on its prompt:
 - "interrupt": starts, then waits for `turn/interrupt`;
 - "steer": waits for `turn/steer`, echoes it, and answers with what it read;
 - "fail": fails the way an exhausted plan does;
+- "compact": compacts its thread (a `contextCompaction` item), then answers;
+- "subagent": spawns a subagent that says a word on its own thread, then
+  waits for its turn to be interrupted, and answers with what became of it;
+- "spend": reports a large token usage, then waits for `turn/interrupt`;
+- "findings": reads a file, then answers in a few lines of Markdown;
 - anything else: the recorded turn — a read, a new file written for real, an
   edit, a failing `cargo test`, a board tool, a web search, a plan, token
   usage and the plan's limits — ending "DONE".
 
 FAKE_CODEX_LOG: a file each message received is appended to, one JSON a line.
 FAKE_CODEX_SIGNED_OUT: set, it is signed out.
+FAKE_CODEX_ARGS: a file each run's command line is appended to, one JSON a
+line, with whether NEBIUS_API_KEY was in its environment, and the names of
+the `*_API_KEY` variables there (never their values).
+
+Run with `-c model_provider=…` (another provider, as a member on Token
+Factory is), it needs no ChatGPT sign-in, as the real one doesn't.
 """
 import json
 import os
@@ -24,6 +35,10 @@ THREAD = "thr-1"
 TURN = "turn-1"
 LOG = os.environ.get("FAKE_CODEX_LOG")
 SIGNED_OUT = bool(os.environ.get("FAKE_CODEX_SIGNED_OUT"))
+OTHER_PROVIDER = any(a.startswith("model_provider=") for a in sys.argv[1:])
+if os.environ.get("FAKE_CODEX_ARGS"):
+    with open(os.environ["FAKE_CODEX_ARGS"], "a") as f:
+        f.write(json.dumps({"args": sys.argv[1:], "nebius_key": bool(os.environ.get("NEBIUS_API_KEY")), "keys": sorted(k for k, v in os.environ.items() if k.endswith("_API_KEY") and v)}) + "\n")
 
 LIMITS = {
     "limitId": "codex", "limitName": None, "normalModelSlug": None,
@@ -90,6 +105,13 @@ def say(item_id, text, phase="final_answer"):
     completed("agentMessage", id=item_id, text=text, phase=phase)
 
 
+def compacting_turn():
+    started("contextCompaction", id="k1")
+    completed("contextCompaction", id="k1")
+    say("a1", "Compacted. DONE")
+    turn_completed()
+
+
 def turn_completed(status="completed", error=None):
     notify("turn/completed", {"threadId": state["thread"], "turn": {"id": TURN, "items": [], "itemsView": "summary", "status": status, "error": error, "startedAt": 1, "completedAt": 2, "durationMs": 1000}})
 
@@ -146,6 +168,41 @@ def recorded_turn(prompt):
     turn_completed()
 
 
+def subagent_turn():
+    sub, sub_turn = "thr-sub", "turn-sub"
+    collab = dict(id="s1", tool="spawnAgent", status="completed", senderThreadId=state["thread"], receiverThreadIds=[sub], prompt="Read the logs", model=None, reasoningEffort=None, agentsStates={})
+    completed("collabAgentToolCall", **collab)
+    notify("turn/started", {"threadId": sub, "turn": {"id": sub_turn, "items": [], "status": "inProgress"}})
+    notify("item/agentMessage/delta", {"threadId": sub, "turnId": sub_turn, "itemId": "x1", "delta": "reading"})
+    while True:
+        request = wait_for("turn/interrupt")
+        send({"id": request["id"], "result": {}})
+        if request["params"].get("threadId") == sub and request["params"].get("turnId") == sub_turn:
+            break
+    waited = dict(id="s2", tool="wait", status="completed", senderThreadId=state["thread"], receiverThreadIds=[sub], prompt=None, model=None, reasoningEffort=None, agentsStates={sub: {"status": "interrupted", "message": None}})
+    completed("collabAgentToolCall", **waited)
+    say("m1", "The subagent was interrupted. DONE")
+    turn_completed()
+
+
+FINDINGS = "Sessions expire in `src/auth.rs:42` (`TTL = 3600`).\n\n- Refreshed by `src/auth.rs:57`.\n- Not checked: the mobile client, which isn't in this repository."
+
+
+def findings_turn():
+    readme = os.path.join(state["cwd"], "README.md")
+    command("c1", "/bin/zsh -lc 'cat README.md'", [{"type": "read", "command": "cat README.md", "name": "README.md", "path": readme}], "completed", 0, "hello\n")
+    say("m1", FINDINGS)
+    turn_completed()
+
+
+def spending_turn():
+    say("m1", "Reading", phase="commentary")
+    notify("thread/tokenUsage/updated", {"threadId": state["thread"], "turnId": TURN, "tokenUsage": {
+        "last": {"totalTokens": 90000, "inputTokens": 90000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 500, "reasoningOutputTokens": 0},
+        "modelContextWindow": 131072}})
+    interrupt_turn()
+
+
 def approval_turn():
     request_id = "srv-1"
     send({"id": request_id, "method": "item/commandExecution/requestApproval", "params": {
@@ -197,7 +254,7 @@ def handle(message):
         send({"id": request_id, "result": {"userAgent": "codex_cli_rs/0.154.0 (fake)", "codexHome": "/nonexistent/.codex", "platformFamily": "unix", "platformOs": "macos"}})
     elif method == "account/read":
         account = None if SIGNED_OUT else {"type": "chatgpt", "email": None, "planType": "pro"}
-        send({"id": request_id, "result": {"account": account, "requiresOpenaiAuth": True}})
+        send({"id": request_id, "result": {"account": account, "requiresOpenaiAuth": not OTHER_PROVIDER}})
     elif method == "account/rateLimits/read":
         send({"id": request_id, "result": {"ordinaryUsageAllowed": True, "rateLimits": LIMITS, "rateLimitsByLimitId": {"codex": LIMITS}, "rateLimitResetCredits": None, "accountId": None, "rateLimitUpsell": None}})
     elif method == "model/list":
@@ -207,10 +264,16 @@ def handle(message):
         # The person's own: a configured server, a plugin's, and Codex's apps.
         servers = [("codex_apps", None), ("node_repl", None), ("cua_repl", "unified-computer-use@openai-bundled")]
         send({"id": request_id, "result": {"data": [{"name": n, "pluginId": p, "tools": {}} for n, p in servers], "nextCursor": None}})
-    elif method in ("thread/start", "thread/resume"):
+    elif method in ("thread/start", "thread/resume", "thread/fork"):
         state["cwd"] = params.get("cwd") or state["cwd"]
         state["model"] = params.get("model") or state["model"]
-        if method == "thread/resume":
+        if method == "thread/fork":
+            # A copy of the thread under a new id; an older Codex has no fork.
+            if params.get("threadId") in ("thr-gone", "thr-nofork"):
+                send({"id": request_id, "error": {"code": -32601, "message": "method not found: thread/fork"}})
+                return
+            state["thread"] = "fork-of-" + params["threadId"]
+        elif method == "thread/resume":
             if params.get("threadId") == "thr-gone":
                 send({"id": request_id, "error": {"code": -32600, "message": "no rollout found for thread id thr-gone"}})
                 return
@@ -233,6 +296,14 @@ def handle(message):
             steer_turn()
         elif "fail" in prompt:
             failing_turn()
+        elif "compact" in prompt:
+            compacting_turn()
+        elif "subagent" in prompt:
+            subagent_turn()
+        elif "spend" in prompt:
+            spending_turn()
+        elif "findings" in prompt:
+            findings_turn()
         else:
             recorded_turn(prompt)
     elif method == "turn/interrupt":

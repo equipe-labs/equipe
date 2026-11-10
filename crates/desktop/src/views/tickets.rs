@@ -1,4 +1,4 @@
-//! 티켓: every ticket, the person's to shape. A list (the default) or a board
+//! Tickets: every ticket, the person's to shape. A list (the default) or a board
 //! of columns by status (V, remembered); in the list each row edits its
 //! priority, owner and status in place; on the board a card dragged to
 //! another column means what that column would (`crate::tickets::drop_card`)
@@ -20,12 +20,12 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::board::{Flow, btn, dot, hue_of, kbd, member_color};
+use super::board::{Flow, btn, dot, kbd, member_color};
 use super::icons;
 use crate::board::{self as rules, Menu, Tab};
 use crate::motion;
 use crate::state::{Need, short_span, status_word};
-use crate::theme::{GAP, MONO, Palette, R_MD, SMALL, look};
+use crate::theme::{GAP, ICON_SM, MONO, Palette, R_MD, SMALL, look};
 use crate::tickets::{self, Column, Drop, Layout, Sheet, Why};
 use crate::tips::TipExt as _;
 use crate::Shell;
@@ -188,7 +188,7 @@ impl TicketsUi {
         self.quick_input.update(cx, |s, cx| s.set_placeholder(t!("tickets.quick_placeholder"), window, cx));
     }
 
-    /// Whether one of 티켓's boxes has the keyboard.
+    /// Whether one of Tickets' boxes has the keyboard.
     pub fn typing(&self, window: &Window, cx: &App) -> bool {
         self.sheet_title.read(cx).focus_handle(cx).is_focused(window)
             || self.sheet_body.read(cx).focus_handle(cx).is_focused(window)
@@ -215,7 +215,7 @@ pub enum Choice {
 // ── what a click or a key does ──
 
 impl Shell {
-    /// 티켓 is on screen (모든 일's place, or a saved view of it).
+    /// Tickets is on screen (All work's place, or a saved view of it).
     pub fn tickets_on(&self) -> bool {
         matches!(self.board.view.menu, Menu::All | Menu::View(_))
     }
@@ -224,7 +224,7 @@ impl Shell {
         self.tickets_on() && self.board.view.layout == Layout::Board
     }
 
-    /// Wire 티켓's boxes: Enter and ⌘⏎ where they mean something.
+    /// Wire Tickets' boxes: Enter and ⌘⏎ where they mean something.
     pub fn tickets_subscriptions(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
         let tk = &self.board.tk;
         let (title, body, criterion, dep, title_input, body_input, comment) =
@@ -607,7 +607,7 @@ impl Shell {
         }
     }
 
-    /// C: the quick line, at the top of 티켓.
+    /// C: the quick line, at the top of Tickets.
     pub fn open_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_act() {
             return;
@@ -722,7 +722,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// Bring 티켓's waiting things up to date: open a ticket just made, settle
+    /// Bring Tickets' waiting things up to date: open a ticket just made, settle
     /// edits the daemon answered (or put back those it refused), ask for the
     /// record of the page open.
     pub fn tickets_sync(&mut self, cx: &mut Context<Self>) {
@@ -799,7 +799,7 @@ impl Shell {
         self.board_changed(cx);
     }
 
-    /// 티켓's own keys, before the work screens': its menus' digits, the
+    /// Tickets' own keys, before the work screens': its menus' digits, the
     /// sheet's ⌘⏎, V, C, P S O E, and the board's arrows. True when taken.
     pub fn on_tickets_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let plain = !(m.control || m.alt || m.platform || m.shift || m.function);
@@ -915,7 +915,7 @@ impl Shell {
         }
     }
 
-    /// "분류 필요": the proposals alone, the first picked — or back to the list.
+    /// "To sort": the proposals alone, the first picked — or back to the list.
     pub fn set_triage(&mut self, on: bool, cx: &mut Context<Self>) {
         self.board.view.triage = on;
         self.board.view.selected = None;
@@ -928,7 +928,7 @@ impl Shell {
         self.board_changed(cx);
     }
 
-    /// Esc on 티켓: a menu, the sheet, an edit — true when one was closed.
+    /// Esc on Tickets: a menu, the sheet, an edit — true when one was closed.
     pub fn tickets_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.board.view.triage && self.board.flow.is_none() && self.board.tk.menu.is_none() {
             self.set_triage(false, cx);
@@ -1077,7 +1077,7 @@ fn pill(p: Palette, id: SharedString, enabled: bool) -> Stateful<Div> {
 
 // ── the list's rows ──
 
-/// A ticket's row in 티켓's list, by what it is and where it stands: status
+/// A ticket's row in Tickets' list, by what it is and where it stands: status
 /// (pulsing while its member works) · T-n · title · what it waits on · project
 /// · who, and what they are doing now or where it is in their queue · its
 /// diff · priority · when it last changed. Status, owner and priority are
@@ -1129,7 +1129,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     let changed = tickets::changed_at(model, t);
     let when = (changed > 0).then(|| short_span(model.unix.saturating_sub(changed)));
     let live = model.is_live(t);
-    // Waiting for the person, and not acted on yet: lit, as in 나에게.
+    // Waiting for the person, and not acted on yet: lit, as in the Inbox.
     let yours = model.needs_you().iter().any(|(_, n)| *n == need);
     // What its member is doing now, how long it has been at it — or its place in their queue.
     let doing: Option<(String, Rgba)> = match t.status {
@@ -1150,6 +1150,9 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     let stat = shell.board.stat(t).filter(|s| !s.files.is_empty()).map(|s| (s.added, s.removed));
     let el = h_flex()
         .id(SharedString::from(format!("ticket-{id}")))
+        .role(Role::ListItem)
+        .aria_label(format!("T-{id} {}", t.title))
+        .aria_selected(picked)
         .group(group.clone())
         .relative()
         .h(px(super::board::ROW + 4.))
@@ -1181,6 +1184,9 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         .child(
             div()
                 .id(SharedString::from(format!("check-{id}")))
+                .role(Role::CheckBox)
+                .aria_label(format!("T-{id}"))
+                .aria_toggled(if chosen { Toggled::True } else { Toggled::False })
                 .size(px(14.))
                 .flex_none()
                 .flex()
@@ -1189,7 +1195,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                 .rounded(px(3.))
                 .border_1()
                 .border_color(if chosen { p.accent } else { p.hair })
-                .when(chosen, |c| c.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓"))
+                .when(chosen, |c| c.bg(p.accent).child(crate::icons::icon(crate::icons::Icon::Check, 10., p.on_accent)))
                 .when(!chosen, |c| c.invisible().group_hover(group.clone(), |s| s.visible()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
@@ -1236,7 +1242,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                     .flex_none()
                     .gap(px(6.))
                     .items_center()
-                    .child(dot(hue_of(p, model, t).unwrap_or(p.muted), 7.))
+                    .child(crate::theme::project_mark(p, 12.))
                     .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(project.unwrap_or_else(|| t!("board.squad_folder").into()))),
             )
         })
@@ -1281,7 +1287,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     el.into_any_element()
 }
 
-/// Above 티켓's list: the proposals waiting to be sorted, a click into triage —
+/// Above Tickets' list: the proposals waiting to be sorted, a click into triage —
 /// or, in triage, the way back.
 pub fn triage_banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
@@ -1303,7 +1309,7 @@ pub fn triage_banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                 .cursor_pointer()
                 .hover(move |s| s.bg(p.wash))
                 .on_click(cx.listener(|this, _, _, cx| this.set_triage(false, cx)))
-                .child("←")
+                .child(crate::icons::icon(crate::icons::Icon::ArrowLeft, ICON_SM, p.text2))
                 .child(t!("tickets.triage_back"))
                 .child(div().flex_1())
                 .child(kbd(p, "A"))
@@ -1335,7 +1341,7 @@ pub fn triage_banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(t!("tickets.triage_banner", n = n)))
             .child(div().text_color(p.text2).child(t!("tickets.triage_banner_hint")))
             .child(div().flex_1())
-            .child(div().text_color(p.accent).child("→"))
+            .child(crate::icons::icon(crate::icons::Icon::ArrowRight, ICON_SM, p.accent))
             .into_any_element()
     })
 }
@@ -1354,8 +1360,7 @@ pub fn quick_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .map(|t| match t {
             tickets::Token::Owner(name) => chip(avatar(p, &shell.model, Some(name), 14.), name.clone()).into_any_element(),
             tickets::Token::Project(name) => {
-                let at = shell.model.project_names().iter().position(|x| x == name);
-                chip(dot(at.map_or(p.muted, |i| p.member(crate::theme::PROJECT_HUES[i % crate::theme::PROJECT_HUES.len()])), 7.).into_any_element(), name.clone()).into_any_element()
+                chip(crate::theme::project_mark(p, 12.), name.clone()).into_any_element()
             }
             tickets::Token::Priority(pr) => chip(priority_icon(p, *pr, 12.), tickets::priority_word(*pr).to_owned()).into_any_element(),
             tickets::Token::After(id) => chip(div().text_color(p.orange).child("⛔").into_any_element(), format!("T-{id}")).into_any_element(),
@@ -1626,6 +1631,9 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
         .child(
             v_flex()
                 .id(SharedString::from(format!("card-{id}")))
+                .role(Role::ListItem)
+                .aria_label(format!("T-{id} {}", t.title))
+                .aria_selected(picked)
                 .p(px(10.))
                 .gap(px(6.))
                 .rounded(px(9.))
@@ -1700,7 +1708,7 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
                         .text_size(px(11.5))
                         .text_color(p.muted)
                         .when(t.status.is_closed() && status == TicketStatus::Done, |h| h.child(icons::status(p, t.status, 11.)))
-                        .child(h_flex().gap(px(5.)).items_center().min_w_0().child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.)).child(div().truncate().child(project.unwrap_or_else(|| t!("board.squad_folder").into()))))
+                        .child(h_flex().gap(px(5.)).items_center().min_w_0().child(crate::theme::project_mark(p, 11.)).child(div().truncate().child(project.unwrap_or_else(|| t!("board.squad_folder").into()))))
                         .when_some(blocked, |h, dep| h.child(super::ticket_card::hover_link(div().id(("card-blocked", id as u64)).px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.orange).child(format!("⛔ T-{dep}")), dep, super::ticket_card::Side::Below)))
                         .when(unblocks > 0 && !t.status.is_closed(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).child(format!("→ {unblocks}"))))
                         .when(t.not_on_main(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.accent).child(t!("state.chip_not_on_main")))),
@@ -1800,8 +1808,7 @@ pub fn edit_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 }
                 Choice::Project(Some(path)) => {
                     let name = equipe_core::board::project_name(path);
-                    let at = model.project_names().iter().position(|x| *x == name);
-                    (dot(at.map_or(p.muted, |i| p.member(crate::theme::PROJECT_HUES[i % crate::theme::PROJECT_HUES.len()])), 8.).into_any_element(), name, None)
+                    (crate::theme::project_mark(p, 13.), name, None)
                 }
                 Choice::Project(None) => (dot(p.muted, 8.).into_any_element(), t!("board.squad_folder").to_owned(), None),
                 Choice::Kind(k) => (div().w(px(14.)).into_any_element(), equipe_core::i18n::label::kind(crate::i18n::lang(), *k).to_owned(), Some(kind_hint(*k).to_owned())),
@@ -1830,7 +1837,7 @@ pub fn edit_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                         .child(div().truncate().text_color(p.text).child(label))
                         .children(hint.map(|h| div().text_size(px(11.5)).line_height(px(15.)).text_color(p.muted).child(h))),
                 )
-                .child(div().w(px(14.)).flex_none().text_color(p.accent).child(if on { "✓" } else { "" }))
+                .child(div().w(px(14.)).flex_none().flex().items_center().children(on.then(|| crate::icons::icon(crate::icons::Icon::Check, 12., p.accent))))
                 .children(number.map(|n| div().w(px(14.)).flex_none().text_size(px(11.)).text_color(p.muted).child(n.to_string())))
                 .into_any_element()
         })
@@ -1978,7 +1985,7 @@ pub fn views_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> 
             .text_size(px(SMALL))
             .cursor_pointer()
             .hover(move |s| s.bg(p.wash))
-            .child(div().w(px(12.)).text_color(p.accent).child(if on { "✓" } else { "" }))
+            .child(div().w(px(12.)).flex_none().flex().items_center().children(on.then(|| crate::icons::icon(crate::icons::Icon::Check, 12., p.accent))))
             .child(div().flex_1().truncate().child(label))
     };
     let mut rows: Vec<AnyElement> = vec![item("view-all".into(), t!("tickets.all_tickets").into(), menu == Menu::All)
@@ -1998,19 +2005,14 @@ pub fn views_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> 
                 }))
                 .when(kept, |r| {
                     r.child(
-                        div()
-                            .id(SharedString::from(format!("view-forget-{at}")))
-                            .px_1()
-                            .rounded(px(4.))
-                            .text_color(p.muted)
+                        crate::ui::x_box(SharedString::from(format!("view-forget-{at}")), p.muted, t!("composer.tip_remove"))
                             .invisible()
                             .group_hover(group.clone(), |s| s.visible())
                             .hover(move |s| s.bg(p.hair))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.board_forget_view(at, cx);
-                            }))
-                            .child("×"),
+                            })),
                     )
                 })
                 .into_any_element(),
@@ -2056,7 +2058,7 @@ pub fn views_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> 
     )
 }
 
-/// "+ 새 티켓".
+/// "+ New ticket".
 pub fn new_button(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     anchored(
@@ -2114,7 +2116,6 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .into_any_element()
     };
     let project_name = s.project.as_deref().map(equipe_core::board::project_name);
-    let project_dot = project_name.as_ref().and_then(|n| model.project_names().iter().position(|x| x == n)).map_or(p.muted, |i| p.member(crate::theme::PROJECT_HUES[i % crate::theme::PROJECT_HUES.len()]));
     let deps_label = if s.depends_on.is_empty() { t!("tickets.prop_depends").to_owned() } else { s.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", ") };
     let kind_label = s.kind.map_or_else(|| t!("tickets.kind_auto").to_owned(), |k| equipe_core::i18n::label::kind(crate::i18n::lang(), k).to_owned());
     let criteria: Vec<AnyElement> = s
@@ -2132,11 +2133,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .child(div().size(px(13.)).flex_none().rounded(px(3.)).border_1().border_color(p.muted))
                 .child(div().flex_1().min_w_0().truncate().text_color(p.text).child(c.clone()))
                 .child(
-                    div()
-                        .id(("criterion-x", i))
-                        .px_1()
-                        .rounded(px(4.))
-                        .text_color(p.muted)
+                    crate::ui::x_box(("criterion-x", i), p.muted, t!("composer.tip_remove"))
                         .cursor_pointer()
                         .invisible()
                         .group_hover(SharedString::from(format!("criterion-{i}")), |s| s.visible())
@@ -2148,8 +2145,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                                 s.criteria.remove(i);
                             }
                             cx.notify();
-                        }))
-                        .child("×"),
+                        })),
                 )
                 .into_any_element()
         })
@@ -2228,7 +2224,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .border_color(p.hair)
                 .child(prop(EditKind::Priority, priority_icon(p, s.priority, 13.), tickets::priority_word(s.priority).to_owned(), cx))
                 .child(prop(EditKind::Assignee, avatar(p, model, s.assignee.as_deref(), 16.), s.assignee.clone().unwrap_or_else(|| t!("tickets.pm_decides").into()), cx))
-                .child(prop(EditKind::Project, dot(project_dot, 7.).into_any_element(), project_name.unwrap_or_else(|| t!("tickets.project_auto").into()), cx))
+                .child(prop(EditKind::Project, crate::theme::project_mark(p, 12.), project_name.unwrap_or_else(|| t!("tickets.project_auto").into()), cx))
                 .child(prop(EditKind::Depends, div().text_color(p.muted).child("⛓").into_any_element(), deps_label, cx))
                 .child(prop(EditKind::Kind, div().w(px(0.)).into_any_element(), kind_label, cx)),
         )
@@ -2318,7 +2314,7 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
         row(t!("tickets.prop_status"), prop(EditKind::Status, icons::status(p, t.status, 13.).into_any_element(), crate::state::state_word(t).to_owned(), cx)),
         row(t!("tickets.prop_priority"), prop(EditKind::Priority, priority_icon(p, t.priority, 13.), tickets::priority_word(t.priority).to_owned(), cx)),
         row(t!("tickets.prop_assignee"), prop(EditKind::Assignee, avatar(p, model, who.as_deref(), 16.), who.unwrap_or_else(|| t!("tickets.pm_decides").into()), cx)),
-        row(t!("tickets.prop_project"), prop(EditKind::Project, dot(hue_of(p, model, t).unwrap_or(p.muted), 7.).into_any_element(), project.unwrap_or_else(|| t!("board.squad_folder").into()), cx)),
+        row(t!("tickets.prop_project"), prop(EditKind::Project, crate::theme::project_mark(p, 12.).into_any_element(), project.unwrap_or_else(|| t!("board.squad_folder").into()), cx)),
     ];
     if !compact {
         rows.push(row(t!("tickets.prop_kind"), prop(EditKind::Kind, div().into_any_element(), equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind).to_owned(), cx)));
@@ -2345,11 +2341,7 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
             .child(div().flex_1().min_w_0().truncate().text_color(p.text2).child(found.map(|d| d.title.clone()).unwrap_or_default()))
             .when(removable && can, |r| {
                 r.child(
-                    div()
-                        .id(SharedString::from(format!("prop-unlink-{id}-{dep}")))
-                        .px_1()
-                        .rounded(px(4.))
-                        .text_color(p.muted)
+                    crate::ui::x_box(SharedString::from(format!("prop-unlink-{id}-{dep}")), p.muted, t!("composer.tip_remove"))
                         .invisible()
                         .group_hover(SharedString::from(format!("prop-link-{dep}")), |s| s.visible())
                         .hover(move |s| s.bg(p.hair))
@@ -2358,8 +2350,7 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
                             let Some(t) = this.model.tickets.iter().find(|t| t.id == id) else { return };
                             let deps: Vec<TicketId> = t.depends_on.iter().copied().filter(|d| *d != dep).collect();
                             this.tickets_edit(vec![id], TicketEdit { depends_on: Some(deps), ..Default::default() }, cx);
-                        }))
-                        .child("×"),
+                        })),
                 )
             })
             .into_any_element()

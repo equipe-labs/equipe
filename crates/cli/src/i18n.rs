@@ -6,14 +6,14 @@ use equipe_core::i18n::Lang;
 
 /// Every language's words, as compiled in.
 pub const FILES: &[(&str, &str)] = &[
-    ("ko", include_str!("../locales/ko.json")),
     ("en", include_str!("../locales/en.json")),
-    ("ja", include_str!("../locales/ja.json")),
-    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
-    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
+    ("de", include_str!("../locales/de.json")),
     ("es", include_str!("../locales/es.json")),
     ("fr", include_str!("../locales/fr.json")),
-    ("de", include_str!("../locales/de.json")),
+    ("ja", include_str!("../locales/ja.json")),
+    ("ko", include_str!("../locales/ko.json")),
+    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
+    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
 ];
 
 equipe_core::words!(test = Lang::En);
@@ -28,6 +28,8 @@ pub fn role_summary(role: &equipe_core::roles::Role) -> &'static str {
         "backend" => equipe_core::t!("role.backend"),
         "mobile" => equipe_core::t!("role.mobile"),
         "qa" => equipe_core::t!("role.qa"),
+        "security" => equipe_core::t!("role.security"),
+        "marketing" => equipe_core::t!("role.marketing"),
         "data" => equipe_core::t!("role.data"),
         "custom" => equipe_core::t!("role.custom"),
         _ => role.summary,
