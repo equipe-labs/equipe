@@ -23,7 +23,7 @@ use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
     Access, Approval, AuthState, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
-    Estimate, ModelChoice, OffMain, RoleModel, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Estimate, ExecutionState, ModelChoice, OffMain, RoleModel, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::codex_app;
@@ -42,7 +42,7 @@ use crate::desktop_gate::{self, Act, Verdict};
 use crate::desktop;
 use crate::eta;
 use crate::guard;
-use crate::journal::{self, Journal, SessionRecord, TicketWork};
+use crate::journal::{self, Journal, Requeued, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
 use crate::routines;
@@ -54,6 +54,9 @@ use crate::squad_memory;
 use crate::steers;
 use crate::watchdog;
 use crate::worktree::{self, Sandbox};
+
+/// Runtime turns renew this on activity and on the daemon's minute tick.
+const EXECUTION_LEASE_SECS: u64 = 150;
 
 /// What equipe says to the person, in their language: `say!(self, "notice.model", model = m)`.
 /// What it tells the models is written out in English instead.
@@ -257,6 +260,8 @@ enum Request {
     Phone(phone::PhoneRequest),
     /// An engine's plan, read outside a turn.
     Usage(Engine, equipe_protocol::PlanUsage),
+    /// The lease check, as if at this unix time (tests).
+    CheckLeases(u64, oneshot::Sender<()>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -497,6 +502,16 @@ impl Handle {
         let _ = self.requests.send(Request::Usage(engine, usage));
     }
 
+    /// The minute tick's lease check, run now as if at unix time `at`, and
+    /// answered once done: for tests of what stalls when, without waiting.
+    #[doc(hidden)]
+    pub async fn check_leases_at(&self, at: u64) {
+        let (tx, rx) = oneshot::channel();
+        if self.requests.send(Request::CheckLeases(at, tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
     /// Stop running turns and the runtime. Open sessions stay journaled.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
@@ -648,6 +663,9 @@ pub fn project_of(dir: &Path) -> PathBuf {
 /// A member's current ticket: where its turns run until the ticket is put down.
 struct Work {
     ticket: TicketId,
+    /// Fresh for every dispatch, even when the same member/engine continues.
+    execution_session: SessionId,
+    execution_generation: u64,
     kind: TicketKind,
     project: PathBuf,
     cwd: PathBuf,
@@ -1200,6 +1218,7 @@ impl Wake {
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
+            Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
@@ -1382,6 +1401,11 @@ impl Runtime {
                         self.apply_engine_moves(&squad).await;
                     }
                 }
+                Some(Request::CheckLeases(at, reply)) => {
+                    self.renew_execution_leases();
+                    self.recover_execution_leases(at).await;
+                    let _ = reply.send(());
+                }
                 Some(Request::Shutdown(reply)) => {
                     self.stop_all_turns();
                     let _ = reply.send(());
@@ -1515,6 +1539,8 @@ impl Runtime {
             Wake::DesignTick => self.design_tick(),
             Wake::Minute => {
                 self.keep_awake();
+                self.renew_execution_leases();
+                self.recover_execution_leases(now_secs()).await;
                 self.plan_use_pass();
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
@@ -1701,16 +1727,17 @@ impl Runtime {
             }
             if self.config.persist
                 && let Some(name) = squad.clone()
+                && let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name)
             {
-                let named = matches!(event, Event::UserMessage { .. }).then(|| session.title.clone()).flatten().filter(|_| !session.kept);
-                if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
-                    no_room = !record(journal, id, &event, &finished);
-                    if let Some(title) = &named {
-                        let _ = journal.set_title_if_empty(id, title);
-                    }
-                    if let Some(turn) = &turn {
-                        let _ = journal.record_turn_use(turn, turn_use.as_ref());
-                    }
+                no_room = !record(journal, id, &event, &finished);
+                if matches!(event, Event::UserMessage { .. })
+                    && !session.kept
+                    && let Some(title) = &session.title
+                {
+                    let _ = journal.set_title_if_empty(id, title);
+                }
+                if let Some(turn) = &turn {
+                    let _ = journal.record_turn_use(turn, turn_use.as_ref());
                 }
             }
         }
@@ -1968,6 +1995,7 @@ impl Runtime {
             Command::KeepOnBranch { squad, ticket } => self.keep_on_branch(&squad, ticket),
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
             Command::Resume { squad, ticket, note } => self.resume(&squad, ticket, note).await,
+            Command::Requeue { squad, ticket, operation, how } => self.requeue(&squad, ticket, &operation, how).await,
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::CreateTicket { squad, draft } => self.person_creates(&squad, draft).await,
             Command::EditTicket { squad, ticket, changes } => self.person_edits(&squad, ticket, changes).await,
@@ -5322,6 +5350,17 @@ for one project goes to it as tickets for its owners, with that project — and 
         } else {
             None
         };
+        // A recovery the person approved starts under the operation and
+        // generation it reserved; any other start takes a fresh one. Either
+        // way the run gets a runtime session of its own, even on the same
+        // member and engine as the run before.
+        let recovered = ticket.execution.as_ref().filter(|e| e.state == ExecutionState::Queued).map(|e| e.operation.clone());
+        let operation = recovered.clone().unwrap_or_else(|| format!("start:{}", equipe_protocol::new_session_id()));
+        let execution_session = equipe_protocol::new_session_id();
+        let Some(execution_generation) = journal.acquire_execution(ticket_id, execution_session, &operation, now_secs(), EXECUTION_LEASE_SECS).ok().flatten()
+        else {
+            return;
+        };
         let cwd = sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project));
 
         ticket.status = TicketStatus::InProgress;
@@ -5348,6 +5387,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(session) = self.sessions.get_mut(&id) {
             session.work = Some(Work {
                 ticket: ticket_id,
+                execution_session,
+                execution_generation,
                 kind,
                 project: project.clone(),
                 cwd,
@@ -5374,7 +5415,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         });
         self.brief_pm(&squad, format!("{name} picked up T-{ticket_id} ({}).", ticket.title), None);
         let language = self.journal(&squad).and_then(Journal::language);
-        let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
+        let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), recovered.is_some(), board_tools, language.as_deref());
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
             prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
         }
@@ -5397,6 +5438,96 @@ for one project goes to it as tickets for its owners, with that project — and 
             ));
         }
         self.start_turn(id, prompt);
+    }
+
+    /// Renew leases only for turns that this runtime can still observe. Late
+    /// heartbeats are fenced by the stored generation and session id.
+    fn renew_execution_leases(&mut self) {
+        let active: Vec<(String, SessionId, TicketId, u64)> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.is_working())
+            .filter_map(|(_, session)| {
+                let work = session.work.as_ref()?;
+                Some((session.squad.clone()?, work.execution_session, work.ticket, work.execution_generation))
+            })
+            .collect();
+        let at = now_secs();
+        for (squad, session, ticket, generation) in active {
+            let Some(journal) = self.journal(&squad) else { continue };
+            let _ = journal.heartbeat_execution(ticket, generation, session, at, EXECUTION_LEASE_SECS);
+        }
+    }
+
+    /// The minute's check, as of unix time `at`: a run whose turn ended
+    /// without a hand-in or a wait, and that nothing renewed before its lease
+    /// ran out, is stalled. A turn still running is never stalled, however
+    /// long it takes. The stalled ticket's member lets go of it and is free
+    /// for other work.
+    async fn recover_execution_leases(&mut self, at: u64) {
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            let live: Vec<SessionId> = self
+                .sessions
+                .values()
+                .filter(|session| session.squad.as_deref() == Some(squad.as_str()) && session.is_working())
+                .filter_map(|session| session.work.as_ref().map(|work| work.execution_session))
+                .collect();
+            let stalled = self.journal(&squad).and_then(|j| j.recover_executions(&live, at).ok()).unwrap_or_default();
+            if stalled.is_empty() {
+                continue;
+            }
+            for ticket in stalled {
+                self.stalled(&squad, ticket, true);
+            }
+            Box::pin(self.dispatch(&squad)).await;
+        }
+    }
+
+    /// `ticket`'s run stalled. Its member, if still on it, lets go — in
+    /// memory only: nothing is committed, and the ticket stays in progress
+    /// with its branch, worktree, commit and uncommitted files exactly as they
+    /// were, for the person to resume, requeue or reassign. What its checkout
+    /// holds is kept for their card; the PM hears of it when `tell`.
+    fn stalled(&mut self, squad: &str, ticket_id: TicketId, tell: bool) {
+        let Some(ticket) = self.journal(squad).and_then(|j| j.ticket(ticket_id).ok().flatten()) else { return };
+        let generation = ticket.execution.as_ref().map(|e| e.generation);
+        // Only the session on that very run lets go.
+        let holder = self
+            .sessions
+            .iter()
+            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.work.as_ref().is_some_and(|w| w.ticket == ticket_id && Some(w.execution_generation) == generation))
+            .map(|(&id, _)| id);
+        if let Some(id) = holder {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                session.work = None;
+            }
+            self.publish(Event::WorkEnded { session: id, ticket: ticket_id });
+            let desk = self.sessions.get(&id).and_then(|s| s.thread.clone());
+            self.publish(Event::Thread { session: id, project: desk });
+        }
+        // A run whose ticket moved on without it (back on the board, say) only
+        // frees its lease: the board starts it again as usual.
+        if ticket.status != TicketStatus::InProgress {
+            return;
+        }
+        let Some(journal) = self.journal(squad) else { return };
+        let (head, dirty) = ticket.worktree.as_deref().map(worktree::checkout_facts).unwrap_or_default();
+        let _ = journal.set_stalled_checkout(ticket_id, head.as_deref(), dirty);
+        let reason = ticket.execution.as_ref().and_then(|e| e.reason.clone()).unwrap_or_default();
+        let _ = journal.ticket_event(ticket_id, "equipe", "stalled", &reason);
+        let Some(ticket) = journal.ticket(ticket_id).ok().flatten() else { return };
+        let (title, who) = (ticket.title.clone(), ticket.assignee.clone().unwrap_or_default());
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
+        if tell {
+            let line = format!(
+                "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It stays in \
+progress with its branch and worktree as they are. The person resumes, requeues or reassigns it on its card — you can't, and \
+don't open a new ticket for it."
+            );
+            let shown = say!(self, "news.stalled", id = ticket_id, name = who, title = title);
+            self.brief_pm(squad, line, Some(shown));
+        }
     }
 
     /// A ticket that can't start (its project isn't a repository, say) goes back
@@ -5568,7 +5699,7 @@ todo); or drop it if it's no longer wanted.]"
                 });
                 ("equipe", "released", format!("{name} left T-{}; it is back on the board", ticket.id), "news.left")
             }
-            WorkEnd::Reassigned { to } => {
+            WorkEnd::Reassigned { ref to } => {
                 ticket.status = TicketStatus::Todo;
                 ticket.assignee = None;
                 ticket.owner = Some(to.clone());
@@ -5586,6 +5717,19 @@ todo); or drop it if it's no longer wanted.]"
             saved.worktree = kept_worktree;
             let _ = journal.set_ticket_work(ticket.id, &saved);
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
+            if work.execution_generation > 0 {
+                let state = if how == WorkEnd::Waiting { ExecutionState::Waiting } else { ExecutionState::Stopped };
+                let reason = match how {
+                    WorkEnd::Waiting => "waiting_for_person",
+                    WorkEnd::HandedIn => "handed_in",
+                    WorkEnd::Accepted => "accepted",
+                    WorkEnd::Cancelled => "cancelled",
+                    WorkEnd::Checked => "design_qa_ended",
+                    WorkEnd::Left => "member_left",
+                    WorkEnd::Reassigned { .. } => "reassigned",
+                };
+                let _ = journal.finish_execution(ticket.id, work.execution_generation, state, Some(reason));
+            }
         }
         // Work now ready for review — this ticket handed in, or the one a
         // designer's QA just passed — when the PM accepts it. Code the PM
@@ -6133,6 +6277,66 @@ with what else waits.]"
         let shown = say!(self, "news.resumed", id = found.id, title = found.title);
         self.brief_pm(squad, line, Some(shown));
         self.dispatch(squad).await;
+    }
+
+    /// The person recovers a stalled ticket (`Command::Requeue`, theirs
+    /// only): its same member goes on, whoever of its role is free next
+    /// starts, or another member takes it over. The recovery and the move
+    /// back to the board are one journal transaction; the start follows at
+    /// once when its owner is free, in a fresh runtime session on the same
+    /// ticket, branch and worktree. The same `operation` twice is one
+    /// recovery. What happened is said: started or queued, done already, or
+    /// why nothing changed.
+    async fn requeue(&mut self, squad: &str, ticket: TicketId, operation: &str, how: equipe_protocol::Recovery) {
+        use equipe_protocol::Recovery;
+        if operation.trim().is_empty() {
+            return self.squad_error(squad, say!(self, "error.recovery_no_operation", id = ticket));
+        }
+        let Some(found) = self.find_ticket(squad, ticket) else { return };
+        let team = self.team(squad);
+        let on_team = |name: &str| team.iter().any(|(_, member, _)| member == name);
+        // The run's member: who held it, or — queued already — who it waits for.
+        let member = found.assignee.clone().or_else(|| found.owner.clone().filter(|o| on_team(o))).unwrap_or_default();
+        let owner = match &how {
+            Recovery::Resume if on_team(&member) => member.clone(),
+            Recovery::Resume => return self.squad_error(squad, say!(self, "error.recovery_member_gone", id = ticket, name = member)),
+            Recovery::Requeue => team
+                .iter()
+                .find(|(_, name, _)| *name == member)
+                .map(|(_, _, role)| role.clone())
+                .unwrap_or_else(|| board::role_of(found.owner.as_deref().unwrap_or(&member)).to_owned()),
+            Recovery::Reassign(to) if on_team(to) => to.clone(),
+            Recovery::Reassign(to) => return self.squad_error(squad, say!(self, "error.no_member", name = to)),
+        };
+        let Some(journal) = self.journal(squad) else { return };
+        match journal.reserve_requeue(ticket, operation, Some(&owner), now_secs()) {
+            Ok(Requeued::Reserved) => {
+                let (event, key) = match how {
+                    Recovery::Resume => ("resumed", "news.recovery_resume"),
+                    Recovery::Requeue => ("requeued", "news.recovery_requeue"),
+                    Recovery::Reassign(_) => ("reassigned", "news.recovery_reassign"),
+                };
+                let _ = journal.ticket_event(ticket, "you", event, &format!("to {owner}, on the same branch and worktree"));
+                if let Ok(Some(changed)) = journal.ticket(ticket) {
+                    self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: changed });
+                }
+                let line = format!(
+                    "The person brought T-{ticket} back for {owner}: a fresh run on the same ticket, branch and worktree, nothing reset. \
+It starts when {owner} is free."
+                );
+                let shown = self.said(key, &[("id", ticket.to_string()), ("title", found.title.clone()), ("to", owner.clone())]);
+                self.brief_pm(squad, line, Some(shown));
+                self.dispatch(squad).await;
+            }
+            Ok(Requeued::AlreadyApplied) => {
+                let text = say!(self, "notice.recovery_applied", id = ticket);
+                if let Some(pm) = self.pm_of(squad) {
+                    self.publish(Event::Notice { undo: None, session: pm, text });
+                }
+            }
+            Ok(Requeued::NotStalled) => self.squad_error(squad, say!(self, "error.recovery_not_stalled", id = ticket)),
+            Err(err) => self.squad_error(squad, say!(self, "error.recovery_failed", id = ticket, err = err)),
+        }
     }
 
     /// `ticket`, waiting, back to `todo` for the member that put it down,
@@ -7243,6 +7447,7 @@ there, end your turn, and carry on when they say they're done."
                     depends_on,
                     branch: None,
                     worktree: None,
+                    execution: None,
                     merged: None,
                     off_main: None,
                     design_qa: None,
@@ -7744,6 +7949,23 @@ it back there once they have done it.{again} End your turn now with a short line
             let Some(squad) = journal.squad() else {
                 continue;
             };
+            // No runtime session outlives the process that ran it: every run
+            // still active when the daemon stopped — and in-progress work from
+            // before runs were kept — is stalled now. A member brought back
+            // below on the ticket it ran, its checkout still there and its
+            // engine able to resume here, carries it on under a new generation
+            // (`resume_work`); what nothing carries on stays stalled for the
+            // person, its ticket, work and files untouched.
+            let carried: Vec<TicketId> = journal
+                .tickets()
+                .unwrap_or_default()
+                .iter()
+                .filter(|t| t.status == TicketStatus::InProgress && t.execution.as_ref().is_none_or(|e| e.state == ExecutionState::Active))
+                .map(|t| t.id)
+                .collect();
+            let _ = journal.stall_all_executions(now_secs());
+            let codex_cli = codex_app::find(&self.config.codex_binary).is_some();
+            let mut carried_on: Vec<TicketId> = Vec::new();
             // A squad from before squad homes gets its home now.
             let home = squad_home::path(&self.config.home, &squad);
             if let Err(err) = squad_home::ensure(&self.config.home, &squad, journal.language().as_deref()) {
@@ -7785,10 +8007,20 @@ it back there once they have done it.{again} End your turn now with a short line
                     })
                     .collect();
                 let edits = record.access == Access::EditFiles;
+                let resumes = record.engine == Engine::Claude || codex_cli;
                 let work = tickets
                     .iter()
-                    .find(|t| t.status == TicketStatus::InProgress && t.assignee.as_deref() == Some(member.name.as_str()))
-                    .and_then(|ticket| restore_work(&journal, ticket, &projects, &home, edits));
+                    .filter(|_| resumes)
+                    .find(|t| t.status == TicketStatus::InProgress && t.assignee.as_deref() == Some(member.name.as_str()) && carried.contains(&t.id))
+                    .and_then(|ticket| restore_work(&journal, ticket, &projects, &home, edits))
+                    .and_then(|mut work| {
+                        let session = equipe_protocol::new_session_id();
+                        let operation = format!("restart:{session}");
+                        work.execution_generation = journal.acquire_execution(work.ticket, session, &operation, now_secs(), EXECUTION_LEASE_SECS).ok().flatten()?;
+                        work.execution_session = session;
+                        carried_on.push(work.ticket);
+                        Some(work)
+                    });
                 // A desk opened in a project moves to the home. Claude Code resumes a
                 // conversation only where it began, so the desk starts afresh there,
                 // from a summary of the last one — once.
@@ -7910,6 +8142,12 @@ it back there once they have done it.{again} End your turn now with a short line
                 }
             }
             self.journals.insert(squad.clone(), journal);
+            // What the restart couldn't carry on: stalled, for the person.
+            for ticket in carried.into_iter().filter(|t| !carried_on.contains(t)) {
+                if self.journals.get(&squad).and_then(|j| j.ticket(ticket).ok().flatten()).is_some_and(|t| t.status == TicketStatus::InProgress) {
+                    self.stalled(&squad, ticket, true);
+                }
+            }
             // A squad whose PM joined before the weekly retro was: it comes now, once.
             if pm.is_some() && self.config.persist {
                 self.add_joining_routine(&squad, crate::retro::ROLE);
@@ -8181,6 +8419,9 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
     };
     Some(Work {
         ticket: ticket.id,
+        // Bound to a new run by the restart that brings it back.
+        execution_session: 0,
+        execution_generation: 0,
         kind: ticket.kind,
         cwd: sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project)),
         project,
@@ -8243,6 +8484,7 @@ fn work_prompt(
     project: &Path,
     sandbox: Option<&Sandbox>,
     reopened: Option<&str>,
+    recovered: bool,
     board_tools: bool,
     language: Option<&str>,
 ) -> String {
@@ -8316,6 +8558,25 @@ then hand in again.\n"
             "The person sent it back. {note}\nWhat they asked for says something about how they want work done: save that \
 lesson in your memory before you start, so the next ticket begins with it.\n"
         ));
+    }
+    if reopened.is_some() {
+        out.push_str("This latest reopen state supersedes any older message saying the work was complete or handed in.\n");
+    }
+    if !ticket.remaining.is_empty() {
+        out.push_str("The latest unresolved blockers take priority:\n");
+        for blocker in &ticket.remaining {
+            out.push_str(&format!("- {blocker}\n"));
+        }
+    }
+    if recovered {
+        out.push_str("The last run on this ticket stopped without a hand-in, and the person brought it back: this is a fresh session on the same ticket.");
+        if sandbox.is_some() {
+            out.push_str(
+                " Same branch and worktree, nothing reset, committed or cleaned — the commit and the uncommitted and untracked files \
+are as the last run left them. Look at `git status` and what is already done first, then carry on from there.",
+            );
+        }
+        out.push('\n');
     }
     if !ticket.body.is_empty() {
         out.push_str(&format!("\n{}\n", ticket.body));

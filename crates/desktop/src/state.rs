@@ -10,7 +10,10 @@ use std::time::Instant;
 
 use equipe_core::protocol::engines::HandOver;
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
-use equipe_core::protocol::{DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
+use equipe_core::protocol::{
+    DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, RunView, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome,
+    stall_reason,
+};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -154,6 +157,9 @@ pub enum Section {
     Decide,
     /// A ticket put down until the person does their part: Your turn.
     Waiting,
+    /// Work in progress whose run stopped without a hand-in: the person
+    /// resumes, requeues or reassigns it. Stopped runs.
+    Stalled,
     /// Work handed in: Review.
     Review,
     /// Suggested work to take on or drop: Proposed.
@@ -164,15 +170,16 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [Section::Permission, Section::Decide, Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain];
+    pub const ALL: [Section; 7] = [Section::Permission, Section::Decide, Section::Waiting, Section::Stalled, Section::Review, Section::Proposed, Section::NotOnMain];
     /// The sections that list tickets.
-    const TICKETS: [Section; 4] = [Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain];
+    const TICKETS: [Section; 5] = [Section::Waiting, Section::Stalled, Section::Review, Section::Proposed, Section::NotOnMain];
 
     pub fn label(self) -> &'static str {
         match self {
             Section::Permission => t!("state.section_permission"),
             Section::Decide => t!("state.section_decide"),
             Section::Waiting => t!("state.status_waiting"),
+            Section::Stalled => t!("state.section_stalled"),
             Section::Review => t!("state.status_review"),
             Section::Proposed => t!("state.status_proposed"),
             Section::NotOnMain => t!("state.not_on_main"),
@@ -184,6 +191,7 @@ impl Section {
     pub fn hint(self) -> Option<&'static str> {
         match self {
             Section::NotOnMain => Some(t!("state.not_on_main_hint")),
+            Section::Stalled => Some(t!("state.section_stalled_hint")),
             _ => None,
         }
     }
@@ -241,6 +249,29 @@ pub fn state_word(t: &Ticket) -> &'static str {
         _ if !t.not_on_main() => status_word(t.status),
         Some(OffMain::Kept) => t!("state.accepted_kept"),
         _ => t!("state.accepted_not_on_main"),
+    }
+}
+
+/// What a ticket's run is called, the same on every screen (the terminal
+/// board's words are the same): only the states that need a word — work
+/// running as it should shows as in progress.
+pub fn run_word(view: RunView) -> Option<&'static str> {
+    match view {
+        RunView::Active => None,
+        RunView::Paused => Some(t!("run.paused")),
+        RunView::Stalled => Some(t!("run.stalled")),
+        RunView::Queued => Some(t!("run.queued")),
+    }
+}
+
+/// Why a run stalled, in the person's words, from the daemon's code; any
+/// code this screen doesn't know is said plainly.
+pub fn stall_reason_words(code: Option<&str>) -> &'static str {
+    match code {
+        Some(stall_reason::LEASE_EXPIRED) => t!("run.reason_lease_expired"),
+        Some(stall_reason::NOT_RESUMED) => t!("run.reason_not_resumed"),
+        Some(stall_reason::MIGRATED) => t!("run.reason_migrated"),
+        _ => t!("run.reason_unknown"),
     }
 }
 
@@ -1950,6 +1981,8 @@ impl Model {
     pub fn section_of(&self, t: &Ticket) -> Option<Section> {
         match t.status {
             TicketStatus::Waiting => Some(Section::Waiting),
+            // Its run stopped without a hand-in: only the person brings it back.
+            TicketStatus::InProgress if self.run_view(t) == Some(RunView::Stalled) => Some(Section::Stalled),
             // A designer checks its screens first.
             TicketStatus::Review if t.in_design_qa() => None,
             // Where the PM accepts, handed-in work is the PM's: the person sees
@@ -2018,6 +2051,34 @@ impl Model {
     /// The member on a ticket now.
     pub fn member_on(&self, id: TicketId) -> Option<&Member> {
         self.members.iter().find(|m| m.ticket == Some(id) && m.presence != Presence::Closed)
+    }
+
+    /// How a ticket's run reads now ([`Ticket::run_view`], the one reading
+    /// every screen shares): whether its assignee has a turn running on it
+    /// is what this screen knows of its members.
+    pub fn run_view(&self, t: &Ticket) -> Option<RunView> {
+        let working = t.assignee.as_ref().map(|_| self.member_on(t.id).is_some_and(|m| m.presence == Presence::Working));
+        t.run_view(self.unix, working)
+    }
+
+    /// What a ticket's state is called where one ticket is shown: its run's
+    /// word when its run needs one (paused, stalled, queued), else
+    /// [`state_word`].
+    pub fn state_word_of(&self, t: &Ticket) -> &'static str {
+        self.run_view(t).and_then(run_word).unwrap_or_else(|| state_word(t))
+    }
+
+    /// Why a ticket's run reads as it does, in a line — `None` for one
+    /// running as it should, or with no run.
+    pub fn run_reason(&self, t: &Ticket) -> Option<String> {
+        let who = t.assignee.clone().or_else(|| t.owner.clone()).unwrap_or_default();
+        Some(match self.run_view(t)? {
+            RunView::Active => return None,
+            RunView::Stalled => stall_reason_words(t.execution.as_ref().and_then(|e| e.reason.as_deref())).to_owned(),
+            RunView::Paused if self.member_on(t.id).is_none_or(|m| m.presence != Presence::Working) => t!("run.paused_idle", who = who),
+            RunView::Paused => t!("run.paused_lease").to_owned(),
+            RunView::Queued => t!("run.queued_for", who = who),
+        })
     }
 
     /// Whether the member on a ticket is in the middle of a turn.
@@ -2876,6 +2937,51 @@ mod tests {
 
     fn ticket(id: u32, status: &str, note: Option<&str>) -> Ticket {
         serde_json::from_value(serde_json::json!({"id": id, "title": "t", "body": "", "status": status, "owner": "backend", "assignee": null, "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": note})).unwrap()
+    }
+
+    fn with_run(mut t: Ticket, state: &str, lease_expires_at: u64, reason: Option<&str>) -> Ticket {
+        t.assignee = Some("backend".into());
+        t.execution = serde_json::from_value(serde_json::json!({
+            "state": state, "session": 3, "operation": "start:3", "generation": 1, "heartbeat_at": 0, "lease_expires_at": lease_expires_at, "reason": reason
+        }))
+        .ok()
+        .map(Box::new);
+        t
+    }
+
+    #[test]
+    fn a_tickets_run_reads_the_same_on_the_board_the_sidebar_and_the_ticket() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Working)]), T0);
+        model.unix = 1_000;
+        let stalled = with_run(ticket(3, "in_progress", None), "stalled", 0, Some(stall_reason::LEASE_EXPIRED));
+        let idle = with_run(ticket(4, "in_progress", None), "active", 2_000, None);
+        let queued = Ticket { status: TicketStatus::Todo, ..with_run(ticket(5, "todo", None), "queued", 0, None) };
+        let old = ticket(6, "in_progress", None);
+        model.tickets = vec![stalled.clone(), idle.clone(), queued.clone(), old.clone()];
+        // The protocol's one reading; backend has no turn on T-4, so it is paused.
+        assert_eq!(model.run_view(&stalled), Some(RunView::Stalled));
+        assert_eq!(model.run_view(&idle), Some(RunView::Paused));
+        assert_eq!(model.run_view(&queued), Some(RunView::Queued));
+        assert_eq!(model.run_view(&old), None, "an older daemon keeps no runs: nothing new is said");
+        // At work on it: active, and no word beyond in progress.
+        model.apply(Update::Event(Event::WorkStarted { session: 2, ticket: 4, title: "t".into(), project: "/p".into(), workspace: None }), T0);
+        assert_eq!(model.run_view(&idle), Some(RunView::Active));
+        assert_eq!(model.state_word_of(&idle), state_word(&idle));
+        assert_eq!(model.run_reason(&idle), None);
+        // The words each screen shows, and why.
+        assert_eq!(model.state_word_of(&stalled), "실행 멈춤");
+        assert_eq!(model.state_word_of(&queued), "다시 대기 중");
+        assert!(model.run_reason(&stalled).is_some_and(|r| r.contains("제출이나 요청 없이")), "{:?}", model.run_reason(&stalled));
+        assert_eq!(stall_reason_words(Some("something_new")), stall_reason_words(None), "a code this screen doesn't know is said plainly");
+        // Only the stalled one waits for the person — in Needs you, and so on the sidebar's count.
+        assert_eq!(model.needs_you(), vec![(Section::Stalled, Need::Ticket(3))]);
+        assert_eq!(model.needs_by_project().values().sum::<usize>(), 1);
+        for lang in equipe_core::i18n::Lang::ALL {
+            for key in ["run.paused", "run.stalled", "run.queued", "state.section_stalled", "recover.resume", "recover.requeue", "recover.reassign", "recover.kept", "run.reason_lease_expired"] {
+                assert!(crate::i18n::of(lang).own(key).is_some_and(|w| !w.trim().is_empty()), "{lang:?} {key}");
+            }
+        }
     }
 
     #[test]

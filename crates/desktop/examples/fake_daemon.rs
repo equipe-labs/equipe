@@ -12,6 +12,8 @@
 //! `FAKE_PHONE_QA=<file>` ends the conversation on a phone test's report kept in that file;
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
+//! `FAKE_STALLED=1` adds a stalled run (T-90), a paused one (T-91) and one queued (T-92);
+//! Resume, Requeue and Reassign on T-90 queue it as the daemon does;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
 //! `FAKE_HELPERS=1` puts backend on Nemotron with equipe's helpers at work, one looking
 //! stuck (`fake_daemon/helpers.rs`; `codex`: a quiet subagent of Codex's own instead);
@@ -404,6 +406,44 @@ fn ticket(id: u32, status: &str, project: &str, who: &str, title: &str, body: &s
     serde_json::from_value(serde_json::json!({"id": id, "title": title, "body": body, "status": status, "owner": who, "assignee": who, "project": repo(project), "depends_on": deps, "branch": branch, "created_by": "pm", "note": note})).unwrap()
 }
 
+/// `FAKE_STALLED=1`: runs the daemon keeps of three tickets — one stalled
+/// (its turn ended without a hand-in), one paused (its member isn't on it),
+/// one the person already brought back, queued for its member.
+fn stalled() -> bool {
+    std::env::var("FAKE_STALLED").is_ok_and(|v| v == "1")
+}
+
+fn stalled_tickets() -> Vec<Ticket> {
+    let now = unix();
+    let run = |state: &str, lease: u64, reason: Option<&str>, head: Option<&str>, dirty: Option<u32>| {
+        serde_json::from_value(serde_json::json!({
+            "state": state, "session": 7, "operation": "start:7", "generation": 2,
+            "heartbeat_at": now - 600, "lease_expires_at": lease, "reason": reason, "head": head, "dirty": dirty,
+        }))
+        .ok()
+        .map(Box::new)
+    };
+    let mut stuck = ticket(
+        90,
+        "in_progress",
+        "web",
+        "frontend",
+        "Coupon field on the checkout page",
+        "- [ ] A coupon can be applied and removed\n- [ ] The total updates at once",
+        &[],
+        Some("equipe/t-90-coupon"),
+        Some("Reopened by the PM: The coupon field overlaps the total at 760px."),
+    );
+    stuck.worktree = Some(repo("web").join(".equipe-worktrees/t90-6af01aaf"));
+    stuck.remaining = vec!["The coupon API key for staging".into()];
+    stuck.execution = run("stalled", 0, Some(equipe_core::protocol::stall_reason::LEASE_EXPIRED), Some("3f9c2a1"), Some(3));
+    let mut paused = ticket(91, "in_progress", "api", "backend", "Refund webhook retries", "", &[], Some("equipe/t-91-refunds"), None);
+    paused.execution = run("active", now + 90, None, None, None);
+    let mut queued = ticket(92, "todo", "app", "designer", "Settings screen spacing pass", "", &[], Some("equipe/t-92-spacing"), None);
+    queued.execution = run("queued", 0, None, None, None);
+    vec![stuck, paused, queued]
+}
+
 /// The board: work in every state, across three projects.
 fn board() -> Vec<Ticket> {
     if crowd::on() {
@@ -458,6 +498,9 @@ fn board() -> Vec<Ticket> {
     }
     if your_turn().is_some() {
         out.push(turn_ticket());
+    }
+    if stalled() {
+        out.extend(stalled_tickets());
     }
     if replies::on() {
         out.extend(replies::tickets(|id, title, note| ticket(id, "review", "web", "frontend", title, "", &[], Some("equipe/frontend-t4-6ad33ac5"), Some(note))));
@@ -1014,11 +1057,33 @@ fn run_commands(commands: Vec<Command>, events: &broadcast::Sender<Event>) {
 fn on_ticket_command(command: &Command) -> Option<Ticket> {
     let mut all = tickets().lock().unwrap();
     let id = match command {
-        Command::Accept { ticket, .. } | Command::Merge { ticket, .. } | Command::KeepOnBranch { ticket, .. } | Command::Reopen { ticket, .. } | Command::Resume { ticket, .. } | Command::Cancel { ticket, .. } => *ticket,
+        Command::Accept { ticket, .. }
+        | Command::Merge { ticket, .. }
+        | Command::KeepOnBranch { ticket, .. }
+        | Command::Reopen { ticket, .. }
+        | Command::Resume { ticket, .. }
+        | Command::Requeue { ticket, .. }
+        | Command::Cancel { ticket, .. } => *ticket,
         _ => return None,
     };
     let t = all.iter_mut().find(|t| t.id == id)?;
     match command {
+        // A stalled run brought back: queued for its owner, everything else kept, as the daemon does.
+        Command::Requeue { how, operation, .. } => {
+            use equipe_core::protocol::{ExecutionState, Recovery};
+            let run = t.execution.as_mut().filter(|e| e.state == ExecutionState::Stalled)?;
+            run.state = ExecutionState::Queued;
+            run.operation = operation.clone();
+            run.generation += 1;
+            run.reason = None;
+            let member = t.assignee.take().unwrap_or_default();
+            t.owner = Some(match how {
+                Recovery::Resume => member,
+                Recovery::Requeue => member.rsplit_once('-').map_or(member.clone(), |(role, _)| role.to_owned()),
+                Recovery::Reassign(to) => to.clone(),
+            });
+            t.status = TicketStatus::Todo;
+        }
         Command::Accept { .. } if t.status == TicketStatus::Proposed => t.status = TicketStatus::Todo,
         Command::Accept { .. } => {
             t.status = TicketStatus::Done;

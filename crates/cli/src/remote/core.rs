@@ -68,6 +68,7 @@ pub enum Action {
     UploadCancel { device: String, upload_id: String },
 }
 
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub name: String,
@@ -180,6 +181,7 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Accept { .. }
         | Command::Reopen { .. }
         | Command::Resume { .. }
+        | Command::Requeue { .. }
         | Command::Cancel { .. }
         | Command::Decide { .. }
         | Command::AnswerQuestions { .. }
@@ -230,6 +232,7 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::KeepOnBranch { squad, .. }
         | Command::Reopen { squad, .. }
         | Command::Resume { squad, .. }
+        | Command::Requeue { squad, .. }
         | Command::Cancel { squad, .. }
         | Command::SetMode { squad, .. }
         | Command::Decide { squad, .. }
@@ -1383,7 +1386,7 @@ pub(crate) mod tests {
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["seq"].as_u64(), opened["rpc"]["params"]["approval"]["action"].as_str()), (Some(0), Some("rm -rf build")));
         // A ticket handed in pushes once.
-        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, design_qa: None, plan: None, created_by: "pm".into(), note: None, asks: vec![], remaining: vec![], images: vec![], updated_at: None, priority: Default::default(), rank: 0 };
+        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, plan: None, created_by: "pm".into(), note: None, asks: vec![], remaining: vec![], images: vec![], updated_at: None, priority: Default::default(), rank: 0 };
         assert_eq!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).len(), 1);
         assert!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).is_empty());
         t.status = TicketStatus::Done;
@@ -1747,4 +1750,3 @@ pub(crate) mod tests {
         assert!(tokio_tungstenite::connect_async(again).await.is_err());
     }
 }
-

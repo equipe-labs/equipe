@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use equipe_core::board;
 use equipe_core::protocol::{
-    Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionSpec,
+    Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, Recovery, RunView, SessionId, SessionInfo, SessionSpec,
     SessionState, Snapshot, Ticket, TicketDraft, TicketEdit, TicketId, TicketStatus, Transcript, new_session_id,
 };
 use equipe_core::i18n::label;
@@ -167,18 +167,21 @@ impl BoardMenu {
 pub enum Section {
     Permission,
     Waiting,
+    /// Work in progress whose run stopped without a hand-in.
+    Stalled,
     Review,
     Proposed,
     NotOnMain,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [Section::Permission, Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain];
+    pub const ALL: [Section; 6] = [Section::Permission, Section::Waiting, Section::Stalled, Section::Review, Section::Proposed, Section::NotOnMain];
 
     pub fn label(self) -> &'static str {
         match self {
             Section::Permission => t!("app.section_permission"),
             Section::Waiting => status_word(TicketStatus::Waiting),
+            Section::Stalled => t!("app.section_stalled"),
             Section::Review => status_word(TicketStatus::Review),
             Section::Proposed => status_word(TicketStatus::Proposed),
             Section::NotOnMain => t!("app.not_on_main"),
@@ -205,6 +208,57 @@ pub fn status_word(status: TicketStatus) -> &'static str {
         TicketStatus::Done => t!("app.status_done"),
         TicketStatus::Cancelled => t!("app.status_cancelled"),
     }
+}
+
+/// What a ticket's run is called — the app's words for the protocol's one
+/// reading ([`Ticket::run_view`]): only the states that need a word.
+pub fn run_word(view: RunView) -> Option<&'static str> {
+    match view {
+        RunView::Active => None,
+        RunView::Paused => Some(t!("app.run_paused")),
+        RunView::Stalled => Some(t!("app.run_stalled")),
+        RunView::Queued => Some(t!("app.run_queued")),
+    }
+}
+
+/// Why a run stalled, from the daemon's code; one this screen doesn't know is said plainly.
+pub fn stall_reason_words(code: Option<&str>) -> &'static str {
+    use equipe_core::protocol::stall_reason;
+    match code {
+        Some(stall_reason::LEASE_EXPIRED) => t!("app.run_reason_lease_expired"),
+        Some(stall_reason::NOT_RESUMED) => t!("app.run_reason_not_resumed"),
+        Some(stall_reason::MIGRATED) => t!("app.run_reason_migrated"),
+        _ => t!("app.run_reason_unknown"),
+    }
+}
+
+/// The person's three ways back for a stalled ticket, each on the same
+/// ticket, branch and worktree — never a new ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoverHow {
+    /// Its member goes on, in a fresh session (a).
+    Resume,
+    /// The next free member of its role starts a fresh run (r).
+    Requeue,
+    /// A member the person picks takes it over (o, then 1–9).
+    Reassign,
+}
+
+/// The command a recovery's confirmation sends, under the question's own
+/// `key`: the same question answered twice is one recovery. `None` for a
+/// reassignment with nobody picked.
+pub fn recover_command(squad: &str, t: &Ticket, how: RecoverHow, to: Option<&str>, key: u64) -> Option<Command> {
+    let how = match how {
+        RecoverHow::Resume => Recovery::Resume,
+        RecoverHow::Requeue => Recovery::Requeue,
+        RecoverHow::Reassign => Recovery::Reassign(to.filter(|m| !m.is_empty())?.to_owned()),
+    };
+    Some(Command::Requeue { squad: squad.to_owned(), ticket: t.id, operation: format!("recover:{}:{key:x}", t.id), how })
+}
+
+/// Whether a ticket's run stopped and waits for the person to bring it back.
+pub fn is_stalled(t: &Ticket) -> bool {
+    t.run_view(0, None) == Some(RunView::Stalled)
 }
 
 /// What accepting code lands: merge and push, merge only, or leave it on its branch.
@@ -669,6 +723,9 @@ pub enum Question {
     Method(TicketId),
     /// n on work under way or handed in: cancel it? (y)
     Cancel(TicketId),
+    /// a, r or o on a stalled ticket: bring it back this way? (y; a
+    /// reassignment picks its member, 1–9). The key is the question's own.
+    Recover(TicketId, RecoverHow, u64),
 }
 
 pub struct App {
@@ -1589,6 +1646,13 @@ impl App {
                     self.next_after(ticket.id);
                 }
                 return Some(commands);
+            }
+            // A stalled run: r requeues it for its role, o reassigns it — each asked back first.
+            KeyCode::Char('r') if ticket.as_ref().is_some_and(is_stalled) => {
+                self.ask(Question::Recover(ticket?.id, RecoverHow::Requeue, new_session_id()));
+            }
+            KeyCode::Char('o') if ticket.as_ref().is_some_and(is_stalled) => {
+                self.ask(Question::Recover(ticket?.id, RecoverHow::Reassign, new_session_id()));
             }
             KeyCode::Char('r') if ticket.as_ref().is_some_and(|t| t.status == TicketStatus::Waiting) => {
                 let ticket = ticket?;
@@ -3231,6 +3295,11 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         let Some(t) = self.tickets.iter().find(|t| t.id == ticket).cloned() else {
             return vec![Command::Accept { squad: self.squad.clone(), ticket }];
         };
+        // Its run stopped: yes resumes it with its member — asked back first.
+        if is_stalled(&t) {
+            self.ask(Question::Recover(ticket, RecoverHow::Resume, new_session_id()));
+            return Vec::new();
+        }
         if needs_way(&t) {
             let project = self.project_label(&t);
             return match self.merge_ways.get(&project).copied() {
@@ -3292,8 +3361,47 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             Question::Way(id) => t!("app.ask_way", id = id, project = project(self, id), ways = ways),
             Question::Method(id) => t!("app.ask_method", id = id, ways = ways),
             Question::Cancel(id) => t!("app.ask_cancel", id = id),
+            Question::Recover(id, how, _) => {
+                let t = self.tickets.iter().find(|t| t.id == id);
+                let who = t.and_then(|t| t.assignee.clone().or_else(|| t.owner.clone())).unwrap_or_default();
+                match how {
+                    RecoverHow::Resume => t!("app.ask_resume_run", id = id, who = who),
+                    RecoverHow::Requeue => t!("app.ask_requeue_run", id = id, role = t.map(|t| self.requeue_role(t)).unwrap_or_default()),
+                    RecoverHow::Reassign => {
+                        let to = t.map(|t| self.reassign_to(t)).unwrap_or_default();
+                        let list = to.iter().take(9).enumerate().map(|(i, m)| format!("{} {m}", i + 1)).collect::<Vec<_>>().join(" · ");
+                        t!("app.ask_reassign_run", id = id, members = list)
+                    }
+                }
+            }
         });
         self.question = Some(question);
+    }
+
+    /// Whether a ticket's run is running, paused, stalled or queued — the
+    /// protocol's one reading, with what this screen knows of its members.
+    pub fn run_view(&self, t: &Ticket) -> Option<RunView> {
+        let working = t.assignee.as_ref().map(|_| self.agents.iter().any(|a| a.ticket == Some(t.id) && a.state == AgentState::Working));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        t.run_view(now, working)
+    }
+
+    /// The role a requeue hands a stalled ticket to: its member's.
+    pub fn requeue_role(&self, t: &Ticket) -> String {
+        let who = t.assignee.as_deref().or(t.owner.as_deref()).unwrap_or_default();
+        if let Some(m) = self.agents.iter().filter_map(|a| a.member.as_ref()).find(|m| m.name == who) {
+            return m.role.clone();
+        }
+        match who.rsplit_once('-') {
+            Some((role, n)) if !role.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => role.to_owned(),
+            _ => who.to_owned(),
+        }
+    }
+
+    /// Who a stalled ticket can go to: the team but the PM and its own member.
+    pub fn reassign_to(&self, t: &Ticket) -> Vec<String> {
+        let now = t.assignee.as_deref().or(t.owner.as_deref());
+        self.agents.iter().filter(|a| a.is_open() && !a.is_pm()).filter_map(|a| a.member.as_ref()).filter(|m| Some(m.name.as_str()) != now).map(|m| m.name.clone()).collect()
     }
 
     /// The answer to a question; `None` for any other key, which puts it away.
@@ -3317,6 +3425,21 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 self.flash = Some(t!("app.cancelled", id = ticket));
                 self.next_after(ticket);
                 vec![Command::Cancel { squad: self.squad.clone(), ticket }]
+            }
+            (Question::Recover(id, how, card), KeyCode::Char('y') | KeyCode::Enter, _) if how != RecoverHow::Reassign => {
+                let t = self.tickets.iter().find(|t| t.id == id).cloned()?;
+                let command = recover_command(&self.squad, &t, how, None, card)?;
+                self.flash = Some(t!("app.recovered", id = id));
+                self.next_after(id);
+                vec![command]
+            }
+            (Question::Recover(id, RecoverHow::Reassign, card), KeyCode::Char(c @ '1'..='9'), _) => {
+                let t = self.tickets.iter().find(|t| t.id == id).cloned()?;
+                let to = self.reassign_to(&t).get(c as usize - '1' as usize).cloned()?;
+                let command = recover_command(&self.squad, &t, RecoverHow::Reassign, Some(&to), card)?;
+                self.flash = Some(t!("app.recovered", id = id));
+                self.next_after(id);
+                vec![command]
             }
             (_, KeyCode::Char('n') | KeyCode::Esc, _) => {
                 self.flash = None;
@@ -3488,6 +3611,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
 pub fn section_of(t: &Ticket) -> Option<Section> {
     match t.status {
         TicketStatus::Waiting => Some(Section::Waiting),
+        TicketStatus::InProgress if is_stalled(t) => Some(Section::Stalled),
         TicketStatus::Review if t.in_design_qa() => None,
         TicketStatus::Review => Some(Section::Review),
         TicketStatus::Proposed => Some(Section::Proposed),
@@ -3858,6 +3982,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,
@@ -5091,6 +5216,50 @@ mod tests {
         assert!(enter(&mut app).is_empty(), "/merge asks how");
         type_text(&mut app, "hi");
         assert_eq!((app.question, app.composer.text()), (None, "hi"));
+    }
+
+    #[test]
+    fn a_stalled_run_is_brought_back_from_the_board_each_way_asked_first() {
+        let snapshot = Snapshot { sessions: vec![info(1, member("pm", "pm")), info(2, member("frontend", "frontend")), info(3, member("backend", "backend"))], ..empty() };
+        let (mut app, _) = App::from_snapshot("/repo".into(), snapshot, &[]);
+        let mut stalled = ticket(9, TicketStatus::InProgress);
+        stalled.assignee = Some("frontend".into());
+        stalled.branch = Some("equipe/t-9".into());
+        stalled.execution = serde_json::from_value(serde_json::json!({
+            "state": "stalled", "session": 1, "operation": "start:1", "generation": 1, "heartbeat_at": 0, "lease_expires_at": 0, "reason": "lease_expired", "head": "3f9c2a1", "dirty": 2
+        }))
+        .ok()
+        .map(Box::new);
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: stalled.clone() });
+        // The same reading and words as the app: stalled, in what waits for the person.
+        assert_eq!(app.run_view(&stalled), Some(RunView::Stalled));
+        assert_eq!(section_of(&stalled), Some(Section::Stalled));
+        assert_eq!(run_word(RunView::Stalled), Some("Stalled"));
+        assert_eq!(run_word(RunView::Active), None);
+        app.pane = Pane::Board;
+        app.board_selected = Some(9);
+        let requeue = |how: Recovery, sent: &[Command]| matches!(sent, [Command::Requeue { ticket: 9, how: h, operation, .. }] if *h == how && operation.starts_with("recover:9:"));
+        // a: resume with its member — asked back, then sent; n puts it away.
+        assert!(app.on_key(key(KeyCode::Char('a')), Instant::now()).is_empty());
+        assert!(matches!(app.question, Some(Question::Recover(9, RecoverHow::Resume, _))), "{:?}", app.question);
+        assert!(app.flash.as_deref().is_some_and(|f| f.contains("frontend")), "{:?}", app.flash);
+        assert!(requeue(Recovery::Resume, &app.on_key(key(KeyCode::Char('y')), Instant::now())));
+        // r: requeue for its role.
+        app.board_selected = Some(9);
+        assert!(app.on_key(key(KeyCode::Char('r')), Instant::now()).is_empty());
+        assert!(app.on_key(key(KeyCode::Char('n')), Instant::now()).is_empty(), "n puts it away");
+        app.on_key(key(KeyCode::Char('r')), Instant::now());
+        assert!(requeue(Recovery::Requeue, &app.on_key(key(KeyCode::Enter), Instant::now())));
+        // o: reassign, picking from the team but the PM and its own member.
+        app.board_selected = Some(9);
+        app.on_key(key(KeyCode::Char('o')), Instant::now());
+        assert_eq!(app.reassign_to(&stalled), ["backend"]);
+        assert!(requeue(Recovery::Reassign("backend".into()), &app.on_key(key(KeyCode::Char('1')), Instant::now())));
+        // One question's key is one recovery; the next question, another.
+        let a = recover_command("acme", &stalled, RecoverHow::Resume, None, 7);
+        assert_eq!(a, recover_command("acme", &stalled, RecoverHow::Resume, None, 7));
+        assert_ne!(a, recover_command("acme", &stalled, RecoverHow::Resume, None, 8));
+        assert_eq!(recover_command("acme", &stalled, RecoverHow::Reassign, None, 7), None);
     }
 
     #[test]

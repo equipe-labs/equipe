@@ -19,9 +19,9 @@ use ratatui::widgets::Paragraph;
 
 use equipe_core::board::{project_name, ticket_ref, ticket_ref_from};
 use equipe_core::i18n::label;
-use equipe_core::protocol::{Engine, Entry, Estimate, Priority, SessionId, TicketId, TicketStatus};
+use equipe_core::protocol::{Engine, Entry, Estimate, Priority, RunView, SessionId, TicketId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, BoardMenu, Compacted, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
+use super::app::{Agent, AgentState, App, BoardMenu, Compacted, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, run_word, section_of, stall_reason_words, status_word, tool_verb};
 use super::markdown;
 use crate::ui;
 use equipe_core::t;
@@ -2413,6 +2413,10 @@ fn diff_short(app: &App, t: &equipe_core::protocol::Ticket) -> Option<String> {
 /// proposed it, how big the change is — and when it is expected done.
 fn row_meta(app: &App, t: &equipe_core::protocol::Ticket, theme: Theme) -> (Vec<Span<'static>>, String, Style, String) {
     let mut flags = Vec::new();
+    // Its run, in the words every screen uses: stalled, paused, queued.
+    if let Some(word) = app.run_view(t).and_then(run_word) {
+        flags.push(Span::styled(format!("{word} "), theme.member(1)));
+    }
     if let Some(dep) = app.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
         flags.push(Span::styled(format!("{} ", t!("view.flag_blocked", id = dep)), theme.member(6)));
     }
@@ -2602,7 +2606,9 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
         facts.push(who.clone());
     }
+    let run = app.run_view(t);
     facts.push(match t.off_main {
+        _ if run.and_then(run_word).is_some() => run.and_then(run_word).unwrap_or_default(),
         _ if t.in_design_qa() => t!("app.status_design_qa"),
         _ if !t.not_on_main() => status_word(t.status),
         Some(equipe_core::protocol::OffMain::Kept) => t!("app.accepted_kept"),
@@ -2612,6 +2618,39 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         facts.push(project_name(project));
     }
     lines.extend(wrapped(Vec::new(), &facts.join(" · "), theme.dim(), 0, width));
+    // Its run, as the app says it: why it reads so — and, stalled, what every way back keeps.
+    if let Some(view) = run.filter(|v| *v != RunView::Active) {
+        let who = t.assignee.clone().or_else(|| t.owner.clone()).unwrap_or_default();
+        let why = match view {
+            RunView::Stalled => stall_reason_words(t.execution.as_ref().and_then(|e| e.reason.as_deref())).to_owned(),
+            RunView::Queued => t!("app.run_queued_for", who = who),
+            _ => t!("app.run_paused_why", who = who),
+        };
+        lines.extend(wrapped(Vec::new(), &why, theme.accent(), 0, width));
+        if view == RunView::Stalled {
+            let run = t.execution.as_deref();
+            let none = "—".to_owned();
+            let dirty = match run.and_then(|r| r.dirty) {
+                Some(n) => t!("app.run_dirty_n", n = n),
+                None => none.clone(),
+            };
+            let reopened = t.note.as_deref().filter(|n| n.starts_with("Reopened") || n.starts_with("Design QA by ")).map(str::to_owned);
+            let mut kept = vec![
+                (t!("app.run_branch"), t.branch.clone().unwrap_or_else(|| none.clone())),
+                (t!("app.run_worktree"), t.worktree.as_ref().map_or_else(|| none.clone(), |w| w.display().to_string())),
+                (t!("app.run_head"), run.and_then(|r| r.head.clone()).unwrap_or_else(|| none.clone())),
+                (t!("app.run_dirty"), dirty),
+            ];
+            if let Some(blocker) = t.remaining.first().cloned().or(reopened) {
+                kept.push((t!("app.run_blocker"), blocker));
+            }
+            let column = kept.iter().map(|(label, _)| cols(label) + 1).max().unwrap_or(0).max(10);
+            for (label, value) in kept {
+                lines.push(Line::from(vec![Span::styled(pad(label, column), theme.dim()), Span::raw(ui::fit(&ui::cell_safe(&value), width.saturating_sub(column)))]));
+            }
+            lines.extend(wrapped(Vec::new(), t!("app.run_kept"), theme.dim(), 0, width));
+        }
+    }
     // What it waits for, and what waits for it.
     let mark = status_mark;
     let named = |id: TicketId| -> String {
@@ -2660,6 +2699,11 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
                 actions.push(("m", t!("view.action_merge").into()));
             }
             actions.push(("r", t!("view.action_reopen").into()));
+        }
+        TicketStatus::InProgress if run == Some(RunView::Stalled) => {
+            actions.push(("a", t!("app.recover_resume").into()));
+            actions.push(("r", t!("app.recover_requeue").into()));
+            actions.push(("o", t!("app.recover_reassign").into()));
         }
         TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Cancelled => {}
     }
@@ -3138,6 +3182,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,

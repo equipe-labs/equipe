@@ -605,5 +605,14 @@
   "phone.install_action": "AXe {version} (Open Source, MIT, etwa {size} MB) in {folder} installieren, damit Mitglieder den iOS-Simulator sehen, antippen und darin tippen können. Sonst ändert sich nichts am Mac, und es braucht keine Berechtigung.",
   "phone.install_why": "{name} testet die App im eigenen iOS-Simulator des Tickets.",
   "notice.qa_report": "▶ {name} hat {flow} auf T-{ticket} getestet: {passed} von {steps} Schritten bestanden · {video}",
-  "disk.kind.recordings": "Handy-Aufnahmen"
+  "disk.kind.recordings": "Handy-Aufnahmen",
+  "news.stalled": "Der Lauf von T-{id} hat ohne Abgabe aufgehört; Branch und Worktree bleiben, wie sie sind. Fortsetzen, neu einreihen oder neu zuweisen auf seiner Karte · {title}.",
+  "news.recovery_resume": "T-{id} geht mit {to} in einer neuen Sitzung weiter, auf demselben Branch und Worktree · {title}.",
+  "news.recovery_requeue": "T-{id} ist für den nächsten freien {to} eingereiht, auf demselben Branch und Worktree · {title}.",
+  "news.recovery_reassign": "T-{id} geht an {to}, auf demselben Branch und Worktree · {title}.",
+  "notice.recovery_applied": "T-{id} wurde schon zurückgeholt; sonst ist nichts passiert.",
+  "error.recovery_not_stalled": "T-{id} ist nicht mehr hängen geblieben, daher hat sich nichts geändert.",
+  "error.recovery_member_gone": "{name} ist nicht mehr im Squad: Reihe T-{id} für seine Rolle neu ein oder weise es neu zu.",
+  "error.recovery_failed": "T-{id} konnte nicht zurückgeholt werden: {err}",
+  "error.recovery_no_operation": "Um T-{id} zurückzuholen, braucht es den Schlüssel der Karte; versuch es auf der Karte noch einmal."
 }

@@ -801,7 +801,7 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
         .rounded(px(10.))
         .bg(p.wash)
         .child(icons::status(p, t.status, 11.))
-        .child(div().text_size(px(11.5)).text_color(icons::color(p, t.status)).child(crate::state::state_word(t)));
+        .child(div().text_size(px(11.5)).text_color(icons::color(p, t.status)).child(model.state_word_of(t)));
     let project = model.ticket_project_name(t).map(|name| {
         h_flex()
             .min_w_0()

@@ -6,7 +6,7 @@
 
 use equipe_core::t;
 
-use equipe_core::protocol::{OffMain, Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{OffMain, RunView, Ticket, TicketId, TicketStatus};
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -297,7 +297,7 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
                 .items_center()
                 .child(icons::status(p, t.status, 14.))
                 .child(div().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{}", t.id)))
-                .child(div().text_size(px(12.)).text_color(icons::color(p, t.status)).child(crate::state::state_word(t))),
+                .child(div().text_size(px(12.)).text_color(icons::color(p, t.status)).child(model.state_word_of(t))),
         )
         .child(super::tickets::title(shell, t, if wide { 22. } else { 16. }, cx))
         .child(h_flex().flex_wrap().gap_x_3().gap_y_1().text_size(px(12.)).text_color(p.muted).children(facts))
@@ -403,6 +403,7 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             );
         }
         _ => {
+            out.extend(run_block(shell, t));
             if t.status == TicketStatus::InProgress {
                 let mut live: Vec<String> = Vec::new();
                 if let Some(a) = live_activity(model, t) {
@@ -437,6 +438,95 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
         out.push(activity(shell, t.id, 3));
     }
     out
+}
+
+/// Its run, when it needs a word: stalled — why, and what each way back keeps
+/// — paused or queued, a line. The same words the board's chip and the
+/// sidebar's count go by.
+fn run_block(shell: &Shell, t: &Ticket) -> Option<AnyElement> {
+    let p = shell.palette;
+    let model = &shell.model;
+    let view = model.run_view(t)?;
+    let word = crate::state::run_word(view)?;
+    let reason = model.run_reason(t).unwrap_or_default();
+    let tone = match view {
+        RunView::Stalled => p.red,
+        RunView::Paused => p.amber,
+        _ => p.accent,
+    };
+    let line = v_flex()
+        .gap_1()
+        .pl_3()
+        .py_1()
+        .border_l_2()
+        .border_color(tone)
+        .text_size(px(13.))
+        .line_height(px(20.))
+        .child(div().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(word))
+        .child(div().text_color(p.text2).child(reason));
+    if view != RunView::Stalled {
+        return Some(line.into_any_element());
+    }
+    Some(
+        v_flex()
+            .gap_3()
+            .child(line)
+            .child(kept_facts(p, t, t.remaining.is_empty()))
+            .child(
+                v_flex().gap_1().children(rules::RecoverHow::ALL.into_iter().map(|how| {
+                    h_flex()
+                        .gap_2()
+                        .items_start()
+                        .text_size(px(12.5))
+                        .line_height(px(18.))
+                        .child(div().w(px(LABEL - 24.)).flex_none().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(how.label()))
+                        .child(div().flex_1().min_w_0().text_color(p.text2).child(recover_what(model, t, how)))
+                })),
+            )
+            .into_any_element(),
+    )
+}
+
+/// What each way back does, for this ticket.
+fn recover_what(model: &crate::state::Model, t: &Ticket, how: rules::RecoverHow) -> String {
+    match how {
+        rules::RecoverHow::Resume => t!("recover.resume_what", who = rules::stalled_member(t).unwrap_or("—")),
+        rules::RecoverHow::Requeue => t!("recover.requeue_what", role = rules::requeue_role(model, t)),
+        rules::RecoverHow::Reassign => t!("recover.reassign_what").to_owned(),
+    }
+}
+
+/// What a recovery keeps, label by value, and that it is kept as it is.
+fn kept_facts(p: Palette, t: &Ticket, blocker: bool) -> AnyElement {
+    let kept = rules::kept(t);
+    let none = || t!("recover.unknown").to_owned();
+    let dirty = match kept.dirty {
+        Some(0) => t!("recover.dirty_none").to_owned(),
+        Some(n) => t!("recover.dirty_n", n = n),
+        None => none(),
+    };
+    let mut facts = vec![
+        (t!("recover.branch"), kept.branch.unwrap_or_else(none), true),
+        (t!("recover.worktree"), kept.worktree.unwrap_or_else(none), true),
+        (t!("recover.head"), kept.head.unwrap_or_else(none), true),
+        (t!("recover.dirty"), dirty, false),
+    ];
+    if let Some(blocker) = kept.blocker.filter(|_| blocker) {
+        facts.push((t!("recover.blocker"), blocker, false));
+    }
+    v_flex()
+        .gap_1()
+        .children(facts.into_iter().map(|(k, v, mono)| {
+            h_flex()
+                .gap_3()
+                .items_start()
+                .text_size(px(12.5))
+                .line_height(px(18.))
+                .child(div().w(px(LABEL - 24.)).flex_none().text_color(p.muted).child(k))
+                .child(div().flex_1().min_w_0().text_color(p.text2).when(mono, |d| d.font_family(MONO).text_size(px(12.))).child(v))
+        }))
+        .child(div().pt_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("recover.kept")))
+        .into_any_element()
 }
 
 /// The files a branch changed, each with its lines; D for the whole diff.
@@ -665,6 +755,13 @@ fn foot(shell: &Shell, t: &Ticket, width: f32, cx: &mut Context<Shell>) -> AnyEl
                 add(btn(p, "p-keep", t!("peek.keep_on_branch").into(), None, false, can).on_click(cx.listener(move |this, _, _, cx| this.board_keep(id, cx))), false);
             }
         }
+        // Its run stopped: three ways back, each said back on its card first.
+        TicketStatus::InProgress if model.run_view(t) == Some(RunView::Stalled) => {
+            for (how, bid, key) in [(rules::RecoverHow::Resume, "p-resume", Some("A")), (rules::RecoverHow::Requeue, "p-requeue", None), (rules::RecoverHow::Reassign, "p-reassign", None)] {
+                let primary = how == rules::RecoverHow::Resume;
+                add(btn(p, bid, how.label().into(), key, primary, can).on_click(cx.listener(move |this, _, _, cx| this.board_recover_open(id, how, cx))), primary);
+            }
+        }
         _ => {}
     }
     if rules::who(t).is_some() {
@@ -681,7 +778,7 @@ fn foot(shell: &Shell, t: &Ticket, width: f32, cx: &mut Context<Shell>) -> AnyEl
     }
     let question = shell.board.flow.filter(|f| match f {
         Flow::Reply(x) | Flow::Cancel(x) | Flow::Method(x) => *x == id,
-        Flow::Way { ticket, .. } => *ticket == id,
+        Flow::Way { ticket, .. } | Flow::Recover { ticket, .. } => *ticket == id,
         _ => false,
     });
     let card = question.map(|flow| question_card(shell, flow, t, &project, cx));
@@ -799,6 +896,56 @@ fn question_card(shell: &Shell, flow: Flow, t: &Ticket, project: &str, cx: &mut 
                         })))
                         .child(btn(p, "reply-send", send, Some("⌘⏎"), true, can && !empty).on_click(cx.listener(|this, _, w, cx| this.board_send_reply(w, cx)))),
                 )
+                .into_any_element()
+        }
+        Flow::Recover { how, key, .. } => {
+            let model = &shell.model;
+            let ask_text = match how {
+                rules::RecoverHow::Resume => t!("recover.ask_resume", id = id, who = rules::stalled_member(t).unwrap_or("—")),
+                rules::RecoverHow::Requeue => t!("recover.ask_requeue", id = id, role = rules::requeue_role(model, t)),
+                rules::RecoverHow::Reassign => t!("recover.ask_reassign", id = id),
+            };
+            let no = btn(p, "recover-no", t!("peek.cancel"), Some("N"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                this.board.flow = None;
+                cx.notify();
+            }));
+            let choices = if how == rules::RecoverHow::Reassign {
+                let to = rules::reassign_to(model, t);
+                if to.is_empty() {
+                    div().text_size(px(12.5)).text_color(p.muted).child(t!("recover.nobody")).into_any_element()
+                } else {
+                    v_flex()
+                        .gap_1()
+                        .children(to.into_iter().take(9).enumerate().map(|(i, name)| {
+                            let role = model.members.iter().find(|m| m.name == name).map_or(name.clone(), |m| m.role.clone());
+                            let said = SharedString::from(t!("recover.reassign_to", who = name));
+                            let face = crate::theme::avatar(p, &role, &name, 15.);
+                            h_flex()
+                                .id(("recover-to", i))
+                                .h(px(28.))
+                                .px_2()
+                                .gap_2()
+                                .items_center()
+                                .rounded(px(6.))
+                                .text_size(px(13.))
+                                .when(can, |d| d.cursor_pointer().hover(move |s| s.bg(p.wash)))
+                                .on_click(cx.listener(move |this, _, _, cx| this.board_recover_send(id, rules::RecoverHow::Reassign, Some(&name), key, cx)))
+                                .child(kbd(p, ["1", "2", "3", "4", "5", "6", "7", "8", "9"][i]))
+                                .child(face)
+                                .child(said)
+                        }))
+                        .into_any_element()
+                }
+            } else {
+                btn(p, "recover-yes", how.label(), Some("Y"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_recover_send(id, how, None, key, cx))).into_any_element()
+            };
+            card()
+                .child(ask(ask_text))
+                .child(div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text2).child(recover_what(model, t, how)))
+                .child(div().w_full().h(px(1.)).bg(p.hair))
+                .child(div().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(format!("T-{id} · {}", t.title)))
+                .child(kept_facts(p, t, true))
+                .child(h_flex().gap_2().items_start().child(choices).child(div().flex_1()).child(no))
                 .into_any_element()
         }
         Flow::Bulk { .. } | Flow::SaveView => div().into_any_element(),

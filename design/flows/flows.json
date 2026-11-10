@@ -336,6 +336,40 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_ACCEPT=1; script `menu:inbox;wait:600;cpick`"
             }
           ]
+        },
+        {
+          "id": "stalled",
+          "title": "A stalled run brought back (Resume · Requeue · Reassign)",
+          "note": "In progress, its run stopped without a hand-in: why, what each way back keeps (branch, worktree, commit, uncommitted files, latest blocker), and each way asked back before it goes. Reassign lists the team to pick from (1–9). The board row and the sidebar's count read the same run state.",
+          "source": [
+            "crates/desktop/src/views/peek.rs",
+            "crates/desktop/src/board.rs",
+            "crates/desktop/src/state.rs"
+          ],
+          "expects": [
+            "default",
+            "long"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "Default",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_STALLED=1; script `menu:inbox;wait:600;ppick:90`"
+            },
+            {
+              "id": "resume",
+              "label": "Resume asked back before it goes",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_STALLED=1; script `menu:inbox;wait:600;ppick:90;bkey:a`"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_STALLED=1; script `menu:inbox;wait:600;ppick:90;bkey:a`; EQUIPE_LANG=de"
+            }
+          ]
         }
       ]
     },

@@ -71,6 +71,9 @@ state("inbox/your-turn/long", "menu:inbox;wait:600;ppick:117", {"FAKE_TURN": "fi
 state("inbox/team-change/default", "menu:inbox;wait:600;tpick:7001", {"FAKE_TEAM": "1"})
 state("inbox/routine/default", "menu:inbox;wait:600;rpick:8001", {"FAKE_ROUTINE": "1"})
 state("inbox/accept/default", "menu:inbox;wait:600;cpick", {"FAKE_ACCEPT": "1"})
+state("inbox/stalled/default", "menu:inbox;wait:600;ppick:90", {"FAKE_STALLED": "1"})
+state("inbox/stalled/resume", "menu:inbox;wait:600;ppick:90;bkey:a", {"FAKE_STALLED": "1"})
+state("inbox/stalled/long", "menu:inbox;wait:600;ppick:90;bkey:a", {"FAKE_STALLED": "1"}, lang="de")
 
 # ── Conversation ───────────────────────────────────────────────────────────
 state("conversation/chat/default", "chat")
@@ -241,6 +244,7 @@ SCREENS = {
     "inbox/team-change": ("A change to the team", ["views/team.rs", "team.rs"], None),
     "inbox/routine": ("A routine the PM proposes", ["views/routine.rs", "routine.rs"], None),
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
+    "inbox/stalled": ("A stalled run brought back (Resume · Requeue · Reassign)", ["views/peek.rs", "board.rs", "state.rs"], "In progress, its run stopped without a hand-in: why, what each way back keeps (branch, worktree, commit, uncommitted files, latest blocker), and each way asked back before it goes. Reassign lists the team to pick from (1–9). The board row and the sidebar's count read the same run state."),
     "conversation/chat": ("PM conversation", ["views/chat.rs", "views/header.rs", "views/sidebar.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "render/plugins.rs", "views/visuals.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are the daemon's PNGs of them, light or dark as the window is (`render/plugins.rs` Cards, `views/visuals.rs` card): a place held while drawn, the source folded when no picture comes, a click opens the page in the browser panel as a data: URL, View larger opens the picture big. The `cards*` states need Google Chrome for the fake daemon to draw them."),
     "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with Undo."),
     "conversation/composer": ("Composer", ["views/composer.rs", "views/attached.rs", "attach.rs", "compose.rs"], None),
@@ -288,7 +292,7 @@ LABELS = {
     "markdown": "Rich Markdown (headings, lists, callouts, code)", "summarizing": "Being summarized (long)", "summarize-failed": "Summary failed",
     "your-turn": "A ticket put down for the person, in the conversation", "attachments": "Two files attached", "drop": "A file dragged over",
     "queued": "A message waiting while the member works", "handover": "Browser handed to the person", "form": "Form open", "draft": "A draft in review",
-    "connect": "Connect a service", "full": "Disk full",
+    "connect": "Connect a service", "full": "Disk full", "resume": "Resume asked back before it goes",
 }
 # Flows recorded as a video by design/flows/record-desktop.py (its FLOWS).
 RECORDED = {"first-run"}
