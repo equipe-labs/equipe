@@ -14,7 +14,7 @@ pub struct Spec {
 
 /// Every command, its `about` (and the words in its `args`) in the language in use — asked afresh each
 /// time, since the person may switch language while the console runs.
-pub fn commands() -> [Spec; 38] {
+pub fn commands() -> [Spec; 39] {
     [
         Spec { name: "usage", args: "", about: t!("commands.usage") },
         Spec { name: "compact", args: "[member]", about: t!("commands.compact") },
@@ -48,6 +48,7 @@ pub fn commands() -> [Spec; 38] {
         Spec { name: "suggest", args: "[on|off]", about: t!("commands.suggest") },
         Spec { name: "engines", args: "[auto|suggest|off|setup]", about: t!("commands.engines") },
         Spec { name: "parallel", args: "[auto|max [per member] [per engine]]", about: t!("commands.parallel") },
+        Spec { name: "model-choice", args: "[quality|off]", about: t!("commands.model_choice") },
         Spec { name: "wake", args: "[on|off]", about: t!("commands.wake") },
         Spec { name: "export", args: "", about: t!("commands.export") },
         Spec { name: "mouse", args: "", about: t!("commands.mouse") },
@@ -272,6 +273,11 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         .map(|(w, about)| word(w, about, ""))
         .collect(),
         ("parallel", 1) => [("auto", t!("parallel.auto_about").to_owned()), ("max", t!("parallel.max_about", per_member = MAX_PER_MEMBER, per_engine = MAX_PER_ENGINE))]
+            .iter()
+            .filter(|(w, _)| starts(w))
+            .map(|(w, about)| word(w, about, ""))
+            .collect(),
+        ("model-choice", 1) => [("quality", t!("model_choice.quality_about")), ("off", t!("model_choice.off_about"))]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))

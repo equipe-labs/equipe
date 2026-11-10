@@ -1015,6 +1015,8 @@ fn render_usage(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     lines.extend(row(t!("engines.switching"), format!("{} — {} · /engines", super::app::engines::mode_word(mode), super::app::engines::mode_about(mode))));
     let parallel = app.engines.parallel;
     lines.extend(row(t!("parallel.heading"), format!("{} — {} · /parallel", super::app::engines::parallel_word(parallel.mode), super::app::engines::parallel_about(&parallel))));
+    let choice = app.engines.model_choice;
+    lines.extend(row(t!("model_choice.heading"), format!("{} — {} · /model-choice", super::app::engines::model_choice_word(choice), super::app::engines::model_choice_about(choice))));
     lines.push(Line::raw(""));
     lines.push(heading(t!("view.usage_members")));
     for agent in app.agents.iter().filter(|a| a.is_open()) {
