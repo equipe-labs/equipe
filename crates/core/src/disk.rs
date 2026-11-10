@@ -306,6 +306,25 @@ fn measure(path: &Path, budget: &mut Budget) -> (u64, bool) {
     (total, budget.left() || stack.is_empty())
 }
 
+/// Measures folders on disk as [`measure`] does, within one time budget all told.
+pub struct Sizer(Budget);
+
+impl Sizer {
+    pub fn new(budget: Duration) -> Self {
+        Self(Budget::new(budget))
+    }
+
+    /// The bytes under `path`; less than all of them once the budget ran out.
+    pub fn size(&mut self, path: &Path) -> u64 {
+        measure(path, &mut self.0).0
+    }
+
+    /// Whether every folder was measured whole so far.
+    pub fn complete(&self) -> bool {
+        !self.0.ran_out
+    }
+}
+
 #[cfg(unix)]
 fn allocated_bytes(meta: &std::fs::Metadata) -> u64 { use std::os::unix::fs::MetadataExt as _; meta.blocks() * 512 }
 #[cfg(windows)]

@@ -5233,11 +5233,12 @@ async fn a_deleted_squad_stops_its_members_and_its_folder_moves_whole_leaving_pr
     let claude = fake_claude(true, &answering("ok"));
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
-    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    handle.send(Command::DeleteSquad { squad: "acme".into(), purge: false });
     let seen = until(&mut events, |e| matches!(e, Event::SquadDeleted { .. } | Event::SquadNotDeleted { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "its member stopped: {seen:#?}");
-    let Some(Event::SquadDeleted { squad, moved_to, next }) = seen.last() else { panic!("{seen:#?}") };
+    let Some(Event::SquadDeleted { squad, moved_to, next, freed, purged }) = seen.last() else { panic!("{seen:#?}") };
     assert_eq!((squad.as_str(), next.as_deref()), ("acme", Some("beta")), "beta opens next");
+    assert!(*freed > 0 && !purged, "its worktree's room given back, its folder kept to restore");
 
     // The folder moved whole, its journal closed with its member still on it: moved back, the squad is as it was.
     assert!(moved_to.starts_with(squads::deleted_dir(&home)) && moved_to.file_name().unwrap().to_string_lossy().starts_with("acme-"), "{moved_to:?}");
@@ -5260,7 +5261,7 @@ async fn a_deleted_squad_stops_its_members_and_its_folder_moves_whole_leaving_pr
     // A screen still on it doesn't make it anew; deleting it again is refused.
     let _ = handle.snapshot("acme").await;
     assert!(!home.join("squads").join("acme").exists(), "not made anew by a late look");
-    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    handle.send(Command::DeleteSquad { squad: "acme".into(), purge: false });
     let again = until(&mut events, |e| matches!(e, Event::SquadNotDeleted { .. })).await;
     assert!(matches!(again.last(), Some(Event::SquadNotDeleted { squad, .. }) if squad == "acme"));
     handle.shutdown().await;
@@ -5271,15 +5272,16 @@ async fn a_deleted_squad_stops_its_members_and_its_folder_moves_whole_leaving_pr
 }
 
 #[tokio::test]
-async fn the_last_squad_may_be_deleted_and_nothing_is_left_to_open() {
+async fn the_last_squad_may_be_deleted_for_good_and_nothing_is_left_to_open() {
     let site = repo();
     let home = squad_home(&[&site]);
     squads::remember_last(&home, "acme").unwrap();
     let claude = fake_claude(true, &answering("ok"));
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
-    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    handle.send(Command::DeleteSquad { squad: "acme".into(), purge: true });
     let seen = until(&mut events, |e| matches!(e, Event::SquadDeleted { .. } | Event::SquadNotDeleted { .. })).await;
-    assert!(matches!(seen.last(), Some(Event::SquadDeleted { next: None, .. })), "{seen:#?}");
+    assert!(matches!(seen.last(), Some(Event::SquadDeleted { next: None, purged: true, .. })), "{seen:#?}");
+    assert_eq!(std::fs::read_dir(squads::deleted_dir(&home)).map(|d| d.count()).unwrap_or(0), 0, "nothing kept to restore");
     assert!(squads::list(&home).is_empty() && squads::last_squad(&home).is_none() && squads::default_squad(&home).is_none());
     assert!(site.join(".git").exists());
     handle.shutdown().await;

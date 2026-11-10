@@ -3,6 +3,10 @@
 //! kept with when it was read; the squad's rules (`crate::switching`) say what
 //! to tell, hold and move, and this makes it so:
 //!
+//! - Claude's usage comes with its turns: told when it changes, and told again
+//!   as still holding while a turn keeps answering ([`ToldPlan`]). When members
+//!   should move toward an engine nobody read lately, it is read then: Claude
+//!   with one tiny turn of the small model, Codex through its CLI;
 //! - in `suggest`, a card the person answers ([`Command::ApplyEngineProposal`]);
 //!   in `auto`, the moves are made and the card tells of them, with an undo;
 //! - a move waits for its member's boundary: idle between tickets, or before
@@ -35,6 +39,9 @@ use crate::switching::{self as rules, Hold, Level, Mate, Memory, Reach, Reading}
 
 /// How long a look at whether Claude Code is signed in holds.
 const READY_FOR: Duration = Duration::from_secs(10 * 60);
+/// How often, at most, the Claude plan's usage is read on its own: when
+/// members should move toward Claude and no turn told it lately.
+const CLAUDE_USAGE_EVERY: Duration = Duration::from_secs(15 * 60);
 /// The decisions the journal keeps, newest last.
 const LOG_KEPT: usize = 200;
 /// How much of the conversation a packet carries verbatim: the last messages,
@@ -49,6 +56,41 @@ const BRIEF_DIFF: usize = 12_000;
 const BRIEF_PERSON: usize = 5_000;
 /// The last commands a packet shows, with their results.
 const BRIEF_COMMANDS: usize = 8;
+
+/// Claude Code tells its plan's usage when it changes: a turn that keeps
+/// answering says its last reading still holds, this often.
+const CLAUDE_PLAN_HOLDS: Duration = Duration::from_secs(5 * 60);
+
+/// The Claude plan's usage a turn last told. Claude Code tells it at the
+/// turn's first answer and again only when it changes, so while the turn's
+/// requests keep coming back, what it told is still the usage now — not a
+/// reading going stale.
+#[derive(Default)]
+pub(super) struct ToldPlan {
+    told: Option<(Activity, std::time::Instant)>,
+}
+
+impl ToldPlan {
+    /// Something the turn said at `now`: its plan, kept; a request's answer,
+    /// the plan told again once [`CLAUDE_PLAN_HOLDS`] has passed since.
+    pub(super) fn heard(&mut self, activity: &Activity, now: std::time::Instant) -> Option<Activity> {
+        match activity {
+            Activity::Plan { .. } => {
+                self.told = Some((activity.clone(), now));
+                None
+            }
+            Activity::Output(_) => {
+                let (plan, at) = self.told.as_mut()?;
+                if now.duration_since(*at) < CLAUDE_PLAN_HOLDS {
+                    return None;
+                }
+                *at = now;
+                Some(plan.clone())
+            }
+            _ => None,
+        }
+    }
+}
 
 /// What engine switching keeps in memory, for every squad.
 #[derive(Default)]
@@ -66,6 +108,10 @@ pub(super) struct Engines {
     claude_ready: Option<(std::time::Instant, bool)>,
     /// A look at Claude's sign-in is under way, off the loop.
     claude_looking: bool,
+    /// When the Claude plan's usage was last read on its own (or tried), and
+    /// whether a read is under way.
+    claude_read: Option<std::time::Instant>,
+    claude_reading: bool,
     /// Each plan's week as the Usage screen reads it: its pace, and who used it.
     loads: HashMap<Engine, crate::plan_use::Load>,
     /// Where each engine stood when the screens last asked (signed in,
@@ -377,8 +423,15 @@ impl Runtime {
             rules::decide(&rules::Squad { readings: &readings, mates: &mates, reach: &reach, mode, now }, memory)
         };
         self.engines_of(squad).holds = decision.hold.clone();
-        for engine in &decision.refresh {
-            crate::daemon_log!("equipe: engines ({squad}): {} usage is stale or unknown; nothing moves toward it until it is read again", engine_name(*engine));
+        // Where members would go, not read lately: read it now.
+        for engine in decision.refresh {
+            let reading = match engine {
+                Engine::Claude => self.read_claude_usage(),
+                Engine::Codex => self.read_codex_usage(true),
+            };
+            if reading {
+                crate::daemon_log!("equipe: engines ({squad}): {} usage is stale or unknown; reading it before anything moves toward it", engine_name(engine));
+            }
         }
         for notice in decision.notices {
             self.tell_level(squad, notice);
@@ -781,6 +834,41 @@ impl Runtime {
     }
 
     // ── at the boundary ──
+
+    /// Read the Claude plan's usage off the loop, with one tiny turn of the
+    /// person's Claude Code ([`claude_code::read_plan`]): no member's turn
+    /// told it lately. At most every [`CLAUDE_USAGE_EVERY`]. Whether a read started.
+    fn read_claude_usage(&mut self) -> bool {
+        if self.engines.claude_reading || self.engines.claude_read.is_some_and(|at| at.elapsed() < CLAUDE_USAGE_EVERY) {
+            return false;
+        }
+        self.engines.claude_reading = true;
+        self.engines.claude_read = Some(std::time::Instant::now());
+        let (binary, home, internal) = (self.config.claude_binary.clone(), self.config.home.clone(), self.internal.clone());
+        tokio::spawn(async move {
+            let cwd = if home.is_dir() { home } else { std::env::temp_dir() };
+            let usage = match claude_code::read_plan(&binary, &cwd).await {
+                Some(Activity::Plan { five_hour, seven_day }) => Some(super::claude_plan(five_hour, seven_day)),
+                _ => None,
+            };
+            let _ = internal.send(super::Internal::ClaudePlan(usage));
+        });
+        true
+    }
+
+    /// The Claude plan's usage, as just read on its own: told the screens,
+    /// weighed at once, and the moves it brings made where members are free.
+    pub(super) async fn on_claude_plan(&mut self, usage: Option<PlanUsage>) {
+        self.engines.claude_reading = false;
+        let Some(usage) = usage else {
+            crate::daemon_log!("equipe: engines: Claude's plan usage couldn't be read; tried again later");
+            return;
+        };
+        self.publish(Event::PlanUsage { usage, engine: Engine::Claude });
+        for squad in self.squads_with_members() {
+            self.apply_engine_moves(&squad).await;
+        }
+    }
 
     /// Each minute: whether Claude Code is signed in (now and then), and every squad looked at again.
     /// Claude's sign-in, as just looked at.
@@ -1513,6 +1601,21 @@ mod tests {
         let wide = "é".repeat(equipe_protocol::engines::PACKET_MOST);
         let kept = packet_kept(&wide);
         assert!(kept.len() <= equipe_protocol::engines::PACKET_MOST && kept.len() >= equipe_protocol::engines::PACKET_MOST - 1 && kept.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn a_turn_that_keeps_answering_tells_its_plan_again_as_still_holding() {
+        let start = std::time::Instant::now();
+        let at = |mins: u64| start + Duration::from_secs(mins * 60);
+        let plan = Activity::Plan { five_hour: None, seven_day: Some((0.33, 1_794_873_600)) };
+        let mut told = ToldPlan::default();
+        assert_eq!(told.heard(&Activity::Output(10), at(0)), None, "nothing told yet: nothing to hold");
+        assert_eq!(told.heard(&plan, at(0)), None);
+        assert_eq!(told.heard(&Activity::Output(20), at(4)), None, "said just now");
+        assert_eq!(told.heard(&Activity::Text("hi".into()), at(6)), None, "only a request's answer says it holds");
+        assert_eq!(told.heard(&Activity::Output(30), at(6)), Some(plan.clone()));
+        assert_eq!(told.heard(&Activity::Output(40), at(8)), None, "and then not again at once");
+        assert_eq!(told.heard(&Activity::Output(50), at(11)), Some(plan));
     }
 
     #[test]

@@ -107,6 +107,19 @@ pub fn checkout_facts(path: &Path) -> (Option<String>, Option<u32>) {
     (head, dirty)
 }
 
+/// The worktrees git lists for the repository at `dir`, its main checkout
+/// first. Nothing when git can't say.
+pub fn listed(dir: &Path) -> Vec<PathBuf> {
+    off_the_loop("listed");
+    git(dir, &["worktree", "list", "--porcelain"]).unwrap_or_default().lines().filter_map(|l| l.strip_prefix("worktree ")).map(PathBuf::from).collect()
+}
+
+/// Make the repository at `dir` forget its worktrees whose folders are gone.
+pub fn prune(dir: &Path) {
+    off_the_loop("prune");
+    let _ = git(dir, &["worktree", "prune"]);
+}
+
 /// The top of the git repository containing `dir`.
 pub fn repo_root(dir: &Path) -> Result<PathBuf> {
     git(dir, &["rev-parse", "--show-toplevel"])

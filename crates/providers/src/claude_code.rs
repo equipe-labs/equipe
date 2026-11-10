@@ -1086,6 +1086,59 @@ pub async fn suggest(binary: &str, cwd: &Path, conversation: &str) -> Option<Str
     parse_suggestion(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// What the plan read asks of Claude Code: as little as a turn can be.
+const PLAN_READ_PROMPT: &str = "Reply with the single word: ok";
+
+/// Arguments for reading the Claude plan's usage: one tiny turn of the small
+/// model, with no tools, no MCP servers and nothing kept. Claude Code tells
+/// the plan's windows (`rate_limit_event`) as its request comes back.
+pub fn plan_read_args() -> Vec<String> {
+    [
+        "-p",
+        PLAN_READ_PROMPT,
+        "--model",
+        "haiku",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--system-prompt",
+        PLAN_READ_PROMPT,
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect()
+}
+
+/// The plan's windows in a turn's stream-json output, the last told.
+pub fn parse_plan(output: &str) -> Option<Activity> {
+    let mut collector = TurnCollector::new();
+    output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .flat_map(|event| collector.on_event(&event))
+        .filter(|a| matches!(a, Activity::Plan { .. }))
+        .last()
+}
+
+/// Read the Claude plan's usage with the person's own Claude Code, in `cwd`:
+/// for when no member's turn has told it lately. A few tokens of the small
+/// model; any failure is no reading.
+pub async fn read_plan(binary: &str, cwd: &Path) -> Option<Activity> {
+    let output = crate::tools_path::command(binary)
+        .args(plan_read_args())
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), output).await.ok()?.ok()?;
+    parse_plan(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Name one conversation without touching its real thread or tools. The core
 /// validates and bounds the returned text before it becomes permanent.
 pub async fn conversation_title(binary: &str, cwd: &Path, prompt: &str) -> Option<String> {
@@ -1731,6 +1784,24 @@ mod tests {
         assert!(std::process::Command::new("cp").arg(&draft).arg(&bin).status().unwrap().success());
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         (bin, dir)
+    }
+
+    #[test]
+    fn a_plan_read_is_one_tiny_turn_and_takes_the_last_windows_told() {
+        let args = plan_read_args();
+        for wanted in ["haiku", "stream-json", "--no-session-persistence", "--strict-mcp-config"] {
+            assert!(args.iter().any(|a| a == wanted), "{wanted} in {args:?}");
+        }
+        assert_eq!(args.iter().position(|a| a == "--tools").map(|i| args[i + 1].as_str()), Some(""), "no tools");
+        let output = [
+            r#"{"type":"system","subtype":"init","session_id":"s"}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day","utilization":0.33,"resetsAt":1794873600,"unifiedWindows":{"seven_day":{"utilization":0.33,"resetsAt":1794873600}}}}"#,
+            "not json",
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#,
+        ]
+        .join("\n");
+        assert_eq!(parse_plan(&output), Some(Activity::Plan { five_hour: None, seven_day: Some((0.33, 1794873600)) }));
+        assert_eq!(parse_plan(r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#), None, "nothing told: no reading");
     }
 
     #[test]

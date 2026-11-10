@@ -85,8 +85,9 @@ pub fn claude() -> Option<PlanUsage> {
     plans().into_iter().find(|p| p.engine == Engine::Claude).map(|p| p.usage)
 }
 
+/// Unless named, a squad that chose to be asked: its cards wait for an answer.
 pub fn switching() -> Switching {
-    env("FAKE_SWITCHING").and_then(|v| Switching::parse(&v)).unwrap_or_default()
+    env("FAKE_SWITCHING").and_then(|v| Switching::parse(&v)).unwrap_or(Switching::Suggest)
 }
 
 fn mv(name: &str, from: Engine, to: Engine, was: &str) -> Move {

@@ -12,6 +12,7 @@
 
 pub mod accept;
 pub mod awake;
+pub mod bless;
 pub mod board;
 pub mod briefs;
 pub mod by_words;

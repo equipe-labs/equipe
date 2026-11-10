@@ -338,6 +338,10 @@ fn is_zero_i64(n: &i64) -> bool {
     *n == 0
 }
 
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
 /// A unit of work on the squad's board — the board is where the team agrees
 /// on what is being done, by whom, in which project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1047,13 +1051,19 @@ pub enum Command {
     /// [`Event::ProjectsChanged`].
     SetHq { squad: SquadName, path: Option<PathBuf> },
     /// The person deletes the squad: its members stop, its journal closes,
-    /// the worktrees its tickets used and no other squad's ticket does are
-    /// removed (their branches stay), and its folder — board, history, home —
-    /// moves to `<equipe home>/deleted/<squad>-<YYYYMMDD-HHMMSS>`, from where
-    /// moving it back restores it. The projects' repositories are never
-    /// touched. Answered, to every screen, with [`Event::SquadDeleted`] or
-    /// [`Event::SquadNotDeleted`].
-    DeleteSquad { squad: SquadName },
+    /// and what can be made again goes at once — the worktrees its tickets
+    /// used and no other squad's ticket does (their branches stay), its build
+    /// cache, and build output in its folder. The rest of its folder — board,
+    /// history, memory, home — moves to
+    /// `<equipe home>/deleted/<squad>-<YYYYMMDD-HHMMSS>`, from where moving it
+    /// back restores it, for a week; `purge` deletes that too, now. The
+    /// projects' checkouts are never touched. Answered, to every screen, with
+    /// [`Event::SquadDeleted`] or [`Event::SquadNotDeleted`].
+    DeleteSquad {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        purge: bool,
+    },
     /// The person makes a routine (`id` 0) or changes one: regular work the
     /// PM is handed on its schedule. Answered with [`Event::RoutinesChanged`].
     SaveRoutine { squad: SquadName, routine: routines::Routine },
@@ -2614,10 +2624,16 @@ pub enum Event {
     /// machine remembers it — or, with none left, to starting a new one.
     SquadDeleted {
         squad: SquadName,
-        /// Where its folder went, on the daemon's machine.
+        /// Where its folder went, on the daemon's machine — gone too when `purged`.
         moved_to: PathBuf,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next: Option<SquadName>,
+        /// The bytes given back on the disk.
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        freed: u64,
+        /// Deleted for good: nothing was kept to restore.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        purged: bool,
     },
     /// A squad couldn't be deleted, and why: told every screen; the one that
     /// asked says it.
@@ -3222,8 +3238,9 @@ pub struct Snapshot {
     /// Every engine's plan usage, as last read: Claude's (as `plan`) and Codex's.
     #[serde(default)]
     pub plans: Vec<EnginePlan>,
-    /// How the squad moves members between engines.
-    #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
+    /// How the squad moves members between engines. Left out when `suggest`,
+    /// as daemons did when that was the default; an older screen reads it so.
+    #[serde(default = "engines::Switching::unsaid", skip_serializing_if = "engines::Switching::is_unsaid")]
     pub engine_switching: engines::Switching,
     /// The squad's latest moves to the other engine, oldest first: which
     /// closed session each open member carries on from.
@@ -3417,17 +3434,20 @@ mod tests {
 
     #[test]
     fn a_deleted_squad_is_told_every_screen_with_where_it_went_and_where_to_go() {
-        let cmd = Command::DeleteSquad { squad: "acme".into() };
-        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "delete_squad", "squad": "acme" }));
-        let gone = Event::SquadDeleted { squad: "acme".into(), moved_to: "/h/.equipe/deleted/acme-20261110-090000".into(), next: Some("beta".into()) };
+        let cmd = Command::DeleteSquad { squad: "acme".into(), purge: false };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "delete_squad", "squad": "acme" }), "as an older daemon reads it");
+        let purge = Command::DeleteSquad { squad: "acme".into(), purge: true };
+        assert_eq!(serde_json::to_value(&purge).unwrap(), json!({ "type": "delete_squad", "squad": "acme", "purge": true }));
+        let gone = Event::SquadDeleted { squad: "acme".into(), moved_to: "/h/.equipe/deleted/acme-20261110-090000".into(), next: Some("beta".into()), freed: 12_000_000_000, purged: false };
+        let purged = Event::SquadDeleted { squad: "acme".into(), moved_to: "/h/.equipe/deleted/acme-20261110-090000".into(), next: None, freed: 1, purged: true };
         let failed = Event::SquadNotDeleted { squad: "acme".into(), why: "no such squad".into() };
-        for event in [gone, failed] {
+        for event in [gone, purged, failed] {
             assert!(event.for_everyone(), "screens on other squads drop it from their lists too");
             assert_eq!(event.session(), None);
             assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&event).unwrap()).unwrap(), event);
         }
         let last: Event = serde_json::from_value(json!({ "type": "squad_deleted", "squad": "acme", "moved_to": "/x" })).unwrap();
-        assert_eq!(last, Event::SquadDeleted { squad: "acme".into(), moved_to: "/x".into(), next: None }, "none left: no next");
+        assert_eq!(last, Event::SquadDeleted { squad: "acme".into(), moved_to: "/x".into(), next: None, freed: 0, purged: false }, "an older daemon's: none left, nothing said freed");
     }
 
     #[test]

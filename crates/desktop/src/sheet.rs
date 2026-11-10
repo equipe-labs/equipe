@@ -16,6 +16,15 @@ pub struct Ask {
     /// The button that says yes.
     pub yes: String,
     pub then: Then,
+    /// A switch over the buttons that changes what yes does — "Delete
+    /// permanently now" — its words, and whether it is on.
+    pub option: Option<AskOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskOption {
+    pub label: String,
+    pub on: bool,
 }
 
 impl Ask {
@@ -156,7 +165,7 @@ pub fn after(after: &After, answer: Result<Vec<String>, String>) -> Outcome {
         }
         After::Confirm { title, yes, then } => {
             let (job, next) = (**then).clone();
-            Outcome::Ask(Ask { title: title.clone(), body: lines, yes: yes.clone(), then: Then::Job(job, next) })
+            Outcome::Ask(Ask { title: title.clone(), body: lines, yes: yes.clone(), then: Then::Job(job, next), option: None })
         }
         After::Squads { open, say } => Outcome::Squads { say: say.clone(), open: open.clone() },
     }

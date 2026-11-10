@@ -1317,6 +1317,7 @@ mod tests {
             missing.join("\n")
         );
         if std::env::var_os("EQUIPE_BLESS_CHARTERS").is_some() {
+            crate::bless::here(env!("CARGO_MANIFEST_DIR"));
             std::fs::write(&path, blessed(&coverage, &told_now)).unwrap();
         }
     }

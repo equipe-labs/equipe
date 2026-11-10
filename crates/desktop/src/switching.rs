@@ -819,7 +819,9 @@ mod tests {
 
     #[test]
     fn an_older_daemons_plan_is_claudes() {
-        let snapshot = Snapshot { squad: "acme".into(), plan: Some(PlanUsage::default()), ..Default::default() };
+        // As an older daemon sends it: no `plans`, and no `engine_switching` (it left out suggest).
+        let snapshot: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[],"plan":{}}"#).unwrap();
+        assert_eq!(snapshot.plan, Some(PlanUsage::default()));
         let mut e = Engines::default();
         e.load(&snapshot, NOW);
         assert_eq!(e.plans.iter().map(|p| (p.engine, p.at)).collect::<Vec<_>>(), [(Engine::Claude, NOW)]);

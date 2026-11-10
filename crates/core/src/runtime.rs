@@ -77,6 +77,7 @@ mod briefs;
 mod plans;
 mod accept;
 mod gate;
+pub(crate) use gate::checks_scratch;
 mod secrets;
 mod design_qa;
 mod team;
@@ -968,6 +969,8 @@ enum Internal {
     ProviderListed { id: String, result: Result<Vec<String>, crate::nemotron::ReviewError> },
     /// Whether Claude is signed in, as just looked at off the loop.
     ClaudeReady(bool),
+    /// The Claude plan's usage, as just read off the loop; `None`: it couldn't be.
+    ClaudePlan(Option<equipe_protocol::PlanUsage>),
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
@@ -1278,6 +1281,7 @@ impl Wake {
             Wake::Internal(Internal::CodexModels(_)) => Borrowed("the Codex models listed"),
             Wake::Internal(Internal::ProviderListed { .. }) => Borrowed("a provider's models listed"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
+            Wake::Internal(Internal::ClaudePlan(_)) => Borrowed("claude's plan usage"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
             Wake::Internal(Internal::DocsFound(..)) => Borrowed("a search of the briefs and plans"),
@@ -1500,6 +1504,7 @@ impl Runtime {
                 Internal::AuthChecked(engine, state, detail) => self.auth_checked(engine, state, detail).await,
                 Internal::AuthRecheck(engine) => self.check_engine(engine),
                 Internal::ClaudeReady(ok) => self.claude_ready(ok),
+                Internal::ClaudePlan(usage) => self.on_claude_plan(usage).await,
                 Internal::CodexModels(listed) => {
                     self.codex_listing = false;
                     if let Some(models) = listed.filter(|m| !m.is_empty()) {
@@ -1797,13 +1802,14 @@ impl Runtime {
     /// Read the Codex plan's usage off the loop, through the person's Codex CLI:
     /// every few minutes while a squad has Codex members, and — `asked` — when
     /// a screen attaches and the last reading is that old. Never more often.
-    fn read_codex_usage(&mut self, asked: bool) {
+    /// Whether a read started.
+    fn read_codex_usage(&mut self, asked: bool) -> bool {
         if self.codex_reading || self.codex_read.is_some_and(|at| at.elapsed() < CODEX_USAGE_EVERY) {
-            return;
+            return false;
         }
         let members = self.sessions.values().any(|s| s.engine == Engine::Codex && has_tools(s) && !s.model.as_deref().is_some_and(crate::nemotron::is_agent_model));
         if !(members || asked) || codex_app::find(&self.config.codex_binary).is_none() {
-            return;
+            return false;
         }
         self.codex_reading = true;
         self.codex_read = Some(std::time::Instant::now());
@@ -1813,6 +1819,7 @@ impl Runtime {
             let read = tokio::time::timeout(SERVER_WAIT, codex_app::read_limits(&binary, &cwd)).await;
             let _ = internal.send(Internal::CodexLimits(read.ok().and_then(Result::ok)));
         });
+        true
     }
 
     /// The Codex plan's limits, read or reported by a turn: to the screens as
@@ -2167,7 +2174,7 @@ impl Runtime {
             Command::AddProject { squad, path } => self.add_project(squad, path),
             Command::RemoveProject { squad, path } => self.remove_project(&squad, &path),
             Command::SetHq { squad, path } => self.set_hq(&squad, path),
-            Command::DeleteSquad { squad } => self.delete_squad(&squad),
+            Command::DeleteSquad { squad, purge } => self.delete_squad(&squad, purge),
             Command::SaveLogin { draft } => self.with_vault(move |vault| vault.save(draft, now_secs()).map(|_| ())),
             Command::DeleteLogin { id } => self.with_vault(move |vault| vault.delete(id)),
             Command::ForgetLoginAllowance { id, who } => self.with_vault(move |vault| vault.forget(id, &who)),
@@ -2713,9 +2720,10 @@ impl Runtime {
     /// stops: their turns, browsers, side chats and helpers end, and every
     /// screen hears they closed. What the journal holds of them stays as it
     /// was, so a squad whose folder is moved back is whole again. Its journal
-    /// closes, nothing opens it again meanwhile, and off the loop its tickets'
-    /// worktrees go and its folder moves ([`crate::squads::delete`]).
-    fn delete_squad(&mut self, squad: &str) {
+    /// closes, nothing opens it again meanwhile, its checks waiting in line
+    /// are dropped, and off the loop what can be made again goes and its
+    /// folder moves — or, `purge`, goes too ([`crate::squads::delete`]).
+    fn delete_squad(&mut self, squad: &str, purge: bool) {
         let home = self.config.home.clone();
         if !crate::squads::exists(&home, squad) || crate::squads::is_gone(&home, squad) {
             let why = say!(self, "error.no_squad", squad = squad);
@@ -2760,10 +2768,18 @@ impl Runtime {
         self.accepts_declined.remove(squad);
         self.design_watch.remove(squad);
         self.signals_running.retain(|(q, _)| q != squad);
+        // Its checks waiting in line: none will run. One running ends on its own.
+        for queue in self.gates.values_mut() {
+            let mut at = 0;
+            queue.retain(|g| {
+                at += 1;
+                at == 1 || g.squad != squad
+            });
+        }
         let (name, internal) = (squad.to_owned(), self.internal.clone());
         // Worktrees and folders: off the loop.
         std::thread::spawn(move || {
-            let result = crate::squads::delete(&home, &name, now_secs());
+            let result = crate::squads::delete(&home, &name, now_secs(), purge);
             crate::squads::mark_going(&home, &name, false);
             let _ = internal.send(Internal::SquadDeleted { squad: name, result });
         });
@@ -2773,13 +2789,14 @@ impl Runtime {
     fn squad_deleted(&mut self, squad: &str, result: Result<crate::squads::Deleted, String>) {
         match result {
             Ok(deleted) => {
+                let folder = if deleted.purged { "deleted for good".to_owned() } else { format!("kept at {} for {} days", deleted.moved_to.display(), crate::squads::KEPT_DAYS) };
                 crate::daemon_log!(
-                    "equipe: deleted the squad {squad}: its folder is now {}; {} worktrees removed, {} kept for other squads",
-                    deleted.moved_to.display(),
+                    "equipe: deleted the squad {squad}: {} MB given back; its folder {folder}; {} worktrees removed, {} kept for other squads",
+                    deleted.freed / 1_000_000,
                     deleted.worktrees_removed.len(),
                     deleted.worktrees_kept.len()
                 );
-                self.publish(Event::SquadDeleted { squad: squad.to_owned(), moved_to: deleted.moved_to, next: deleted.next });
+                self.publish(Event::SquadDeleted { squad: squad.to_owned(), moved_to: deleted.moved_to, next: deleted.next, freed: deleted.freed, purged: deleted.purged });
             }
             Err(why) => {
                 crate::daemon_log!("equipe: the squad {squad} wasn't deleted: {why}");
@@ -4859,6 +4876,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
+                    let mut plan = engines::ToldPlan::default();
                     let outcome = claude_code::run_turn(&binary, &cwd, request, Some(steer_rx), |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
@@ -4866,6 +4884,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         if let Activity::Engine { pid } = activity {
                             let _ = internal.send(Internal::EngineStarted { session: id, pid });
                             return;
+                        }
+                        if let Some(event) = plan.heard(&activity, std::time::Instant::now()).and_then(|again| activity_event(id, again)) {
+                            emit(event);
                         }
                         if let Some(event) = activity_event(id, activity) {
                             emit(event);
@@ -8664,6 +8685,10 @@ check what is already done in your worktree first."
             for line in checks_left.map(|dir| crate::checks::sweep(&dir)).unwrap_or_default() {
                 crate::daemon_log!("equipe: {line}");
             }
+            // Deleted squads kept past their week.
+            for line in crate::squads::purge_deleted(&home, now_secs()) {
+                crate::daemon_log!("equipe: {line}");
+            }
         });
     }
 }
@@ -9432,16 +9457,20 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         }
         Activity::Compacted => Event::Compacted { session: id, member: None, project: None, trigger: CompactTrigger::Auto, took_ms: 0 },
         Activity::CompactFailed(message) => Event::CompactFailed { session: id, member: None, project: None, trigger: CompactTrigger::Auto, message },
-        Activity::Plan { five_hour, seven_day } => {
-            let window = |w: Option<(f64, i64)>| {
-                w.map(|(used, resets_at)| equipe_protocol::PlanWindow { used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8, resets_at })
-            };
-            Event::PlanUsage { usage: equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) }, engine: Engine::Claude }
-        }
+        Activity::Plan { five_hour, seven_day } => Event::PlanUsage { usage: claude_plan(five_hour, seven_day), engine: Engine::Claude },
         Activity::Limits(_) => return None,
         // The loop's to know, never a screen's: sent apart by the turn.
         Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } => return None,
     })
+}
+
+/// The Claude plan's windows, each as the share used (0–1) and when it
+/// resets, as plan usage.
+fn claude_plan(five_hour: Option<(f64, i64)>, seven_day: Option<(f64, i64)>) -> equipe_protocol::PlanUsage {
+    let window = |w: Option<(f64, i64)>| {
+        w.map(|(used, resets_at)| equipe_protocol::PlanWindow { used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8, resets_at })
+    };
+    equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) }
 }
 
 /// The Codex plan's limits as plan usage: its windows known by their length —
