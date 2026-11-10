@@ -42,6 +42,11 @@ pub struct DesignSystem {
     /// Its pictures: `assets/` and `components/`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<Asset>,
+    /// Its components: each one the project's registry lists or its
+    /// components' folder holds, or the design folder has a preview of —
+    /// with its previews, what its matrix found and where to open it live.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<Component>,
     /// The service's every flow and screen, each in every state
     /// (`flows/flows.json` and the pictures beside it). `None`: no map yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,7 +72,7 @@ impl DesignSystem {
 
     /// Whether there is anything in it to show.
     pub fn is_empty(&self) -> bool {
-        self.tokens.is_empty() && self.guidelines.is_none() && self.assets.is_empty()
+        self.tokens.is_empty() && self.guidelines.is_none() && self.assets.is_empty() && self.components.is_empty()
     }
 }
 
@@ -142,6 +147,85 @@ pub enum AssetKind {
     Illustration,
     Component,
     Other,
+}
+
+/// A component of the design system, as the screen's Components section
+/// shows it: what it is called, what it is for, its pictures, and where it
+/// stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Component {
+    /// Its name as the registry and the folders write it: `evidence-card`.
+    pub name: String,
+    /// As a person reads it: the registry item's `title`, else its name in words.
+    pub title: String,
+    /// What it is for, as its registry item (or its note beside the preview) says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// A block (a section built of components: `registry:block`), not one component.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub block: bool,
+    /// Its pictures: the previews the designer rendered (`components/<name>.png`,
+    /// a variant or state as `components/<name>/<label>.png`), then the
+    /// contact sheets its matrix drew, one a width.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previews: Vec<Preview>,
+    /// The variants its docs page shows, as its matrix found them
+    /// (`variant=outline,size=sm`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// The states its pattern has (`default`, `hover`, `focus-visible`, …),
+    /// when equipe knows the component.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<String>,
+    /// Where to see it live: its docs page or story, an `http(s)` address —
+    /// or a page on the daemon's machine, by its path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+    /// Its source, from the top of its repository: `components/ui/button.tsx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// What its latest matrix found. `None`: never drawn in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<ComponentCheck>,
+    /// A ticket making or changing it, not accepted yet. `None`: as accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<ComponentWork>,
+}
+
+/// One picture of a component.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preview {
+    /// Where it is on the daemon's machine, as `read_image` asks for it.
+    pub path: String,
+    /// The variant or state it shows, as its file names it (`outline`,
+    /// `hover · dark`). `None`: the component as it first draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// A matrix's contact sheet — every example in every state — at this width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet: Option<u32>,
+    pub size: u64,
+}
+
+/// What a component's latest matrix found (`design/checks/components/<name>.json`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComponentCheck {
+    /// When it was drawn, in unix seconds.
+    pub at: u64,
+    /// What to fix before it is released.
+    pub fails: usize,
+    /// Worth a look, never blocking.
+    pub notes: usize,
+}
+
+/// The ticket at work on a component.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComponentWork {
+    pub ticket: TicketId,
+    pub title: String,
+    /// Handed in and waiting for the person; `false`: still being made.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub review: bool,
 }
 
 /// The service's UI map, as the designer keeps it in `design/flows/`:
@@ -583,6 +667,26 @@ mod tests {
         assert_eq!((token.group(), token.leaf()), ("color", "bg"));
         assert_eq!(token.value_in(Some("dark")), "#0A0A0C");
         assert_eq!(token.value_in(Some("high-contrast")), "#F6F5F1");
+    }
+
+    #[test]
+    fn a_component_travels_without_what_it_lacks() {
+        let bare = Component { name: "button".into(), title: "Button".into(), ..Default::default() };
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"name":"button","title":"Button"}"#);
+        let full = Component {
+            previews: vec![Preview { path: "/d/components/button.png".into(), label: None, sheet: None, size: 10 }, Preview { path: "/d/checks/components/button/sheet-390.png".into(), label: None, sheet: Some(390), size: 20 }],
+            check: Some(ComponentCheck { at: 1, fails: 2, notes: 0 }),
+            work: Some(ComponentWork { ticket: 412, title: "Buttons".into(), review: false }),
+            page: Some("http://localhost:3000/docs/components/button".into()),
+            ..bare
+        };
+        let wire = serde_json::to_string(&full).unwrap();
+        assert!(wire.contains(r#""work":{"ticket":412,"title":"Buttons"}"#), "{wire}");
+        assert_eq!(serde_json::from_str::<Component>(&wire).unwrap(), full);
+        let system = DesignSystem { dir: "/d".into(), components: vec![full], ..Default::default() };
+        assert!(!system.is_empty());
+        // An older daemon's system reads as one without components.
+        assert!(serde_json::from_str::<DesignSystem>(r#"{"dir":"/d","stamp":0}"#).unwrap().components.is_empty());
     }
 
     #[test]
