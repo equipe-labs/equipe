@@ -159,7 +159,7 @@ fn row(shell: &Shell, ix: usize, r: &Row, key_width: f32, undo: Option<(FocusHan
         .items_start()
         .text_size(px(SMALL))
         .line_height(px(20.))
-        .child(div().w(px(key_width)).flex_none().font_weight(FontWeight::SEMIBOLD).text_color(p.text).when(r.head.starts_with('/'), |d| d.font_family(MONO)).child(r.head.clone()))
+        .child(div().w(px(key_width)).max_w(relative(0.4)).flex_none().font_weight(FontWeight::SEMIBOLD).text_color(p.text).when(r.head.starts_with('/'), |d| d.font_family(MONO)).child(r.head.clone()))
         .child(
             v_flex()
                 .flex_1()
