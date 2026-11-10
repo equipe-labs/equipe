@@ -304,6 +304,8 @@ impl Runtime {
             .filter(|s| s.is_working())
             .filter_map(|s| Some(journal::build_dir(&self.config.home, s.squad.as_deref()?, s.name()?)))
             .collect();
+        // And where accepted work's checks are building.
+        known.building.extend(self.gate_builds());
         known
     }
 

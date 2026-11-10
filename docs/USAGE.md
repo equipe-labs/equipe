@@ -81,3 +81,48 @@ says whether that's a subscription or per-token API billing.
 (NVIDIA Nemotron on Nebius Token Factory, or any OpenAI-compatible server) and the free,
 open-source Codex CLI run members on open models, billed per token to your key — see
 [OPEN-MODELS.md](OPEN-MODELS.md).
+
+## Project checks
+
+When the PM accepts a code ticket, equipe can run the project's own checks on the
+branch **merged with main** before anything lands. A member saying its tests pass is
+never enough: the branch may be days behind main, and two changes that each pass alone
+can break each other.
+
+Declare the checks in `.equipe/checks.json` at the top of the repository, committed to
+main like a CI workflow:
+
+```json
+{
+  "commands": [
+    "cargo test --workspace --locked",
+    "cargo clippy --workspace --all-targets --locked -- -D warnings"
+  ],
+  "timeoutMinutes": 40
+}
+```
+
+- **Where they run.** equipe works the merge out without touching main, checks that exact
+  commit out in a temporary worktree (under `~/.equipe/checks/`, removed afterwards; the
+  project's installed `node_modules` are cloned in copy-on-write where the lockfile
+  matches), and runs each command there through the shell (`sh -c`; `cmd /C` on Windows),
+  one after another, off the daemon's loop. `EQUIPE_CHECKS=1` is set; Rust builds go to a
+  build folder of the squad's own (`~/.equipe/cache/build/<squad>/_checks`), kept between
+  runs and trimmed like the members' ones.
+- **Pass:** the ticket is accepted, and the very commit that was checked lands on main
+  (pushed if the PM was asked to push). If main moved meanwhile, the checks run again on
+  the new main (up to three times).
+- **Fail or time out:** the ticket goes back to its member, on the same branch, with the
+  failing command and the last lines of its output. Main is untouched. If the same command
+  also fails on main alone, main is broken already: the work stays in review, nothing is
+  merged, and the PM and the person hear that main needs fixing first.
+- **The file is read from main as it stands**, never from the branch being checked, so a
+  branch can't weaken the checks it is held to. A file that can't be read (bad JSON, an
+  unknown key, no commands) holds the merge back rather than guessing.
+- **No file, no checks.** equipe doesn't guess a project's test command: full suites can
+  take many minutes, and only the project knows what "passing" means. Such a project is
+  merged as before, and the acceptance the person sees says no project checks ran.
+- `timeoutMinutes` covers all the commands together: 30 when left out, at most 180.
+
+The gate applies to the PM's own acceptance (`accept_work`). Work the person accepts and
+merges themselves, from the board or a card, is merged as they say.

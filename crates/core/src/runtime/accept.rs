@@ -79,6 +79,9 @@ them, and note what they said on the ticket with `comment`, for the PM."
             return Err("Name the handed-in tickets you accept in `tickets`.".into());
         }
         let (mut accepted, mut left) = (Vec::new(), Vec::new());
+        // Code merged with no checks run (the project declares none), and code
+        // whose checks run first.
+        let (mut unchecked, mut checking) = (Vec::new(), Vec::new());
         for ticket in named {
             let Some(t) = self.find_ticket(squad, ticket) else {
                 left.push(format!("there is no T-{ticket}"));
@@ -97,14 +100,26 @@ them, and note what they said on the ticket with `comment`, for the PM."
                 left.push(format!("T-{ticket} waits for its design QA"));
                 continue;
             }
+            if self.gating(squad, ticket) {
+                left.push(format!("T-{ticket}'s checks are running already: you hear how they went"));
+                continue;
+            }
             // A branch only behind main merges with a merge commit: no reason to
             // send it back. A real conflict goes back to its member now, before
             // anything is accepted; one that can't be told is left to the merge.
-            if !t.kind.in_home()
-                && let (Some(branch), Some(project)) = (t.branch.clone(), t.project.clone())
-            {
-                let looked = tokio::task::spawn_blocking(move || worktree::repo_root(&project).and_then(|repo| worktree::merge_conflicts(&repo, &branch))).await;
-                if let Ok(Ok(files)) = looked
+            // And what the project declares as its checks, on main as it stands.
+            let code = !t.kind.in_home() && t.branch.is_some();
+            if code && let (Some(branch), Some(project)) = (t.branch.clone(), t.project.clone()) {
+                let looked = tokio::task::spawn_blocking(move || {
+                    let repo = worktree::repo_root(&project).ok();
+                    let conflicts = repo.as_deref().map(|repo| worktree::merge_conflicts(repo, &branch));
+                    let declared = repo.as_deref().map(crate::checks::declared_on_main);
+                    (repo, conflicts, declared)
+                })
+                .await
+                .unwrap_or((None, None, None));
+                let (repo, conflicts, declared) = looked;
+                if let Some(Ok(files)) = conflicts
                     && !files.is_empty()
                 {
                     let files = files.join(", ");
@@ -118,30 +133,65 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
                     }
                     continue;
                 }
+                match (declared, repo, t.branch.clone()) {
+                    // Checked on its merge first, off the loop: accepted and landed only if they pass.
+                    (Some(Ok(Some(_))), Some(repo), Some(branch)) => {
+                        let title = t.title.clone();
+                        self.queue_gate(gate::Gate { squad: squad.to_owned(), ticket, title, by: member.to_owned(), session: id, checked: checked.clone(), push, repo, branch, tries: 0 });
+                        checking.push(ticket);
+                        continue;
+                    }
+                    // A checks file that can't be read holds the merge back: never guessed past.
+                    (Some(Err(err)), ..) => {
+                        left.push(format!("T-{ticket} wasn't accepted: {err}. Get that file fixed on main, then accept it again"));
+                        continue;
+                    }
+                    _ => unchecked.push(ticket),
+                }
             }
             if let Some(journal) = self.journal(squad) {
                 let _ = journal.ticket_event(ticket, member, "accepted by the PM", &checked);
             }
             Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;
             // Code lands on main at once: nothing left for the person to merge.
-            if !t.kind.in_home() && t.branch.is_some() {
+            if code {
                 self.merge(squad, ticket, push);
             }
             accepted.push(ticket);
         }
-        if !accepted.is_empty() {
-            let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
-            let text = say!(self, "notice.pm_accepted", ids = ids, checked = checked);
+        let list = |ids: &[TicketId]| ids.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
+        // What the person reads: work merged with no checks run says so.
+        let (unchecked_now, rest): (Vec<TicketId>, Vec<TicketId>) = accepted.iter().partition(|t| unchecked.contains(t));
+        if !rest.is_empty() {
+            let text = say!(self, "notice.pm_accepted", ids = list(&rest), checked = checked);
             self.publish(Event::Notice { undo: None, session: id, text });
         }
-        let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
-        let mut reply = if accepted.is_empty() {
+        if !unchecked_now.is_empty() {
+            let text = say!(self, "notice.pm_accepted_unchecked", ids = list(&unchecked_now), checked = checked, file = crate::checks::FILE);
+            self.publish(Event::Notice { undo: None, session: id, text });
+        }
+        let ids = list(&accepted);
+        let mut reply = if accepted.is_empty() && checking.is_empty() {
             "Nothing accepted.".to_owned()
+        } else if accepted.is_empty() {
+            String::new()
         } else if push {
             format!("Accepted {ids}; code is merging into main and main is being pushed.")
         } else {
             format!("Accepted {ids}; code is merging into main.")
         };
+        if !unchecked_now.is_empty() {
+            reply.push_str(&format!(" No project checks ran for {}: the project declares none in {}.", list(&unchecked_now), crate::checks::FILE));
+        }
+        if !checking.is_empty() {
+            reply.push_str(&format!(
+                " Checking {} first: equipe runs the project's checks on it merged with main, off to the side, and accepts and merges \
+it only if they pass; if they fail it goes back to its member with the output, and main stays as it is. You hear how it went; \
+carry on meanwhile.",
+                list(&checking)
+            ));
+        }
+        let mut reply = reply.trim_start().to_owned();
         if !left.is_empty() {
             reply.push_str(&format!(" Left: {}.", left.join("; ")));
         }

@@ -305,6 +305,111 @@ async fn the_persons_words_raise_the_card_a_no_keeps_it_as_it_is_and_the_board_s
     handle.shutdown().await;
 }
 
+// ── the project's checks, run on the merged result before the PM's acceptance lands ──
+
+/// [`handed_in`], on a repository whose main declares `checks` in
+/// `.equipe/checks.json`.
+async fn handed_in_checked(checks: &str) -> (Handle, UnboundedReceiver<Event>, PathBuf) {
+    let repo = repo();
+    std::fs::create_dir_all(repo.join(".equipe")).unwrap();
+    std::fs::write(repo.join(".equipe/checks.json"), checks).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "declare the checks"]);
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done, tests pass.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
+    // Main moves on meanwhile: the branch is behind it, as T-578's was.
+    std::fs::write(repo.join("LATER.md"), "later\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "later on main"]);
+    (handle, events, repo)
+}
+
+fn on_main(repo: &Path, file: &str) -> bool {
+    Process::new("git").arg("-C").arg(repo).args(["cat-file", "-e", &format!("main:{file}")]).stderr(std::process::Stdio::null()).status().unwrap().success()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn checks_that_pass_on_the_merged_result_accept_and_merge_it() {
+    // The command sees the merge: the branch's file and main's later one together.
+    let (handle, mut events, repo) = handed_in_checked(r#"{ "commands": ["test -f HERO.md && test -f LATER.md"] }"#).await;
+    let main_before = git(&repo, &["rev-parse", "main"]);
+    let ok = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "Read the diff." })).await;
+    assert!(!ok.is_error && ok.text.starts_with("Checking T-1 first"), "{ok:?}");
+    // Not accepted on the PM's word: in review until the checks pass.
+    assert_eq!(status(&handle, 1).await, TicketStatus::Review);
+    let again = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "again" })).await;
+    assert!(again.text.contains("checks are running already") || again.text.contains("accepted already"), "{again:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("once the project's checks passed"))), "{seen:#?}");
+    assert_eq!(status(&handle, 1).await, TicketStatus::Done);
+    assert!(on_main(&repo, "HERO.md") && on_main(&repo, "LATER.md"));
+    // What landed is the merge that was checked: main's old tip and the branch, as its parents.
+    assert_eq!(git(&repo, &["rev-parse", "main^1"]), main_before);
+    handle.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failing_checks_send_it_back_with_the_output_and_leave_main_untouched() {
+    let (handle, mut events, repo) = handed_in_checked(r#"{ "commands": ["echo the hero breaks the build; test ! -f HERO.md"] }"#).await;
+    let main_before = git(&repo, &["rev-parse", "main"]);
+    let ok = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "Looks right." })).await;
+    assert!(!ok.is_error && ok.text.contains("Checking T-1"), "{ok:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Todo)).await;
+    let back = seen.iter().rev().find_map(|e| if let Event::TicketChanged { ticket, .. } = e { (ticket.id == 1).then(|| ticket.clone()) } else { None }).unwrap();
+    let note = back.note.unwrap_or_default();
+    assert!(note.starts_with("Reopened by the PM: equipe ran the project's checks"), "{note}");
+    assert!(note.contains("test ! -f HERO.md") && note.contains("exit code 1") && note.contains("the hero breaks the build"), "{note}");
+    assert_eq!(back.owner.as_deref(), Some("frontend"), "back to its member");
+    assert_eq!(git(&repo, &["rev-parse", "main"]), main_before, "main untouched");
+    assert!(!on_main(&repo, "HERO.md"));
+    handle.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn main_failing_its_own_checks_keeps_the_work_in_review_rather_than_blaming_it() {
+    let (handle, mut events, repo) = handed_in_checked(r#"{ "commands": ["false"] }"#).await;
+    let main_before = git(&repo, &["rev-parse", "main"]);
+    tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "Fine." })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::Error { message, .. } if message.contains("Main fails the project's own checks"))).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status != TicketStatus::Review)), "{seen:#?}");
+    assert_eq!(status(&handle, 1).await, TicketStatus::Review);
+    assert_eq!(git(&repo, &["rev-parse", "main"]), main_before);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_checks_file_that_cant_be_read_merges_nothing() {
+    let (handle, _events, repo) = handed_in_checked(r#"{ "command": ["typo"] }"#).await;
+    let main_before = git(&repo, &["rev-parse", "main"]);
+    let held = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "Fine." })).await;
+    assert!(held.text.starts_with("Nothing accepted.") && held.text.contains(".equipe/checks.json isn't valid"), "{held:?}");
+    assert_eq!(status(&handle, 1).await, TicketStatus::Review);
+    assert_eq!(git(&repo, &["rev-parse", "main"]), main_before);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn with_no_checks_declared_it_merges_as_before_and_says_none_ran() {
+    let (handle, mut events, repo) = handed_in().await;
+    let ok = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "Read the diff." })).await;
+    assert!(!ok.is_error && ok.text.starts_with("Accepted T-1") && ok.text.contains("No project checks ran for T-1"), "{ok:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("No project checks ran") && text.contains(".equipe/checks.json"))), "{seen:#?}");
+    assert!(on_main(&repo, "HERO.md"));
+    handle.shutdown().await;
+}
+
 /// The guarantee, in the code itself: the daemon accepts a ticket only for
 /// [`Command::Accept`] (or the person's own move to done on the board), merges
 /// only for [`Command::Merge`], sends back only for [`Command::Reopen`] (or
@@ -319,7 +424,7 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
     let mut files = vec![src.join("runtime.rs"), src.join("by_words.rs")];
     files.extend(std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()));
     files.sort();
-    let watched = ["self.accept(", "self.merge(", "self.reopen(", "end_work(id, WorkEnd::Accepted)", "TicketStatus::Done)", "Command::Accept {", "Command::Merge {", "Command::Reopen {", "confirm_accept("];
+    let watched = ["self.accept(", "self.merge(", "worktree::land(", "self.reopen(", "end_work(id, WorkEnd::Accepted)", "TicketStatus::Done)", "Command::Accept {", "Command::Merge {", "Command::Reopen {", "confirm_accept("];
     let mut found: Vec<String> = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap();
@@ -341,6 +446,10 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             // The PM's `accept_work`, only while the person lets the PM accept (`SetPmAccepts`).
             "accept.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
             "accept.rs: self.merge(squad, ticket, push);",
+            // The same, once the project's checks passed on the very merge that lands (`gate.rs`).
+            "gate.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
+            "gate.rs: None => self.merge(squad, ticket, gate.push),",
+            "gate.rs: let result = worktree::land(&repo, &merge).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));",
             "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>, said: Option<equipe_protocol::by_words::Said>) {",
             "accept.rs: Box::pin(self.handle(Command::Reopen { squad, ticket, note: proposal.note.clone() })).await;",
             "accept.rs: Box::pin(self.handle(Command::Accept { squad: squad.clone(), ticket })).await;",
