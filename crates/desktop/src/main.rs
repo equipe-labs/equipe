@@ -718,8 +718,8 @@ impl Shell {
                 }
                 return;
             }
-            // On the studio's wait card action, Esc or Shift-Tab goes back to the text box when it is on screen.
-            if (key == "escape" || (key == "tab" && modifiers.shift)) && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, cx| matches!(shell.screen, Screen::Studio) && shell.design_talk_open(window, cx) && shell.studio.wait_focus.as_ref().is_some_and(|f| f.is_focused(window))).unwrap_or(false) {
+            // On the studio's wait card action, Esc goes back to the text box when it is on screen; Shift-Tab walks the usual order back.
+            if key == "escape" && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, cx| matches!(shell.screen, Screen::Studio) && shell.design_talk_open(window, cx) && shell.studio.wait_focus.as_ref().is_some_and(|f| f.is_focused(window))).unwrap_or(false) {
                 this.update(cx, |shell, cx| shell.composer.focus(window, cx)).ok();
                 cx.stop_propagation();
                 return;
