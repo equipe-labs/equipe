@@ -32,6 +32,7 @@ pub mod helpers;
 pub mod desktop;
 pub mod desktop_gate;
 pub mod disk;
+pub mod leftovers;
 pub mod engine_auth;
 pub mod engines;
 pub mod eta;
