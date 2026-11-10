@@ -306,6 +306,7 @@
   "card.files.other": "{count} Dateien",
   "card.loading": "Wird gesucht …",
   "card.not_found": "Nicht gefunden",
+  "card.unanswered": "Nicht prüfbar",
   "card.open": "Öffnen",
   "card.plan": "Plan",
   "card.see_changes": "Änderungen ansehen",
