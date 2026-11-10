@@ -489,6 +489,12 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
             },
             {
+              "id": "outline-open",
+              "label": "The two bars at the left are the conversation outline: the pointer opens the list of what was asked",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800;rail:open;wait:500`"
+            },
+            {
               "id": "ticket-card-missing",
               "label": "A ticket card for a number not on the board: Not found",
               "kind": "default",
