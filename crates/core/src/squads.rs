@@ -263,6 +263,150 @@ pub fn remove_project(home: &Path, name: &str, project: &Path) -> Result<(), Str
     journal.remove_project(project).map_err(|err| err.to_string())
 }
 
+// ── deleting a squad ──
+//
+// A deleted squad's folder is never erased: it moves, whole, to
+// `<home>/deleted/<name>-<YYYYMMDD-HHMMSS>` — on the same disk as the squad,
+// so the move is a rename that can't stop half-way, and on the machine the
+// squad lived on. Moving it back to `<home>/squads/<name>` (with the daemon
+// stopped) brings the squad back as it was: its board, history, members and
+// home. The projects' repositories are never touched; the worktrees its
+// tickets used are removed (their branches stay), as they would be once the
+// work was done.
+
+/// Where deleted squads' folders go.
+pub fn deleted_dir(home: &Path) -> PathBuf {
+    home.join("deleted")
+}
+
+/// Squads being deleted now in this process, by folder: nothing opens their
+/// journal again meanwhile (which would make the squad anew).
+static GOING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Say that squad `name` is being deleted (`going`), or no longer is.
+pub fn mark_going(home: &Path, name: &str, going: bool) {
+    let dir = squad_dir(home, name);
+    let mut list = GOING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    list.retain(|d| *d != dir);
+    if going {
+        list.push(dir);
+    }
+}
+
+/// Whether squad `name` is being deleted, or was and hasn't been made again:
+/// its journal isn't to be opened — opening it would make it anew.
+pub fn is_gone(home: &Path, name: &str) -> bool {
+    let dir = squad_dir(home, name);
+    if GOING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&dir) {
+        return true;
+    }
+    !dir.join("squad.db").exists() && was_deleted(home, name)
+}
+
+/// Whether a folder of squad `name`'s is among the deleted ones.
+fn was_deleted(home: &Path, name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(deleted_dir(home)) else {
+        return false;
+    };
+    entries.flatten().any(|e| e.file_name().to_str().and_then(|n| n.strip_prefix(name)).and_then(|n| n.strip_prefix('-')).is_some_and(is_stamp))
+}
+
+/// `20261110-093005`, or the same with `-2`… after it.
+fn is_stamp(text: &str) -> bool {
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    let mut parts = text.split('-');
+    let (Some(day), Some(time)) = (parts.next(), parts.next()) else { return false };
+    digits(day, 8) && digits(time, 6) && parts.next().is_none_or(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) && parts.next().is_none()
+}
+
+/// The moment `unix` as a deleted folder's name ends: `20261110-093005`, the machine's local time.
+fn stamp(unix: u64) -> String {
+    match equipe_providers::platform::local_time(unix) {
+        Some(t) => format!("{:04}{:02}{:02}-{:02}{:02}{:02}", t.year, t.month, t.day, t.hour, t.minute, t.second),
+        None => format!("{unix}"),
+    }
+}
+
+/// What deleting a squad did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleted {
+    /// Where its folder went.
+    pub moved_to: PathBuf,
+    /// Its tickets' worktrees, removed; their branches stay.
+    pub worktrees_removed: Vec<PathBuf>,
+    /// Its tickets' worktrees another squad's ticket uses too: left.
+    pub worktrees_kept: Vec<PathBuf>,
+    /// The squad to open now, if any is left: what `state.json` remembers.
+    pub next: Option<String>,
+}
+
+/// Delete squad `name` at `now` (unix seconds): the worktrees its tickets
+/// used that no other squad's ticket does are removed — their branches stay,
+/// in the projects' repositories, which are otherwise never touched — its
+/// members' build caches go, and its folder moves to [`deleted_dir`]. If it
+/// was the squad opened last, the one to open now is remembered instead (or
+/// none, when it was the last squad). Its members must have stopped and its
+/// journal closed: the daemon's to do first ([`crate::runtime`]). Blocking
+/// (git, folders): off the daemon's loop.
+pub fn delete(home: &Path, name: &str, now: u64) -> Result<Deleted, String> {
+    if !exists(home, name) {
+        return Err(format!("there is no squad called {name}"));
+    }
+    let dir = squad_dir(home, name);
+    let worktrees_root = home.join("worktrees");
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
+    let tickets_worktrees = |squad: &str| -> Vec<PathBuf> {
+        Journal::open(&squad_dir(home, squad).join("squad.db")).and_then(|j| j.tickets()).unwrap_or_default().into_iter().filter_map(|t| t.worktree).collect()
+    };
+    // Its tickets' worktrees under `worktrees/`, and every one of its home's.
+    let mut own: Vec<PathBuf> = tickets_worktrees(name).into_iter().filter(|w| w.starts_with(&worktrees_root)).collect();
+    let home_worktrees = crate::worktree::worktrees_of(&crate::squad_home::path(home, name), home);
+    if let Ok(entries) = std::fs::read_dir(&home_worktrees) {
+        own.extend(entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()));
+    }
+    own.sort();
+    own.dedup();
+    let others: Vec<PathBuf> = list(home).into_iter().filter(|s| s.name != name).flat_map(|s| tickets_worktrees(&s.name)).map(|w| canon(&w)).collect();
+    let (mut worktrees_removed, mut worktrees_kept) = (Vec::new(), Vec::new());
+    for worktree in own {
+        let at = canon(&worktree);
+        if others.iter().any(|o| o.starts_with(&at) || at.starts_with(o)) {
+            worktrees_kept.push(worktree);
+            continue;
+        }
+        if !worktree.exists() {
+            continue;
+        }
+        match crate::worktree::remove_at(&worktree) {
+            Ok(()) => worktrees_removed.push(worktree),
+            Err(why) => crate::daemon_log!("equipe: deleting {name}: {} stays: {why}", worktree.display()),
+        }
+    }
+    let _ = std::fs::remove_dir(&home_worktrees);
+    // Its members' builds: made again whenever wanted.
+    let _ = std::fs::remove_dir_all(home.join("cache").join("build").join(name));
+    // The folder, whole, under a name no other deleted folder has.
+    let deleted = deleted_dir(home);
+    std::fs::create_dir_all(&deleted).map_err(|e| format!("{}: {e}", deleted.display()))?;
+    let base = format!("{name}-{}", stamp(now));
+    let moved_to = (1..)
+        .map(|n| deleted.join(if n == 1 { base.clone() } else { format!("{base}-{n}") }))
+        .find(|p| !p.exists())
+        .expect("some name is free");
+    std::fs::rename(&dir, &moved_to).map_err(|e| format!("{} → {}: {e}", dir.display(), moved_to.display()))?;
+    // What opens next: the one remembered, unless that was this one.
+    let mut state = state(home);
+    let next = default_squad(home);
+    if state.get("last_squad").and_then(|v| v.as_str()) == Some(name) {
+        match &next {
+            Some(next) => state.insert("last_squad".into(), next.clone().into()),
+            None => state.remove("last_squad"),
+        };
+        save_state(home, state)?;
+    }
+    Ok(Deleted { moved_to, worktrees_removed, worktrees_kept, next })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +474,33 @@ mod tests {
         assert_eq!(default_squad(&home).as_deref(), Some("beta"));
         remember_last(&home, "gone").unwrap();
         assert_eq!(default_squad(&home).as_deref(), Some("acme"), "a squad since removed is passed over");
+    }
+
+    #[test]
+    fn a_deleted_folder_is_named_by_its_squad_and_when_and_only_its_own_counts() {
+        assert!(is_stamp("20261110-093005") && is_stamp("20261110-093005-2"));
+        assert!(!is_stamp("20261110") && !is_stamp("2026111-093005") && !is_stamp("20261110-093005-") && !is_stamp("x-093005"));
+        let home = home();
+        create_without_project(&home, "acme").unwrap();
+        create_without_project(&home, "acme-2").unwrap();
+        create_without_project(&home, "beta").unwrap();
+        remember_last(&home, "beta").unwrap();
+        let first = delete(&home, "acme-2", 1_762_000_000).unwrap();
+        assert!(first.moved_to.file_name().unwrap().to_string_lossy().starts_with("acme-2-"));
+        assert_eq!(first.next.as_deref(), Some("beta"), "the one remembered, as it was");
+        assert_eq!(last_squad(&home).as_deref(), Some("beta"), "not this one: left as it was");
+        assert!(is_gone(&home, "acme-2") && !is_gone(&home, "acme"), "acme-2's folder isn't acme's");
+        // The same name, the same second: a name of its own.
+        create_without_project(&home, "acme-2").unwrap();
+        assert!(!is_gone(&home, "acme-2"), "made again: not gone");
+        let second = delete(&home, "acme-2", 1_762_000_000).unwrap();
+        assert_ne!(first.moved_to, second.moved_to);
+        assert!(second.moved_to.to_string_lossy().ends_with("-2"));
+        assert!(delete(&home, "nope", 0).unwrap_err().contains("nope"));
+        mark_going(&home, "beta", true);
+        assert!(is_gone(&home, "beta"), "while it goes");
+        mark_going(&home, "beta", false);
+        assert!(!is_gone(&home, "beta"));
     }
 
     #[test]

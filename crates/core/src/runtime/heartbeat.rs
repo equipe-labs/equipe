@@ -90,10 +90,37 @@ don't ask them in words meanwhile."
     pub(super) async fn wake_idle_pms(&mut self) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
+            self.remind_of_reviews(&squad).await;
             if !self.wake_if_idle(&squad).await {
                 self.ask_about_ideas(&squad).await;
             }
         }
+    }
+
+    /// Where the PM accepts, handed-in work it left waiting past a couple of
+    /// hours is brought up to it — in one message, each ticket at most every
+    /// few hours, as a routine is handed to it (after its turn if one runs).
+    /// A hand-in's own wake can be missed mid-turn; work shouldn't wait days.
+    async fn remind_of_reviews(&mut self, squad: &str) {
+        if !self.journal(squad).is_some_and(Journal::pm_accepts) {
+            return;
+        }
+        let Some(pm) = self.pm_of(squad) else { return };
+        let pm_name = self.sessions.get(&pm).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
+        let tickets = self.tickets(squad);
+        let on_cards: Vec<TicketId> = self.accepts.get(squad).map(|cards| cards.iter().flat_map(|p| p.tickets.iter().copied()).collect()).unwrap_or_default();
+        let now = now_secs();
+        let nudged = self.review_nudged.entry(squad.to_owned()).or_default();
+        nudged.retain(|id, _| tickets.iter().any(|t| t.id == *id && t.status == TicketStatus::Review));
+        let due = crate::accept::stale_reviews(&tickets, &pm_name, &on_cards, nudged, now);
+        if due.is_empty() {
+            return;
+        }
+        for (id, _) in &due {
+            nudged.insert(*id, now);
+        }
+        crate::daemon_log!("equipe: {squad}: {} handed-in tickets wait past {}h; the PM is reminded", due.len(), crate::accept::REVIEW_NUDGE_AFTER / 3600);
+        self.hand_to_pm(squad, pm, crate::accept::stale_review_message(&due)).await;
     }
 
     /// The PM asked, at most every few days, whether one of the person's

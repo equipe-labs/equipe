@@ -621,11 +621,15 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
 
     let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx);
     let screen = Line::new(t!("settings.mac_screen"), t!("settings.mac_screen_desc")).words("desktop computer use /desktop").switch(shell, "desktop", !model.desktop_stopped, connected, |this, on, _, _| this.set_desktop_open(on), cx);
+    // The squad itself, deleted: asked first (`views/delete_squad.rs`).
+    let delete = Line::new(t!("settings.delete_squad"), t!("settings.delete_squad_desc", name = model.squad)).words(t!("settings.delete_squad_words")).control(
+        ui::button(p, "delete-squad", Kind::Danger, t!("settings.delete_squad_button")).icon(Icon::Trash).disabled(!shell.can_delete_squad()).on_click(cx.listener(|this, _, _, cx| this.open_delete_squad(cx))),
+    );
     vec![
         Section::new(t!("settings.section_connection"), vec![squad, machine, connection]).foot(t!("settings.connection_foot")),
         phones(shell, connected, cx),
         Section::new(t!("settings.section_daemon"), vec![daemon_version, restart, disk]),
-        Section::new(t!("settings.section_squad"), vec![suggestions, screen]).foot(t!("settings.squad_foot")),
+        Section::new(t!("settings.section_squad"), vec![suggestions, screen, delete]).foot(t!("settings.squad_foot")),
     ]
 }
 

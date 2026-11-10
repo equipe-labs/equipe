@@ -359,6 +359,9 @@ pub struct Shell {
     /// The buttons a sheet's keys can reach, in Tab order (set as it is drawn).
     pub sheet_stops: std::rc::Rc<std::cell::RefCell<Vec<FocusHandle>>>,
     pub confirm: Option<sheet::Ask>,
+    /// The squad this window asked its daemon to delete, until it answers
+    /// (`views/delete_squad.rs`).
+    pub deleting_squad: Option<String>,
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     /// A squad just made on another machine, and how much it does alone: set
@@ -521,6 +524,7 @@ impl Shell {
             sidebar_squeezed: false,
             sheet_stops: Default::default(),
             confirm: None,
+            deleting_squad: None,
             pending_team: None,
             pending_mode: None,
             connecting_shown: false,
@@ -1030,6 +1034,15 @@ impl Shell {
                                 changed |= this.doc_copy_kept(squad, kept, removed, undo);
                                 continue;
                             }
+                            // A squad deleted, here or from another screen: the switcher's, and the window's if it was on it.
+                            daemon::Update::Event(Event::SquadDeleted { squad, moved_to, next }) => {
+                                changed |= this.squad_deleted(&squad, &moved_to, next, window, cx);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::SquadNotDeleted { squad, why }) => {
+                                changed |= this.squad_not_deleted(&squad, &why);
+                                continue;
+                            }
                             other => other,
                         };
                         // The shared Chrome's tabs and hands: the browser panel's.
@@ -1088,6 +1101,10 @@ impl Shell {
                                 && !cfg!(feature = "snapshot")
                             {
                                 cx.open_url(&url);
+                            }
+                            // A note that goes (a sign-in just finished): drawn again once it has.
+                            if let Some(wait) = effect.later {
+                                this.engines_later(wait, cx);
                             }
                             // Installed as the person asked: straight on to its sign-in.
                             if let Some(engine) = effect.sign_in

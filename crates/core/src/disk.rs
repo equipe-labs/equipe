@@ -271,7 +271,10 @@ impl Budget {
 }
 
 /// The bytes under `path` on disk, links not followed; `false` when the
-/// budget ran out before the end.
+/// budget ran out before the end. Blocks a copy-on-write clone shares with
+/// its source (a worktree's seeded `node_modules`, see
+/// [`crate::worktree::SHARED_DEPENDENCIES`]) count in both: neither APFS nor
+/// a reflink filesystem tells cheaply which blocks are shared.
 fn measure(path: &Path, budget: &mut Budget) -> (u64, bool) {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return (0, true);

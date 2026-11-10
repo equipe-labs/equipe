@@ -535,6 +535,23 @@ squad and records it as the last; `/squad new <name> [folder]` starts one, the
 folder now optional; `equipe squads` lists them with their homes. A squad with no
 project is valid everywhere: `/squad remove` may take its last project away.
 
+**Deleting** (`Command::DeleteSquad`; `equipe squad delete <name>`, the desktop's
+squad switcher and Settings › Squad & machine): the daemon stops the squad's
+members the way it does when it stops — turns, browsers, side chats and helpers
+end, every screen hears `SessionClosed` — but writes nothing about them into the
+journal, then closes the journal. Off the loop (`squads::delete`) the worktrees
+its tickets used are removed unless another squad's ticket uses them (branches
+stay; the projects' repositories are otherwise never touched), its members'
+build caches go, and the folder `~/.equipe/squads/<name>/` moves whole to
+`~/.equipe/deleted/<name>-<YYYYMMDD-HHMMSS>`: a rename on the same disk, never a
+copy, on the machine the squad lived on. Moving it back with the daemon stopped
+restores the squad — board, history, members, home. While it goes, and after,
+nothing opens its journal again (which would make an empty squad of the same
+name): `squads::is_gone`, until a squad of that name is made again. If it was
+`last_squad` in `state.json`, the next squad by name takes its place, or none.
+Every screen hears `SquadDeleted { next }`: a window on it opens `next`, or —
+the last squad deleted, which is allowed — the screen that starts a new one.
+
 ### The squad home
 
 Every squad has a **home**, `~/.equipe/squads/<squad>/home`: a git repository

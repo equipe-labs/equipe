@@ -877,6 +877,14 @@ pub enum Command {
     /// operations across its products live — or none (`None`). Answered with
     /// [`Event::ProjectsChanged`].
     SetHq { squad: SquadName, path: Option<PathBuf> },
+    /// The person deletes the squad: its members stop, its journal closes,
+    /// the worktrees its tickets used and no other squad's ticket does are
+    /// removed (their branches stay), and its folder — board, history, home —
+    /// moves to `<equipe home>/deleted/<squad>-<YYYYMMDD-HHMMSS>`, from where
+    /// moving it back restores it. The projects' repositories are never
+    /// touched. Answered, to every screen, with [`Event::SquadDeleted`] or
+    /// [`Event::SquadNotDeleted`].
+    DeleteSquad { squad: SquadName },
     /// The person makes a routine (`id` 0) or changes one: regular work the
     /// PM is handed on its schedule. Answered with [`Event::RoutinesChanged`].
     SaveRoutine { squad: SquadName, routine: routines::Routine },
@@ -2398,6 +2406,19 @@ pub enum Event {
     /// The squad's signals now, each with its latest readings: on a new
     /// reading, one turned on or off, or paused.
     SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
+    /// A squad was deleted ([`Command::DeleteSquad`]): told every screen. A
+    /// screen on it moves to `next` — the squad to open now, as the daemon's
+    /// machine remembers it — or, with none left, to starting a new one.
+    SquadDeleted {
+        squad: SquadName,
+        /// Where its folder went, on the daemon's machine.
+        moved_to: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<SquadName>,
+    },
+    /// A squad couldn't be deleted, and why: told every screen; the one that
+    /// asked says it.
+    SquadNotDeleted { squad: SquadName, why: String },
     ProjectsChanged {
         squad: SquadName,
         projects: Vec<PathBuf>,
@@ -2597,6 +2618,8 @@ impl Event {
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
             | Event::ProjectsChanged { .. }
+            | Event::SquadDeleted { .. }
+            | Event::SquadNotDeleted { .. }
             | Event::PutAwayChanged { .. }
             | Event::RoutinesChanged { .. }
             | Event::RoutineProposed { .. }
@@ -2673,6 +2696,8 @@ impl Event {
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
+                | Event::SquadDeleted { .. }
+                | Event::SquadNotDeleted { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }
                 | Event::BrowserDialog { squad: None, .. }
@@ -3177,6 +3202,21 @@ mod tests {
         assert!(snapshot.hand_overs.is_empty());
         let with = Snapshot { hand_overs: vec![moved], ..snapshot };
         assert_eq!(serde_json::from_value::<Snapshot>(serde_json::to_value(&with).unwrap()).unwrap(), with);
+    }
+
+    #[test]
+    fn a_deleted_squad_is_told_every_screen_with_where_it_went_and_where_to_go() {
+        let cmd = Command::DeleteSquad { squad: "acme".into() };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "delete_squad", "squad": "acme" }));
+        let gone = Event::SquadDeleted { squad: "acme".into(), moved_to: "/h/.equipe/deleted/acme-20261110-090000".into(), next: Some("beta".into()) };
+        let failed = Event::SquadNotDeleted { squad: "acme".into(), why: "no such squad".into() };
+        for event in [gone, failed] {
+            assert!(event.for_everyone(), "screens on other squads drop it from their lists too");
+            assert_eq!(event.session(), None);
+            assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&event).unwrap()).unwrap(), event);
+        }
+        let last: Event = serde_json::from_value(json!({ "type": "squad_deleted", "squad": "acme", "moved_to": "/x" })).unwrap();
+        assert_eq!(last, Event::SquadDeleted { squad: "acme".into(), moved_to: "/x".into(), next: None }, "none left: no next");
     }
 
     #[test]

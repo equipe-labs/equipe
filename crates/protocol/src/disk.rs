@@ -170,6 +170,10 @@ pub struct DiskItem {
     /// Short words for it: `T-24 · target/`, `frontend`, `daemon.log`.
     pub label: String,
     pub path: PathBuf,
+    /// Its blocks on disk. A copy-on-write clone (a worktree's `node_modules`
+    /// cloned from the project's checkout) counts in full, though it shares
+    /// its blocks with its source until changed: removing it may give back
+    /// far less than this.
     pub bytes: u64,
     /// The measuring stopped at its time budget: at least `bytes`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

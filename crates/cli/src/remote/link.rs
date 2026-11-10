@@ -112,6 +112,14 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     .into_iter()
                     .map(|s| (s.name, s.projects.iter().map(|p| equipe_core::board::project_name(p)).collect()))
                     .collect();
+                // A squad deleted since: followed no more.
+                followed.retain(|squad, task| {
+                    let listed = core.squads.iter().any(|(s, _)| s == squad);
+                    if !listed {
+                        task.abort();
+                    }
+                    listed
+                });
                 // With devices to reach, every squad is followed for pushes.
                 if core.has_devices() {
                     for (squad, _) in core.squads.clone() {

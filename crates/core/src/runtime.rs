@@ -599,6 +599,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         engines: Default::default(),
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
+        review_nudged: HashMap::new(),
     };
     let mut memos = Vec::new();
     // What waited on the person in words when the daemon stopped: logged as dropped.
@@ -608,6 +609,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.prune();
         memos = runtime.resume_work();
         runtime.restore_stopped();
+        // Change requests the PM once left as plain comments: to their members, once.
+        runtime.recover_change_requests();
         // Chrome's first start, off the loop, before a reply's card waits on it.
         let _ = crate::visuals::card::warm_up(&runtime.config.home);
     }
@@ -889,6 +892,8 @@ enum Internal {
     DiskTrimmed(u64, Vec<String>),
     /// A project the person added, or why it wasn't.
     ProjectAdded { squad: String, result: Result<PathBuf, String> },
+    /// A squad deleted off the loop, or why it wasn't.
+    SquadDeleted { squad: String, result: Result<crate::squads::Deleted, String> },
     /// The logins changed (or couldn't): what screens see of them now.
     Logins(Result<Vec<crate::protocol::vault::Login>, String>),
     /// Something waits for a conversation to act on — work handed in for the
@@ -1138,6 +1143,8 @@ struct Runtime {
     /// What the screens are told of them, as last kept.
     logins: Vec<crate::protocol::vault::Login>,
     design_busy: std::collections::HashSet<String>,
+    /// Handed-in work the PM was reminded of, by squad: when (`heartbeat`).
+    review_nudged: HashMap<String, HashMap<TicketId, u64>>,
     /// Secrets members asked the person for (`ask_secret`), by squad — read
     /// from its journal when first wanted.
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
@@ -1201,6 +1208,7 @@ impl Wake {
             Wake::Internal(Internal::PlanUsePassed(..)) => Borrowed("where the plans went"),
             Wake::Internal(Internal::DiskCleaned(..)) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
+            Wake::Internal(Internal::SquadDeleted { .. }) => Borrowed("a squad deleted"),
             Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
@@ -1416,6 +1424,7 @@ impl Runtime {
                 Internal::PlanUsePassed(burns, loads) => self.on_plan_use_passed(burns, loads),
                 Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
                 Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
+                Internal::SquadDeleted { squad, result } => self.squad_deleted(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
@@ -2086,6 +2095,7 @@ impl Runtime {
             Command::AddProject { squad, path } => self.add_project(squad, path),
             Command::RemoveProject { squad, path } => self.remove_project(&squad, &path),
             Command::SetHq { squad, path } => self.set_hq(&squad, path),
+            Command::DeleteSquad { squad } => self.delete_squad(&squad),
             Command::SaveLogin { draft } => self.with_vault(move |vault| vault.save(draft, now_secs()).map(|_| ())),
             Command::DeleteLogin { id } => self.with_vault(move |vault| vault.delete(id)),
             Command::ForgetLoginAllowance { id, who } => self.with_vault(move |vault| vault.forget(id, &who)),
@@ -2381,17 +2391,19 @@ impl Runtime {
         self.codex_models = None;
     }
 
-    /// Sign `engine` out with its own tool. Claude Code's login is the
-    /// person's: equipe never touches it.
+    /// Sign `engine` out with its own tool, when the person asks on its card.
     fn sign_out(&mut self, engine: Engine) {
-        if engine != Engine::Codex {
-            return;
+        if engine == Engine::Codex {
+            self.forget_codex_plan();
         }
-        self.forget_codex_plan();
         let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
         tokio::spawn(async move {
-            if let Err(why) = crate::engines::codex_logout(&codex).await {
-                crate::daemon_log!("equipe: `codex logout` failed: {why}");
+            let out = match engine {
+                Engine::Codex => crate::engines::codex_logout(&codex).await.map_err(|why| ("codex logout", why)),
+                _ => crate::engines::claude_logout(&claude).await.map_err(|why| ("claude auth logout", why)),
+            };
+            if let Err((tool, why)) = out {
+                crate::daemon_log!("equipe: `{tool}` failed: {why}");
             }
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
         });
@@ -2620,6 +2632,86 @@ impl Runtime {
             Err(why) => {
                 let message = say!(self, "error.project_not_removed", why = why);
                 self.squad_error(squad, message);
+            }
+        }
+    }
+
+    /// The person deletes `squad`. Its members stop as they do when the daemon
+    /// stops: their turns, browsers, side chats and helpers end, and every
+    /// screen hears they closed. What the journal holds of them stays as it
+    /// was, so a squad whose folder is moved back is whole again. Its journal
+    /// closes, nothing opens it again meanwhile, and off the loop its tickets'
+    /// worktrees go and its folder moves ([`crate::squads::delete`]).
+    fn delete_squad(&mut self, squad: &str) {
+        let home = self.config.home.clone();
+        if !crate::squads::exists(&home, squad) || crate::squads::is_gone(&home, squad) {
+            let why = say!(self, "error.no_squad", squad = squad);
+            return self.publish(Event::SquadNotDeleted { squad: squad.to_owned(), why });
+        }
+        crate::daemon_log!("equipe: deleting the squad {squad}");
+        crate::squads::mark_going(&home, squad, true);
+        // Closed first: what the members' ends say isn't written into it.
+        self.journals.remove(squad);
+        // Lanes before the members they belong to.
+        let mut ids: Vec<(bool, SessionId)> = self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad)).map(|(&id, s)| (s.lane.is_none(), id)).collect();
+        ids.sort();
+        let mut desktop_changed = false;
+        for (_, id) in ids {
+            self.stop_turn(id);
+            self.close_side_chats_of(id);
+            self.publish(Event::SessionClosed { session: id });
+            self.dispatch_deferred.remove(&id);
+            if let Some(who) = self.sessions.remove(&id).as_ref().and_then(session_member) {
+                desktop_changed |= self.desktop.leave(&who);
+            }
+        }
+        if desktop_changed {
+            self.publish_desktop();
+        }
+        // What waited on the person there waits no more.
+        self.pending.retain(|_, p| p.squad != squad);
+        self.browsers.retain(|(q, _), _| q != squad);
+        self.last_url.retain(|(q, _), _| q != squad);
+        self.show_url.retain(|(q, _), _| q != squad);
+        let of_squad = |lane: &String| lane.split_once('/').is_some_and(|(q, _)| q == squad);
+        self.held.retain(|lane, _| !of_squad(lane));
+        self.checking.retain(|lane, _| !of_squad(lane));
+        self.asked_in.retain(|lane, _| !of_squad(lane));
+        self.focus.remove(squad);
+        self.watching.remove(squad);
+        self.frame_watchers.remove(squad);
+        self.questions.remove(squad);
+        self.team_changes.remove(squad);
+        self.routine_proposals.remove(squad);
+        self.accepts.remove(squad);
+        self.accepts_declined.remove(squad);
+        self.design_watch.remove(squad);
+        self.signals_running.retain(|(q, _)| q != squad);
+        let (name, internal) = (squad.to_owned(), self.internal.clone());
+        // Worktrees and folders: off the loop.
+        std::thread::spawn(move || {
+            let result = crate::squads::delete(&home, &name, now_secs());
+            crate::squads::mark_going(&home, &name, false);
+            let _ = internal.send(Internal::SquadDeleted { squad: name, result });
+        });
+    }
+
+    /// A squad deleted, or not: every screen hears it.
+    fn squad_deleted(&mut self, squad: &str, result: Result<crate::squads::Deleted, String>) {
+        match result {
+            Ok(deleted) => {
+                crate::daemon_log!(
+                    "equipe: deleted the squad {squad}: its folder is now {}; {} worktrees removed, {} kept for other squads",
+                    deleted.moved_to.display(),
+                    deleted.worktrees_removed.len(),
+                    deleted.worktrees_kept.len()
+                );
+                self.publish(Event::SquadDeleted { squad: squad.to_owned(), moved_to: deleted.moved_to, next: deleted.next });
+            }
+            Err(why) => {
+                crate::daemon_log!("equipe: the squad {squad} wasn't deleted: {why}");
+                let why = say!(self, "error.squad_not_deleted", why = why);
+                self.publish(Event::SquadNotDeleted { squad: squad.to_owned(), why });
             }
         }
     }
@@ -5088,6 +5180,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         let edits = role_edits || kind.in_home() || (pm_codes && worktree::repo_root(&workplace).is_ok());
 
         let sandbox = if edits {
+            // A squad home's copy leaves out other tickets' outputs: gigabytes in a home that has done much work.
+            let only = if kind.in_home() {
+                worktree::home_patterns(&std::iter::once(&ticket_id).chain(&ticket.depends_on).collect::<Vec<_>>())
+            } else {
+                Vec::new()
+            };
+            let mut made = false;
             let checkout = worktree::repo_root(&workplace).and_then(|repo| {
                 let id_part = format!("t{ticket_id}-{:x}", now_secs());
                 match (&saved.worktree, &ticket.branch, &saved.base) {
@@ -5096,13 +5195,25 @@ for one project goes to it as tickets for its owners, with that project — and 
                         Ok(Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() })
                     }
                     // Its worktree went away: check its branch out again.
-                    (_, Some(branch), Some(base)) => worktree::resume(&repo, &home, &id_part, branch, base),
+                    (_, Some(branch), Some(base)) => {
+                        made = true;
+                        worktree::resume(&repo, &home, &id_part, branch, base, &only)
+                    }
                     // New: from HEAD, with the finished work it depends on.
-                    _ => worktree::create_after(&repo, &home, &id_part, &name, &after),
+                    _ => {
+                        made = true;
+                        worktree::create_after(&repo, &home, &id_part, &name, &after, &only)
+                    }
                 }
             });
             match checkout {
-                Ok(sandbox) => Some(sandbox),
+                Ok(sandbox) => {
+                    // Its dependencies cloned from a checkout that has them installed, off the loop.
+                    if made {
+                        worktree::seed_in_background(sandbox.path.clone());
+                    }
+                    Some(sandbox)
+                }
                 Err(err) => return self.cannot_start(&squad, ticket, &name, &err),
             }
         } else {
@@ -5408,8 +5519,9 @@ todo); or drop it if it's no longer wanted.]"
             {
                 let prompt = format!(
                     "[equipe: T-{ready} is handed in and ready for you. Check it and accept it with `accept_work` (with \
-`push` when the person asked for it to go live), send it back with `comment`, or — if it needs the person — put it to \
-them with `propose_accept`. Then carry on with what else waits.]"
+`push` when the person asked for it to go live), send it back with `comment` and `review: changes`, or — if it needs the \
+person — put it to them with `propose_accept`. A branch only behind main is no reason to send it back. Then carry on \
+with what else waits.]"
                 );
                 let _ = self.internal.send(Internal::Wake { session: pm, prompt });
             }
@@ -6882,8 +6994,12 @@ there, end your turn, and carry on when they say they're done."
     async fn set_going(&mut self, id: SessionId, prompt: String) {
         let Some(session) = self.sessions.get(&id) else { return };
         if session.is_working() {
-            if let Some(steer) = session.steer.clone() {
-                let _ = steer.send(prompt);
+            // An engine that can't take it mid-turn gets it after: never dropped.
+            match session.steer.clone() {
+                Some(steer) => {
+                    let _ = steer.send(prompt);
+                }
+                None => self.leave_memo(id, prompt),
             }
             return;
         }
@@ -7156,9 +7272,14 @@ there, end your turn, and carry on when they say they're done."
             board::COMMENT => {
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
                 let text = board::arg_str(&args, "text").ok_or("Say something.")?;
+                let word = crate::accept::review_word(&args)?;
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
-                journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
-                journal.ticket_event(ticket_id, &member, "comment", text).map_err(|e| e.to_string())?;
+                let ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
+                // The PM's word on work in review sends it back or only notes it: said which.
+                if is_pm {
+                    return self.pm_comment(&squad, &member, &ticket, text, word);
+                }
+                journal.ticket_event(ticket_id, &member, board::COMMENT, text).map_err(|e| e.to_string())?;
                 Ok(format!("Noted on T-{ticket_id}."))
             }
             board::SUBMIT_FOR_REVIEW => {
@@ -8034,6 +8155,12 @@ fn work_prompt(
                 sandbox.path.display(),
                 ticket.id
             ));
+            if worktree::is_sparse(&sandbox.path) {
+                out.push_str(&format!(
+                    " Other tickets' outputs aren't in this copy: read them in the squad's folder, {}.",
+                    sandbox.repo.join("outputs").display()
+                ));
+            }
         }
         if ticket.kind == TicketKind::Task {
             out.push_str(
@@ -8074,6 +8201,11 @@ check what is already done in your worktree first.\n"
         out.push_str(&format!(
             "The squad's designer checked its screens and sent it back. {note}\nFix each difference it lists in your \
 worktree, then hand in again with fresh screenshots of the screens you changed.\n"
+        ));
+    } else if let Some(note) = reopened.and_then(|n| n.strip_prefix(crate::accept::PM_SENT_BACK)) {
+        out.push_str(&format!(
+            "The PM reviewed your hand-in and sent it back: {note}\nFix each point in your worktree, on the same branch, \
+then hand in again.\n"
         ));
     } else if let Some(note) = reopened {
         out.push_str(&format!(
@@ -8354,6 +8486,10 @@ fn visual_keys(lines: &[Entry]) -> impl Iterator<Item = String> + '_ {
 /// The journal of `squad`, opened on first use.
 fn journal_for<'a>(journals: &'a mut HashMap<String, Journal>, home: &Path, squad: &str) -> Option<&'a Journal> {
     if !journals.contains_key(squad) {
+        // Opening a deleted squad's journal would make the squad anew.
+        if crate::squads::is_gone(home, squad) {
+            return None;
+        }
         let journal = Journal::for_squad(home, squad).ok()?;
         journals.insert(squad.to_owned(), journal);
     }
