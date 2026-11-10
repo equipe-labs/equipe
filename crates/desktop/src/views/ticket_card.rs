@@ -203,11 +203,15 @@ pub struct Hover {
     dragging: bool,
     /// Where the pointer last was.
     pointer: Option<(f32, f32)>,
+    /// The link whose card was put away by Esc or an action: it stays shut
+    /// while the pointer keeps resting on it, and opens again only once the
+    /// pointer has left it and come back.
+    dismissed: Option<Target>,
 }
 
 impl Default for Hover {
     fn default() -> Self {
-        Self { phase: Phase::Idle, card: None, epoch: 0, scrolled: None, dragging: false, pointer: None }
+        Self { phase: Phase::Idle, card: None, epoch: 0, scrolled: None, dragging: false, pointer: None, dismissed: None }
     }
 }
 
@@ -215,6 +219,10 @@ impl Hover {
     /// The pointer came onto a link (a button not held). True when something changed.
     pub fn enter(&mut self, target: Target, now: Instant) -> bool {
         if self.dragging || self.scrolled.is_some_and(|at| now.saturating_duration_since(at) < SCROLL_QUIET) {
+            return false;
+        }
+        // Put away on this link: the pointer resting (or wobbling) on it doesn't bring it back.
+        if self.dismissed.is_some_and(|d| d.id == target.id) {
             return false;
         }
         match self.phase {
@@ -267,6 +275,9 @@ impl Hover {
     pub fn moved(&mut self, x: f32, y: f32, pressed: bool, now: Instant) -> bool {
         self.dragging = pressed;
         self.pointer = Some((x, y));
+        if self.dismissed.is_some_and(|d| !d.anchor.grown(SLACK).contains(x, y)) {
+            self.dismissed = None;
+        }
         let before = self.phase;
         match self.phase {
             Phase::Waiting { .. } if pressed => self.phase = Phase::Idle,
@@ -328,7 +339,17 @@ impl Hover {
         }
     }
 
-    /// Esc, or an action that went elsewhere: put it away. Whether it was there.
+    /// Esc, or an action that went elsewhere: put it away, and keep it away
+    /// while the pointer stays on its link. Whether it was there.
+    pub fn dismiss(&mut self) -> bool {
+        self.dismissed = match self.phase {
+            Phase::Open { target, .. } | Phase::Done { target, .. } | Phase::Waiting { target, .. } => Some(target),
+            Phase::Idle => self.dismissed,
+        };
+        self.close()
+    }
+
+    /// The card goes (the pointer left, a scroll, a press elsewhere). Whether it was there.
     pub fn close(&mut self) -> bool {
         let was = self.phase != Phase::Idle;
         self.phase = Phase::Idle;
@@ -593,7 +614,7 @@ pub fn key(shell: &mut Shell, event: &KeyDownEvent, window: &mut Window, cx: &mu
     let k = &event.keystroke;
     if k.key == "escape" {
         card.update(cx, |c, cx| {
-            c.hover.close();
+            c.hover.dismiss();
             c.changed(cx);
         });
         return true;
@@ -649,7 +670,7 @@ impl TicketCard {
                 self.result = Some(words.into());
             }
             None => {
-                self.hover.close();
+                self.hover.dismiss();
             }
         }
         self.changed(cx);
@@ -1223,6 +1244,37 @@ mod tests {
 
     fn target(id: TicketId) -> Target {
         Target { id, anchor: link(100., 100.), prefer: Side::Below }
+    }
+
+    #[test]
+    fn a_card_put_away_by_esc_stays_shut_while_the_pointer_rests_on_its_link() {
+        let t0 = Instant::now();
+        let mut h = Hover::default();
+        h.moved(110., 110., false, t0);
+        h.enter(target(42), t0);
+        h.tick(t0 + OPEN_AFTER);
+        assert!(h.shown().is_some());
+        assert!(h.dismiss(), "Esc put it away");
+        // The pointer wobbles a point or two on the same link: every move reports the link again.
+        let mut at = t0 + OPEN_AFTER;
+        for (x, y) in [(111., 110.), (112., 111.), (111., 112.)] {
+            at += Duration::from_millis(40);
+            h.moved(x, y, false, at);
+            assert!(!h.enter(target(42), at), "the same link, still resting on it");
+            assert!(!h.tick(at + OPEN_AFTER));
+            assert_eq!(h.phase, Phase::Idle);
+        }
+        // Another link opens its own card.
+        let other = Target { id: 51, anchor: link(300., 100.), prefer: Side::Below };
+        h.moved(310., 110., false, at);
+        assert!(h.enter(other, at));
+        h.close();
+        // Off the link and back: its card again, after the usual wait.
+        h.moved(110., 300., false, at);
+        h.moved(110., 110., false, at);
+        assert!(h.enter(target(42), at));
+        assert!(h.tick(at + OPEN_AFTER));
+        assert_eq!(h.shown().map(|t| t.id), Some(42));
     }
 
     #[test]

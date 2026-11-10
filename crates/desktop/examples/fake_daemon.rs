@@ -35,8 +35,8 @@
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all);
 //! `FAKE_KEPT=<words>` a voice memo whose files are gone, its words kept with it.
-//! `FAKE_CARDS=1` ends it on a person's Markdown naming T-42 and T-51, then a
-//! multiline reply naming emphasized T-42, T-117 and T-999 (no such ticket),
+//! `FAKE_CARDS=1` ends it on a person's line naming T-42 and T-51, then a
+//! multiline reply naming emphasized T-42, T-117 (waiting for the person) and T-999 (no such ticket),
 //! to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
 //! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
 //! the reply names T-4 too — its pictures and all, a card taller than a small window.
@@ -455,7 +455,8 @@ fn board() -> Vec<Ticket> {
         t.plan = Some(plan.clone());
         t.body.push_str(&format!("\n\nPlan: `{plan}`\n\nThis ticket's test plan:\n\n- TP-1: choosing a card and paying creates an order\n- TP-3: the chosen payment method survives a refresh"));
     }
-    if your_turn().is_some() {
+    // `FAKE_CARDS`'s reply names T-117 as the person's turn: it is on the board then too.
+    if your_turn().is_some() || std::env::var_os("FAKE_CARDS").is_some() {
         out.push(turn_ticket());
     }
     if replies::on() {
@@ -1301,7 +1302,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
                         // long gone, for the tickets' cards on the pointer.
                         if std::env::var_os("FAKE_CARDS").is_some() {
-                            history.push(Entry::User { text: "Can you compare **T-42** with T-51 before I review it?".into(), kept: Vec::new() });
+                            history.push(Entry::User { text: "Can you compare T-42 with T-51 before I review it?".into(), kept: Vec::new() });
                             let pictures = if replies::on() { " Have a look at T-4's pictures too." } else { "" };
                             history.push(Entry::Reply { text: format!("## What needs attention\n\n- **T-42** is waiting for review; T-51 is the related follow-up.\n- T-117 is your turn, and the old T-999 is gone.{pictures}") });
                         }
