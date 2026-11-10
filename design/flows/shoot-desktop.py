@@ -96,6 +96,7 @@ state("conversation/chat/activity-large", "chat;zoom:150;say:torture 9;wait:2500
 state("conversation/chat/long", "chat;wait:800", {"FAKE_READING": "1"})
 state("conversation/chat/pictures", "chat;wait:800", {"FAKE_REPLY_IMAGES": "1"}, wait=2500)
 state("conversation/chat/ticket-cards", "chat;wait:800", {"FAKE_CARDS": "1"})
+state("conversation/chat/outline-open", "chat;wait:800;rail:open;wait:500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, label="The two bars at the left are the conversation outline: the pointer opens the list of what was asked")
 state("conversation/chat/ticket-card-missing", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:649,499;wait:1500", 760: "hover:553,428;wait:1500"}, label="A ticket card for a number not on the board: Not found")
 state("conversation/chat/ticket-card-missing-long", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, lang="de", at={1200: "hover:649,499;wait:1500", 760: "hover:553,428;wait:1500"}, label="A ticket card for a number not on the board, in German")
 state("conversation/chat/ticket-card-recovered", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, at={1200: "hover:438,468;wait:1500", 760: "hover:341,397;wait:1500"}, label="A ticket card for a ticket the list missed: looked up, shown")
