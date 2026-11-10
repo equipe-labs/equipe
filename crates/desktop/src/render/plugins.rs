@@ -16,7 +16,7 @@ use super::links::{self, looks_like_path};
 use super::raster::{self, Kind};
 use super::view::Look;
 use super::{Open, ShellRef, base_dir, hash_of, open_file, tones, with_shell};
-use crate::theme::{MONO, Palette};
+use crate::theme::{MONO, Palette, R_LG, R_SM};
 
 fn hex(c: Rgba) -> u32 {
     let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u32;
@@ -24,8 +24,8 @@ fn hex(c: Rgba) -> u32 {
 }
 
 /// Every plugin, in the order they are asked; `scope`: the conversation's row they draw in.
-pub fn all(p: Palette, look: Look, scope: u64) -> (FileChips, Images, InlineMath, BlockMath, Mermaid, Alerts) {
-    (FileChips { p }, Images { p, live: look.live, scope }, InlineMath { p }, BlockMath { p, look }, Mermaid { p }, Alerts { p, look })
+pub fn all(p: Palette, look: Look, scope: u64) -> (FileChips, Images, InlineMath, BlockMath, Mermaid, Alerts, Cards) {
+    (FileChips { p }, Images { p, live: look.live, scope }, InlineMath { p }, BlockMath { p, look }, Mermaid { p }, Alerts { p, look }, Cards { p, scope })
 }
 
 // ── file chips ──
@@ -373,26 +373,32 @@ impl MarkdownPlugin for BlockMath {
         let picture = raster::draw(Kind::DisplayMath, &source, self.look.size * 1.1, hex(p.text), super::is_dark(&p), cx);
         div().w_full().py_2().flex().justify_center().overflow_hidden().child(match picture {
             Ok(pic) => img(ImageSource::Render(pic.image)).w(px(pic.width)).h(px(pic.height)).flex_none().into_any_element(),
-            Err(_) => source_box(p, &source),
+            Err(_) => source_box(p, &source, true),
         })
     }
 }
 
 /// Source shown as code, when it couldn't be drawn.
-fn source_box(p: Palette, source: &str) -> AnyElement {
+fn source_box(p: Palette, source: &str, framed: bool) -> AnyElement {
+    // Lines don't wrap (a `<br/` cut from its `>` read as broken): a long one scrolls sideways.
     div()
+        .id(("source", hash_of(source)))
         .w_full()
-        .p_3()
-        .rounded(px(8.))
-        .bg(p.code_bg)
-        .border_1()
-        .border_color(p.hair)
+        .overflow_x_scroll()
+        .when(framed, |d| d.p_3().rounded(px(8.)).bg(p.code_bg).border_1().border_color(p.hair))
         .font_family(MONO)
         .text_size(px(12.5))
         .line_height(px(19.))
         .text_color(p.text2)
-        .children(source.lines().map(|l| div().child(l.to_owned())))
+        .children(source.lines().map(|l| div().whitespace_nowrap().child(l.to_owned())))
         .into_any_element()
+}
+
+/// The face of a diagram's block, as the diagram theme has it: white in
+/// light, `color.surface` in dark — the colour of its plain nodes and of an
+/// HTML card, so the three sit as one.
+fn diagram_face(p: &Palette) -> Rgba {
+    if super::is_dark(p) { rgb(0x16171A) } else { rgb(0xFFFFFF) }
 }
 
 /// Whether a fence's closing line has come (a diagram is drawn only then).
@@ -437,67 +443,194 @@ impl MarkdownPlugin for Mermaid {
         let showing_source = window.use_keyed_state(("mermaid-source", key), cx, |_, _| false);
         let as_source = *showing_source.read(cx);
         let picture = raster::draw(Kind::Mermaid, &source, 14., hex(p.text), super::is_dark(&p), cx);
-        let failed = picture.is_err();
+        // A diagram that couldn't be drawn is its source, with no card around it.
+        let Ok(pic) = picture else {
+            return v_flex()
+                .w_full()
+                .my_1()
+                .gap_1()
+                .child(source_box(p, &source, true))
+                .child(div().px_1().text_size(px(12.)).text_color(tones(&p).danger).child(t!("render.diagram_failed")))
+                .into_any_element();
+        };
+        let name = crate::views::visuals::diagram_title(&source).unwrap_or_else(|| t!("render.show_diagram").to_owned());
+        // Source and copy show under the pointer or at the keys (and stay while the source is up, which is the way back).
+        let reveal = crate::views::visuals::Reveal::of("mermaid", key, as_source, window, cx);
+        let copy_focus = window.use_keyed_state(("mermaid-copy-focus", key), cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
         let toggle = {
             let state = showing_source.clone();
-            div()
-                .id(("mermaid-toggle", key))
-                .px_2()
-                .rounded(px(5.))
-                .text_size(px(12.))
-                .text_color(p.muted)
-                .cursor_pointer()
-                .hover(move |s| s.bg(p.wash).text_color(p.text))
-                .child(if as_source { t!("render.show_diagram") } else { t!("render.show_source") })
-                .on_click(move |_, _, cx| state.update(cx, |s, cx| {
+            let label = if as_source { t!("render.show_diagram") } else { t!("render.show_source") };
+            reveal.button(p, ElementId::NamedInteger("mermaid-toggle".into(), key), label, format!("{label}: {name}"), None).on_click(move |_, _, cx| {
+                state.update(cx, |s, cx| {
                     *s = !*s;
                     cx.notify();
-                }))
+                })
+            })
         };
         let copy = {
             let source = source.clone();
-            div()
-                .id(("mermaid-copy", key))
-                .px_2()
-                .rounded(px(5.))
-                .text_size(px(12.))
-                .text_color(p.muted)
-                .cursor_pointer()
-                .hover(move |s| s.bg(p.wash).text_color(p.text))
-                .child(t!("chat.copy"))
+            reveal
+                .button(p, ElementId::NamedInteger("mermaid-copy".into(), key), t!("chat.copy"), format!("{}: {name}", t!("chat.copy")), Some(&copy_focus))
                 .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(source.clone())))
         };
+        let block = div()
+            .id(("mermaid", key))
+            .relative()
+            .w_full()
+            .my_1()
+            .pt(px(48.))
+            .px(px(16.))
+            .pb(px(16.))
+            .rounded(px(R_LG))
+            .border_1()
+            .border_color(p.hair)
+            .bg(diagram_face(&p))
+            .role(Role::Image)
+            .aria_label(name)
+            .child(h_flex().absolute().top(px(8.)).right(px(8.)).gap_1().child(toggle).child(copy))
+            .child(if as_source {
+                source_box(p, &source, false)
+            } else {
+                div().w_full().flex().justify_center().overflow_hidden().child(img(ImageSource::Render(pic.image)).max_w_full().w(px(pic.width)).h(px(pic.height)).flex_none()).into_any_element()
+            });
+        reveal.watch(block).into_any_element()
+    }
+}
+
+// ── HTML cards ──
+
+/// How long a card waits for the daemon's picture before it shows its source.
+const CARD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A fenced block ```` ```html card ````: the daemon's picture of it (light or
+/// dark as the window is), a place held while it is drawn, and — when it
+/// isn't coming (the daemon draws no cards, or it failed) — the source,
+/// folded.
+pub struct Cards {
+    p: Palette,
+    scope: u64,
+}
+
+impl MarkdownPlugin for Cards {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "html-card"
+    }
+
+    fn parse(&self, node: &md::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let md::Node::Code(code) = node else { return None };
+        let card = code.lang.as_deref().is_some_and(|l| l.eq_ignore_ascii_case("html")) && code.meta.as_deref().is_some_and(|m| m.trim().eq_ignore_ascii_case("card"));
+        (card && fence_closed(node, cx)).then(|| MarkdownNode::new("html-card", code.value.clone()).text(code.value.clone()).markdown(format!("```html card\n{}\n```", code.value)))
+    }
+
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let source = node.data::<String>().cloned().unwrap_or_default();
+        let p = self.p;
+        let key = equipe_core::visuals::diagram::key(&source);
+        let drawn = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).and_then(|shell| {
+            shell.read(cx).model.convos.values().flat_map(|c| c.rendered.iter()).find(|r| r.kind == "card" && r.key == key).cloned()
+        });
+        if let Some(drawn) = drawn
+            && let Some(shell) = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade())
+        {
+            let shots = crate::views::visuals::Shots::of(shell.read(cx), shell.downgrade(), cx);
+            if let Some(card) = crate::views::visuals::card(&shots, self.scope, &drawn, crate::views::visuals::card_title(&source), window, cx) {
+                return card;
+            }
+        }
+        // Not drawn yet: a place held for a while, then the source.
+        let since = card_seen(&key);
+        let waiting = since.elapsed() < CARD_WAIT;
+        if waiting {
+            self.recheck(&key, since, cx);
+            return h_flex()
+                .my_1()
+                .w_full()
+                .h(px(96.))
+                .items_center()
+                .justify_center()
+                .rounded(px(R_LG))
+                .border_1()
+                .border_color(p.hair)
+                .bg(p.wash)
+                .text_size(px(12.5))
+                .text_color(p.muted)
+                .child(t!("render.card_waiting"))
+                .into_any_element();
+        }
+        let open = window.use_keyed_state(("card-source", hash_of(&key)), cx, |_, _| false);
+        let shown = *open.read(cx);
+        let ring = Rgba { a: 0.55, ..p.accent };
+        let focus = window.use_keyed_state(("card-fold-focus", hash_of(&key)), cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
+        let label = if shown { t!("render.card_hide") } else { t!("render.show_source") };
         v_flex()
             .w_full()
             .my_1()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(p.hair)
-            .bg(p.code_bg)
+            .gap_1()
             .child(
                 h_flex()
-                    .px_2()
-                    .pt_1()
-                    .gap_1()
+                    .gap_2()
+                    .items_center()
                     .text_size(px(12.))
-                    .child(div().flex_1().pl_1().font_family(MONO).text_color(p.muted).child("mermaid"))
-                    .when(!failed, |row| row.child(toggle))
-                    .child(copy),
+                    .text_color(p.muted)
+                    .child(div().child(t!("render.card_failed")))
+                    .child(
+                        div()
+                            .id(("card-fold", hash_of(&key)))
+                            .h(px(24.))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .rounded(px(R_SM))
+                            .bg(p.code_bg)
+                            .cursor_pointer()
+                            .hover(move |s| s.text_color(p.text))
+                            .track_focus(&focus)
+                            .focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]))
+                            .role(Role::Button)
+                            .aria_label(label)
+                            .child(label)
+                            .on_click(move |_, _, cx| open.update(cx, |s, cx| {
+                                *s = !*s;
+                                cx.notify();
+                            })),
+                    ),
             )
-            .child(match picture {
-                Ok(pic) if !as_source => div()
-                    .w_full()
-                    .p_3()
-                    .flex()
-                    .justify_center()
-                    .overflow_hidden()
-                    .child(img(ImageSource::Render(pic.image)).max_w_full().w(px(pic.width)).h(px(pic.height)).flex_none())
-                    .into_any_element(),
-                _ => v_flex()
-                    .child(div().p_1().child(source_box(p, &source)))
-                    .when(failed, |col| col.child(div().px_3().pb_2().text_size(px(12.)).text_color(tones(&p).danger).child(t!("render.diagram_failed"))))
-                    .into_any_element(),
-            })
+            .when(shown, |col| col.child(source_box(p, &source, true)))
+            .into_any_element()
+    }
+}
+
+/// When this card was first drawn on screen.
+fn card_seen(key: &str) -> std::time::Instant {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static SEEN: RefCell<HashMap<String, std::time::Instant>> = RefCell::new(HashMap::new());
+    }
+    SEEN.with(|seen| *seen.borrow_mut().entry(key.to_owned()).or_insert_with(std::time::Instant::now))
+}
+
+impl Cards {
+    /// Draw this row again when the wait is over (once per card).
+    fn recheck(&self, key: &str, since: std::time::Instant, cx: &mut App) {
+        use std::cell::RefCell;
+        use std::collections::HashSet;
+        thread_local! {
+            static SET: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+        }
+        if !SET.with(|s| s.borrow_mut().insert(key.to_owned())) {
+            return;
+        }
+        let (scope, left) = (self.scope, CARD_WAIT.saturating_sub(since.elapsed()));
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(left + std::time::Duration::from_millis(50)).await;
+            cx.update(|cx| with_shell(cx, |shell, cx| shell.chat.remeasure_row(scope, cx)));
+        })
+        .detach();
     }
 }
 

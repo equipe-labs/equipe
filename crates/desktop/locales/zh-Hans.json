@@ -3472,5 +3472,11 @@
   "moved.why_back": "{engine} 的额度又够了",
   "moved.mid_ticket": "进行中，已交接 T-{id}",
   "moved.between": "在两个工单之间",
-  "moved.packet_note": "这是新对话一开始收到的原文，只读。"
+  "moved.packet_note": "这是新对话一开始收到的原文，只读。",
+  "render.card_waiting": "正在绘制卡片…",
+  "render.card_failed": "无法绘制此卡片",
+  "render.card_open": "在浏览器面板中打开",
+  "render.card_big": "放大查看",
+  "render.card_label": "HTML 卡片",
+  "render.card_hide": "收起"
 }

@@ -24,6 +24,7 @@ pub mod cache;
 pub mod card;
 pub mod diagram;
 pub mod markdown;
+mod theme;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};

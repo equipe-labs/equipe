@@ -3559,5 +3559,11 @@
   "moved.why_back": "{engine}-Kontingent wieder frei",
   "moved.mid_ticket": "mitten im Ticket, T-{id} übergeben",
   "moved.between": "zwischen Tickets",
-  "moved.packet_note": "Genau das, womit das neue Gespräch begann. Nur lesbar."
+  "moved.packet_note": "Genau das, womit das neue Gespräch begann. Nur lesbar.",
+  "render.card_waiting": "Karte wird gezeichnet…",
+  "render.card_failed": "Diese Karte ließ sich nicht zeichnen",
+  "render.card_open": "Im Browser-Bereich öffnen",
+  "render.card_big": "Vergrößern",
+  "render.card_label": "HTML-Karte",
+  "render.card_hide": "Einklappen"
 }
