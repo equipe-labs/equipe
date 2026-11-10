@@ -167,16 +167,22 @@ pub struct Sandbox {
 /// Cut a new branch from `HEAD` — `equipe/<label>-<id>` — and check it out in a
 /// worktree under `home`.
 pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox> {
+    create_sparse(repo, home, id, label, &[])
+}
+
+/// [`create`], checking out only what `only` — sparse-checkout patterns, see
+/// [`home_patterns`] — leaves in, when `repo` is a squad home; everything when
+/// `only` is empty or `repo` is anything else.
+fn create_sparse(repo: &Path, home: &Path, id: &str, label: &str, only: &[String]) -> Result<Sandbox> {
     let base = git(repo, &["rev-parse", "HEAD"])
         .map_err(|_| "the repository has no commits yet — commit something first".to_owned())?;
     let path = home.join("worktrees").join(folder_name(repo)).join(id);
     let branch = format!("equipe/{label}-{id}");
     std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
         .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
-    git(
-        repo,
-        &["worktree", "add", "-q", "-b", &branch, &path.to_string_lossy(), &base],
-    )?;
+    add_worktree(repo, &path, &["-b", &branch, &path.to_string_lossy(), &base], only).inspect_err(|_| {
+        let _ = git(repo, &["branch", "-q", "-D", &branch]);
+    })?;
     Ok(Sandbox {
         repo: repo.to_owned(),
         path,
@@ -186,22 +192,97 @@ pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox
 }
 
 /// Check out an existing branch again — a reopened ticket whose worktree was
-/// removed — in a fresh worktree under `home`.
-pub fn resume(repo: &Path, home: &Path, id: &str, branch: &str, base: &str) -> Result<Sandbox> {
+/// removed — in a fresh worktree under `home`; `only` as [`create_after`].
+pub fn resume(repo: &Path, home: &Path, id: &str, branch: &str, base: &str, only: &[String]) -> Result<Sandbox> {
     let path = home.join("worktrees").join(folder_name(repo)).join(id);
     std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
         .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
-    git(repo, &["worktree", "add", "-q", &path.to_string_lossy(), branch])?;
+    add_worktree(repo, &path, &[&path.to_string_lossy(), branch], only)?;
     Ok(Sandbox { repo: repo.to_owned(), path, branch: branch.to_owned(), base: base.to_owned() })
+}
+
+/// How long `git worktree add` (and the checkout that fills a sparse one) may
+/// take for a ticket: a squad home or a big project can hold tens of thousands
+/// of files, and an add stopped half-way leaves a locked, half-made worktree
+/// behind that nothing uses.
+pub const WORKTREE_ADD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Whether `repo` is a squad home (`…/squads/<squad>/home`): the one kind of
+/// repository whose tickets' worktrees are sparse.
+fn is_squad_home(repo: &Path) -> bool {
+    repo.file_name().is_some_and(|n| n == "home") && folder_name(repo) != "home"
+}
+
+/// The sparse-checkout patterns for a ticket's worktree of a squad home:
+/// everything but other tickets' folders under `outputs/` (`outputs/T-7 …/`),
+/// which in a home that has done much work hold tens of thousands of files.
+/// The folders of `tickets` — the ticket's own and those of the work it builds
+/// on — stay, and so do the files right in `outputs/` and its other folders.
+pub fn home_patterns<T: std::fmt::Display>(tickets: &[T]) -> Vec<String> {
+    let mut patterns = vec!["/*".to_owned(), "!/outputs/T-*/".to_owned()];
+    for id in tickets {
+        patterns.extend([format!("/outputs/T-{id}/"), format!("/outputs/T-{id} */"), format!("/outputs/T-{id}-*/")]);
+    }
+    patterns
+}
+
+/// `git worktree add <args>` for `path` (named among `args`). With `only` and
+/// `repo` a squad home it checks out what those patterns leave in — set for
+/// that worktree alone (`extensions.worktreeConfig`), never for the home's
+/// own checkout or another worktree. Nothing is left behind when it fails.
+fn add_worktree(repo: &Path, path: &Path, args: &[&str], only: &[String]) -> Result<()> {
+    if only.is_empty() || !is_squad_home(repo) {
+        let mut add = vec!["worktree", "add", "-q"];
+        add.extend(args);
+        return git_within(repo, &add, WORKTREE_ADD_TIMEOUT).map(|_| ());
+    }
+    // Before the worktree is made sparse, so that the setting goes into that
+    // worktree's own config rather than the repository's.
+    git(repo, &["config", "extensions.worktreeConfig", "true"])?;
+    let mut add = vec!["worktree", "add", "-q", "--no-checkout"];
+    add.extend(args);
+    git_within(repo, &add, WORKTREE_ADD_TIMEOUT)?;
+    let filled = (|| {
+        let mut set = vec!["sparse-checkout", "set", "--no-cone"];
+        set.extend(only.iter().map(String::as_str));
+        git(path, &set)?;
+        // The home's own checkout must stay whole.
+        if git(repo, &["config", "--local", "--get", "core.sparseCheckout"]).is_ok_and(|v| v == "true") {
+            let _ = git(repo, &["config", "--local", "--unset", "core.sparseCheckout"]);
+            return Err("git made the squad's own folder sparse, not just the ticket's copy".to_owned());
+        }
+        git_within(path, &["checkout", "-q"], WORKTREE_ADD_TIMEOUT)
+    })();
+    if let Err(err) = filled {
+        let _ = git(repo, &["worktree", "remove", "-f", "-f", &path.to_string_lossy()]);
+        let _ = git(repo, &["worktree", "prune"]);
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// The admin folder git keeps for worktree `path` (`<repo>/.git/worktrees/<name>`),
+/// read from its `.git` file; `None` when `path` isn't a linked worktree.
+fn admin_dir(path: &Path) -> Option<PathBuf> {
+    let link = std::fs::read_to_string(path.join(".git")).ok()?;
+    let dir = PathBuf::from(link.trim().strip_prefix("gitdir:")?.trim());
+    Some(if dir.is_relative() { path.join(dir) } else { dir })
+}
+
+/// Whether worktree `path` checks out only part of its repository, as a
+/// squad home's ticket worktree does. Reads a file; runs no git.
+pub fn is_sparse(path: &Path) -> bool {
+    admin_dir(path).is_some_and(|admin| admin.join("info").join("sparse-checkout").is_file())
 }
 
 /// Cut a ticket's branch from `HEAD` with the work it builds on already in it:
 /// each of `after` — `(what, branch)`, the finished tickets it depends on — is
 /// merged in unless `HEAD` has it. Their work may be accepted but not merged
 /// yet; the ticket must not start without it. When two of them conflict, nothing
-/// is left behind and the error names them.
-pub fn create_after(repo: &Path, home: &Path, id: &str, label: &str, after: &[(String, String)]) -> Result<Sandbox> {
-    let mut sandbox = create(repo, home, id, label)?;
+/// is left behind and the error names them. With `only` (patterns, see
+/// [`home_patterns`]) a squad home's worktree checks out just what they leave in.
+pub fn create_after(repo: &Path, home: &Path, id: &str, label: &str, after: &[(String, String)], only: &[String]) -> Result<Sandbox> {
+    let mut sandbox = create_sparse(repo, home, id, label, only)?;
     for (what, branch) in after {
         if git(repo, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_err()
             || is_ancestor(&sandbox.path, branch, "HEAD")
@@ -495,7 +576,15 @@ const FALLBACK_IDENTITY: [&str; 4] = ["-c", "user.name=equipe", "-c", "user.emai
 impl Sandbox {
     /// Commit everything the agent changed. `Ok(None)` when it changed nothing.
     pub fn commit_all(&self, message: &str) -> Result<Option<String>> {
-        git(&self.path, &["add", "-A"])?;
+        // In a sparse worktree (a squad home's), a file written where the
+        // checkout leaves things out is refused without `--sparse`; files left
+        // out are never taken as deleted either way.
+        if let Err(err) = git(&self.path, &["add", "-A"]) {
+            if !err.contains("sparse") {
+                return Err(err);
+            }
+            git(&self.path, &["add", "-A", "--sparse"])?;
+        }
         if git(&self.path, &["diff", "--cached", "--quiet"]).is_ok() {
             return Ok(None);
         }
@@ -546,41 +635,106 @@ impl Sandbox {
     }
 }
 
+/// How long a worktree no ticket keeps and no one works in must be untouched
+/// before [`tidy`] removes it, with nothing uncommitted in it: long enough
+/// that one made for a ticket while tidy ran is never taken for a leftover.
+const CLEAN_IDLE: Duration = Duration::from_secs(10 * 60);
+/// … with uncommitted changes in it, which go with it.
+const DIRTY_IDLE: Duration = Duration::from_secs(24 * 60 * 60);
+/// … left locked by a `git worktree add` stopped half-way. A running add holds
+/// the same lock, and none takes this long.
+const HALF_MADE_IDLE: Duration = Duration::from_secs(60 * 60);
+/// Build output in a worktree no one works in: rebuilt when wanted.
+const BUILDS: [&str; 2] = ["target", ".next"];
+
 /// Give back the space tickets' worktrees hold. In a worktree no one works in
-/// now, build output (`target/`, rebuilt when wanted) goes; a worktree no
-/// ticket keeps either — its work landed, or it was dropped — goes too, once
-/// nothing in it is uncommitted (its branch stays). `in_use` and `kept` are
-/// worktree paths. Returns what it did, one line each.
+/// now, build output ([`BUILDS`]) goes. A worktree no ticket keeps either —
+/// its work landed, or it was dropped — goes too once untouched for a while
+/// (its branch stays): [`CLEAN_IDLE`], or [`DIRTY_IDLE`] when something in
+/// it is uncommitted, or [`HALF_MADE_IDLE`] when an add stopped half-way left
+/// it locked. A folder there that isn't a worktree goes only when it is
+/// named as a ticket's (`t12-…`) and untouched for [`DIRTY_IDLE`]; nothing
+/// else is ever touched. `in_use` and `kept` are worktree paths. Returns what
+/// it did, one line each. Gigabytes: off the loop.
 pub fn tidy(home: &Path, in_use: &[PathBuf], kept: &[PathBuf]) -> Vec<String> {
     let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
     let in_use: Vec<PathBuf> = in_use.iter().map(|p| canon(p)).collect();
     let kept: Vec<PathBuf> = kept.iter().map(|p| canon(p)).collect();
+    let now = std::time::SystemTime::now();
+    let idle_for = |at: std::time::SystemTime| now.duration_since(at).unwrap_or_default();
     let mut done = Vec::new();
     let Ok(repos) = std::fs::read_dir(home.join("worktrees")) else {
         return done;
     };
-    for dir in repos.flatten().flat_map(|r| std::fs::read_dir(r.path()).into_iter().flatten().flatten()) {
+    let dirs = repos.flatten().filter(|r| r.file_type().is_ok_and(|t| t.is_dir())).flat_map(|r| std::fs::read_dir(r.path()).into_iter().flatten().flatten());
+    for dir in dirs.filter(|d| d.file_type().is_ok_and(|t| t.is_dir())) {
         let path = canon(&dir.path());
-        // Only a worktree: its `.git` is a file pointing back at its repository.
-        if !path.join(".git").is_file() || in_use.iter().any(|u| u.starts_with(&path) || path.starts_with(u)) {
+        if in_use.iter().any(|u| u.starts_with(&path) || path.starts_with(u)) {
             continue;
         }
-        let target = path.join("target");
-        if target.is_dir() && std::fs::remove_dir_all(&target).is_ok() {
-            done.push(format!("cleared {}", target.display()));
-        }
-        if kept.contains(&path) || !git(&path, &["status", "--porcelain"]).is_ok_and(|s| s.is_empty()) {
-            continue;
-        }
-        let Ok(common) = git(&path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]) else {
+        // A worktree's `.git` is a file pointing at its admin folder in its repository.
+        let Some(admin) = admin_dir(&path).filter(|a| a.is_dir()) else {
+            let name = dir.file_name().to_string_lossy().into_owned();
+            if is_ticket_named(&name) && !kept.contains(&path) && idle_for(last_touched(&path, None)) >= DIRTY_IDLE && std::fs::remove_dir_all(&path).is_ok() {
+                done.push(format!("removed {}, a ticket's folder that isn't a worktree", path.display()));
+            }
             continue;
         };
-        let repo = Path::new(&common).parent().map(Path::to_owned).unwrap_or_default();
-        if git(&repo, &["worktree", "remove", "--force", &path.to_string_lossy()]).is_ok() {
-            done.push(format!("removed {}", path.display()));
+        // Before anything here changes, and before git status rewrites the index.
+        let idle = idle_for(last_touched(&path, Some(&admin)));
+        for build in BUILDS.map(|b| path.join(b)) {
+            if build.is_dir() && std::fs::remove_dir_all(&build).is_ok() {
+                done.push(format!("cleared {}", build.display()));
+            }
+        }
+        if kept.contains(&path) {
+            continue;
+        }
+        let half_made = is_half_made(&admin);
+        let clean = !half_made && git(&path, &["status", "--porcelain"]).is_ok_and(|s| s.is_empty());
+        let wait = match (half_made, clean) {
+            (true, _) => HALF_MADE_IDLE,
+            (false, true) => CLEAN_IDLE,
+            (false, false) => DIRTY_IDLE,
+        };
+        // `<repo>/.git/worktrees/<name>`: git runs from `<repo>/.git`.
+        let Some(git_dir) = admin.parent().and_then(Path::parent).filter(|_| idle >= wait) else {
+            continue;
+        };
+        // Twice forced: a locked worktree too. Gigabytes may take as long to remove as to add.
+        if git_within(git_dir, &["worktree", "remove", "-f", "-f", &path.to_string_lossy()], WORKTREE_ADD_TIMEOUT).is_ok() {
+            let _ = git(git_dir, &["worktree", "prune"]);
+            done.push(match (half_made, clean) {
+                (true, _) => format!("removed {}, a worktree left half-made", path.display()),
+                (false, true) => format!("removed {}", path.display()),
+                (false, false) => format!("removed {}; the uncommitted changes in it were dropped (its branch stays)", path.display()),
+            });
         }
     }
     done
+}
+
+/// Whether `name` is how equipe names a ticket's worktree: `t<digits>-…`.
+fn is_ticket_named(name: &str) -> bool {
+    name.strip_prefix('t').and_then(|rest| rest.split_once('-')).is_some_and(|(digits, _)| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether the worktree whose admin folder is `admin` was left locked by a
+/// `git worktree add` that never finished: locked while initializing, or
+/// with no index yet (it is written once the checkout is done).
+fn is_half_made(admin: &Path) -> bool {
+    std::fs::read_to_string(admin.join("locked")).is_ok_and(|why| why.trim() == "initializing" || !admin.join("index").exists())
+}
+
+/// When folder `path` was last worked in, cheaply — never walking what may
+/// be gigabytes: the newest of its entries (a file written or added there)
+/// and of its git index (`admin`'s, which every `git add` writes); the
+/// folder's own when it is empty.
+fn last_touched(path: &Path, admin: Option<&Path>) -> std::time::SystemTime {
+    let at = |p: &Path| std::fs::symlink_metadata(p).and_then(|m| m.modified()).ok();
+    let entries = std::fs::read_dir(path).into_iter().flatten().flatten().filter_map(|e| at(&e.path()));
+    let index = admin.and_then(|a| at(&a.join("index")));
+    entries.chain(index).max().or_else(|| at(path)).unwrap_or(std::time::UNIX_EPOCH)
 }
 
 /// The bytes under `path`, links not followed.
@@ -776,15 +930,193 @@ mod tests {
             git(&s.path, &["add", "-A"]).unwrap();
             git(&s.path, &["commit", "-q", "-m", "ignore builds"]).unwrap();
         }
+        // Untouched for an hour: past the wait for a clean one, not a dirty one.
+        for s in [&landed, &unsaved] {
+            age(&s.path, 3_600);
+        }
 
         let done = tidy(&home, std::slice::from_ref(&working.path), std::slice::from_ref(&waiting.path));
         assert!(working.path.join("target/debug/app").exists(), "the one at work keeps everything");
         assert!(waiting.path.exists() && !waiting.path.join("target").exists(), "kept, its build given back");
         assert!(!landed.path.exists(), "no ticket keeps it: gone");
         assert!(git(&repo, &["rev-parse", "--verify", "-q", &landed.branch]).is_ok(), "its branch stays");
-        assert!(unsaved.path.exists() && !unsaved.path.join("target").exists(), "uncommitted work stays");
+        assert!(unsaved.path.exists() && !unsaved.path.join("target").exists(), "uncommitted work stays a day");
         assert_eq!(done.len(), 4, "{done:?}");
         assert!(tidy(&home, std::slice::from_ref(&working.path), std::slice::from_ref(&waiting.path)).is_empty(), "nothing more");
+    }
+
+    /// Make worktree (or folder) `path` look untouched for `secs`: its
+    /// entries and its git index, as [`last_touched`] reads them.
+    fn age(path: &Path, secs: u64) {
+        let then = std::time::SystemTime::now() - Duration::from_secs(secs);
+        let entries = std::fs::read_dir(path).unwrap().flatten().map(|e| e.path());
+        let index = admin_dir(path).map(|a| a.join("index")).filter(|i| i.exists());
+        for p in entries.chain(index).chain([path.to_owned()]) {
+            std::fs::File::open(&p).unwrap().set_modified(then).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_leftover_worktree_goes_once_untouched_even_dirty_or_locked_but_not_what_a_member_made() {
+        let repo = repo();
+        let home = scratch("tidy-leftovers");
+        let dirty_old = create(&repo, &home, "t5-a", "x").unwrap();
+        let dirty_fresh = create(&repo, &home, "t6-b", "x").unwrap();
+        let locked_old = create(&repo, &home, "t7-c", "x").unwrap();
+        let locked_fresh = create(&repo, &home, "t8-d", "x").unwrap();
+        for s in [&dirty_old, &dirty_fresh] {
+            std::fs::write(s.path.join("DRAFT.md"), "unsaved\n").unwrap();
+        }
+        // As a `git worktree add` stopped half-way leaves them.
+        for s in [&locked_old, &locked_fresh] {
+            std::fs::write(admin_dir(&s.path).unwrap().join("locked"), "initializing\n").unwrap();
+        }
+        let worktrees = worktrees_of(&repo, &home);
+        // A half-made add with no `.git` yet, and an empty one.
+        std::fs::create_dir_all(worktrees.join("t12-x/outputs")).unwrap();
+        std::fs::create_dir_all(worktrees.join("t558-shots")).unwrap();
+        // What a member made under worktrees/ is never touched, however old.
+        let member = home.join("worktrees").join("t1188-mcp");
+        std::fs::create_dir_all(member.join("src")).unwrap();
+        std::fs::write(member.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::create_dir_all(worktrees.join("notes")).unwrap();
+        age(&dirty_old.path, 25 * 3_600);
+        age(&dirty_fresh.path, 3_600);
+        age(&locked_old.path, 2 * 3_600);
+        age(&locked_fresh.path, 60);
+        for dir in [worktrees.join("t12-x"), worktrees.join("t558-shots"), member.join("src"), member.clone(), worktrees.join("notes")] {
+            age(&dir, 3 * 86_400);
+        }
+
+        let done = tidy(&home, &[], &[]);
+        assert!(!dirty_old.path.exists(), "dirty, untouched a day: gone {done:?}");
+        assert!(git(&repo, &["rev-parse", "--verify", "-q", &dirty_old.branch]).is_ok(), "its branch stays");
+        assert!(done.iter().any(|l| l.contains("t5-a") && l.contains("uncommitted")), "{done:?}");
+        assert!(dirty_fresh.path.join("DRAFT.md").exists(), "dirty, touched an hour ago: stays");
+        assert!(!locked_old.path.exists(), "locked half-made, untouched two hours: gone {done:?}");
+        assert!(locked_fresh.path.exists(), "an add may still be at it");
+        assert!(!worktrees.join("t12-x").exists() && !worktrees.join("t558-shots").exists(), "{done:?}");
+        assert!(member.join("src/main.rs").exists() && worktrees.join("notes").exists(), "{done:?}");
+        let listed = git(&repo, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(!listed.contains("t5-a") && !listed.contains("t7-c"), "pruned from git's list too: {listed}");
+        // Kept by a ticket: stays, however old and dirty.
+        age(&dirty_fresh.path, 3 * 86_400);
+        assert!(tidy(&home, &[], std::slice::from_ref(&dirty_fresh.path)).is_empty());
+        assert!(dirty_fresh.path.exists());
+    }
+
+    #[test]
+    fn an_idle_worktree_gives_back_its_next_build_too() {
+        let repo = repo();
+        let home = scratch("tidy-next");
+        let site = create(&repo, &home, "t9-site", "x").unwrap();
+        std::fs::create_dir_all(site.path.join(".next/cache")).unwrap();
+        std::fs::write(site.path.join(".next/cache/blob"), "x").unwrap();
+        let done = tidy(&home, &[], std::slice::from_ref(&site.path));
+        assert!(site.path.join("README.md").exists() && !site.path.join(".next").exists(), "{done:?}");
+    }
+
+    /// A squad home (`…/squads/acme/home`) with outputs of three tickets.
+    fn squad_home() -> PathBuf {
+        let dir = scratch("squad").join("squads").join("acme").join("home");
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]).unwrap();
+        git(&dir, &["config", "user.name", "Test"]).unwrap();
+        git(&dir, &["config", "user.email", "test@example.com"]).unwrap();
+        for folder in ["outputs/T-1 brief", "outputs/T-12 site", "outputs/T-12", "outputs/T-123 other", "outputs/shared", "notes"] {
+            std::fs::create_dir_all(dir.join(folder)).unwrap();
+            std::fs::write(dir.join(folder).join("a.md"), "a\n").unwrap();
+        }
+        std::fs::write(dir.join("outputs/T-5.png"), "png").unwrap();
+        std::fs::write(dir.join("README.md"), "home\n").unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &["commit", "-q", "-m", "init"]).unwrap();
+        dir
+    }
+
+    /// Every file a checkout holds, from its top, `.git` left out.
+    fn files(dir: &Path) -> Vec<String> {
+        fn walk(dir: &Path, top: &Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.file_name().is_some_and(|n| n == ".git") {
+                    continue;
+                }
+                if p.is_dir() {
+                    walk(&p, top, out);
+                } else {
+                    out.push(p.strip_prefix(top).unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, dir, &mut out);
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_squad_homes_worktree_leaves_out_other_tickets_outputs_and_only_its_own() {
+        let home_repo = squad_home();
+        let all = files(&home_repo);
+        let home = scratch("sparse-home");
+        let sandbox = create_after(&home_repo, &home, "t12-1", "writer", &[], &home_patterns(&[12, 1])).unwrap();
+        assert!(is_sparse(&sandbox.path));
+        assert_eq!(
+            files(&sandbox.path),
+            ["README.md", "notes/a.md", "outputs/T-1 brief/a.md", "outputs/T-12 site/a.md", "outputs/T-12/a.md", "outputs/T-5.png", "outputs/shared/a.md"]
+        );
+        assert_eq!(git(&sandbox.path, &["status", "--porcelain"]).unwrap(), "", "nothing left out reads as deleted");
+
+        // The member writes its own outputs, and one into another ticket's folder.
+        std::fs::write(sandbox.path.join("outputs/T-12 site/b.md"), "b\n").unwrap();
+        std::fs::create_dir_all(sandbox.path.join("outputs/T-123 other")).unwrap();
+        std::fs::write(sandbox.path.join("outputs/T-123 other/note.md"), "n\n").unwrap();
+        sandbox.commit_all("work").unwrap().unwrap();
+        let changed = git(&home_repo, &["diff", "--name-status", &format!("{}..{}", sandbox.base, sandbox.branch)]).unwrap();
+        assert_eq!(changed, "A\toutputs/T-12 site/b.md\nA\toutputs/T-123 other/note.md", "no deletions of what was left out");
+
+        // The home's own checkout and config are whole.
+        assert_eq!(files(&home_repo), all);
+        assert!(!is_sparse(&home_repo));
+        assert!(git(&home_repo, &["config", "--local", "--get", "core.sparseCheckout"]).is_err());
+        assert_eq!(git(&home_repo, &["status", "--porcelain"]).unwrap(), "");
+        // Another worktree of it, made the plain way, is whole too.
+        let plain = create(&home_repo, &home, "t2-2", "writer").unwrap();
+        assert!(!is_sparse(&plain.path));
+        assert_eq!(files(&plain.path), all);
+
+        // Accepted: only its changes land, every other output stays on main.
+        merge_into_main(&home_repo, &sandbox.branch, "accept T-12").unwrap();
+        let mut now = all.clone();
+        now.extend(["outputs/T-12 site/b.md".to_owned(), "outputs/T-123 other/note.md".to_owned()]);
+        now.sort();
+        assert_eq!(files(&home_repo), now);
+        let on_main = git(&home_repo, &["-c", "core.quotepath=off", "ls-tree", "-r", "--name-only", "main"]).unwrap();
+        assert_eq!(on_main.lines().count(), now.len(), "{on_main}");
+
+        // Checked out again later: sparse again.
+        sandbox.remove_worktree().unwrap();
+        let again = resume(&home_repo, &home, "t12-3", &sandbox.branch, &sandbox.base, &home_patterns(&[12])).unwrap();
+        assert!(again.path.join("outputs/T-12 site/b.md").exists() && !again.path.join("outputs/T-1 brief").exists());
+    }
+
+    #[test]
+    fn only_a_squad_homes_worktrees_are_ever_sparse() {
+        let repo = repo();
+        std::fs::create_dir_all(repo.join("outputs/T-3 x")).unwrap();
+        std::fs::write(repo.join("outputs/T-3 x/a.md"), "a\n").unwrap();
+        git(&repo, &["add", "-A"]).unwrap();
+        git(&repo, &["commit", "-q", "-m", "outputs"]).unwrap();
+        let sandbox = create_after(&repo, &scratch("code-home"), "t4-1", "dev", &[], &home_patterns(&[4])).unwrap();
+        assert!(!is_sparse(&sandbox.path));
+        assert!(sandbox.path.join("outputs/T-3 x/a.md").exists());
+    }
+
+    #[test]
+    fn a_ticket_named_folder_is_t_digits_dash() {
+        assert!(is_ticket_named("t12-x") && is_ticket_named("t558-shots") && is_ticket_named("t1-6ad3"));
+        assert!(!is_ticket_named("t1188") && !is_ticket_named("src") && !is_ticket_named("t-1") && !is_ticket_named("tx1-a") && !is_ticket_named("T12-a"));
     }
 
     #[test]
@@ -811,7 +1143,7 @@ mod tests {
         sandbox.commit_all("a").unwrap();
         assert!(sandbox.has_commits());
         sandbox.remove_worktree().unwrap();
-        let again = resume(&repo, &home, "t5-again", &sandbox.branch, &sandbox.base).unwrap();
+        let again = resume(&repo, &home, "t5-again", &sandbox.branch, &sandbox.base, &[]).unwrap();
         assert_eq!(std::fs::read_to_string(again.path.join("A.md")).unwrap(), "a");
         assert_eq!(again.branch, "equipe/frontend-t5");
     }
@@ -966,7 +1298,7 @@ mod tests {
         let one = finished(&repo, &home, "t1", "ONE.md", "one\n");
         let two = finished(&repo, &home, "t2", "TWO.md", "two\n");
         let after = [("T-1".to_owned(), one), ("T-2".to_owned(), two)];
-        let sandbox = create_after(&repo, &home, "t3", "dev", &after).unwrap();
+        let sandbox = create_after(&repo, &home, "t3", "dev", &after, &[]).unwrap();
         assert_eq!(std::fs::read_to_string(sandbox.path.join("ONE.md")).unwrap(), "one\n");
         assert_eq!(std::fs::read_to_string(sandbox.path.join("TWO.md")).unwrap(), "two\n");
         // Its own change is what it shows, not the work it started from.
@@ -985,7 +1317,7 @@ mod tests {
         let one = finished(&repo, &home, "t1", "ONE.md", "one\n");
         merge_into_main(&repo, &one, "merge").unwrap();
         let after = [("T-1".to_owned(), one), ("T-9".to_owned(), "equipe/gone-t9".to_owned())];
-        let sandbox = create_after(&repo, &home, "t2", "dev", &after).unwrap();
+        let sandbox = create_after(&repo, &home, "t2", "dev", &after, &[]).unwrap();
         assert_eq!(sandbox.base, git(&repo, &["rev-parse", "main"]).unwrap());
     }
 
@@ -996,7 +1328,7 @@ mod tests {
         let one = finished(&repo, &home, "t1", "README.md", "one\n");
         let two = finished(&repo, &home, "t2", "README.md", "two\n");
         let after = [("T-1".to_owned(), one), ("T-2".to_owned(), two)];
-        let err = create_after(&repo, &home, "t3", "dev", &after).unwrap_err();
+        let err = create_after(&repo, &home, "t3", "dev", &after, &[]).unwrap_err();
         assert!(err.contains("T-2") && err.contains("README.md"), "{err}");
         assert!(git(&repo, &["rev-parse", "--verify", "-q", "equipe/dev-t3"]).is_err());
         assert!(!home.join("worktrees").join(repo.file_name().unwrap()).join("t3").exists());
