@@ -306,6 +306,257 @@ pub fn create_after(repo: &Path, home: &Path, id: &str, label: &str, after: &[(S
     Ok(sandbox)
 }
 
+/// A kind of dependency folder a ticket's new worktree is given ready-made —
+/// see [`SHARED_DEPENDENCIES`].
+#[derive(Debug, Clone, Copy)]
+pub struct SharedDependency {
+    /// The folder, relative to a package's folder (`node_modules`, `.next/cache`).
+    pub folder: &'static str,
+    /// The tracked file that marks a package's folder (`package.json`).
+    pub manifest: &'static str,
+    /// The lockfiles that pin what the folder holds. The nearest folder at or
+    /// above the package's that has any of them governs; each must be the
+    /// same, byte for byte, in the source and the new worktree.
+    pub lockfiles: &'static [&'static str],
+}
+
+/// The lockfiles of JavaScript package managers.
+const NODE_LOCKFILES: &[&str] = &["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock"];
+
+/// Dependency folders a ticket's new worktree gets as a copy-on-write clone
+/// of another checkout of the same repository that already has them — the
+/// project's main checkout, else the sibling worktree that installed last —
+/// so that a dozen worktrees of one web project don't each hold their own
+/// copy of hundreds of megabytes of `node_modules`. A clone takes next to no
+/// room until a member changes it (an install that adds a package writes only
+/// what it adds). See [`seed_dependencies`] for when a folder is left out.
+///
+/// To share another kind (`.venv` by `pyproject.toml` and `uv.lock`, `Pods`
+/// by `Podfile` and `Podfile.lock`…), add it here: what it needs is a
+/// manifest that marks where it goes and a lockfile that says the source's
+/// copy is the one the new worktree would install.
+pub const SHARED_DEPENDENCIES: &[SharedDependency] = &[
+    SharedDependency { folder: "node_modules", manifest: "package.json", lockfiles: NODE_LOCKFILES },
+    // Next.js's build cache: its next build starts warm.
+    SharedDependency { folder: ".next/cache", manifest: "package.json", lockfiles: NODE_LOCKFILES },
+];
+
+/// How long a Linux reflink copy of one folder may take.
+#[cfg(target_os = "linux")]
+const SEED_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// [`seed_dependencies`] for `worktree`, on a thread of its own: a ticket
+/// never waits for it, nor fails because of it. One line for the daemon's
+/// log when it did or tried anything.
+pub fn seed_in_background(worktree: PathBuf) {
+    if !CAN_CLONE {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("equipe-seed-deps".into()).spawn(move || {
+        let notes = seed_dependencies(&worktree);
+        if !notes.is_empty() {
+            crate::daemon_log!("equipe: dependencies for {}: {}", worktree.display(), notes.join("; "));
+        }
+    });
+}
+
+/// Whether this system can clone a folder copy-on-write: APFS's
+/// `clonefile` on a Mac, a reflink copy on Linux (Btrfs, XFS…). Elsewhere
+/// nothing is seeded.
+const CAN_CLONE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+
+/// Give the new worktree at `worktree` the [`SHARED_DEPENDENCIES`] folders
+/// another checkout of its repository has installed, each as a
+/// copy-on-write clone. A folder is seeded only when
+/// * the worktree tracks its package's manifest, git ignores the folder
+///   there (so it is never committed), and nothing is at its path yet;
+/// * a checkout has it — the main one first, then the other worktrees, the
+///   most recently installed first — whose governing lockfile is the same as
+///   the worktree's, byte for byte; with no lockfile, never;
+/// * no link in it points into that checkout by an absolute path (a write
+///   through it would change the source; npm, pnpm and yarn link relatively);
+/// * the system clones: never a full copy, which would cost the room this
+///   saves. A clone that fails leaves nothing behind.
+///
+/// What was seeded or failed, one note each; nothing for what had no source.
+/// It runs git and may take seconds: off the loop.
+pub fn seed_dependencies(worktree: &Path) -> Vec<String> {
+    off_the_loop("seed_dependencies");
+    let mut notes = Vec::new();
+    if !CAN_CLONE {
+        return notes;
+    }
+    let me = worktree.canonicalize().unwrap_or_else(|_| worktree.to_owned());
+    let checkouts: Vec<PathBuf> = git(worktree, &["worktree", "list", "--porcelain"])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir() && p.canonicalize().map_or(true, |c| c != me))
+        .collect();
+    if checkouts.is_empty() {
+        return notes;
+    }
+    // Where each kind could go: by its manifest's tracked places, in this
+    // worktree (a sparse one leaves some out); never inside a dependency folder.
+    let mut wanted: Vec<(SharedDependency, PathBuf)> = Vec::new();
+    for kind in SHARED_DEPENDENCIES {
+        let tracked = git(worktree, &["ls-files", "-z", "--", &format!("*{}", kind.manifest)]).unwrap_or_default();
+        for file in tracked.split('\0').filter(|f| !f.is_empty()).map(Path::new) {
+            if file.file_name().is_none_or(|n| n != kind.manifest) || file.components().any(|c| c.as_os_str() == "node_modules") {
+                continue;
+            }
+            let package = file.parent().unwrap_or(Path::new(""));
+            let rel = package.join(kind.folder);
+            if worktree.join(package).is_dir() && std::fs::symlink_metadata(worktree.join(&rel)).is_err() {
+                wanted.push((*kind, rel));
+            }
+        }
+    }
+    if wanted.is_empty() {
+        return notes;
+    }
+    // Only what git ignores: a seeded folder must never end up in a commit.
+    // Asked as folders (`node_modules/`): a `node_modules/` pattern doesn't
+    // match a path git can't see is a folder, and none is there yet.
+    let mut check = git_command(worktree);
+    check.args(["-c", "core.quotePath=false", "check-ignore", "--"]).args(wanted.iter().map(|(_, rel)| format!("{}/", rel.display())));
+    let ignored: Vec<PathBuf> = output_within(check, GIT_TIMEOUT)
+        .map(|out| String::from_utf8_lossy(&out.stdout).lines().map(|l| PathBuf::from(l.trim_end_matches('/'))).collect())
+        .unwrap_or_default();
+    for (kind, rel) in wanted.into_iter().filter(|(_, rel)| ignored.contains(rel)) {
+        let Some(lock_dir) = rel.ancestors().skip(1).find(|dir| kind.lockfiles.iter().any(|l| worktree.join(dir).join(l).is_file())) else {
+            continue;
+        };
+        let locks = |root: &Path| kind.lockfiles.iter().map(|l| std::fs::read(root.join(lock_dir).join(l)).ok()).collect::<Vec<_>>();
+        let mine = locks(worktree);
+        let has = |root: &Path| std::fs::symlink_metadata(root.join(&rel)).is_ok_and(|m| m.is_dir());
+        let installed = |root: &Path| std::fs::metadata(root.join(&rel)).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        // The main checkout first, then the worktree that installed last.
+        let (main, others) = checkouts.split_first().expect("checkouts isn't empty");
+        let mut others: Vec<&PathBuf> = others.iter().filter(|c| has(c)).collect();
+        others.sort_by_key(|c| std::cmp::Reverse(installed(c)));
+        let Some(source) = std::iter::once(main).filter(|c| has(c)).chain(others).find(|c| locks(c) == mine) else {
+            continue;
+        };
+        let (from, to) = (source.join(&rel), worktree.join(&rel));
+        if let Some(link) = absolute_link_into(&from, source) {
+            notes.push(format!("left {} out: {} links into {} by an absolute path", rel.display(), link.display(), source.display()));
+            continue;
+        }
+        notes.push(match clone_new(&from, &to) {
+            Ok(()) => format!("cloned {} from {}", rel.display(), source.display()),
+            Err(err) => format!("couldn't clone {} from {}: {err}", rel.display(), source.display()),
+        });
+    }
+    notes
+}
+
+/// A link under `folder` whose target is an absolute path inside `checkout`,
+/// if any. Links aren't followed.
+fn absolute_link_into(folder: &Path, checkout: &Path) -> Option<PathBuf> {
+    let roots = [checkout.to_owned(), checkout.canonicalize().unwrap_or_else(|_| checkout.to_owned())];
+    let mut stack = vec![folder.to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                stack.push(entry.path());
+            } else if kind.is_symlink()
+                && let Ok(target) = std::fs::read_link(entry.path())
+                && target.is_absolute()
+            {
+                // As written and as resolved: `/var/…` is `/private/var/…` on a Mac.
+                let real = target.canonicalize().unwrap_or_else(|_| target.clone());
+                if roots.iter().any(|r| target.starts_with(r) || real.starts_with(r)) {
+                    return Some(entry.path());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Clone folder `from` to `to` copy-on-write, `to` made only if nothing is
+/// there by then (a member's own install may have begun). The clone is made
+/// beside it under another name and moved in whole, so `to` is either
+/// absent or complete; on failure nothing is left behind.
+fn clone_new(from: &Path, to: &Path) -> Result<()> {
+    let (Some(parent), Some(name)) = (to.parent(), to.file_name()) else {
+        return Err("no folder to put it in".to_owned());
+    };
+    // `.next/cache` with no `.next` yet: made, and removed again on failure.
+    let made_parent = !parent.exists();
+    std::fs::create_dir_all(parent).map_err(|err| format!("couldn't create {}: {err}", parent.display()))?;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = parent.join(format!(".{}.equipe-seed-{}-{n}", name.to_string_lossy(), std::process::id()));
+    let done = clone_tree(from, &staging).and_then(|()| rename_new(&staging, to));
+    if done.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+        if made_parent {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+    done
+}
+
+/// APFS's `clonefile`: the whole folder at once, sharing every block.
+#[cfg(target_os = "macos")]
+fn clone_tree(from: &Path, to: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    // From <sys/clonefile.h>: a link is cloned as a link; the clone is ours.
+    const CLONE_NOFOLLOW: u32 = 0x0001;
+    const CLONE_NOOWNERCOPY: u32 = 0x0002;
+    let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| format!("{} has a NUL in it", p.display()));
+    let (from_c, to_c) = (c(from)?, c(to)?);
+    // SAFETY: both are valid C strings that outlive the call.
+    if unsafe { libc::clonefile(from_c.as_ptr(), to_c.as_ptr(), CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
+/// A reflink copy; on a filesystem without reflinks it fails — never a full copy.
+#[cfg(target_os = "linux")]
+fn clone_tree(from: &Path, to: &Path) -> Result<()> {
+    let mut cp = Command::new("cp");
+    cp.args(["-R", "-P", "--reflink=always", "--"]).arg(from).arg(to);
+    let out = output_within(cp, SEED_TIMEOUT)?;
+    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn clone_tree(_: &Path, _: &Path) -> Result<()> {
+    Err("this system can't clone a folder".to_owned())
+}
+
+/// Move `from` to `to` unless something is at `to`.
+fn rename_new(from: &Path, to: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| format!("{} has a NUL in it", p.display()));
+        let (from_c, to_c) = (c(from)?, c(to)?);
+        // SAFETY: both are valid C strings that outlive the call.
+        if unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) } == 0 {
+            Ok(())
+        } else {
+            Err(format!("{}: {}", to.display(), std::io::Error::last_os_error()))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // A rename replaces an empty folder: an install that began this very
+        // moment then finds the clone in its place, which it works with.
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(format!("{} is there already", to.display()));
+        }
+        std::fs::rename(from, to).map_err(|err| format!("{}: {err}", to.display()))
+    }
+}
+
 /// Whether `commit` is already contained in `into`.
 fn is_ancestor(dir: &Path, commit: &str, into: &str) -> bool {
     git(dir, &["merge-base", "--is-ancestor", commit, into]).is_ok()
@@ -910,6 +1161,162 @@ mod tests {
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-q", "-m", "init"]).unwrap();
         dir
+    }
+
+    /// A JavaScript workspace: a root package with a lockfile and one nested
+    /// package, `node_modules` and `.next` ignored.
+    #[cfg(unix)]
+    fn js_repo() -> PathBuf {
+        let dir = repo();
+        std::fs::write(dir.join(".gitignore"), "node_modules/\n.next\n").unwrap();
+        std::fs::write(dir.join("package.json"), r#"{"name":"root","workspaces":["packages/*"]}"#).unwrap();
+        std::fs::write(dir.join("package-lock.json"), "{\"lockfileVersion\":3}\n").unwrap();
+        std::fs::create_dir_all(dir.join("packages/b")).unwrap();
+        std::fs::write(dir.join("packages/b/package.json"), r#"{"name":"b"}"#).unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &["commit", "-q", "-m", "js"]).unwrap();
+        dir
+    }
+
+    /// What an install leaves in `checkout`: a package and a relative `.bin`
+    /// link at the root, one package in the nested one, a build cache.
+    #[cfg(unix)]
+    fn install(checkout: &Path) {
+        let modules = checkout.join("node_modules");
+        std::fs::create_dir_all(modules.join("x")).unwrap();
+        std::fs::create_dir_all(modules.join(".bin")).unwrap();
+        std::fs::write(modules.join("x/index.js"), "module.exports = 1;\n").unwrap();
+        std::os::unix::fs::symlink("../x/index.js", modules.join(".bin/x")).unwrap();
+        std::fs::create_dir_all(checkout.join("packages/b/node_modules/y")).unwrap();
+        std::fs::write(checkout.join("packages/b/node_modules/y/index.js"), "module.exports = 2;\n").unwrap();
+        std::fs::create_dir_all(checkout.join(".next/cache/images")).unwrap();
+        std::fs::write(checkout.join(".next/cache/images/a.webp"), "img").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_worktree_gets_its_dependencies_cloned_from_a_checkout_with_the_same_lockfile() {
+        if !CAN_CLONE {
+            return;
+        }
+        let (repo, home) = (js_repo(), scratch("seed-home"));
+        install(&repo);
+        let sandbox = create(&repo, &home, "t1-a", "x").unwrap();
+        let notes = seed_dependencies(&sandbox.path);
+        let (wt, src) = (&sandbox.path, &repo);
+        if cfg!(target_os = "linux") && notes.iter().all(|n| n.starts_with("couldn't")) {
+            // No reflinks on this filesystem: nothing is copied in their place.
+            assert!(!wt.join("node_modules").exists(), "{notes:?}");
+            return;
+        }
+        assert_eq!(notes.len(), 3, "{notes:?}");
+        assert_eq!(std::fs::read_to_string(wt.join("node_modules/x/index.js")).unwrap(), "module.exports = 1;\n");
+        assert_eq!(std::fs::read_to_string(wt.join("packages/b/node_modules/y/index.js")).unwrap(), "module.exports = 2;\n", "the nested package's too");
+        assert_eq!(std::fs::read_to_string(wt.join(".next/cache/images/a.webp")).unwrap(), "img");
+        // The link is still a relative link, and leads into the worktree's own copy.
+        assert_eq!(std::fs::read_link(wt.join("node_modules/.bin/x")).unwrap(), Path::new("../x/index.js"));
+        assert_eq!(std::fs::read_to_string(wt.join("node_modules/.bin/x")).unwrap(), "module.exports = 1;\n");
+        // A change in the clone stays there.
+        std::fs::write(wt.join("node_modules/x/index.js"), "changed\n").unwrap();
+        std::fs::write(wt.join("node_modules/.bin/x"), "through the link\n").unwrap();
+        std::fs::write(wt.join("node_modules/new.js"), "new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(src.join("node_modules/x/index.js")).unwrap(), "module.exports = 1;\n");
+        assert!(!src.join("node_modules/new.js").exists());
+        // Nothing to commit, nothing left beside it.
+        assert_eq!(git(wt, &["status", "--porcelain"]).unwrap(), "");
+        let leftovers: Vec<_> = std::fs::read_dir(wt).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("equipe-seed")).collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependencies_come_only_from_a_checkout_whose_lockfile_is_the_same() {
+        if !CAN_CLONE {
+            return;
+        }
+        let (repo, home) = (js_repo(), scratch("seed-lock"));
+        install(&repo);
+        // The main checkout installed from a lockfile nobody committed.
+        std::fs::write(repo.join("package-lock.json"), "{\"lockfileVersion\":3,\"x\":1}\n").unwrap();
+        let sandbox = create(&repo, &home, "t1-a", "x").unwrap();
+        assert!(seed_dependencies(&sandbox.path).is_empty());
+        assert!(!sandbox.path.join("node_modules").exists() && !sandbox.path.join(".next").exists());
+        // A sibling worktree installed from the committed one: it is the source.
+        let sibling = create(&repo, &home, "t2-b", "x").unwrap();
+        install(&sibling.path);
+        let later = create(&repo, &home, "t3-c", "x").unwrap();
+        let notes = seed_dependencies(&later.path);
+        assert!(notes.iter().any(|n| n.contains(&sibling.path.display().to_string())), "{notes:?}");
+        // No lockfile at all: never.
+        std::fs::remove_file(later.path.join("package-lock.json")).unwrap();
+        let _ = std::fs::remove_dir_all(later.path.join("node_modules"));
+        let _ = std::fs::remove_dir_all(later.path.join("packages/b/node_modules"));
+        let _ = std::fs::remove_dir_all(later.path.join(".next"));
+        assert!(seed_dependencies(&later.path).is_empty());
+        assert!(!later.path.join("node_modules").exists());
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependencies_never_go_where_something_already_is() {
+        if !CAN_CLONE {
+            return;
+        }
+        let (repo, home) = (js_repo(), scratch("seed-there"));
+        install(&repo);
+        let sandbox = create(&repo, &home, "t1-a", "x").unwrap();
+        std::fs::create_dir_all(sandbox.path.join("node_modules")).unwrap();
+        std::fs::write(sandbox.path.join("node_modules/mine.js"), "mine\n").unwrap();
+        let notes = seed_dependencies(&sandbox.path);
+        assert!(!notes.iter().any(|n| n.contains("cloned node_modules ")), "{notes:?}");
+        let names: Vec<_> = std::fs::read_dir(sandbox.path.join("node_modules")).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names, ["mine.js"]);
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_with_an_absolute_link_into_its_checkout_is_left_out() {
+        if !CAN_CLONE {
+            return;
+        }
+        let (repo, home) = (js_repo(), scratch("seed-abs"));
+        install(&repo);
+        std::os::unix::fs::symlink(repo.join("packages/b"), repo.join("node_modules/b")).unwrap();
+        let sandbox = create(&repo, &home, "t1-a", "x").unwrap();
+        let notes = seed_dependencies(&sandbox.path);
+        assert!(notes.iter().any(|n| n.starts_with("left node_modules out")), "{notes:?}");
+        assert!(!sandbox.path.join("node_modules").exists());
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_clone_that_fails_leaves_the_worktree_as_it_was() {
+        if !CAN_CLONE {
+            return;
+        }
+        let (repo, home) = (js_repo(), scratch("seed-fail"));
+        install(&repo);
+        let sandbox = create(&repo, &home, "t1-a", "x").unwrap();
+        // `.next` is a file here: `.next/cache` can't be made.
+        std::fs::write(sandbox.path.join(".next"), "not a folder").unwrap();
+        let notes = seed_dependencies(&sandbox.path);
+        assert!(notes.iter().any(|n| n.starts_with("couldn't clone .next/cache")), "{notes:?}");
+        assert_eq!(std::fs::read_to_string(sandbox.path.join(".next")).unwrap(), "not a folder");
+        // The worktree works on: its branch, its files.
+        assert_eq!(git(&sandbox.path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(), sandbox.branch);
+        assert!(sandbox.path.join("package.json").is_file());
+        let leftovers: Vec<_> = std::fs::read_dir(&sandbox.path).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("equipe-seed")).collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
