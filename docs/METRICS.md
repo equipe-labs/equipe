@@ -28,6 +28,11 @@ flowchart LR
 - A key is in the Keychain and nowhere else: not `connections.json`, not a
   snapshot, not the daemon's log, not an answer, not a member's tool result.
   `metrics.connect` is the only message that carries one, inward.
+- The Keychain item trusts the `equipe` that made it by its code signature.
+  An ad-hoc signed build (cdhash only) can't read back what another build
+  kept — `errSecAuthFailed`, no prompt for a background daemon, error code
+  `keychain` (T-356). A daemon signed with the fixed Developer ID identity
+  (T-510) keeps reading its keys across updates.
 - An adapter's error message has every key of its connection cut out
   (`•••`) before it is kept, answered or logged — in case a service echoes it.
 - Members only read. Connecting, keys and disconnecting are the person's, on
