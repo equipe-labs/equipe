@@ -2018,28 +2018,33 @@ impl Shell {
         let Conn::Down { reason, since, had_snapshot: true } = conn else { return None };
         let guide = reason.guide(&self.endpoint);
         let waits = reason.waits_for_person();
-        Some(
-            h_flex()
-                .h(px(36.))
-                .flex_none()
-                .px_4()
-                .gap_3()
-                .items_center()
-                .bg(p.accent_bg)
-                .border_b_1()
-                .border_color(p.hair)
-                .text_size(px(SMALL))
-                // One line whatever the width: what went wrong gives way to the
-                // button, the line after it first — never a word a letter wide
-                // running down over the window (T-621).
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .child(div().flex_none().child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text)))
-                .child(div().min_w_0().truncate().text_color(p.text).child(format!("{} · {since}", guide.short)))
-                .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
-                .child(div().flex_none().child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx))))),
-        )
+        let hint = if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") };
+        let retry = ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx)));
+        Some(banner_bar(p, format!("{} · {since}", guide.short), hint, retry))
     }
+}
+
+/// The banner's one row: what is down, a hint, the retry. Narrow, the hint
+/// goes first (one line, an ellipsis, then nothing), then what is down ends
+/// in "…"; the retry stays whole and no word ever wraps.
+fn banner_bar(p: Palette, what: String, hint: impl Into<SharedString>, retry: impl IntoElement) -> Div {
+    h_flex()
+        .h(px(36.))
+        .flex_none()
+        .px_4()
+        .gap_3()
+        .items_center()
+        // One line whatever the width (T-621).
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .bg(p.accent_bg)
+        .border_b_1()
+        .border_color(p.hair)
+        .text_size(px(SMALL))
+        .child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text).flex_none())
+        .child(div().debug_selector(|| "banner-what".into()).min_w_0().flex_shrink(1.).truncate().text_color(p.text).child(what))
+        .child(div().debug_selector(|| "banner-hint".into()).flex_1().min_w_0().truncate().text_color(p.muted).child(hint.into()))
+        .child(div().debug_selector(|| "banner-retry-box".into()).flex_none().child(retry))
 }
 
 /// What runs on the daemon's machine: the latest equipe over the one there
@@ -2960,5 +2965,50 @@ mod tests {
         // The menu shows the first binding of each: ⌘+, not ⌘=.
         let first_zoom_in = bindings.iter().find(|b| b.action().name() == "equipe::ZoomIn").unwrap();
         assert_eq!(first_zoom_in.keystrokes()[0].unparse(), "cmd-+");
+    }
+}
+
+#[cfg(all(test, feature = "snapshot"))]
+mod banner_layout {
+    use super::banner_bar;
+    use crate::theme::Palette;
+    use gpui_kit::{Bounds, Context, IntoElement, Render, Styled, TestAppContext, Window, WindowAppearance, point, px, size};
+
+    struct Probe {
+        p: Palette,
+        width: f32,
+    }
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let retry = crate::ui::button(self.p, "banner-retry", crate::ui::Kind::Secondary, "Try Again").icon(crate::icons::Icon::Retry);
+            banner_bar(self.p, "Can't reach 100.106.17.55 · 16:02:37".into(), "Reconnecting — picks up on its own once it's back", retry).w(px(self.width))
+        }
+    }
+
+    /// The connection banner at every width the window allows (and below):
+    /// no label wraps to a second line or leaves the bar, and the retry stays whole.
+    #[test]
+    fn no_banner_word_wraps_or_leaves_the_bar() {
+        let mut app = TestAppContext::single();
+        for appearance in [WindowAppearance::Light, WindowAppearance::Dark] {
+            let p = Palette::new(appearance);
+            let (view, cx) = app.add_window_view(|_, _| Probe { p, width: 1044. });
+            for width in [1044., 760., 560., 400.] {
+                view.update(cx, |v, _| v.width = width);
+                cx.update(|window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                });
+                let bar = Bounds::new(point(px(0.), px(0.)), size(px(width), px(36.)));
+                for id in ["banner-what", "banner-hint", "banner-retry-box"] {
+                    let b = cx.debug_bounds(id).unwrap_or_else(|| panic!("{id} not drawn at {width}"));
+                    assert!(b.size.height <= px(36.), "{id} is {:?} tall at {width}: its words wrapped", b.size.height);
+                    assert!(b.right() <= bar.right() + px(0.5) && b.left() >= bar.left(), "{id} leaves the bar at {width}: {b:?}");
+                }
+                let retry = cx.debug_bounds("banner-retry-box").unwrap();
+                assert!(retry.size.width >= px(90.), "the retry is squeezed to {:?} at {width}", retry.size.width);
+            }
+        }
     }
 }
