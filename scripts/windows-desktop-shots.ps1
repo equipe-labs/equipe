@@ -23,7 +23,7 @@ try {
             $env:EQUIPE_SNAPSHOT_SCALE = "$scale"
             $png = Join-Path $Out "$mode-${scale}00.png"
             $chat = Join-Path $home_dir "chat.png"; $board = Join-Path $home_dir "board.png"; $set = Join-Path $home_dir "settings.png"
-            $env:EQUIPE_SCRIPT = "theme:$mode;size:1000x640;wait:2500;shot:$chat;board;wait:1500;shot:$board;press:ctrl-,;wait:1500;shot:$set;quit"
+            $env:EQUIPE_SCRIPT = "theme:$mode;size:1000x640;wait:2500;shot:$chat;board;wait:1500;shot:$board;settings;wait:1500;shot:$set;quit"
             $p = Start-Process $app -PassThru -RedirectStandardError (Join-Path $home_dir 'app.log')
             if (-not $p.WaitForExit(90000)) { $p.Kill(); throw "equipe-desktop still running after 90 s" }
             foreach ($f in $chat, $board, $set) { if (-not (Test-Path $f)) { Get-Content (Join-Path $home_dir 'app.log') -Tail 20; throw "no picture: $f" } }
