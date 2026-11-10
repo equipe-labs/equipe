@@ -656,12 +656,14 @@ impl Scan<'_> {
 
     /// Scratch folders members made for a ticket in the system's temporary
     /// folders, once that ticket is done with everywhere it exists. Named
-    /// `equipe-t<N>-…` (equipe's way): given back on equipe's own, after a
-    /// Gradle daemon still running from one is stopped. Named `t<N>-…`: only
-    /// likely a member's, so reported with the command that removes it, for
-    /// the person to run. See [`ticket_temp_name`].
+    /// `equipe-t<N>-…` (equipe's way) or `t<N>`, `t<N>-…` (members' way):
+    /// given back on equipe's own, after what is still running from one is
+    /// stopped. Named `t<N>` run into letters: only a guess, so reported with
+    /// the command that removes it, for the person to run. See [`ticket_temp_name`].
     fn ticket_temps(&mut self) {
         let mut seen: Vec<PathBuf> = Vec::new();
+        // Where processes stand, read once for every folder looked at.
+        let mut standing: Option<Vec<crate::leftovers::Standing>> = None;
         for root in self.known.temp.clone() {
             let Ok(canon) = root.canonicalize() else { continue };
             if seen.contains(&canon) {
@@ -680,26 +682,33 @@ impl Scan<'_> {
                 if meta.file_type().is_symlink() || !self.budget.left() {
                     continue;
                 }
+                if !matches!(name, TempName::Equipe(_)) && !meta.is_dir() {
+                    continue;
+                }
                 let id = name.ticket();
                 let Some(why) = ticket_done_everywhere(&self.known.tickets, id) else { continue };
                 let (bytes, whole) = measure(&path, &mut self.budget);
-                if bytes < MB {
+                // A process left running in it, of a ticket done everywhere, keeps
+                // the folder fresh and holds it: it is what is left to stop.
+                let all = standing.get_or_insert_with(crate::leftovers::running);
+                let held = !crate::leftovers::standing_in(all, std::slice::from_ref(&path), &[]).is_empty();
+                if bytes < MB && !held {
                     continue;
                 }
-                let idle = newest_entry(&path).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= TEMP_IDLE);
+                let idle = held || newest_entry(&path).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= TEMP_IDLE);
                 let label = path.to_string_lossy().into_owned();
                 match name {
-                    TempName::Equipe(_) => {
+                    TempName::Equipe(_) | TempName::Bare(_) => {
                         let (safe, why) = if idle { (true, why) } else { (false, DiskWhy::InUse) };
                         let at = self.push(DiskGroup::Equipe, DiskKind::TicketTemp, label, &path, bytes, whole, safe, why);
                         self.items[at].ticket = Some(id);
                     }
-                    TempName::Bare(_) if idle => {
+                    TempName::Loose(_) if idle => {
                         let at = self.push(DiskGroup::Caches, DiskKind::TicketTemp, label, &path, bytes, whole, false, DiskWhy::NotEquipes);
                         self.items[at].ticket = Some(id);
                         self.items[at].command = Some(format!("rm -rf {}", shell_quote(&path)));
                     }
-                    TempName::Bare(_) => {}
+                    TempName::Loose(_) => {}
                 }
             }
         }
@@ -858,6 +867,9 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
             DiskKind::Recordings if removable(&item.path, &roots) => std::fs::remove_dir_all(&item.path).is_ok(),
             DiskKind::TicketTemp if temp_removable(&item.path, &known.temp) => {
                 for line in stop_gradle_daemons(&item.path) {
+                    crate::daemon_log!("equipe: {line}");
+                }
+                for line in crate::leftovers::stop_in(std::slice::from_ref(&item.path), &[]) {
                     crate::daemon_log!("equipe: {line}");
                 }
                 remove_any(&item.path)
@@ -1112,21 +1124,26 @@ pub enum TempName {
     /// `equipe-t<N>`, alone or followed by `-`, `_` or `.` (`equipe-t430-gradle`,
     /// `equipe-t506-apk.6kf9ay`): equipe's own way of naming one.
     Equipe(TicketId),
-    /// `t<N>-…` (`t105-design-qa.WXlKO4`): how members often name a branch's
-    /// copy, but a person may name a folder so too.
+    /// `t<N>` alone or followed by `-`, `_` or `.` (`t757`, `t773-main`,
+    /// `t105-design-qa.WXlKO4`): how members name a branch's copy.
     Bare(TicketId),
+    /// `t<N>` run into letters (`t644src`): a member's, or a person's `t3d`.
+    /// Only reported, with the command that removes it.
+    Loose(TicketId),
 }
 
 impl TempName {
     pub fn ticket(self) -> TicketId {
         match self {
-            TempName::Equipe(id) | TempName::Bare(id) => id,
+            TempName::Equipe(id) | TempName::Bare(id) | TempName::Loose(id) => id,
         }
     }
 }
 
-/// The ticket a temporary folder's name ties it to, if any — never `t16`,
-/// `t17venv` or `t1.png`: a bare name needs a dash right after the number.
+/// The ticket a temporary folder's name ties it to, if any — never `t1.png`
+/// (a file's extension), `t0…` or `xt12-a`. A bare name ends right after the
+/// number or goes on with `-`, `_` or `.`; run into letters it is only a
+/// guess ([`TempName::Loose`]).
 pub fn ticket_temp_name(name: &str) -> Option<TempName> {
     let number = |rest: &str| -> Option<(TicketId, char)> {
         let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
@@ -1141,7 +1158,13 @@ pub fn ticket_temp_name(name: &str) -> Option<TempName> {
         return matches!(next, '\0' | '-' | '_' | '.').then_some(TempName::Equipe(id));
     }
     let (id, next) = number(name.strip_prefix('t')?)?;
-    (next == '-').then_some(TempName::Bare(id))
+    match next {
+        '\0' | '-' | '_' => Some(TempName::Bare(id)),
+        // `t1.png` is a file; `t510.adt4ab` is what `mktemp` makes.
+        '.' => name.split_once('.').is_some_and(|(_, rest)| rest.len() >= 5).then_some(TempName::Bare(id)),
+        c if c.is_ascii_alphabetic() => Some(TempName::Loose(id)),
+        _ => None,
+    }
 }
 
 /// Why ticket `id`'s scratch folders may go: it is done (or cancelled) in
@@ -1162,10 +1185,11 @@ fn newest_entry(path: &Path) -> Option<std::time::SystemTime> {
 }
 
 /// Whether `path` may go as a ticket's temporary folder: right in one of
-/// `temp` (its folders' links resolved), not a link, and named `equipe-t<N>…`.
+/// `temp` (its folders' links resolved), not a link, and named for a ticket
+/// the sure way: `equipe-t<N>…`, `t<N>`, `t<N>-…` (not run into letters).
 fn temp_removable(path: &Path, temp: &[PathBuf]) -> bool {
     let Some(at) = real(path) else { return false };
-    let named = at.file_name().and_then(|n| n.to_str()).and_then(ticket_temp_name).is_some_and(|n| matches!(n, TempName::Equipe(_)));
+    let named = at.file_name().and_then(|n| n.to_str()).and_then(ticket_temp_name).is_some_and(|n| matches!(n, TempName::Equipe(_) | TempName::Bare(_)));
     let not_link = std::fs::symlink_metadata(&at).is_ok_and(|m| !m.file_type().is_symlink());
     named && not_link && temp.iter().filter_map(|r| r.canonicalize().ok()).any(|root| at.parent() == Some(root.as_path()))
 }
@@ -1226,6 +1250,45 @@ fn is_gradle_daemon(pid: u32) -> bool {
     let mut ps = std::process::Command::new("ps");
     ps.args(["-o", "command=", "-p", &pid.to_string()]);
     output_within(ps, Duration::from_secs(10)).is_ok_and(|out| out.status.success() && String::from_utf8_lossy(&out.stdout).contains("GradleDaemon"))
+}
+
+/// What ticket `id` left behind when it was done with: processes still
+/// running in its worktrees (`worktrees`) or its scratch folders right in
+/// `temp` ([`ticket_temp_name`]: `equipe-t<N>…`, `t<N>`, `t<N>-…`), stopped, then
+/// those scratch folders removed. `temp` is empty while another squad has a
+/// ticket of that number open: its folders can't be told from ours. Never
+/// `keep`'s processes (the live sessions' engines). What went, for the log.
+pub fn clear_ticket_leftovers(id: TicketId, temp: &[PathBuf], worktrees: &[PathBuf], keep: &[u32]) -> Vec<String> {
+    off_the_loop("disk::clear_ticket_leftovers");
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for root in temp {
+        let Ok(canon) = root.canonicalize() else { continue };
+        if seen.contains(&canon) {
+            continue;
+        }
+        seen.push(canon.clone());
+        for entry in std::fs::read_dir(&canon).into_iter().flatten().flatten() {
+            let named = ticket_temp_name(&entry.file_name().to_string_lossy()).filter(|n| matches!(n, TempName::Equipe(_) | TempName::Bare(_)) && n.ticket() == id);
+            if named.is_some() && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                folders.push(entry.path());
+            }
+        }
+    }
+    folders.sort();
+    let mut done = Vec::new();
+    let in_worktrees: Vec<PathBuf> = worktrees.iter().filter(|w| w.join(".git").exists()).cloned().collect();
+    let stand: Vec<PathBuf> = folders.iter().chain(&in_worktrees).cloned().collect();
+    done.extend(crate::leftovers::stop_in(&stand, keep));
+    for folder in &folders {
+        for line in stop_gradle_daemons(folder) {
+            done.push(line);
+        }
+        if temp_removable(folder, temp) && remove_any(folder) {
+            done.push(format!("removed {}", folder.display()));
+        }
+    }
+    done
 }
 
 /// Build output in a worktree whose ticket is done with — merged or
@@ -1923,7 +1986,13 @@ mod tests {
         assert_eq!(ticket_temp_name("equipe-t12"), Some(TempName::Equipe(12)));
         assert_eq!(ticket_temp_name("t105-design-qa.WXlKO4"), Some(TempName::Bare(105)));
         assert_eq!(ticket_temp_name("t1-review-9b640aa"), Some(TempName::Bare(1)));
-        for not in ["t16", "t17venv", "t1.png", "equipe-telemetry-1", "equipe-t", "equipe-tx-1", "equipe-t07-x", "t-12", "tmp", "equipe-t12x", "xt12-a"] {
+        assert_eq!(ticket_temp_name("t757"), Some(TempName::Bare(757)));
+        assert_eq!(ticket_temp_name("t773-main"), Some(TempName::Bare(773)));
+        assert_eq!(ticket_temp_name("t67-build"), Some(TempName::Bare(67)));
+        assert_eq!(ticket_temp_name("t510.adt4ab"), Some(TempName::Bare(510)));
+        assert_eq!(ticket_temp_name("t644src"), Some(TempName::Loose(644)));
+        assert_eq!(ticket_temp_name("t17venv"), Some(TempName::Loose(17)));
+        for not in ["t1.png", "t1.json", "t-1", "t0", "t.x", "equipe-telemetry-1", "equipe-t", "equipe-tx-1", "equipe-t07-x", "t-12", "tmp", "equipe-t12x", "xt12-a"] {
             assert_eq!(ticket_temp_name(not), None, "{not}");
         }
     }
@@ -1946,6 +2015,8 @@ mod tests {
         let fresh = folder("equipe-t3-copy", Duration::ZERO);
         let cancelled = folder("equipe-t4.x1", old);
         let bare = folder("t1-design-qa.abc", old);
+        let bare_alone = folder("t4", old);
+        let loose = folder("t1src", old);
         let person = folder("t16", old);
         let elsewhere_open = folder("equipe-t9-copy", old);
         let unknown = folder("equipe-t77-copy", old);
@@ -1968,23 +2039,25 @@ mod tests {
         assert!(at(&gradle).is_some_and(|i| certain(i) && i.why == DiskWhy::Merged && i.ticket == Some(1) && i.bytes >= 2 * MB));
         assert!(at(&cancelled).is_some_and(|i| certain(i) && i.why == DiskWhy::Cancelled));
         assert!(at(&fresh).is_some_and(|i| !i.safe && i.why == DiskWhy::InUse), "touched within the hour: someone may still be on it");
-        let listed = at(&bare).expect("a bare name is reported");
-        assert!(!listed.safe && listed.why == DiskWhy::NotEquipes && listed.command.as_deref() == Some(format!("rm -rf {}", bare.display()).as_str()), "{listed:?}");
+        assert!(at(&bare).is_some_and(|i| certain(i) && i.why == DiskWhy::Merged), "a member's `t<N>-…` name goes on its own too");
+        assert!(at(&bare_alone).is_some_and(|i| certain(i) && i.why == DiskWhy::Cancelled), "so does a bare `t<N>`");
+        let listed = at(&loose).expect("a name run into letters is reported");
+        assert!(!listed.safe && listed.why == DiskWhy::NotEquipes && listed.command.as_deref() == Some(format!("rm -rf {}", loose.display()).as_str()), "{listed:?}");
         for left in [&reviewing, &person, &elsewhere_open, &unknown] {
             assert!(at(left).is_none(), "{} isn't a finished ticket's", left.display());
         }
         assert!(at(&tmp.join("equipe-t1-link")).is_none());
 
         let cleaned = clean_certain(&known);
-        assert!(cleaned.freed >= 4 * MB, "{cleaned:?}");
-        assert!(!gradle.exists() && !cancelled.exists(), "a finished ticket's own folders went");
-        for kept in [&reviewing, &fresh, &bare, &person, &elsewhere_open, &unknown] {
+        assert!(cleaned.freed >= 8 * MB, "{cleaned:?}");
+        assert!(!gradle.exists() && !cancelled.exists() && !bare.exists() && !bare_alone.exists(), "a finished ticket's own folders went");
+        for kept in [&reviewing, &fresh, &loose, &person, &elsewhere_open, &unknown] {
             assert!(kept.exists(), "{} stays", kept.display());
         }
         assert!(tmp.join("equipe-t1-link").exists() && tree.outside.join("blob").exists(), "the link and what it points at stay");
-        // Asked for by id, a bare one isn't equipe's to remove either.
+        // Asked for by id, one run into letters isn't equipe's to remove either.
         let asked = clean(&known, std::slice::from_ref(&listed.id));
-        assert!(asked.removed.is_empty() && bare.exists(), "{asked:?}");
+        assert!(asked.removed.is_empty() && loose.exists(), "{asked:?}");
     }
 
     #[cfg(unix)]
@@ -2000,7 +2073,9 @@ mod tests {
         assert!(!temp_removable(&deeper, &roots), "only right in the root");
         assert!(!temp_removable(&tmp.join("equipe-t1-copy"), &[]), "no roots, nothing");
         fill(&tmp.join("t1-copy"), 10);
-        assert!(!temp_removable(&tmp.join("t1-copy"), &roots), "a bare name is the person's to remove");
+        assert!(temp_removable(&tmp.join("t1-copy"), &roots));
+        fill(&tmp.join("t1copy"), 10);
+        assert!(!temp_removable(&tmp.join("t1copy"), &roots), "a name run into letters is the person's to remove");
     }
 
     #[cfg(unix)]
@@ -2040,5 +2115,59 @@ mod tests {
         fill(&path.join("android").join(".gradle"), 10);
         let found = build_dirs(&path);
         assert!(found.contains(&path.join("ios/App/.build")) && found.contains(&path.join("android/.gradle")), "{found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_ticket_s_leftovers_are_stopped_with_its_folders_but_not_another_squads() {
+        use std::process::{Command, Stdio};
+        let tree = Tree::new();
+        let tmp = tree.home.parent().unwrap().join("tmp");
+        let run_in = |dir: &Path| {
+            fill(dir, 10);
+            Command::new("sleep").arg("60").current_dir(dir).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap()
+        };
+        let (mine, shared) = (tmp.join("t60-build"), tmp.join("t61"));
+        let (mut a, mut b) = (run_in(&mine), run_in(&shared));
+        let mut elsewhere = run_in(&tmp.join("t600-build"));
+        std::thread::sleep(Duration::from_millis(300));
+        let worktree = tree.worktree(60, 10);
+        let mut inside = run_in(&worktree.join("web"));
+        let mut kept = Command::new("sleep").arg("60").current_dir(&worktree).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        // Ticket 60's folders and worktree; the engine of a live session stands in the worktree too.
+        let lines = clear_ticket_leftovers(60, std::slice::from_ref(&tmp), std::slice::from_ref(&worktree), &[kept.id()]);
+        assert!(a.wait().is_ok() && inside.wait().is_ok(), "{lines:?}");
+        assert!(!mine.exists() && shared.exists(), "its folder went, ticket 61's stays");
+        for running in [&mut b, &mut elsewhere, &mut kept] {
+            assert!(running.try_wait().unwrap().is_none(), "another ticket's process, and a live session's engine, run on");
+        }
+        // Another squad has a ticket 60 open: no scratch folder is touched, the worktree's own still are.
+        let again = tmp.join("t60-again");
+        let mut c = run_in(&again);
+        std::thread::sleep(Duration::from_millis(300));
+        clear_ticket_leftovers(60, &[], &[], &[]);
+        assert!(again.exists() && c.try_wait().unwrap().is_none());
+        for p in [&mut b, &mut c, &mut elsewhere, &mut kept] {
+            let _ = p.kill();
+            let _ = p.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_held_by_a_process_left_running_is_found_though_it_never_goes_idle() {
+        use std::process::{Command, Stdio};
+        let tree = Tree::new();
+        let tmp = tree.home.parent().unwrap().join("tmp");
+        let path = tmp.join("t757");
+        fill(&path, 2 * MB as usize);
+        let mut dev = Command::new("sleep").arg("60").current_dir(&path).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let known = Known { home: tree.home.clone(), tickets: vec![tree.ticket(757, TicketStatus::Done, Some(true), None)], temp: vec![tmp.clone()], ..Known::default() };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        assert!(items.iter().any(|i| i.path == path && certain(i)), "fresh, but held: it is what a clean stops and removes");
+        let cleaned = clean_certain(&known);
+        assert!(!path.exists() && dev.wait().is_ok(), "{cleaned:?}");
     }
 }
