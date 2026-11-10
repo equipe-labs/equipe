@@ -408,6 +408,7 @@
   "match.wall_titles": "just a moment|checking your browser|please wait while we verify",
   "match.human_words": "verify you are human|verifying you are human|are you a robot|i'm not a robot|i am human|not a robot|checking if the site connection is secure|needs to review the security of your connection|quick security check|security verification",
   "match.code_words": "two-factor|2-step|two-step|verification code|security code|authentication code|authenticator app|one-time code|enter the code",
+  "match.title_prefixes": "Title:|title:|TITLE:",
   "match.sign_in_words": "login|log-in|log_in|log in|signin|sign-in|sign_in|sign in",
   "match.blocked_words": "password|passcode|passkey|two-factor|security settings|privacy & security|touch id & password|users & groups|delete account|close account|delete my account|payment|checkout|pay now|buy now|place order|billing",
   "match.outward_words": "send|share|invite|accept|join|post|submit|publish|call|upload|attach|forward",

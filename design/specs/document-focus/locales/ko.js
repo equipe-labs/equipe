@@ -1,0 +1,108 @@
+// The prototypes' Korean copy (the app's own is crates/desktop/locales/ko.json), kept
+// under locales/ with the other languages' words. Each page marks a Korean text or
+// attribute as {{kN}}; loaded where the page's markup ends, this fills them in.
+window.PROTO_KO = {
+  k1: "문서",
+  k2: "문서 작업",
+  k3: "다시 읽기",
+  k4: "Finder에서 파일 열기",
+  k5: "더 많은 문서 작업",
+  k6: "관찰, 가설, 두 갈래 검증, 다음 실험",
+  k7: "문서 집중 보기 프로토타입",
+  k8: "PM 대화",
+  k9: "확인 필요",
+  k10: "작업 중",
+  k11: "티켓",
+  k12: "현황",
+  k13: "로드맵",
+  k14: "어제 하던 일 이어서 해줘",
+  k15: "네, T-617부터 이어서 할게요.",
+  k16: "2026년 11월 제품 성장 실험과 첫 10명 인터뷰 결과 보고서 — 결정할 것과 다음 주 실행 계획.md",
+  k17: "집중 보기",
+  k18: "문서 닫기",
+  k19: "T-617 대화로 돌아가기",
+  k20: "Esc 메뉴 닫기",
+  k21: "전체 경로 복사",
+  k22: "제품 성장 실험과 첫 10명 인터뷰 결과",
+  k23: "이번 주에는 설치를 시작한 메이커를 만나, 첫 결과물을 승인하기까지 막힌 지점을 확인했습니다.",
+  k24: "이번 주 흐름",
+  k25: "관찰",
+  k26: "승인 전에 다음 행동을 찾으려고 대화를 다시 읽음",
+  k27: "가설",
+  k28: "다음 행동과 승인 기준이 서로 다른 위치에 있음",
+  k29: "두 갈래 검증",
+  k30: "A · 문서 위에 다음 행동",
+  k31: "B · 대화에 승인 기준",
+  k32: "다음 실험",
+  k33: "먼저 읽은 곳에 안내를 붙이고 복귀 후 행동을 비교함",
+  k34: "결정할 것",
+  k35: "반복된 장애물을 다음 실험의 기준으로 둡니다.",
+  k36: "설치보다 첫 승인까지 걸린 시간을 기록합니다.",
+  k37: "작업 중 보드로 돌아가기",
+  k38: "작업 중 보드로 돌아가기, 선택 티켓 T-617, Escape",
+  k39: "T-617 대화로 돌아가기, Escape",
+  k40: "보드 · 작업 중",
+  k41: "배포 준비",
+  k42: "문서 집중 보기 UX",
+  k43: "구현",
+  k44: "회귀 QA",
+  k45: "파일 열기",
+  k46: "PM 대화로 돌아가기, Escape",
+  k47: "지표에서 가설, 결정으로 이어지는 흐름",
+  k48: "A · 같은 헤더 확장",
+  k49: "outputs/T-631 제품 성장 보고서/",
+  k50: "PM 대화로 ",
+  k51: "누적 열 명 중 이번 주에는 설치를 시작한 메이커 다섯 명을 만나, 첫 결과물을 승인하기까지 막힌 지점을 확인했습니다.",
+  k52: "첫 승인까지",
+  k53: "18분",
+  k54: "설치 뒤",
+  k55: "다음 행동이 흐림",
+  k56: "첫 승인 안내를",
+  k57: "앞당김",
+  k58: "설치 완료보다 첫 승인까지 걸린 시간을 함께 기록합니다.",
+  k59: "B · 명시적 복귀 헤더",
+  k60: "PM 대화로",
+  k61: "C · 모드 우선 헤더",
+  k62: "문서 집중 보기",
+  k63: "집중 보기, Command Shift F",
+  k64: "보드로 돌아가기, Escape",
+  k65: "집중 보기 상태 계약",
+  k66: "1 · 기본 패널 — 현재 대화와 문서 스크롤 42%",
+  k67: "… 이전 메시지와 선택은 그대로 있습니다.",
+  k68: "분기 성장 보고서.md",
+  k69: "집중 보기 ",
+  k70: "현재 읽던 문단…",
+  k71: "스크롤 42%",
+  k72: "2 · 보드에서 집중 보기 — 목적지가 행동 이름에 포함됨",
+  k73: "← 보드로 ",
+  k74: "같은 문단, 같은 스크롤 42%",
+  k75: "3 · 더보기 열림 — 첫 Esc는 메뉴만 닫음",
+  k76: "← PM 대화로 ",
+  k77: "집중 보기는 유지됩니다.",
+  k78: "경로 복사",
+  k79: "4 · 두 번째 Esc — 원래 보드·선택·포커스 복원",
+  k80: "문서 스크롤 42% 보존"
+};
+// The spec's copy (spec.md, "Copy"), by key.
+window.SPEC_KO = {
+  'focus.enter': '집중 보기',
+  'focus.back_conversation': '{title} 대화로 돌아가기',
+  'focus.back_board': '{title} 보드로 돌아가기',
+  'focus.esc_menu': 'Esc 메뉴 닫기',
+  'focus.more': '더 많은 문서 작업',
+  'focus.close': '문서 닫기',
+  'focus.enter_label': '집중 보기, Shift Command F',
+  'focus.back_conversation_label': '{title} 대화로 돌아가기, Escape',
+  'focus.back_board_label': '{title} 보드로 돌아가기, Escape',
+};
+(() => {
+  const fill = (s) => s.replace(/\{\{(k\d+)\}\}/g, (_, k) => window.PROTO_KO[k]);
+  const walk = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  for (let n = walk.currentNode; n; n = walk.nextNode()) {
+    if (n.nodeType === Node.TEXT_NODE) {
+      if (n.data.includes('{{')) n.data = fill(n.data);
+    } else {
+      for (const a of n.attributes) if (a.value.includes('{{')) a.value = fill(a.value);
+    }
+  }
+})();

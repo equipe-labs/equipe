@@ -515,11 +515,9 @@ fn stuck(model: &Model, lanes: &[Lane]) -> Vec<Stuck> {
                         out.push(Stuck::Nobody { member: lane.name.clone(), ticket, on: on.ticket });
                     }
                 }
-                _ if w.is_chain() && w.on_member() != Some(lane.name.as_str()) => {
-                    // Once per ticket held up directly: two tickets waiting on the same one are one chain.
-                    if chained.insert(w.hops[0].ticket) {
-                        out.push(Stuck::Chain { member: lane.name.clone(), wait: w.clone() });
-                    }
+                // Once per ticket held up directly: two tickets waiting on the same one are one chain.
+                _ if w.is_chain() && w.on_member() != Some(lane.name.as_str()) && chained.insert(w.hops[0].ticket) => {
+                    out.push(Stuck::Chain { member: lane.name.clone(), wait: w.clone() });
                 }
                 _ => {}
             }
