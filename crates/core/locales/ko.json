@@ -610,5 +610,6 @@
   "error.recovery_not_stalled": "T-{id}은(는) 이제 멈춘 상태가 아니라서 아무것도 바꾸지 않았어요.",
   "error.recovery_member_gone": "{name}은(는) 이제 스쿼드에 없어요. T-{id}을(를) 같은 역할에 다시 맡기거나 담당을 바꿔 주세요.",
   "error.recovery_failed": "T-{id}을(를) 다시 시작하지 못했어요: {err}",
-  "error.recovery_no_operation": "T-{id}을(를) 다시 시작하려면 카드의 키가 필요해요. 카드에서 다시 시도해 주세요."
+  "error.recovery_no_operation": "T-{id}을(를) 다시 시작하려면 카드의 키가 필요해요. 카드에서 다시 시도해 주세요.",
+  "notice.runs_update": "티켓 {count}개를 동시에 진행하고 있어요. 이 화면에서 따라가려면 equipe를 업데이트하세요."
 }

@@ -159,7 +159,7 @@ async fn at_work(model: Option<&str>, nemotron: bool) -> (Handle, UnboundedRecei
 }
 
 fn call(name: &str, arguments: Value) -> ToolCall {
-    ToolCall { squad: "acme".into(), member: "backend".into(), name: name.into(), arguments }
+    ToolCall { run: None, squad: "acme".into(), member: "backend".into(), name: name.into(), arguments }
 }
 
 async fn spawn(handle: &Handle, brief: &str, what: &str) -> ToolResult {

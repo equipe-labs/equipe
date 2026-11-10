@@ -120,7 +120,7 @@ async fn add(handle: &Handle, events: &mut UnboundedReceiver<Event>, id: u64, sp
 }
 
 async fn tool(handle: &Handle, member: &str, name: &str, arguments: serde_json::Value) -> ToolResult {
-    handle.tool(ToolCall { squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
 }
 
 /// The reference's two questions: one pick, then several.

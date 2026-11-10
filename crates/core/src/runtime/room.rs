@@ -257,7 +257,7 @@ impl Runtime {
 
     /// Every member of `squad`, lanes left out.
     pub(super) fn squad_members(&self, squad: &str) -> Vec<SessionId> {
-        self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.is_some()).map(|(&id, _)| id).collect()
+        self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.is_some()).map(|(&id, _)| id).collect()
     }
 
     /// A member's build or turn failed for want of room: the disk is full,
@@ -302,7 +302,7 @@ impl Runtime {
             .sessions
             .values()
             .filter(|s| s.is_working())
-            .filter_map(|s| Some(journal::build_dir(&self.config.home, s.squad.as_deref()?, s.name()?)))
+            .filter_map(|s| self.build_dir_of(s))
             .collect();
         known
     }

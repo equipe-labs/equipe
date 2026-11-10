@@ -161,7 +161,7 @@ impl Runtime {
     /// for their answer, as `ask_person` does.
     pub(super) fn propose_signal(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
         let refuse = |text: String| ToolResult { text, is_error: true, image: None };
-        let Some(id) = self.member_id(&call.squad, &call.member) else {
+        let Some(id) = self.caller_id(&call) else {
             let _ = reply.send(refuse("You're not on the squad.".into()));
             return;
         };

@@ -27,7 +27,7 @@ impl Runtime {
         out.push(format!("Projects: {}.", if names.is_empty() { "none".to_owned() } else { names.join(", ") }));
         out.push(format!("HQ: {}.", hq.as_deref().map_or_else(|| "none".to_owned(), board::project_name)));
         out.push(format!("Mode (how much members do on their own): {} for the squad.", mode_word(mode)));
-        let mut members: Vec<_> = self.sessions.values().filter(|s| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.is_some()).collect();
+        let mut members: Vec<_> = self.sessions.values().filter(|s| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.is_some()).collect();
         members.sort_by_key(|s| s.name().map(str::to_owned));
         for s in members {
             let name = s.name().unwrap_or_default();
@@ -337,8 +337,9 @@ impl Runtime {
         members
             .iter()
             .filter_map(|name| {
-                let s = self.member_id(squad, name).and_then(|id| self.sessions.get(&id))?;
-                Some(Mover { name: name.clone(), from: s.engine, working: s.is_working(), on_ticket: s.work.is_some(), now })
+                let id = self.member_id(squad, name)?;
+                let s = self.sessions.get(&id)?;
+                Some(Mover { name: name.clone(), from: s.engine, working: s.is_working(), on_ticket: !self.runs_of(id).is_empty(), now })
             })
             .collect()
     }

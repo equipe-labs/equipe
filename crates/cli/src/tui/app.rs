@@ -3961,6 +3961,7 @@ mod tests {
             steering_in: vec![],
             estimate: None,
             lane: None,
+            run: None,
             work: None,
             mode: None,
             effort: None,
@@ -5337,10 +5338,11 @@ mod tests {
             title: "Hero".into(),
             project: "/repo".into(),
             workspace: Some(Workspace { branch: "equipe/frontend-t3".into(), base: "abc".into(), path: "/w/3".into() }),
+            of: None,
         });
         let agent = &app.agents[1];
         assert_eq!((agent.ticket, agent.state, agent.base.clone()), (Some(3), AgentState::Working, PathBuf::from("/w/3")));
-        app.on_event(Event::WorkEnded { session: frontend, ticket: 3 });
+        app.on_event(Event::WorkEnded { session: frontend, ticket: 3, of: None });
         assert_eq!((app.agents[1].ticket, app.agents[1].base.clone()), (None, PathBuf::from("/repo")));
     }
 

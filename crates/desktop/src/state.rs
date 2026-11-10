@@ -2530,6 +2530,7 @@ mod tests {
             steering: vec![],
             steering_in: vec![],
             lane: None,
+            run: None,
             estimate: None,
             work: None,
             mode: None,
@@ -2905,7 +2906,7 @@ mod tests {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
 
-        assert!(model.apply(Update::Event(Event::WorkStarted { session: 1, ticket: 5, title: "t".into(), project: "/p".into(), workspace: None }), T0));
+        assert!(model.apply(Update::Event(Event::WorkStarted { session: 1, ticket: 5, title: "t".into(), project: "/p".into(), workspace: None, of: None }), T0));
         assert_eq!(model.status(&model.members[0]), Status::Working { ticket: Some(5), verb: Verb::Thinking });
         model.apply(Update::Event(Event::ToolUse { session: 1, tool: "Read".into(), target: None, label: None, background: false }), T0);
         assert_eq!(model.status(&model.members[0]), Status::Working { ticket: Some(5), verb: Verb::Reading });
@@ -2985,7 +2986,7 @@ mod tests {
         assert_eq!(model.run_view(&queued), Some(RunView::Queued));
         assert_eq!(model.run_view(&old), None, "an older daemon keeps no runs: nothing new is said");
         // At work on it: active, and no word beyond in progress.
-        model.apply(Update::Event(Event::WorkStarted { session: 2, ticket: 4, title: "t".into(), project: "/p".into(), workspace: None }), T0);
+        model.apply(Update::Event(Event::WorkStarted { session: 2, ticket: 4, title: "t".into(), project: "/p".into(), workspace: None, of: None }), T0);
         assert_eq!(model.run_view(&idle), Some(RunView::Active));
         assert_eq!(model.state_word_of(&idle), state_word(&idle));
         assert_eq!(model.run_reason(&idle), None);

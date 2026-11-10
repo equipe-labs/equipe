@@ -77,7 +77,7 @@ impl Runtime {
         let by_role = || {
             self.sessions
                 .iter()
-                .filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.as_ref().is_some_and(|m| m.role == name))
+                .filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| m.role == name))
                 .min_by_key(|(_, s)| (s.name() != Some(name), s.joined))
                 .map(|(&id, _)| id)
         };

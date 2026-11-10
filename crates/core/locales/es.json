@@ -614,5 +614,6 @@
   "error.recovery_not_stalled": "T-{id} ya no está detenido, así que no cambió nada.",
   "error.recovery_member_gone": "{name} ya no está en el equipo: pon T-{id} en cola para su rol o reasígnalo.",
   "error.recovery_failed": "No se pudo recuperar T-{id}: {err}",
-  "error.recovery_no_operation": "Para recuperar T-{id} hace falta la clave de la tarjeta; inténtalo de nuevo desde ella."
+  "error.recovery_no_operation": "Para recuperar T-{id} hace falta la clave de la tarjeta; inténtalo de nuevo desde ella.",
+  "notice.runs_update": "Trabaja en {count} tickets a la vez: actualiza equipe en esta pantalla para seguirlos."
 }

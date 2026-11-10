@@ -3569,7 +3569,7 @@ mod tests {
     fn memos_left_while_on_a_ticket_stack_up_in_sight() {
         let (mut app, pm) = working();
         app.projects = vec!["/code/site".into(), "/code/app".into()];
-        app.on_event(Event::WorkStarted { session: pm, ticket: 7, title: "Settle up".into(), project: "/h/home".into(), workspace: None });
+        app.on_event(Event::WorkStarted { session: pm, ticket: 7, title: "Settle up".into(), project: "/h/home".into(), workspace: None, of: None });
         for text in ["what was the 200 for?", "is it all done?"] {
             app.on_event(Event::MessageQueued { session: pm, text: text.into(), project: Some("home".into()) });
         }
@@ -3602,6 +3602,7 @@ mod tests {
             title: "Hero".into(),
             project: "/repo".into(),
             workspace: Some(Workspace { branch: "equipe/frontend-t3".into(), base: "abc".into(), path: "/w".into() }),
+            of: None,
         });
         app.selected = 1;
         let shot = screen(&app, 100, 24);

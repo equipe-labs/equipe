@@ -181,6 +181,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         steering: vec![],
         steering_in: vec![],
         lane: None,
+        run: None,
         estimate: None,
         recent,
         recent_at: Vec::new(),

@@ -717,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn attaches_and_follows_events() {
         let socket = socket();
-        let event = Event::WorkEnded { session: 3, ticket: 55 };
+        let event = Event::WorkEnded { session: 3, ticket: 55, of: None };
         let _fake = Fake::start(&socket, "daemon-1", vec![event.clone()]);
         let mut spawned = spawn(target(&socket), FAST);
 

@@ -610,5 +610,6 @@
   "error.recovery_not_stalled": "T-{id} はもう停止していないため、何も変更していません。",
   "error.recovery_member_gone": "{name} はもうスクワッドにいません。T-{id} を同じ役割に再投入するか、担当を変えてください。",
   "error.recovery_failed": "T-{id} を再開できませんでした: {err}",
-  "error.recovery_no_operation": "T-{id} の再開にはカードのキーが必要です。カードからもう一度試してください。"
+  "error.recovery_no_operation": "T-{id} の再開にはカードのキーが必要です。カードからもう一度試してください。",
+  "notice.runs_update": "{count}件のチケットを同時に進めています。この画面で追うには equipe を更新してください。"
 }

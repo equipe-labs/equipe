@@ -27,11 +27,15 @@ proposes it to the person."
                 .into());
         }
         let tickets = self.tickets(squad);
+        // What each member is on: the ticket of its first run, if any.
         let team: Vec<(String, String, Option<TicketId>)> = self
             .sessions
-            .values()
-            .filter(|s| s.squad.as_deref() == Some(squad) && s.lane.is_none())
-            .filter_map(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.work.as_ref().map(|w| w.ticket))))
+            .iter()
+            .filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself())
+            .filter_map(|(&id, s)| {
+                let on = self.runs_of(id).first().and_then(|r| self.sessions.get(r)).and_then(|r| r.work.as_ref()).map(|w| w.ticket);
+                s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), on))
+            })
             .collect();
         let mates: Vec<Mate<'_>> = team.iter().map(|(name, role, on)| Mate { name, role, on: *on }).collect();
         let waiting = self.team_changes.get(squad).cloned().unwrap_or_default();
@@ -139,7 +143,7 @@ proposes it to the person."
         let team: Vec<(String, String)> = self
             .sessions
             .values()
-            .filter(|s| s.squad.as_deref() == Some(squad) && s.lane.is_none())
+            .filter(|s| s.squad.as_deref() == Some(squad) && s.is_member_itself())
             .filter_map(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone())))
             .collect();
         let mates: Vec<Mate<'_>> = team.iter().map(|(name, role)| Mate { name, role, on: None }).collect();

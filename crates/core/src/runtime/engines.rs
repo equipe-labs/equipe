@@ -170,6 +170,12 @@ impl Engines {
         self.squads.get(squad).map(|s| s.proposals.clone()).unwrap_or_default()
     }
 
+    /// Whether a move to another engine waits for member `name`: it starts
+    /// no new run meanwhile, so its runs end and the move comes.
+    pub(super) fn moving(&self, squad: &str, name: &str) -> bool {
+        self.waits_for(squad, name)
+    }
+
     /// Whether members on `engine` take no new ticket now.
     pub(super) fn held(&self, squad: &str, engine: Engine) -> bool {
         self.hold_on(squad, engine).is_some()
@@ -324,7 +330,7 @@ impl Runtime {
         let mut team: Vec<(u64, Mate)> = self
             .sessions
             .values()
-            .filter(|s| s.squad.as_deref() == Some(squad) && s.lane.is_none())
+            .filter(|s| s.squad.as_deref() == Some(squad) && s.is_member_itself())
             .filter_map(|s| {
                 let m = s.member.as_ref()?;
                 let home = record.homes.get(&m.name);
@@ -535,8 +541,9 @@ impl Runtime {
             .iter()
             .filter(|m| !m.done && !m.in_place())
             .filter_map(|m| {
-                let s = self.member_id(squad, &m.member).and_then(|id| self.sessions.get(&id))?;
-                let mover = crate::controls::Mover { name: m.member.clone(), from: m.from, working: s.is_working(), on_ticket: s.work.is_some(), now: m.now };
+                let id = self.member_id(squad, &m.member)?;
+                let s = self.sessions.get(&id)?;
+                let mover = crate::controls::Mover { name: m.member.clone(), from: m.from, working: s.is_working(), on_ticket: !self.runs_of(id).is_empty(), now: m.now };
                 Some(crate::controls::move_when(self.config.lang, &mover, m.to))
             })
             .collect::<Vec<_>>()
@@ -809,10 +816,22 @@ impl Runtime {
         if s.is_working() || !s.queued.is_empty() || !s.steering.is_empty() || self.pending.values().any(|p| p.approval.session == id) {
             return false;
         }
-        let on_ticket = s.work.is_some();
         if s.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some()) {
             return false;
         }
+        // Each of its runs at a clean point too; it starts no new one while
+        // the move waits ([`Self::moving`]).
+        let runs = self.runs_of(id);
+        for run in &runs {
+            let Some(r) = self.sessions.get(run) else { continue };
+            if r.is_working() || !r.queued.is_empty() || !r.steering.is_empty() || self.pending.values().any(|p| p.approval.session == *run) {
+                return false;
+            }
+            if r.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some()) {
+                return false;
+            }
+        }
+        let on_ticket = s.work.is_some() || !runs.is_empty();
         let name = due.mv.member.clone();
         if self.question_sets(squad).iter().any(|q| q.member == name) {
             return false;
@@ -945,7 +964,8 @@ impl Runtime {
             (Engine::Codex, Some(hint)) => self.codex_model(&hint).await,
             (_, model) => model,
         };
-        let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        let first_run = self.runs_of(id).first().copied();
+        let ticket = first_run.or(Some(id)).and_then(|at| self.sessions.get(&at)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         let brief = self.hand_over(squad, id, due).await;
         let packet = packet_kept(&brief).to_owned();
         let fresh = equipe_protocol::new_session_id();
@@ -1053,18 +1073,26 @@ impl Runtime {
     /// packet its next session opens with. The ticket's record names the old
     /// conversation, which the journal keeps.
     async fn hand_over(&mut self, squad: &str, id: SessionId, due: &Due) -> String {
-        let Some(s) = self.sessions.get_mut(&id) else { return String::new() };
-        let entries = s.transcript.entries().to_vec();
-        let estimate = s.estimate.as_ref().and_then(|e| e.live_what.clone().or(e.what.clone()));
-        let work = s.work.take();
+        // Its runs' tickets go over too, each the same way; the first one's
+        // conversation and ticket open the packet.
+        let runs = self.runs_of(id);
+        let Some(s) = self.sessions.get(&id) else { return String::new() };
+        let told = runs.first().and_then(|r| self.sessions.get(r)).unwrap_or(s);
+        let entries = told.transcript.entries().to_vec();
+        let estimate = told.estimate.as_ref().and_then(|e| e.live_what.clone().or(e.what.clone()));
+        let mut works: Vec<(SessionId, Work)> = Vec::new();
+        for at in std::iter::once(id).chain(runs.iter().copied()) {
+            if let Some(work) = self.sessions.get_mut(&at).and_then(|s| s.work.take()) {
+                works.push((at, work));
+            }
+        }
         let name = due.mv.member.clone();
         let (from, to) = (engine_name(due.mv.from), engine_name(due.mv.to));
-        let mut waiting: Vec<String> = self.pending.values().filter(|p| p.approval.session == id).map(|p| p.approval.action.lines().next().unwrap_or_default().to_owned()).collect();
+        let mut waiting: Vec<String> = self.pending.values().filter(|p| p.approval.session == id || runs.contains(&p.approval.session)).map(|p| p.approval.action.lines().next().unwrap_or_default().to_owned()).collect();
         waiting.extend(self.question_sets(squad).iter().filter(|q| q.member == name).flat_map(|q| q.questions.iter().map(|x| x.question.clone())));
         let mut ticket_part = None;
-        if let Some(work) = work
-            && let Some(mut ticket) = self.journal(squad).and_then(|j| j.ticket(work.ticket).ok().flatten())
-        {
+        for (at, work) in works {
+            let Some(mut ticket) = self.journal(squad).and_then(|j| j.ticket(work.ticket).ok().flatten()) else { continue };
             let mut tree = Tree::default();
             if let Some(sandbox) = work.sandbox.clone() {
                 let message = format!("equipe: handoff wip — T-{} {}\n\n{name} moved from {from} to {to}.", ticket.id, ticket.title);
@@ -1093,13 +1121,17 @@ impl Runtime {
                 let _ = journal.set_ticket_work(ticket.id, &kept);
                 // This run is over: the new session starts the next one at once.
                 let _ = journal.finish_execution(ticket.id, work.execution_generation, ExecutionState::Stopped, Some("handed_over"));
-                let what = format!("{from} → {to}, mid-ticket: {}; the conversation before is kept as session {id}", tree.commit.as_deref().map_or_else(|| "nothing uncommitted".to_owned(), |c| format!("work committed as {}", &c[..c.len().min(10)])));
+                let what = format!("{from} → {to}, mid-ticket: {}; the conversation before is kept as session {at}", tree.commit.as_deref().map_or_else(|| "nothing uncommitted".to_owned(), |c| format!("work committed as {}", &c[..c.len().min(10)])));
                 let _ = journal.ticket_event(ticket.id, "equipe", "handed over", &what);
             }
-            ticket_part = Some(brief_ticket(&ticket, &tree, &notes));
+            if ticket_part.is_none() {
+                ticket_part = Some(brief_ticket(&ticket, &tree, &notes));
+            }
             let ticket_id = ticket.id;
             self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
-            self.publish(Event::WorkEnded { session: id, ticket: ticket_id });
+            let of = self.sessions.get(&at).and_then(|s| s.run_of);
+            self.publish(Event::WorkEnded { session: at, ticket: ticket_id, of });
+            self.close_run(at);
         }
         let state = State { estimate, waiting };
         packet(&name, &due.mv, due.why, ticket_part.as_deref(), &entries, &state)

@@ -982,6 +982,7 @@ mod tests {
             steering: vec![],
             steering_in: vec![],
             lane: None,
+            run: None,
             estimate: None,
             work: None,
             mode: None,

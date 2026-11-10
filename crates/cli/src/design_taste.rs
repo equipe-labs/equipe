@@ -195,14 +195,14 @@ pub(crate) fn board_args(args: &[String]) -> Result<Vec<String>, String> {
 /// `design_tools`, for a designer's board server: `equipe design <args>` run
 /// as this same equipe, in the member's worktree (asked of the daemon),
 /// reading only the listed sites; what it printed is the answer.
-pub(crate) async fn from_board(socket: &Path, home: &Path, squad: &str, member: &str, arguments: &serde_json::Value) -> equipe_core::protocol::rpc::ToolResult {
+pub(crate) async fn from_board(socket: &Path, home: &Path, squad: &str, member: &str, run: Option<equipe_core::protocol::rpc::RunKey>, arguments: &serde_json::Value) -> equipe_core::protocol::rpc::ToolResult {
     use equipe_core::protocol::rpc::{ToolCall, ToolResult};
     let words: Vec<String> = arguments["args"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_owned)).collect();
     let args = match board_args(&words) {
         Ok(args) => args,
         Err(why) => return ToolResult { text: why, is_error: true, image: None },
     };
-    let ask = ToolCall { squad: squad.to_owned(), member: member.to_owned(), name: equipe_core::board::WORKDIR.to_owned(), arguments: json!({}) };
+    let ask = ToolCall { squad: squad.to_owned(), member: member.to_owned(), name: equipe_core::board::WORKDIR.to_owned(), arguments: json!({}), run };
     let cwd = match equipe_core::gateway::call_tool(socket, &ask).await {
         Ok(r) if !r.is_error && Path::new(r.text.trim()).is_dir() => PathBuf::from(r.text.trim()),
         Ok(r) => return ToolResult { text: r.text, is_error: true, image: None },

@@ -232,6 +232,7 @@ async fn a_members_tool_call_reaches_the_board_over_the_socket() {
     until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
 
     let call = ToolCall {
+        run: None,
         squad: "acme".into(),
         member: "designer".into(),
         name: "create_ticket".into(),
@@ -264,12 +265,12 @@ async fn while_the_app_is_attached_a_handed_over_browser_goes_to_its_panel_not_t
     let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
     screen.send(Command::Start { session: 51, spec: SessionSpec { role: Some("pm".into()), ..spec(&project) } });
     until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
-    let call = ToolCall { squad: "acme".into(), member: "pm".into(), name: "show_my_browser".into(), arguments: serde_json::json!({ "why": "Sign in to App Store Connect" }) };
+    let call = ToolCall { run: None, squad: "acme".into(), member: "pm".into(), name: "show_my_browser".into(), arguments: serde_json::json!({ "why": "Sign in to App Store Connect" }) };
 
     // The app attaches, saying it has a panel (closed for now).
     let app = tokio::net::UnixStream::connect(&socket).await.unwrap();
     let (reader, mut writer) = app.into_split();
-    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true, phone: false };
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true, phone: false, runs: false };
     writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await.unwrap() {
@@ -819,7 +820,7 @@ async fn a_screen_connects_metrics_and_a_member_reads_them_without_the_key() {
     let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
     screen.send(Command::Start { session: 41, spec: spec(&project) });
     until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
-    let call = ToolCall { squad: "acme".into(), member: "designer".into(), name: "metrics".into(), arguments: serde_json::json!({ "days": 7 }) };
+    let call = ToolCall { run: None, squad: "acme".into(), member: "designer".into(), name: "metrics".into(), arguments: serde_json::json!({ "days": 7 }) };
     let result = gateway::call_tool(&socket, &call).await.unwrap();
     assert!(!result.is_error && result.text.contains("Visits `visits`"), "{result:?}");
     assert!(!result.text.contains(KEY));

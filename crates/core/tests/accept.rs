@@ -10,7 +10,7 @@ use std::process::Command as Process;
 use std::time::Duration;
 
 use equipe_core::protocol::accept::{AcceptProposal, Confirmed, FROM_WORDS, Land, Verdict};
-use equipe_core::protocol::rpc::{ToolCall, ToolResult};
+use equipe_core::protocol::rpc::{RunKey, ToolCall, ToolResult};
 use equipe_core::protocol::{Access, Command, Event, SessionSpec, TicketStatus};
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::squads;
@@ -158,7 +158,14 @@ async fn add(handle: &Handle, events: &mut UnboundedReceiver<Event>, id: u64, sp
 }
 
 async fn tool(handle: &Handle, member: &str, name: &str, arguments: serde_json::Value) -> ToolResult {
-    handle.tool(ToolCall { squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+}
+
+/// A tool call from the run of `ticket`, as its board server makes it.
+async fn tool_on(handle: &Handle, member: &str, ticket: u32, name: &str, arguments: serde_json::Value) -> ToolResult {
+    let snapshot = handle.snapshot("acme").await;
+    let run = snapshot.sessions.iter().find_map(|s| s.run.filter(|r| r.ticket == ticket).map(|r| RunKey { session: s.session, ticket, generation: r.generation }));
+    handle.tool(ToolCall { run, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
 }
 
 fn proposed(events: &[Event]) -> AcceptProposal {
@@ -260,7 +267,8 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     // The person keeps acceptance for themselves: the PM only puts it on a card.
     handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
     until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
-    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Pricing done.", "changes_screens": false })).await;
+    // Its own proposal runs beside T-2 now: the hand-in says which run it is.
+    let handed = tool_on(&handle, "frontend", 2, "submit_for_review", json!({ "summary": "Pricing done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review)).await;
     let kept = tool(&handle, "pm", "accept_work", json!({ "tickets": [2], "checked": "fine" })).await;

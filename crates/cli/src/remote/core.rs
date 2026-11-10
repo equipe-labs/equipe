@@ -1079,6 +1079,7 @@ pub(crate) mod tests {
             steering_in: vec![],
             subagents: vec![],
             lane: None,
+            run: None,
             estimate: None,
             work: None,
             mode: None,

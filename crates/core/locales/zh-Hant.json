@@ -610,5 +610,6 @@
   "error.recovery_not_stalled": "T-{id} 已不再停滯，所以沒有做任何變更。",
   "error.recovery_member_gone": "{name} 已不在小隊中：請把 T-{id} 重新排隊給同一角色，或改派給其他人。",
   "error.recovery_failed": "無法恢復 T-{id}：{err}",
-  "error.recovery_no_operation": "恢復 T-{id} 需要卡片的識別碼；請從卡片上重試。"
+  "error.recovery_no_operation": "恢復 T-{id} 需要卡片的識別碼；請從卡片上重試。",
+  "notice.runs_update": "正在同時處理 {count} 張工單——請在此畫面上更新 equipe 以查看它們。"
 }

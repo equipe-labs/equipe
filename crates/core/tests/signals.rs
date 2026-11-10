@@ -92,7 +92,7 @@ async fn start(handle: &Handle, events: &mut UnboundedReceiver<Event>, id: u64, 
 }
 
 async fn tool(handle: &Handle, member: &str, name: &str, arguments: serde_json::Value) -> ToolResult {
-    handle.tool(ToolCall { squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
 }
 
 /// What the PM was told of failing signals: woken with it, or left it for after its turn.

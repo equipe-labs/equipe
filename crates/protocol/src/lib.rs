@@ -63,6 +63,7 @@ pub const WHY_NOW: &str = "Why now: ";
 /// (`update_ticket`, status todo).
 pub const OFFICE_HOURS_FIRST: &str = "Office hours first: the PM releases it.";
 pub mod rpc;
+pub mod runs;
 pub mod stream;
 pub mod studio;
 pub mod tags;
@@ -196,6 +197,20 @@ pub struct Lane {
     /// the PM runs beside its work, folded back when idle.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept: bool,
+}
+
+/// A session that runs one ticket for a member: the member's own session
+/// stays its one identity (role, memory, settings, its conversation with the
+/// person), and each ticket it works runs in a session of its own beside it —
+/// its own worktree, engine conversation, turn, steering and stop. A member
+/// may run several at once; the team lists it once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RunOf {
+    /// The member's own session.
+    pub of: SessionId,
+    pub ticket: TicketId,
+    /// The ticket's run generation this session holds ([`TicketExecution::generation`]).
+    pub generation: u64,
 }
 
 /// A squad's name: lowercase letters, digits and dashes.
@@ -2025,6 +2040,16 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         kept: bool,
     },
+    /// The session just started runs one ticket for member `of` ([`RunOf`]):
+    /// a screen lists it under the member. Sent right after its
+    /// [`Event::SessionStarted`], before its [`Event::WorkStarted`]; it ends
+    /// with [`Event::SessionClosed`].
+    RunOpened {
+        session: SessionId,
+        of: SessionId,
+        ticket: TicketId,
+        generation: u64,
+    },
     /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
     LaneMoved { session: SessionId, project: Option<String> },
     /// A conversation's title is now `title`: `named` by the person
@@ -2061,10 +2086,19 @@ pub enum Event {
         title: String,
         project: PathBuf,
         workspace: Option<Workspace>,
+        /// Set when `session` is a run of a member ([`RunOf`]): that member.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        of: Option<SessionId>,
     },
     /// The member put the ticket down (handed in, accepted, cancelled, or left);
-    /// its turns are back at its desk.
-    WorkEnded { session: SessionId, ticket: TicketId },
+    /// its turns are back at its desk — or, for a run, the run is over.
+    WorkEnded {
+        session: SessionId,
+        ticket: TicketId,
+        /// Set when `session` is a run of a member ([`RunOf`]): that member.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        of: Option<SessionId>,
+    },
     /// A ticket was created or changed. Carries the whole ticket.
     TicketChanged { squad: SquadName, ticket: Ticket },
     /// An NVIDIA Nemotron model on Nebius Token Factory read a handed-in
@@ -2737,6 +2771,7 @@ impl Event {
             | Event::Suggestion { session, .. }
             | Event::SteerQueued { session, .. }
             | Event::LaneOpened { session, .. }
+            | Event::RunOpened { session, .. }
             | Event::LaneMoved { session, .. }
             | Event::ConversationBack { session, .. }
             | Event::ConversationTitle { session, .. }
@@ -3038,6 +3073,10 @@ pub struct SessionInfo {
     /// about one project, running beside the others.
     #[serde(default)]
     pub lane: Option<Lane>,
+    /// Set when this session runs one ticket for a member ([`RunOf`]). A
+    /// screen lists it under that member, never as a member of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunOf>,
     /// When it expects its work done, and what it ships live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimate: Option<Estimate>,
@@ -3490,7 +3529,7 @@ mod tests {
                 squad: Some("acme".into()),
             },
             Event::TicketChanged { squad: "acme".into(), ticket: ticket(3) },
-            Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None },
+            Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None, of: None },
             Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
             Event::Notice { undo: None, session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
@@ -3706,6 +3745,7 @@ mod tests {
                 steering: Vec::new(),
                 steering_in: vec![],
                 lane: None,
+                run: None,
                 estimate: None,
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),

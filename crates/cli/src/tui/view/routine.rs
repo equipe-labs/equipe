@@ -110,6 +110,7 @@ mod tests {
             steering_in: Vec::new(),
             estimate: None,
             lane: None,
+            run: None,
             work: None,
             mode: None,
             effort: None,
