@@ -84,6 +84,10 @@ state("conversation/chat/ticket-card-missing", "chat;wait:800", {"FAKE_CARDS": "
 state("conversation/chat/ticket-card-missing-long", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, lang="de", at={1200: "hover:806,432;wait:1500", 760: "hover:323,429;wait:1500"}, label="A ticket card for a number not on the board, in German")
 state("conversation/chat/ticket-card-recovered", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, at={1200: "hover:421,432;wait:1500", 760: "hover:318,404;wait:1500"}, label="A ticket card for a ticket the list missed: looked up, shown")
 state("conversation/chat/ticket-card-large", "chat;wait:800;zoom:in;zoom:in;wait:600;hover:398,535;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(1200, 760)], label="Large text")
+# At 150% the narrowest window has little room: the card keeps its gap and scrolls instead. One state each, as the lookup runs out in seconds.
+Z = "chat;wait:800;zoom:150;wait:600"
+state("conversation/chat/ticket-card-zoomed", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(760, 600)], at={760: "hover:475,234;wait:1500"}, label="Zoomed to 150%, narrowest width: the card keeps its gap over the link")
+state("conversation/chat/ticket-card-zoomed-missing", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, sizes=[(760, 600)], at={760: "hover:485,346;wait:1500"}, label="Zoomed to 150%: Not found, with its mark")
 # One width each: the lookup runs out in a few seconds, and a resize takes longer than that.
 state("conversation/chat/ticket-card-looking", "chat;wait:800;hover:421,432;wait:700", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], wait=0, label="A ticket card the list missed, while the daemon is still asked")
 state("conversation/chat/ticket-card-looking-narrow", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:318,404;wait:700"}, wait=0, label="The same, at the narrowest width")

@@ -759,25 +759,30 @@ impl Render for TicketCard {
         super::visuals::flush(&held, &self.shell, cx);
         // Placed by its size as last drawn; drawn again when that changes.
         let viewport = window.viewport_size();
-        let size = self.drawn.get().map_or(if found { GUESS } else { (200., 36.) }, |r| (r.w, r.h));
-        let (x, y, side) = place(target.anchor, size, (f32::from(viewport.width), f32::from(viewport.height)), target.prefer);
+        let mut size = self.drawn.get().map_or(if found { GUESS } else { (200., 36.) }, |r| (r.w, r.h));
+        let window_size = (f32::from(viewport.width), f32::from(viewport.height));
+        let (_, _, side) = place(target.anchor, size, window_size, target.prefer);
+        // No taller than the room on its side of the link, its gap kept: a short window scrolls the card's middle.
+        let room = room_on(target.anchor, window_size.1, side);
+        size.1 = size.1.min(room);
+        let (x, y, side) = place(target.anchor, size, window_size, target.prefer);
         let drawn = self.drawn.clone();
         let card = div()
             .id(("ticket-card", target.id as u64))
             .relative()
             .occlude()
-            .w(px(if found { WIDTH } else { 220. }))
+            .when(found, |c| c.w(px(WIDTH))).when(!found, |c| c.min_w(px(MISSING_MIN)))
             .rounded(px(10.))
             .bg(p.raised)
             .border_1()
-            .border_color(p.hair)
+            .border_color(rim(p))
             .shadow(crate::motion::float_shadow(1.))
             .text_color(p.text)
             .cursor_default()
             // No taller than the window: its middle scrolls instead.
             .flex()
             .flex_col()
-            .max_h(px(tallest(f32::from(viewport.height))))
+            .max_h(px(tallest(window_size.1).min(room).max(MIN_ROOM)))
             .child(body)
             // A wheel on the card is the card's, at its ends too: what is
             // under it (the conversation) never scrolls from here.
@@ -794,6 +799,25 @@ impl Render for TicketCard {
     }
 }
 
+/// The room between the window's margin and the link, on `side` of it.
+fn room_on(anchor: Rect, window_h: f32, side: Side) -> f32 {
+    match side {
+        Side::Above => anchor.y - GAP - MARGIN,
+        _ => window_h - MARGIN - (anchor.bottom() + GAP),
+    }
+}
+
+/// Least height a card keeps when there is little room: its header and a line.
+const MIN_ROOM: f32 = 80.;
+
+/// The card's edge: a line that shows on the page in either appearance (the hairline is for rules inside it).
+fn rim(p: Palette) -> Rgba {
+    Rgba { a: 0.55, ..p.muted }
+}
+
+/// How narrow the "Not found" / "Looking…" card goes.
+const MISSING_MIN: f32 = 150.;
+
 /// How long the daemon has to answer before a number reads "Not found" (an older one may not).
 const LOOK_FOR: Duration = Duration::from_secs(4);
 
@@ -807,7 +831,8 @@ fn missing(p: Palette, id: TicketId, gone: bool) -> AnyElement {
         .text_size(px(SMALL))
         .child(div().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(format!("T-{id}")))
         .child(div().text_color(p.muted).child("·"))
-        .when(!gone, |row| row.child(crate::motion::spinner(11., p.muted)))
+        // Looking turns; gone is a still mark: the two read apart without the words.
+        .child(if gone { crate::icons::icon(crate::icons::Icon::XCircle, 12., p.muted).into_any_element() } else { crate::motion::spinner(11., p.muted) })
         .child(div().text_color(p.muted).child(if gone { t!("card.not_found") } else { t!("card.loading") }))
         .into_any_element()
 }

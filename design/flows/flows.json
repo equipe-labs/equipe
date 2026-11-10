@@ -425,6 +425,18 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800;zoom:in;zoom:in;wait:600;hover:398,535;wait:1500`"
             },
             {
+              "id": "ticket-card-zoomed",
+              "label": "Zoomed to 150%, narrowest width: the card keeps its gap over the link",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800;zoom:150;wait:600`"
+            },
+            {
+              "id": "ticket-card-zoomed-missing",
+              "label": "Zoomed to 150%: Not found, with its mark",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800;zoom:150;wait:600`"
+            },
+            {
               "id": "ticket-card-looking",
               "label": "A ticket card the list missed, while the daemon is still asked",
               "kind": "default",
