@@ -329,6 +329,7 @@
   "news.change_requests_recovered": "PM의 수정 요청이 담당 멤버에게 전달되지 않은 채 검토 대기 중이던 티켓 {count}개를 담당 멤버에게 돌려보냈어요: {tickets}",
   "news.pm_sent_back": "PM이 T-{id} · {title}을(를) {name}에게 돌려보냈어요. 고칠 점을 함께 전했어요.",
   "news.model_raised": "T-{id} · {title}은(를) 다음 레인부터 더 강한 모델({tier})로 올려요. 계속 잘못 돌아오거나 막혔어요. 인수 메모와 함께 새로 시작해요.",
+  "news.model_fresh": "T-{id} · {title}이(가) 계속 잘못 돌아오거나 막혔어요. 이미 가장 강한 모델이라서, 다음 레인은 인수 메모와 함께 새로 시작해요.",
   "news.model_pm_decides": "T-{id} · {title}이(가) {times}번 잘못 돌아왔어요. 이미 더 강한 모델로도 해 봤어요. 어떻게 할지는 PM이 정해요.",
   "tier.light": "가벼움",
   "tier.standard": "표준",

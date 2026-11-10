@@ -332,6 +332,7 @@
   "news.change_requests_recovered": "{count} tickets sont repartis vers leurs membres avec les demandes de modification du PM, qui ne leur étaient jamais parvenues pendant l’attente de revue : {tickets}",
   "news.pm_sent_back": "Le PM a renvoyé T-{id} · {title} à {name}, avec ce qu’il faut changer.",
   "news.model_raised": "T-{id} · {title} passe à un modèle plus fort ({tier}) à partir de sa prochaine voie : il revenait sans cesse faux, ou restait bloqué. Il repart à neuf, avec une note de passation.",
+  "news.model_fresh": "T-{id} · {title} revenait sans cesse faux ou restait bloqué. Il est déjà sur le modèle le plus fort : sa prochaine voie repart à neuf, avec une note de passation.",
   "news.model_pm_decides": "T-{id} · {title} est revenu faux {times} fois, dont une déjà sur un modèle plus fort : le PM décide de la suite.",
   "tier.light": "léger",
   "tier.standard": "standard",

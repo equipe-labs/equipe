@@ -332,6 +332,7 @@
   "news.change_requests_recovered": "{count} tickets volvieron a sus miembros con las peticiones de cambio del PM, que nunca les habían llegado mientras el trabajo esperaba revisión: {tickets}",
   "news.pm_sent_back": "El PM devolvió T-{id} · {title} a {name}, con lo que hay que cambiar.",
   "news.model_raised": "T-{id} · {title} pasa a un modelo más fuerte ({tier}) desde su próximo carril: volvía mal una y otra vez, o se atascó. Empieza de nuevo, con una nota de traspaso.",
+  "news.model_fresh": "T-{id} · {title} volvía mal una y otra vez o se atascó. Ya está en el modelo más fuerte, así que su próximo carril empieza de nuevo, con una nota de traspaso.",
   "news.model_pm_decides": "T-{id} · {title} volvió mal {times} veces, una ya con un modelo más fuerte: el PM decide qué hacer con él.",
   "tier.light": "ligero",
   "tier.standard": "estándar",

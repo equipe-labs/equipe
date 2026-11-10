@@ -78,18 +78,29 @@ decide — split it into smaller tickets, rewrite what it asks and how it is che
             crate::daemon_log!("equipe: {squad}: T-{ticket} {why}, pinned by the person: not raised");
             return;
         };
-        let note = self.handoff_note(squad, &t, up.tier);
+        let note = self.handoff_note(squad, &t, up.tier, up.tier == now.tier);
         let Some(journal) = self.journal(squad) else { return };
         if let Err(err) = journal.set_ticket_model(ticket, Some(&up)) {
             return crate::daemon_log!("equipe: {squad}: T-{ticket} not raised: {err}");
         }
         let _ = journal.record_model_choice(ticket, "escalated", None, &up);
         let tier = up.tier.map_or("its member's own model", ModelTier::code);
-        let _ = journal.ticket_event(ticket, "equipe", "model raised", &format!("{why}: its next lane starts on {tier}, in a fresh conversation with a handoff note."));
+        // At the top already (or on a model equipe can't place): a fresh start is all that's left.
+        let top = up.tier == now.tier;
+        let what = if top { format!("{why}: already at {tier}, so its next lane starts fresh, with a handoff note.") } else { format!("{why}: its next lane starts on {tier}, in a fresh conversation with a handoff note.") };
+        let _ = journal.ticket_event(ticket, "equipe", "model raised", &what);
         let _ = journal.ticket_event(ticket, "equipe", "handoff", &note);
-        crate::daemon_log!("equipe: {squad}: T-{ticket} raised to {tier} ({why})");
-        let shown = say!(self, "news.model_raised", id = ticket, title = t.title, tier = self.tier_word(up.tier));
-        let line = format!("equipe: T-{ticket} ({}) was {why}, so its next lane starts one step stronger ({tier}), fresh, with a handoff note. Nothing to do about it.", t.title);
+        crate::daemon_log!("equipe: {squad}: T-{ticket} {} ({why})", if top { format!("starts fresh at {tier}") } else { format!("raised to {tier}") });
+        let shown = if top {
+            say!(self, "news.model_fresh", id = ticket, title = t.title)
+        } else {
+            say!(self, "news.model_raised", id = ticket, title = t.title, tier = self.tier_word(up.tier))
+        };
+        let line = if top {
+            format!("equipe: T-{ticket} ({}) was {why}; it is on the strongest model and effort already, so its next lane starts fresh with a handoff note. If it comes back wrong again, decide what to do with it.", t.title)
+        } else {
+            format!("equipe: T-{ticket} ({}) was {why}, so its next lane starts one step stronger ({tier}), fresh, with a handoff note. Nothing to do about it.", t.title)
+        };
         self.brief_pm(squad, line, Some(shown));
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: Ticket { model: Some(up), ..t } });
     }
@@ -110,15 +121,16 @@ decide — split it into smaller tickets, rewrite what it asks and how it is che
     /// What a ticket's fresh lane on a stronger tier starts from, instead of
     /// the conversation before: where the work is, what was handed in, and
     /// what came back. In English, for the member.
-    fn handoff_note(&mut self, squad: &str, t: &Ticket, tier: Option<ModelTier>) -> String {
+    fn handoff_note(&mut self, squad: &str, t: &Ticket, tier: Option<ModelTier>, same: bool) -> String {
         let journal = self.journal(squad);
         let history = journal.and_then(|j| j.ticket_history(t.id).ok()).unwrap_or_default();
         let base = journal.and_then(|j| j.ticket_work(t.id).ok()).and_then(|w| w.base);
-        let mut out = format!(
-            "Handoff: T-{} moves to a stronger model{}, in a fresh conversation — the one before isn't carried over. Start from here, not from scratch.",
-            t.id,
-            tier.map(|t| format!(" ({})", t.code())).unwrap_or_default()
-        );
+        let tier = tier.map(|t| format!(" ({})", t.code())).unwrap_or_default();
+        let mut out = if same {
+            format!("Handoff: T-{} starts again{tier} in a fresh conversation — the one before isn't carried over. Start from here, not from scratch.", t.id)
+        } else {
+            format!("Handoff: T-{} moves to a stronger model{tier}, in a fresh conversation — the one before isn't carried over. Start from here, not from scratch.", t.id)
+        };
         if let Some(branch) = &t.branch {
             out.push_str(&format!("\n- The work so far is on branch {branch}, in your worktree"));
             match base {

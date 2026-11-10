@@ -332,6 +332,7 @@
   "news.change_requests_recovered": "{count} Tickets gingen mit den Änderungswünschen des PM an ihre Mitglieder zurück – die Wünsche hatten sie nie erreicht, während die Arbeit auf Review wartete: {tickets}",
   "news.pm_sent_back": "Der PM hat T-{id} · {title} an {name} zurückgegeben, mit dem, was zu ändern ist.",
   "news.model_raised": "T-{id} · {title} läuft ab dem nächsten Lauf auf einem stärkeren Modell ({tier}): Es kam immer wieder falsch zurück oder blieb hängen. Es beginnt neu, mit einer Übergabenotiz.",
+  "news.model_fresh": "T-{id} · {title} kam immer wieder falsch zurück oder blieb hängen. Es läuft schon auf dem stärksten Modell, also beginnt der nächste Lauf neu, mit einer Übergabenotiz.",
   "news.model_pm_decides": "T-{id} · {title} kam {times}-mal falsch zurück, einmal schon auf einem stärkeren Modell: Der PM entscheidet, wie es weitergeht.",
   "tier.light": "leicht",
   "tier.standard": "Standard",

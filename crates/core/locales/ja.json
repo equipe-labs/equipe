@@ -329,6 +329,7 @@
   "news.change_requests_recovered": "PM の修正依頼が担当メンバーに届かないままレビュー待ちだったチケット {count} 件を、担当メンバーに戻しました：{tickets}",
   "news.pm_sent_back": "PM が T-{id} · {title} を {name} に差し戻しました。直す点も伝えています。",
   "news.model_raised": "T-{id} · {title} は次のレーンからより強いモデル（{tier}）に上げます。何度も差し戻されたか、行き詰まったためです。引き継ぎメモを持って新しく始めます。",
+  "news.model_fresh": "T-{id} · {title} は差し戻しが続いたか、行き詰まりました。すでに最も強いモデルなので、次のレーンは引き継ぎメモを持って新しく始めます。",
   "news.model_pm_decides": "T-{id} · {title} は {times} 回差し戻されました。より強いモデルでも一度試しています。どうするかは PM が決めます。",
   "tier.light": "ライト",
   "tier.standard": "標準",

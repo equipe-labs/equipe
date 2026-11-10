@@ -329,6 +329,7 @@
   "news.change_requests_recovered": "有 {count} 个工单的 PM 修改意见一直没送到负责成员手里，工单停在待审核：已把它们退回给各自的成员：{tickets}",
   "news.pm_sent_back": "PM 把 T-{id} · {title} 退回给 {name}，并附上了要改的地方。",
   "news.model_raised": "T-{id} · {title} 从下一条通道起换用更强的模型（{tier}）：它屡次被退回，或卡住了。它会带着交接说明重新开始。",
+  "news.model_fresh": "T-{id} · {title} 屡次被退回或卡住了。它已经在用最强的模型，所以下一条通道会带着交接说明重新开始。",
   "news.model_pm_decides": "T-{id} · {title} 已被退回 {times} 次，其中一次已经用了更强的模型：由 PM 决定怎么处理。",
   "tier.light": "轻量",
   "tier.standard": "标准",

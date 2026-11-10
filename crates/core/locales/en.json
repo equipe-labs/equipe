@@ -332,6 +332,7 @@
   "news.change_requests_recovered": "{count} tickets went back to their members with the PM's change requests, which had never reached them while the work waited in review: {tickets}",
   "news.pm_sent_back": "The PM sent T-{id} · {title} back to {name}, with what to change.",
   "news.model_raised": "T-{id} · {title} moves to a stronger model ({tier}) from its next lane: it kept coming back wrong, or got stuck. It starts fresh, with a handoff note.",
+  "news.model_fresh": "T-{id} · {title} kept coming back wrong or got stuck. It's on the strongest model already, so its next lane starts fresh, with a handoff note.",
   "news.model_pm_decides": "T-{id} · {title} came back wrong {times} times, once already on a stronger model: the PM decides what to do with it.",
   "tier.light": "light",
   "tier.standard": "standard",

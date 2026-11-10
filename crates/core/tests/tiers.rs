@@ -156,14 +156,19 @@ fn arg_after<'a>(prompt: &'a str, flag: &str) -> Option<&'a str> {
 /// A squad of a PM and a frontend (Sonnet, its role's model) on one
 /// repository, kept for its journal, T-1 under way on its first lane.
 async fn started(title: &str, body: &str) -> (Handle, UnboundedReceiver<Event>, PathBuf, PathBuf) {
+    started_as("frontend", title, body).await
+}
+
+/// The same, T-1 owned by a member of `role` (named after it).
+async fn started_as(role: &str, title: &str, body: &str) -> (Handle, UnboundedReceiver<Event>, PathBuf, PathBuf) {
     let repo = repo();
     let home = scratch("home");
     squads::create(&home, "acme", &repo).unwrap();
     let bin = claude();
     let (handle, mut events) = runtime::start(config(&bin, &home, true));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
-    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
-    tool(&handle, "pm", "create_ticket", json!({ "title": title, "body": body, "owner": "frontend" })).await;
+    add(&handle, &mut events, 2, member(&repo, role)).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": title, "body": body, "owner": role })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     (handle, events, home, bin)
 }
@@ -171,7 +176,11 @@ async fn started(title: &str, body: &str) -> (Handle, UnboundedReceiver<Event>, 
 /// T-1's current lane hands in; the PM sends it back with `text` for `reason`;
 /// its next lane starts.
 async fn round(handle: &Handle, events: &mut UnboundedReceiver<Event>, text: &str, reason: &str) -> Vec<Event> {
-    let handed = tool(handle, "frontend", "submit_for_review", json!({ "summary": "Done.", "changes_screens": false })).await;
+    round_by(handle, events, "frontend", text, reason).await
+}
+
+async fn round_by(handle: &Handle, events: &mut UnboundedReceiver<Event>, member: &str, text: &str, reason: &str) -> Vec<Event> {
+    let handed = tool(handle, member, "submit_for_review", json!({ "summary": "Done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     until(events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     let back = tool(handle, "pm", "comment", json!({ "id": 1, "text": text, "review": "changes", "reason": reason })).await;
@@ -228,6 +237,24 @@ async fn a_feature_starts_above_a_sonnet_member_and_correctness_send_backs_climb
     let choices = journal.model_choices(1).unwrap();
     assert!(choices.iter().any(|c| c.what == "escalated" && c.tier.as_deref() == Some("deep") && c.by == "escalation"), "{choices:?}");
     assert_eq!(choices.iter().filter(|c| c.what == "lane").count(), 4, "{choices:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_ticket_already_at_the_top_starts_fresh_and_says_so_rather_than_claiming_a_raise() {
+    // A backend member on Opus at Claude Code's own effort: the top tier already.
+    let (handle, mut events, home, bin) = started_as("backend", "Add an export endpoint", "Run `cargo test`.").await;
+    let model = ticket(&handle).await.model.unwrap();
+    assert_eq!((model.tier, model.reason, model.shadow), (Some(ModelTier::Max), TierReason::MemberFloor, Some(ModelTier::Strong)), "the cheaper tier only recorded");
+    round_by(&handle, &mut events, "backend", "The CSV header is missing.", "correctness").await;
+    let seen = round_by(&handle, &mut events, "backend", "Still no header.", "correctness").await;
+    assert!(!raised(&seen));
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("strongest model already"))), "{seen:#?}");
+    let third = nth_prompt(&bin, 3).await;
+    assert!(third.contains("Handoff:") && !third.contains("--resume"), "{third}");
+    assert_eq!(arg_after(&third, "--model"), Some("opus"));
+    let record = Journal::for_squad(&home, "acme").unwrap().ticket_history(1).unwrap();
+    assert!(record.iter().any(|(_, kind, text)| kind == "model raised" && text.contains("already at max")), "{record:?}");
     handle.shutdown().await;
 }
 
