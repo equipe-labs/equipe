@@ -1358,6 +1358,9 @@ pub struct Window {
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) focus: Option<FocusId>,
     focus_enabled: bool,
+    /// equipe: where the focused element was last drawn, with its focus id — so a
+    /// scrolling page can bring a control the keys moved to into view.
+    pub(crate) focused_bounds: Option<(FocusId, Bounds<Pixels>)>,
     /// Incremented every time focus moves. Used to invalidate a
     /// pending keyboard activation state when focus changes.
     pub(crate) focus_generation: u64,
@@ -2258,6 +2261,7 @@ impl Window {
             activation_observers: SubscriberSet::new(),
             focus: None,
             focus_enabled: true,
+            focused_bounds: None,
             focus_generation: 0,
             pending_input: None,
             pending_modifier: ModifierState::default(),
@@ -2453,6 +2457,12 @@ impl Window {
     /// Close this window.
     pub fn remove_window(&mut self) {
         self.removed = true;
+    }
+
+    /// equipe: the window bounds the focused element was last drawn at, once drawn
+    /// since focus moved to it (`None` while the frame that shows it is pending).
+    pub fn focused_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.focused_bounds.filter(|(id, _)| Some(*id) == self.focus).map(|(_, b)| b)
     }
 
     /// Obtain the currently focused [`FocusHandle`]. If no elements are focused, returns `None`.
