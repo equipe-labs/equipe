@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.103.75"
+version = "0.103.76"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2229,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.103.75"
+version = "0.103.76"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.103.75"
+version = "0.103.76"
 dependencies = [
  "alacritty_terminal",
  "base64 0.23.1",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop-control"
-version = "0.103.75"
+version = "0.103.76"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.103.75"
+version = "0.103.76"
 dependencies = [
  "serde",
  "serde_json",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.103.75"
+version = "0.103.76"
 dependencies = [
  "base64 0.23.1",
  "chrono",
