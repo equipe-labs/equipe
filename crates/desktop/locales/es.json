@@ -1181,6 +1181,7 @@
   "doc.focus_more": "Más acciones del documento",
   "doc.focus_menu_esc": "Esc cierra el menú",
   "doc.close_doc": "Cerrar documento",
+  "doc.body": "Texto del documento",
   "deck.present": "Presentar",
   "deck.prev": "Diapositiva anterior",
   "deck.next": "Diapositiva siguiente",

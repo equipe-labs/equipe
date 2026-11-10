@@ -986,7 +986,9 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 // One keystroke through the window, as the keyboard sends it: `press:escape`, `press:cmd-,`.
                 "press" => {
                     if let Ok(stroke) = Keystroke::parse(&arg) {
-                        window.dispatch_keystroke(stroke, cx);
+                        window.dispatch_keystroke(stroke.clone(), cx);
+                        // And released, as a key is: a focused button is pressed on the release.
+                        window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke: stroke }), cx);
                     }
                 }
                 // The summary band's "Retry" reached by the keyboard, as Tab does.

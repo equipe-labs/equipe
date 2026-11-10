@@ -17,22 +17,39 @@ use crate::tips::tip;
 use crate::ui;
 
 /// Where the keyboard goes: the button that went into focus view (back
-/// there on the way out), its way back, the "more" button, and a stop for
-/// every tool and menu item so Tab reaches them in the order they are drawn.
+/// there on the way out), its way back, the "more" button, a stop for
+/// every tool and menu item so Tab reaches them in the order they are drawn,
+/// and the text itself, last, where the arrows and Page keys scroll it.
 pub struct Handles {
     pub entry: FocusHandle,
     pub back: FocusHandle,
     pub more: FocusHandle,
     pub menu: [FocusHandle; 4],
     pub tools: [FocusHandle; 6],
+    pub body: FocusHandle,
 }
 
 impl Handles {
     pub fn new(cx: &mut Context<Shell>) -> Self {
         let stop = |cx: &mut Context<Shell>| cx.focus_handle().tab_stop(true);
-        Self { entry: stop(cx), back: stop(cx), more: stop(cx), menu: [stop(cx), stop(cx), stop(cx), stop(cx)], tools: [stop(cx), stop(cx), stop(cx), stop(cx), stop(cx), stop(cx)] }
+        Self { entry: stop(cx), back: stop(cx), more: stop(cx), menu: [stop(cx), stop(cx), stop(cx), stop(cx)], tools: [stop(cx), stop(cx), stop(cx), stop(cx), stop(cx), stop(cx)], body: stop(cx) }
+    }
+
+    /// The document's buttons: one of them has the keyboard.
+    pub fn button_focused(&self, window: &Window) -> bool {
+        [&self.entry, &self.back, &self.more].into_iter().chain(&self.menu).chain(&self.tools).any(|h| h.is_focused(window))
+    }
+
+    /// Anywhere in the document has the keyboard.
+    pub fn any_focused(&self, window: &Window) -> bool {
+        self.button_focused(window) || self.body.is_focused(window)
     }
 }
+
+/// How far a focus ring reaches outside its button.
+const RING: f32 = 6.;
+/// The text's side margins in focus view (`layout.gutter`).
+const GUTTER: f32 = 24.;
 
 /// The panel's left edge: drag to make it wider or narrower (kept), double-
 /// click for the usual width. Shared by the document and the terminal.
@@ -99,6 +116,8 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     let window_width: f32 = window.viewport_size().width.into();
     let compact = crate::doc::compact(window_width, shell.remembered.zoom.0);
     let keys = &shell.doc_keys;
+    let zoom = crate::zoom::factor(shell.remembered.zoom.0);
+    let body_ring = keys.body.is_focused(window) && window.last_input_was_keyboard();
     let copy_path = {
         let path = path.clone();
         move |cx: &mut App| {
@@ -146,7 +165,7 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             row = row.child(ui::button(p, "doc-more-copy", ui::Kind::Ghost, t!("doc.copy_path")).icon(Icon::Copy).focus(&keys.menu[2]).on_click(move |_, _, cx| copy(cx)));
         }
         // In focus view the close folds in with the rest; beside the panel it never leaves the bar.
-        row.when(focused, |row| row.child(ui::button(p, "doc-more-close", ui::Kind::Ghost, t!("doc.close_doc")).icon(Icon::X).focus(&keys.menu[3]).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx)))))
+        row.when(focused, |row| row.child(ui::button(p, "doc-more-close", ui::Kind::Ghost, t!("doc.close_doc")).icon(Icon::X).focus(&keys.menu[3]).on_click(cx.listener(|this, _, window, cx| this.close_doc_from(window, cx)))))
     });
     // The whole name, wrapping, and where it is — never cut.
     let where_ = |left: f32| {
@@ -180,21 +199,25 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     let bar = if let Some(focus) = &doc.focus {
         // Focus view: a way back on the left, the tools on the right; under
         // them the whole name and where it is.
+        // A long title is shortened so the way back's words and Esc show.
+        let title_most = if compact { 24 } else { 48 };
         let back = match &focus.origin {
-            crate::doc::Origin::Conversation(title) => t!("doc.focus_back_chat", title = title),
+            crate::doc::Origin::Conversation(title) => t!("doc.focus_back_chat", title = crate::doc::shortened(title, title_most)),
             crate::doc::Origin::Docs => t!("doc.focus_back_docs").to_string(),
-            crate::doc::Origin::Project(name) => t!("doc.focus_back_project", name = name),
+            crate::doc::Origin::Project(name) => t!("doc.focus_back_project", name = crate::doc::shortened(name, title_most)),
         };
         let esc = if doc.more { t!("doc.focus_menu_esc").to_string() } else { "Esc".to_string() };
         let first = ui::title_bar(
             h_flex().h(px(super::header::HEIGHT)).flex_none().pl(px(lights + 8.)).pr_3().gap_2().items_center().child(
-                div().flex_shrink(1.).min_w_0().overflow_hidden().child(
-                    ui::button(p, "doc-focus-back", ui::Kind::Ghost, back).icon(Icon::ArrowLeft).key(esc).focus(&keys.back).on_click(cx.listener(|this, _, window, cx| this.toggle_doc_focus(window, cx))),
+                // Room around the button for its focus ring, which a tight
+                // clip would cut; the margin takes the room back.
+                div().flex_shrink(1.).min_w_0().overflow_hidden().p(px(RING)).m(px(-RING)).child(
+                    ui::button(p, "doc-focus-back", ui::Kind::Ghost, back).icon(Icon::ArrowLeft).key(esc).strong().focus(&keys.back).on_click(cx.listener(|this, _, window, cx| this.toggle_doc_focus(window, cx))),
                 ),
             ),
         )
         .child(div().flex_1().min_w_0());
-        let first = tools(first, cx).when(compact, |bar| bar.child(more_button(cx))).when(!compact, |bar| bar.child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close_doc"), None).focus(&keys.tools[5]).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx)))));
+        let first = tools(first, cx).when(compact, |bar| bar.child(more_button(cx))).when(!compact, |bar| bar.child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close_doc"), None).focus(&keys.tools[5]).on_click(cx.listener(|this, _, window, cx| this.close_doc_from(window, cx)))));
         v_flex().flex_none().border_b_1().border_color(p.hair).child(first).child(where_(edge_left))
     } else {
         // Beside the conversation: the name and the two ways out on top; under
@@ -203,8 +226,8 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             .flex_none()
             .items_start()
             .child(where_(edge_left).pt_2())
-            .child(h_flex().flex_none().h(px(super::header::HEIGHT)).pr_3().gap_1().items_center().child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).focus(&keys.tools[4]).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx)))).child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close_doc"), None).focus(&keys.tools[5]).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx)))));
-        let enter = ui::button(p, "doc-focus", ui::Kind::Ghost, t!("doc.focus")).icon(Icon::Expand).key("⇧⌘F").focus(&keys.entry).on_click(cx.listener(|this, _, window, cx| this.toggle_doc_focus(window, cx)));
+            .child(h_flex().flex_none().h(px(super::header::HEIGHT)).pr_3().gap_1().items_center().child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).focus(&keys.tools[4]).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx)))).child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close_doc"), None).focus(&keys.tools[5]).on_click(cx.listener(|this, _, window, cx| this.close_doc_from(window, cx)))));
+        let enter = ui::button(p, "doc-focus", ui::Kind::Secondary, t!("doc.focus")).icon(Icon::Expand).key("⇧⌘F").focus(&keys.entry).on_click(cx.listener(|this, _, window, cx| this.toggle_doc_focus(window, cx)));
         let row = h_flex().flex_none().px_2().pb_2().gap_1().items_center().child(enter).child(div().flex_1().min_w_0());
         let row = tools(row, cx).when(compact, |bar| bar.child(more_button(cx)));
         v_flex().flex_none().border_b_1().border_color(p.hair).child(top).child(row)
@@ -213,7 +236,9 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     let tickets = (!named.is_empty()).then(|| {
         h_flex()
             .flex_none()
-            .px_3()
+            // In focus view it starts where the header's words do (past the file icon and its gap).
+            .pl(px(if focused { edge_left + 15. + 8. } else { 12. }))
+            .pr_3()
             .py_1p5()
             .gap_1()
             .flex_wrap()
@@ -250,7 +275,9 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             let markdown = doc.markdown().unwrap_or_default();
             let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live: false };
             v_flex()
-                .px_5()
+                // In focus view the gutter keeps its size however large the text.
+                .when(focused, |b| b.px(px(GUTTER / zoom)))
+                .when(!focused, |b| b.px_5())
                 .pt_4()
                 .pb_8()
                 .min_w_0()
@@ -285,7 +312,27 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             .child(bar)
             .children(menu)
             .children(tickets)
-            .child(div().id("doc-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&doc.scroll).child(if focused { div().w_full().max_w(px(680.)).mx_auto().child(body).into_any_element() } else { body }))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(
+                        div()
+                            .id("doc-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&doc.scroll)
+                            // The text is the last stop: there the arrows, Page keys, Space, Home and End scroll it.
+                            .track_focus(&keys.body)
+                            .role(Role::Document)
+                            .aria_label(format!("{}, {}", t!("doc.body"), doc.name()))
+                            .child(if focused { div().w_full().max_w(px(680.)).mx_auto().child(body).into_any_element() } else { body }),
+                    )
+                    // Its ring, over the text rather than under it, when the keys moved there.
+                    .children(body_ring.then(|| div().absolute().inset_0().border_2().border_color(p.accent))),
+            )
             .children((!focused).then(|| edge(shell, cx)))
             .into_any_element(),
     )

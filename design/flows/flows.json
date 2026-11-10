@@ -1112,13 +1112,13 @@
               "id": "default",
               "label": "Default panel · focus entry",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md`"
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md`"
             },
             {
               "id": "default-large",
               "label": "Default panel · 150% · Korean",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600`; EQUIPE_LANG=ko"
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600`; EQUIPE_LANG=ko"
             },
             {
               "id": "default-board",
@@ -1136,13 +1136,13 @@
               "id": "focus",
               "label": "Focus view · conversation origin",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f`"
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f`"
             },
             {
               "id": "focus-ko",
               "label": "Focus view · Korean",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f`; EQUIPE_LANG=ko"
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f`; EQUIPE_LANG=ko"
             },
             {
               "id": "focus-board",
@@ -1154,13 +1154,13 @@
               "id": "focus-large",
               "label": "Focus view · long English · 150%",
               "kind": "long",
-              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600;press:cmd-shift-f`"
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600;press:cmd-shift-f`"
             },
             {
               "id": "focus-menu",
               "label": "Focus view · More open",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:400;dmore`"
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:400;dmore`"
             },
             {
               "id": "focus-menu-board",
@@ -1178,13 +1178,43 @@
               "id": "focus-restored",
               "label": "Restored origin · entry focus",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:400;press:escape`"
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:400;press:escape`"
             },
             {
               "id": "focus-restored-board",
               "label": "Restored board · selected ticket focus",
               "kind": "default",
               "note": "shot by design/flows/shoot-desktop.py: script `docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;press:escape`"
+            },
+            {
+              "id": "focus-ring",
+              "label": "Focus view · way back focused by keyboard (ring)",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:300;press:tab;press:shift-tab`"
+            },
+            {
+              "id": "focus-ring-ko",
+              "label": "Focus view · Korean 150% · way back focused",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600;press:cmd-shift-f;wait:300;press:tab;press:shift-tab`; EQUIPE_LANG=ko"
+            },
+            {
+              "id": "focus-keys-scrolled",
+              "label": "Focus view · text focused and scrolled by keyboard",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:300;press:shift-tab;press:pagedown;press:down`"
+            },
+            {
+              "id": "focus-enter-back",
+              "label": "Way back pressed with Return: the panel beside the conversation",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:300;press:enter`"
+            },
+            {
+              "id": "focus-closed-by-keys",
+              "label": "Close document by keyboard: back to the conversation's box",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:300;press:tab;press:tab;press:tab;press:tab;press:enter`"
             },
             {
               "id": "focus-restored-board-scrolled",

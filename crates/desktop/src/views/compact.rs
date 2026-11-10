@@ -120,11 +120,11 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .flex_none()
             .gap_1()
             .items_center()
-            .child(ui::button(p, "compact-retry", ui::Kind::Secondary, t!("compact.retry")).focus(&shell.chat.compact_focus.0).on_click(cx.listener(move |shell, _, _, cx| {
+            .child(ui::button(p, "compact-retry", ui::Kind::Secondary, t!("compact.retry")).surface(p.raised).focus(&shell.chat.compact_focus.0).on_click(cx.listener(move |shell, _, _, cx| {
                 shell.send_command(Command::Refresh { session, summary: true });
                 shell.close_compact(session, cx);
             })))
-            .child(ui::icon_button(p, "compact-close", Icon::X, t!("compact.close"), None).focus(&shell.chat.compact_focus.1).on_click(cx.listener(move |shell, _, _, cx| shell.close_compact(session, cx))))
+            .child(ui::icon_button(p, "compact-close", Icon::X, t!("compact.close"), None).surface(p.raised).focus(&shell.chat.compact_focus.1).on_click(cx.listener(move |shell, _, _, cx| shell.close_compact(session, cx))))
     });
     let card = h_flex()
         .id("compaction")

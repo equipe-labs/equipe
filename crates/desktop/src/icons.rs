@@ -127,7 +127,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 68] = [
+    pub const ALL: [Icon; 69] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,

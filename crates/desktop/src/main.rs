@@ -683,6 +683,22 @@ impl Shell {
                 }
                 return;
             }
+            // The document's text, focused by the keyboard: the arrows, Page
+            // keys, Space, Home and End scroll it. Its buttons keep Enter and
+            // Space, which press them (on the key's release), from every
+            // shortcut below.
+            let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function);
+            if plain && this.update(cx, |shell, _| shell.doc_keys.body.is_focused(window)).unwrap_or(false) {
+                if this.update(cx, |shell, cx| shell.scroll_doc(key, modifiers.shift, cx)).unwrap_or(false) {
+                    cx.stop_propagation();
+                }
+                if matches!(key, "up" | "down" | "pageup" | "pagedown" | "space" | "home" | "end") {
+                    return;
+                }
+            }
+            if plain && !modifiers.shift && matches!(key, "enter" | "space") && this.update(cx, |shell, _| shell.doc_keys.button_focused(window)).unwrap_or(false) {
+                return;
+            }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
             if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
@@ -1665,6 +1681,32 @@ impl Shell {
         cx.notify();
     }
 
+    /// The document closed by its own button or menu: the keyboard, if it
+    /// was in the document, goes back to where the document came up — the
+    /// conversation's box, or the briefs-and-plans search.
+    pub fn close_doc_from(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let had_keys = self.doc_keys.any_focused(window);
+        self.close_doc(cx);
+        if had_keys {
+            match self.screen {
+                Screen::Chat => self.composer.focus(window, cx),
+                Screen::Docs => window.focus(&self.docs_search.read(cx).focus_handle(cx), cx),
+                _ => window.blur(cx),
+            }
+        }
+    }
+
+    /// A key on the document's focused text: scrolled, or not a key of its.
+    pub fn scroll_doc(&mut self, key: &str, shift: bool, cx: &mut Context<Self>) -> bool {
+        let Some(doc) = self.doc.as_ref() else { return false };
+        let seen = f32::from(doc.scroll.bounds().size.height);
+        let (down, most) = (-f32::from(doc.scroll.offset().y), f32::from(doc.scroll.max_offset().y));
+        let Some(to) = doc::scrolled(key, shift, down, most, seen) else { return false };
+        doc.scroll.set_offset(point(doc.scroll.offset().x, px(-to)));
+        cx.notify();
+        true
+    }
+
     /// Whether the document is read across the whole window now.
     pub fn doc_focused(&self) -> bool {
         matches!(self.screen, Screen::Chat | Screen::Project | Screen::Docs) && self.doc.as_ref().is_some_and(|d| d.focus.is_some() && !d.folded)
@@ -1713,9 +1755,8 @@ impl Shell {
                 if let Some(doc) = self.doc.as_mut() {
                     doc.more = false;
                 }
-                if self.doc_focused() {
-                    self.doc_keys.more.focus(window, cx);
-                }
+                // Back to the button that opened it, beside the conversation as in focus view.
+                self.doc_keys.more.focus(window, cx);
                 cx.notify();
                 true
             }

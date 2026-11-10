@@ -105,6 +105,37 @@ pub fn escape(doc: Option<&Doc>) -> Escape {
     }
 }
 
+/// Where a key scrolls the document's text to, focused by the keyboard:
+/// ↑↓ a line, PageUp/PageDown and Space (⇧Space back) a screen less a line,
+/// Home/End the ends. `down` is how far it is scrolled now, `most` the
+/// furthest it goes, `seen` how tall the text's view is. None: not a key of
+/// its, or nowhere to go.
+pub fn scrolled(key: &str, shift: bool, down: f32, most: f32, seen: f32) -> Option<f32> {
+    const LINE: f32 = 40.;
+    let page = (seen - LINE).max(LINE);
+    let to = match (key, shift) {
+        ("down", false) => down + LINE,
+        ("up", false) => down - LINE,
+        ("pagedown", false) | ("space", false) => down + page,
+        ("pageup", false) | ("space", true) => down - page,
+        ("home", false) => 0.,
+        ("end", false) => most,
+        _ => return None,
+    };
+    let to = to.clamp(0., most.max(0.));
+    (to != down).then_some(to)
+}
+
+/// A long title shortened to `most` characters, with an ellipsis, so the
+/// words around it ("Back to … conversation", Esc) always show.
+pub fn shortened(title: &str, most: usize) -> String {
+    if title.chars().count() <= most {
+        return title.to_string();
+    }
+    let kept: String = title.chars().take(most.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
+
 /// The window is narrow, or its text large: the document's tools fold into
 /// "more". Widths are the window's, in points.
 pub fn compact(window: f32, zoom_pct: u16) -> bool {
@@ -308,6 +339,30 @@ mod tests {
         assert_eq!(kept_width(None, 506., 260.), 246.);
         assert!((kept_width(None, 1200., 260.) - 504.).abs() < 0.01);
         assert_eq!(kept_width(None, 300., 260.), NARROWEST);
+    }
+
+    #[test]
+    fn the_keyboard_scrolls_the_text_and_stops_at_its_ends() {
+        assert_eq!(scrolled("down", false, 0., 1000., 600.), Some(40.));
+        assert_eq!(scrolled("up", false, 0., 1000., 600.), None, "already at the top");
+        assert_eq!(scrolled("pagedown", false, 100., 1000., 600.), Some(660.));
+        assert_eq!(scrolled("space", false, 100., 1000., 600.), Some(660.));
+        assert_eq!(scrolled("space", true, 660., 1000., 600.), Some(100.));
+        assert_eq!(scrolled("pagedown", false, 900., 1000., 600.), Some(1000.), "no further than the end");
+        assert_eq!(scrolled("end", false, 0., 1000., 600.), Some(1000.));
+        assert_eq!(scrolled("home", false, 500., 1000., 600.), Some(0.));
+        assert_eq!(scrolled("down", false, 0., 0., 600.), None, "a short text doesn't move");
+        assert_eq!(scrolled("a", false, 0., 1000., 600.), None);
+    }
+
+    #[test]
+    fn a_long_title_is_shortened_and_a_short_one_kept() {
+        assert_eq!(shortened("PM", 32), "PM");
+        let long = "A very long automatically made conversation title that runs on";
+        let short = shortened(long, 32);
+        assert!(short.chars().count() <= 32);
+        assert!(short.starts_with("A very long"));
+        assert!(short.ends_with('…'));
     }
 
     #[test]

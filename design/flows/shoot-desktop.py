@@ -156,8 +156,10 @@ state("tools/browser/handover", "chat", {"FAKE_BROWSER": "handover"}, wait=3000,
 state("tools/terminal/default", "chat;term;wait:3000;tkeys:ls -la~", wait=1500)
 # Document panel and its focus view (T-618). The board-origin states open the
 # document from the briefs-and-plans page, the board's side of the app.
-LONG_DOC = "{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md"
-DOC = "{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md"
+# {DOCS} is a copy of design/flows/fixtures/docs in the run's own home, so
+# the path the panel shows is short and nobody's checkout is pictured.
+LONG_DOC = "{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md"
+DOC = "{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md"
 state("tools/document/default", "chat;doc:" + DOC, wait=1500, label="Default panel · focus entry")
 state("tools/document/default-large", "chat;doc:" + DOC + ";wait:800;zoom:150;wait:600", wait=1200, lang="ko", label="Default panel · 150% · Korean")
 state("tools/document/default-board", "docs;wait:600;docsopen:0", wait=1500, label="Default panel · board origin")
@@ -171,6 +173,11 @@ state("tools/document/focus-menu-board", "docs;wait:600;docsopen:0;wait:800;pres
 state("tools/document/focus-after-menu-board", "docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;dmore;wait:300;press:escape", wait=1000, label="Board focus · first Esc complete")
 state("tools/document/focus-restored", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f;wait:400;press:escape", wait=1000, label="Restored origin · entry focus")
 state("tools/document/focus-restored-board", "docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;press:escape", wait=1000, label="Restored board · selected ticket focus")
+state("tools/document/focus-ring", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f;wait:300;press:tab;press:shift-tab", wait=1000, label="Focus view · way back focused by keyboard (ring)")
+state("tools/document/focus-ring-ko", "chat;doc:" + DOC + ";wait:800;zoom:150;wait:600;press:cmd-shift-f;wait:300;press:tab;press:shift-tab", wait=1000, lang="ko", label="Focus view · Korean 150% · way back focused")
+state("tools/document/focus-keys-scrolled", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f;wait:300;press:shift-tab;press:pagedown;press:down", wait=1000, label="Focus view · text focused and scrolled by keyboard")
+state("tools/document/focus-enter-back", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f;wait:300;press:enter", wait=1000, label="Way back pressed with Return: the panel beside the conversation")
+state("tools/document/focus-closed-by-keys", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f;wait:300;press:tab;press:tab;press:tab;press:tab;press:enter", wait=1000, label="Close document by keyboard: back to the conversation's box")
 state("tools/document/focus-restored-board-scrolled", "docs;wait:600;docsopen:0;wait:800;scroll:6,-120;wait:400;press:cmd-shift-f;wait:400;press:escape", wait=1000, label="Restored board · scroll and focus")
 state("tools/subagent/default", "chat;subagent:frontend", {"FAKE_SUBAGENTS": "1"}, wait=2000)
 state("tools/pair-phone/default", "pair", wait=1200)
@@ -378,7 +385,9 @@ def run_state(item, bin_dir, root):
                                   stdout=subprocess.DEVNULL, stderr=open(os.path.join(tmp, "daemon.log"), "w"))
         time.sleep(1.5)
     script = ["wait:2500"]
-    script += [s.replace("{ROOT}", root) for s in steps.split(";") if s]
+    docs = os.path.join(user, "Documents", "plans")
+    shutil.copytree(os.path.join(HERE, "fixtures", "docs"), docs)
+    script += [s.replace("{ROOT}", root).replace("{DOCS}", docs) for s in steps.split(";") if s]
     script.append(f"wait:{opts.get('wait', 900)}")
     for w, h in opts.get("sizes", SIZES):
         script += [f"size:{w}x{h}", "wait:700"]

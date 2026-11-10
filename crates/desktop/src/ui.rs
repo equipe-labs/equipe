@@ -86,6 +86,8 @@ pub struct Button {
     disabled: bool,
     selected: bool,
     expanded: Option<bool>,
+    strong: bool,
+    surface: Option<Rgba>,
     focus: Option<FocusHandle>,
     width: Option<f32>,
     on_click: Option<OnClick>,
@@ -93,12 +95,12 @@ pub struct Button {
 
 /// A button with words.
 pub fn button(p: Palette, id: impl Into<ElementId>, kind: Kind, label: impl Into<SharedString>) -> Button {
-    Button { id: id.into(), p, kind, label: Some(label.into()), icon: None, key: None, tip: None, height: CONTROL, disabled: false, selected: false, expanded: None, focus: None, width: None, on_click: None }
+    Button { id: id.into(), p, kind, label: Some(label.into()), icon: None, key: None, tip: None, height: CONTROL, disabled: false, selected: false, expanded: None, strong: false, surface: None, focus: None, width: None, on_click: None }
 }
 
 /// A square button with only an icon; its name shows as a tooltip.
 pub fn icon_button(p: Palette, id: impl Into<ElementId>, glyph: Icon, name: impl Into<SharedString>, keys: Option<&'static str>) -> Button {
-    Button { id: id.into(), p, kind: Kind::Ghost, label: None, icon: Some(glyph), key: None, tip: Some((name.into(), keys)), height: CONTROL, disabled: false, selected: false, expanded: None, focus: None, width: None, on_click: None }
+    Button { id: id.into(), p, kind: Kind::Ghost, label: None, icon: Some(glyph), key: None, tip: Some((name.into(), keys)), height: CONTROL, disabled: false, selected: false, expanded: None, strong: false, surface: None, focus: None, width: None, on_click: None }
 }
 
 impl Button {
@@ -155,8 +157,23 @@ impl Button {
         self
     }
 
-    /// Reached by Tab through `focus`; Space or Return presses it, and a
-    /// ring shows only when the keys moved there.
+    /// The words in the text colour and semibold, whatever its kind: the
+    /// one action a bar leads with.
+    pub fn strong(mut self) -> Self {
+        self.strong = true;
+        self
+    }
+
+    /// The surface it sits on, when that isn't the window's background (a
+    /// card): its focus ring's gap is drawn in it.
+    pub fn surface(mut self, color: Rgba) -> Self {
+        self.surface = Some(color);
+        self
+    }
+
+    /// Reached by Tab through `focus`; Space or Return presses it (GPUI
+    /// clicks a focused element on the key's release), and a ring shows
+    /// only when the keys moved there.
     pub fn focus(mut self, focus: &FocusHandle) -> Self {
         self.focus = Some(focus.clone());
         self
@@ -178,7 +195,11 @@ impl RenderOnce for Button {
             let tint = |a: f32| Rgba { a, ..p.accent };
             look = Look { fill: Some(mix(p.raised, p.accent, 0.16)), text: p.text, key: p.text2, edge: tint(0.75), hover: mix(p.raised, p.accent, 0.24), press: mix(p.raised, p.accent, 0.3) };
         }
+        if self.strong && live {
+            look.text = p.text;
+        }
         let ring = p.accent;
+        let gap = self.surface.unwrap_or(p.bg);
         let square = self.label.is_none();
         // What a screen reader says of it: the tooltip's name and keys (see
         // `tips::Spoken`), or its words when it has them, the tooltip then
@@ -202,7 +223,7 @@ impl RenderOnce for Button {
             .when(square, |b| b.w(px(self.height)))
             .when(!square, |b| b.px_3())
             .when_some(self.width, |b, w| b.min_w(px(w)))
-            .when(self.kind == Kind::Primary || self.selected, |b| b.font_weight(FontWeight::SEMIBOLD))
+            .when(self.kind == Kind::Primary || self.selected || self.strong, |b| b.font_weight(FontWeight::SEMIBOLD))
             .when_some(look.fill, |b, fill| b.bg(fill))
             .when(faded, |b| b.opacity(0.4))
             .when(live, |b| b.cursor_pointer().active(move |s| s.bg(look.press)))
@@ -213,7 +234,7 @@ impl RenderOnce for Button {
                 // A 2px ring, 3px off the button: the surface is drawn between,
                 // so the words never sit on the accent.
                 let shadow = |color: Rgba, spread: f32| BoxShadow { color: color.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset: false };
-                b.track_focus(&focus).focus_visible(move |s| s.shadow(vec![shadow(ring, 5.), shadow(p.bg, 3.)]))
+                b.track_focus(&focus).focus_visible(move |s| s.shadow(vec![shadow(ring, 5.), shadow(gap, 3.)]))
             })
             .when_some(self.on_click.filter(|_| live), |b, f| b.on_click(move |e, w, cx| f(e, w, cx)));
         let b = match self.tip {
