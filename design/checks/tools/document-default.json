@@ -35,7 +35,7 @@
   "verdict": {
     "pass": true,
     "fixes": [],
-    "summary": "760·1200px 모두 긴 파일명이 온전히 줄바꿈되고, ‘집중 보기’와 ‘문서 닫기’가 분리되어 쉽게 찾아져요. 문서 제목부터 본문·흐름도로 이어지는 위계와 여백이 일관되고, 좁은 폭에서도 흐름도 내용이 잘리지 않아 기본 읽기 화면으로 적합해요.",
+    "summary": "At both 760 and 1200px the long file name wraps in full, and ‘Focus view’ and ‘Close document’ are separate and easy to find. The hierarchy and spacing from the document title to the body and flow diagram are consistent, and the diagram isn't clipped even at the narrow width, so it works as the default reading screen.",
     "at": 1794208478,
     "by": "codex",
     "widths": [
@@ -45,8 +45,8 @@
     "first": false,
     "questions": [
       {
-        "what": "보고서의 ‘2026년 11월’과 ‘첫 10명’이 실제 조사 시점과 인원인지 확인이 필요해요.",
-        "wording": "제품 성장 실험과 인터뷰 결과 보고서 — 결정할 것과 다음 실행 계획"
+        "what": "Confirm that the report's ‘November 2026’ and ‘first ten’ match the actual research date and number of people.",
+        "wording": "Product growth experiments and interview results — decisions and next execution plan"
       }
     ],
     "reviewer": {

@@ -544,7 +544,7 @@ pub async fn refs_command(action: RefsAction) -> Result<(), String> {
                 not_sandboxed()?;
             }
             let html = design.join(refs::DIR).join("board.html");
-            std::fs::write(&html, refs::board_html(&board, brief.as_deref(), crate::i18n::lang())).map_err(|e| format!("{}: {e}", html.display()))?;
+            std::fs::write(&html, refs::board_html(&board, brief.as_deref(), Lang::En)).map_err(|e| format!("{}: {e}", html.display()))?;
             println!("{}", t!("design.taste.wrote", path = html.display()));
             if !no_png {
                 let rows = board.len().div_ceil(3) as u32;

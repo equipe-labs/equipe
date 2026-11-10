@@ -5,7 +5,7 @@
     "site": "linear.app",
     "source": "other",
     "date": "2026-11-09",
-    "learn": "Peek에서 현재 맥락을 유지한 채 상세를 빠르게 여닫는 구조",
+    "learn": "Peek opens and closes details quickly while keeping the current context",
     "aspects": [
       "pattern"
     ],
@@ -21,7 +21,7 @@
     "site": "manual.raycast.com",
     "source": "other",
     "date": "2026-11-09",
-    "learn": "Esc를 가장 안쪽 상태부터 이전 보기로 되돌리는 일관된 규칙",
+    "learn": "A consistent rule: Esc steps back to the previous view from the innermost state outward",
     "aspects": [
       "pattern"
     ],

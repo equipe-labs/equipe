@@ -1,15 +1,12 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width">
-  <title>문서 집중 보기 프로토타입</title>
+  <title>Document focus view prototype</title>
   <link rel="stylesheet" href="common.css">
   <style>
     :root { --sidebar-width: calc(var(--eq-space-9) * 2 + var(--eq-space-6)); }
-    .en { display: none; }
-    html[lang="en"] .ko { display: none; }
-    html[lang="en"] .en { display: inline; }
     .shell { min-height: 0; height: 100vh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr) minmax(320px, 42%); overflow: hidden; }
     .sidebar, .conversation { min-width: 0; border-inline-end: var(--eq-border-1) solid var(--eq-color-line); background: var(--eq-color-bg); }
     .sidebar { padding: var(--eq-space-4); }
@@ -65,24 +62,29 @@
 </head>
 <body>
   <main class="shell">
-    <aside class="sidebar"><div class="chrome">equipe</div><div class="context"><span class="ko">PM 대화<br><br>확인 필요<br>작업 중<br>티켓<br>현황<br>로드맵</span><span class="en">PM conversation<br><br>Needs you<br>Working<br>Tickets<br>Progress<br>Roadmap</span></div></aside>
-    <section class="conversation"><div class="chrome"><span class="ko">PM 대화</span><span class="en">PM conversation</span></div><div class="context"><span class="ko">어제 하던 일 이어서 해줘<br><br>네, T-617부터 이어서 할게요.</span><span class="en">Continue from yesterday.<br><br>I'll continue with T-617.</span></div></section>
-    <section class="doc-surface" aria-label="문서">
+    <aside class="sidebar"><div class="chrome">equipe</div><div class="context">PM conversation<br><br>Needs you<br>Working<br>Tickets<br>Progress<br>Roadmap</div></aside>
+    <section class="conversation"><div class="chrome">PM conversation</div><div class="context">Continue from yesterday.<br><br>I'll continue with T-617.</div></section>
+    <section class="doc-surface" aria-label="Document">
       <header class="default-head">
-        <div class="default-top"><span aria-hidden="true">▤</span><div class="file-meta"><span class="file-name"><span class="ko">2026년 11월 제품 성장 실험과 첫 10명 인터뷰 결과 보고서 — 결정할 것과 다음 주 실행 계획.md</span><span class="en">November product growth experiments, first ten interviews, decisions, and next-week execution plan.md</span></span><span class="file-path">outputs/T-617/</span></div></div>
-        <nav class="default-actions" aria-label="문서 작업"><button class="back-btn focus-entry" data-primary><span aria-hidden="true">⛶</span><span class="ko">집중 보기</span><span class="en">Focus view</span> <span class="shortcut">⇧⌘F</span></button><button class="back-btn close-document"><span class="ko">문서 닫기</span><span class="en">Close document</span></button></nav>
+        <div class="default-top"><span aria-hidden="true">▤</span><div class="file-meta"><span class="file-name">November product growth experiments, first ten interviews, decisions, and next-week execution plan.md</span><span class="file-path">outputs/T-617/</span></div></div>
+        <nav class="default-actions" aria-label="Document actions"><button class="back-btn focus-entry" data-primary><span aria-hidden="true">⛶</span>Focus view <span class="shortcut">⇧⌘F</span></button><button class="back-btn close-document">Close document</button></nav>
       </header>
       <header class="focus-head">
-        <div class="focus-command"><button class="back-btn focus-exit" data-primary><span aria-hidden="true">←</span><span class="origin-label ko">T-617 대화로 돌아가기</span><span class="origin-label en">Back to T-617 conversation</span><span class="shortcut">Esc</span></button><nav class="focus-tools" aria-label="문서 작업"><span class="escape-status" role="status"><span class="ko">Esc 메뉴 닫기</span><span class="en">Esc closes menu</span></span><button class="icon-btn secondary-action reload" aria-label="다시 읽기" title="다시 읽기">↻</button><button class="icon-btn secondary-action open-file" aria-label="Finder에서 파일 열기" title="Finder에서 파일 열기">↗</button><button class="icon-btn more" aria-label="더 많은 문서 작업" aria-expanded="false" title="더 많은 문서 작업">•••</button></nav></div>
-        <div class="focus-info"><span aria-hidden="true">▤</span><div class="file-meta"><span class="file-name"><span class="ko">2026년 11월 제품 성장 실험과 첫 10명 인터뷰 결과 보고서 — 결정할 것과 다음 주 실행 계획.md</span><span class="en">November product growth experiments, first ten interviews, decisions, and next-week execution plan.md</span></span><span class="file-path">outputs/T-617/</span></div></div>
-        <div class="menu" role="menu"><button role="menuitem"><span class="ko">다시 읽기</span><span class="en">Reload</span></button><button role="menuitem"><span class="ko">Finder에서 파일 열기</span><span class="en">Open in Finder</span></button><button role="menuitem"><span class="ko">전체 경로 복사</span><span class="en">Copy full path</span></button><button role="menuitem"><span class="ko">문서 닫기</span><span class="en">Close document</span></button></div>
+        <div class="focus-command"><button class="back-btn focus-exit" data-primary><span aria-hidden="true">←</span><span class="origin-label">Back to T-617 conversation</span><span class="shortcut">Esc</span></button><nav class="focus-tools" aria-label="Document actions"><span class="escape-status" role="status">Esc closes menu</span><button class="icon-btn secondary-action reload" aria-label="Reload" title="Reload">↻</button><button class="icon-btn secondary-action open-file" aria-label="Open in Finder" title="Open in Finder">↗</button><button class="icon-btn more" aria-label="More document actions" aria-expanded="false" title="More document actions">•••</button></nav></div>
+        <div class="focus-info"><span aria-hidden="true">▤</span><div class="file-meta"><span class="file-name">November product growth experiments, first ten interviews, decisions, and next-week execution plan.md</span><span class="file-path">outputs/T-617/</span></div></div>
+        <div class="menu" role="menu"><button role="menuitem">Reload</button><button role="menuitem">Open in Finder</button><button role="menuitem">Copy full path</button><button role="menuitem">Close document</button></div>
       </header>
-      <div class="doc-scroll"><article class="paper"><h1><span class="ko">제품 성장 실험과 첫 10명 인터뷰 결과</span><span class="en">Product growth experiments and the first ten interviews</span></h1><p><span class="ko">이번 주에는 설치를 시작한 메이커를 만나, 첫 결과물을 승인하기까지 막힌 지점을 확인했습니다.</span><span class="en">This week we met makers who began installing equipe and found where the path to approving a first result broke down.</span></p><h2><span class="ko">이번 주 흐름</span><span class="en">This week's path</span></h2><div class="mermaid" role="img" aria-label="관찰, 가설, 두 갈래 검증, 다음 실험"><div class="node"><span class="ko"><span class="node-title">관찰</span><span class="node-copy">승인 전에 다음 행동을 찾으려고 대화를 다시 읽음</span></span><span class="en"><span class="node-title">Observation</span><span class="node-copy">People reread the conversation to find the next action before approval</span></span></div><span class="arrow">→</span><div class="node"><span class="ko"><span class="node-title">가설</span><span class="node-copy">다음 행동과 승인 기준이 서로 다른 위치에 있음</span></span><span class="en"><span class="node-title">Hypothesis</span><span class="node-copy">The next action and approval criteria live in separate places</span></span></div><span class="arrow">→</span><div class="node"><span class="ko"><span class="node-title">두 갈래 검증</span><span class="node-copy">A · 문서 위에 다음 행동<br>B · 대화에 승인 기준</span></span><span class="en"><span class="node-title">Two tests</span><span class="node-copy">A · Next action above the document<br>B · Approval criteria in conversation</span></span></div><span class="arrow">→</span><div class="node"><span class="ko"><span class="node-title">다음 실험</span><span class="node-copy">먼저 읽은 곳에 안내를 붙이고 복귀 후 행동을 비교함</span></span><span class="en"><span class="node-title">Next experiment</span><span class="node-copy">Place guidance where people read first and compare the action after return</span></span></div></div><h2><span class="ko">결정할 것</span><span class="en">Decision</span></h2><ul><li><span class="ko">반복된 장애물을 다음 실험의 기준으로 둡니다.</span><span class="en">Use repeated blockers as the basis for the next experiment.</span></li><li><span class="ko">설치보다 첫 승인까지 걸린 시간을 기록합니다.</span><span class="en">Track time to first approval, not installation alone.</span></li></ul></article></div>
+      <div class="doc-scroll"><article class="paper"><h1>Product growth experiments and the first ten interviews</h1><p>This week we met makers who began installing equipe and found where the path to approving a first result broke down.</p><h2>This week's path</h2><div class="mermaid" role="img" aria-label="Observation, hypothesis, two tests, next experiment"><div class="node"><span class="node-title">Observation</span><span class="node-copy">People reread the conversation to find the next action before approval</span></div><span class="arrow">→</span><div class="node"><span class="node-title">Hypothesis</span><span class="node-copy">The next action and approval criteria live in separate places</span></div><span class="arrow">→</span><div class="node"><span class="node-title">Two tests</span><span class="node-copy">A · Next action above the document<br>B · Approval criteria in conversation</span></div><span class="arrow">→</span><div class="node"><span class="node-title">Next experiment</span><span class="node-copy">Place guidance where people read first and compare the action after return</span></div></div><h2>Decision</h2><ul><li>Use repeated blockers as the basis for the next experiment.</li><li>Track time to first approval, not installation alone.</li></ul></article></div>
     </section>
   </main>
+  <script src="locales/ko.js"></script>
   <script>
     const name = location.pathname.split('/').pop();
-    const language = name.includes('-en') ? 'en' : 'ko';
+    // English by default; a `-ko` page shows the Korean sample words from
+    // locales/ko.js (keyed by the English text) to check CJK wrapping.
+    const language = name.includes('-ko') ? 'ko' : 'en';
+    const words = (window.prototypeWords || {})[language] || {};
+    const say = english => words[english] || english;
     const boardOrigin = name.includes('-board');
     document.documentElement.lang = language;
     document.documentElement.dataset.scale = name.includes('-large') ? 'large' : 'default';
@@ -95,23 +97,35 @@
     const focusExit = document.querySelector('.focus-exit');
     const reload = document.querySelector('.reload');
     const openFile = document.querySelector('.open-file');
-    documentSurface.setAttribute('aria-label', language === 'en' ? 'Document' : '문서');
-    more.setAttribute('aria-label', language === 'en' ? 'More document actions' : '더 많은 문서 작업');
-    reload.setAttribute('aria-label', language === 'en' ? 'Reload' : '다시 읽기');
-    openFile.setAttribute('aria-label', language === 'en' ? 'Open in Finder' : 'Finder에서 파일 열기');
-    openFile.setAttribute('title', language === 'en' ? 'Open in Finder' : 'Finder에서 파일 열기');
-    more.setAttribute('title', language === 'en' ? 'More document actions' : '더 많은 문서 작업');
+    documentSurface.setAttribute('aria-label', say('Document'));
+    more.setAttribute('aria-label', say('More document actions'));
+    reload.setAttribute('aria-label', say('Reload'));
+    openFile.setAttribute('aria-label', say('Open in Finder'));
+    openFile.setAttribute('title', say('Open in Finder'));
+    more.setAttribute('title', say('More document actions'));
     if (boardOrigin) {
-      focusExit.querySelector('.ko').textContent = '작업 중 보드로 돌아가기';
-      focusExit.querySelector('.en').textContent = 'Back to Working board';
+      focusExit.querySelector('.origin-label').textContent = 'Back to Working board';
     }
-    focusExit.setAttribute('aria-label', language === 'en' ? (boardOrigin ? 'Return to Working board, selected ticket T-617, Escape' : 'Return to T-617 conversation, Escape') : (boardOrigin ? '작업 중 보드로 돌아가기, 선택 티켓 T-617, Escape' : 'T-617 대화로 돌아가기, Escape'));
+    focusExit.setAttribute('aria-label', say(boardOrigin ? 'Return to Working board, selected ticket T-617, Escape' : 'Return to T-617 conversation, Escape'));
     let opener = document.querySelector('.focus-entry');
     if (boardOrigin && document.documentElement.dataset.focus === 'false') {
       const conversation = document.querySelector('.conversation');
-      conversation.querySelector('.chrome').textContent = language === 'en' ? 'Board · Working' : '보드 · 작업 중';
-      conversation.querySelector('.context').innerHTML = `<div class="board-restore"><button class="board-ticket">T-616<br>${language === 'en' ? 'Release prep' : '배포 준비'}</button><button class="board-ticket selected-ticket">T-617<br>${language === 'en' ? 'Document focus view' : '문서 집중 보기 UX'}</button><button class="board-ticket">T-618<br>${language === 'en' ? 'Implementation' : '구현'}</button><button class="board-ticket">T-619<br>${language === 'en' ? 'Regression QA' : '회귀 QA'}</button></div>`;
+      conversation.querySelector('.chrome').textContent = say('Board · Working');
+      conversation.querySelector('.context').innerHTML = `<div class="board-restore"><button class="board-ticket">T-616<br>${say('Release prep')}</button><button class="board-ticket selected-ticket">T-617<br>${say('Document focus view')}</button><button class="board-ticket">T-618<br>${say('Implementation')}</button><button class="board-ticket">T-619<br>${say('Regression QA')}</button></div>`;
       opener = conversation.querySelector('.selected-ticket');
+    }
+    if (language !== 'en') {
+      document.title = say(document.title);
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.nodeValue.trim();
+        if (words[text]) node.nodeValue = node.nodeValue.replace(text, words[text]);
+      }
+      for (const el of document.querySelectorAll('[aria-label], [title]')) {
+        for (const attribute of ['aria-label', 'title']) {
+          if (el.hasAttribute(attribute)) el.setAttribute(attribute, say(el.getAttribute(attribute)));
+        }
+      }
     }
     const setMenu = on => { menu.classList.toggle('open', on); document.documentElement.dataset.menu = String(on); more.setAttribute('aria-expanded', String(on)); };
     const setFocus = on => { document.documentElement.dataset.focus = String(on); setMenu(false); requestAnimationFrame(() => (on ? focusExit : opener).focus()); };
