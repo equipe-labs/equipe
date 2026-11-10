@@ -3707,5 +3707,20 @@
   "recover.toast_requeue": "T-{id} relancé pour {role}",
   "recover.toast_reassign": "T-{id} passe à {who}",
   "sidebar.runs": "{n} tickets",
-  "sidebar.run_failed": "Échec"
+  "sidebar.run_failed": "Échec",
+  "sidebar.needs_you_what": "vous attend",
+  "sidebar.waited": "En attente depuis {span}",
+  "sidebar.waited_stale": "En attente depuis {span} · ancien : toujours utile ?",
+  "sidebar.team_engine": "Tout le monde tourne sur {engine}",
+  "sidebar.team_turns_open": "Ouvrir ce qui vous attend ({n})",
+  "sidebar.resting": "Au repos",
+  "sidebar.rest": "Mettre au repos",
+  "sidebar.rest_hint": "Aucun nouveau travail jusqu’à son réveil",
+  "sidebar.rest_hint_busy": "Aucun nouveau travail ; le travail en cours est terminé",
+  "sidebar.rest_stop": "Mettre au repos et arrêter le travail en cours",
+  "sidebar.wake": "Réveiller",
+  "sidebar.wake_hint": "Reprend du nouveau travail",
+  "sidebar.open_ticket": "Ouvrir",
+  "board.flag_stale": "Ancien",
+  "board.flag_stale_tip": "En attente depuis {span} : toujours utile, ou peut-on le fermer ?"
 }

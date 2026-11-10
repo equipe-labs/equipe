@@ -3619,5 +3619,20 @@
   "recover.toast_requeue": "T-{id}을(를) {role}에게 다시 맡겼어요",
   "recover.toast_reassign": "T-{id}을(를) {who}에게 넘겨요",
   "sidebar.runs": "티켓 {n}개",
-  "sidebar.run_failed": "실패"
+  "sidebar.run_failed": "실패",
+  "sidebar.needs_you_what": "내 차례",
+  "sidebar.waited": "{span}째 기다리는 중",
+  "sidebar.waited_stale": "{span}째 기다리는 중 · 오래됨: 아직 필요한가요?",
+  "sidebar.team_engine": "모두 {engine}에서 일해요",
+  "sidebar.team_turns_open": "나를 기다리는 일 열기 ({n})",
+  "sidebar.resting": "휴식",
+  "sidebar.rest": "휴식시키기",
+  "sidebar.rest_hint": "다시 깨울 때까지 새 일을 받지 않아요",
+  "sidebar.rest_hint_busy": "새 일은 받지 않고, 지금 하던 일은 마쳐요",
+  "sidebar.rest_stop": "휴식시키고 하던 일도 멈추기",
+  "sidebar.wake": "휴식 끝내기",
+  "sidebar.wake_hint": "다시 새 일을 받아요",
+  "sidebar.open_ticket": "열기",
+  "board.flag_stale": "오래됨",
+  "board.flag_stale_tip": "{span}째 기다리는 중: 아직 필요한가요, 닫아도 되나요?"
 }

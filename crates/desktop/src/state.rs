@@ -366,6 +366,8 @@ pub struct Model {
     pub catalogs: HashMap<Engine, Vec<equipe_core::protocol::ModelChoice>>,
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub idle_wake_hours: u32,
+    /// The members the person rested, by name: they take no new work.
+    pub resting: Vec<String>,
     /// How many subagents each member runs at once, where its engine has
     /// them, as the person set it; `None`: each engine's own.
     pub subagents_at_once: Option<u32>,
@@ -570,6 +572,7 @@ impl Model {
             role_models: Vec::new(),
             catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
+            resting: Vec::new(),
             subagents_at_once: None,
             parallel: Default::default(),
             model_choice: Default::default(),
@@ -721,10 +724,17 @@ impl Model {
     }
 
     /// The team as the sidebar lists it: the PM first, then whoever needs
-    /// the person, who works, who rests, who left.
+    /// the person, who works, who is idle, who left — and last, those the
+    /// person rested.
     pub fn team(&self) -> Vec<SessionId> {
         let pm = self.pm();
-        pm.into_iter().chain(self.ordered().into_iter().filter(|m| !self.moved_on(m)).map(|m| m.session).filter(|s| Some(*s) != pm)).collect()
+        let (resting, at_hand): (Vec<&Member>, Vec<&Member>) = self.ordered().into_iter().filter(|m| !self.moved_on(m) && Some(m.session) != pm).partition(|m| self.is_resting(m));
+        pm.into_iter().chain(at_hand.into_iter().chain(resting).map(|m| m.session)).collect()
+    }
+
+    /// Whether the person rested `member`: it takes no new work.
+    pub fn is_resting(&self, member: &Member) -> bool {
+        self.resting.contains(&member.name)
     }
 
     /// A closed session whose member carries on in an open one under the same
@@ -1182,6 +1192,7 @@ impl Model {
         self.role_models = snapshot.role_models.clone();
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
+        self.resting = snapshot.resting.clone();
         self.subagents_at_once = snapshot.subagents_at_once;
         self.parallel = snapshot.parallel;
         self.model_choice = snapshot.model_choice;
@@ -1348,6 +1359,10 @@ impl Model {
             }
             Event::IdleWakeChanged { squad, hours } if *squad == self.squad => {
                 self.idle_wake_hours = *hours;
+                self.revision += 1;
+            }
+            Event::RestingChanged { squad, resting } if *squad == self.squad => {
+                self.resting = resting.clone();
                 self.revision += 1;
             }
             Event::SubagentsAtOnceChanged { squad, at_once } if *squad == self.squad => {

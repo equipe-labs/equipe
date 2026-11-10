@@ -3618,5 +3618,20 @@
   "recover.toast_requeue": "T-{id} 已重新排队给 {role}",
   "recover.toast_reassign": "T-{id} 改派给 {who}",
   "sidebar.runs": "{n} 个工单",
-  "sidebar.run_failed": "失败"
+  "sidebar.run_failed": "失败",
+  "sidebar.needs_you_what": "等你处理",
+  "sidebar.waited": "已等待 {span}",
+  "sidebar.waited_stale": "已等待 {span} · 搁置已久：还需要吗？",
+  "sidebar.team_engine": "所有人都在 {engine} 上运行",
+  "sidebar.team_turns_open": "打开等你处理的事 ({n})",
+  "sidebar.resting": "休息中",
+  "sidebar.rest": "让其休息",
+  "sidebar.rest_hint": "在你唤醒之前不接新工作",
+  "sidebar.rest_hint_busy": "不接新工作，手头的工作会做完",
+  "sidebar.rest_stop": "休息并停止当前工作",
+  "sidebar.wake": "唤醒",
+  "sidebar.wake_hint": "重新接新工作",
+  "sidebar.open_ticket": "打开",
+  "board.flag_stale": "搁置",
+  "board.flag_stale_tip": "已等待 {span}：还需要吗，还是可以关闭？"
 }

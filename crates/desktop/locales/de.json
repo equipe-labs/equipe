@@ -3707,5 +3707,20 @@
   "recover.toast_requeue": "T-{id} für {role} neu eingereiht",
   "recover.toast_reassign": "T-{id} geht an {who}",
   "sidebar.runs": "{n} Tickets",
-  "sidebar.run_failed": "Fehlgeschlagen"
+  "sidebar.run_failed": "Fehlgeschlagen",
+  "sidebar.needs_you_what": "wartet auf dich",
+  "sidebar.waited": "Wartet seit {span}",
+  "sidebar.waited_stale": "Wartet seit {span} · veraltet: noch nötig?",
+  "sidebar.team_engine": "Alle laufen auf {engine}",
+  "sidebar.team_turns_open": "Öffnen, was auf dich wartet ({n})",
+  "sidebar.resting": "Pausiert",
+  "sidebar.rest": "Pausieren",
+  "sidebar.rest_hint": "Keine neue Arbeit, bis du sie zurückholst",
+  "sidebar.rest_hint_busy": "Keine neue Arbeit; Laufendes wird fertig",
+  "sidebar.rest_stop": "Pausieren und laufende Arbeit stoppen",
+  "sidebar.wake": "Zurückholen",
+  "sidebar.wake_hint": "Nimmt wieder neue Arbeit an",
+  "sidebar.open_ticket": "Öffnen",
+  "board.flag_stale": "Veraltet",
+  "board.flag_stale_tip": "Wartet seit {span}: noch nötig, oder kann es geschlossen werden?"
 }

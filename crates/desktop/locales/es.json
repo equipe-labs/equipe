@@ -3707,5 +3707,20 @@
   "recover.toast_requeue": "T-{id} en cola para {role}",
   "recover.toast_reassign": "T-{id} pasa a {who}",
   "sidebar.runs": "{n} tickets",
-  "sidebar.run_failed": "Falló"
+  "sidebar.run_failed": "Falló",
+  "sidebar.needs_you_what": "te espera",
+  "sidebar.waited": "Esperando desde hace {span}",
+  "sidebar.waited_stale": "Esperando desde hace {span} · antiguo: ¿sigue haciendo falta?",
+  "sidebar.team_engine": "Todos funcionan con {engine}",
+  "sidebar.team_turns_open": "Abrir lo que te espera ({n})",
+  "sidebar.resting": "En descanso",
+  "sidebar.rest": "Poner en descanso",
+  "sidebar.rest_hint": "Sin trabajo nuevo hasta que lo despiertes",
+  "sidebar.rest_hint_busy": "Sin trabajo nuevo; termina lo que tiene entre manos",
+  "sidebar.rest_stop": "Poner en descanso y detener el trabajo actual",
+  "sidebar.wake": "Despertar",
+  "sidebar.wake_hint": "Acepta trabajo nuevo otra vez",
+  "sidebar.open_ticket": "Abrir",
+  "board.flag_stale": "Antiguo",
+  "board.flag_stale_tip": "Esperando desde hace {span}: ¿sigue haciendo falta o se puede cerrar?"
 }

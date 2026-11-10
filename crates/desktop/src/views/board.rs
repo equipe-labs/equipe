@@ -130,6 +130,8 @@ pub struct BoardUi {
     pub reopening: Option<equipe_core::protocol::SessionId>,
     /// A project's menu, open where its ⋯ or a right-click was.
     pub project_menu: Option<(String, Point<Pixels>)>,
+    /// A member's menu (rest it, wake it), open where the right-click was.
+    pub member_menu: Option<(equipe_core::protocol::SessionId, Point<Pixels>)>,
     /// A project just taken off the squad, to put back while it is said.
     pub removed_project: Option<super::sidebar::Removed>,
     /// The team block's subagent rows as last drawn, the same way.
@@ -222,6 +224,7 @@ impl BoardUi {
             progress_today: false,
             orchestra: Default::default(),
             project_menu: None,
+            member_menu: None,
             removed_project: None,
             sub_motion: Default::default(),
             popup: None,
@@ -1950,6 +1953,10 @@ pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<(String, Rgba, Option<String>
     if let Some(quiet) = model.quiet_for(t) {
         flags.push((format!("{} {}", t!("board.flag_quiet"), short_span(quiet)), p.amber, None));
     }
+    // Waiting on the person for days: worth asking whether it is still needed.
+    if let Some(note) = board::wait_note(model, t).filter(|n| n.stale) {
+        flags.push((t!("board.flag_stale").to_owned(), p.amber, Some(t!("board.flag_stale_tip", span = short_span(note.waited.unwrap_or_default())))));
+    }
     if model.failed(t) {
         flags.push((t!("board.flag_error").to_owned(), p.red, None));
     }
@@ -1972,7 +1979,8 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
             0 => (a, p.text2),
             n => (format!("{a} · {}", t!("sidebar.subagents", n = n)), p.text2),
         }),
-        TicketStatus::Waiting => board::first_need(t).map(|n| (n, p.accent)),
+        // Whose it is and what it asks: Needs you's list says who waits on the person for what.
+        TicketStatus::Waiting => board::wait_note(model, t).and_then(|n| n.line()).map(|n| (n, p.accent)),
         TicketStatus::Proposed if t.why_now().is_some() => Some((t!("board.idea_back").to_owned(), p.accent)),
         TicketStatus::Proposed => Some((t!("board.proposed_by", who = t.created_by), p.muted)),
         TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind)), p.muted)),

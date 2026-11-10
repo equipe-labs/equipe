@@ -3618,5 +3618,20 @@
   "recover.toast_requeue": "T-{id} を {role} に再投入",
   "recover.toast_reassign": "T-{id} を {who} に担当変更",
   "sidebar.runs": "チケット{n}件",
-  "sidebar.run_failed": "失敗"
+  "sidebar.run_failed": "失敗",
+  "sidebar.needs_you_what": "あなたの番",
+  "sidebar.waited": "{span}待機中",
+  "sidebar.waited_stale": "{span}待機中 · 放置: まだ必要ですか？",
+  "sidebar.team_engine": "全員が {engine} で動いています",
+  "sidebar.team_turns_open": "あなたを待っているものを開く ({n})",
+  "sidebar.resting": "休憩中",
+  "sidebar.rest": "休ませる",
+  "sidebar.rest_hint": "起こすまで新しい仕事を受けません",
+  "sidebar.rest_hint_busy": "新しい仕事は受けず、今の作業は終わらせます",
+  "sidebar.rest_stop": "休ませて今の作業も止める",
+  "sidebar.wake": "休憩を終える",
+  "sidebar.wake_hint": "また新しい仕事を受けます",
+  "sidebar.open_ticket": "開く",
+  "board.flag_stale": "放置",
+  "board.flag_stale_tip": "{span}待機中: まだ必要ですか、それとも閉じてよいですか？"
 }
