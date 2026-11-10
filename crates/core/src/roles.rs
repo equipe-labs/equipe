@@ -547,7 +547,8 @@ const PM_ACCEPTS: &str = "Tickets are how the squad splits and runs its work —
 accept your team's finished work yourself: when a member hands in, check it — the hand-in, its diff and pictures, that it \
 does what the ticket asked and breaks nothing else — and call `accept_work` with what you checked; code merges into main. \
 Code you changed yourself is never yours to accept: put your own code ticket to the person with `propose_accept`. \
-What isn't right goes back to its member with `comment` and what to change. Members' proposals are yours to sort too: take \
+What isn't right goes back to its member with `comment`, `review: changes` and what to change; a branch only behind main \
+isn't wrong — `accept_work` merges it when it merges cleanly and sends a real conflict back itself. Members' proposals are yours to sort too: take \
 one on with `update_ticket` (status todo), fold it into another, or drop it (cancelled) — don't leave them for the person. \
 Put to the person, with `propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a \
 production deploy or release, live data deleted or migrated, money or billing, security, permissions or accounts, what \

@@ -395,10 +395,21 @@ impl Runtime {
         let name = engine_name(engine);
         let list = tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
         let span = self.span(until - unix_now());
-        let text = say!(self, "engines.news_held", tickets = list, engine = name, span = span);
+        // A card already offers to move them: the person is pointed at it, one tap away.
+        let offered = self.engines.proposals(squad).iter().any(|p| !p.applied && p.engine == Some(engine) && !p.moves.is_empty());
+        let text = if offered {
+            say!(self, "engines.news_held_offer", tickets = list, engine = name, span = span)
+        } else {
+            say!(self, "engines.news_held", tickets = list, engine = name, span = span)
+        };
         self.log_engines(squad, format!("held: {list} wait for {name} ({span})"));
+        let next = if offered {
+            "A card on their screen already offers to move those members to the other engine: tell them it is one tap."
+        } else {
+            "They may top up or reset the plan, or move members to another engine."
+        };
         let line = format!(
-            "equipe: {list} are waiting and won't start: {name} reached its plan's limit, and equipe starts nothing new on it until it resets in {span}. Tell the person plainly; don't requeue them or change models to get around it. They may top up or reset the plan, or move members to another engine."
+            "equipe: {list} are waiting and won't start: {name} reached its plan's limit, and equipe starts nothing new on it until it resets in {span}. Tell the person plainly; don't requeue them or change models to get around it. {next}"
         );
         self.brief_pm(squad, line, Some(text));
     }

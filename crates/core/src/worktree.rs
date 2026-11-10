@@ -403,6 +403,27 @@ impl MergedCache {
     }
 }
 
+/// The files where merging `branch` into the main branch would conflict —
+/// none when it merges cleanly, however far behind main it is: equipe merges
+/// with a merge commit ([`merge_into_main`]), never asks for a rebase. Worked
+/// out apart from any checkout; nothing moves.
+pub fn merge_conflicts(repo: &Path, branch: &str) -> Result<Vec<String>> {
+    off_the_loop("merge_conflicts");
+    let main = main_branch(repo)?;
+    let mut command = git_command(repo);
+    command.args(["merge-tree", "--write-tree", "--name-only", "--no-messages", &format!("refs/heads/{main}"), branch]);
+    let out = output_within(command, GIT_TIMEOUT)?;
+    match out.status.code() {
+        Some(0) => Ok(Vec::new()),
+        Some(1) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let files: Vec<String> = stdout.lines().skip(1).take_while(|l| !l.is_empty()).map(str::to_owned).collect();
+            if files.is_empty() { Err(format!("git merge-tree found a conflict between {branch} and {main} but named no file")) } else { Ok(files) }
+        }
+        _ => Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
+    }
+}
+
 /// Merge `branch` into the main branch with a merge commit, never touching a
 /// conflict: the merge is worked out apart from any checkout, and only a clean
 /// one moves the branch. A checkout that has main checked out follows along

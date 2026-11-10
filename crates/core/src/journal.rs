@@ -1460,6 +1460,16 @@ impl Journal {
         self.set_meta("kept_rescued", "1")
     }
 
+    /// Whether the PM's change requests left as plain comments on work in
+    /// review were sent back to their members once already.
+    pub fn change_requests_recovered(&self) -> bool {
+        self.meta("change_requests_recovered").is_some()
+    }
+
+    pub fn set_change_requests_recovered(&self) -> Result<()> {
+        self.set_meta("change_requests_recovered", "1")
+    }
+
     fn entries(&self, id: SessionId, limit: Option<u64>) -> Result<Vec<Entry>> {
         Ok(self.timed_entries(id, limit)?.0)
     }
