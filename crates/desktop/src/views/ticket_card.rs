@@ -52,7 +52,7 @@ const MARGIN: f32 = 8.;
 /// Slack around a link the pointer may wander in without leaving it.
 const SLACK: f32 = 2.;
 /// The size a card is taken to be before it was ever drawn.
-const GUESS: (f32, f32) = (WIDTH, 230.);
+const GUESS: (f32, f32) = (WIDTH, 300.);
 /// The excerpt: this many lines, then it fades out.
 const EXCERPT_LINES: f32 = 8.;
 /// How tall the fade over a cut edge of the card's text is.
@@ -776,7 +776,7 @@ impl Render for TicketCard {
             None if found => GUESS,
             None => (200., 36.),
         };
-        let ((x, y, side), room) = fit(target.anchor, natural, window_size, target.prefer);
+        let ((x, y, side), room) = fit_for(target.anchor, natural, window_size, target.prefer, found);
         // Cut to the room it was given, it stays "cut" next time: the side is picked by what it would be uncut.
         self.capped = self.drawn.get().is_some_and(|r| r.h >= room - 0.5);
         let drawn = self.drawn.clone();
@@ -818,6 +818,16 @@ fn fit(anchor: Rect, natural: (f32, f32), window: (f32, f32), prefer: Side) -> (
     let (_, _, side) = place(anchor, natural, window, prefer);
     let room = room_on(anchor, window.1, side);
     (place(anchor, (natural.0, natural.1.min(room)), window, prefer), room)
+}
+
+/// [`fit`] for the card of a ticket, or (`found` false) for the small one standing in for it: it takes the
+/// side the ticket's card would, so the answer grows in the place the look was, and never lands on the next line.
+fn fit_for(anchor: Rect, natural: (f32, f32), window: (f32, f32), prefer: Side, found: bool) -> ((f32, f32, Side), f32) {
+    if found {
+        return fit(anchor, natural, window, prefer);
+    }
+    let (_, _, side) = place(anchor, GUESS, window, prefer);
+    fit(anchor, natural, window, side)
 }
 
 /// The room between the window's margin and the link, on `side` of it.
@@ -1202,7 +1212,7 @@ mod tests {
 
     use equipe_core::protocol::{TicketId, TicketStatus};
 
-    use super::{Act, CLOSE_AFTER, Hover, OPEN_AFTER, Phase, RESULT_FOR, Rect, SCROLL_QUIET, Side, Target, act_for_key, acts, done_words, fit, place, tallest};
+    use super::{Act, CLOSE_AFTER, Hover, OPEN_AFTER, Phase, RESULT_FOR, Rect, SCROLL_QUIET, Side, Target, act_for_key, acts, done_words, fit, fit_for, place, tallest};
     use crate::board::MergeWay;
 
     const WIN: (f32, f32) = (1200., 800.);
@@ -1246,6 +1256,19 @@ mod tests {
         // A card cut shorter than the room below, taken as if natural, sinks under the link: the regression.
         let ((_, _, sunk), _) = fit(anchor, (380., 170.), win, Side::Below);
         assert_eq!(sunk, Side::Below);
+    }
+
+    #[test]
+    fn looking_and_not_found_take_the_side_the_ticket_card_will_take() {
+        // 760×600: 300 above the link, 270 below; the ticket card (about 300) goes above.
+        let (anchor, win) = (link(100., 300.), (760., 600.));
+        let ticket = fit_for(anchor, (380., 400.), win, Side::Below, true).0;
+        let looking = fit_for(anchor, (200., 36.), win, Side::Below, false).0;
+        assert_eq!((ticket.2, looking.2), (Side::Above, Side::Above));
+        // Its foot a gap over the link, as the ticket's card's is: the answer grows upward from the same edge.
+        assert!((looking.1 + 36. - (300. - 6.)).abs() < 0.01, "{looking:?}");
+        // Where the ticket's card fits below (a link high up), the small one goes below too.
+        assert_eq!(fit_for(link(100., 40.), (200., 36.), win, Side::Below, false).0.2, Side::Below);
     }
 
     #[test]
