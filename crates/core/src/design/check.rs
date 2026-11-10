@@ -1,8 +1,8 @@
 //! `equipe design check`: what a designer runs before handing a design
 //! system in — whether equipe's screen reads every token, whether the system
 //! has its layers (values, roles, components), dark values, text that passes
-//! WCAG AA on what it sits on, a Korean-capable type family, a brand file, a
-//! logo — and whether it wears the stock look of AI-made screens. Findings,
+//! WCAG AA on what it sits on, a type family that has the script the
+//! product is written in, a brand file, a logo — and whether it wears the stock look of AI-made screens. Findings,
 //! not taste: each says what is wrong and what to do.
 
 use std::path::Path;
@@ -37,10 +37,84 @@ impl Finding {
     }
 }
 
-/// Families that set Korean well — a Korean-first face, or one with Hangul.
-const KOREAN: [&str; 16] = [
-    "pretendard", "noto sans kr", "noto sans cjk", "noto serif kr", "apple sd gothic", "suit", "spoqa han sans", "nanum", "ibm plex sans kr", "wanted sans", "gmarket", "s-core dream", "nanumsquare", "kopubworld", "gothic a1", "malgun",
+/// A script that Latin-only type doesn't set, the languages written in it
+/// (by their English names, as [`crate::language::detect`] gives them), the
+/// families that set it well — a face made for it, or a pan-CJK or pan-script
+/// one that has it — and a few to name.
+struct Script {
+    name: &'static str,
+    languages: &'static [&'static str],
+    families: &'static [&'static str],
+    examples: &'static str,
+    right_to_left: bool,
+}
+
+const SCRIPTS: [Script; 7] = [
+    Script {
+        name: "Korean",
+        languages: &["Korean"],
+        families: &[
+            "pretendard", "noto sans kr", "noto serif kr", "noto sans cjk", "noto serif cjk", "source han", "apple sd gothic", "suit", "spoqa han sans", "nanum", "ibm plex sans kr", "wanted sans", "gmarket", "s-core dream", "kopubworld", "gothic a1", "malgun",
+        ],
+        examples: "Pretendard, Noto Sans KR, Apple SD Gothic Neo",
+        right_to_left: false,
+    },
+    Script {
+        name: "Japanese",
+        languages: &["Japanese"],
+        families: &[
+            "noto sans jp", "noto serif jp", "noto sans cjk", "noto serif cjk", "source han", "hiragino", "yu gothic", "yu mincho", "meiryo", "m plus", "zen kaku", "zen maru", "biz ud", "ibm plex sans jp", "line seed jp", "kosugi", "sawarabi",
+        ],
+        examples: "Noto Sans JP, Hiragino Sans, BIZ UDPGothic",
+        right_to_left: false,
+    },
+    Script {
+        name: "Chinese",
+        languages: &["Chinese", "Mandarin"],
+        families: &[
+            "noto sans sc", "noto sans tc", "noto sans hk", "noto serif sc", "noto serif tc", "noto sans cjk", "noto serif cjk", "source han", "pingfang", "hiragino sans gb", "microsoft yahei", "microsoft jhenghei", "heiti", "songti", "lxgw", "harmonyos sans", "misans",
+        ],
+        examples: "Noto Sans SC or TC, PingFang SC or TC, Source Han Sans",
+        right_to_left: false,
+    },
+    Script {
+        name: "Arabic",
+        languages: &["Arabic", "Persian", "Urdu"],
+        families: &["noto sans arabic", "noto naskh", "noto kufi", "noto nastaliq", "ibm plex sans arabic", "cairo", "tajawal", "almarai", "amiri", "readex pro", "vazirmatn", "geeza", "sf arabic", "dubai"],
+        examples: "Noto Sans Arabic, IBM Plex Sans Arabic, Vazirmatn",
+        right_to_left: true,
+    },
+    Script {
+        name: "Hebrew",
+        languages: &["Hebrew", "Yiddish"],
+        families: &["noto sans hebrew", "noto serif hebrew", "ibm plex sans hebrew", "heebo", "assistant", "rubik", "frank ruhl", "david libre", "secular one", "arimo"],
+        examples: "Noto Sans Hebrew, Heebo, Rubik",
+        right_to_left: true,
+    },
+    Script {
+        name: "Thai",
+        languages: &["Thai"],
+        families: &["noto sans thai", "noto serif thai", "ibm plex sans thai", "sarabun", "prompt", "kanit", "anuphan", "thonburi"],
+        examples: "Noto Sans Thai, IBM Plex Sans Thai, Sarabun",
+        right_to_left: false,
+    },
+    Script {
+        name: "Devanagari",
+        languages: &["Hindi", "Marathi", "Nepali", "Sanskrit"],
+        families: &["noto sans devanagari", "noto serif devanagari", "ibm plex sans devanagari", "mukta", "hind", "poppins", "tiro devanagari", "kohinoor devanagari", "yatra"],
+        examples: "Noto Sans Devanagari, Mukta, Hind",
+        right_to_left: false,
+    },
 ];
+
+/// The script the product's own words are written in, when type needs one
+/// Latin letters don't give: read from the language its brand file and
+/// guidelines are written in (their sample lines are the product's words).
+fn script_of(dir: &Path) -> Option<&'static Script> {
+    let text: String = ["brand.md", super::folder::GUIDELINES].iter().map(|f| std::fs::read_to_string(dir.join(f)).unwrap_or_default()).collect::<Vec<_>>().join("\n");
+    let language = crate::language::detect(&text)?;
+    SCRIPTS.iter().find(|s| s.languages.contains(&language))
+}
 
 /// Roles a semantic layer names its colours by.
 const ROLES: [&str; 16] = ["text", "fg", "foreground", "bg", "background", "surface", "border", "action", "accent", "primary", "success", "warning", "danger", "error", "info", "muted"];
@@ -79,7 +153,7 @@ pub fn check(dir: &Path) -> Vec<Finding> {
     if let Some(dark) = &dark {
         contrast_of(tokens, Some(dark), true, &mut out);
     }
-    typefaces(tokens, &mut out);
+    typefaces(tokens, script_of(dir), &mut out);
     look(tokens, &locked(dir), &mut out);
     files(dir, &mut out);
     out.sort_by_key(|f| f.level);
@@ -140,7 +214,8 @@ fn contrast_of(tokens: &[Token], mode: Option<&str>, dark: bool, out: &mut Vec<F
             continue;
         }
         let is_line = words.iter().any(|w| ["border", "icon", "outline", "focus", "ring"].contains(w));
-        if contrast::is_surface(t) || !(is_text || is_line) || words.iter().any(|w| ["disabled", "placeholder", "subtle", "faint"].contains(w)) {
+        // A translucent tint (`color.raw.alpha.ink-5`) is laid over a surface, never text on its own.
+        if contrast::is_surface(t) || !(is_text || is_line) || words.iter().any(|w| ["disabled", "placeholder", "subtle", "faint", "alpha"].contains(w)) {
             continue;
         }
         let Some(ratio) = contrast::measure(tokens, t, mode, dark) else { continue };
@@ -160,8 +235,9 @@ fn contrast_of(tokens: &[Token], mode: Option<&str>, dark: bool, out: &mut Vec<F
     }
 }
 
-/// A family that sets Korean, and body text at a line height Korean reads at.
-fn typefaces(tokens: &[Token], out: &mut Vec<Finding>) {
+/// A family that sets the product's script, when it needs one, and body text
+/// at a line height that reads.
+fn typefaces(tokens: &[Token], script: Option<&Script>, out: &mut Vec<Finding>) {
     let mut families: Vec<String> = Vec::new();
     // The body style's line height over its size.
     let mut body_line: Option<f64> = None;
@@ -180,17 +256,26 @@ fn typefaces(tokens: &[Token], out: &mut Vec<Finding>) {
             _ => {}
         }
     }
-    if families.is_empty() {
-        out.push(Finding::new(Level::Warn, "type", "No type family: name the families (a Korean-capable one first for Korean text)."));
-    } else if !families.iter().any(|f| KOREAN.iter().any(|k| f.to_ascii_lowercase().contains(k))) {
-        out.push(Finding::new(Level::Warn, "type", format!("None of {} sets Korean well: put a Korean-first family (Pretendard, SUIT, Noto Sans KR, …) first for Korean text.", dedup(&families).join(", "))));
-    } else {
-        out.push(Finding::new(Level::Ok, "type", "A Korean-capable family is there."));
+    let direction = |s: &Script| if s.right_to_left { format!(" {} reads right to left: lay out with start and end, not left and right, and mirror what points the way.", s.name) } else { String::new() };
+    match script {
+        _ if families.is_empty() => {
+            let need = script.map(|s| format!(" (one that sets {} first: {}, …)", s.name, s.examples)).unwrap_or_default();
+            out.push(Finding::new(Level::Warn, "type", format!("No type family: name the families{need}.")));
+        }
+        Some(s) if !families.iter().any(|f| s.families.iter().any(|k| f.to_ascii_lowercase().contains(k))) => {
+            out.push(Finding::new(
+                Level::Warn,
+                "type",
+                format!("The product is written in {}, and none of {} is made for it: put one that is ({}, …) first.{}", s.name, dedup(&families).join(", "), s.examples, direction(s)),
+            ));
+        }
+        Some(s) => out.push(Finding::new(Level::Ok, "type", format!("A family that sets {} is there.{}", s.name, direction(s)))),
+        None => out.push(Finding::new(Level::Ok, "type", format!("Type families named: {}.", dedup(&families).join(", ")))),
     }
     if let Some(multiple) = body_line
         && !(1.4..=1.8).contains(&multiple)
     {
-        out.push(Finding::new(Level::Warn, "type", format!("Body line height {multiple:.2}× reads tight or loose for Korean: 1.5–1.7 of the size.")));
+        out.push(Finding::new(Level::Warn, "type", format!("Body line height {multiple:.2}× reads tight or loose: 1.4–1.7 of the size (CJK, Thai and Devanagari want the upper end).")));
     }
 }
 
@@ -204,7 +289,8 @@ fn dedup(list: &[String]) -> Vec<String> {
     seen
 }
 
-/// What `brand.md` lists under `## Locked` (or `## 고정`): the brand's
+/// What `brand.md` lists under `## Locked` (or its word in another language,
+/// from the locale files): the brand's
 /// own values, lower-cased — hex colours and face names — which are the
 /// brand, not a cliché.
 pub fn locked(dir: &Path) -> Vec<String> {
@@ -215,7 +301,7 @@ pub fn locked(dir: &Path) -> Vec<String> {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') {
             let lower = trimmed.to_lowercase();
-            on = lower.contains("locked") || lower.contains("고정");
+            on = crate::i18n::every("match.locked_heading").iter().any(|w| lower.contains(w));
             continue;
         }
         if on {
@@ -264,12 +350,12 @@ fn is_indigo(c: Color) -> bool {
 fn files(dir: &Path, out: &mut Vec<Finding>) {
     let brand = std::fs::read_to_string(dir.join("brand.md")).unwrap_or_default();
     if brand.trim().is_empty() {
-        out.push(Finding::new(Level::Warn, "brand", "No brand.md: who it is for, the brand in three to five words (this, not that), and its voice — with Korean lines for buttons, errors and empty states."));
+        out.push(Finding::new(Level::Warn, "brand", "No brand.md: who it is for, the brand in three to five words (this, not that), and its voice — with sample lines for buttons, errors and empty states."));
     } else {
         let lower = brand.to_lowercase();
         let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
-        if !has(&["voice", "tone", "말투", "보이스", "톤"]) {
-            out.push(Finding::new(Level::Warn, "brand", "brand.md says nothing about voice: how it speaks (해요체 or 합니다체, words it uses and avoids) with sample lines."));
+        if !has(crate::i18n::every("match.voice_words")) {
+            out.push(Finding::new(Level::Warn, "brand", "brand.md says nothing about voice: how it speaks (one register everywhere, words it uses and avoids) with sample lines."));
         } else {
             out.push(Finding::new(Level::Ok, "brand", "brand.md has the brand and its voice."));
         }
@@ -363,6 +449,56 @@ mod tests {
         assert!(levels(&f, "type").contains(&Level::Ok), "Pretendard sets Korean");
         assert!(levels(&f, "brand").iter().all(|l| *l == Level::Ok), "{f:#?}");
         assert!(levels(&f, "assets").is_empty(), "{f:#?}");
+    }
+
+    #[test]
+    fn type_is_asked_for_the_script_the_product_is_written_in() {
+        let with = |family: &str| format!(r##"{{ "font": {{ "body": {{ "$type": "fontFamily", "$value": ["{family}", "sans-serif"] }} }} }}"##);
+        let type_of = |family: &str, brand: &str| {
+            let f = check(&dir(&with(family), &[("brand.md", brand)]));
+            f.into_iter().filter(|x| x.area == "type").collect::<Vec<_>>()
+        };
+        // Written in Latin letters: any family will do, none is asked for.
+        for brand in ["# Brand\n## Voice\nPlain and warm: \"Save changes\", \"Something went wrong — try again.\"", "# Marque\n## Voix\nSimple et chaleureuse : « Enregistrer », « Une erreur est survenue, réessayez. »", ""] {
+            let f = type_of("Inter", brand);
+            assert!(f.iter().all(|x| x.level == Level::Ok) && !f.iter().any(|x| x.message.contains("Korean")), "{brand}: {f:#?}");
+        }
+        for (brand, wrong, right, name) in [
+            ("# Brand\n## Voice\n「保存する」「もう一度お試しください」", "Inter", "Noto Sans JP", "Japanese"),
+            ("# 品牌\n## 语气\n「保存」「出错了，请重试」", "Inter", "PingFang SC", "Chinese"),
+            ("# 브랜드\n## Voice\n「저장하기」「다시 시도해 주세요」", "Inter", "Pretendard", "Korean"),
+            ("# Brand\n## Voice\n«حفظ التغييرات» «حدث خطأ، حاول مرة أخرى»", "Inter", "IBM Plex Sans Arabic", "Arabic"),
+            ("# Brand\n## Voice\n„שמירת שינויים” „משהו השתבש, נסו שוב”", "Inter", "Heebo", "Hebrew"),
+        ] {
+            let f = type_of(wrong, brand);
+            assert!(f.iter().any(|x| x.level == Level::Warn && x.message.contains(name)), "{name}: {f:#?}");
+            let f = type_of(right, brand);
+            assert!(f.iter().all(|x| x.level == Level::Ok) && f.iter().any(|x| x.message.contains(name)), "{name}: {f:#?}");
+        }
+        let arabic = type_of("Cairo", "# Brand\n## Voice\n«حفظ التغييرات» «حدث خطأ، حاول مرة أخرى»");
+        assert!(arabic.iter().any(|x| x.message.contains("right to left")), "{arabic:#?}");
+    }
+
+    #[test]
+    fn a_components_text_is_measured_on_its_own_fill_and_tints_are_not_text() {
+        let tokens = r##"{
+          "color": { "$type": "color",
+            "bg": { "$value": "#F6F5F1", "$extensions": { "mode": { "dark": "#0A0A0C" } } },
+            "action": { "$value": "#15161A", "$extensions": { "mode": { "dark": "#EFEDE7" } } },
+            "on-action": { "$value": "#FFFFFF", "$extensions": { "mode": { "dark": "#0A0A0C" } } },
+            "raw": { "alpha": { "ink-5": { "$value": "#15161A0D" } } }
+          },
+          "button": {
+            "primary-bg": { "$type": "color", "$value": "{color.action}" },
+            "primary-fg": { "$type": "color", "$value": "{color.on-action}" },
+            "ghost-bg": { "$type": "color", "$value": "#F6F5F1" },
+            "ghost-fg": { "$type": "color", "$value": "#C8C8C8" }
+          }
+        }"##;
+        let f = check(&dir(tokens, &[]));
+        let light = f.iter().find(|x| x.area == "contrast" && x.message.contains("light")).unwrap();
+        assert!(!light.message.contains("primary-fg") && !light.message.contains("ink-5"), "{}", light.message);
+        assert!(light.message.contains("button.ghost-fg 1."), "still measured, on its own fill: {}", light.message);
     }
 
     #[test]

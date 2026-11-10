@@ -1,4 +1,4 @@
-//! 로드맵 (`roadmap.rs`): the squad's work as one picture — a lane per
+//! Roadmap (`roadmap.rs`): the squad's work as one picture — a lane per
 //! project, the HQ first; across it what finished lately, what is under way,
 //! what comes next and what waits; an arrow from each ticket to the ones
 //! waiting on it, orange while it holds them up. A card opens its ticket.
@@ -67,7 +67,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let layout = roadmap::layout(model, now_secs());
     let (tops, height) = lane_tops(&layout);
     let width = column_x(Stage::Later) + COL_W + PAD;
-    let header = h_flex()
+    // Nothing to press in it: the whole bar is the title bar's.
+    let header = crate::ui::title_bar(h_flex())
         .h(px(super::header::HEIGHT))
         .flex_none()
         .pr_4()
@@ -76,7 +77,6 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .items_center()
         .border_b_1()
         .border_color(p.hair)
-        .window_control_area(WindowControlArea::Drag)
         .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("roadmap.title")))
         .child(div().flex_1().min_w_0().truncate().text_size(px(SMALL)).text_color(p.muted).child(t!("roadmap.subtitle")))
         .child(legend(shell));
@@ -108,7 +108,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         let name = lane.name.clone().unwrap_or_else(|| t!("board.squad_folder").into());
         let ident = match (lane.at, lane.hq) {
             (Some(_), true) => super::sidebar::icon(IconName::Building2, 12., p.text2).into_any_element(),
-            (Some(at), false) => super::board::dot(super::header::project_color(p, at), 7.).into_any_element(),
+            (Some(_), false) => crate::theme::project_mark(p, 12.),
             (None, _) => super::sidebar::icon(IconName::Folder, 12., p.muted).into_any_element(),
         };
         div()

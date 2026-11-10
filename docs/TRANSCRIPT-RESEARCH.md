@@ -31,8 +31,8 @@ actions (desktop, `views/chat.rs`). What the others do, what we took.
 
 - Consecutive tool calls are **one group**: a quiet line with the group's
   meaning — the one call it holds, a delegated task's description, or a
-  summary ("명령 3개 실행 · 파일 2개 읽음") — then a chevron. While a call
-  runs the line names it in the present tense with a spinner ("실행 중 cargo
+  summary ("Ran 3 commands · Read 2 files") — then a chevron. While a call
+  runs the line names it in the present tense with a spinner ("Running cargo
   test"); done, it settles into the summary on the same single line.
 - Opened, the group is a hairline card with **one row per call**: a muted verb
   phrase, the object (truncated to one line), its time, and a chevron when
@@ -45,10 +45,10 @@ actions (desktop, `views/chat.rs`). What the others do, what we took.
 - **Ticket references** in a row open the ticket beside the conversation
   (the board's peek panel, with back, expand and close).
 - **News** (handed in, accepted, proposed…) are one-line event rows with an
-  icon per kind; more than three in a row fold to "소식 4개". Lines stored in
+  icon per kind; more than three in a row fold to "4 updates". Lines stored in
   another language are recognised against every language's template and
   re-worded in the one in use.
-- **Thinking** is "생각함 · 8초 ›", opening in place.
+- **Thinking** is "Thought · 8s ›", opening in place.
 - Expand and collapse ease height and opacity, the chevron turns
   (`motion::openness`, `motion::Reveal`); groups stay as they were left while
   the app runs.

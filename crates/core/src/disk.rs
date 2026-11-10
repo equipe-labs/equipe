@@ -48,7 +48,7 @@ const STALE_AFTER: Duration = Duration::from_secs(3 * 24 * 60 * 60);
 pub const LOG_PAST: u64 = 20 * MB;
 const LOG_KEEP: u64 = MB;
 /// The Mac's caches are listed from this size.
-const CACHE_FROM: u64 = 500 * MB;
+const CACHE_FROM: u64 = if cfg!(test) { MB } else { 500 * MB };
 /// How long a look may take, all told.
 pub const SCAN_BUDGET: Duration = Duration::from_secs(20);
 
@@ -133,6 +133,7 @@ pub fn watched(home: &Path, projects: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// What `statvfs` says of the volume `path` is on: (its id, free, total).
+#[cfg(unix)]
 fn volume(path: &Path) -> Option<(u64, u64, u64)> {
     use std::os::unix::ffi::OsStrExt as _;
     // A folder not made yet: the volume it will be on.
@@ -148,6 +149,15 @@ fn volume(path: &Path) -> Option<(u64, u64, u64)> {
     #[allow(clippy::unnecessary_cast)]
     let (free, total) = (stat.f_bavail as u64 * stat.f_frsize as u64, stat.f_blocks as u64 * stat.f_frsize as u64);
     Some((dev, free, total))
+}
+
+#[cfg(windows)]
+fn volume(path: &Path) -> Option<(u64, u64, u64)> {
+    use std::hash::{Hash as _, Hasher as _};
+    let path = path.ancestors().find(|p| p.exists())?;
+    let mut drive = std::collections::hash_map::DefaultHasher::new();
+    path.components().next()?.as_os_str().hash(&mut drive);
+    Some((drive.finish(), fs2::available_space(path).ok()?, fs2::total_space(path).ok()?))
 }
 
 /// The free space of the tightest volume among `paths` (its level left
@@ -261,13 +271,15 @@ impl Budget {
 }
 
 /// The bytes under `path` on disk, links not followed; `false` when the
-/// budget ran out before the end.
+/// budget ran out before the end. Blocks a copy-on-write clone shares with
+/// its source (a worktree's seeded `node_modules`, see
+/// [`crate::worktree::SHARED_DEPENDENCIES`]) count in both: neither APFS nor
+/// a reflink filesystem tells cheaply which blocks are shared.
 fn measure(path: &Path, budget: &mut Budget) -> (u64, bool) {
-    use std::os::unix::fs::MetadataExt as _;
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return (0, true);
     };
-    let mut total = meta.blocks() * 512;
+    let mut total = allocated_bytes(&meta);
     if !meta.is_dir() {
         return (total, true);
     }
@@ -281,7 +293,7 @@ fn measure(path: &Path, budget: &mut Budget) -> (u64, bool) {
                 return (total, false);
             }
             let Ok(meta) = entry.metadata() else { continue };
-            total += meta.blocks() * 512;
+            total += allocated_bytes(&meta);
             if meta.is_dir() {
                 stack.push(entry.path());
             }
@@ -289,6 +301,11 @@ fn measure(path: &Path, budget: &mut Budget) -> (u64, bool) {
     }
     (total, budget.left() || stack.is_empty())
 }
+
+#[cfg(unix)]
+fn allocated_bytes(meta: &std::fs::Metadata) -> u64 { use std::os::unix::fs::MetadataExt as _; meta.blocks() * 512 }
+#[cfg(windows)]
+fn allocated_bytes(meta: &std::fs::Metadata) -> u64 { meta.len() }
 
 /// `path` with its folders' links resolved, `path` itself as it is: what a
 /// removal would act on.
@@ -594,8 +611,52 @@ impl Scan<'_> {
                 continue;
             }
             let (bytes, whole) = measure(&path, &mut self.budget);
-            if bytes >= MB {
-                self.push(DiskGroup::Equipe, kind, format!("{folder}/"), &path, bytes, whole, false, DiskWhy::Needed);
+            // What sent messages attached is told apart: kept, and the person's to remove.
+            let kept = if kind == DiskKind::Uploads { crate::kept::usage(&home, std::time::SystemTime::now()) } else { crate::kept::Usage::default() };
+            let rest = bytes.saturating_sub(kept.bytes);
+            if rest >= MB {
+                self.push(DiskGroup::Equipe, kind, format!("{folder}/"), &path, rest, whole, false, DiskWhy::Needed);
+            }
+            let recent = (kept.files - kept.old_files, kept.bytes - kept.old_bytes);
+            if recent.0 > 0 {
+                let at = self.push(DiskGroup::Equipe, DiskKind::Attachments, format!("{folder}/ ({})", recent.0), &path, recent.1, true, false, DiskWhy::Sent);
+                self.items[at].id = format!("{}:sent", id(DiskKind::Attachments, &path));
+            }
+            if kept.old_files > 0 {
+                let at = self.push(DiskGroup::Equipe, DiskKind::Attachments, format!("{folder}/ ({})", kept.old_files), &path, kept.old_bytes, true, true, DiskWhy::SentLongAgo);
+                self.items[at].id = format!("{}:old", id(DiskKind::Attachments, &path));
+            }
+        }
+        self.recordings();
+    }
+
+    /// Each ticket's phone recordings, in its squad's folder: given back once
+    /// the ticket is done with.
+    fn recordings(&mut self) {
+        let home = self.known.home.clone();
+        let squads: Vec<String> = std::fs::read_dir(home.join("squads")).into_iter().flatten().flatten().map(|d| d.file_name().to_string_lossy().into_owned()).collect();
+        for squad in squads {
+            let root = crate::squad_home::path(&home, &squad).join(crate::phone::RECORDINGS);
+            let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root).into_iter().flatten().flatten().map(|d| d.path()).collect();
+            dirs.sort();
+            for dir in dirs {
+                let is_dir = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir());
+                let Some(id) = dir.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("T-")).and_then(|n| n.parse::<TicketId>().ok()) else { continue };
+                if !is_dir || !self.budget.left() {
+                    continue;
+                }
+                let (bytes, whole) = measure(&dir, &mut self.budget);
+                let ticket = self.known.tickets.iter().find(|t| t.squad == squad && t.id == id);
+                let why = match ticket {
+                    Some(t) if !t.status.is_closed() => DiskWhy::OpenTicket,
+                    Some(t) if t.status == TicketStatus::Cancelled => DiskWhy::Cancelled,
+                    Some(_) => DiskWhy::Merged,
+                    None => DiskWhy::NoTicket,
+                };
+                let safe = why != DiskWhy::OpenTicket;
+                let at = self.push(DiskGroup::Equipe, DiskKind::Recordings, format!("{squad} · T-{id} · {}/", crate::phone::RECORDINGS), &dir, bytes, whole, safe, why);
+                self.items[at].squad = Some(squad.clone());
+                self.items[at].ticket = Some(id);
             }
         }
     }
@@ -614,7 +675,7 @@ impl Scan<'_> {
             (DiskKind::Pnpm, library.join("pnpm/store"), Some("pnpm store prune")),
             (DiskKind::Pnpm, user.join(".local/share/pnpm/store"), Some("pnpm store prune")),
             (DiskKind::Yarn, library.join("Caches/Yarn"), Some("yarn cache clean")),
-            (DiskKind::Docker, library.join("Containers/com.docker.docker/Data"), Some("docker system prune")),
+            (DiskKind::Docker, library.join("Containers/com.docker.docker/Data"), Some("docker system prune -f")),
         ];
         for (kind, path, command) in listed {
             if !path.is_dir() || !self.budget.left() {
@@ -719,6 +780,16 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
                 remove_worktree(&item.path)
             }
             DiskKind::Log if removable(&item.path, &roots) => trim_log(&item.path).is_ok(),
+            DiskKind::Recordings if removable(&item.path, &roots) => std::fs::remove_dir_all(&item.path).is_ok(),
+            // Kept attachments sent long ago: the files go, their names with them.
+            DiskKind::Attachments if item.why == DiskWhy::SentLongAgo => {
+                let (files, bytes) = crate::kept::remove_old(&known.home, std::time::SystemTime::now());
+                if files > 0 {
+                    done.freed += bytes;
+                    done.removed.push(id.clone());
+                }
+                continue;
+            }
             _ => false,
         };
         if gone {
@@ -731,6 +802,72 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
             done.freed += item.bytes + builds;
             done.removed.push(id.clone());
         }
+    }
+    done
+}
+
+/// What equipe gives back on its own, without asking: what it may remove and
+/// nobody needs again — a finished ticket's work (in main, or cancelled; its
+/// branch stays), build folders nobody built in for days, a log's old part.
+/// The rest it may remove (a working member's build folder, a worktree no
+/// ticket keeps) waits for the person's yes.
+pub fn certain(item: &DiskItem) -> bool {
+    item.safe && matches!(item.why, DiskWhy::Merged | DiskWhy::Cancelled | DiskWhy::Stale | DiskWhy::OldLog)
+}
+
+/// Give back, on equipe's own, what one look finds [`certain`].
+pub fn clean_certain(known: &Known) -> DiskCleaned {
+    off_the_loop("disk::clean_certain");
+    let fresh = Known { user_home: None, projects: Vec::new(), ..known.clone() };
+    let (items, _) = scan(&fresh, Duration::from_secs(60));
+    let ids: Vec<String> = items.iter().filter(|i| certain(i)).map(|i| i.id.clone()).collect();
+    if ids.is_empty() {
+        return DiskCleaned { auto: true, ..DiskCleaned::default() };
+    }
+    DiskCleaned { auto: true, ..clean(known, &ids) }
+}
+
+/// How long a cache's own command may take.
+const COMMAND_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// Clear what isn't equipe's — a cache of the Mac's, a project's build output —
+/// with the command a fresh look lists for `id`, as the person said yes to
+/// it: never a command a screen sends. What it gave back, measured.
+pub fn clear_other(known: &Known, id: &str) -> DiskCleaned {
+    off_the_loop("disk::clear_other");
+    let (items, _) = scan(known, Duration::from_secs(120));
+    let mut done = DiskCleaned::default();
+    let Some((item, command)) = items.iter().find(|i| i.id == id).and_then(|i| Some((i, i.command.clone()?))) else {
+        done.skipped.push((id.to_owned(), DiskWhy::Needed));
+        return done;
+    };
+    let mut budget = Budget::new(Duration::from_secs(60));
+    let (before, _) = measure(&item.path, &mut budget);
+    let mut run = std::process::Command::new("/bin/sh");
+    run.args(["-c", &command]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    if let Some(user) = &known.user_home {
+        run.current_dir(user).env("HOME", user);
+    }
+    let ran = run.spawn().is_ok_and(|mut child| {
+        let deadline = Instant::now() + COMMAND_WAIT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.success(),
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
+                _ => {
+                    let _ = child.kill();
+                    break false;
+                }
+            }
+        }
+    });
+    let mut budget = Budget::new(Duration::from_secs(60));
+    let after = if item.path.exists() { measure(&item.path, &mut budget).0 } else { 0 };
+    done.freed = before.saturating_sub(after);
+    if ran || done.freed > 0 {
+        done.removed.push(id.to_owned());
+    } else {
+        done.skipped.push((id.to_owned(), DiskWhy::NotEquipes));
     }
     done
 }
@@ -803,10 +940,13 @@ fn unbuilt<T>(path: &Path, f: impl FnOnce() -> T) -> Option<T> {
 }
 
 /// When the disk runs short: the caches no build needs between builds go,
-/// without asking — incremental caches in members' build folders, and at
-/// `deeper` (nearly full) whole build folders nobody built in for days. Only
-/// where cargo isn't building, kept out while they go. What went, for the log.
-pub fn trim_builds(home: &Path, deeper: bool) -> (u64, Vec<String>) {
+/// without asking — incremental caches in members' build folders; nearly
+/// full, whole build folders nobody built in for days; full, every member's
+/// build folder cargo isn't building in now, however recent (a build makes it
+/// again; a full disk fails every build, and the work with it). Only where
+/// cargo isn't building, kept out while they go. What went, for the log.
+pub fn trim_builds(home: &Path, level: DiskLevel) -> (u64, Vec<String>) {
+    let (deeper, whole) = (level >= DiskLevel::Critical, level >= DiskLevel::Full);
     off_the_loop("disk::trim_builds");
     let roots = roots(home);
     let mut freed = 0;
@@ -825,7 +965,7 @@ pub fn trim_builds(home: &Path, deeper: bool) -> (u64, Vec<String>) {
             if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
                 continue;
             }
-            if deeper && newest(&path).is_some_and(|at| at.elapsed().unwrap_or_default() > STALE_AFTER) {
+            if whole || (deeper && newest(&path).is_some_and(|at| at.elapsed().unwrap_or_default() > STALE_AFTER)) {
                 give(&path, &mut done);
                 continue;
             }
@@ -874,6 +1014,67 @@ pub fn clear_builds(home: &Path, worktree: &Path) -> Vec<String> {
     for build in build_dirs(worktree) {
         if removable(&build, &roots) && std::fs::remove_dir_all(&build).is_ok() {
             done.push(format!("cleared {}", build.display()));
+        }
+    }
+    done
+}
+
+/// The phone recordings of a squad's tickets that are done with, deleted:
+/// `tickets` is every ticket of the squad, with whether it is still open and
+/// its words — a recording an open ticket names (a bug filed with its clip)
+/// stays until that ticket is done too. What went, for the log.
+pub fn sweep_recordings(squad_home: &Path, tickets: &[(TicketId, bool, String)]) -> Vec<String> {
+    off_the_loop("disk::sweep_recordings");
+    let root = squad_home.join(crate::phone::RECORDINGS);
+    let mut done = Vec::new();
+    for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        let dir = entry.path();
+        let Some(id) = entry.file_name().to_str().and_then(|n| n.strip_prefix("T-")).and_then(|n| n.parse::<TicketId>().ok()) else { continue };
+        if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let open = tickets.iter().any(|(t, open, _)| *t == id && *open);
+        let named = tickets.iter().any(|(_, open, words)| *open && words.contains(&*dir.to_string_lossy()));
+        let known = tickets.iter().any(|(t, ..)| *t == id);
+        if known && !open && !named && std::fs::remove_dir_all(&dir).is_ok() {
+            done.push(format!("deleted T-{id}'s phone recordings"));
+        }
+    }
+    done
+}
+
+/// Whether an AVD named `name` is ticket `id`'s: `acme_T126_qa` (`squad`'s),
+/// or a bare `T126_…` / `t126_…` when no other squad has that number open.
+fn ticket_avd(name: &str, id: TicketId, squad: &str, shared: bool) -> bool {
+    let own = crate::phone::android::avd_name(squad);
+    let rest = match name.strip_prefix(&own).and_then(|r| r.strip_prefix('_')) {
+        Some(rest) => rest,
+        None if !shared => name,
+        None => return false,
+    };
+    [format!("T{id}"), format!("t{id}")].iter().any(|tag| rest == tag || rest.strip_prefix(tag.as_str()).is_some_and(|r| r.starts_with(['_', '-', '.'])))
+}
+
+/// The Android emulators made for ticket `id`, stopped and deleted with it.
+pub fn clear_avds(id: TicketId, squad: &str, shared: bool) -> Vec<String> {
+    use crate::phone::{android, exec::Real};
+    off_the_loop("disk::clear_avds");
+    let dir = android::avd_home();
+    let mut done = Vec::new();
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        let Some(name) = file.strip_suffix(".ini") else { continue };
+        if !ticket_avd(name, id, squad, shared) {
+            continue;
+        }
+        if let Some(adb) = android::adb_path()
+            && let Some(serial) = android::serial_of(&Real, &adb, name)
+        {
+            android::shutdown(&Real, &adb, &serial);
+        }
+        let _ = std::fs::remove_dir_all(dir.join(format!("{name}.avd")));
+        if std::fs::remove_file(entry.path()).is_ok() {
+            done.push(format!("deleted emulator {name}"));
         }
     }
     done
@@ -933,6 +1134,36 @@ mod tests {
         assert!(!ticket_simulator("T1260 iPhone", 126, None));
         assert!(!ticket_simulator("iPhone 17 Pro", 126, None));
         assert!(!ticket_simulator("Test T126", 126, None));
+        assert!(ticket_simulator("acme T126 qa iPhone 17 Pro", 126, Some("acme")), "the phone tools' own name");
+    }
+
+    #[test]
+    fn an_emulator_is_a_tickets_by_its_name() {
+        assert!(ticket_avd("acme_T126_qa", 126, "acme", true), "the squad's own, even when the number is shared");
+        assert!(ticket_avd("t126_api35", 126, "acme", false), "one made by hand, the number not shared");
+        assert!(!ticket_avd("t126_api35", 126, "acme", true));
+        assert!(!ticket_avd("acme_T1260_qa", 126, "acme", false));
+        assert!(!ticket_avd("other_T126_qa", 126, "acme", true));
+        assert!(!ticket_avd("Pixel_9", 126, "acme", false));
+    }
+
+    #[test]
+    fn recordings_go_with_their_ticket_unless_an_open_ticket_names_them() {
+        let home = std::env::temp_dir().join(format!("equipe-disk-rec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let root = home.join(crate::phone::RECORDINGS);
+        for id in [5, 6, 7, 8] {
+            std::fs::create_dir_all(root.join(format!("T-{id}"))).unwrap();
+            std::fs::write(root.join(format!("T-{id}/flow.mp4")), b"v").unwrap();
+        }
+        let clip = root.join("T-7/flow.mp4").to_string_lossy().into_owned();
+        let tickets = [(5, false, String::new()), (6, true, String::new()), (7, false, String::new()), (9, true, format!("Pay fails: see {clip}"))];
+        let gone = sweep_recordings(&home, &tickets);
+        assert_eq!(gone, vec!["deleted T-5's phone recordings".to_owned()]);
+        assert!(root.join("T-6").is_dir(), "its ticket is open");
+        assert!(root.join("T-7").is_dir(), "an open bug names its clip");
+        assert!(root.join("T-8").is_dir(), "no ticket known of that number: left alone");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     const G: u64 = GB;
@@ -1005,6 +1236,8 @@ mod tests {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn scratch(name: &str) -> PathBuf {
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        crate::scratch::sweep_once(&SWEPT, "equipe-disk-");
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("equipe-disk-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1061,8 +1294,60 @@ mod tests {
         }
     }
 
+    // Its folder goes with it: one run left 140 MB of them.
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            if let Some(root) = self.home.parent() {
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+    }
+
     fn find<'a>(items: &'a [DiskItem], kind: DiskKind, path: &Path) -> &'a DiskItem {
         items.iter().find(|i| i.kind == kind && i.path == path).unwrap_or_else(|| panic!("no {kind:?} at {}: {items:#?}", path.display()))
+    }
+
+    #[test]
+    fn only_a_finished_tickets_work_goes_on_its_own_and_the_rest_waits_for_a_yes() {
+        let tree = Tree::new();
+        let merged = tree.worktree(1, 3 * MB as usize);
+        let cancelled = tree.worktree(2, 2 * MB as usize);
+        let orphan = tree.worktree(5, 2 * MB as usize);
+        let not_merged = tree.worktree(7, 2 * MB as usize);
+        let known = Known {
+            home: tree.home.clone(),
+            tickets: vec![
+                tree.ticket(1, TicketStatus::Done, Some(true), None),
+                tree.ticket(2, TicketStatus::Cancelled, None, None),
+                tree.ticket(7, TicketStatus::Done, Some(false), None),
+            ],
+            ..Known::default()
+        };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        assert!(certain(find(&items, DiskKind::Worktree, &merged)) && certain(find(&items, DiskKind::Worktree, &cancelled)));
+        assert!(!certain(find(&items, DiskKind::Worktree, &orphan)), "no ticket keeps it: the person says");
+        assert!(!certain(find(&items, DiskKind::Worktree, &not_merged)), "not in main yet: never");
+        let cleaned = clean_certain(&known);
+        assert!(cleaned.auto && cleaned.freed >= 5 * MB, "{cleaned:?}");
+        assert!(!merged.exists() && !cancelled.exists(), "a finished ticket's work went");
+        assert!(orphan.exists() && not_merged.exists(), "the rest stays for the person's yes");
+    }
+
+    #[test]
+    fn what_isnt_equipes_is_cleared_only_with_the_command_a_look_lists() {
+        let tree = Tree::new();
+        let user = tree.home.parent().unwrap().join("user");
+        let npm = user.join(".npm/_cacache");
+        std::fs::create_dir_all(&npm).unwrap();
+        std::fs::write(npm.join("blob"), vec![0u8; (CACHE_FROM + MB) as usize]).unwrap();
+        let known = Known { home: tree.home.clone(), user_home: Some(user.clone()), ..Known::default() };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        let item = find(&items, DiskKind::Npm, &npm);
+        assert!(!item.safe && item.command.as_deref() == Some("npm cache clean --force"));
+        assert_eq!(clear_other(&known, "made-up").skipped, vec![("made-up".to_owned(), DiskWhy::Needed)], "an id no look lists runs nothing");
+        // Whatever the command does here (npm may be missing), it's the listed one.
+        let done = clear_other(&known, &item.id);
+        assert_eq!(done.removed.len() + done.skipped.len(), 1);
     }
 
     #[test]
@@ -1146,6 +1431,45 @@ mod tests {
         let none = clean(&known, &[format!("worktree:{}", tree.outside.display()), format!("build_cache:{}", tree.repo.display())]);
         assert_eq!(none.removed.len(), 0);
         assert!(tree.outside.join("blob").exists() && tree.repo.join(".gitignore").exists());
+    }
+
+    #[test]
+    fn attachments_the_person_sent_are_told_apart_and_go_only_when_they_pick_the_old_ones() {
+        use std::io::Write as _;
+        let tree = Tree::new();
+        let home = &tree.home;
+        let put = |name: &str, bytes: usize, days: u64| {
+            let (mut file, path) = crate::gateway::create_upload(home, name, Some(equipe_protocol::rpc::UploadKind::File)).unwrap();
+            file.write_all(&vec![1u8; bytes]).unwrap();
+            file.set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 24 * 3600)).unwrap();
+            path
+        };
+        let draft = put("draft.txt", 2 * MB as usize, 0);
+        let recent = put("recent.txt", 2 * MB as usize, 2);
+        let old = put("old.txt", 3 * MB as usize, 31);
+        crate::kept::keep(home, &format!("[file: {}] [file: {}]", recent.display(), old.display()));
+        let known = Known { home: home.clone(), ..Known::default() };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        let uploads = crate::gateway::uploads_dir(home);
+        let of = |why: DiskWhy| items.iter().find(|i| i.path == uploads && i.why == why).unwrap_or_else(|| panic!("no {why:?}: {items:#?}"));
+        // The room each takes on disk: its bytes, and a block or so more.
+        let about = |bytes: u64, n: u64| (n * MB..n * MB + 64 * 1024).contains(&bytes);
+        let rest = of(DiskWhy::Needed);
+        assert!(rest.kind == DiskKind::Uploads && about(rest.bytes, 2), "the draft, apart: {rest:?}");
+        let sent = of(DiskWhy::Sent);
+        assert!(sent.kind == DiskKind::Attachments && about(sent.bytes, 2) && !sent.safe, "{sent:?}");
+        let long_ago = of(DiskWhy::SentLongAgo).clone();
+        assert!(long_ago.kind == DiskKind::Attachments && about(long_ago.bytes, 3) && long_ago.safe, "{long_ago:?}");
+        assert!(!certain(&long_ago), "never given back on equipe's own");
+        assert_eq!(clean_certain(&known).freed, 0);
+        assert!(old.exists());
+        let report = DiskReport { items: items.clone(), ..DiskReport::default() };
+        assert_eq!(report.reclaimable(), 0, "not part of everything equipe may give back");
+        // The person picks them: only the old ones go, and are kept no more.
+        let done = clean(&known, &[long_ago.id.clone(), sent.id.clone()]);
+        assert_eq!((done.freed, done.removed.clone()), (long_ago.bytes, vec![long_ago.id.clone()]), "{done:?}");
+        assert!(!old.exists() && recent.exists() && draft.exists());
+        assert!(!crate::kept::names(home).contains(old.file_name().unwrap().to_str().unwrap()));
     }
 
     #[test]
@@ -1259,7 +1583,7 @@ mod tests {
         fill(&builds.join("qa").join("aarch64-apple-darwin").join("debug").join("incremental"), MB as usize);
         fill(&builds.join("mobile").join("debug").join("incremental"), MB as usize);
         let held = building_in(&builds.join("mobile").join("debug"));
-        let (freed, done) = trim_builds(&tree.home, false);
+        let (freed, done) = trim_builds(&tree.home, DiskLevel::Low);
         assert!(!builds.join("pm").join("debug").join("incremental").exists() && builds.join("pm").join("debug").join("deps").exists());
         assert!(!builds.join("qa").join("aarch64-apple-darwin").join("debug").join("incremental").exists(), "per target too");
         assert!(builds.join("mobile").join("debug").join("incremental").exists(), "cargo builds there now");
@@ -1271,10 +1595,27 @@ mod tests {
         for dir in [builds.join("pm"), builds.join("pm").join("debug")] {
             std::fs::File::open(&dir).unwrap().set_modified(old).unwrap();
         }
-        trim_builds(&tree.home, false);
+        trim_builds(&tree.home, DiskLevel::Low);
         assert!(builds.join("pm").exists(), "only when nearly full");
-        trim_builds(&tree.home, true);
+        trim_builds(&tree.home, DiskLevel::Critical);
         assert!(!builds.join("pm").exists() && builds.join("mobile").join("debug").exists());
+    }
+
+    #[test]
+    fn a_full_disk_gives_back_every_build_folder_no_build_is_using_however_recent() {
+        let tree = Tree::new();
+        let builds = tree.home.join("cache").join("build").join("acme");
+        for member in ["frontend", "backend", "mobile"] {
+            fill(&builds.join(member).join("debug").join("deps"), MB as usize);
+        }
+        let held = building_in(&builds.join("mobile").join("debug"));
+        trim_builds(&tree.home, DiskLevel::Critical);
+        assert!(builds.join("frontend").exists(), "built today: kept while there is a little room");
+        let (freed, done) = trim_builds(&tree.home, DiskLevel::Full);
+        assert!(!builds.join("frontend").exists() && !builds.join("backend").exists(), "{done:?}");
+        assert!(builds.join("mobile").join("debug").join("deps").exists(), "cargo builds there now");
+        assert!(freed >= 2 * MB);
+        drop(held);
     }
 
     #[test]

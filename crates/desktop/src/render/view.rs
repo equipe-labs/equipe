@@ -34,6 +34,9 @@ const COPIED_FOR: Duration = Duration::from_millis(1500);
 pub fn style(p: Palette, look: &Look) -> TextViewStyle {
     let to_hsla = |c: Rgba| -> Hsla { c.into() };
     let size = look.size;
+    let heading = if look.color == p.prose { p.text } else { look.color };
+    // A list's bullets and numbers a step behind the words they mark.
+    let marker = if look.color == p.prose { p.text2 } else { look.color };
     // Borderless, a quiet fill; room above the code for its header (language, copy).
     let code_block = StyleRefinement::default().bg(to_hsla(p.code_bg)).rounded(px(10.)).pt(px(30.)).text_size(px(12.5)).line_height(px(19.));
     let mut table = StyleRefinement::default().bg(to_hsla(p.code_bg)).border_color(to_hsla(p.hair)).text_color(to_hsla(p.text)).rounded(px(8.));
@@ -51,6 +54,7 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
         .with_foreground(to_hsla(look.color))
         .with_paragraph_gap(em(PARAGRAPH_GAP))
         .with_list_item_gap(em(LIST_GAP))
+        .with_list_marker(to_hsla(marker))
         .with_link_underline(link_underline)
         .with_muted_foreground(to_hsla(p.muted))
         .with_link(to_hsla(p.accent))
@@ -61,8 +65,13 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
         .with_table(table)
         .with_table_head(table_head)
         .with_table_cell(table_cell)
-        .with_inline_code(HighlightStyle { color: Some(to_hsla(p.accent)), background_color: Some(to_hsla(p.code_bg)), ..Default::default() })
-        // A conversation is not a document: headings are bold, barely larger.
+        .with_inline_code(HighlightStyle { color: Some(to_hsla(p.text2)), background_color: Some(to_hsla(p.code_bg)), ..Default::default() })
+        // Semibold, as Claude's replies: bold Korean clots, and a reply is full of it.
+        .with_strong_weight(FontWeight::SEMIBOLD)
+        // A ticket number, many to a reply, is a link without the underline.
+        .with_plain_links("ticket:")
+        // A conversation is not a document: headings are bold, barely larger,
+        // and in reading text the titles' colour, a step above the words.
         .with_heading(move |level| {
             let grow = match level {
                 1 => 2.,
@@ -70,7 +79,7 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
                 _ => 0.,
             };
             // More room above than below: it belongs to what follows.
-            StyleRefinement::default().text_size(px(size + grow)).font_weight(FontWeight::SEMIBOLD).mt(px(HEADING_ABOVE)).pb(px(HEADING_BELOW))
+            StyleRefinement::default().text_size(px(size + grow)).font_weight(FontWeight::SEMIBOLD).text_color(to_hsla(heading)).mt(px(HEADING_ABOVE)).pb(px(HEADING_BELOW))
         })
         .with_dark(is_dark(&p))
 }
@@ -177,6 +186,37 @@ pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<H
         .motion(motion)
 }
 
+/// The style of a document read on its own — a report, a slide: its headings
+/// a document's, a clear step above the words, where a conversation's are
+/// barely larger.
+pub fn document_style(p: Palette, look: &Look) -> TextViewStyle {
+    let heading = if look.color == p.prose { p.text } else { look.color };
+    let size = look.size;
+    style(p, look).with_heading(move |level| {
+        let scale = match level {
+            1 => 1.75,
+            2 => 1.4,
+            3 => 1.15,
+            _ => 1.,
+        };
+        let weight = if level == 1 { FontWeight::BOLD } else { FontWeight::SEMIBOLD };
+        StyleRefinement::default()
+            .text_size(px(size * scale))
+            .line_height(px(size * scale * 1.25))
+            .font_weight(weight)
+            .text_color(Hsla::from(heading))
+            .mt(px(size * 1.1))
+            .pb(px(size * 0.35))
+    })
+}
+
+/// A document's text view: [`nested`]'s, with [`document_style`].
+pub fn document(p: Palette, id: (&'static str, u64), markdown: &str, look: Look) -> impl IntoElement {
+    let (text, full) = prepare(markdown, false, &|_| true);
+    let view = configure(TextView::markdown(ElementId::NamedInteger(id.0.into(), id.1), text), p, look, 0, Arc::new(full));
+    div().text_size(px(look.size)).line_height(px(look.line)).text_color(look.color).child(view.style(document_style(p, &look)))
+}
+
 /// A text view of its own, inside another's custom block (a callout's body).
 pub fn nested(p: Palette, id: (&'static str, u64), markdown: &str, look: Look) -> impl IntoElement {
     let (text, full) = prepare(markdown, false, &|_| true);
@@ -196,7 +236,7 @@ pub fn follow(url: &str, modifiers: Modifiers, scope: u64, window: &mut Window, 
     let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
     match links::classify(url, &base) {
         // ⌘-click (⇧, ⌥⌘): in a window of its own, as a link opens elsewhere.
-        Link::Ticket(n) if crate::views::elsewhere::wants_window(&modifiers) => crate::views::elsewhere::open(crate::views::elsewhere::Goal::Ticket(n), cx),
+        Link::Ticket(n) if crate::views::elsewhere::wants_window(&modifiers) => crate::views::elsewhere::open_beside(crate::views::elsewhere::Goal::Ticket(n), cx),
         Link::Ticket(n) => with_shell(cx, |shell, cx| shell.open_ticket(n, cx)),
         // Where the person chose (settings), ⌘-click the other place.
         Link::Web(url) => {
@@ -222,5 +262,50 @@ pub fn follow(url: &str, modifiers: Modifiers, scope: u64, window: &mut Window, 
         }
         Link::Control(what) => with_shell(cx, |shell, cx| shell.chat_control(scope, &what, cx)),
         Link::Other(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Look, document_style, style};
+    use crate::theme::Palette;
+    use gpui_kit::base::text::TextViewStyle;
+    use gpui_kit::{Hsla, WindowAppearance, px};
+
+    #[test]
+    fn a_documents_headings_stand_well_above_its_words_where_a_replys_barely_do() {
+        let p = Palette::new(WindowAppearance::Dark);
+        let look = Look { size: 15., line: 24., color: p.prose, live: false };
+        let size = |s: TextViewStyle, level| s.heading(level).text.font_size.map(|s| f32::from(s.to_pixels(px(16.))));
+        assert_eq!(size(style(p, &look), 1), Some(17.), "a reply's: barely larger");
+        assert_eq!(size(document_style(p, &look), 1), Some(15. * 1.75));
+        assert!(size(document_style(p, &look), 2) > size(document_style(p, &look), 3));
+        // On a slide the words are big, and the headings with them.
+        let slide = Look { size: 32., line: 46., ..look };
+        assert_eq!(size(document_style(p, &slide), 1), Some(56.));
+    }
+
+    /// A link reads as a link and code as code: inline code takes the words'
+    /// secondary colour, not the link's; ticket numbers, which a reply is
+    /// full of, go without the underline; strong is semibold, not bold.
+    #[test]
+    fn links_code_and_headings_each_read_as_themselves() {
+        for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
+            let p = Palette::new(appearance);
+            let s = style(p, &Look { size: crate::theme::BODY, line: crate::theme::BODY_LINE, color: p.prose, live: false });
+            let link: Hsla = p.accent.into();
+            let text2: Hsla = p.text2.into();
+            assert_eq!(s.link(), link);
+            assert_eq!(s.inline_code().color, Some(text2));
+            assert!(s.link_underline_for("ticket:3").is_none());
+            assert!(s.link_underline_for("https://example.com").is_some());
+            assert_eq!(s.strong_weight(), gpui_kit::FontWeight::SEMIBOLD);
+            // Bullets and numbers sit a step behind the words.
+            assert_eq!(s.list_marker(), text2);
+            // A heading in a reply is the titles' colour, a step brighter
+            // than the words.
+            let title: Hsla = p.text.into();
+            assert_eq!(s.heading(2).text.color, Some(title));
+        }
     }
 }

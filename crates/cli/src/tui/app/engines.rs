@@ -75,7 +75,7 @@ pub fn mode_about(mode: Switching) -> &'static str {
     }
 }
 
-/// "35분", "2시간", "3일": how long until `at`.
+/// "35m", "2h", "3d" (in the person's language): how long until `at`.
 pub fn span(at: i64) -> String {
     let secs = (at - now()).max(60) as u64;
     match secs {
@@ -110,7 +110,7 @@ pub fn headline(p: &Proposal) -> String {
     }
 }
 
-/// One move as a row: "backend  Claude opus → Codex 기본 모델 · medium".
+/// One move as a row: "backend  Claude opus → Codex default model · medium".
 pub fn move_row(m: &Move) -> (String, String) {
     let model = |m: Option<&str>| m.map_or_else(|| t!("engines.default_model").to_owned(), str::to_owned);
     let after = match &m.effort {
@@ -153,7 +153,9 @@ impl App {
         let (id, applied) = (card.id, card.applied);
         let squad = self.squad.clone();
         let command = match code {
-            KeyCode::Char('y') if !applied => Command::ApplyEngineProposal { squad, id },
+            KeyCode::Char('y') if !applied => Command::ApplyEngineProposal { squad, id, now: false },
+            // Move now: at the end of each one's turn, a ticket in progress handed over.
+            KeyCode::Char('m') => Command::ApplyEngineProposal { squad, id, now: true },
             KeyCode::Char('u') if applied => Command::UndoEngineProposal { squad, id },
             KeyCode::Char('n') => Command::DismissEngineProposal { squad, id },
             _ => return None,
@@ -201,11 +203,12 @@ mod tests {
             used_percent: 86,
             resets_at: now() + 2 * 3600,
             moves: vec![
-                Move { member: "backend".into(), role: "backend".into(), from: Engine::Claude, to: Engine::Codex, model: None, effort: None, was_model: Some("opus".into()), done: false },
-                Move { member: "frontend".into(), role: "frontend".into(), from: Engine::Claude, to: Engine::Codex, model: None, effort: None, was_model: Some("sonnet".into()), done: true },
+                Move { member: "backend".into(), role: "backend".into(), from: Engine::Claude, to: Engine::Codex, model: None, effort: None, was_model: Some("opus".into()), done: false, now: false },
+                Move { member: "frontend".into(), role: "frontend".into(), from: Engine::Claude, to: Engine::Codex, model: None, effort: None, was_model: Some("sonnet".into()), done: true, now: false },
             ],
             applied,
             proposed_at: 0,
+            forecast: None,
         }
     }
 

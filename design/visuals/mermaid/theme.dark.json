@@ -1,0 +1,57 @@
+{
+  "base": "dark",
+  "fields": {
+    "font_family": "\"Helvetica Neue\", \"Hiragino Sans\", \"PingFang SC\", \"Apple SD Gothic Neo\", sans-serif",
+    "font_size": 14,
+    "background": "transparent",
+    "primary_color": "#16171A",
+    "primary_text_color": "#EFEDE7",
+    "text_color": "#A3A5AB",
+    "primary_border_color": "#7C7E85",
+    "line_color": "#A3A5AB",
+    "secondary_color": "#111114",
+    "tertiary_color": "#1B1C20",
+    "edge_label_background": "#16171A",
+    "cluster_background": "#111114",
+    "cluster_border": "#2F2F31",
+    "sequence_actor_fill": "#16171A",
+    "sequence_actor_border": "#7C7E85",
+    "sequence_actor_line": "#A3A5AB",
+    "sequence_note_fill": "#2F2B23",
+    "sequence_note_border": "#E2B865",
+    "sequence_activation_fill": "#111114",
+    "sequence_activation_border": "#7C7E85",
+    "pie_colors": [
+      "#8FB0FF",
+      "#7FCB8E",
+      "#E2B865",
+      "#EC9A62",
+      "#EE7B74",
+      "#7C7E85",
+      "#8FB0FF",
+      "#7FCB8E",
+      "#E2B865",
+      "#EC9A62",
+      "#EE7B74",
+      "#7C7E85"
+    ],
+    "pie_section_text_color": "#0A0A0C",
+    "pie_title_text_color": "#EFEDE7",
+    "pie_legend_text_color": "#EFEDE7",
+    "pie_stroke_color": "#16171A",
+    "pie_outer_stroke_color": "#16171A",
+    "pie_opacity": 1
+  },
+  "font_family_by_language": {
+    "Korean": "\"Helvetica Neue\", \"Apple SD Gothic Neo\", sans-serif",
+    "Japanese": "\"Helvetica Neue\", \"Hiragino Sans\", sans-serif",
+    "Chinese": "\"Helvetica Neue\", \"PingFang SC\", sans-serif"
+  },
+  "layout": {
+    "nodeSpacing": 28,
+    "rankSpacing": 56,
+    "nodePaddingX": 22,
+    "nodePaddingY": 14,
+    "maxLabelWidthChars": 30
+  }
+}

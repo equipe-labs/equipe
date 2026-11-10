@@ -23,9 +23,11 @@ const opt = (name, fallback) => {
 };
 const pagesWanted = Math.max(1, Math.min(8, parseInt(opt('--pages', '3'), 10) || 3));
 const out = resolve(opt('--out', 'design/audit'));
+// The language the site is asked for (equipe passes the person's).
+const locale = opt('--locale', 'en-US');
 let start = args[0];
 if (!start) {
-  console.error('usage: audit <url> [--pages 3] [--out design/audit]');
+  console.error('usage: audit <url> [--pages 3] [--out design/audit] [--locale en-US]');
   process.exit(2);
 }
 if (!/^https?:\/\//.test(start)) start = 'https://' + start;
@@ -153,7 +155,7 @@ function collect() {
 }
 
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
-const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, locale: 'ko-KR' });
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, locale });
 const page = await context.newPage();
 const visited = [];
 const queue = [start];
@@ -327,8 +329,8 @@ try {
   const brand = colors.filter((c) => c.chromatic);
   const neutral = colors.filter((c) => !c.chromatic);
   const typeRows = Object.entries(audit.type).map(([k, t]) => `<tr><td>${k}</td><td style="font-family:${esc(t.family)};font-size:${esc(t.size)};font-weight:${esc(t.weight)};line-height:${esc(t.lineHeight)};letter-spacing:${esc(t.letterSpacing)}">${esc(t.sample)}</td><td>${esc(familyOf(t.family))}<br>${esc(t.size)} / ${esc(t.weight)} / ${esc(t.lineHeight)}</td></tr>`).join('');
-  const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>Brand audit — ${esc(start)}</title><style>
-body{margin:0;padding:40px;font-family:Pretendard,"Apple SD Gothic Neo",system-ui,sans-serif;background:#F4F4F5;color:#18181B}
+  const html = `<!doctype html><html lang="${esc(locale)}"><head><meta charset="utf-8"><title>Brand audit — ${esc(start)}</title><style>
+body{margin:0;padding:40px;font-family:-apple-system,BlinkMacSystemFont,system-ui,"Hiragino Sans","PingFang SC","Apple SD Gothic Neo",sans-serif;background:#F4F4F5;color:#18181B}
 h1{margin:0 0 4px;font-size:26px} .sub{color:#71717A;margin:0 0 20px} h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#71717A;margin:34px 0 12px}
 .shots{display:flex;gap:12px;overflow:hidden} .shots img{width:420px;border-radius:10px;border:1px solid #E4E4E7;background:#fff}
 .grid{display:flex;flex-wrap:wrap;gap:10px} .sw{width:150px;background:#fff;border:1px solid #E4E4E7;border-radius:10px;overflow:hidden;font-size:12px;display:flex;flex-direction:column} .sw .chip{height:56px} .sw b,.sw span,.sw em{padding:0 10px} .sw b{padding-top:8px} .sw span{color:#71717A} .sw em{color:#B45309;font-style:normal;padding-bottom:8px} .sw span:last-of-type{padding-bottom:8px} .off{opacity:.6}

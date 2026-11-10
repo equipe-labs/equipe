@@ -26,7 +26,7 @@ const BACKEND: &str = "demo/backend@squad";
 /// The PM's own browser, with `FAKE_BROWSER=handover`.
 pub const PM: &str = "demo/pm";
 /// What the PM asked the person to do in it.
-pub const PM_WHY: &str = "App Store Connect(Umbriles Inc. 계정 소유자 Apple ID)에 로그인해 주세요. 끝나면 DSA '거래자' 신고는 제가 이어서 합니다.";
+pub const PM_WHY: &str = "Please sign in to App Store Connect (with the Apple ID that owns the Umbriles Inc. account). Once you have, I'll carry on with the DSA 'trader' declaration.";
 /// Ids as a host started now would give them: far from 1.
 const FIRST: u64 = 1_879_000_000_000_001;
 

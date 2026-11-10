@@ -28,7 +28,7 @@ again, members are told and the held code tickets start.
 
 A member's tool or turn that says `No space left on device` (or `ENOSPC`, `os error 28`)
 makes the level full at once and puts a plain news row in that member's conversation —
-"디스크가 가득 차서 frontend의 빌드가 실패했어요 · 정리하기" — once until there's room again;
+"The disk is full, so frontend's build failed · Clean up" — once until there's room again;
 the member is told not to retry the build.
 
 ## What takes the space
@@ -40,7 +40,12 @@ Asked for (`disk_scan`, `equipe disk`), within a 20-second budget — never the 
   `DerivedData/`, `.turbo/` up to three levels down, only what git ignores there).
 - **Members' build folders** (`~/.equipe/cache/build/<squad>/<member>`, their
   `CARGO_TARGET_DIR`).
-- **equipe's own**: logs, the members' browser, journals, uploads.
+- **equipe's own**: logs, the members' browser, journals, uploads — the attachments of sent
+  messages apart (kept until the person removes them; those sent over 30 days ago are offered
+  as a fix of their own, never part of "clean everything", never given back on equipe's own),
+  and each ticket's phone
+  recordings (`<squad home>/recordings/T-<n>/`, given back once the ticket is done or
+  cancelled; see [mobile-qa.md](./mobile-qa.md)).
 - **Build output in the squads' projects**, other tools' worktrees there included
   (`.claude/worktrees/*`, `.codex/worktrees/*`): the person's, so reported with a command.
 - **The Mac's caches**, reported only, with the command that clears each: Xcode DerivedData,
@@ -59,7 +64,9 @@ and acts only on what that fresh look still says is safe:
   that no ticket keeps;
 - such a worktree itself (`git worktree remove`; **its branch stays**);
 - a member's build folder while that member isn't mid-turn;
-- a log past 20 MB, trimmed to its last 1 MB.
+- a log past 20 MB, trimmed to its last 1 MB;
+- attachments of messages sent over 30 days ago, only when the person picks that fix — the
+  words of their text files stay in the conversation.
 
 Never: an open ticket's worktree (in progress, waiting, in review, or done but not in main),
 a worktree with anything not committed, anything outside `~/.equipe`, anything reached
@@ -88,8 +95,8 @@ on its own (the worktree and branch stay), and `daemon.log` says so.
 - `equipe disk` — the status, what takes the space by group, and what to do.
 - `equipe disk clean [--yes]` — what would go, and a y/N.
 - `equipe disk debug [lines|off|full] [--squad <name>]`.
-- Desktop: the banner's 정리하기, settings → 스쿼드와 기기 → 디스크, `/disk`, a news row's
-  정리하기. TUI: a warning in the header; `/disk` says where things stand.
+- Desktop: the banner's Clean up, settings → Squad & machine → Disk, `/disk`, a news row's
+  Clean up. TUI: a warning in the header; `/disk` says where things stand.
 - Phone: `disk_level` events and a push at critical and full (`docs/remote-protocol.md`).
 - Screens' RPC: `disk` → `DiskReport`, `disk_clean { ids }` → `DiskCleaned`.
 - Fake daemon: `FAKE_DISK=low|critical|full`.

@@ -100,7 +100,7 @@ fn ticket(home: &Path, repo: &Path, status: TicketStatus, branch: &str) {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -134,11 +134,14 @@ fn config(home: &Path, claude: &Path) -> Config {
         retention_days: 90,
         equipe_binary: None,
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
+        watch_disk: false,
     }
 }
 

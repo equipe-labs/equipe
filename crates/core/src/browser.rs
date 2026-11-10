@@ -38,8 +38,10 @@ fn ensure_state(home: &Path) -> PathBuf {
     let state = state_file(home);
     if !state.is_file() {
         let _ = std::fs::create_dir_all(&dir);
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
         let _ = std::fs::write(&state, r#"{"cookies":[],"origins":[]}"#);
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     }
     state
@@ -91,6 +93,14 @@ fn max_file(home: &Path) -> PathBuf {
 }
 
 fn memory_gb() -> usize {
+    #[cfg(windows)]
+    let bytes = std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    #[cfg(not(windows))]
     let bytes = std::process::Command::new("sysctl")
         .args(["-n", "hw.memsize"])
         .output()
@@ -120,6 +130,7 @@ pub struct Running {
     pub last_used: std::time::Instant,
 }
 
+#[cfg_attr(windows, allow(clippy::large_enum_variant))]
 enum Kind {
     /// A Chrome of its own, with a profile of its own.
     Own(tokio::process::Child),
@@ -135,7 +146,7 @@ impl Drop for Running {
         match &self.kind {
             Kind::Own(child) => {
                 if let Some(pid) = child.id() {
-                    crate::group::end(pid, libc::SIGTERM);
+                    crate::group::end(pid, crate::group::Signal::Terminate);
                 }
             }
             Kind::Lane { id, host } => {
@@ -299,78 +310,36 @@ impl HostPage {
 }
 
 /// Titles of a whole-page "checking your browser" wall — Cloudflare's, in the
-/// languages it speaks, and the like.
-const WALL_TITLES: &[&str] = &[
-    "just a moment",
-    "잠시만 기다리십시오",
-    "잠시만 기다려 주십시오",
-    "잠시만 기다려주세요",
-    "un instant",
-    "einen moment",
-    "un momento",
-    "しばらくお待ちください",
-    "请稍候",
-    "請稍候",
-    "attention required! | cloudflare",
-    "checking your browser",
-    "please wait while we verify",
-    "ddos-guard",
-];
+/// languages it speaks, and the like: the locale files' words, and the walls'
+/// own names.
+fn wall_titles() -> impl Iterator<Item = &'static str> {
+    crate::i18n::every("match.wall_titles").iter().copied().chain(["attention required! | cloudflare", "ddos-guard"])
+}
 
 /// Words of a page asking whether a person is there.
-const HUMAN_WORDS: &[&str] = &[
-    "verify you are human",
-    "verifying you are human",
-    "are you a robot",
-    "i'm not a robot",
-    "i am human",
-    "not a robot",
-    "checking if the site connection is secure",
-    "needs to review the security of your connection",
-    "사람인지 확인",
-    "로봇이 아닙니다",
-    "연결이 안전한지 확인",
-    "人間であることを確認",
-    "ロボットではありません",
-    "确认您是真人",
-    "確認您是真人",
-    "vérifiez que vous êtes humain",
-    "bestätigen sie, dass sie ein mensch sind",
-    "verifica que eres humano",
-];
+fn human_words() -> &'static [&'static str] {
+    crate::i18n::every("match.human_words")
+}
 
 /// Where a CAPTCHA's frame comes from (not an invisible one's badge).
-const CAPTCHA_FRAMES: &[&str] = &["challenges.cloudflare.com", "hcaptcha.com", "/recaptcha/api2/", "/recaptcha/enterprise/", "recaptcha.net/recaptcha"];
+const CAPTCHA_FRAMES: &[&str] = &["challenges.cloudflare.com", "hcaptcha.com", "/recaptcha/api2/", "/recaptcha/enterprise/", "recaptcha.net/recaptcha", "arkoselabs.com", "funcaptcha.com"];
+
+/// Where a site checks its person after the password — LinkedIn's
+/// checkpoint, Google's challenge: a puzzle, a code sent to them, a tap on
+/// their phone. The person's, whatever the page has on it. Kept with
+/// `CHALLENGE_PATH` in `browser-host.cjs`.
+const CHALLENGE_PATHS: &[&str] = &["/checkpoint/challenge", "/checkpoint/lg", "/signin/challenge", "/login/challenge", "/auth/challenge"];
 
 /// Words of a code from the person's phone.
-const CODE_WORDS: &[&str] = &[
-    "two-factor",
-    "2-step",
-    "two-step",
-    "2fa",
-    "verification code",
-    "security code",
-    "authentication code",
-    "authenticator app",
-    "one-time code",
-    "enter the code",
-    "인증 코드",
-    "인증번호",
-    "2단계 인증",
-    "보안 코드",
-    "確認コード",
-    "認証コード",
-    "2 段階認証",
-    "验证码",
-    "驗證碼",
-    "code de vérification",
-    "bestätigungscode",
-    "código de verificación",
-];
+fn code_words() -> impl Iterator<Item = &'static str> {
+    crate::i18n::every("match.code_words").iter().copied().chain(["2fa"])
+}
 
-/// Words of a sign-in page, in its address or title.
-const SIGN_IN_WORDS: &[&str] =
-    &["login", "log-in", "log_in", "log in", "signin", "sign-in", "sign_in", "sign in", "/auth", "/sso", "sso.", "accounts.", "로그인", "ログイン", "登录", "登入", "anmelden", "connexion", "iniciar sesión", "se connecter"];
+/// Words of a sign-in page, in its address or title: the locale files'
+/// words, and addresses' own marks.
+fn sign_in_words() -> impl Iterator<Item = &'static str> {
+    crate::i18n::every("match.sign_in_words").iter().copied().chain(["/auth", "/sso", "sso.", "accounts."])
+}
 
 /// Whether a page waits for a person, and for what: from its address, its
 /// title and what the host read off it. Only what a person must do counts —
@@ -381,9 +350,9 @@ pub fn human_check(url: &str, title: &str, signals: Option<&Signals>) -> Option<
     let s = signals.unwrap_or(&none);
     let url_l = url.to_lowercase();
     let title_l = title.trim().trim_end_matches(['.', '…', ' ']).to_lowercase();
-    let says = |words: &[&str]| words.iter().any(|w| s.text.contains(w) || title_l.contains(w));
+    let says = |w: &str| s.text.contains(w) || title_l.contains(w);
     // A wall over the whole page: its title, or Cloudflare's challenge in the address.
-    let wall_title = title_l.chars().count() <= 40 && WALL_TITLES.iter().any(|w| title_l.starts_with(w));
+    let wall_title = title_l.chars().count() <= 40 && wall_titles().any(|w| title_l.starts_with(w));
     if wall_title || url_l.contains("__cf_chl") || url_l.contains("cf_chl_") || url_l.contains("/cdn-cgi/challenge-platform") {
         return Some(HumanCheck::Challenge);
     }
@@ -392,13 +361,16 @@ pub fn human_check(url: &str, title: &str, signals: Option<&Signals>) -> Option<
         let f = f.to_lowercase();
         CAPTCHA_FRAMES.iter().any(|c| f.contains(c)) && !f.contains("size=invisible")
     });
-    if !s.solved && (s.widget || (captcha_frame && says(HUMAN_WORDS))) {
+    if !s.solved && (s.widget || (captcha_frame && human_words().iter().any(|w| says(w)))) {
         return Some(HumanCheck::Captcha);
     }
-    if s.otp || (s.code && !s.password && says(CODE_WORDS)) {
+    if s.otp || (s.code && !s.password && code_words().any(says)) {
         return Some(HumanCheck::TwoFactor);
     }
-    if s.password && SIGN_IN_WORDS.iter().any(|w| url_l.contains(w) || title_l.contains(w)) {
+    if CHALLENGE_PATHS.iter().any(|p| url_l.contains(p)) {
+        return Some(HumanCheck::Challenge);
+    }
+    if s.password && sign_in_words().any(|w| url_l.contains(w) || title_l.contains(w)) {
         return Some(HumanCheck::SignIn);
     }
     None
@@ -452,7 +424,6 @@ impl Host {
     /// the sign-ins members' own browsers kept. What it says comes on
     /// `events`; its pictures go to `hub`.
     pub fn start(npx: &Path, home: &Path, hub: &std::sync::Arc<Hub>, events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> std::io::Result<SharedHost> {
-        use std::os::unix::process::CommandExt as _;
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
         let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE);
@@ -462,17 +433,23 @@ impl Host {
         let profile = host_profile(home);
         std::fs::create_dir_all(&profile)?;
         let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join("browser").join("host.log"))?;
-        let mut child = std::process::Command::new(npx)
+        let mut command = std::process::Command::new(npx);
+        command
             .args(["-y", "-p", PLAYWRIGHT_PACKAGE, "node"])
             .arg(&script)
             .arg(&profile)
             .arg(&state)
+            .env("EQUIPE_BROWSER_CHANNEL", browser_channel())
             .env("EQUIPE_FIRST_PAGE", first_page_id(std::time::SystemTime::now()).to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(log)
-            .process_group(0)
-            .spawn()?;
+            .stderr(log);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let hub = hub.clone();
@@ -569,7 +546,7 @@ fn read_host(mut out: impl std::io::Read, hub: &Hub, events: &tokio::sync::mpsc:
 
 impl Drop for Host {
     fn drop(&mut self) {
-        crate::group::end(self.child.id(), libc::SIGTERM);
+        crate::group::end(self.child.id(), crate::group::Signal::Terminate);
     }
 }
 
@@ -962,6 +939,8 @@ pub fn member_color(name: &str) -> &'static str {
         "qa" => 4,
         "data" => 5,
         "mobile" => 6,
+        "security" => 7,
+        "marketing" => 1,
         _ => 6 + role.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as usize % 2,
     };
     PALETTE[hue]
@@ -979,14 +958,11 @@ pub fn launch(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
         .collect();
     // Every turn's connection shares the one browser — its tabs and sign-ins.
     args.extend(["--port".into(), port.to_string(), "--host".into(), "localhost".into(), "--shared-browser-context".into()]);
-    let child = tokio::process::Command::new(npx)
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()?;
+    let mut command = tokio::process::Command::new(npx);
+    command.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command.kill_on_drop(true).spawn()?;
     Ok(Running { kind: Kind::Own(child), port, shown, last_used: std::time::Instant::now() })
 }
 
@@ -1137,12 +1113,70 @@ pub fn server(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
 /// automation switch and with automation hidden from pages, which Google
 /// otherwise answers by refusing to sign anyone in; `--test-type` keeps Chrome
 /// from warning about that flag in a bar across every window.
-const MCP_CONFIG: &str = r#"{"browser":{"browserName":"chromium","launchOptions":{"channel":"chrome","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled","--test-type"]}}}"#;
+fn browser_channel() -> &'static str {
+    if std::env::var("EQUIPE_BROWSER_CHANNEL").is_ok_and(|v| v.eq_ignore_ascii_case("msedge")) {
+        return "msedge";
+    }
+    #[cfg(windows)]
+    if installed_browsers().iter().all(|(channel, _)| *channel != "chrome")
+        && installed_browsers().iter().any(|(channel, _)| *channel == "msedge")
+    {
+        return "msedge";
+    }
+    "chrome"
+}
+
+/// Chrome and Edge executables in Windows' per-machine and per-user install
+/// locations. Playwright receives the channel name; these paths let equipe
+/// choose Edge when Chrome is absent without borrowing either browser's live
+/// profile.
+pub fn installed_browsers() -> Vec<(&'static str, PathBuf)> {
+    #[cfg(windows)]
+    {
+        let mut roots = Vec::new();
+        for key in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
+            if let Some(root) = std::env::var_os(key).filter(|p| !p.is_empty()) {
+                roots.push(PathBuf::from(root));
+            }
+        }
+        let mut found = Vec::new();
+        for root in roots {
+            for (channel, suffix) in [
+                ("chrome", "Google/Chrome/Application/chrome.exe"),
+                ("msedge", "Microsoft/Edge/Application/msedge.exe"),
+            ] {
+                let path = root.join(suffix);
+                if path.is_file() && !found.iter().any(|(_, p)| p == &path) {
+                    found.push((channel, path));
+                }
+            }
+        }
+        found
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// The browsers' normal Windows profile roots. equipe deliberately uses its
+/// own profile below `EQUIPE_HOME/browser`: opening a browser's live Default
+/// profile concurrently can corrupt it and would bypass equipe's sign-in gate.
+#[cfg(windows)]
+pub fn windows_profile_roots() -> Vec<(&'static str, PathBuf)> {
+    let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|p| !p.is_empty()).map(PathBuf::from) else { return Vec::new() };
+    vec![
+        ("chrome", local.join("Google/Chrome/User Data")),
+        ("msedge", local.join("Microsoft/Edge/User Data")),
+    ]
+}
 
 fn mcp_config(home: &Path) -> PathBuf {
     let path = home.join("browser").join("mcp-config.json");
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(MCP_CONFIG) {
-        let _ = std::fs::write(&path, MCP_CONFIG);
+    let config = format!(
+        r#"{{"browser":{{"browserName":"chromium","launchOptions":{{"channel":"{}","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled","--test-type"]}}}}}}"#,
+        browser_channel()
+    );
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(config.as_str()) {
+        let _ = std::fs::write(&path, config);
     }
     path
 }
@@ -1161,8 +1195,7 @@ pub fn sign_in_script(home: &Path) -> PathBuf {
 
 /// `npx` on PATH: the browser needs Node.js.
 pub fn find_npx() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join("npx")).find(|p| p.is_file())
+    equipe_providers::tools_path::find("npx")
 }
 
 /// The sites in a storage state the person is signed in to, by domain.
@@ -1542,6 +1575,23 @@ mod tests {
         });
         assert_eq!(human_check("https://nid.naver.com/", "네이버", Some(&code)), Some(TwoFactor));
         assert_eq!(human_check("https://example.com/search", "Search", Some(&signals(|s| s.code = true))), None, "a short field alone");
+    }
+
+    #[test]
+    fn a_sites_own_check_after_the_password_is_the_persons_until_it_passes() {
+        use equipe_protocol::HumanCheck::{Captcha, Challenge};
+        // LinkedIn's security check: a puzzle, or a code sent by mail — no field
+        // equipe knows on the first, yet the person's all the same.
+        let url = "https://www.linkedin.com/checkpoint/challenge/AgG1x?ut=0Pq&_l=en_US";
+        assert_eq!(human_check(url, "Security Verification | LinkedIn", Some(&Signals::default())), Some(Challenge));
+        assert_eq!(human_check("https://accounts.google.com/v3/signin/challenge/totp", "Google", None), Some(Challenge));
+        let arkose = signals(|s| {
+            s.frames = vec!["https://client-api.arkoselabs.com/fc/gc/?token=1".into()];
+            s.text = "let's do a quick security check".into();
+        });
+        assert_eq!(human_check("https://www.linkedin.com/uas/login-submit", "LinkedIn", Some(&arkose)), Some(Captcha));
+        assert_eq!(human_check("https://www.linkedin.com/feed/", "Feed | LinkedIn", Some(&Signals::default())), None, "signed in: back to its member");
+        assert_eq!(human_check("https://leetcode.com/problemset/challenges/", "Challenges", None), None, "a page about challenges");
     }
 
     #[test]

@@ -6,6 +6,10 @@
 //! `$TMPDIR/equipe-fake/pictures`, and read back as the daemon reads a
 //! member's pictures (`equipe_core::visuals`), from that folder only.
 //!
+//! `FAKE_DECIDE=brand`: the designer's three brand directions instead, each
+//! drawn on the product's home screen (calm, bold, warm), every option with
+//! the aspects the person can mix — type, colour, shape.
+//!
 //! `FAKE_DECIDE_CASE=<case>[,<case>…]` puts other logo questions to the
 //! person instead, one a step, for the grid's edge cases: `four` (the Gallery
 //! Y question — a picture of its own over four options, as a member once
@@ -21,9 +25,14 @@ use equipe_core::protocol::rpc::{ImageRead, ReadImage};
 use equipe_core::protocol::Ticket;
 use image::{Rgba, RgbaImage};
 
-/// Whether the logo decision and the brand hand-in are on.
+/// Whether the logo decision (or the brand directions) and the brand hand-in are on.
 pub fn on() -> bool {
-    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo")
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo" || v == "brand")
+}
+
+/// Whether the brand directions are asked, rather than the logo.
+fn brand() -> bool {
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "brand")
 }
 
 /// Where the pictures are drawn: the designer's worktree, as it were.
@@ -31,7 +40,7 @@ pub fn dir() -> PathBuf {
     std::env::temp_dir().join("equipe-fake").join("pictures")
 }
 
-fn at(name: &str) -> String {
+pub fn at(name: &str) -> String {
     let dir = dir();
     let dir = dir.canonicalize().unwrap_or(dir);
     dir.join(name).to_string_lossy().into_owned()
@@ -116,11 +125,180 @@ fn make_cases(dir: &Path) {
     let _ = draw(1200, 800, Some([0xFF, 0xFF, 0xFF, 0xFF]), |u, v| if (0.06..0.94).contains(&u) && (0.08..0.2).contains(&v) { Some([0xEE, 0xEF, 0xF2, 0xFF]) } else if e(u * 1.5, v, 0.3, 0.55, 0.16) { Some(INK) } else { None }).save(dir.join("case-now.png"));
 }
 
+/// A direction's tokens, as its home screen shows them.
+struct Tokens {
+    bg: [u8; 4],
+    surface: [u8; 4],
+    ink: [u8; 4],
+    muted: [u8; 4],
+    accent: [u8; 4],
+    on_accent: [u8; 4],
+    /// Corner radius, in the screen's height.
+    radius: f32,
+    /// How thick the headline's strokes are, in the screen's height.
+    weight: f32,
+}
+
+/// Whether `(x, y)` — x in the screen's height too — is in the box from
+/// `(x0, y0)` to `(x1, y1)` with corners `r` round.
+fn rounded(x: f32, y: f32, (x0, y0, x1, y1): (f32, f32, f32, f32), r: f32) -> bool {
+    if x < x0 || x > x1 || y < y0 || y > y1 {
+        return false;
+    }
+    let r = r.min((x1 - x0) / 2.).min((y1 - y0) / 2.);
+    let cx = x.max(x0 + r).min((x1 - r).max(x0 + r));
+    let cy = y.max(y0 + r).min((y1 - r).max(y0 + r));
+    (x - cx).powi(2) + (y - cy).powi(2) <= r * r
+}
+
+/// A line of words at `(x, y)`, `w` long and `h` high: blocks a word each,
+/// rounded as the type is.
+fn words(x: f32, y: f32, at: (f32, f32), w: f32, h: f32, round: f32) -> bool {
+    let (x0, y0) = at;
+    if y < y0 || y > y0 + h || x < x0 || x > x0 + w {
+        return false;
+    }
+    // Words of a few widths, a gap between.
+    let lengths = [0.09, 0.05, 0.13, 0.07, 0.1, 0.06, 0.11];
+    let mut start = x0;
+    for (i, len) in lengths.iter().cycle().enumerate().take(40) {
+        let len = len * (h / 0.04).clamp(0.6, 1.4);
+        let end = (start + len).min(x0 + w);
+        if x >= start && x <= end {
+            return rounded(x, y, (start, y0, end, y0 + h), h * round);
+        }
+        start = end + h * 0.45 + (i % 2) as f32 * 0.004;
+        if start >= x0 + w {
+            break;
+        }
+    }
+    false
+}
+
+/// The product's home screen in a direction's tokens: its bar, a headline
+/// and a line under it, the call to action and a quieter button, a picture,
+/// and three cards.
+fn home(t: &Tokens) -> impl Fn(f32, f32) -> Option<[u8; 4]> + '_ {
+    const WIDE: f32 = 4. / 3.;
+    move |u, v| {
+        let x = u * WIDE;
+        let r = t.radius;
+        let round = if r > 0.03 { 0.5 } else if r > 0. { 0.25 } else { 0. };
+        // The bar: a mark, three links, a button.
+        if v < 0.1 {
+            if (x - 0.07).powi(2) + (v - 0.05).powi(2) <= 0.018f32.powi(2) {
+                return Some(t.accent);
+            }
+            if words(x, v, (0.1, 0.04), 0.12, 0.022, round) {
+                return Some(t.ink);
+            }
+            for (i, at) in [0.72, 0.84, 0.96].iter().enumerate() {
+                if words(x, v, (*at, 0.042), 0.07 + i as f32 * 0.005, 0.016, round) {
+                    return Some(t.muted);
+                }
+            }
+            if rounded(x, v, (1.1, 0.025, 1.27, 0.075), r * 0.6) {
+                return Some(if words(x, v, (1.13, 0.043), 0.11, 0.014, round) { t.on_accent } else { t.ink });
+            }
+            return Some(t.surface);
+        }
+        if (0.1..0.103).contains(&v) {
+            return Some(t.muted);
+        }
+        // The headline, its line, the buttons.
+        let head = t.weight;
+        if words(x, v, (0.07, 0.17), 0.56, head, round) || words(x, v, (0.07, 0.17 + head * 1.45), 0.38, head, round) {
+            return Some(t.ink);
+        }
+        let below = 0.17 + head * 2.9 + 0.02;
+        if words(x, v, (0.07, below), 0.5, 0.018, round) || words(x, v, (0.07, below + 0.034), 0.42, 0.018, round) {
+            return Some(t.muted);
+        }
+        let buttons = below + 0.09;
+        if rounded(x, v, (0.07, buttons, 0.29, buttons + 0.07), r) {
+            return Some(if words(x, v, (0.1, buttons + 0.027), 0.15, 0.017, round) { t.on_accent } else { t.accent });
+        }
+        if rounded(x, v, (0.31, buttons, 0.5, buttons + 0.07), r) {
+            let inside = rounded(x, v, (0.313, buttons + 0.003, 0.497, buttons + 0.067), r);
+            return Some(if !inside || words(x, v, (0.34, buttons + 0.027), 0.12, 0.017, round) { t.ink } else { t.bg });
+        }
+        // The picture: the accent, lit from its corner.
+        if rounded(x, v, (0.72, 0.16, 1.27, 0.52), r * 1.4) {
+            let light = ((x - 0.72) / 0.55 * 0.5 + (v - 0.16) / 0.36 * 0.5).clamp(0., 1.);
+            let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * light * 0.55) as u8;
+            let disc = (x - 1.02).powi(2) + (v - 0.33).powi(2) <= 0.09f32.powi(2);
+            let base = if disc { t.on_accent } else { t.accent };
+            return Some([mix(base[0], t.surface[0]), mix(base[1], t.surface[1]), mix(base[2], t.surface[2]), 0xFF]);
+        }
+        // Three cards.
+        for i in 0..3 {
+            let x0 = 0.07 + i as f32 * 0.405;
+            let card = (x0, 0.6, x0 + 0.38, 0.94);
+            if rounded(x, v, card, r) {
+                if rounded(x, v, (x0 + 0.02, 0.62, x0 + 0.36, 0.77), r * 0.7) {
+                    let tint = [0.18, 0.3, 0.42][i];
+                    let m = |a: u8, b: u8| (a as f32 * tint + b as f32 * (1. - tint)) as u8;
+                    return Some([m(t.accent[0], t.bg[0]), m(t.accent[1], t.bg[1]), m(t.accent[2], t.bg[2]), 0xFF]);
+                }
+                if words(x, v, (x0 + 0.025, 0.8), 0.26, 0.022, round) {
+                    return Some(t.ink);
+                }
+                if words(x, v, (x0 + 0.025, 0.845), 0.3, 0.015, round) || words(x, v, (x0 + 0.025, 0.875), 0.2, 0.015, round) {
+                    return Some(t.muted);
+                }
+                return Some(t.surface);
+            }
+        }
+        Some(t.bg)
+    }
+}
+
+/// The three directions' home screens, drawn once.
+fn make_brand(dir: &Path) {
+    if dir.join("brand-warm.png").exists() {
+        return;
+    }
+    let calm = Tokens {
+        bg: [0xF6, 0xF6, 0xF4, 0xFF],
+        surface: [0xFF, 0xFF, 0xFF, 0xFF],
+        ink: [0x1C, 0x1D, 0x21, 0xFF],
+        muted: [0xA3, 0xA7, 0xAE, 0xFF],
+        accent: [0x3A, 0x5B, 0xD9, 0xFF],
+        on_accent: [0xFF, 0xFF, 0xFF, 0xFF],
+        radius: 0.018,
+        weight: 0.032,
+    };
+    let bold = Tokens {
+        bg: [0x10, 0x12, 0x14, 0xFF],
+        surface: [0x1C, 0x1E, 0x22, 0xFF],
+        ink: [0xF4, 0xF4, 0xF2, 0xFF],
+        muted: [0x6E, 0x73, 0x7B, 0xFF],
+        accent: [0xFF, 0x5A, 0x1F, 0xFF],
+        on_accent: [0x10, 0x12, 0x14, 0xFF],
+        radius: 0.,
+        weight: 0.056,
+    };
+    let warm = Tokens {
+        bg: [0xF3, 0xF5, 0xF0, 0xFF],
+        surface: [0xFF, 0xFF, 0xFC, 0xFF],
+        ink: [0x22, 0x33, 0x2A, 0xFF],
+        muted: [0x93, 0xA0, 0x97, 0xFF],
+        accent: [0x2E, 0x8B, 0x57, 0xFF],
+        on_accent: [0xFF, 0xFF, 0xFF, 0xFF],
+        radius: 0.05,
+        weight: 0.042,
+    };
+    for (name, tokens) in [("brand-calm.png", calm), ("brand-bold.png", bold), ("brand-warm.png", warm)] {
+        let _ = draw(800, 600, None, home(&tokens)).save(dir.join(name));
+    }
+}
+
 /// The marks, the app icon and the palette, drawn once.
 pub fn make() {
     let dir = dir();
     let _ = std::fs::create_dir_all(&dir);
     make_cases(&dir);
+    make_brand(&dir);
     if dir.join("palette.png").exists() {
         return;
     }
@@ -181,46 +359,46 @@ pub fn make() {
 
 /// One of `FAKE_DECIDE_CASE`'s questions.
 fn case(name: &str) -> Option<Question> {
-    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: if image.is_empty() { Vec::new() } else { vec![at(image)] } };
-    let marks = |n: usize| (0..n).map(|i| option(&format!("{} 안", (b'A' + i as u8) as char), "모서리를 조금 더 둥글게 — 작은 크기에서도 읽힙니다", &format!("case-mark-{}.png", i % 4))).collect::<Vec<_>>();
+    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: if image.is_empty() { Vec::new() } else { vec![at(image)] }, ..Choice::default() };
+    let marks = |n: usize| (0..n).map(|i| option(&format!("Option {}", (b'A' + i as u8) as char), "Corners a little rounder — reads at small sizes too", &format!("case-mark-{}.png", i % 4))).collect::<Vec<_>>();
     Some(match name {
         "four" => Question {
-            question: "Gallery Y 로고로 어느 안을 쓸까요?".into(),
-            header: "로고".into(),
+            question: "Which option should be the Gallery Y logo?".into(),
+            header: "Logo".into(),
             images: vec![at("case-now.png")],
             options: vec![
-                option("A 세 벽 (Recommended)", "세 개의 벽이 빛을 받아들이는 공간 — 16px 파비콘 어디서나 같은 모양으로 읽힙니다", "case-walls.png"),
-                option("B 빛의 교회", "벽을 가르는 십자형 빛 — 안도 다다오의 건축 언어예요. 다만 종교적인 연상이 강할 수 있습니다", "case-light.png"),
-                option("C 폼타이", "콘크리트 거푸집의 폼타이 구멍 — 재료의 흔적을 그대로 씁니다", "case-tie.png"),
-                option("D 원과 사각", "원과 사각의 대비 — 가장 단순하지만 다른 갤러리와 겹칠 수 있습니다", "case-circle-square.png"),
+                option("A Three walls (Recommended)", "Three walls taking in the light — reads as the same shape anywhere, down to a 16px favicon", "case-walls.png"),
+                option("B Church of the Light", "A cross of light splitting the wall — Tadao Ando's architectural language. It may read as strongly religious, though", "case-light.png"),
+                option("C Form ties", "The form-tie holes of concrete formwork — the material's traces used as they are", "case-tie.png"),
+                option("D Circle and square", "A circle against a square — the simplest, but it may overlap with other galleries", "case-circle-square.png"),
             ],
             ..Question::default()
         },
-        "five" => Question { question: "다섯 안 가운데 어느 것으로 갈까요?".into(), header: "로고".into(), options: marks(5), ..Question::default() },
-        "eight" => Question { question: "스티커 세트에 넣을 마크를 모두 골라 주세요".into(), header: "스티커".into(), options: marks(8), multi_select: true, ..Question::default() },
+        "five" => Question { question: "Which of the five shall we go with?".into(), header: "Logo".into(), options: marks(5), ..Question::default() },
+        "eight" => Question { question: "Pick every mark for the sticker set".into(), header: "Stickers".into(), options: marks(8), multi_select: true, ..Question::default() },
         "mixed" => Question {
-            question: "앱 아이콘 배경은 어떻게 할까요?".into(),
-            header: "아이콘".into(),
+            question: "What should the app icon's background be?".into(),
+            header: "Icon".into(),
             options: vec![
-                option("파란 바탕 (추천)", "스토어에서 눈에 띕니다", "app-icon.png"),
-                option("흰 바탕", "시안은 다음에 그려 드릴게요", ""),
-                option("🎨 Gradient — 파랑에서 보라로 이어지는 아주 긴 이름의 그라데이션 배경 안", "A long English description that keeps going, 한국어와 섞여서, past two lines of the tile so it has to end in an ellipsis somewhere", "case-mark-3.png"),
-                option("Dark 모드 전용", "", ""),
-                option("원과 사각", "원과 사각의 대비", "case-circle-square.png"),
+                option("Blue background (Recommended)", "Stands out in the store", "app-icon.png"),
+                option("White background", "I'll draw this one next time", ""),
+                option("🎨 Gradient — a gradient background running from blue into purple, with a very long name", "A long English description that keeps going, 日本語も混ざって (wide letters mixed in), past two lines of the tile so it has to end in an ellipsis somewhere", "case-mark-3.png"),
+                option("Dark mode only", "", ""),
+                option("Circle and square", "A circle against a square", "case-circle-square.png"),
             ],
             ..Question::default()
         },
         "aspect" => Question {
-            question: "배너 모양은 어느 쪽이 좋을까요?".into(),
-            header: "배너".into(),
-            options: vec![option("가로로 긴 띠", "2400×240", "case-wide.png"), option("세로로 긴 탑", "240×2400", "case-tower.png"), option("정사각", "600×600", "case-square.png"), option("SVG 4점", "크기를 말하지 않는 SVG", "logo-four-dots.svg")],
+            question: "Which banner shape works best?".into(),
+            header: "Banner".into(),
+            options: vec![option("A wide strip", "2400×240", "case-wide.png"), option("A tall tower", "240×2400", "case-tower.png"), option("Square", "600×600", "case-square.png"), option("SVG four dots", "An SVG that gives no size", "logo-four-dots.svg")],
             ..Question::default()
         },
         "lead" => Question {
-            question: "지금 사이트 머리글을 그대로 둘까요?".into(),
-            header: "머리글".into(),
+            question: "Keep the site's header as it is?".into(),
+            header: "Header".into(),
             images: vec![at("case-now.png")],
-            options: vec![Choice { label: "그대로 (추천)".into(), description: "이번 릴리스에서는 손대지 않습니다".into(), ..Choice::default() }, Choice { label: "로고만 바꾸기".into(), description: "새 마크로 바꾸고 나머지는 둡니다".into(), ..Choice::default() }],
+            options: vec![Choice { label: "As it is (Recommended)".into(), description: "Not touched in this release".into(), ..Choice::default() }, Choice { label: "Change the logo only".into(), description: "Swap in the new mark, leave the rest".into(), ..Choice::default() }],
             ..Question::default()
         },
         _ => return None,
@@ -230,11 +408,34 @@ fn case(name: &str) -> Option<Question> {
 /// The designer's question: which mark is the master — each option its render.
 /// With `FAKE_DECIDE_CASE`, the edge cases' questions instead.
 pub fn question_set(now: u64) -> QuestionSet {
-    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: vec![at(image)] };
+    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: vec![at(image)], ..Choice::default() };
+    let aspects = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+    if brand() {
+        let direction = |label: &str, description: &str, image: &str| Choice { aspects: aspects(&["Type", "Colour", "Shape"]), ..option(label, description, image) };
+        return QuestionSet {
+            id: 9003,
+            session: 4,
+            member: "designer".into(),
+            ticket: Some(150),
+            questions: vec![Question {
+                question: "Which way should the brand go? I put all three on the home screen".into(),
+                header: "Brand".into(),
+                options: vec![
+                    direction("Calm (Recommended)", "Light type, generous space and a single blue — easy on the eyes for hours", "brand-calm.png"),
+                    direction("Bold", "Heavy type on a dark background, square corners — remembered at first sight", "brand-bold.png"),
+                    direction("Warm", "Round corners and green — feels approachable", "brand-warm.png"),
+                ],
+                ..Question::default()
+            }],
+            asked_at: now.saturating_sub(120),
+            review: false,
+            retro: None,
+        };
+    }
     if let Some(cases) = std::env::var("FAKE_DECIDE_CASE").ok().filter(|c| !c.is_empty()) {
         let questions: Vec<Question> = cases.split(',').filter_map(|c| case(c.trim())).collect();
         if !questions.is_empty() {
-            return QuestionSet { id: 9003, session: 4, member: "designer".into(), ticket: Some(24), questions, asked_at: now.saturating_sub(300) };
+            return QuestionSet { id: 9003, session: 4, member: "designer".into(), ticket: Some(24), questions, asked_at: now.saturating_sub(300), review: false, retro: None };
         }
     }
     QuestionSet {
@@ -244,23 +445,25 @@ pub fn question_set(now: u64) -> QuestionSet {
         ticket: Some(144),
         questions: vec![
             Question {
-                question: "로고 마스터는 어느 안으로 할까요? (사이트는 파란 4점, 앱·스토어는 'e.' 회색 점으로 갈라져 있습니다)".into(),
-                header: "로고".into(),
+                question: "Which option should be the master logo? (The site uses four blue dots, the app and stores an 'e.' with a grey dot)".into(),
+                header: "Logo".into(),
                 options: vec![
-                    option("e. + 파란 원 점 (추천)", "사이트와 앱을 하나로 — 작은 크기에서도 또렷합니다", "logo-blue-dot.png"),
-                    option("e. 회색 점 유지", "지금 앱·스토어 그대로", "logo-grey-dot.png"),
-                    option("파란 4점을 주 로고로", "사이트의 4점을 앱에도 씁니다", "logo-four-dots.svg"),
+                    Choice { aspects: aspects(&["Dot"]), ..option("e. + a round blue dot (Recommended)", "One mark for site and app — crisp at small sizes", "logo-blue-dot.png") },
+                    Choice { aspects: aspects(&["Dot"]), ..option("Keep the e. grey dot", "The app and stores as they are", "logo-grey-dot.png") },
+                    Choice { aspects: aspects(&["Colour"]), ..option("Four blue dots as the main logo", "The site's four dots in the app too", "logo-four-dots.svg") },
                 ],
                 ..Question::default()
             },
             Question {
-                question: "앱 아이콘 배경은 어떻게 할까요?".into(),
-                header: "아이콘".into(),
-                options: vec![option("파란 바탕 (추천)", "스토어에서 눈에 띕니다", "app-icon.png"), Choice { label: "흰 바탕".into(), description: "시안은 다음에 그려 드릴게요".into(), ..Choice::default() }],
+                question: "What should the app icon's background be?".into(),
+                header: "Icon".into(),
+                options: vec![option("Blue background (Recommended)", "Stands out in the store", "app-icon.png"), Choice { label: "White background".into(), description: "I'll draw this one next time".into(), ..Choice::default() }],
                 ..Question::default()
             },
         ],
         asked_at: now.saturating_sub(300),
+        review: false,
+        retro: None,
     }
 }
 
@@ -272,7 +475,7 @@ pub fn hand_in(mut ticket: Ticket) -> Ticket {
 }
 
 /// The news of it in the PM's conversation, as the daemon words it.
-pub const NEWS: &str = "designer handed in T-144 for your review · equipe 브랜드 정리·체계화 (이름·로고 유지).";
+pub const NEWS: &str = "designer handed in T-144 for your review · equipe brand clean-up and system (name and logo kept).";
 
 /// A picture read back: from the pictures' folder only, as the daemon reads a member's.
 pub fn read(ask: &ReadImage) -> Result<ImageRead, String> {

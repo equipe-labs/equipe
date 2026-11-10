@@ -30,14 +30,14 @@ never have the person run a command to type it. A website sign-in is `sign_in`, 
         "inputSchema": {
             "type": "object",
             "properties": {
-                "why": { "type": "string", "description": "What it is for, in a line in the person's language: \"NAS 매일 자동 수집에 쓸 NAS 로그인\"." },
+                "why": { "type": "string", "description": "What it is for, in a line in the person's language: \"NAS login for the daily automatic import from the NAS\"." },
                 "fields": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
                             "key": { "type": "string", "description": "The key it is saved under: NAS_USER (uppercase, digits, _)." },
-                            "label": { "type": "string", "description": "How the card names it, in the person's language: \"NAS 아이디\"." },
+                            "label": { "type": "string", "description": "How the card names it, in the person's language: \"NAS username\"." },
                             "secret": { "type": "boolean", "description": "Typed hidden: a password, key or token. False for a username." },
                         },
                         "required": ["key", "label"],
@@ -127,7 +127,6 @@ pub fn place(given: &str, home: &Path) -> Result<(PathBuf, String), String> {
 /// line replaced or added, the file's other lines kept; the file readable by
 /// its owner alone, its new folders too.
 pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Result<(), String> {
-    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
     if values.len() != fields.len() {
         return Err(format!("{} values for {} fields", values.len(), fields.len()));
     }
@@ -135,7 +134,10 @@ pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Res
         return Err("a value can't hold a line break".into());
     }
     if let Some(dir) = path.parent() {
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| e.to_string())?;
+        let mut builder = std::fs::DirBuilder::new(); builder.recursive(true);
+        #[cfg(unix)]
+        { use std::os::unix::fs::DirBuilderExt as _; builder.mode(0o700); }
+        builder.create(dir).map_err(|e| e.to_string())?;
     }
     let before = std::fs::read_to_string(path).unwrap_or_default();
     let ours = |line: &str| fields.iter().any(|f| line.trim_start().strip_prefix("export ").unwrap_or(line.trim_start()).starts_with(&format!("{}=", f.key)));
@@ -148,10 +150,14 @@ pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Res
     let draft = path.with_extension("equipe-draft");
     {
         use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&draft).map_err(|e| e.to_string())?;
+        let mut options = std::fs::OpenOptions::new(); options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        { use std::os::unix::fs::OpenOptionsExt as _; options.mode(0o600); }
+        let mut file = options.open(&draft).map_err(|e| e.to_string())?;
         file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     }
-    std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    { use std::os::unix::fs::PermissionsExt as _; std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?; }
     std::fs::rename(&draft, path).map_err(|e| e.to_string())
 }
 
@@ -164,6 +170,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
+    }
+
+    /// What the charters stopped saying because the tool says it (crates/core/charter-moved.txt).
+    #[test]
+    fn ask_secrets_description_says_the_person_types_it_into_a_card_never_in_words() {
+        let said = tool()["description"].as_str().unwrap().to_owned();
+        for part in ["They type it into a card in equipe", "saves it straight to a file for you", "Never ask for one in words", "never have the person run a command to type it", "never print, echo or copy a value"] {
+            assert!(said.contains(part), "{part}: {said}");
+        }
     }
 
     #[test]

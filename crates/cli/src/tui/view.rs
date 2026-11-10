@@ -30,6 +30,7 @@ mod accept;
 mod decide;
 mod engines;
 mod team;
+mod routine;
 mod turn;
 
 /// How many columns `text` takes on screen — a Korean letter takes two.
@@ -403,7 +404,7 @@ impl Layouts {
 fn layout_key(agent: &Agent, width: usize, turns: u64) -> LayoutKey {
     let entries = agent.drawn();
     let last = entries.last().map_or(0, |entry| match entry.as_ref() {
-        Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
+        Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. } => text.len(),
         Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
@@ -442,6 +443,9 @@ fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     }
     if asking.is_empty() {
         asking = team::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
+    if asking.is_empty() {
+        asking = routine::lines(app, theme, area.width.saturating_sub(2) as usize);
     }
     if asking.is_empty() {
         asking = engines::lines(app, theme, area.width.saturating_sub(2) as usize);
@@ -1266,6 +1270,8 @@ fn look(role: &str, name: &str) -> (&'static str, usize) {
         "qa" => ("◎", 4),
         "data" => ("▲", 5),
         "mobile" => ("◈", 6),
+        "security" => ("⬢", 7),
+        "marketing" => ("✺", 1),
         _ => {
             const MARKS: [&str; 4] = ["◇", "★", "▼", "✚"];
             let h = name.bytes().fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
@@ -1385,7 +1391,7 @@ fn side_lines(app: &App, theme: Theme, area: Rect) -> (Vec<(Line<'static>, Optio
                 lines.push((Line::from(vec![Span::raw("  "), Span::styled("+ ", theme.dim()), Span::styled(text, if today > 0 { Style::new() } else { theme.dim() })]), Some(side)));
             }
             Side::Menu(menu) => {
-                // 나에게 · 작업 중 · 모든 일, each with its count, as the desktop's menu.
+                // Inbox · In progress · All work, each with its count, as the desktop's menu.
                 let on = app.pane == Pane::Board && app.board_menu == menu;
                 let count = app.menu_count(menu);
                 let marker = if on { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
@@ -1705,7 +1711,7 @@ fn tool_run(run: Vec<ToolLine>, expanded: bool, theme: Theme, width: usize) -> V
 /// background when the terminal told us its colour.
 /// What the person attached, named rather than spelled out: each tag of a
 /// message (`[image: /…/uploads/1792073093606-paste.png]`) as its kind and
-/// name — `[이미지] paste.png`. The member still gets the tag as it is.
+/// name — `[Image] paste.png`. The member still gets the tag as it is.
 pub fn attachments_named(text: &str) -> String {
     use equipe_core::protocol::tags::{TagKind, compact};
     compact(text, |tag| {
@@ -1933,13 +1939,13 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
         match entry {
             Entry::Thread { .. } => {}
             // The person's answers to a member's questions: one line.
-            Entry::User { text } if decide::decided_line(text, theme, width).is_some() => {
+            Entry::User { text, .. } if decide::decided_line(text, theme, width).is_some() => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.extend(decide::decided_line(text, theme, width));
                 lines.push(Line::raw(""));
             }
-            Entry::User { text } => {
+            Entry::User { text, .. } => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.extend(user_message(&attachments_named(text), theme, width));
@@ -1964,14 +1970,14 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                 }
             }
             // Other projects' talk, folded: one quiet line saying how much.
-            Entry::Note { text } if text.starts_with(super::app::FOLDED) => {
+            Entry::Note { text, .. } if text.starts_with(super::app::FOLDED) => {
                 let said: usize = text[super::app::FOLDED.len_utf8()..].parse().unwrap_or(0);
                 begin(Block::Note, &mut lines, &mut last);
                 gap(&mut lines);
                 lines.push(Line::from(Span::styled(format!("── {} ──", t!("view.elsewhere", count = said)), theme.dim())));
             }
             // A ticket still waiting for the person: its asks one under another.
-            Entry::Note { text } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
+            Entry::Note { text, .. } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
                 let id = equipe_core::i18n::waiting_ticket(text).unwrap_or_default();
                 if let Some((_, title, asks)) = turns.iter().find(|(t, ..)| *t == id) {
                     begin(Block::Note, &mut lines, &mut last);
@@ -1979,7 +1985,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                     lines.extend(your_turn_lines(id, title, asks, theme, width));
                 }
             }
-            Entry::Note { text } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
+            Entry::Note { text, .. } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
                 Some(news) => {
                     begin(Block::News, &mut lines, &mut last);
                     lines.extend(news);
@@ -2366,7 +2372,7 @@ fn for_you(t: &equipe_core::protocol::Ticket) -> bool {
 }
 
 /// A status as one ASCII mark, so it lines up in any terminal: proposed `.`,
-/// to do `o`, in progress `*`, 내 차례 `!`, 검토 `?`, done `+`, cancelled `x`.
+/// to do `o`, in progress `*`, your turn `!`, review `?`, done `+`, cancelled `x`.
 /// How pressing a ticket is, before its title: `!! ` urgent, `↑ ` high,
 /// `↓ ` low; normal says nothing.
 pub fn priority_mark(priority: Priority, theme: Theme) -> Span<'static> {
@@ -2381,6 +2387,7 @@ pub fn priority_mark(priority: Priority, theme: Theme) -> Span<'static> {
 pub fn status_mark(status: TicketStatus) -> &'static str {
     match status {
         TicketStatus::Proposed => ".",
+        TicketStatus::Idea => "~",
         TicketStatus::Todo => "o",
         TicketStatus::InProgress => "*",
         TicketStatus::Waiting => "!",
@@ -2435,7 +2442,7 @@ fn row_meta(app: &App, t: &equipe_core::protocol::Ticket, theme: Theme) -> (Vec<
     (flags, activity, style, eta)
 }
 
-/// The board's list, as the menu asks: 나에게 by section, 작업 중, or 모든 일
+/// The board's list, as the menu asks: the Inbox by section, In progress, or All work
 /// by status with the finished folded into one line (e). One row a ticket:
 /// its mark, number, project, title, flags, what is happening, when done, who.
 fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<u32>)> {
@@ -2557,7 +2564,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     if let Some(line) = current.as_deref().and_then(folded) {
         rows.push((line, None));
     }
-    // 모든 일: the finished, folded into one line until shown.
+    // All work: the finished, folded into one line until shown.
     if app.board_menu == BoardMenu::All && query.is_none() && !app.board_expanded {
         let done = app.tickets.iter().filter(|t| t.status.is_closed() && app.in_focus(t)).count();
         if done > 0 {
@@ -2647,6 +2654,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             actions.push(("a", t!("view.action_take").into()));
             actions.push(("n", t!("view.action_drop").into()));
         }
+        TicketStatus::Idea => actions.push(("n", t!("view.action_drop").into())),
         TicketStatus::Done => {
             if t.not_on_main() {
                 actions.push(("m", t!("view.action_merge").into()));
@@ -3112,7 +3120,7 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             squad: Some("acme".into()),
         });
-        app.on_event(Event::UserMessage { session: id, text: "fix the bug".into() });
+        app.on_event(Event::UserMessage { session: id, text: "fix the bug".into(), kept: Vec::new() });
         app.on_event(Event::TextDelta { session: id, text: "Looking **now**.".into() });
         app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/auth.rs".into()), label: None, background: false });
         (app, id)
@@ -3132,7 +3140,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -3215,6 +3223,7 @@ mod tests {
                 cache_tokens: Some(98_766),
                 context_tokens: Some(130_000),
                 context_window: Some(200_000),
+                ..Default::default()
             }),
         });
         let plan = equipe_core::protocol::PlanWindow { used_percent: 84, resets_at: 0 };
@@ -3281,14 +3290,14 @@ mod tests {
         let (mut app, id) = working();
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
         let said = "pair 가 잘 안되는데 [image: /Users/abel/.equipe/uploads/1792073093606-paste.png] [pdf: /Users/abel/.equipe/uploads/1792073093607-spec.pdf · 2 pages]";
-        app.on_event(Event::UserMessage { session: id, text: said.into() });
+        app.on_event(Event::UserMessage { session: id, text: said.into(), kept: Vec::new() });
         let shot = screen(&app, 100, 24);
         assert!(shot.contains("pair 가 잘 안되는데 [Image] paste.png [PDF]") && shot.contains("spec.pdf · 2 pages"), "{shot}");
         assert!(!shot.contains("uploads"), "{shot}");
         assert_eq!(app.agents[0].last_said().as_deref(), Some("pair 가 잘 안되는데 [Image] paste.png [PDF] spec.pdf · 2 pages"));
         assert_eq!(attachments_named("[video: /u/1792073093606-a.mov · 0:20 · frames: /u/f.jpg@0:05]"), "[Video] a.mov · 0:20");
         // What reaches the member is the tag as it was typed.
-        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == said)));
+        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text, .. } if text == said)));
     }
 
     #[test]
@@ -3364,7 +3373,7 @@ mod tests {
         assert!(shot.contains("(when done)"), "{shot}");
         assert!(!shot.contains("and the app icon"), "{shot}");
         // The turn ends: app's memo goes, into app's conversation; site's waits for the next.
-        app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into(), kept: Vec::new() });
         assert_eq!(app.agents[0].queued, ["and the site footer"]);
         assert_eq!(app.agents[0].queued_in, [Some("site".to_owned())]);
     }
@@ -3389,16 +3398,16 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             squad: Some("acme".into()),
         });
-        app.on_event(Event::LaneOpened { session: 77, of: pm, project: None });
+        app.on_event(Event::LaneOpened { session: 77, of: pm, project: None, kept: false });
         assert_eq!(app.agents.len(), 1);
-        app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into() });
+        app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into(), kept: Vec::new() });
         app.on_event(Event::TextDelta { session: 77, text: "The app is fine.".into() });
         assert_eq!(app.viewed().map(|a| a.id), Some(77));
         let shot = screen(&app, 110, 24);
         assert!(shot.contains("The app is fine.") && shot.contains("2 at once"), "{shot}");
         // Scrolling moves the conversation shown.
         for i in 0..60 {
-            app.on_event(Event::Notice { session: 77, text: format!("line {i}") });
+            app.on_event(Event::Notice { undo: None, session: 77, text: format!("line {i}") });
         }
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 24), &Layouts::default());
         app.set_extent(laid.page, laid.conversation_max, laid.board_max);
@@ -3499,10 +3508,10 @@ mod tests {
         assert!(shot.contains("› skip the footer") && shot.contains("(next step)"), "{shot}");
         assert!(shot.contains("1 unread"), "{shot}");
         // Read: it moves into the conversation, where it was read.
-        app.on_event(Event::Steered { session: pm, text: "skip the footer".into() });
+        app.on_event(Event::Steered { session: pm, text: "skip the footer".into(), kept: Vec::new() });
         let shot = screen(&app, 110, 24);
         assert!(!shot.contains("(next step)"), "{shot}");
-        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == "skip the footer")));
+        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text, .. } if text == "skip the footer")));
         // Tab: for after this turn.
         for c in "then the pricing page".chars() {
             app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
@@ -3758,8 +3767,8 @@ mod tests {
         });
         app.on_event(Event::TextDelta { session: id, text: "T-8 is ready for you.".into() });
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
-        app.on_event(Event::Notice { session: id, text: "designer handed in T-8 for your review · Translations.".into() });
-        app.on_event(Event::Notice { session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "designer handed in T-8 for your review · Translations.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
         let shot = screen(&app, 140, 30);
         let lines: Vec<&str> = shot.lines().collect();
         let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("no {text:?} in:\n{shot}"));
@@ -3881,7 +3890,7 @@ mod tests {
             "Check the shots in `outputs/T-117/shots/` and listing.json; if they're fine, just say OK.".into(),
         ];
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t.clone() });
-        app.on_event(Event::Notice { session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
+        app.on_event(Event::Notice { undo: None, session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
         app.flash = None;
         let shot = screen(&app, 140, 40);
         let lines: Vec<&str> = shot.lines().collect();
@@ -4224,7 +4233,7 @@ mod tests {
     fn a_members_subagents_show_under_it_while_they_work() {
         let (mut app, pm) = working();
         for (sub, what) in [("t1", "Run the iOS tests"), ("t2", "Read the logs"), ("t3", "Survey the API")] {
-            app.on_event(Event::SubagentStarted { session: pm, id: sub.into(), what: what.into() });
+            app.on_event(Event::SubagentStarted { session: pm, id: sub.into(), what: what.into(), brief: String::new() });
         }
         app.on_event(Event::SubagentStep { session: pm, id: "t1".into(), step: "Bash xcodebuild test".into() });
         app.squad_width = Some(50);
@@ -4236,7 +4245,7 @@ mod tests {
         let pm_row = shot.lines().position(|l| l.contains("pm    haiku")).unwrap() as u16;
         assert!(laid.hits.iter().any(|h| h.2 == pm_row && h.3 == Hit::Side(Side::Pm)));
         // Done, gone; the turn's end takes the rest.
-        app.on_event(Event::SubagentEnded { session: pm, id: "t2".into() });
+        app.on_event(Event::SubagentEnded { session: pm, id: "t2".into(), result: None, failed: false });
         assert!(!screen(&app, 140, 30).contains("Read the logs"));
         app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
         assert!(!screen(&app, 140, 30).contains("↳"));
@@ -4290,7 +4299,7 @@ mod tests {
         app.agents[0].compacted = Some(Compacted::Failed);
         assert!(screen(&app, 140, 30).contains(fail), "it doesn't go by itself");
         assert!(!app.ticking(), "nothing to count: no redraws for it");
-        app.on_event(Event::UserMessage { session: pm, text: "go on".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "go on".into(), kept: Vec::new() });
         assert!(!screen(&app, 140, 30).contains("Couldn't summarize"), "the person's next message takes it");
     }
 
@@ -4482,7 +4491,7 @@ mod bench {
         let id = *id;
         app.on_event(Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) });
         for i in 0..200 {
-            app.on_event(Event::UserMessage { session: id, text: format!("question {i}") });
+            app.on_event(Event::UserMessage { session: id, text: format!("question {i}"), kept: Vec::new() });
             app.on_event(Event::TextDelta { session: id, text: "## Plan\n\n1. **designer**: 랜딩 페이지 카피와 디자인을 맡아요. equipe가 뭔지 담아요.\n2. **frontend**: 정적 사이트 프로젝트를 세팅해요 (Astro 제안).\n\n| 티켓 | 담당 | 내용 |\n|---|---|---|\n| T-1 | designer | 카피·디자인 |\n| T-2 | frontend | Astro 셋업 |\n\nSome `code` and more prose that goes on for a while to wrap across lines in the pane.".into() });
             app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some("src/a.rs".into()), label: None, background: false });
             app.on_event(Event::TurnEnded { session: id, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None });

@@ -14,6 +14,14 @@ use crate::disk::{self, DiskCleaned, DiskLevel, DiskReport, DiskStatus};
 const NO_ROOM_HOLD: Duration = Duration::from_secs(5 * 60);
 /// The build caches are trimmed on a short disk at most this often.
 const TRIM_EVERY: Duration = Duration::from_secs(10 * 60);
+/// …and this often once the disk is full.
+const TRIM_EVERY_FULL: Duration = Duration::from_secs(60);
+/// With room to spare, what's certain to be unneeded is given back this often
+/// (kept across restarts by a stamp's time, `cache/auto-clean`).
+const AUTO_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// …and not before the daemon has been up this long: a start (an update's
+/// restart, a test's) isn't the moment to walk every worktree.
+const AUTO_AFTER_START: Duration = Duration::from_secs(10 * 60);
 
 /// What the daemon knows of its disk.
 #[derive(Default)]
@@ -30,6 +38,10 @@ pub(super) struct DiskWatch {
     pub publish: bool,
     /// A clean under way.
     pub cleaning: bool,
+    /// When equipe last gave back, on its own, what it was sure of.
+    pub auto_cleaned: Option<std::time::Instant>,
+    /// When the disk was first looked at, since the daemon started.
+    pub first_look: Option<std::time::Instant>,
     /// A trim of the build caches under way, and when the last began.
     pub trimming: bool,
     pub trimmed: Option<std::time::Instant>,
@@ -57,7 +69,7 @@ impl Runtime {
 
     /// How much room there is, looked at off the loop; one look at a time.
     pub(super) fn look_at_disk(&mut self) {
-        if self.disk.looking {
+        if self.disk.looking || !self.config.watch_disk {
             return;
         }
         self.disk.looking = true;
@@ -90,6 +102,55 @@ impl Runtime {
             self.disk_level_changed(before);
         }
         self.trim_if_short();
+        self.clean_certain_if_due();
+    }
+
+    /// What equipe is sure nobody needs ([`disk::certain`]: a finished
+    /// ticket's work, stale build folders, old logs) goes on its own: at once
+    /// when the disk runs short, else every few hours. Off the loop; logged and
+    /// told to the screens. The rest waits for the person's yes.
+    fn clean_certain_if_due(&mut self) {
+        let short = self.disk.status.level.is_warning();
+        let first = *self.disk.first_look.get_or_insert_with(std::time::Instant::now);
+        if !short && first.elapsed() < AUTO_AFTER_START {
+            return;
+        }
+        let every = if short { TRIM_EVERY } else { AUTO_EVERY };
+        let stamp = self.config.home.join("cache").join("auto-clean");
+        let last = std::fs::metadata(&stamp).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok());
+        let due = self.disk.auto_cleaned.is_none_or(|at| at.elapsed() >= every) && last.is_none_or(|ago| ago >= every);
+        if self.disk.cleaning || !due {
+            return;
+        }
+        self.disk.cleaning = true;
+        self.disk.auto_cleaned = Some(std::time::Instant::now());
+        let (known, paths, internal) = (self.disk_known(), self.disk_paths(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let _ = std::fs::create_dir_all(stamp.parent().expect("the stamp has a folder"));
+            let _ = std::fs::write(&stamp, b"");
+            let cleaned = disk::clean_certain(&known);
+            let asked = std::time::Instant::now();
+            let status = disk::probe(&paths);
+            let _ = internal.send(Internal::DiskCleaned(Box::new(cleaned), status, asked, None));
+        });
+    }
+
+    /// Clear one of what isn't equipe's (a cache of the Mac's, a project's
+    /// build output) with the command a fresh look lists for it, as the
+    /// person said yes to. Answered like a clean.
+    pub(super) fn disk_run(&mut self, id: String) {
+        if self.disk.cleaning {
+            return;
+        }
+        self.disk.cleaning = true;
+        let (known, paths, internal) = (self.disk_known(), self.disk_paths(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let cleaned = disk::clear_other(&known, &id);
+            crate::daemon_log!("equipe: the person cleared {id} with its command");
+            let asked = std::time::Instant::now();
+            let status = disk::probe(&paths);
+            let _ = internal.send(Internal::DiskCleaned(Box::new(cleaned), status, asked, None));
+        });
     }
 
     /// Short of room: what no build needs between builds goes at once, off the
@@ -98,13 +159,15 @@ impl Runtime {
     /// Rebuilt when wanted, so nobody is asked; logged.
     fn trim_if_short(&mut self) {
         let level = self.disk.status.level;
-        if !level.is_warning() || self.disk.trimming || self.disk.trimmed.is_some_and(|at| at.elapsed() < TRIM_EVERY) {
+        // Full, every minute counts: not the usual wait between trims.
+        let every = if level == DiskLevel::Full { TRIM_EVERY_FULL } else { TRIM_EVERY };
+        if !level.is_warning() || self.disk.trimming || self.disk.trimmed.is_some_and(|at| at.elapsed() < every) {
             return;
         }
         (self.disk.trimming, self.disk.trimmed) = (true, Some(std::time::Instant::now()));
-        let (home, internal, deeper) = (self.config.home.clone(), self.internal.clone(), level.holds_builds());
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
         tokio::task::spawn_blocking(move || {
-            let (freed, lines) = disk::trim_builds(&home, deeper);
+            let (freed, lines) = disk::trim_builds(&home, level);
             let _ = internal.send(Internal::DiskTrimmed(freed, lines));
         });
     }
@@ -129,6 +192,8 @@ impl Runtime {
         if before != DiskLevel::Full {
             self.disk.status.level = DiskLevel::Full;
             self.disk_level_changed(before);
+            // Room at once, not at the next look.
+            self.trim_if_short();
         }
     }
 
@@ -156,7 +221,7 @@ impl Runtime {
         if level.holds_builds() && !before.holds_builds() {
             // The PM above all: it plans the work, and tells the person.
             let line = format!(
-                "The disk is nearly full: {free} free. Builds may fail. Don't start heavy builds (cargo build, npm install, xcodebuild) until there's room again, and tell the person: they can free space in equipe's 디스크 panel (/disk) or with `equipe disk clean`. equipe holds new code tickets back meanwhile."
+                "The disk is nearly full: {free} free. Builds may fail. Don't start heavy builds (cargo build, npm install, xcodebuild) until there's room again, and tell the person: they can free space in equipe's Disk panel (/disk) or with `equipe disk clean`. equipe holds new code tickets back meanwhile."
             );
             for squad in &squads {
                 let shown = say!(self, "news.disk_critical", free = free);
@@ -191,7 +256,7 @@ impl Runtime {
     }
 
     /// Every member of `squad`, lanes left out.
-    fn squad_members(&self, squad: &str) -> Vec<SessionId> {
+    pub(super) fn squad_members(&self, squad: &str) -> Vec<SessionId> {
         self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.is_some()).map(|(&id, _)| id).collect()
     }
 
@@ -204,10 +269,10 @@ impl Runtime {
         }
         let Some(name) = self.sessions.get(&id).and_then(|s| s.name().map(str::to_owned)) else { return };
         let text = say!(self, "news.disk_build_failed", name = name);
-        self.publish(Event::Notice { session: id, text });
+        self.publish(Event::Notice { undo: None, session: id, text });
         if let Some(session) = self.sessions.get_mut(&id) {
             session.briefing.push(
-                "Your last build failed because the disk is full (No space left on device). Don't retry it: tell the person, who frees space in equipe's 디스크 panel (/disk), then carry on."
+                "Your last build failed because the disk is full (No space left on device). Don't retry it: tell the person, who frees space in equipe's Disk panel (/disk), then carry on."
                     .to_owned(),
             );
         }
@@ -308,6 +373,15 @@ impl Runtime {
             self.disk_measured(status, asked);
         }
         cleaned.status = self.disk.status.clone();
+        if cleaned.auto {
+            // Nothing it was sure of: nothing to say.
+            if cleaned.removed.is_empty() {
+                return;
+            }
+            crate::daemon_log!("equipe: gave back on its own what nobody needs: {} ({} items)", disk::size(cleaned.freed), cleaned.removed.len());
+            self.publish(Event::DiskCleaned { cleaned });
+            return;
+        }
         crate::daemon_log!("equipe: the person gave back {} ({} items)", disk::size(cleaned.freed), cleaned.removed.len());
         match reply {
             Some(reply) => {
@@ -324,6 +398,7 @@ impl Runtime {
     /// (one whose removal failed, or kept) goes now, off the loop — rebuilt
     /// when wanted; the worktree and its branch stay. Logged.
     pub(super) fn clear_finished_builds(&mut self, squad: &str, ticket: &Ticket) {
+        self.clear_finished_phones(squad, ticket.id);
         let folder = if ticket.kind.in_home() {
             format!("{squad}.home")
         } else {

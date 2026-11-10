@@ -1,6 +1,6 @@
 //! Requests for permission: the queue, the card's words, and the card — above
 //! the composer for the oldest one, and in the peek for the one picked in
-//! 나에게. Allow once is Y or A, always ⇧A, decline N. The queue and the card's
+//! the Inbox. Allow once is Y or A, always ⇧A, decline N. The queue and the card's
 //! text are plain code, tested without a window; the drawing is below them.
 
 use std::collections::HashMap;
@@ -101,7 +101,7 @@ impl Queue {
         let id = approval.id;
         self.answered.push(id);
         let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
-        Some(Command::Decide { squad: squad.to_owned(), approval: id, decision, words })
+        Some(Command::Decide { squad: squad.to_owned(), approval: id, decision, words, said: None })
     }
 }
 
@@ -117,7 +117,7 @@ pub fn decision_for(key: &str, shift: bool) -> Option<Decision> {
 }
 
 /// The boxes the person writes to a member in, on its request: open once
-/// "R 답장" is pressed, by request.
+/// "R Reply" is pressed, by request.
 #[derive(Default)]
 pub struct Words {
     pub fields: HashMap<u64, Entity<TextareaState>>,
@@ -152,6 +152,8 @@ pub fn noun(tool: &str) -> &'static str {
         equipe_core::desktop_gate::SEND => t!("approvals.noun_send"),
         equipe_core::permissions::BROWSER_CODE => t!("approvals.noun_browser_code"),
         SIGN_IN => t!("approvals.noun_sign_in"),
+        equipe_core::phone::INSTALL => t!("approvals.noun_install"),
+        equipe_core::controls::ENGINE_TOOL => t!("approvals.noun_engine"),
         _ => t!("approvals.noun_other"),
     }
 }
@@ -198,7 +200,8 @@ pub fn files_written(script: &str) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Card {
     pub noun: &'static str,
-    /// The start of the action: 12 lines of browser code, 8 of a message, 3 otherwise.
+    /// The start of the action: 12 lines of browser code, 8 of a message or
+    /// an engine move (who moves, then when each one does), 3 otherwise.
     pub lines: Vec<String>,
     pub more: usize,
     pub writes: Vec<String>,
@@ -211,7 +214,7 @@ impl Card {
     pub fn of(approval: &Approval) -> Self {
         let shown = match approval.tool.as_str() {
             equipe_core::permissions::BROWSER_CODE => 12,
-            equipe_core::desktop_gate::SEND => 8,
+            equipe_core::desktop_gate::SEND | equipe_core::controls::ENGINE_TOOL => 8,
             _ => 3,
         };
         let all: Vec<&str> = approval.action.lines().collect();
@@ -260,7 +263,7 @@ impl Shell {
             None => {
                 let field = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 6).submit_on_enter(true).placeholder(t!("approvals.words_placeholder")));
                 let subscription = cx.subscribe_in(&field, window, move |shell, _, event: &InputEvent, _, cx| {
-                    // Words in the box turn the buttons into "…하고 보내기".
+                    // Words in the box turn the buttons into "… and send".
                     if matches!(event, InputEvent::Change) {
                         cx.notify();
                     }
@@ -359,7 +362,8 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
     let model = &shell.model;
     let approval = model.approvals.get(id)?;
     let card = Card::of(approval);
-    let (mark, hue) = look(model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str()), &approval.member);
+    let role = model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str());
+    let (_, hue) = look(role, &approval.member);
     let waiting = model.approvals.len();
     let handle = cx.entity().downgrade();
     let for_decisions = handle.clone();
@@ -394,17 +398,10 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .border_color(p.accent)
                     .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(21.)).child(Textarea::new(&field).appearance(false).bordered(false)))
                     .child(
-                        div()
-                            .id(("words-close", id))
-                            .flex_none()
+                        crate::ui::x_box(("words-close", id), p.muted, t!("composer.aria_close"))
                             .mt(px(2.))
-                            .px_1()
-                            .rounded(px(4.))
                             .cursor_pointer()
-                            .text_size(px(12.))
-                            .text_color(p.muted)
-                            .hover(|s| s.text_color(p.text).bg(p.wash))
-                            .child("✕")
+                            .hover(move |s| s.bg(p.wash))
                             .on_click(move |_, window, cx| {
                                 close.update(cx, |shell, cx| shell.close_words(id, window, cx)).ok();
                             }),
@@ -414,18 +411,26 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
     });
     let opened = words_box.is_some();
     let open_words = handle.clone();
+    // To a screen reader: who asks what, then what it would run.
+    let asked = format!("{}: {}", approval.member, t!("approvals.allow_question", what = card.noun));
+    let detail = card.lines.iter().cloned().chain(approval.reason.clone()).collect::<Vec<_>>().join("\n");
     Some(
         v_flex()
+            .id(("approval-card", id))
+            .role(Role::Group)
+            .aria_label(asked)
+            .aria_description(detail)
             .w_full()
             .gap_2()
             .child(
                 h_flex()
                     .gap_2()
+                    .overflow_hidden()
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(div().text_color(p.accent).child(t!("approvals.waiting_on_you_mark")))
-                    .child(div().text_color(p.member(hue)).child(format!("{mark} {}", approval.member)))
-                    .children(approval.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}"))))
+                    .child(h_flex().flex_none().gap_1().text_color(p.accent).child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)).child(t!("approvals.waiting_on_you_mark")))
+                    .child(h_flex().min_w_0().flex_shrink(1.).overflow_hidden().gap_1().items_center().text_color(p.member(hue)).child(div().flex_none().child(crate::theme::avatar(p, role, &approval.member, 15.))).child(div().min_w_0().truncate().child(approval.member.clone())))
+                    .children(approval.ticket.map(|t| div().flex_none().text_color(p.muted).child(format!("T-{t}"))))
                     .child(div().flex_1())
                     .when(queue_line && waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting)))),
             )
@@ -489,7 +494,7 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
 }
 
 /// The card of work waiting for the person above the composer gave way to
-/// 나에게 in the sidebar, which holds the same list with its keys: nothing here.
+/// The Inbox in the sidebar, which holds the same list with its keys: nothing here.
 pub fn for_you(_shell: &Shell, _cx: &mut Context<Shell>) -> Option<AnyElement> {
     None
 }
@@ -514,15 +519,40 @@ mod tests {
     fn the_oldest_request_is_the_one_answered() {
         let mut q = queue(vec![approval(1, 2, "Bash", "ls"), approval(2, 3, "Bash", "pwd")]);
         assert_eq!(q.len(), 2);
-        assert_eq!(q.answer("acme", Decision::Allow), Some(Command::Decide { squad: "acme".into(), approval: 1, decision: Decision::Allow, words: None }));
+        assert_eq!(q.answer("acme", Decision::Allow), Some(Command::Decide { squad: "acme".into(), approval: 1, decision: Decision::Allow, words: None, said: None }));
         // Answered: hidden at once, so the next key is for the next request.
         assert_eq!(q.first().map(|a| a.id), Some(2));
-        assert_eq!(q.answer("acme", Decision::Deny), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None }));
+        assert_eq!(q.answer("acme", Decision::Deny), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None, said: None }));
         assert_eq!(q.answer("acme", Decision::Allow), None);
         // The daemon's word clears them; a lost link shows the unresolved again.
         q.resolve(1);
         q.forget_answers();
         assert_eq!(q.ids(), vec![2]);
+    }
+
+    #[test]
+    fn installing_a_tool_is_named_and_never_allowed_always() {
+        let install = approval(1, 2, equipe_core::phone::INSTALL, "Install AXe 1.8.0 …");
+        let card = Card::of(&install);
+        assert_eq!(card.noun, equipe_core::t!("approvals.noun_install"));
+        assert_eq!(card.always, None, "asked each time it comes up, which is once");
+    }
+
+    #[test]
+    fn an_engine_move_the_pm_asked_for_shows_who_moves_and_when_each_one_does_and_is_never_always() {
+        use equipe_core::controls::{Mover, move_words};
+        use equipe_core::protocol::Engine;
+        let mover = |name: &str, working: bool, on_ticket: bool| Mover { name: name.into(), from: Engine::Claude, working, on_ticket, now: false };
+        let action = move_words(equipe_core::i18n::Lang::En, &[mover("designer", false, true), mover("mobile", true, false), mover("mobile-2", false, false)], Engine::Codex, Some("GPT-6.1 Sol"), Some("high"));
+        let card = Card::of(&approval(1, 2, equipe_core::controls::ENGINE_TOOL, &action));
+        assert_eq!(card.noun, equipe_core::t!("approvals.noun_engine"));
+        assert_eq!((card.lines.len(), card.more), (6, 0), "every line on the card: {:?}", card.lines);
+        assert_eq!(card.lines[0], "Move designer, mobile, mobile-2 to Codex");
+        assert!(card.lines[3].starts_with("designer keeps Claude for the ticket in progress"));
+        assert_eq!(card.always, None, "a move is asked each time");
+        let mut q = queue(vec![approval(1, 2, equipe_core::controls::ENGINE_TOOL, &action)]);
+        assert_eq!(q.answer("acme", Decision::Always), None, "no rule to keep");
+        assert!(q.answer("acme", Decision::Allow).is_some());
     }
 
     #[test]
@@ -556,7 +586,7 @@ mod tests {
     #[test]
     fn a_request_is_answered_by_its_id_too() {
         let mut q = queue(vec![approval(1, 2, "Bash", "ls"), approval(2, 3, "Bash", "pwd")]);
-        assert_eq!(q.answer_id("acme", 2, Decision::Deny, None), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None }));
+        assert_eq!(q.answer_id("acme", 2, Decision::Deny, None), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny, words: None, said: None }));
         assert_eq!(q.open_items().map(|a| a.id).collect::<Vec<_>>(), vec![1]);
         assert!(q.get(2).is_none());
     }

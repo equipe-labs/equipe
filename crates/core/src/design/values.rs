@@ -82,6 +82,9 @@ fn color_text(s: &str) -> Option<Color> {
         };
     }
     let lower = s.to_ascii_lowercase();
+    if let Some(c) = css_function(&lower) {
+        return Some(c);
+    }
     let inner = lower.strip_prefix("rgba(").or_else(|| lower.strip_prefix("rgb("))?.strip_suffix(')')?;
     let parts: Vec<&str> = inner.split([',', ' ', '/']).map(str::trim).filter(|p| !p.is_empty()).collect();
     if !(3..=4).contains(&parts.len()) {
@@ -101,6 +104,69 @@ fn color_text(s: &str) -> Option<Color> {
         None => 1.,
     };
     Some(Color { r: channel(parts[0])?, g: channel(parts[1])?, b: channel(parts[2])?, a: alpha.clamp(0., 1.) })
+}
+
+/// `hsl()`, `oklch()` and `oklab()`, as CSS writes them (shadcn's themes are
+/// `oklch(0.205 0 0)`), in sRGB.
+fn css_function(lower: &str) -> Option<Color> {
+    let (name, rest) = lower.split_once('(')?;
+    let name = name.trim();
+    if !["hsl", "hsla", "oklch", "oklab"].contains(&name) {
+        return None;
+    }
+    let inner = rest.strip_suffix(')')?;
+    let (parts, alpha) = match inner.split_once('/') {
+        Some((p, a)) => (p, Some(a.trim().to_owned())),
+        None => (inner, None),
+    };
+    let mut parts: Vec<&str> = parts.split([',', ' ']).map(str::trim).filter(|p| !p.is_empty()).collect();
+    let mut alpha = alpha;
+    if parts.len() == 4 && alpha.is_none() {
+        alpha = parts.pop().map(str::to_owned);
+    }
+    if parts.len() != 3 {
+        return None;
+    }
+    let num = |p: &str, whole: f64| -> Option<f64> {
+        match p.strip_suffix('%') {
+            Some(pct) => pct.parse::<f64>().ok().map(|x| x / 100. * whole),
+            None => p.trim_end_matches("deg").parse::<f64>().ok(),
+        }
+    };
+    let a = match alpha {
+        Some(a) => num(&a, 1.)?.clamp(0., 1.) as f32,
+        None => 1.,
+    };
+    let byte = |x: f64| (x.clamp(0., 1.) * 255.).round() as u8;
+    let (r, g, b) = if name.starts_with("hsl") {
+        let h = num(parts[0], 360.)?.rem_euclid(360.);
+        let s = num(parts[1], 1.)?.clamp(0., 1.);
+        let l = num(parts[2], 1.)?.clamp(0., 1.);
+        let f = |n: f64| {
+            let k = (n + h / 30.) % 12.;
+            l - s * l.min(1. - l) * (k - 3.).min(9. - k).clamp(-1., 1.)
+        };
+        (f(0.), f(8.), f(4.))
+    } else {
+        let l = num(parts[0], 1.)?;
+        let (a_, b_) = if name == "oklch" {
+            let c = num(parts[1], 0.4)?;
+            let h = num(parts[2], 360.)?.to_radians();
+            (c * h.cos(), c * h.sin())
+        } else {
+            (num(parts[1], 0.4)?, num(parts[2], 0.4)?)
+        };
+        let l1 = (l + 0.396_337_777_4 * a_ + 0.215_803_757_3 * b_).powi(3);
+        let m1 = (l - 0.105_561_345_8 * a_ - 0.063_854_172_8 * b_).powi(3);
+        let s1 = (l - 0.089_484_177_5 * a_ - 1.291_485_548 * b_).powi(3);
+        let gamma = |x: f64| if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * x.powf(1. / 2.4) - 0.055 };
+        (
+            gamma(4.076_741_662_1 * l1 - 3.307_711_591_3 * m1 + 0.230_969_929_2 * s1),
+            gamma(-1.268_438_004_6 * l1 + 2.609_757_401_1 * m1 - 0.341_319_396_5 * s1),
+            gamma(-0.004_196_086_3 * l1 - 0.703_418_614_7 * m1 + 1.707_614_701 * s1),
+        )
+    };
+    Some(Color { r: byte(r), g: byte(g), b: byte(b), a })
 }
 
 /// The pixels on the root font size a `rem` is.

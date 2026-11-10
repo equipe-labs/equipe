@@ -58,7 +58,7 @@ pub fn words(compact: &Compact, ran: Duration) -> Words {
     }
 }
 
-/// "메시지 2개 대기 중 · 요약이 끝나면 보낼게요".
+/// "2 messages waiting · sent once the summary is done".
 pub fn queued(n: usize) -> String {
     t!("compact.queued", count = n)
 }

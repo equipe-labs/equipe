@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Connect</title><link rel="stylesheet" href="metrics.css"></head><body><div class="win"><aside class="side"><div style="padding:4px 12px 12px;font-weight:700;font-size:15px">equipe<span style="color:var(--eq-color-dot)">.</span></div>
+<h6>Projects</h6><div class="nav"><i></i>equipe-site</div><div class="nav"><i></i>equipe-app</div><div class="nav"><i></i>equipe-desktop</div>
+<h6>Views</h6><div class="nav">Conversation</div><div class="nav">Tickets</div><div class="nav on">Metrics</div><div class="nav">Settings</div></aside><main class="main">
+<div class="head"><div><h1>Connect metrics</h1><div class="sub">Connect a service and see its numbers right inside equipe. It only reads; it changes nothing.</div></div></div>
+<div class="grid g3" style="align-items:start">
+<div class="card"><div class="tag">1 · Pick services</div>
+<div style="display:flex;gap:12px;align-items:center;padding:12px 0;border-top:1px solid var(--eq-color-line)"><div class="ico">PH</div><div style="flex:1"><div style="font-weight:600;font-size:14px">PostHog</div><div class="note">Visits, languages, referrers, click locations</div></div><span class="btn p">Connect</span></div>
+<div style="display:flex;gap:12px;align-items:center;padding:12px 0;border-top:1px solid var(--eq-color-line)"><div class="ico">GH</div><div style="flex:1"><div style="font-weight:600;font-size:14px">GitHub</div><div class="note">Repository traffic, stars</div></div><span class="btn">Connect</span></div>
+<div style="display:flex;gap:12px;align-items:center;padding:12px 0;border-top:1px solid var(--eq-color-line)"><div class="ico">AS</div><div style="flex:1"><div style="font-weight:600;font-size:14px">App Store Connect</div><div class="note">App downloads</div></div><span class="btn">Connect</span></div>
+<div class="note">You don't need to connect all three. Only what you connect shows on the dashboard.</div></div>
+<div class="card"><div class="tag">2 · Add a key · PostHog</div>
+<div class="note" style="color:var(--eq-color-text)">In PostHog → Settings → Personal API keys, make a <b>read-only</b> key and paste it here.</div>
+<div style="display:flex;flex-direction:column;gap:4px"><label class="l">Personal API key</label><div class="field f">phx_••••••••••••••••<span style="margin-left:auto;width:1px;height:16px;background:var(--eq-color-text)"></span></div></div>
+<div style="display:flex;flex-direction:column;gap:4px"><label class="l">Project ID</label><div class="field">700951</div><div class="note">The number after /project/ in your PostHog address.</div></div>
+<div style="display:flex;gap:8px"><span class="btn p">Check and connect</span><span class="btn g">Back</span></div>
+<div class="note">🔒 The key is kept on this Mac only. It never goes to equipe's servers or your phone.</div></div>
+<div class="card"><div class="tag">3 · Connected</div>
+<div style="display:flex;gap:10px;align-items:center"><span class="badge ok">✓ Connected</span><b style="font-size:15px">PostHog</b></div>
+<div class="note" style="color:var(--eq-color-text)">What can be read from project 700951</div>
+<div style="display:flex;flex-direction:column;gap:6px;font-size:13px"><span>✓ Page visits · languages · referrers</span><span>✓ Download click locations</span><span>✓ Metrics you defined (North Star)</span></div>
+<div class="note">The first numbers fill in a few seconds. After that they refresh once a day, at 7 am.</div>
+<div style="display:flex;gap:8px"><span class="btn p">View dashboard</span><span class="btn">Connect GitHub</span></div>
+<div class="note">Remove a key any time in Settings → Manage connections.</div></div>
+</div>
+<div class="card" style="flex-direction:row;gap:32px;align-items:flex-start"><div style="flex:1"><div class="tag">What do the other two services take?</div></div>
+<div style="flex:2;display:grid;grid-template-columns:1fr 1fr;gap:16px" class="note"><div><b style="color:var(--eq-color-text)">GitHub</b><br>A token with repository read access, from Settings → Developer settings → Tokens. Traffic shows only for an account with write access to the repository.</div><div><b style="color:var(--eq-color-text)">App Store Connect</b><br>An API key (.p8 file), key ID and issuer ID, from Users and Access → Integrations. Sales and Trends read access is enough.</div></div></div>
+</main></div></body></html>

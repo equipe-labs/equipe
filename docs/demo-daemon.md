@@ -13,7 +13,7 @@ What a reviewer's phone gets, on its own copy:
 - a **request for permission** waiting (frontend asks to run `npm run build`). Allowed, the
   member goes on and hands the landing page in; denied, it says so. Another request follows
   20 seconds after each answer — one waits at a time;
-- the **PM answers** what it's told (in Korean when written to in Korean); asked for work
+- the **PM answers** what it's told (in the language it is written to, when equipe speaks it; else the screen's); asked for work
   ("add a FAQ page"), it puts a ticket on the board. Other members answer briefly;
 - **attachments**: `hello` offers `uploads` and the phone's files come in pieces like a real
   daemon's ([Attachments](remote-protocol.md#attachments)). A message with a photo or a file

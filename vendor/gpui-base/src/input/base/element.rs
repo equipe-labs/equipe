@@ -2003,6 +2003,7 @@ impl<M: InputModeKind> TextElement<M> {
         runs: &[TextRun],
         bg_segments: &[(Range<usize>, Hsla)],
         whitespace_indicators: Option<WhitespaceIndicators>,
+        fit: Option<Pixels>,
         window: &mut Window,
     ) -> Vec<LineLayout> {
         let is_single_line = state.is_single_line();
@@ -2032,12 +2033,19 @@ impl<M: InputModeKind> TextElement<M> {
             let mut line_has_background = false;
 
             for (line, line_runs) in placeholder_line_runs(&placeholder_text, runs) {
-                let shaped_line = window.text_system().shape_line(
+                let mut shaped_line = window.text_system().shape_line(
                     line.to_string().into(),
                     font_size,
                     &line_runs,
                     None,
                 );
+                // A hint wider than the field ends in "…" at its edge, not cut mid-letter.
+                if let Some(fit) = fit.filter(|fit| shaped_line.width() > *fit && *fit > px(0.)) {
+                    let ellipsis = window.text_system().shape_line("…".into(), font_size, &placeholder_ellipsis_runs(&line_runs), None);
+                    let keep = shaped_line.closest_index_for_x(fit - ellipsis.width());
+                    let (text, runs) = placeholder_ellipsized(line, &line_runs, keep);
+                    shaped_line = window.text_system().shape_line(text.into(), font_size, &runs, None);
+                }
                 line_has_background |= has_background(&line_runs);
                 placeholder_lines.push(shaped_line);
             }
@@ -2720,6 +2728,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             &runs,
             &document_colors,
             whitespace_indicators,
+            wrap_width,
             window,
         );
 
@@ -3328,6 +3337,36 @@ impl<M: InputModeKind> Element for TextElement<M> {
 }
 
 /// Split placeholder text into display lines and trim runs to each line.
+/// `line`'s first `keep` bytes (back to a character's start, trailing spaces
+/// off) and "…", with `runs` cut to match: the ellipsis takes the last run's style.
+fn placeholder_ellipsized(line: &str, runs: &[TextRun], keep: usize) -> (String, Vec<TextRun>) {
+    let mut keep = keep.min(line.len());
+    while !line.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    let kept = line[..keep].trim_end();
+    let mut left = kept.len();
+    let mut out: Vec<TextRun> = Vec::new();
+    for run in runs {
+        if left == 0 {
+            break;
+        }
+        let take = run.len.min(left);
+        out.push(TextRun { len: take, ..run.clone() });
+        left -= take;
+    }
+    match out.last_mut() {
+        Some(last) => last.len += '…'.len_utf8(),
+        None => out.extend(runs.first().map(|r| TextRun { len: '…'.len_utf8(), ..r.clone() })),
+    }
+    (format!("{kept}…"), out)
+}
+
+/// The style the ellipsis is drawn in: the hint's first run's.
+fn placeholder_ellipsis_runs(runs: &[TextRun]) -> Vec<TextRun> {
+    runs.first().map(|r| vec![TextRun { len: '…'.len_utf8(), ..r.clone() }]).unwrap_or_default()
+}
+
 fn placeholder_line_runs<'a>(
     display_text: &'a str,
     runs: &[TextRun],

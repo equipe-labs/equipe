@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Hsla, Rems, StyleRefinement, UnderlineStyle, px, rems};
+use gpui::{FontWeight, HighlightStyle, Hsla, Rems, SharedString, StyleRefinement, UnderlineStyle, px, rems};
 
 use crate::ColorTokens;
 
@@ -29,6 +29,12 @@ pub struct TextViewStyle {
     // which were fixed.
     link_underline: UnderlineStyle,
     list_item_gap: Rems,
+    // equipe: links whose address starts with this draw no underline, and
+    // the weight `**bold**` draws in (700 makes long Korean replies heavy).
+    strong_weight: FontWeight,
+    // equipe: the colour of a list's bullets and numbers (the text's, unless set).
+    list_marker: Option<Hsla>,
+    plain_links: Option<SharedString>,
     /// The table body background, or the theme surface when `None`. Only
     /// [`Self::on_text_color`] sets it, to let a table on an inverted surface
     /// show that surface.
@@ -54,6 +60,9 @@ impl PartialEq for TextViewStyle {
             && self.table_background == other.table_background
             && self.link_underline == other.link_underline
             && self.list_item_gap == other.list_item_gap
+            && self.plain_links == other.plain_links
+            && self.strong_weight == other.strong_weight
+            && self.list_marker == other.list_marker
             && self.is_dark == other.is_dark
     }
 }
@@ -102,6 +111,9 @@ impl TextViewStyle {
                 ..Default::default()
             },
             list_item_gap: rems(0.),
+            plain_links: None,
+            strong_weight: FontWeight::BOLD,
+            list_marker: None,
             is_dark,
         }
     }
@@ -260,6 +272,43 @@ impl TextViewStyle {
     /// How links are underlined.
     pub fn link_underline(&self) -> UnderlineStyle {
         self.link_underline
+    }
+
+    /// Sets the colour of a list's bullets and numbers. Defaults to the text's.
+    pub fn with_list_marker(mut self, color: Hsla) -> Self {
+        self.list_marker = Some(color);
+        self
+    }
+
+    /// The colour of a list's bullets and numbers.
+    pub fn list_marker(&self) -> Hsla {
+        self.list_marker.unwrap_or(self.foreground)
+    }
+
+    /// Sets the weight strong text draws in. Defaults to bold.
+    pub fn with_strong_weight(mut self, weight: FontWeight) -> Self {
+        self.strong_weight = weight;
+        self
+    }
+
+    /// The weight strong text draws in.
+    pub fn strong_weight(&self) -> FontWeight {
+        self.strong_weight
+    }
+
+    /// Links whose address starts with `prefix` draw in the link colour
+    /// without an underline.
+    pub fn with_plain_links(mut self, prefix: impl Into<SharedString>) -> Self {
+        self.plain_links = Some(prefix.into());
+        self
+    }
+
+    /// How the link to `url` is underlined: not at all if it is a plain one.
+    pub fn link_underline_for(&self, url: &str) -> Option<UnderlineStyle> {
+        match &self.plain_links {
+            Some(prefix) if url.starts_with(prefix.as_ref()) => None,
+            _ => Some(self.link_underline),
+        }
     }
 
     /// The room between a list's items.

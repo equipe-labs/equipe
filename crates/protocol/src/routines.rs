@@ -2,7 +2,9 @@
 //! at the dependencies — that the person sets up once and equipe hands the
 //! PM on its schedule, as if the person had sent it then. Only the person
 //! makes, changes or runs one ([`crate::Command::SaveRoutine`],
-//! [`crate::Command::RunRoutine`]); a member never does.
+//! [`crate::Command::RunRoutine`]); a member never does. The PM may only
+//! propose one ([`RoutineProposal`]), which waits for the person's click
+//! ([`crate::Command::ApproveRoutine`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +57,26 @@ pub struct Routine {
 fn on() -> bool {
     true
 }
+
+/// A routine the PM proposed (`propose_routine`), waiting for the person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutineProposal {
+    pub id: u64,
+    /// What would be saved: `id` 0, on.
+    pub routine: Routine,
+    /// Why, in the person's language.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    /// Who proposed it, and the conversation it was proposed in.
+    pub by: String,
+    pub session: crate::SessionId,
+    /// When, in unix seconds.
+    #[serde(default)]
+    pub proposed_at: u64,
+}
+
+/// How long an empty board waits before the PM is woken, unless the person says otherwise.
+pub const IDLE_WAKE_HOURS: u32 = 24;
 
 #[cfg(test)]
 mod tests {

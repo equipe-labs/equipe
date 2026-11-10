@@ -28,7 +28,7 @@ pub fn is_full(err: &Error) -> bool {
             e.code == rusqlite::ErrorCode::DiskFull || message.as_deref().is_some_and(|m| m.contains("disk is full"))
         }
         Error::ToSqlConversionFailure(e) => {
-            e.downcast_ref::<std::io::Error>().is_some_and(|e| e.raw_os_error() == Some(libc::ENOSPC))
+            e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::StorageFull)
         }
         _ => false,
     }
@@ -45,6 +45,15 @@ pub fn no_room_for_tests() {
 
 /// How long conversations are kept before they are pruned to the record.
 pub const DEFAULT_RETENTION_DAYS: u64 = 90;
+
+/// A conversation with the PM the person opened ([`Journal::record_conversation`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationRecord {
+    pub id: SessionId,
+    pub project: Option<String>,
+    pub engine_session: Option<String>,
+    pub title: Option<String>,
+}
 
 /// A session as the journal keeps it — enough to resume it after a restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +181,18 @@ fn fold_memory(from: &Path, to: &Path, who: &str) -> std::io::Result<usize> {
     Ok(moved)
 }
 
+/// The most lines of a ticket's work [`Journal::ticket_lines`] reads.
+pub const TICKET_WORK_MOST: usize = 4000;
+
+/// A ticket's work as its conversation kept it ([`Journal::ticket_lines`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TicketWorkLines {
+    pub session: SessionId,
+    /// Where the conversation works, as last recorded.
+    pub cwd: Option<PathBuf>,
+    pub lines: Vec<(Entry, Option<u64>)>,
+}
+
 /// Where an editing member's ticket work is checked out, so it can be resumed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TicketWork {
@@ -180,6 +201,41 @@ pub struct TicketWork {
     /// The engine's conversation for this ticket (Claude Code `--resume`).
     pub engine_session: Option<String>,
 }
+
+/// What a member's turn used: its engine and model, the engine's session it
+/// ran in, and its tokens by kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnUse {
+    pub engine: Engine,
+    pub model: Option<String>,
+    pub session: Option<String>,
+    pub tokens: crate::protocol::plan_use::Tokens,
+    /// Of `tokens.cache_write`, written to be kept an hour.
+    pub cache_write_long: u64,
+    pub calls: u64,
+}
+
+impl TurnUse {
+    /// From a turn's usage, as its engine reported it.
+    pub fn of(engine: Engine, model: Option<String>, session: Option<String>, u: &crate::protocol::Usage) -> Self {
+        // An engine that said only the sum: read from the cache, as most of it is.
+        let (write, read) = match (u.cache_write_tokens, u.cache_read_tokens) {
+            (None, None) => (0, u.cache_tokens.unwrap_or(0)),
+            (write, read) => (write.unwrap_or(0), read.unwrap_or(0)),
+        };
+        TurnUse {
+            engine,
+            model,
+            session,
+            tokens: crate::protocol::plan_use::Tokens { input: u.input_tokens.unwrap_or(0), output: u.output_tokens.unwrap_or(0), cache_write: write, cache_read: read },
+            cache_write_long: u.cache_write_long_tokens.unwrap_or(0).min(write),
+            calls: u.calls.unwrap_or(1),
+        }
+    }
+}
+
+/// How long turns and waits are kept for the retros: a quarter.
+const KEPT_FOR_RETROS: i64 = 92 * 24 * 60 * 60;
 
 fn now() -> i64 {
     std::time::SystemTime::now()
@@ -211,6 +267,7 @@ fn mode_str(mode: Mode) -> &'static str {
 fn status_str(status: TicketStatus) -> &'static str {
     match status {
         TicketStatus::Proposed => "proposed",
+        TicketStatus::Idea => "idea",
         TicketStatus::Todo => "todo",
         TicketStatus::InProgress => "in_progress",
         TicketStatus::Waiting => "waiting",
@@ -223,6 +280,7 @@ fn status_str(status: TicketStatus) -> &'static str {
 fn status_from(s: &str) -> TicketStatus {
     match s {
         "proposed" => TicketStatus::Proposed,
+        "idea" => TicketStatus::Idea,
         "in_progress" => TicketStatus::InProgress,
         "waiting" => TicketStatus::Waiting,
         "review" => TicketStatus::Review,
@@ -347,12 +405,61 @@ impl Journal {
                rule TEXT PRIMARY KEY,
                by TEXT NOT NULL,
                added_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS reviews (
+               ticket INTEGER PRIMARY KEY,
+               body TEXT
+             );
+             CREATE TABLE IF NOT EXISTS turns (
+               member TEXT NOT NULL,
+               role TEXT NOT NULL,
+               ticket INTEGER,
+               began INTEGER NOT NULL,
+               ended INTEGER NOT NULL,
+               outcome TEXT NOT NULL,
+               tokens INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS turns_ended ON turns(ended);
+             CREATE TABLE IF NOT EXISTS waits (
+               kind TEXT NOT NULL,
+               member TEXT NOT NULL,
+               ticket INTEGER,
+               what TEXT NOT NULL,
+               asked INTEGER NOT NULL,
+               answered INTEGER NOT NULL,
+               outcome TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS conversations (
+               id INTEGER PRIMARY KEY,
+               project TEXT,
+               engine_session TEXT,
+               title TEXT,
+               open INTEGER NOT NULL DEFAULT 1,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL,
+               cwd TEXT
              );",
         )?;
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT", []);
+        // What a member's turn used, by kind, on which engine and model, in
+        // which of the engine's sessions (`crate::plan_use`).
+        for column in [
+            "engine TEXT",
+            "model TEXT",
+            "session TEXT",
+            "input INTEGER",
+            "output INTEGER",
+            "cache_write INTEGER",
+            "cache_write_long INTEGER",
+            "cache_read INTEGER",
+            "calls INTEGER",
+        ] {
+            let _ = conn.execute(&format!("ALTER TABLE turns ADD COLUMN {column}"), []);
+        }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN off_main TEXT", []);
         // The person's say on how soon and in which order: normal and by number
         // for tickets from before.
@@ -364,6 +471,8 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN images TEXT", []);
         // The design QA ticket a hand-in waits on before the person's review.
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN design_qa INTEGER", []);
+        // The plan it was cut from, or reviews: its path.
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN plan TEXT", []);
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -522,6 +631,15 @@ impl Journal {
         self.set_meta("build_debug", debug.word())
     }
 
+    /// The looks the squad's screens told, a machine each (`crate::looks`).
+    pub fn screen_looks(&self) -> crate::looks::Looks {
+        self.meta(crate::looks::KEY).and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_screen_looks(&self, looks: &crate::looks::Looks) -> Result<()> {
+        self.set_meta(crate::looks::KEY, &serde_json::to_string(looks).unwrap_or_default())
+    }
+
     /// The person turned off guesses at their next message.
     pub fn suggestions_off(&self) -> bool {
         self.meta("suggestions").as_deref() == Some("off")
@@ -559,6 +677,54 @@ impl Journal {
         self.set_meta("pm_accepts", if on { "on" } else { "off" })
     }
 
+    /// "All by words": the person's own words decide high-risk requests too,
+    /// read back and confirmed. Off unless they turned it on, at the Mac.
+    pub fn words_all(&self) -> bool {
+        self.meta("words_all").as_deref() == Some("on")
+    }
+
+    pub fn set_words_all(&self, on: bool) -> Result<()> {
+        self.set_meta("words_all", if on { "on" } else { "off" })
+    }
+
+    /// How many subagents each member runs at once, where its engine has
+    /// them, as the person set it; `None`: each engine's own.
+    pub fn subagents_at_once(&self) -> Option<u32> {
+        self.meta("subagents_at_once").and_then(|n| n.parse().ok()).map(equipe_protocol::subagents_at_once)
+    }
+
+    pub fn set_subagents_at_once(&self, at_once: Option<u32>) -> Result<()> {
+        self.set_meta("subagents_at_once", &at_once.map(|n| equipe_protocol::subagents_at_once(n).to_string()).unwrap_or_default())
+    }
+
+    /// Which engine reviews the designer's work; auto unless the person set it.
+    pub fn design_reviewer(&self) -> equipe_protocol::engines::Reviewer {
+        self.meta("design_reviewer").and_then(|v| equipe_protocol::engines::Reviewer::parse(&v)).unwrap_or_default()
+    }
+
+    pub fn set_design_reviewer(&self, reviewer: equipe_protocol::engines::Reviewer) -> Result<()> {
+        self.set_meta("design_reviewer", reviewer.code())
+    }
+
+    /// What new members of a role start with on an engine, where the person
+    /// set it; every other role takes equipe's recommendation.
+    pub fn role_models(&self) -> Vec<equipe_protocol::RoleModel> {
+        self.meta("role_models").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    /// Keep `default` for its role and engine: one with neither a model nor
+    /// an effort goes back to the recommendation.
+    pub fn set_role_model(&self, default: equipe_protocol::RoleModel) -> Result<Vec<equipe_protocol::RoleModel>> {
+        let mut all = self.role_models();
+        all.retain(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine));
+        if default.model.is_some() || default.effort.is_some() {
+            all.push(default);
+        }
+        all.sort_by(|a, b| (a.role.as_str(), a.engine as u8).cmp(&(b.role.as_str(), b.engine as u8)));
+        self.set_meta("role_models", &serde_json::to_string(&all).unwrap_or_default())?;
+        Ok(all)
+    }
+
     /// What engine switching keeps for the squad (`runtime/engines.rs`), as JSON.
     pub fn engines_record(&self) -> Option<String> {
         self.meta("engines")
@@ -566,6 +732,22 @@ impl Journal {
 
     pub fn set_engines_record(&self, json: &str) -> Result<()> {
         self.set_meta("engines", json)
+    }
+
+    /// The hand-over packet session `id` opened with, after a move to the
+    /// other engine (`runtime/engines.rs`), as it was sent.
+    pub fn hand_over_packet(&self, id: SessionId) -> Option<String> {
+        self.meta(&format!("hand_over:{id}"))
+    }
+
+    pub fn set_hand_over_packet(&self, id: SessionId, packet: &str) -> Result<()> {
+        self.set_meta(&format!("hand_over:{id}"), packet)
+    }
+
+    /// A packet no move on record names any more.
+    pub fn forget_hand_over_packet(&self, id: SessionId) -> Result<()> {
+        self.conn.execute("DELETE FROM meta WHERE key = ?1", params![format!("hand_over:{id}")])?;
+        Ok(())
     }
 
     /// The members equipe brought in to help, which it lets go when idle.
@@ -665,6 +847,91 @@ impl Journal {
         self.set_meta("routines", &serde_json::to_string(routines).unwrap_or_else(|_| "[]".into()))
     }
 
+    /// The squad's signals (`crate::signals`), in the order turned on.
+    pub fn signals(&self) -> Vec<crate::signals::Signal> {
+        self.meta("signals").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_signals(&self, signals: &[crate::signals::Signal]) -> Result<()> {
+        self.set_meta("signals", &serde_json::to_string(signals).unwrap_or_else(|_| "[]".into()))
+    }
+
+    /// Each signal's readings and whether its failing was told, by its key.
+    pub fn signal_states(&self) -> std::collections::BTreeMap<String, crate::signals::State> {
+        self.meta("signal_states").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_signal_states(&self, states: &std::collections::BTreeMap<String, crate::signals::State>) -> Result<()> {
+        self.set_meta("signal_states", &serde_json::to_string(states).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// Hours an empty board waits before the PM is woken; 0: never.
+    pub fn idle_wake_hours(&self) -> u32 {
+        self.meta("idle_wake_hours").and_then(|h| h.parse().ok()).unwrap_or(crate::protocol::routines::IDLE_WAKE_HOURS)
+    }
+
+    pub fn set_idle_wake_hours(&self, hours: u32) -> Result<()> {
+        self.set_meta("idle_wake_hours", &hours.to_string())
+    }
+
+    /// When the person last did something in the squad — made it, wrote to a
+    /// member — in unix seconds; the board's own times count besides.
+    /// `None`: not since this was kept.
+    pub fn active_at(&self) -> Option<u64> {
+        self.meta("active_at").and_then(|at| at.parse().ok())
+    }
+
+    pub fn set_active_at(&self, at: u64) -> Result<()> {
+        self.set_meta("active_at", &at.to_string())
+    }
+
+    /// Whether the weekly routine `role` brings was ever added (it comes once).
+    pub fn role_routine_added(&self, role: &str) -> bool {
+        self.meta(&format!("{role}_check_added")).is_some()
+    }
+
+    pub fn set_role_routine_added(&self, role: &str) -> Result<()> {
+        self.set_meta(&format!("{role}_check_added"), "1")
+    }
+
+    /// The designer's weekly review among the routines (`crate::design::review`),
+    /// by its id: added with the designer, gone once the person deletes it.
+    pub fn design_review_routine(&self) -> Option<u32> {
+        self.meta("design_review_routine").and_then(|id| id.parse().ok())
+    }
+
+    pub fn set_design_review_routine(&self, id: Option<u32>) -> Result<()> {
+        self.set_meta("design_review_routine", &id.map(|id| id.to_string()).unwrap_or_default())
+    }
+
+    /// The PM's weekly retro among the routines (`crate::retro`), by its id:
+    /// added with the PM, gone once the person deletes it.
+    pub fn retro_routine(&self) -> Option<u32> {
+        self.meta("retro_routine").and_then(|id| id.parse().ok())
+    }
+
+    pub fn set_retro_routine(&self, id: Option<u32>) -> Result<()> {
+        self.set_meta("retro_routine", &id.map(|id| id.to_string()).unwrap_or_default())
+    }
+
+    /// When the PM was last woken over an empty board, in unix seconds.
+    pub fn idle_woken_at(&self) -> Option<u64> {
+        self.meta("idle_woken_at").and_then(|at| at.parse().ok())
+    }
+
+    pub fn set_idle_woken_at(&self, at: u64) -> Result<()> {
+        self.set_meta("idle_woken_at", &at.to_string())
+    }
+
+    /// When the PM was last asked to look at the person's ideas, in unix seconds.
+    pub fn ideas_woken_at(&self) -> Option<u64> {
+        self.meta("ideas_woken_at").and_then(|at| at.parse().ok())
+    }
+
+    pub fn set_ideas_woken_at(&self, at: u64) -> Result<()> {
+        self.set_meta("ideas_woken_at", &at.to_string())
+    }
+
     pub fn set_hq(&self, path: Option<&Path>) -> Result<()> {
         self.set_meta("hq", &path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
     }
@@ -677,8 +944,8 @@ impl Journal {
         let at = now();
         self.conn.execute(
             "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
-                                  note, created_at, updated_at, kind, priority, rank)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15)",
+                                  note, created_at, updated_at, kind, priority, rank, plan)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16)",
             params![
                 id,
                 t.title,
@@ -695,6 +962,7 @@ impl Journal {
                 t.kind.label(),
                 t.priority.label(),
                 t.rank,
+                t.plan,
             ],
         )?;
         Ok(id as TicketId)
@@ -705,7 +973,7 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20
              WHERE id = ?11",
             params![
                 t.title,
@@ -727,6 +995,7 @@ impl Journal {
                 remaining_str(&t.remaining),
                 remaining_str(&t.images),
                 t.design_qa,
+                t.plan,
             ],
         )?;
         Ok(())
@@ -764,7 +1033,7 @@ impl Journal {
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
-                    priority, rank, remaining, images, design_qa
+                    priority, rank, remaining, images, design_qa, plan
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -791,6 +1060,7 @@ impl Journal {
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
                 updated_at: r.get::<_, Option<i64>>(15)?.map(|at| at.max(0) as u64),
                 design_qa: r.get(20)?,
+                plan: r.get(21)?,
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -830,6 +1100,30 @@ impl Journal {
         Ok(())
     }
 
+    /// Keep Nemotron's review of its ticket, in place of one before.
+    pub fn save_review(&self, review: &equipe_protocol::review::CodeReview) -> Result<()> {
+        let body = serde_json::to_string(review).map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute("INSERT OR REPLACE INTO reviews (ticket, body) VALUES (?1, ?2)", params![review.ticket, body])?;
+        Ok(())
+    }
+
+    /// Forget `ticket`'s review: its work changed since.
+    pub fn forget_review(&self, ticket: TicketId) -> Result<()> {
+        self.conn.execute("DELETE FROM reviews WHERE ticket = ?1", [ticket])?;
+        Ok(())
+    }
+
+    /// The reviews of `tickets` that were kept, in their order.
+    pub fn reviews(&self, tickets: &[TicketId]) -> Result<Vec<equipe_protocol::review::CodeReview>> {
+        let mut stmt = self.conn.prepare("SELECT body FROM reviews WHERE ticket = ?1")?;
+        let mut found = Vec::new();
+        for id in tickets {
+            let body: Option<String> = stmt.query_row([id], |r| r.get(0)).optional()?;
+            found.extend(body.and_then(|b| serde_json::from_str(&b).ok()));
+        }
+        Ok(found)
+    }
+
     /// How long tickets took, from first being assigned to first being handed
     /// in (or put down for the person): `(member, kind, seconds)`, newest first.
     pub fn ticket_times(&self) -> Result<Vec<(String, TicketKind, u64)>> {
@@ -858,6 +1152,93 @@ impl Journal {
     pub fn turn_times(&self, role: &str) -> Result<Vec<u64>> {
         let mut stmt = self.conn.prepare("SELECT seconds FROM turn_times WHERE role = ?1 ORDER BY at DESC, rowid DESC LIMIT 50")?;
         let rows = stmt.query_map([role], |r| Ok(r.get::<_, i64>(0)?.max(0) as u64))?;
+        rows.collect()
+    }
+
+    /// Keep a member's turn — who, on what, how long, how it ended, what it
+    /// used — for the weekly retro. A quarter's worth is kept.
+    pub fn record_turn(&self, t: &crate::retro::Turn) -> Result<()> {
+        self.record_turn_use(t, None)
+    }
+
+    /// Keep a member's turn with what it used, by kind ([`TurnUse`]).
+    pub fn record_turn_use(&self, t: &crate::retro::Turn, used: Option<&TurnUse>) -> Result<()> {
+        let n = |f: fn(&TurnUse) -> u64| used.map(|u| f(u) as i64);
+        self.conn.execute(
+            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens, engine, model, session, input, output, cache_write, cache_write_long, cache_read, calls)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                t.member,
+                t.role,
+                t.ticket,
+                t.began as i64,
+                t.ended as i64,
+                t.outcome,
+                t.tokens as i64,
+                used.map(|u| engine_str(u.engine)),
+                used.and_then(|u| u.model.clone()),
+                used.and_then(|u| u.session.clone()),
+                n(|u| u.tokens.input),
+                n(|u| u.tokens.output),
+                n(|u| u.tokens.cache_write),
+                n(|u| u.cache_write_long),
+                n(|u| u.tokens.cache_read),
+                n(|u| u.calls)
+            ],
+        )?;
+        self.conn.execute("DELETE FROM turns WHERE ended < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// The turns that ended at or after `since`, oldest first.
+    pub fn turns_since(&self, since: u64) -> Result<Vec<crate::retro::Turn>> {
+        let mut stmt = self.conn.prepare("SELECT member, role, ticket, began, ended, outcome, tokens FROM turns WHERE ended >= ?1 ORDER BY ended, rowid")?;
+        let rows = stmt.query_map([since as i64], |r| {
+            Ok(crate::retro::Turn {
+                member: r.get(0)?,
+                role: r.get(1)?,
+                ticket: r.get(2)?,
+                began: r.get::<_, i64>(3)?.max(0) as u64,
+                ended: r.get::<_, i64>(4)?.max(0) as u64,
+                outcome: r.get(5)?,
+                tokens: r.get::<_, i64>(6)?.max(0) as u64,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Keep what a member waited on the person for, once answered.
+    pub fn record_wait(&self, w: &crate::retro::Wait) -> Result<()> {
+        let answered = w.answered.unwrap_or(w.asked);
+        self.conn.execute(
+            "INSERT INTO waits (kind, member, ticket, what, asked, answered, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![w.kind, w.member, w.ticket, w.what, w.asked as i64, answered as i64, w.outcome],
+        )?;
+        self.conn.execute("DELETE FROM waits WHERE answered < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// The waits answered at or after `since`, oldest first.
+    pub fn waits_since(&self, since: u64) -> Result<Vec<crate::retro::Wait>> {
+        let mut stmt = self.conn.prepare("SELECT kind, member, ticket, what, asked, answered, outcome FROM waits WHERE answered >= ?1 ORDER BY answered, rowid")?;
+        let rows = stmt.query_map([since as i64], |r| {
+            Ok(crate::retro::Wait {
+                kind: r.get(0)?,
+                member: r.get(1)?,
+                ticket: r.get(2)?,
+                what: r.get(3)?,
+                asked: r.get::<_, i64>(4)?.max(0) as u64,
+                answered: Some(r.get::<_, i64>(5)?.max(0) as u64),
+                outcome: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Every ticket's record since `since`, oldest first, each with its ticket.
+    pub fn ticket_events_since(&self, since: u64) -> Result<Vec<(TicketId, TicketEntry)>> {
+        let mut stmt = self.conn.prepare("SELECT ticket, at, by, kind, text FROM ticket_events WHERE at >= ?1 ORDER BY at, ticket, seq")?;
+        let rows = stmt.query_map([since as i64], |r| Ok((r.get(0)?, TicketEntry { at: r.get::<_, i64>(1)?.max(0) as u64, by: r.get(2)?, kind: r.get(3)?, text: r.get(4)? })))?;
         rows.collect()
     }
 
@@ -916,6 +1297,7 @@ impl Journal {
     }
 
     pub fn set_engine_session(&self, id: SessionId, engine_session: &str) -> Result<()> {
+        self.touch_conversation(id, "engine_session", engine_session)?;
         self.touch(id, "engine_session", engine_session)
     }
 
@@ -926,16 +1308,72 @@ impl Journal {
 
     /// Forget the engine's conversation: the next turn starts a fresh one.
     pub fn clear_engine_session(&self, id: SessionId) -> Result<()> {
+        self.touch_conversation(id, "engine_session", None::<String>)?;
         self.touch(id, "engine_session", None::<String>)
     }
 
-    /// The first message names the session; later ones don't.
-    pub fn set_title_if_empty(&self, id: SessionId, title: &str) -> Result<()> {
+    fn touch_conversation(&self, id: SessionId, set: &str, value: impl rusqlite::ToSql) -> Result<()> {
+        self.conn.execute(&format!("UPDATE conversations SET {set} = ?1, updated_at = ?2 WHERE id = ?3"), params![value, now(), id as i64])?;
+        Ok(())
+    }
+
+    /// A conversation the person opened with the PM, about `project`
+    /// (`None`: the whole squad). Its lines are kept as any session's.
+    /// A conversation with the PM, held where the PM works (`cwd`), which
+    /// its replies' pictures are read from.
+    pub fn record_conversation(&self, id: SessionId, project: Option<&str>, cwd: &Path) -> Result<()> {
+        let t = now();
         self.conn.execute(
-            "UPDATE sessions SET title = ?1 WHERE id = ?2 AND title IS NULL",
-            params![title, id as i64],
+            "INSERT OR REPLACE INTO conversations (id, project, open, created_at, updated_at, cwd) VALUES (?1, ?2, 1, ?3, ?3, ?4)",
+            params![id as i64, project, t, cwd.to_string_lossy()],
         )?;
         Ok(())
+    }
+
+    pub fn set_conversation_project(&self, id: SessionId, project: Option<&str>) -> Result<()> {
+        self.touch_conversation(id, "project", project)
+    }
+
+    /// Put away: it leaves the list; its lines stay as long as any.
+    pub fn close_conversation(&self, id: SessionId) -> Result<()> {
+        self.touch_conversation(id, "open", false)
+    }
+
+    /// The conversations put away, the latest first: at most `limit`.
+    pub fn put_away(&self, limit: usize) -> Result<Vec<equipe_protocol::PutAway>> {
+        let mut stmt = self.conn.prepare("SELECT id, project, title, updated_at FROM conversations WHERE open = 0 ORDER BY updated_at DESC, id DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(equipe_protocol::PutAway { session: r.get::<_, i64>(0)? as u64, project: r.get(1)?, title: r.get(2)?, at: r.get(3)? })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// A conversation put away, taken up again: back on the list, as it was.
+    /// None if there is no such conversation, or it is open.
+    pub fn reopen_conversation(&self, id: SessionId) -> Result<Option<ConversationRecord>> {
+        let changed = self.conn.execute("UPDATE conversations SET open = 1, updated_at = ?1 WHERE id = ?2 AND open = 0", params![now(), id as i64])?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(self.conversations()?.into_iter().find(|c| c.id == id))
+    }
+
+    /// The conversations with the PM still open, oldest first.
+    pub fn conversations(&self) -> Result<Vec<ConversationRecord>> {
+        let mut stmt = self.conn.prepare("SELECT id, project, engine_session, title FROM conversations WHERE open = 1 ORDER BY created_at, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ConversationRecord { id: r.get::<_, i64>(0)? as u64, project: r.get(1)?, engine_session: r.get(2)?, title: r.get(3)? })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// The first finished title wins; later attempts never rename it.
+    pub fn set_title_if_empty(&self, id: SessionId, title: &str) -> Result<bool> {
+        let mut changed = false;
+        for table in ["sessions", "conversations"] {
+            changed |= self.conn.execute(&format!("UPDATE {table} SET title = ?1 WHERE id = ?2 AND title IS NULL"), params![title, id as i64])? > 0;
+        }
+        Ok(changed)
     }
 
     pub fn add_tokens(&self, id: SessionId, tokens: u64) -> Result<()> {
@@ -985,14 +1423,105 @@ impl Journal {
         Ok(())
     }
 
+    /// The person's messages whose kept line holds `needle`, each with where
+    /// it is kept (session, line): for a look through what was sent
+    /// (`crate::kept::rescue`).
+    pub fn messages_holding(&self, needle: &str) -> Result<Vec<(SessionId, i64, Entry)>> {
+        let mut stmt = self.conn.prepare("SELECT session, seq, body FROM entries WHERE instr(body, ?1) > 0 ORDER BY session, seq")?;
+        let rows = stmt.query_map([needle], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?;
+        Ok(rows
+            .filter_map(|row| row.ok())
+            .filter_map(|(session, seq, body)| Some((session as SessionId, seq, serde_json::from_str::<Entry>(&body).ok()?)))
+            .filter(|(.., entry)| matches!(entry, Entry::User { .. }))
+            .collect())
+    }
+
+    /// Line `seq` of `session`'s conversation, as `entry` now has it — when it
+    /// was said stays.
+    pub fn rewrite(&self, session: SessionId, seq: i64, entry: &Entry) -> Result<()> {
+        let body = serde_json::to_string(entry).map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute("UPDATE entries SET body = ?1 WHERE session = ?2 AND seq = ?3", params![body, session as i64, seq])?;
+        Ok(())
+    }
+
+    /// Everything waiting for members' next turns, of every kind.
+    pub fn all_waiting(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT text FROM waiting ORDER BY session, kind, seq")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    /// Whether this journal's sent attachments were looked through once
+    /// already ([`crate::kept::rescue`]).
+    pub fn kept_rescued(&self) -> bool {
+        self.meta("kept_rescued").is_some()
+    }
+
+    pub fn set_kept_rescued(&self) -> Result<()> {
+        self.set_meta("kept_rescued", "1")
+    }
+
+    /// Whether the PM's change requests left as plain comments on work in
+    /// review were sent back to their members once already.
+    pub fn change_requests_recovered(&self) -> bool {
+        self.meta("change_requests_recovered").is_some()
+    }
+
+    pub fn set_change_requests_recovered(&self) -> Result<()> {
+        self.set_meta("change_requests_recovered", "1")
+    }
+
     fn entries(&self, id: SessionId, limit: Option<u64>) -> Result<Vec<Entry>> {
+        Ok(self.timed_entries(id, limit)?.0)
+    }
+
+    /// The lines, and when each was kept (unix seconds; a time that can't be
+    /// one, `None`) — a message when it came, a reply when it was done.
+    fn timed_entries(&self, id: SessionId, limit: Option<u64>) -> Result<(Vec<Entry>, Vec<Option<u64>>)> {
         let mut stmt = self.conn.prepare(
-            "SELECT body FROM (SELECT seq, body FROM entries WHERE session = ?1 ORDER BY seq DESC LIMIT ?2)
+            "SELECT body, at FROM (SELECT seq, body, at FROM entries WHERE session = ?1 ORDER BY seq DESC LIMIT ?2)
              ORDER BY seq ASC",
         )?;
         let limit = limit.map_or(-1, |l| l as i64);
-        let rows = stmt.query_map(params![id as i64, limit], |r| r.get::<_, String>(0))?;
-        Ok(rows.filter_map(|b| b.ok().and_then(|b| serde_json::from_str(&b).ok())).collect())
+        let rows = stmt.query_map(params![id as i64, limit], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        Ok(rows
+            .filter_map(|row| row.ok().and_then(|(body, at)| Some((serde_json::from_str::<Entry>(&body).ok()?, u64::try_from(at).ok().filter(|&at| at > 0)))))
+            .unzip())
+    }
+
+    /// The latest work on `ticket` in whichever conversation did it: the
+    /// session, where it works, and its lines from the ticket's header
+    /// (`── T-<n> · …`) to the next ticket's or a thread's start, each with
+    /// when it was kept — at most [`TICKET_WORK_MOST`] lines. `None`: no
+    /// conversation has worked on it.
+    pub fn ticket_lines(&self, ticket: TicketId) -> Result<Option<TicketWorkLines>> {
+        let header = format!("── T-{ticket} ");
+        let found: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT session, MAX(seq) FROM entries WHERE instr(body, ?1) > 0 AND instr(body, '\"kind\":\"note\"') > 0 GROUP BY session ORDER BY MAX(at) DESC LIMIT 1",
+                [&header],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((session, from)) = found else { return Ok(None) };
+        let cwd: Option<String> = self.conn.query_row("SELECT cwd FROM sessions WHERE id = ?1", [session], |r| r.get(0)).optional()?;
+        let mut stmt = self.conn.prepare("SELECT body, at FROM entries WHERE session = ?1 AND seq >= ?2 ORDER BY seq ASC LIMIT ?3")?;
+        let rows = stmt.query_map(params![session, from, TICKET_WORK_MOST as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut lines = Vec::new();
+        for (body, at) in rows.filter_map(|row| row.ok()) {
+            let Ok(entry) = serde_json::from_str::<Entry>(&body) else { continue };
+            let ends = match &entry {
+                Entry::Note { text, .. } => text.starts_with("── T-") && !text.starts_with(&header),
+                Entry::Thread { .. } => true,
+                _ => false,
+            };
+            if ends && !lines.is_empty() {
+                break;
+            }
+            lines.push((entry, u64::try_from(at).ok().filter(|&at| at > 0)));
+        }
+        Ok(Some(TicketWorkLines { session: session as SessionId, cwd: cwd.map(PathBuf::from), lines }))
     }
 
     /// The last `limit` lines of a session's conversation, oldest first.
@@ -1005,16 +1534,24 @@ impl Journal {
         self.entries(id, None)
     }
 
+    /// The same, with when each line was said, one per line.
+    pub fn conversation_at(&self, id: SessionId) -> Result<(Vec<Entry>, Vec<Option<u64>>)> {
+        self.timed_entries(id, None)
+    }
+
     /// The latest `limit` lines of the squad's conversations that name a path
     /// (a `/` in them), newest first, each with where its session works — what
-    /// a reply's pictures and folders are read from (`crate::visuals`).
+    /// a reply's pictures and folders are read from (`crate::visuals`). The
+    /// person's conversations with the PM count, from where the PM works (one
+    /// opened before that was kept: where the open PM works now).
     pub fn said_with_paths(&self, limit: u64) -> Result<Vec<(PathBuf, Entry)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.cwd, e.body FROM entries e JOIN sessions s ON s.id = e.session
-             WHERE e.body LIKE '%/%' ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
+            "SELECT COALESCE(s.cwd, c.cwd, (SELECT p.cwd FROM sessions p WHERE p.role = 'pm' AND p.open = 1 ORDER BY p.id LIMIT 1)), e.body
+             FROM entries e LEFT JOIN sessions s ON s.id = e.session LEFT JOIN conversations c ON c.id = e.session
+             WHERE (e.body LIKE '%/%' OR e.body LIKE '%![%') AND (s.id IS NOT NULL OR c.id IS NOT NULL) ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd), serde_json::from_str(&body).ok()?))).collect())
+        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd?), serde_json::from_str(&body).ok()?))).collect())
     }
 
     pub fn open_sessions(&self) -> Result<Vec<SessionRecord>> {
@@ -1111,7 +1648,7 @@ mod tests {
         j.record_session(&record(1)).unwrap();
         let pages: i64 = j.conn.query_row("PRAGMA max_page_count = 1", [], |r| r.get(0)).unwrap();
         assert!(pages >= 1);
-        let err = j.append(1, &Entry::User { text: "x".repeat(200_000) }).unwrap_err();
+        let err = j.append(1, &Entry::User { text: "x".repeat(200_000), kept: Vec::new() }).unwrap_err();
         assert!(is_full(&err), "{err:?}");
         assert!(!is_full(&Error::QueryReturnedNoRows));
         // What it holds is still there to read; a lock left behind would fail this.
@@ -1139,6 +1676,104 @@ mod tests {
     }
 
     #[test]
+    fn a_squad_keeps_how_many_subagents_a_member_runs_at_once_within_what_engines_take() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        assert_eq!(j.subagents_at_once(), None, "unset: each engine's own");
+        j.set_subagents_at_once(Some(4)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(4));
+        // Never none (both engines refuse 0), never past what equipe offers.
+        j.set_subagents_at_once(Some(0)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(1));
+        j.set_subagents_at_once(Some(500)).unwrap();
+        assert_eq!(j.subagents_at_once(), Some(equipe_protocol::MOST_SUBAGENTS_AT_ONCE));
+        // Back to each engine's own.
+        j.set_subagents_at_once(None).unwrap();
+        assert_eq!(j.subagents_at_once(), None);
+    }
+
+    #[test]
+    fn a_squad_keeps_who_reviews_its_designers_work_auto_until_set() {
+        use equipe_protocol::engines::Reviewer;
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        assert_eq!(j.design_reviewer(), Reviewer::Auto);
+        j.set_design_reviewer(Reviewer::Same).unwrap();
+        assert_eq!(j.design_reviewer(), Reviewer::Same);
+        j.set_design_reviewer(Reviewer::Other).unwrap();
+        assert_eq!(j.design_reviewer(), Reviewer::Other);
+        j.set_design_reviewer(Reviewer::Auto).unwrap();
+        assert_eq!(j.design_reviewer(), Reviewer::Auto);
+    }
+
+    #[test]
+    fn what_a_conversation_with_the_pm_says_is_read_from_where_the_pm_works() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        let pm = SessionRecord { cwd: "/squad/pm".into(), member: Some(Member { role: "pm".into(), name: "pm".into() }), ..record(1) };
+        j.record_session(&pm).unwrap();
+        j.record_conversation(50, Some("web"), Path::new("/squad/pm")).unwrap();
+        j.append(50, &Entry::Reply { text: "![shot](shots/home.png)".into() }).unwrap();
+        // One kept before conversations knew where they were held.
+        j.record_conversation(51, None, Path::new("/elsewhere")).unwrap();
+        j.conn.execute("UPDATE conversations SET cwd = NULL WHERE id = 51", []).unwrap();
+        j.append(51, &Entry::Reply { text: "see /tmp/a.png".into() }).unwrap();
+        // A line of nothing known is left out.
+        j.append(99, &Entry::Reply { text: "/nowhere".into() }).unwrap();
+        let said = j.said_with_paths(10).unwrap();
+        let cwds: Vec<_> = said.iter().map(|(cwd, _)| cwd.to_string_lossy().into_owned()).collect();
+        assert_eq!(cwds, ["/squad/pm", "/squad/pm"], "{said:?}");
+    }
+
+    #[test]
+    fn a_conversation_put_away_is_kept_listed_and_taken_up_again() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        j.record_conversation(50, Some("web"), Path::new("/squad/pm")).unwrap();
+        j.record_conversation(51, None, Path::new("/squad/pm")).unwrap();
+        j.record_conversation(52, Some("app"), Path::new("/squad/pm")).unwrap();
+        j.set_title_if_empty(50, "the pricing page").unwrap();
+        j.append(50, &Entry::User { text: "the pricing page".into(), kept: Vec::new() }).unwrap();
+        j.close_conversation(50).unwrap();
+        j.close_conversation(52).unwrap();
+        j.conn.execute("UPDATE conversations SET updated_at = 100 WHERE id = 50", []).unwrap();
+        j.conn.execute("UPDATE conversations SET updated_at = 200 WHERE id = 52", []).unwrap();
+        let away = j.put_away(10).unwrap();
+        assert_eq!(away.iter().map(|c| c.session).collect::<Vec<_>>(), [52, 50], "the latest first, open ones not");
+        assert_eq!(away[1].title.as_deref(), Some("the pricing page"));
+        assert_eq!(away[1].project.as_deref(), Some("web"));
+        assert_eq!(away[1].at, 100);
+        assert_eq!(j.put_away(1).unwrap().len(), 1);
+        let back = j.reopen_conversation(50).unwrap().expect("taken up");
+        assert_eq!((back.id, back.project.as_deref(), back.title.as_deref()), (50, Some("web"), Some("the pricing page")));
+        assert_eq!(j.conversation(50).unwrap(), [Entry::User { text: "the pricing page".into(), kept: Vec::new() }], "its lines, as they were");
+        assert_eq!(j.put_away(10).unwrap().iter().map(|c| c.session).collect::<Vec<_>>(), [52]);
+        assert!(j.reopen_conversation(50).unwrap().is_none(), "open already");
+        assert!(j.reopen_conversation(99).unwrap().is_none(), "no such one");
+    }
+
+    #[test]
+    fn a_generated_topic_is_written_once_and_survives_more_turns_restart_and_put_away() {
+        let home = temp_home();
+        let id = 70;
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            j.record_conversation(id, Some("desktop"), Path::new("/squad/pm")).unwrap();
+            let question = "대화 첫 메시지를 그대로 제목으로 쓰지 않게 해 줘";
+            j.append(id, &Entry::User { text: question.into(), kept: Vec::new() }).unwrap();
+            j.append(id, &Entry::Reply { text: "첫 교환을 요약해 한 번 저장하겠습니다.".into() }).unwrap();
+            let title = crate::conversation_title::resolve(Some("세션 주제 제목"), question);
+            assert_ne!(title, question);
+            assert!(j.set_title_if_empty(id, &title).unwrap());
+            j.append(id, &Entry::User { text: "두 번째 질문".into(), kept: Vec::new() }).unwrap();
+            j.append(id, &Entry::Reply { text: "두 번째 답변".into() }).unwrap();
+            assert!(!j.set_title_if_empty(id, "바뀌면 안 되는 제목").unwrap());
+            j.close_conversation(id).unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(j.put_away(10).unwrap()[0].title.as_deref(), Some("세션 주제 제목"));
+        let back = j.reopen_conversation(id).unwrap().expect("conversation back");
+        assert_eq!(back.title.as_deref(), Some("세션 주제 제목"));
+        assert_eq!(j.conversation(id).unwrap().len(), 4);
+    }
+
+    #[test]
     fn a_session_and_its_conversation_survive_reopening() {
         let home = temp_home();
         {
@@ -1148,7 +1783,7 @@ mod tests {
             j.set_title_if_empty(7, "not this one").unwrap();
             j.set_engine_session(7, "sess-1").unwrap();
             j.add_tokens(7, 40).unwrap();
-            j.append(7, &Entry::User { text: "add a docstring".into() }).unwrap();
+            j.append(7, &Entry::User { text: "add a docstring".into(), kept: Vec::new() }).unwrap();
             j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
         }
         let j = Journal::for_squad(&home, "acme").unwrap();
@@ -1159,9 +1794,28 @@ mod tests {
         assert_eq!(open[0].tokens, 40);
         assert_eq!(
             j.conversation(7).unwrap(),
-            vec![Entry::User { text: "add a docstring".into() }, Entry::Reply { text: "done".into() }]
+            vec![Entry::User { text: "add a docstring".into(), kept: Vec::new() }, Entry::Reply { text: "done".into() }]
         );
         assert_eq!(j.squad().as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn each_line_comes_back_with_when_it_was_said() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        j.record_session(&record(7)).unwrap();
+        let before = now() as u64;
+        j.append(7, &Entry::User { text: "add a docstring".into(), kept: Vec::new() }).unwrap();
+        j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
+        let (lines, times) = j.conversation_at(7).unwrap();
+        assert_eq!(lines, j.conversation(7).unwrap());
+        assert_eq!(times.len(), 2);
+        assert!(times.iter().all(|at| at.is_some_and(|at| at >= before && at <= now() as u64)), "{times:?}");
+        // Kept a while ago: that time, not now.
+        j.backdate_entries(7, 1_762_300_000);
+        assert_eq!(j.conversation_at(7).unwrap().1, vec![Some(1_762_300_000); 2]);
+        // A time that can't be one (a row written wrong): not known.
+        j.backdate_entries(7, 0);
+        assert_eq!(j.conversation_at(7).unwrap().1, vec![None, None]);
     }
 
     #[test]
@@ -1200,14 +1854,14 @@ mod tests {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
         for i in 0..10 {
-            j.append(1, &Entry::Note { text: i.to_string() }).unwrap();
+            j.append(1, &Entry::Note { undo: None, text: i.to_string() }).unwrap();
         }
         let texts: Vec<_> = j
             .recent(1, 3)
             .unwrap()
             .into_iter()
             .map(|e| match e {
-                Entry::Note { text } => text,
+                Entry::Note { text, .. } => text,
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -1255,11 +1909,11 @@ mod tests {
     fn recent_lines_survive_pruning() {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
-        j.append(1, &Entry::Note { text: "old".into() }).unwrap();
+        j.append(1, &Entry::Note { undo: None, text: "old".into() }).unwrap();
         j.backdate_entries(1, 1_000);
-        j.append(1, &Entry::Note { text: "new".into() }).unwrap();
+        j.append(1, &Entry::Note { undo: None, text: "new".into() }).unwrap();
         j.prune(now() - 86_400).unwrap();
-        assert_eq!(j.conversation(1).unwrap(), vec![Entry::Note { text: "new".into() }]);
+        assert_eq!(j.conversation(1).unwrap(), vec![Entry::Note { undo: None, text: "new".into() }]);
     }
 
     #[test]
@@ -1300,7 +1954,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -1370,6 +2024,49 @@ mod tests {
     }
 
     #[test]
+    fn the_plan_a_ticket_was_cut_from_is_kept_from_its_making() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let plan = Some("docs/plans/2026-11-04-sign-in.md".to_owned());
+        j.create_ticket(&Ticket { plan: plan.clone(), ..ticket("Magic link") }).unwrap();
+        let mut t = j.ticket(1).unwrap().unwrap();
+        assert_eq!(t.plan, plan);
+        t.plan = None;
+        j.save_ticket(&t).unwrap();
+        assert_eq!(j.ticket(1).unwrap().unwrap().plan, None);
+    }
+
+    #[test]
+    fn a_turn_keeps_what_it_used_by_kind_and_a_journal_from_before_gains_the_columns() {
+        let home = temp_home();
+        let path = squad_dir(&home, "acme").join("squad.db");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            // The turns table as it first was.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch("CREATE TABLE turns (member TEXT NOT NULL, role TEXT NOT NULL, ticket INTEGER, began INTEGER NOT NULL, ended INTEGER NOT NULL, outcome TEXT NOT NULL, tokens INTEGER NOT NULL DEFAULT 0);
+                INSERT INTO turns VALUES ('pm', 'pm', NULL, 1, 2, 'completed', 50);").unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let usage = crate::protocol::Usage { input_tokens: Some(10), output_tokens: Some(200), cache_tokens: Some(1300), cache_read_tokens: Some(1000), cache_write_tokens: Some(300), cache_write_long_tokens: Some(300), calls: Some(4), ..Default::default() };
+        let used = TurnUse::of(Engine::Claude, Some("claude-opus-5-5".into()), Some("s-1".into()), &usage);
+        assert_eq!((used.tokens.cache_read, used.tokens.cache_write, used.cache_write_long, used.calls), (1000, 300, 300, 4));
+        let now = now() as u64;
+        let turn = crate::retro::Turn { member: "frontend".into(), role: "frontend".into(), ticket: Some(7), began: now - 60, ended: now, outcome: "completed".into(), tokens: 1510 };
+        j.record_turn_use(&turn, Some(&used)).unwrap();
+        let kept: (String, String, String, i64, i64, i64, i64) = j
+            .conn
+            .query_row("SELECT engine, model, session, output, cache_read, cache_write_long, calls FROM turns WHERE member = 'frontend'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
+            .unwrap();
+        assert_eq!(kept, ("claude".into(), "claude-opus-5-5".into(), "s-1".into(), 200, 1000, 300, 4));
+        // The retro reads them as before.
+        assert_eq!(j.turns_since(now - 100).unwrap(), [turn]);
+        // A sum alone: read from the cache.
+        let summed = TurnUse::of(Engine::Codex, None, None, &crate::protocol::Usage { cache_tokens: Some(900), ..Default::default() });
+        assert_eq!((summed.tokens.cache_read, summed.tokens.cache_write, summed.calls), (900, 0, 1));
+    }
+
+    #[test]
     fn the_design_qa_a_hand_in_waits_on_is_kept() {
         let home = temp_home();
         let j = Journal::for_squad(&home, "acme").unwrap();
@@ -1416,6 +2113,33 @@ mod tests {
         let entries = j.ticket_entries(2).unwrap();
         assert_eq!((entries[0].by.as_str(), entries[0].kind.as_str()), ("you", "edited"));
         assert!(entries[0].at > 0);
+    }
+
+    #[test]
+    fn turns_waits_and_the_weeks_ticket_records_are_kept_for_the_retro() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        let at = now() as u64;
+        let turn = |member: &str, ended: u64| crate::retro::Turn { member: member.into(), role: "backend".into(), ticket: Some(4), began: ended - 600, ended, outcome: "completed".into(), tokens: 1200 };
+        let failed = crate::retro::Turn { ticket: None, outcome: "failed".into(), ..turn("pm", at - 60) };
+        j.record_turn(&turn("backend", at - 3600)).unwrap();
+        j.record_turn(&failed).unwrap();
+        j.record_turn(&turn("old", at - 200 * 24 * 3600)).unwrap();
+        assert_eq!(j.turns_since(at - 7200).unwrap(), [turn("backend", at - 3600), failed]);
+        assert!(j.turns_since(0).unwrap().iter().all(|t| t.member != "old"), "past a quarter: let go");
+        let wait = crate::retro::Wait { kind: "permission".into(), member: "backend".into(), ticket: Some(4), what: "git push".into(), asked: at - 900, answered: Some(at - 300), outcome: "allowed".into() };
+        j.record_wait(&wait).unwrap();
+        assert_eq!(j.waits_since(at - 600).unwrap(), [wait]);
+        assert!(j.waits_since(at - 200).unwrap().is_empty());
+        j.ticket_event(4, "you", "reopened", "Reopened: wrong order").unwrap();
+        j.ticket_event(5, "equipe", "assigned", "frontend").unwrap();
+        let events = j.ticket_events_since(at.saturating_sub(10)).unwrap();
+        assert_eq!(events.iter().map(|(id, e)| (*id, e.kind.as_str())).collect::<Vec<_>>(), [(4, "reopened"), (5, "assigned")]);
+        assert!(j.ticket_events_since(at + 3600).unwrap().is_empty());
+        assert_eq!(j.retro_routine(), None);
+        j.set_retro_routine(Some(3)).unwrap();
+        assert_eq!(j.retro_routine(), Some(3));
+        j.set_retro_routine(None).unwrap();
+        assert_eq!(j.retro_routine(), None);
     }
 
     #[test]
@@ -1477,6 +2201,30 @@ mod tests {
         assert!(!j.browsers_all_shown());
         j.show_browser(None, true, &[]).unwrap();
         assert!(j.browsers_all_shown());
+    }
+
+    #[test]
+    fn what_a_role_starts_with_is_kept_per_engine_and_cleared_back_to_the_recommendation() {
+        use equipe_protocol::{Engine, RoleModel};
+        let home = temp_home();
+        let set = |role: &str, engine, model: Option<&str>, effort: Option<&str>| RoleModel { role: role.into(), engine, model: model.map(Into::into), effort: effort.map(Into::into) };
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            assert!(j.role_models().is_empty(), "the recommendation until the person sets one");
+            j.set_role_model(set("frontend", Engine::Claude, Some("claude-opus-5-5"), None)).unwrap();
+            j.set_role_model(set("frontend", Engine::Codex, None, Some("high"))).unwrap();
+            j.set_role_model(set("designer", Engine::Claude, Some("fable"), Some("max"))).unwrap();
+            // Set again: the newer replaces it.
+            j.set_role_model(set("frontend", Engine::Claude, Some("sonnet"), None)).unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(
+            j.role_models(),
+            [set("designer", Engine::Claude, Some("fable"), Some("max")), set("frontend", Engine::Codex, None, Some("high")), set("frontend", Engine::Claude, Some("sonnet"), None)]
+        );
+        let left = j.set_role_model(set("frontend", Engine::Codex, None, None)).unwrap();
+        assert_eq!(left.len(), 2, "nothing set is the recommendation again");
+        assert_eq!(j.role_models(), left);
     }
 
     #[test]

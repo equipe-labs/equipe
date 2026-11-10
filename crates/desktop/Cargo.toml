@@ -35,10 +35,10 @@ gpui-kit = { version = "=0.7.1", features = [
 ] }
 # Images a reply points at on the web: GPUI fetches them through this client.
 gpui-pre-reqwest-client = "=0.3.8"
-# Math and diagrams in replies: drawn to SVG, which GPUI rasterizes (resvg) at 2x.
+# Math in replies (diagrams: core's `visuals::diagram`): drawn to SVG, which GPUI rasterizes (resvg) at 2x.
 latex-rust = { version = "2.1", default-features = false, features = ["std"] }
-mermaid-rs-renderer = { version = "0.3", default-features = false }
-libc = "0.2"
+# Canonical decomposition, for a past tense marked inside a letter (`asklist`); already in the tree through `idna`.
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Drafts and recent attachments, kept on disk between launches.
 serde = { version = "1.0.229", features = ["derive"] }
 # Drafts and recent attachments on disk; a JSON reply pretty-printed.
@@ -55,7 +55,7 @@ base64 = "0.23.1"
 qrcode = { version = "0.14.1", default-features = false }
 # `equipe send-image` drops files in an inbox; the folder is watched, not polled.
 # (Renamed: this crate has a module of its own called `notify`.)
-fs-notify = { package = "notify", version = "8", default-features = false, features = ["macos_fsevent"] }
+fs-notify = { package = "notify", version = "8", default-features = false }
 # Markdown parsed as the text view parses it (the version gpui-kit uses), so
 # ticket numbers are linked in text alone and emphasis next to Korean closes.
 markdown = "=1.0.0"
@@ -63,6 +63,8 @@ markdown = "=1.0.0"
 ropey = "=2.0.0-beta.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+fs-notify = { package = "notify", version = "8", default-features = false, features = ["macos_fsevent"] }
 # Notifications while the window is out of sight, through macOS's
 # UNUserNotificationCenter (src/notify/system.rs): the same crate and features
 # GPUI already builds.
@@ -82,4 +84,3 @@ objc2-speech = { version = "0.3", default-features = false, features = ["std", "
 
 [features]
 snapshot = ["gpui-kit/test-support"]
-

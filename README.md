@@ -1,193 +1,116 @@
 # equipe
 
-### Spin up a full software squad of AI agents — and ship real projects, and the work around them.
+**A squad of AI coding agents that you lead.** A PM, a designer, frontend and
+backend engineers, QA and more work together on your projects, on top of Claude
+Code or Codex with your own plan. The PM turns what you ask for into tickets,
+members build them on their own branches, and the decisions that matter stay
+yours.
 
-<p align="center">
-  <img src="demo/equipe.gif" alt="equipe CLI" width="820">
-</p>
+[![CI](https://github.com/equipe-labs/equipe/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/equipe-labs/equipe/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/equipe-labs/equipe)](https://github.com/equipe-labs/equipe/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/equipe-labs/equipe)](LICENSE)
 
-<p align="center">
-  <em>PM · Designer · Frontend · Backend · QA · Data</em> — a coordinated team,
-  working off a shared board, in your repo.
-</p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/needs-you-dark.png">
+  <img src="docs/images/readme/needs-you-light.png" alt="The equipe desktop app's Needs you view: two permission requests from members, two tickets waiting on the person, three proposed tickets and one accepted change, with a backend member's request to run cargo test open on the right." width="800">
+</picture>
 
-<p align="center">
-  <code>MIT</code> · <strong>building in public from commit #1</strong> ·
-  <a href="docs/ROADMAP.md">roadmap</a> · <a href="docs/ARCHITECTURE.md">architecture</a>
-</p>
+<sub>The desktop app's **Needs you** view: what the squad is waiting on you for. Example data from the repository's
+test daemon.</sub>
 
-> **Status: early.** A squad already lives in a background daemon on your own
-> plans: you tell the PM what you want, it puts tickets on the board, engineers
-> pick them up and work on their own branches inside a sandbox, asking you before
-> anything beyond it, and you accept the work. Handoffs and a phone channel are
-> next. Watch it build itself.
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Safety and privacy](#safety-and-privacy) ·
+[Documentation](#documentation) · [Contributing](#contributing)
 
-## Why
+## Why equipe
 
-A single coding agent is great in a chat window and falls apart on a real project:
-no one owns the spec, nothing gets reviewed, there's no division of labor.
+One coding agent in a chat window is good at one task. A real project needs more: someone who
+owns the plan, work that runs in parallel without collisions, review before anything lands,
+and one clear place where you say yes or no.
 
-equipe isn't another agent loop — mature ones already exist. It's the **team layer
-on top of them**: roles, a board as the single source of truth, isolated git
-worktrees for parallel work, and human approval gates where they matter.
+equipe is that team layer. It does not rebuild the agent loop. It drives mature coding agents
+(Claude Code and the Codex CLI) and adds roles, a shared board, isolated git worktrees, and
+approval gates.
 
-## How it works
+## What it does
 
-```
-                    You ── talk to the PM, or to anyone directly
-                     │
-      ┌──────────────▼──────────────┐   equipe's rules, in code:
-      │  PM — plans, splits tickets │   assignment · order · budgets · approval gates
-      └──────────────┬──────────────┘
-                     │  reads / writes
-           ┌─────────▼─────────┐   ← single source of truth (SQLite + git)
-           │      Board        │      tickets · status · decisions · artifacts
-           └─────────┬─────────┘
-      ┌─────────┬────┴─────┬─────────┬─────────┐
-   Designer  Frontend   Backend     QA       Data
-   each = [engine] + [role charter] + [its role's memory] + [git worktree]
-```
+- **One conversation with the PM.** Say what you want. The PM answers what's quick and puts
+  the rest on the board as tickets, then hands each one to the right member.
+- **Parallel work that doesn't collide.** Each member works in its own git worktree, on its own
+  branch. Your checkout is not touched.
+- **Roles you choose.** PM, designer, frontend, backend, mobile, QA, security, marketing and
+  data, plus roles of your own (`/add custom <name>`). equipe never adds a member without your
+  yes. Each role keeps a memory that every member of that role shares.
+- **Engines per member.** Mix Claude Code and Codex in one squad, and change a member's model
+  with `/model`. Members can also run on open models through the Codex CLI with your own key
+  ([OPEN-MODELS.md](docs/OPEN-MODELS.md)).
+- **Not only code.** Research, writing and other tasks go on the board as tickets too, and are
+  reviewed the same way.
+- **Keeps working when you leave.** The squad lives in a background daemon. Come back from
+  the desktop app (macOS), the terminal console (macOS and Linux), or Telegram. The desktop
+  app can also open a squad that runs on another machine, over SSH.
+- **Speaks your language.** The interface is in English, German, Spanish, French, Japanese,
+  Korean, and Simplified and Traditional Chinese.
 
-- **The board is the source of truth.** Agents coordinate through tickets and
-  immutable events — not a firehose of chat. Every action ends in a visible outcome.
-- **Roles are data.** The PM turns what you want into tickets; engineers edit code
-  (web, backend, mobile) in isolated worktrees; QA reviews; the data analyst answers with numbers. Each
-  member gets a model suited to its role, and learns into its role's memory —
-  shared by every member of the role, so what `backend-3` learned in a rush stays
-  with `backend` after it leaves.
-- **Not only code.** Research, writing, numbers, paperwork, a few steps in an app:
-  the PM does a short one right in the conversation and puts a bigger one on the
-  board as a `task` or `action` ticket, worked in the squad's own folder and accepted
-  like code — with the files it leaves and the sources it cites on the review card.
-  Any role can take one; when no one on the squad fits, the PM does it or suggests
-  `/add <role>` — or `/add custom writer` (`--edits` lets a custom role change a
-  project's files too).
-- **Engines are borrowed, not rebuilt.** equipe drives mature coding agents —
-  Codex and Claude Code today, more over the
-  [Agent Client Protocol](https://agentclientprotocol.com) — and mixes them per role.
-- **You stay in the loop** at approval gates (e.g. before a branch merges).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/in-progress-dark.png">
+  <img src="docs/images/readme/in-progress-light.png" alt="The desktop app's In progress view: seven tickets being worked on by different members, with one ticket open showing its status, assignee, project, dependencies and the member's latest words." width="800">
+</picture>
 
-## What works today
+<sub>Work in progress across a squad of eight. Example data from the repository's test daemon.</sub>
 
-```
-$ equipe status
-equipe.  v0.0.1
+## Quick start
 
-CODEX  ChatGPT plan · equipe signs in
-  account    …
-  backend    ✓ 3 models  gpt-6-luna, gpt-5.6-terra, gpt-5.6-luna
+You need **git** and at least one engine signed in: [Claude Code](https://code.claude.com/docs/en/setup)
+on your Claude plan, or Codex on your ChatGPT plan.
 
-CLAUDE CODE  your claude · signs itself in
-  login      ✓ claude.ai · max subscription
+### macOS: the desktop app
 
-  ready      codex · claude
-```
+Download [equipe.dmg](https://github.com/equipe-labs/equipe/releases/latest/download/equipe.dmg),
+drag equipe to Applications and open it. The first window walks you through setup: it
+installs Apple's developer tools if git is missing, lets you pick a project folder (or none)
+and name your squad, then opens **Settings → AI platforms**, where you can install Claude Code
+or Codex with its maker's own installer and sign in. The app starts the daemon for you.
 
-| Command | What it does |
-|---|---|
-| `equipe` | **The squad console**, from any folder. The first time it sets up your squad in under a minute — no repository needed; after that it opens the squad of the project you're in, else the one you used last (`--squad <name>` picks one), and in a repository no squad has it asks once whether to add it (`n` is remembered). Then: **one conversation with the PM, and the work as tickets.** On the left, the PM, then every ticket by where it stands — waiting for you, in progress, to do, done — then the team; on the right, what's open. Tell the PM what you want — it answers what's quick and puts the rest on tickets (its own work too, so it's never out of reach), equipe hands each to its owner, engineers work on their own branches and hand the work in. Open a ticket (Tab, or a click) to see its work and steer it as it goes; `/accept` or `/reopen` it (Ctrl-B shows the board). `@name` talks to someone directly — the PM hears about it. In **auto** mode members install, build and test inside a sandbox around their worktree; anything beyond — a push, a deploy — waits for your `y` / `a` / `n` (`/mode` switches between read-only, ask me, auto and full access). **The squad lives in a background daemon** — leave, or close the terminal, and it keeps working; run `equipe` again to come back |
-| `equipe browser` | **One Chrome for the whole squad, signed in once.** equipe runs a Google Chrome of its own on this Mac — an ordinary one as sites see it, so Google lets you in — and `equipe browser` opens a window in it where **you** sign in, or sign up, wherever the squad should work: Google, GitHub, Vercel, PostHog… Once is enough: every member works in that Chrome, each conversation in a window of its own that sees only its own tabs and the popups it opened — a member talking about two projects at once has two — side by side and at the same time, signed in as you — no copies of your sign-ins, nothing to repeat per member. Members' windows open behind what you're doing and work minimized; each glows in the member's colour with its name (and the project, for a conversation beside its own) at the foot, and outlines what it clicks or types into. They ask you before creating accounts, accepting terms, paying or deleting anything, and leave passwords, codes and CAPTCHAs to you. Needs Node.js and Google Chrome. In the console, Ctrl-W (or `/browser watch`) shows the member you talk to's window live above its conversation; `/browser` brings that member's window to the front of the Mac's screen — one at a time — where you watch it work or sign in for it; a member stuck on something you must see calls for it itself. `/browser signin` opens your window. Code a member runs in its browser's own process asks you first in auto, showing the code |
-| `equipe desktop setup` | **Experimental, macOS.** Members work this Mac's desktop apps the way they work the browser — screenshot, read an app's buttons and fields, click, type (Korean included), shortcuts, open and bring apps forward. A small helper app, *equipe Desktop Helper*, is the only thing you give Screen Recording and Accessibility to (equipe and its members never get them); `setup` installs it, opens the two Settings panes and says what is still missing — Accessibility takes your password or Touch ID to switch on. Off for every member until `equipe desktop on <member> --experimental` (`off` takes it back, `status` checks, `remove` uninstalls). Each click is checked against the app the member means, typing is refused when the keyboard focus is elsewhere and stops if it moves — leave the Mac alone while a member works it. Screenshots are never saved by equipe (Claude Code's own transcript keeps them) |
-| `equipe daemon status\|stop\|restart` | The daemon itself. `equipe` starts it when needed; stopping it keeps open sessions, which resume when it starts again. `restart --when-idle` waits until no member is mid-turn — what to run after `equipe update`. `status` says who is working |
-| `/add` | Teammates are yours to add: `/add <role…>` brings one in, `/add custom <name>` one of your own making, and the PM proposes one when a role's work keeps piling up — equipe never adds members on its own. Big work runs in parallel inside a member instead: it splits a ticket that divides cleanly across subagents and runs them together, each shown under its name; long or independent side work goes to subagents too, and the member keeps only their summaries |
-| `/send-apps` | Where a member on the desktop may send something in your name — Microsoft Teams, Slack, Mail, Outlook, Messages, KakaoTalk, Zoom, Discord… A message is typed as a draft, but Return or the Send button waits for your yes every time, in every mode, showing the draft, the conversation and the screen (`o` opens it). Other apps never ask; payment, account deletion, passwords and security settings take no input at all. `/send-apps add <app>`, `remove <app>`, `reset` |
-| `Ctrl-V` · drop | Ctrl-V attaches the clipboard's image (a screenshot) to your message; dropping an image file on the terminal attaches it too. The member looks at it before answering. **Over SSH**, a terminal only carries text, so the other machine can't see your Mac's clipboard: run `equipe paste-setup` once on the Mac you type on (or `curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/paste-setup.sh \| sh` if equipe isn't installed there) and ⌃⇧V in iTerm2 types the clipboard's screenshot down the connection, where equipe attaches it (`--remove` undoes it). Without it, Ctrl-V over SSH opens a picker on your Mac, and `equipe send-image <host>` sends the clipboard image from your Mac |
-| `/find` · `/tidy` | A board of hundreds stays readable: work not yet started folds past ten per section (`e` shows it whole), done work keeps its latest few, and **f** on the board (or `/find <words>`) narrows it as you type — titles, notes and T-numbers, done work too; Esc clears. `g` shows open work as a tree of what waits for what, and each ticket says what it's after and what it unblocks. Once a day the PM hears which unstarted tickets haven't moved in a week and proposes, next time you talk, what to close, merge or keep — it never drops work itself; `/tidy` asks now |
-| When it's done | A member starting anything longer than a couple of minutes says when it expects to be done, and — pushing a release, deploying — when what it ships will be live. The console shows it where you look: `done ~20:52 (12m)` and `v0.28.1 on Homebrew live ~21:05 (25m)` beside a member at work, `~12m` (or `↑25m` until live) in the squad and on the all view, and the PM hears it too. Past its time it says `still going` rather than going quiet. When a member hasn't said, equipe guesses from how long the same kind of work took before — that role's tickets of that kind (else anyone's), or its turns at the desk — and says it's a guess: `usually done ~20:52 (12m)`, `≈12m`, `longer than usual`; a guess shows once a turn has gone on a minute |
-| `/suggest` | After a member answers you, your likely next message waits greyed in the empty composer — "yes, tidy the other pages too", the obvious next step — and **→** takes it; typing ignores it. Claude Code's small model guesses it from the end of the conversation alone (a few hundred tokens, no tools, nothing kept). `/suggest off` stops it, `/suggest on` brings it back |
-| `/model` | `/model <member> <model>` changes the model a member works on from its next turn — Claude Code's `opus` / `sonnet` / `haiku`, or any model its engine offers (Codex's, and the engines to come); its conversation carries on. Completion lists what the member's engine takes |
-| `/usage` | The footer shows your Claude plan's five-hour and weekly windows; `/usage` adds when they start over, and each member's context, tokens processed and the share from cache |
-| `/compact` · `/clear` | Conversations stay a sensible size on their own: Claude Code compacts a long one as it fills, and a member's desk conversation (between tickets) starts afresh — handed a summary of where the last one left off — once it is 60% full, or after an hour unused, when carrying it on would mean processing all of it again. `/compact [member]` asks for that now; `/clear [member]` starts clean. Memory and the board carry over either way. The title shows how full the selected member's context is, and token counts include cached input |
-| `equipe pair` · `equipe devices` | **The equipe app on your phone.** `equipe pair` shows a QR code; scan it in the app, say `y` at the terminal, and the phone follows your squads from anywhere — requests for permission (Face ID, then once — never "always"), work to review, the board, the PM — with a push when something needs you. Phone and machine reach each other through the equipe relay (`relay/`, on Cloudflare), every frame sealed between the two ends (HPKE): the relay passes envelopes it can't open, and nothing listens on your machine. `equipe devices` lists paired phones; `equipe devices remove <name>` cuts one off at once. Protocol: `docs/remote-protocol.md` |
-| `equipe telegram setup` | **Your squads from your phone.** Make a bot with @BotFather, paste its token, tap the link it shows: the bot is paired with your Telegram account and answers no one else. Requests for permission arrive with Allow / Decline (once — never "always" from a phone), work to review with Accept / Ask for changes, tickets waiting on you with a reply box; write to talk to the PM, `@name …` for a member, reply to a member's message to go on with them; `/status`, `/board`, `/squad`. Telegram delivers the notifications. Runs in the daemon; `equipe telegram off` disconnects. Messages travel through Telegram's servers (encrypted to them, not end to end) |
-| `equipe daemon install\|uninstall` | Run the daemon as a login service (launchd on macOS, systemd on Linux): it starts when you log in, comes back after a crash, and outlives the terminal or SSH session that started it |
-| `equipe login` | Pick an engine and sign in (`codex` / `claude`, `--again`, `--no-browser`) |
-| `equipe logout` | Forget equipe's Codex login (Claude Code keeps its own) |
-| `equipe status` | Which engines are ready, on which plan, with which models |
-| `equipe roles` | The roles a squad can have, what each does and the model it gets |
-| `equipe squads` | Your squads and the projects each works on |
-| `equipe lang [code\|auto]` · `/lang` | The language equipe speaks to you — ko, en, ja, zh-Hans, zh-Hant, es, fr, de — one pick for the console, the app and what the daemon says in conversations (the app picks it in Settings, live). Nothing picked (`auto`): `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` in a terminal, then the system's preferred languages in order (on a Mac, the language set for equipe alone in System Settings › General › Language & Region › Applications included), else English. `EQUIPE_LANG` overrides everything. Members write to you in the language you write in |
-| `/squad` · `/project` | In the console: `/squad <name>` switches to another squad (click its name in the header), `/squad new <name> [folder]` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. The console is about the whole squad, wherever you run it — in one of its repositories or not, the same screen opens: the header shows the squad, its home folder, and a chip per project with who is at work on it (●) and what waits for you there (⚑), then **all**, where it starts. The board tags every ticket with its project — `home` for work in the squad home — and its kind (`code`, `task`, `action`), and with work in several places gives each a lane below what waits for you; members show the project they work in. `/project <name>`, a click on its chip, or **Ctrl-P** (the next one, then all; Alt-1…9 where the terminal sends Alt, Alt-0 all) filters to one project — the board, the review card and new requests are about it, and the line under the composer says so; `/project all` takes the filter off. **All** is the control tower: over the PM's conversation, a line a project says who is at it — members on its tickets, conversations about it — and what waits for you there (a click goes in), and the PM, told the same with each message, answers for the whole squad — priorities, what waits on you, what goes next — and sends work for one project to it as tickets. Adding an app suggests a mobile engineer (`/add mobile`) **Each member keeps one conversation**: the project you look at travels with what you say, and a ticket's work lives with its ticket, so no project crowds another's (the squad's memory is shared by all). Click a member in the squad to talk to it |
-| `equipe try "…"` | One turn on whichever engine is ready (`--engine`, `--model`) |
-| `equipe try --edit "…"` | An agent edits your repo **on a new branch**, in its own worktree. Your checkout is untouched; you get review / keep / discard commands |
-
-```
-$ equipe try --edit "In app.py, capitalize the name in greet()"
-claude code · may edit files
-  branch     equipe/try-6acb8840  from b54a531
-
-· read   app.py
-✎ edit   app.py
-Done. greet() now capitalizes the name.
-
-✓ Changes committed to equipe/try-6acb8840
-  review     git show equipe/try-6acb8840
-  keep       git merge equipe/try-6acb8840
-  discard    git branch -D equipe/try-6acb8840
-```
-
-## Engines & sign-in
-
-Both engines run on a plan **you** already have. equipe never pays for, resells or
-pools anyone's usage.
-
-**Codex — equipe signs in.** `equipe login codex` runs OAuth so equipe can use
-**your** ChatGPT plan, with PKCE and the public Codex OAuth client the same way
-OpenAI's own Codex CLI does. equipe **identifies itself honestly** as a
-third-party harness (`originator: equipe`) and never impersonates the official CLI.
-
-> Whether a consumer subscription fits OpenAI's Terms this way is your call and
-> your risk.
-
-**Claude Code — bring your own.** equipe runs **your installed, unmodified
-`claude`**, which signs itself in on Anthropic's own page (`equipe login claude`
-just starts that flow). equipe never reads, stores or forwards Claude credentials:
-Anthropic's terms don't allow third-party tools to offer Claude.ai login or handle
-its tokens, and they do allow you to sign in to the unmodified Claude Code binary
-with your own plan. Usage is billed to you under your own agreement; `equipe status`
-says whether that's a subscription or per-token API billing.
-
-> Anthropic's advertised Pro/Max limits assume ordinary, individual use. A whole
-> squad on one subscription will reach them; plan to give Claude Code the roles that
-> need it most.
-
-## Install
-
-macOS and Linux:
+### macOS and Linux: the terminal
 
 ```bash
 curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh
 ```
 
-That puts a prebuilt `equipe` in `~/.local/bin` (checked against its SHA-256)
-and adds it to your PATH. Or with Homebrew:
+This installs a prebuilt `equipe` into `~/.local/bin`, checked against its SHA-256. Or use
+Homebrew:
 
 ```bash
 brew install equipe-labs/tap/equipe
 ```
 
-Then, from any folder:
+Sign in to an engine and check it's ready:
 
 ```bash
+equipe login        # pick Claude Code or Codex
+equipe status       # which engines are ready, on which plan
+```
+
+Then open the squad console from your project (or any folder):
+
+```bash
+cd your-project
 equipe
 ```
 
-The first run sets up your squad — no repository needed. After that, `equipe`
-opens your squad wherever you run it: inside one of its projects, that project's
-squad; anywhere else, the squad you used last. Run it in a repository no squad
-has yet and the console asks once whether to add it. Either way it opens on the
-whole squad — every project and the squad home — not on the folder you ran it
-in; a project's chip filters to it. Members run on
-[Claude Code](https://code.claude.com/docs/en/setup) with your own plan, or on a
-ChatGPT plan with `equipe login codex`.
+The first run sets up your squad; no repository is needed. Tell the PM what you want, for
+example *"Add a dark mode toggle to the settings page"*, and watch the tickets appear. When a
+member asks for permission, press `y` to allow it once, `A` to always allow it, or `n` to
+decline. Work that waits for your review can be accepted with `/accept` or sent back with
+`/reopen`.
 
-**Update** with `equipe update` (or `brew upgrade equipe`). When a squad is running, `equipe daemon restart`
-once no one is working puts it on the new build.
+Update with `equipe update` (or `brew upgrade equipe`). The full command reference is in
+[docs/USAGE.md](docs/USAGE.md).
 
 <details>
-<summary>From source</summary>
+<summary>Build from source</summary>
 
-Needs [Rust](https://rustup.rs) 1.88+ and git.
+Needs a stable [Rust](https://rustup.rs) toolchain and git.
 
 ```bash
 git clone https://github.com/equipe-labs/equipe && cd equipe
@@ -196,24 +119,147 @@ cargo install --locked --path crates/cli
 
 </details>
 
-## Development
+## How it works
 
-```bash
-cargo test --workspace                     # no network, no login needed
-cargo clippy --workspace --all-targets
-cargo run -p equipe -- status              # the CLI from source
-cargo run --release -p equipe-desktop      # the desktop app (see docs/DESKTOP.md)
-demo/render.sh                             # regenerate the hero gif (see demo/README.md)
+```mermaid
+flowchart LR
+    you(["You"])
+    pm["PM<br/>plans and splits the work"]
+    board[("Board<br/>tickets, status, decisions")]
+    subgraph squad ["Members, each in its own git worktree"]
+        designer["Designer"]
+        frontend["Frontend"]
+        backend["Backend"]
+        qa["QA"]
+    end
+    subgraph engines ["Engines, on your own plans"]
+        claude["Claude Code"]
+        codex["Codex CLI"]
+    end
+    you <-->|"what you want"| pm
+    pm -->|"tickets"| board
+    board -->|"assigned work"| squad
+    squad -->|"hand-ins"| board
+    squad -.->|"permission requests"| you
+    squad --> engines
 ```
+
+1. **You talk to the PM** (or to any member directly with `@name`).
+2. **The PM writes tickets** on the board, the single source of truth. Members coordinate
+   through tickets and their history, not through free-form chat.
+3. **A member takes a ticket** and works on its own branch, in its own worktree, inside a
+   sandbox. Anything beyond the sandbox, such as a push or a deploy, waits for your answer.
+4. **The member hands the work in** for review: the branch's diff for code, and for other
+   work the files it left and the sources it cited.
+5. **The work is accepted.** By default the PM checks and accepts routine work, and brings you
+   anything that can't easily be undone or reaches outside: production deploys, live data,
+   money, security and permissions, what customers will see, and brand direction. Turn this off
+   in **Settings → Team → The PM accepts work** and you accept every ticket yourself.
+
+More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Safety and privacy
+
+**Approvals are yours.** Answering a permission request, accepting or merging work, and
+approving changes to the team are commands only the person can send. The daemon refuses them
+when they come from a member's own process, whatever its mode or engine
+([`person_only`](crates/core/src/permissions.rs) and [`gateway.rs`](crates/core/src/gateway.rs)).
+From a phone, a permission can be allowed once, never "always".
+
+**Permission modes.** Each member works in one of four modes (`/mode` in the console):
+
+| Mode | What the member may do |
+|---|---|
+| read-only | Reads and plans. Changes nothing. |
+| ask me | Asks you before every edit and every command. |
+| **auto** (default) | Edits, installs, builds and tests on its own, sandboxed in its worktree. Asks before anything beyond: network, pushes, your accounts. |
+| full access | Does anything your account can without asking, except what equipe always blocks. Still asks before acting in your name. Because it runs with your account's rights, equipe can't fully stop a determined member here; auto is the safer default. |
+
+**The sandbox.** In auto, a member's shell commands run inside its engine's operating-system
+sandbox (Claude Code's sandbox, Codex's `workspace-write`). They write only inside the member's
+worktree and reach only package registries and source hosts (npm, PyPI, crates.io, the Go
+proxy, RubyGems, Maven Central, GitHub). Pushing, publishing and deploying (`git push`,
+`npm publish`, `gh`, `vercel` and others) ask you even when the sandbox would allow them.
+Reading credential locations (`~/.ssh`, `~/.aws`, `.env` files, keychains and others) asks you
+every time.
+
+**Always blocked**, in every mode: `sudo`, `su`, `rm -rf /` and `rm -rf ~`, `mkfs`, `dd if=`,
+`shutdown`, `reboot` and force pushes. The lists are in
+[`crates/core/src/permissions.rs`](crates/core/src/permissions.rs).
+
+**Your credentials.** equipe runs your installed, unmodified `claude` and never reads, stores
+or forwards Claude credentials. For Codex, equipe signs in with OAuth on your ChatGPT plan and
+identifies itself as a third-party tool. API keys you save are stored on your machine,
+readable only by you.
+
+**What leaves your machine.** The daemon and its state (squads, board, memory) live on the
+machine that runs it. Network traffic comes from:
+
+| Source | When |
+|---|---|
+| The engines | Always. Claude Code and Codex talk to their providers as they normally do, or to the model server you configured. |
+| Usage telemetry | Only after you say yes. Anonymous events, never content, names or paths. The full list is in [docs/TELEMETRY.md](docs/TELEMETRY.md); `equipe telemetry off` stops it. |
+| Update checks | The desktop app checks GitHub Releases for new versions. |
+| Features you turn on | Telegram (`equipe telegram setup`), phone pairing through the equipe relay (end-to-end sealed; the relay can't read it), the Nemotron code review (sends the diff to Nebius Token Factory), and the shared Chrome that members use for the sites you sign it in to. |
+
+## Requirements
+
+| | |
+|---|---|
+| **Desktop app** | macOS 12 or later, Apple silicon or Intel |
+| **CLI and daemon** | macOS (Apple silicon, Intel) or Linux (x86_64, arm64). No native Windows build; the installer suggests WSL. |
+| **Tools** | git |
+| **An engine** | [Claude Code](https://code.claude.com/docs/en/setup) on your Claude plan, Codex on your ChatGPT plan (`equipe login codex`), or an API key for an OpenAI-compatible model server used through the [Codex CLI](https://github.com/openai/codex) |
+| **Optional** | Google Chrome and Node.js for the shared browser (`equipe browser`) |
+
+Your plan's usage limits apply. A whole squad on one subscription will reach them sooner than
+one person does, so give the busiest roles to the plan with the most room.
+
+## Documentation
+
+| | |
+|---|---|
+| [docs/USAGE.md](docs/USAGE.md) | Every command and console feature, and how engines sign in |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions and the shape of the code |
+| [docs/OPEN-MODELS.md](docs/OPEN-MODELS.md) | Members on open models (NVIDIA Nemotron, OpenAI-compatible servers) and the Nemotron code review |
+| [docs/DESKTOP.md](docs/DESKTOP.md) | The desktop app, including connecting to a daemon over SSH |
+| [docs/DESKTOP-CONTROL.md](docs/DESKTOP-CONTROL.md) | Members working macOS desktop apps (experimental) |
+| [docs/TELEMETRY.md](docs/TELEMETRY.md) | Exactly what opt-in telemetry sends |
+| [docs/remote-protocol.md](docs/remote-protocol.md) | How a phone reaches the daemon through the relay |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What is built and what is next |
+| [docs/RELEASING.md](docs/RELEASING.md) | How releases are cut, including the fast path |
+
+## Contributing
+
+Issues and pull requests are welcome on
+[GitHub](https://github.com/equipe-labs/equipe/issues). Read [CONTRIBUTING.md](CONTRIBUTING.md)
+first: open an issue before a large change so we can agree on the approach. Everyone taking
+part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+The workspace is all Rust:
 
 | Crate | |
 |---|---|
-| `crates/protocol` | `equipe-protocol` — the contract between the brain and every screen: Commands in, Events out |
-| `crates/core` | `equipe-core` — the brain: the runtime that runs sessions on engines, roles, the board, worktrees |
-| `crates/providers` | `equipe-providers` — sign-in and engines: Codex, your Claude Code |
-| `crates/cli` | `equipe` — the command line and the terminal UI |
-| `crates/desktop` | `equipe-desktop` — the desktop app (GPUI) |
+| `crates/protocol` | The contract between the daemon and every screen: commands in, events out |
+| `crates/core` | The daemon's core: sessions on engines, roles, the board, worktrees, permissions |
+| `crates/providers` | Sign-in and engines: Codex and Claude Code |
+| `crates/cli` | The `equipe` command and the terminal console |
+| `crates/desktop` | The desktop app (GPUI) |
+
+```bash
+cargo test --workspace --exclude equipe-desktop   # what CI runs; no network or login needed
+cargo clippy --workspace --exclude equipe-desktop --all-targets -- -D warnings
+cargo run -p equipe -- status                     # the CLI from source
+cargo run --release -p equipe-desktop             # the desktop app (macOS, see docs/DESKTOP.md)
+```
+
+The README's screenshots are drawn offscreen by the desktop app against an example daemon
+([`scripts/design-shot.sh`](scripts/design-shot.sh), [`fake_daemon.rs`](crates/desktop/examples/fake_daemon.rs)),
+so they show example data, not anyone's real squad.
+
+**Security issues:** please don't post them in a public issue. Report them privately through
+the repository's **Security** tab; see [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT
+[MIT](LICENSE)

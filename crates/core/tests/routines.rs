@@ -46,11 +46,14 @@ fn config(claude: &Path, home: &Path) -> Config {
         retention_days: 90,
         equipe_binary: Some("/opt/equipe".into()),
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::Ko,
+        nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -87,6 +90,11 @@ async fn the_persons_routine_is_kept_run_on_their_click_and_handed_to_the_pm() {
     std::fs::create_dir_all(&project).unwrap();
     let home = scratch("home");
     squads::create(&home, "acme", &project).unwrap();
+    // Without the weekly check-in a new squad starts with, nor the retro its PM brings (`tests/heartbeat.rs`).
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    journal.set_routines(&[]).unwrap();
+    journal.set_role_routine_added("pm").unwrap();
+    drop(journal);
     let claude = busy_claude();
     let (handle, mut events) = runtime::start(config(&claude, &home));
     pm(&handle, &mut events, &project).await;
@@ -110,7 +118,7 @@ async fn the_persons_routine_is_kept_run_on_their_click_and_handed_to_the_pm() {
     handle.send(Command::RunRoutine { squad: "acme".into(), id: 1 });
     let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
     assert!(
-        seen.iter().any(|e| matches!(e, Event::UserMessage { session: 1, text } if text == "[Routine · 주간 리포트]\n\n이번 주 프로젝트별로 정리해 줘")),
+        seen.iter().any(|e| matches!(e, Event::UserMessage { session: 1, text, .. } if text == "[Routine · 주간 리포트]\n\n이번 주 프로젝트별로 정리해 줘")),
         "{seen:#?}"
     );
     let ran = routines_in(&seen);

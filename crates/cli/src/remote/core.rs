@@ -51,6 +51,10 @@ pub enum Action {
     /// List the pictures of a folder a reply points at, which `device` asked
     /// for (`id`); the answer goes back through [`Core::images_listed`].
     ListImages { device: String, squad: String, id: u64, ask: rpc::ListImages },
+    /// Work out the project's numbers `device` asked for (`id`), of `squad`:
+    /// read-only, never a key or a setting; the answer goes back through
+    /// [`Core::metrics_summarized`].
+    MetricsSummary { device: String, squad: String, id: u64, ask: equipe_core::protocol::metrics::SummaryParams },
     /// The device left: stop following squads for it.
     Close { device: String },
     /// For `equipe pair`, waiting at the terminal.
@@ -151,7 +155,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// is allowed once, never always; a member's questions are the person's to
 /// answer or close from anywhere, and so is a change to the team the PM
 /// proposed to approve or decline, and moves between engines to make, leave
-/// or undo; so is handed-in work put to them on a card to confirm or decline
+/// or undo; so is taking back a change to the squad's folder or memory a
+/// member made, which equipe told of; so is handed-in work put to them on a card to confirm or decline
 /// — confirmed from a phone it is accepted, never merged; starting, closing,
 /// merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
@@ -161,14 +166,17 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// person's squad, nor see the one-time code that would.
 pub fn allowed(command: Command) -> Option<Command> {
     match command {
-        Command::Decide { squad, approval, decision: Decision::Always, words } => Some(Command::Decide { squad, approval, decision: Decision::Allow, words }),
+        Command::Decide { squad, approval, decision: Decision::Always, words, said } => Some(Command::Decide { squad, approval, decision: Decision::Allow, words, said }),
         // Merging stays at the console: confirmed from a phone, the work is accepted only.
-        Command::ConfirmAccept { squad, id, tickets } => {
-            Some(Command::ConfirmAccept { squad, id, tickets: tickets.into_iter().map(|c| equipe_core::protocol::accept::Confirmed::only(c.ticket)).collect() })
+        Command::ConfirmAccept { squad, id, tickets, said } => {
+            Some(Command::ConfirmAccept { squad, id, tickets: tickets.into_iter().map(|c| equipe_core::protocol::accept::Confirmed::only(c.ticket)).collect(), said })
         }
         c @ (Command::Submit { .. }
+        | Command::Say { .. }
+        | Command::UndoWords { .. }
         | Command::Interrupt { .. }
         | Command::SendNow { .. }
+        | Command::StopCommand { .. }
         | Command::Accept { .. }
         | Command::Reopen { .. }
         | Command::Resume { .. }
@@ -178,15 +186,39 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::DismissQuestions { .. }
         | Command::ApproveTeamChange { .. }
         | Command::DeclineTeamChange { .. }
+        | Command::ApproveRoutine { .. }
+        | Command::DeclineRoutine { .. }
         | Command::DeclineAccept { .. }
         | Command::ApplyEngineProposal { .. }
         | Command::DismissEngineProposal { .. }
         | Command::UndoEngineProposal { .. }
+        | Command::UndoHomeChange { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }
         | Command::Engines
-        | Command::Design { .. }) => Some(c),
+        // Where the plans went: a look, which changes nothing.
+        | Command::PlanUse { .. }
+        | Command::Design { .. }
+        | Command::ProjectDocs { .. }
+        // Finding a brief or plan by its words: a look. Keeping one copy stays at the console.
+        | Command::SearchDocs { .. }
+        // A call: what it says reaches members only as a submit.
+        | Command::CallStart { .. }
+        | Command::CallUtterance { .. }
+        | Command::CallEnd { .. }) => Some(c),
         _ => None,
+    }
+}
+
+/// A device's command as the daemon takes it: a message said on a phone
+/// carries the device the link knows it came from — never the phone's own
+/// claim — and "all by words" off. From a phone, words decide only what is
+/// low risk; all by words for a phone is the person's to turn on at the Mac
+/// (not yet there: the security review comes first).
+pub fn from_device(device: &str, command: Command) -> Command {
+    match command {
+        Command::Say { squad, session, text, via, later, pasted, about, .. } => Command::Say { squad, session, text, via, all: false, later, pasted, about, device: Some(device.to_owned()) },
+        other => other,
     }
 }
 
@@ -205,6 +237,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::DismissQuestions { squad, .. }
         | Command::ApproveTeamChange { squad, .. }
         | Command::DeclineTeamChange { squad, .. }
+        | Command::ApproveRoutine { squad, .. }
+        | Command::DeclineRoutine { squad, .. }
         | Command::ProposeAccept { squad, .. }
         | Command::ConfirmAccept { squad, .. }
         | Command::DeclineAccept { squad, .. }
@@ -212,11 +246,23 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::ApplyEngineProposal { squad, .. }
         | Command::DismissEngineProposal { squad, .. }
         | Command::UndoEngineProposal { squad, .. }
+        | Command::UndoHomeChange { squad, .. }
         | Command::ShowEngineSetup { squad }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
         | Command::ShowBrowser { squad, .. }
-        | Command::Design { squad } => Some(squad),
+        | Command::Design { squad }
+        | Command::Say { squad, .. }
+        | Command::UndoWords { squad, .. }
+        | Command::WordsLog { squad }
+        | Command::ClearWordsLog { squad }
+        | Command::SetWordsAll { squad, .. }
+        | Command::ProjectDocs { squad }
+        | Command::SearchDocs { squad, .. }
+        | Command::KeepDocCopy { squad, .. }
+        | Command::CallStart { squad }
+        | Command::CallUtterance { squad, .. }
+        | Command::CallEnd { squad, .. } => Some(squad),
         _ => None,
     }
 }
@@ -580,6 +626,19 @@ impl Core {
                 }
                 vec![Action::ListImages { device: device.to_owned(), squad: ask.squad.clone(), id, ask }]
             }
+            // The project's numbers, for the phone's card: only the summary —
+            // connecting, keys and the other `metrics.*` stay at the Mac.
+            Some(equipe_core::protocol::metrics::SUMMARY) => {
+                let Some(id) = id else { return vec![] };
+                let Some(ask) = message.params_as::<equipe_core::protocol::metrics::SummaryParams>() else {
+                    return fail(self, -32602, "metrics.summary needs { squad, project? }");
+                };
+                let followed = self.following.contains(&(device.to_owned(), ask.squad.clone()));
+                if squad.as_deref() != Some(ask.squad.as_str()) || !followed {
+                    return fail(self, -32002, "say hello to that squad first");
+                }
+                vec![Action::MetricsSummary { device: device.to_owned(), squad: ask.squad.clone(), id, ask }]
+            }
             Some(rpc::COMMAND) => {
                 let Some(command) = message.params_as::<Command>() else {
                     return vec![];
@@ -591,7 +650,7 @@ impl Core {
                     return vec![];
                 }
                 match allowed(command) {
-                    Some(command) => vec![Action::Command { device: device.to_owned(), squad, command }],
+                    Some(command) => vec![Action::Command { device: device.to_owned(), squad, command: from_device(device, command) }],
                     None => vec![],
                 }
             }
@@ -665,12 +724,21 @@ impl Core {
         self.frame_for(device, Some(squad), &message).into_iter().collect()
     }
 
+    /// The project's numbers a device asked for (`metrics.summary`): back to it.
+    pub fn metrics_summarized(&mut self, device: &str, squad: &str, id: u64, summary: Result<equipe_core::protocol::metrics::Summary, String>) -> Vec<Action> {
+        let message = match summary {
+            Ok(summary) => Message::response(id, summary),
+            Err(why) => Message::failure(id, -32000, why),
+        };
+        self.frame_for(device, Some(squad), &message).into_iter().collect()
+    }
+
     /// An event of a squad a device follows: on to the device.
     pub fn on_event(&mut self, device: &str, squad: &str, event: &Event) -> Vec<Action> {
         // Pictures of a browser someone at the Mac watches stay on the Mac, and
         // so does the disk panel's look (the phone gets the disk's level), and a
         // sign-in's one-time code: it is for the person's screens.
-        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } | Event::SignIn { .. }) {
+        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } | Event::SignIn { .. } | Event::WordsLog { .. }) {
             return vec![];
         }
         self.frame_for(device, Some(squad), &Message::event(event)).into_iter().collect()
@@ -701,6 +769,7 @@ impl Core {
                     "Write" | "Edit" | "MultiEdit" => t!("remote.push_asks_edit", member = member),
                     "WebFetch" => t!("remote.push_asks_fetch", member = member),
                     "Confirm" => t!("remote.push_asks_confirm", member = member),
+                    equipe_core::controls::ENGINE_TOOL => t!("remote.push_asks_engine", member = member),
                     _ => t!("remote.push_asks_permission", member = member),
                 };
                 let mut short = approval.clone();
@@ -742,6 +811,14 @@ impl Core {
                     }
                 };
                 (title, squad.to_owned(), "team", format!("team-{}", change.id), Event::TeamChangeProposed { squad: squad.to_owned(), change: short })
+            }
+            Event::RoutineProposed { proposal, .. } => {
+                let mut short = proposal.clone();
+                short.reason = short.reason.chars().take(PUSH_ACTION).collect();
+                short.routine.prompt = short.routine.prompt.chars().take(PUSH_ACTION).collect();
+                // Its title is content: it travels sealed, the lock screen says who.
+                let title = t!("remote.push_routine", member = proposal.by);
+                (title, squad.to_owned(), "routine", format!("routine-{}", proposal.id), Event::RoutineProposed { squad: squad.to_owned(), proposal: short })
             }
             Event::AcceptProposed { proposal, .. } => {
                 use equipe_core::protocol::accept::Verdict;
@@ -983,6 +1060,7 @@ pub(crate) mod tests {
             member: None,
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,
@@ -990,6 +1068,7 @@ pub(crate) mod tests {
             tokens: 0,
             context: None,
             recent: (0..200).map(|_| Entry::Reply { text: line.clone() }).collect(),
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],
@@ -1002,6 +1081,7 @@ pub(crate) mod tests {
             mode: None,
             effort: None,
             compacting: None,
+            visuals: Vec::new(),
         };
         let snapshot = Snapshot { squad: "acme".into(), sessions: (1..=8).map(session).collect(), ..Snapshot::default() };
         assert!(serde_json::to_string(&snapshot).unwrap().len() > 2 * RELAY_FRAME_MAX);
@@ -1067,11 +1147,11 @@ pub(crate) mod tests {
         // "Always" from a phone is once.
         let decide = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decide", "squad": "acme", "approval": 3, "decision": "always" } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), decide, now), now);
-        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::Decide { squad: "acme".into(), approval: 3, decision: Decision::Allow, words: None } }]);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::Decide { squad: "acme".into(), approval: 3, decision: Decision::Allow, words: None, said: None } }]);
         // A member's questions are the person's to answer, or close, from a phone too.
         let answer = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "answer_questions", "squad": "acme", "id": 5, "answers": [{ "picked": [1] }, {}] } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), answer, now), now);
-        let answers = vec![equipe_core::protocol::decide::Answer { picked: vec![1], other: None }, Default::default()];
+        let answers = vec![equipe_core::protocol::decide::Answer { picked: vec![1], ..Default::default() }, Default::default()];
         assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::AnswerQuestions { squad: "acme".into(), id: 5, answers, about: None } }]);
         let dismiss = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "acme", "id": 5 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), dismiss, now), now)[..], [Action::Command { command: Command::DismissQuestions { .. }, .. }]));
@@ -1085,13 +1165,40 @@ pub(crate) mod tests {
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineTeamChange { .. }, .. }]));
         let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "zeta", "id": 6 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
+        // A routine the PM proposed: the person's to turn on or decline from a phone too.
+        let approve = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_routine", "squad": "acme", "id": 7 } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), approve, now), now);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ApproveRoutine { squad: "acme".into(), id: 7 } }]);
+        let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_routine", "squad": "acme", "id": 7 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineRoutine { .. }, .. }]));
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_routine", "squad": "zeta", "id": 7 } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
         // Handed-in work on a card: the person's to confirm or decline from a phone — accepted, never merged.
         let confirm = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "confirm_accept", "squad": "acme", "id": 8, "tickets": [{ "ticket": 1, "merge": "push" }, { "ticket": 3 }] } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), confirm, now), now);
         let only = |t| equipe_core::protocol::accept::Confirmed::only(t);
-        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ConfirmAccept { squad: "acme".into(), id: 8, tickets: vec![only(1), only(3)] } }]);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ConfirmAccept { squad: "acme".into(), id: 8, tickets: vec![only(1), only(3)], said: None } }]);
         let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_accept", "squad": "acme", "id": 8 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineAccept { .. }, .. }]));
+        // A message said on a phone: the device the link knows, and all by words off, whatever the phone claims.
+        let said = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "say", "squad": "acme", "session": 1, "text": "ㄱㄱ", "via": "voice", "all": true, "device": "someone-else" } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), said, now), now);
+        let heard = Command::Say { squad: "acme".into(), session: 1, text: "ㄱㄱ".into(), via: equipe_core::protocol::by_words::Via::Voice, all: false, later: false, pasted: false, about: None, device: Some(phone.id.clone()) };
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: heard }]);
+        let undo = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "undo_words", "squad": "acme", "id": 4 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), undo, now), now)[..], [Action::Command { command: Command::UndoWords { id: 4, .. }, .. }]));
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "say", "squad": "zeta", "session": 1, "text": "yes" } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
+        // The log of decisions in words, its deleting, and all by words stay at the Mac.
+        for asked in [json!({ "type": "words_log", "squad": "acme" }), json!({ "type": "clear_words_log", "squad": "acme" }), json!({ "type": "set_words_all", "squad": "acme", "on": true })] {
+            let sent = json!({ "jsonrpc": "2.0", "method": "command", "params": asked });
+            assert!(core.on_relay(&phone.send(&c, Some("acme"), sent, now), now).is_empty(), "{asked}");
+        }
+        // A call mode's own decide, by voice: on as it came, for the log.
+        let voiced = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decide", "squad": "acme", "approval": 3, "decision": "allow", "via": "voice", "utterance": "응 해" } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), voiced, now), now);
+        let said = Some(equipe_core::protocol::by_words::Said { via: equipe_core::protocol::by_words::Via::Voice, utterance: "응 해".into() });
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::Decide { squad: "acme".into(), approval: 3, decision: Decision::Allow, words: None, said } }]);
         // A phone doesn't raise cards itself: the person's words are read where they type them.
         let raise = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "propose_accept", "squad": "acme", "session": 1, "verdict": "accept", "tickets": [1] } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), raise, now), now).is_empty());
@@ -1103,10 +1210,79 @@ pub(crate) mod tests {
         let other = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "zeta", "ticket": 1 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), other, now), now).is_empty());
         // Events go on to it, sealed, counted.
-        let out = core.on_event(&phone.id, "acme", &Event::Notice { session: 1, text: "hi".into() });
+        let out = core.on_event(&phone.id, "acme", &Event::Notice { undo: None, session: 1, text: "hi".into() });
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["squad"].as_str(), opened["rpc"]["method"].as_str()), (Some("acme"), Some("event")));
         assert!(opened["seq"].as_u64().unwrap() >= 3);
+        // A reply's diagram, drawn for it: the paths it reads with `read_image`.
+        let image = |tone: &str| equipe_core::protocol::RenderedImage { path: format!("/h/squads/acme/visuals/558211ed72b2d696-{tone}.png"), width: 880, height: 724 };
+        let drawn = equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: image("light"), dark: image("dark"), page: None };
+        let out = core.on_event(&phone.id, "acme", &Event::VisualsRendered { session: 1, visuals: vec![drawn] });
+        let params = &phone.open(&c, &out[0])["rpc"]["params"];
+        assert_eq!((params["type"].as_str(), params["visuals"][0]["key"].as_str()), (Some("visuals_rendered"), Some("558211ed72b2d696")));
+        assert_eq!(params["visuals"][0]["dark"]["path"], "/h/squads/acme/visuals/558211ed72b2d696-dark.png");
+    }
+
+    #[tokio::test]
+    async fn a_phone_reads_a_projects_numbers_but_connects_nothing() {
+        use equipe_core::metrics::{InMemory, Metrics};
+        use equipe_core::protocol::metrics::{ConnectParams, RefreshParams, SourceKind, SummaryParams};
+        const TOKEN: &str = "tok-SECRET-4815162342";
+        const SEED: &str = "90210";
+        let home = std::env::temp_dir().join(format!("equipe-remote-metrics-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // Two connections of the project: one that works, one whose key the service refuses.
+        let mut metrics = Metrics::new(&home, Box::new(InMemory::default()));
+        metrics.with_fake = true;
+        let fake = |extra: &[(&str, &str)]| {
+            let mut settings = std::collections::BTreeMap::from([("token".to_owned(), TOKEN.to_owned()), ("seed".to_owned(), SEED.to_owned())]);
+            settings.extend(extra.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
+            ConnectParams { squad: "acme".into(), project: Some("site".into()), kind: Some(SourceKind::Fake), id: None, settings }
+        };
+        let at = 1_793_000_000;
+        metrics.connect(fake(&[]), at).unwrap();
+        metrics.connect(fake(&[("fail", "auth")]), at).unwrap();
+        let today = equipe_core::metrics::day_of(&equipe_core::routines::Local, at);
+        metrics.refresh(&RefreshParams { squad: "acme".into(), ..Default::default() }, at, today).await.unwrap();
+
+        let (mut core, mut phone, now) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let ask = |id: u64, squad: &str, method: &str| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": { "squad": squad, "project": "site" } });
+        // Not followed yet: refused, with why.
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(1, "acme", "metrics.summary"), now), now);
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["error"]["code"], -32002);
+        core.on_relay(&phone.send(&c, Some("acme"), json!({ "jsonrpc": "2.0", "id": 2, "method": "hello", "params": { "version": "app", "squad": "acme" } }), now), now);
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(3, "acme", "metrics.summary"), now), now);
+        let wanted = SummaryParams { squad: "acme".into(), project: Some("site".into()) };
+        assert_eq!(out, vec![Action::MetricsSummary { device: phone.id.clone(), squad: "acme".into(), id: 3, ask: wanted.clone() }]);
+        // Another squad than the frame's.
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(4, "zeta", "metrics.summary"), now), now);
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["error"]["code"], -32002);
+        // The rest of metrics stays at the Mac.
+        for (id, method) in (5..).zip(["metrics.connect", "metrics.disconnect", "metrics.refresh", "metrics.query", "metrics.sources"]) {
+            let out = core.on_relay(&phone.send(&c, Some("acme"), ask(id, "acme", method), now), now);
+            let error = &phone.open(&c, &out[0])["rpc"]["error"];
+            assert_eq!((error["code"].as_i64(), error["message"].as_str()), (Some(-32601), Some("not something a device may ask")), "{method}");
+        }
+
+        // Worked out as the daemon does, back to the phone: the numbers, never a key or a setting.
+        let summary = super::super::link::phone_summary(&home, &wanted, at);
+        let out = core.metrics_summarized(&phone.id, "acme", 3, summary);
+        let opened = phone.open(&c, &out[0]);
+        let result = &opened["rpc"]["result"];
+        let tiles = result["tiles"].as_array().unwrap();
+        assert!(tiles.len() >= 2, "{result}");
+        assert!(tiles.iter().any(|t| t["value"].is_number() && t.get("error").is_none()), "{result}");
+        assert!(tiles.iter().any(|t| t["error"]["code"] == "auth"), "{result}");
+        let text = opened.to_string();
+        for kept in [TOKEN, SEED, "\"settings\"", "\"keys\"", "\"token\"", "\"seed\""] {
+            assert!(!text.contains(kept), "the answer holds {kept}: {text}");
+        }
+        // Why not, when it can't.
+        let out = core.metrics_summarized(&phone.id, "acme", 9, Err("gone".into()));
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["error"]["message"], "gone");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -1167,6 +1343,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_engine_move_the_pm_asked_for_reaches_a_phone_whole_and_its_yes_is_once() {
+        use equipe_core::controls::{ENGINE_TOOL, Mover, move_words};
+        use equipe_core::protocol::Engine;
+        let (mut core, phone, now) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let movers: Vec<Mover> = ["designer", "mobile", "mobile-2"].iter().map(|n| Mover { name: (*n).into(), from: Engine::Claude, working: false, on_ticket: true, now: false }).collect();
+        let action = move_words(equipe_core::i18n::Lang::En, &movers, Engine::Codex, None, None);
+        let approval = Approval { id: 12, session: 1, member: "pm".into(), ticket: None, tool: ENGINE_TOOL.into(), action: action.clone(), reason: None, preview: None };
+        core.on_relay(&json!({ "type": "presence", "device": phone.id, "online": false }), now);
+        let out = core.on_squad_event("acme", &Event::ApprovalRequested { squad: "acme".into(), approval });
+        let Action::Relay(push) = &out[0] else { panic!() };
+        assert_eq!((push["title"].as_str(), push["category"].as_str()), (Some("pm asks to move members to another engine"), Some("approval")));
+        assert!(!push.to_string().contains("mobile-2"), "who moves travels sealed only");
+        let opened = phone.open(&c, &out[0]);
+        assert_eq!(opened["rpc"]["params"]["approval"]["action"].as_str(), Some(action.as_str()), "the whole card, every member's line");
+        // The phone's yes is the card's own; an "always" from it is a yes once.
+        let yes = Command::Decide { squad: "acme".into(), approval: 12, decision: Decision::Allow, words: None, said: None };
+        assert_eq!(allowed(yes.clone()), Some(yes));
+        let always = Command::Decide { squad: "acme".into(), approval: 12, decision: Decision::Always, words: None, said: None };
+        assert!(matches!(allowed(always), Some(Command::Decide { decision: Decision::Allow, .. })));
+        // A phone never moves members itself.
+        assert_eq!(allowed(Command::MoveEngine { squad: "acme".into(), members: vec!["mobile".into()], engine: Engine::Codex, model: None, effort: None, now: false }), None);
+    }
+
+    #[test]
     fn a_device_away_gets_a_push_that_names_who_not_what() {
         let (mut core, phone, now) = core_with_phone();
         let c = core.config.clone().unwrap();
@@ -1182,7 +1383,7 @@ pub(crate) mod tests {
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["seq"].as_u64(), opened["rpc"]["params"]["approval"]["action"].as_str()), (Some(0), Some("rm -rf build")));
         // A ticket handed in pushes once.
-        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, design_qa: None, created_by: "pm".into(), note: None, asks: vec![], remaining: vec![], images: vec![], updated_at: None, priority: Default::default(), rank: 0 };
+        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, design_qa: None, plan: None, created_by: "pm".into(), note: None, asks: vec![], remaining: vec![], images: vec![], updated_at: None, priority: Default::default(), rank: 0 };
         assert_eq!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).len(), 1);
         assert!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).is_empty());
         t.status = TicketStatus::Done;
@@ -1198,6 +1399,8 @@ pub(crate) mod tests {
             ticket: Some(4),
             questions: vec![Question { question: long.clone(), header: "DB".into(), options: vec![option("Postgres"), option("SQLite")], multi_select: false, ..Question::default() }; 2],
             asked_at: 1,
+            review: false,
+            retro: None,
         };
         let out = core.on_squad_event("acme", &Event::QuestionsAsked { squad: "acme".into(), questions: set });
         let Action::Relay(push) = &out[0] else { panic!() };
@@ -1207,6 +1410,15 @@ pub(crate) mod tests {
         let questions = &opened["rpc"]["params"]["questions"]["questions"];
         assert_eq!(questions[0]["question"].as_str().unwrap().chars().count(), 200);
         assert_eq!((questions[0]["options"][0]["label"].as_str(), questions[0]["options"][0].get("description")), (Some("Postgres"), None));
+        // A routine the PM proposed: who — its title and prompt travel sealed.
+        use equipe_core::protocol::routines::{Routine, RoutineProposal, Schedule};
+        let routine = Routine { id: 0, title: "Weekly check-in".into(), prompt: "Sum up the week".into(), when: Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: None };
+        let proposal = RoutineProposal { id: 12, routine, reason: "asked thrice".into(), by: "pm".into(), session: 1, proposed_at: 1 };
+        let out = core.on_squad_event("acme", &Event::RoutineProposed { squad: "acme".into(), proposal });
+        let Action::Relay(push) = &out[0] else { panic!("{out:?}") };
+        assert_eq!((push["title"].as_str(), push["category"].as_str()), (Some("pm proposes a routine"), Some("routine")));
+        assert!(!push.to_string().contains("Weekly check-in"), "its title travels sealed only");
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["params"]["proposal"]["routine"]["title"].as_str(), Some("Weekly check-in"));
         // A member hands the person its browser: who, and that it's the Mac's app to do it in — what for travels sealed.
         let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
         let handed = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: Some(why.into()), check: None };
@@ -1267,13 +1479,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_phone_takes_back_a_change_but_never_says_itself_a_phone() {
+        let undo = Command::UndoHomeChange { squad: "acme".into(), session: 1, change: "abc".into() };
+        assert_eq!(allowed(undo.clone()), Some(undo));
+        // The mark is the daemon's to put on what the relay link brings, not the phone's to send.
+        let submit = Command::Submit { session: 1, text: "hi".into(), about: None };
+        assert_eq!(allowed(Command::OnPhone { command: Box::new(submit) }), None);
+    }
+
+    #[test]
+    fn a_phone_reads_and_searches_the_briefs_and_plans_but_keeps_no_copy() {
+        for look in [Command::ProjectDocs { squad: "acme".into() }, Command::SearchDocs { squad: "acme".into(), query: "checkout".into() }] {
+            assert_eq!(allowed(look.clone()), Some(look));
+        }
+        let keep = Command::KeepDocCopy { squad: "acme".into(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() };
+        assert_eq!(allowed(keep), None, "removing a copy stays at the person's screens");
+    }
+
+    #[test]
     fn a_phone_sees_where_the_engines_stand_but_signs_none_in_or_out() {
         use equipe_core::protocol::Engine;
         assert_eq!(allowed(Command::Engines), Some(Command::Engines));
+        let look = Command::PlanUse { engine: equipe_core::protocol::Engine::Claude, span: equipe_core::protocol::plan_use::Span::Day };
+        assert_eq!(allowed(look.clone()), Some(look), "where the plans went: read from a phone too");
         for command in [
             Command::SignIn { engine: Engine::Codex, device: true },
             Command::SignInCancel { engine: Engine::Codex },
             Command::SignOut { engine: Engine::Codex },
+            // A provider's key is pasted at the person's own screens only.
+            Command::AddProvider { preset: "openrouter".into(), base_url: None, key: Some(equipe_core::protocol::secrets::SecretValue("sk-or-x".into())) },
+            Command::RemoveProvider { id: "openrouter".into() },
+            Command::TestProvider { id: "openrouter".into() },
+            Command::Providers,
         ] {
             assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens");
         }

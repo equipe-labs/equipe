@@ -280,7 +280,7 @@ impl Bridge {
                 state!().members.remove(session);
                 state!().working.remove(session);
             }
-            Event::UserMessage { session, text } => {
+            Event::UserMessage { session, text, .. } => {
                 state!().working.insert(*session);
                 if let Some((_, hearing)) = self.hearing.get_mut(session)
                     && matches!(hearing, Hearing::Waiting(sent) if text.contains(sent.as_str()))
@@ -424,7 +424,7 @@ impl Bridge {
                     return (vec![], vec![toast(t!("telegram.already_answered"))]);
                 }
                 let said = if decision == Decision::Deny { t!("telegram.declined") } else { t!("telegram.allowed") };
-                (vec![(squad.clone(), Command::Decide { squad, approval: id, decision, words: None })], vec![toast(said)])
+                (vec![(squad.clone(), Command::Decide { squad, approval: id, decision, words: None, said: None })], vec![toast(said)])
             }
             Act::Accept(squad, ticket) => {
                 if !self.is(&squad, ticket, TicketStatus::Review) {
@@ -967,6 +967,7 @@ mod tests {
             member: Some(Member { role: role.into(), name: name.into() }),
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,
@@ -974,6 +975,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],
@@ -986,6 +988,7 @@ mod tests {
             effort: None,
             subagents: Vec::new(),
             compacting: None,
+            visuals: Vec::new(),
         }
     }
 
@@ -1003,7 +1006,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: Some("Done: <form> & tests".into()),
@@ -1049,7 +1052,7 @@ mod tests {
         b.sent(Key::Approval("acme".into(), 7), 100);
         let allow = buttons(&outs[0])[0].1.clone();
         let (commands, said) = b.on_button("cb", &allow);
-        assert_eq!(commands, vec![("acme".to_owned(), Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None })]);
+        assert_eq!(commands, vec![("acme".to_owned(), Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None, said: None })]);
         assert_eq!(said, vec![Out::Toast { callback: "cb".into(), text: "Allowed".into() }]);
         let outs = b.on_event("acme", &Event::ApprovalResolved { squad: "acme".into(), approval: 7, decision: Decision::Allow });
         assert!(matches!(&outs[..], [Out::Edit { message: 100, text }] if text.ends_with("<b>✅ Allowed</b>")), "{outs:?}");
@@ -1101,7 +1104,7 @@ mod tests {
         assert_eq!(said, vec![Out::Seen { message: 10 }]);
         // What the PM was saying before the person's message isn't the answer.
         b.on_event("acme", &Event::TextDelta { session: 1, text: "earlier work".into() });
-        b.on_event("acme", &Event::UserMessage { session: 1, text: "Ship the site today?".into() });
+        b.on_event("acme", &Event::UserMessage { session: 1, text: "Ship the site today?".into(), kept: Vec::new() });
         b.on_event("acme", &Event::TextDelta { session: 1, text: "Checking the board.".into() });
         b.on_event("acme", &Event::ToolUse { session: 1, tool: "board".into(), target: None, label: None, background: false });
         b.on_event("acme", &Event::TextDelta { session: 1, text: "Yes — after T-3.".into() });

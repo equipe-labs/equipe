@@ -1,7 +1,13 @@
-# 취향 기록 (design/taste.md)
+# Taste record (design/taste.md)
 
-## 2026-10-30 · 대화 요약 중 표시 (T-164)
-- **고른 것**: B — 흐르는 막대(%없음) + 실제 경과 시간, 입력창 위 띠.
-- **넘긴 것**: A(추정 막대 + %, Claude 앱 모양), C(대화 속 한 줄).
-- **이유**: 사람이 "왜 A가 아니라 B를 추천하느냐"고 물었고, 추정 %는 지어낸 값이라는 설명을 듣고 B를 골랐다.
-- **읽을 것**: 익숙한 모양보다 **정직한 값**을 택한다. 없는 정보(진행률 등)는 만들어 보여 주지 않는다. 조용하고 사실만 보여 주는 쪽.
+## 2026-10-30 · Showing a conversation being summarized (T-164)
+- **Chosen**: B — a flowing bar (no %) + the real elapsed time, a band above the composer.
+- **Passed over**: A (an estimated bar + %, the Claude app's look), C (a line in the conversation).
+- **Why**: the person asked "why recommend B and not A", heard that an estimated % is a made-up value, and chose B.
+- **To read from it**: **honest values** over a familiar look. Information that isn't there (progress and the like) is never made up for show. The quiet side that shows only facts.
+
+## 2026-11-03 · The look of Mermaid diagrams in the conversation (T-336)
+- **Chosen**: A, cards — rounded card nodes, a colour per status (in progress·your turn·done·blocked) + a symbol (● ◆ ✓ ✕ ○), the role on the second line. The code-block header above is gone; source and copy show only on hover.
+- **Passed over**: B, lanes (a lane per role — it widens sideways, so the text gets small on a narrow width), C, pills (only the main path bold — less explanation).
+- **Why**: the person said "it's ugly, I'd like it to be pretty", and the trouble with the look then was 'the same grey boxes·no hierarchy·the code header'. They looked at three options and chose A (no reason given in words).
+- **To read from it**: chose what is closest to the current screen while gaining hierarchy. Tidy cards over a dramatic change. Status by symbol as well as colour.

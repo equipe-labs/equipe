@@ -1,13 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# Patched copies of two GPUI crates (see [patch.crates-io]), not ours to lint.
+# Patched copies of three GPUI crates (see [patch.crates-io]), not ours to lint.
 exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.86.4"
+version = "0.103.79"
 
 [profile.release]
 lto = "thin"
@@ -16,14 +16,23 @@ strip = true
 opt-level = 3
 panic = "abort"
 
+# Lines in backtraces, not full debug info: full, a debug build of this
+# workspace took 27 GB, and every worktree and member makes its own.
+[profile.dev]
+debug = "line-tables-only"
+
 # Fast inner loop: optimize deps once, keep our own crates cheap to rebuild.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
-# Two GPUI crates, patched where they offer no way in (each change is marked
+# Three GPUI crates, patched where they offer no way in (each change is marked
 # `equipe:` in the source; take them again on a gpui-kit upgrade):
 # - gpui-pre: Korean wraps at spaces, as CSS `word-break: keep-all` — it broke
 #   words between any two syllables (`LineWrapper::is_word_char`).
+# - gpui-pre: Japanese and Chinese keep an opening bracket with the word after it
+#   and closing punctuation with the word before it — kinsoku
+#   (`LineWrapper::may_break_between`, used by `LineLayout::compute_wrap_boundaries`).
 # - gpui-pre: the content zoom (⌘+ / ⌘-) — `Window::set_content_zoom` scales
 #   the drawing and maps the viewport, input and IME positions (`zoom.rs`).
 # - gpui-pre: `EQUIPE_PERF=1|2|3` logs frame times (wall and main-thread CPU)
@@ -31,6 +40,12 @@ opt-level = 2
 # - gpui-pre: a cached view is drawn again when an entity it read while drawn
 #   is notified between frames, not only itself (`Window::notified_entities`,
 #   `view.rs`; the desktop's panes, docs/PERF-2026-10.md 6).
+# - gpui-pre: `App::peek_asset` and `ImageSource::decoded` — what an image
+#   decoded to, without loading it, so the app can let a picture it no longer
+#   shows go from the asset cache and the atlas (`app.rs`, `elements/img.rs`;
+#   the desktop's `views::visuals::release`).
+# - gpui-component: dictation may use the platform's servers when the person
+#   agreed (`SystemRecognizer::servers`; macOS on-device otherwise).
 # - gpui-base: a text view's link underline and the room between list items
 #   are the style's to set (`TextViewStyle`).
 # - gpui-base: where the window's selection ends are drawn, for what floats
@@ -38,6 +53,10 @@ opt-level = 2
 # - gpui-base: `ElementExt::on_prepaint` reports the element's own bounds —
 #   its canvas pinned to the top-left, not flowed under the element's
 #   children (`element_ext.rs`; the ticket card's place, `views/ticket_card.rs`).
+# - gpui-pre-macos: `EQUIPE_SNAPSHOT_SCALE=2` forces the window's scale factor
+#   (`get_scale_factor`), so a snapshot is drawn 2x on a screen that is not.
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-base = { path = "vendor/gpui-base" }
+gpui-component = { path = "vendor/gpui-component" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }

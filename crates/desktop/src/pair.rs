@@ -18,7 +18,7 @@ pub const REFRESHES: u32 = 3;
 /// With no word from the daemon this long after asking, it doesn't know how
 /// to pair phones: it's older than this app.
 pub const NO_ANSWER: Duration = Duration::from_secs(8);
-/// How long "연결됨" stays before the sheet closes by itself.
+/// How long "Connected" stays before the sheet closes by itself.
 pub const PAIRED_FOR: Duration = Duration::from_millis(1800);
 
 /// Why the sheet stopped, as it explains it.
@@ -83,14 +83,14 @@ pub struct Pairing {
     /// The sheet is on screen.
     pub open: bool,
     pub stage: Stage,
-    /// Codes replaced since the sheet opened (or since "새 코드").
+    /// Codes replaced since the sheet opened (or since "New code").
     refreshes: u32,
     /// The daemon has answered a pairing command: it knows them.
     pub answered: bool,
     /// The list, once the daemon said it; when it was last asked for.
     pub devices: Option<Devices>,
     pub devices_asked: Option<Instant>,
-    /// "링크 복사" was pressed, to say "복사됨" a moment.
+    /// "Copy link" was pressed, to say "Copied" a moment.
     pub copied: Option<Instant>,
     /// Bumped on each new stage, for the sheet's animations.
     pub turn: u64,
@@ -118,7 +118,7 @@ impl Pairing {
         vec![Command::Devices, Command::PairStart]
     }
 
-    /// The sheet closes (Esc, 닫기, or by itself once paired): the code, if
+    /// The sheet closes (Esc, "Close", or by itself once paired): the code, if
     /// any, stops working, and leaves this window's memory. A phone left
     /// asking is told no.
     pub fn close(&mut self) -> Vec<Command> {
@@ -135,7 +135,7 @@ impl Pairing {
         send
     }
 
-    /// "다시 시도" / "새 코드": a fresh code, the count of replacements anew.
+    /// "Try again" / "New code": a fresh code, the count of replacements anew.
     pub fn retry(&mut self, now: Instant) -> Vec<Command> {
         self.refreshes = 0;
         self.set(Stage::Opening { since: now });
@@ -242,7 +242,7 @@ impl Pairing {
         self.refreshes < REFRESHES
     }
 
-    /// The code on screen, for the QR and "링크 복사".
+    /// The code on screen, for the QR and "Copy link".
     pub fn url(&self) -> Option<&str> {
         match &self.stage {
             Stage::Showing { url, .. } => Some(url),
@@ -361,7 +361,7 @@ mod tests {
         assert!(!p.renews());
         assert_eq!(p.tick(now + Duration::from_secs(300)), vec![Command::PairCancel]);
         assert!(matches!(p.stage, Stage::Ended { problem: Problem::Expired, .. }));
-        // "새 코드" starts the count over.
+        // "New code" starts the count over.
         assert_eq!(p.retry(now), vec![Command::PairStart]);
         assert!(p.renews());
     }

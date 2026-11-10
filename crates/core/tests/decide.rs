@@ -73,11 +73,14 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         retention_days: 90,
         equipe_binary: Some("/opt/equipe".into()),
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -156,6 +159,9 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     let set = asked(&seen);
     assert_eq!((set.member.as_str(), set.session, set.ticket, set.questions.len()), ("backend", 2, None, 2));
     assert!(set.questions[1].multi_select && set.questions[0].options[0].description == "Relational, hosted on Supabase");
+    // "(Recommended)" written into a label comes off as the mark screens show in their own words: once.
+    let marks: Vec<(&str, bool)> = set.questions[0].options.iter().map(|o| (o.label.as_str(), o.recommended)).collect();
+    assert_eq!(marks, [("Postgres", true), ("SQLite", false)]);
     assert!(set.asked_at > 0);
     // The PM hears of it in its conversation.
     let news = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
@@ -165,13 +171,13 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     assert_eq!(snapshot.questions, std::slice::from_ref(&set));
 
     // The person answers: Postgres; Auth and Payments, with a note.
-    let answers = vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![1, 0], other: Some("SSO later".into()) }];
+    let answers = vec![Answer { picked: vec![0], ..Answer::default() }, Answer { picked: vec![1, 0], other: Some("SSO later".into()), ..Answer::default() }];
     handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers, about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { id, answers, .. } = e { Some((*id, answers.clone())) } else { None });
-    assert_eq!(closed, Some((set.id, Some(vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![0, 1], other: Some("SSO later".into()) }]))));
-    let expected = "Answers to your questions:\n1) Which database should the API use? → Postgres (Recommended)\n2) Which features ship first? → Auth, Payments (+ note: SSO later)";
-    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { session: 2, text } if text == expected)), "{seen:#?}");
+    assert_eq!(closed, Some((set.id, Some(vec![Answer { picked: vec![0], ..Answer::default() }, Answer { picked: vec![0, 1], other: Some("SSO later".into()), ..Answer::default() }]))));
+    let expected = "Answers to your questions:\n1) Which database should the API use? → Postgres\n2) Which features ship first? → Auth, Payments (+ note: SSO later)";
+    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { session: 2, text, .. } if text == expected)), "{seen:#?}");
     let prompt = calls(&recorded).last().map(|c| arg(c, "-p").unwrap_or_default().to_owned()).unwrap_or_default();
     assert!(prompt.ends_with(expected), "the member reads them as its next message: {prompt}");
     assert!(handle.snapshot("acme").await.questions.is_empty(), "no longer waiting");
@@ -181,6 +187,73 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     handle.send(Command::Submit { session: 1, text: "status?".into(), about: None });
     let after = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert!(!after.iter().any(|e| matches!(e, Event::QuestionsClosed { .. } | Event::UserMessage { session: 2, .. } | Event::Error { .. })), "{after:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_persons_answers_to_the_designer_are_kept_as_their_taste_for_every_design_after() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "Which hero layout?", "options": ["B: airy (Recommended)", "A: dense"] }] })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let set = asked(&seen);
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![1], other: Some("we're a tool, show more".into()), ..Answer::default() }], about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).expect("kept in the squad's memory");
+    assert!(taste.body.contains("Which hero layout? → chose A: dense; passed over B: airy; in their words: \u{201c}we're a tool, show more\u{201d}"), "{}", taste.body);
+
+    // A backend's answers are no design taste.
+    add(&handle, &mut events, 3, member(&project, "backend")).await;
+    tool(&handle, "backend", "ask_decision", json!({ "questions": [{ "question": "Which database?", "options": ["Postgres", "SQLite"] }] })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
+    let set = asked(&seen);
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![0], ..Answer::default() }], about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 3, .. })).await;
+    let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).unwrap();
+    assert!(!taste.body.contains("database"), "{}", taste.body);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_design_choice_reacted_to_in_one_click_goes_to_the_designer_and_into_the_taste() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    std::fs::create_dir_all(folder.join("brand")).unwrap();
+    for name in ["calm.png", "bold.png", "warm.png"] {
+        image::RgbaImage::new(8, 8).save(folder.join("brand").join(name)).unwrap();
+    }
+    let options = json!([
+        { "label": "Calm (Recommended)", "images": "brand/calm.png" },
+        { "label": "Bold", "images": "brand/bold.png" },
+        { "label": "Warm", "images": "brand/warm.png" },
+    ]);
+    let ask = json!({ "questions": [
+        { "question": "Which direction?", "aspects": ["type", "colour", "shape"], "options": options },
+        { "question": "Which home screen?", "aspects": ["type", "colour"], "options": options },
+    ] });
+    tool(&handle, "designer", "ask_decision", ask).await;
+    let set = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
+    assert_eq!(set.questions[0].options[2].aspects, ["type", "colour", "shape"], "the screen has what it can offer to mix");
+    // Calm with Warm's type; and another round of home screens, with why.
+    let answers = vec![Answer::mix(0, 2, "type"), Answer::again(Some("all too busy".into()))];
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: answers.clone(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { answers, .. } = e { answers.clone() } else { None });
+    assert_eq!(closed, Some(answers));
+    let message = seen.iter().find_map(|e| if let Event::UserMessage { session: 2, text, .. } = e { Some(text.clone()) } else { None }).unwrap();
+    assert!(message.contains("1) Which direction? → mix — «Calm» with the type of «Warm»"), "{message}");
+    assert!(message.contains("2) Which home screen? → another round — none of these (+ note: all too busy)"), "{message}");
+    assert!(message.contains("For a mix: make it") && message.contains("For another round:"), "{message}");
+    let taste = equipe_core::squad_memory::facts(&folder).into_iter().find(|f| f.name == equipe_core::taste::NAME).unwrap();
+    assert!(taste.body.contains("chose Calm with the type of Warm") && taste.body.contains("asked for another round"), "{}", taste.body);
     handle.shutdown().await;
 }
 
@@ -219,6 +292,16 @@ async fn a_visual_choice_shows_its_pictures_found_where_the_member_works_and_a_b
     // Asked in words alone: it goes, and the member is told to show them next time.
     let blind = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "로고 마스터는 어느 안으로 할까요?", "options": ["e. + 파란 원 점 (추천)", "e. 회색 점 유지"] }] })).await;
     assert!(!blind.is_error && blind.text.contains("Asked.") && blind.text.contains("choosing blind") && blind.text.contains("`images`"), "{blind:?}");
+
+    // The person picks a picture: a decision in the brand's record, the picture kept beside it.
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![1], other: Some("조용한 쪽이 좋아요".into()), ..Answer::default() }], about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let record = folder.join("design/decisions");
+    let files: Vec<String> = std::fs::read_dir(&record).expect("the record").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let md = files.iter().find(|f| f.ends_with("-which-logo.md")).unwrap_or_else(|| panic!("{files:?}"));
+    let text = std::fs::read_to_string(record.join(md)).unwrap();
+    assert!(text.contains("- Chose: Grey dot\n") && text.contains("- Passed over: Blue dot\n") && text.contains("조용한 쪽이 좋아요"), "{text}");
+    assert!(record.join(md.replace(".md", ".png")).is_file(), "{files:?}");
     handle.shutdown().await;
 }
 
@@ -236,7 +319,7 @@ async fn skipped_questions_say_so_and_a_closed_set_tells_the_member_to_go_on() {
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let text = seen.iter().find_map(|e| if let Event::UserMessage { text, .. } = e { Some(text.clone()) } else { None }).unwrap();
     assert_eq!(text, "Answers to your questions:\n1) Which database should the API use? → skipped — your call\n2) Which features ship first? → skipped — your call");
-    assert!(!seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("asks you to decide"))), "the PM isn't told of its own");
+    assert!(!seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 1, text } if text.contains("asks you to decide"))), "the PM isn't told of its own");
 
     // Asked again, and closed unanswered: the PM goes on without it.
     tool(&handle, "pm", "ask_decision", json!({ "questions": [{ "question": "Ship today?", "options": ["Yes (Recommended)", "No"] }] })).await;
@@ -287,5 +370,82 @@ async fn a_member_with_equipes_tools_has_no_engine_question_tool() {
     let call = calls(&recorded).pop().unwrap();
     let at = call.iter().position(|a| a == "--disallowedTools").expect("disallowed tools");
     assert!(call[at..].iter().any(|a| a == "AskUserQuestion"), "{call:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_decision_asked_again_replaces_its_card_and_one_already_answered_stays_answered() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "backend")).await;
+    tool(&handle, "backend", "ask_decision", two_questions()).await;
+    let first = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
+    tool(&handle, "pm", "ask_decision", json!({ "questions": [{ "question": "Ship on Friday?", "options": ["Yes", "No"] }] })).await;
+    let other = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "pm")).await);
+
+    // The same questions, spaced and worded a little differently, the same
+    // options: the card keeps its id (a pick in progress still holds) and
+    // moves to the end, the newest.
+    let mut again = two_questions();
+    again["questions"][0]["question"] = json!("Which  database should the API use, then?");
+    tool(&handle, "backend", "ask_decision", again).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::QuestionsClosed { .. })), "nothing closed: {seen:#?}");
+    let replaced = asked(&seen);
+    assert_eq!(replaced.id, first.id);
+    assert_eq!(replaced.questions[0].question, "Which  database should the API use, then?");
+    assert!(replaced.asked_at >= first.asked_at);
+    let waiting = handle.snapshot("acme").await.questions;
+    assert_eq!(waiting.iter().map(|s| s.id).collect::<Vec<_>>(), [other.id, first.id], "one card for it");
+
+    // Other options this time: the old card goes, unanswered and untold; the new one comes.
+    let mysql = || {
+        let mut changed = two_questions();
+        changed["questions"][0]["options"] = json!([{ "label": "Postgres" }, { "label": "MySQL" }]);
+        changed
+    };
+    tool(&handle, "backend", "ask_decision", mysql()).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::QuestionsClosed { id, answers: None, .. } if *id == first.id)), "{seen:#?}");
+    let newer = asked(&seen);
+    assert_ne!(newer.id, first.id);
+    assert_eq!(handle.snapshot("acme").await.questions.iter().map(|s| s.id).collect::<Vec<_>>(), [other.id, newer.id]);
+
+    // Answered: the answer goes as given, once — and the same question asked
+    // after it is a card of its own; the answer isn't touched.
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: newer.id, answers: vec![Answer::pick(1), Answer::pick(0)], about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let told: Vec<&str> = seen.iter().filter_map(|e| if let Event::UserMessage { session: 2, text, .. } = e { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(told, ["Answers to your questions:\n1) Which database should the API use? → MySQL\n2) Which features ship first? → Auth"]);
+    tool(&handle, "backend", "ask_decision", mysql()).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { questions, .. } if questions.member == "backend")).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::QuestionsClosed { .. })), "{seen:#?}");
+    let after = asked(&seen);
+    assert!(after.id != newer.id && after.id != first.id);
+    assert_eq!(handle.snapshot("acme").await.questions.len(), 2);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_decision_kept_twice_from_before_waits_once_after_a_restart() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let set = {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&project, "pm")).await;
+        tool(&handle, "pm", "ask_decision", json!({ "questions": [{ "question": "Ship on Friday?", "options": ["Yes", "No"] }] })).await;
+        let set = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
+        handle.shutdown().await;
+        set
+    };
+    // A journal from before asking again replaced a card: the one decision kept twice.
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    let twice = decide::QuestionSet { id: set.id + 1, asked_at: set.asked_at + 60, ..set.clone() };
+    journal.set_questions(&[set.clone(), twice.clone()]).unwrap();
+    drop(journal);
+    let (handle, _events) = runtime::start(config(&claude, &home, true));
+    assert_eq!(handle.snapshot("acme").await.questions, [decide::QuestionSet { id: set.id, ..twice }], "once, as last asked");
     handle.shutdown().await;
 }

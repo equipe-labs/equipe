@@ -3,6 +3,7 @@
 //! build folders, an agent's worktree in a project, Xcode's DerivedData. The
 //! snapshot carries the level, `disk_scan` answers with the look, and
 //! `disk_clean` gives back what was picked (only what is safe) and looks again.
+//! Its uploads hold what sent messages attached, those sent long ago apart.
 //! `FAKE_DISK=critical` also leaves a member's build failing for want of room
 //! last in frontend's conversation, with its news line.
 
@@ -97,7 +98,10 @@ fn items() -> Vec<DiskItem> {
         item(G::Builds, K::BuildCache, "pm · demo", "~/.equipe/cache/build/demo/pm", 1_940 * MB, true, W::Rebuildable, None, None),
         item(G::Equipe, K::Log, "daemon.log", "~/.equipe/daemon.log", 86 * MB, true, W::OldLog, None, None),
         item(G::Equipe, K::Browser, "browser/", "~/.equipe/browser", 1_120 * MB, false, W::Needed, None, None),
-        item(G::Equipe, K::Uploads, "uploads/", "~/.equipe/uploads", 214 * MB, false, W::Needed, None, None),
+        item(G::Equipe, K::Uploads, "uploads/", "~/.equipe/uploads", 18 * MB, false, W::Needed, None, None),
+        // What sent messages attached: kept, and those sent over 30 days ago the person's to remove.
+        DiskItem { id: "attachments:sent".into(), ..item(G::Equipe, K::Attachments, "uploads/ (41)", "~/.equipe/uploads", 152 * MB, false, W::Sent, None, None) },
+        DiskItem { id: "attachments:old".into(), ..item(G::Equipe, K::Attachments, "uploads/ (12)", "~/.equipe/uploads", 44 * MB, true, W::SentLongAgo, None, None) },
         item(G::Equipe, K::Journals, "squads/*/squad.db", "~/.equipe/squads", 38 * MB, false, W::Needed, None, None),
         item(G::Projects, K::ProjectBuild, "equipe · .claude/worktrees/agent-a24f/target/", "~/code/equipe/.claude/worktrees/agent-a24f/target", 14_700 * MB, false, W::NotEquipes, None, Some("rm -rf ~/code/equipe/.claude/worktrees/agent-a24f/target")),
         item(G::Projects, K::ProjectBuild, "equipe · target/", "~/code/equipe/target", 11_900 * MB, false, W::NotEquipes, None, Some("rm -rf ~/code/equipe/target")),
@@ -147,7 +151,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                 gone().lock().unwrap().extend(safe.iter().map(|i| i.id.clone()));
                 let now = *free().lock().unwrap();
                 let status = DiskStatus { level: level(now), free: now, total: TOTAL, path: home().join(".equipe"), container_free: None };
-                let cleaned = DiskCleaned { freed, removed: safe.iter().map(|i| i.id.clone()).collect(), skipped: Vec::new(), status: status.clone() };
+                let cleaned = DiskCleaned { freed, removed: safe.iter().map(|i| i.id.clone()).collect(), skipped: Vec::new(), status: status.clone(), auto: false };
                 let _ = events.send(Event::DiskCleaned { cleaned });
                 if status.level != before {
                     let _ = events.send(Event::DiskLevel { status });
@@ -171,6 +175,6 @@ pub fn failed_build() -> Vec<equipe_core::protocol::Entry> {
     let outcome = ToolOutcome { ok: false, exit: Some(101), ms: Some(48_200), output: output.into(), skipped: 0, diff: None };
     vec![
         Entry::Tool { tool: "Bash".into(), target: Some("cargo build -p equipe-desktop".into()), outcome: Some(Box::new(outcome)), label: None, background: false },
-        Entry::Note { text: equipe_core::i18n::core(equipe_core::i18n::Lang::Ko).fill("news.disk_build_failed", &[("name", "frontend".to_owned())]) },
+        Entry::Note { undo: None, text: equipe_core::i18n::core(crate::lang()).fill("news.disk_build_failed", &[("name", "frontend".to_owned())]) },
     ]
 }

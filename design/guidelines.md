@@ -1,241 +1,251 @@
-# equipe 디자인 가이드라인
+# equipe design guidelines
 
-equipe(CLI·데몬·데스크톱)의 디자인 규칙이다. 값은 `tokens.json`(생성 파일 — `tokens/`에서 만든다, `README.md`), 컴포넌트 규칙은 `components/components.md`, 로고는 `assets/logo/`. squad 공통 원칙은 squad 폴더의 `design/principles.md`이고 여기 복사하지 않는다.
+The design rules for equipe (CLI·daemon·desktop). Values are in `tokens.json` (a generated file — made from `tokens/`, see `README.md`), component rules in `components/components.md`, the logo in `assets/logo/`. The squad's shared principles are in the squad folder's `design/principles.md` and aren't copied here.
 
-출처: 브랜드 부분(§0~§7)은 T-144 브랜드 가이드라인 v1(2026-10-16 확정)을 그대로 옮겼다. 본문에 나오는 그림·근거 파일(`compare-color.png`, `compare-type.png`, `type-8lang.png`, `audit.md`, `brand.md`, `contrast.md`)은 `brand/`에, `logo-usage.png`·`logo-in-use.png`도 `brand/`에 있다. 고르기 전 시안(`options/`)과 `brand-tokens.draft.json`은 squad 폴더 `outputs/T-144 브랜드 가이드라인/`에만 있다.
+Source: the brand part (§0–§7) is carried over as is from the T-144 brand guidelines v1 (settled 2026-10-16). The pictures and evidence files the text mentions (`compare-color.png`, `compare-type.png`, `type-8lang.png`, `audit.md`, `brand.md`, `contrast.md`) are in `brand/`, as are `logo-usage.png`·`logo-in-use.png`. The drafts from before the choice (`options/`) and `brand-tokens.draft.json` are only in the squad folder's `outputs/T-144 brand guidelines/`.
 
-## 디자인 시스템 원칙 (충돌하면 위가 이긴다)
-1. **사람의 승인이 가장 크게 보인다.** 결정 카드는 어느 화면에서도 가장 눈에 띄고, 주 행동은 한 영역에 하나.
-2. **색만으로 말하지 않는다.** 상태는 색 + 기호 + 글자. 글자 4.5:1 · 그래픽 3:1 아래로 내리지 않는다.
-3. **플랫폼답게, 이름은 하나.** iOS·Android는 시스템 글꼴·Dynamic Type·시트 관례를 따르되, 같은 역할은 같은 토큰 이름(`radius.card`)을 쓰고 값 차이는 토큰의 `$extensions["im.equipe"].platform`에 적는다.
-4. **움직임은 짧고 하나의 곡선, 줄이기를 존중한다.**
-5. **새 값보다 기존 토큰.** 필요하다고 느껴지면 먼저 "기존 토큰으로 안 되는 이유"를 쓴다(`README.md` 거버넌스).
+## Design system principles (higher wins in a conflict)
+1. **The person's approval shows the most.** The decision card stands out most on any screen, and an area has one primary action.
+2. **Never say it with colour alone.** A status is colour + symbol + words. Never below 4.5:1 for text · 3:1 for graphics.
+3. **True to each platform, one name.** iOS·Android follow the system font·Dynamic Type·sheet conventions, but the same role uses the same token name (`radius.card`), with value differences written in the token's `$extensions["im.equipe"].platform`.
+4. **Motion is short, one curve, and respects reduce motion.**
+5. **An existing token before a new value.** When one feels needed, first write down "why no existing token will do" (`README.md` governance).
 
-## 엔지니어가 쓰는 법
-- 제품 코드에는 의미·컴포넌트 토큰만 쓴다. `color.raw.*`나 16진수·px 리터럴을 직접 쓰지 않는다.
-- 값이 필요한데 없으면 티켓으로 디자인 요청 — 자기 코드에 새 상수를 만들지 않는다.
-- `tokens.json`과 `build/` 아래 파일은 **생성 파일이라 손으로 고치지 않는다.** `tokens/`를 고치고 `npm run check`.
-- 화면이 바뀌는 변경은 designer 디자인 QA를 거친다.
+## How engineers use it
+- Product code uses semantic and component tokens only. Never `color.raw.*` or hex·px literals directly.
+- A value you need that isn't there is a design request on a ticket — don't make a new constant in your own code.
+- `tokens.json` and the files under `build/` are **generated, never edited by hand.** Edit `tokens/` and run `npm run check`.
+- A change that changes a screen goes through the designer's design QA.
 
-## 브랜드 0. 사람이 고른 것 (2026-10-16, 모두 추천안)
+## Brand 0. What the person chose (2026-10-16, every recommendation)
 
-| # | 질문 | 선택지 (추천 먼저) |
+| # | Question | Options (recommended first) |
 |---|---|---|
-| D1 | **로고 마스터** — 사이트(파란 4점)와 앱·스토어(`e.` 회색 점)가 다르다 | **①** `e.` + 파란 원 점 `#3F6FF5`(= T-105의 C안, 앱·스토어는 점만 칠함, 사이트는 로고만 교체) · ② `e.` 회색 점 그대로(앱 현행, 사이트가 맞춤) · ③ 파란 4점을 주 로고로(앱 아이콘 전부 재제작) |
-| D2 | **색 안** (`compare-color.png`) | **A Signal blue**(따뜻한 중립 + 파란 한 점, 링크 `#1D4ED8`) · B Steel chrome(데스크톱 현행 강철 파랑) · C Mono ink(강조색 없음, 점은 회색) |
-| D3 | **서체 안** (`compare-type.png`) | **1 Inter + Pretendard**(웹·마케팅은 Inter, 앱은 시스템 글꼴) · 2 시스템 글꼴만 · 3 IBM Plex Sans |
-| D4 | **한국어 말투** | **해요체 통일** · 합쇼체 통일 |
+| D1 | **Logo master** — the site (four blue dots) and the app·store (`e.` with a grey dot) differ | **①** `e.` + a round blue dot `#3F6FF5` (= option C of T-105; the app·store only colour the dot, the site only swaps the logo) · ② `e.` with the grey dot as is (the app today; the site follows) · ③ the four blue dots as the main logo (every app icon redone) |
+| D2 | **Colour option** (`compare-color.png`) | **A Signal blue** (warm neutrals + one blue dot, links `#1D4ED8`) · B Steel chrome (the desktop's current steel blue) · C Mono ink (no accent colour, a grey dot) |
+| D3 | **Typeface option** (`compare-type.png`) | **1 Inter + a family for each script** (Inter for web·marketing, the system font in the apps; Pretendard for Korean, Noto Sans for Japanese·Chinese) · 2 system fonts only · 3 IBM Plex Sans |
+| D4 | **Register in each language** — decided first for Korean | **Korean: the polite -yo register (haeyo-che) throughout** · Korean: the formal register (hapsyo-che) throughout |
 
-## 브랜드 1. 로고
+## Brand 1. Logo
 
-### 1.1 구성 (D1① 기준)
+### 1.1 Construction (per D1①)
 
-- **마크 `e.`**: void `#0A0A0C` 타일 + bone `#EFEDE7` 소문자 `e` + 브랜드 점. 앱 아이콘·파비콘·아바타. 모서리 반지름 = 한 변의 22%(사이트 타일 14/64와 같음).
-- **워드마크 `equipe.`**: 소문자 + 점. Helvetica Neue Bold, 자간 −0.04em(BRAND.md의 −6px@150px). 점은 **원**(지름 ≈ 0.115em), 색 `brand.dot` `#3F6FF5`.
-- **점의 뜻**: 사이트 4점의 "꽉 찬 점 = 이끄는 사람"을 점 하나로 줄인 것(`equipe-site/design/tokens.md`의 뜻을 계승, T-105). 4점은 로고에서 내리고 본문 일러스트로 남긴다.
-- 그림: `logo-usage.png` ①, 적용 예: `logo-in-use.png`.
+- **Mark `e.`**: a void `#0A0A0C` tile + a bone `#EFEDE7` lowercase `e` + the brand dot. App icon·favicon·avatar. Corner radius = 22% of a side (the same as the site tile's 14/64).
+- **Wordmark `equipe.`**: lowercase + dot. Helvetica Neue Bold, tracking −0.04em (BRAND.md's −6px@150px). The dot is a **circle** (diameter ≈ 0.115em), colour `brand.dot` `#3F6FF5`.
+- **What the dot means**: the site's four dots' "filled dot = the person who leads", reduced to one dot (carrying on the meaning in `equipe-site/design/tokens.md`, T-105). The four dots leave the logo and stay as an illustration in the body.
+- Pictures: `logo-usage.png` ①, in use: `logo-in-use.png`.
 
-### 1.2 이름 표기 규칙 (제안)
-- 문장·UI·메타 안: **`equipe`** — 항상 소문자, 점 없음(용어집 §1과 같음). 문장 첫머리에서도 소문자.
-- 점은 **로고(그림)** 에만. 텍스트로 `equipe.`를 쓰지 않는다(안드로이드 `wordmark` 문자열 `equipe.`는 로고 자리라 예외).
-- iOS 홈 화면 이름은 `equipe`(`project.yml:61`의 `Equipe`는 수정 대상 — 같은 파일 `:96`은 이미 `equipe`).
-- pt-BR·fr에서는 첫 언급에 설명어("equipe, um squad…")를 붙인다 — 용어집 §1 그대로.
+### 1.2 How the name is written (proposed)
+- In sentences·UI·meta: **`equipe`** — always lowercase, no dot (as in glossary §1). Lowercase at the start of a sentence too.
+- The dot is for the **logo (the picture)** only. Never write `equipe.` as text (Android's `wordmark` string `equipe.` stands in for the logo, so it's the exception).
+- The iOS home-screen name is `equipe` (`Equipe` at `project.yml:61` is to be fixed — `:96` of the same file already says `equipe`).
+- In pt-BR·fr the first mention gets a descriptor ("equipe, um squad…") — exactly as glossary §1.
 
-### 1.3 사용 규칙 (`logo-usage.png`)
-- **여백**: x = 마크 한 변의 ¼, 워드마크는 `e` 높이의 ½ — 안쪽엔 아무것도 들어오지 않는다.
-- **최소 크기**: 마크 16px, 워드마크 글자 높이 16px(≈ 폭 72px). 16px에서도 점이 2px 이상 남는다(렌더로 확인). 인쇄 8mm / 폭 20mm는 **제안(인쇄 미확인)**.
-- **배경**: 밝은 바탕에는 글자 `#15161A`, 어두운 바탕에는 bone `#EFEDE7`. 점은 양쪽 모두 `#3F6FF5`(대비 §2.4: 밝은 `bg` 4.01:1, void 4.52:1, 흰색 4.37:1 — 그래픽 기준 3:1 이상).
-- **단색 버전**: 한 색 인쇄, 안드로이드 테마 아이콘, iOS 틴트 → 점도 글자와 같은 한 색.
-- **하지 말 것**: 점·글자 색 바꾸기, 늘이기·기울이기, 그림자·그라데이션, 파란 바탕·사진 위에 얹기, 다른 글꼴, `e`를 4점으로 대체(마지막 줄은 사이트 현행 로고 — D1①에서 내림).
+### 1.3 Usage rules (`logo-usage.png`)
+- **Clear space**: x = ¼ of the mark's side, for the wordmark ½ of the `e`'s height — nothing comes inside.
+- **Minimum size**: mark 16px, wordmark letter height 16px (≈ 72px wide). At 16px the dot still keeps 2px or more (checked by rendering). Print 8mm / 20mm wide is **a proposal (not checked in print)**.
+- **Backgrounds**: on light backgrounds the letters are `#15161A`, on dark ones bone `#EFEDE7`. The dot is `#3F6FF5` on both (contrast §2.4: light `bg` 4.01:1, void 4.52:1, white 4.37:1 — above the 3:1 graphics threshold).
+- **One-colour version**: one-colour print, Android themed icons, iOS tint → the dot takes the same single colour as the letters.
+- **Don't**: change the dot's or letters' colour, stretch·slant, add shadows·gradients, set it on a blue background·a photo, use another font, replace the `e` with the four dots (the last is the site's current logo — dropped by D1①).
 
-### 1.4 앱 아이콘과의 관계
-- 앱 아이콘 = 마크 타일을 전체 면(1024²)에 채운 것. OS가 모서리를 깎는다(iOS 마스크, 안드로이드 적응형 아이콘 — 전경 레이어 `e.`, 배경 void).
-- 다크/틴트 변형: 점은 단색으로 돌아간다(T-72·T-88의 틴트와 같음). 라이트·다크 모두 타일은 void.
-- GitHub 조직 아바타는 BRAND.md의 "라벨형"(bone 바탕 + 검은 `e` + 점)을 유지하되 점 색은 D1에 따른다 — 어두운 테마·밝은 테마 모두에서 구분되려는 의도(BRAND.md Assets).
-- **글꼴 의존 해소 (T-178, 2026-10-31)**: 마스터 SVG는 이제 글자 요소 없이 `e`를 윤곽선 path로 그린다(`assets/logo/mark.svg`, 라이트 타일 `mark-light.svg`, 타일 없는 전경 `mark-glyph.svg`, 워드마크 `wordmark-light.svg`·`wordmark-on-dark.svg`). 윤곽선의 원본은 **TeX Gyre Heros Bold**(Helvetica 계열 자유 글꼴, [GUST Font License](https://www.gust.org.pl/projects/e-foundry/licenses) — 사용·수정·재배포 허용, 글꼴 파일을 고쳐 배포할 때만 이름 변경 의무; 사본 `assets/logo/GUST-FONT-LICENSE.txt`). 옛 Helvetica Neue 렌더와 겹쳐 본 차이는 윤곽선 가장자리 1~2% 안(`brand/logo-outline-compare.png`). Helvetica Neue 윤곽선은 **쓰지 않는다**: Mac 번들 글꼴 소프트웨어는 Linotype/Monotype·Apple 소유이고(글꼴 파일 저작권 문구 확인) 로고용 윤곽선 변환·재배포를 허용한다는 공개 문서를 찾지 못했다 — 불확실하면 쓰지 않는 것이 원칙(미확인, 쓰려면 Monotype 로고 라이선스 문의 필요). Inter Bold(OFL)도 시험했으나 `e` 꼬리가 비스듬히 잘리고 더 커서 눈에 띄게 달라져 채택하지 않았다.
+### 1.4 Relation to the app icon
+- App icon = the mark tile filling the whole face (1024²). The OS cuts the corners (iOS mask, Android adaptive icon — foreground layer `e.`, background void).
+- Dark/tinted variants: the dot goes one colour (as T-72·T-88's tint). In light and dark alike the tile is void.
+- The GitHub organisation avatar keeps BRAND.md's "label style" (bone background + black `e` + dot), with the dot's colour per D1 — meant to stand out on dark and light themes alike (BRAND.md Assets).
+- **No longer font-dependent (T-178, 2026-10-31)**: the master SVGs now draw the `e` as an outline path with no text element (`assets/logo/mark.svg`, the light tile `mark-light.svg`, the foreground without a tile `mark-glyph.svg`, the wordmarks `wordmark-light.svg`·`wordmark-on-dark.svg`). The outlines come from **TeX Gyre Heros Bold** (a free Helvetica-style font, [GUST Font License](https://www.gust.org.pl/projects/e-foundry/licenses) — use·modification·redistribution allowed; a rename is required only when distributing a modified font file; copy at `assets/logo/GUST-FONT-LICENSE.txt`). Laid over the old Helvetica Neue render, the difference stays within 1–2% at the outline's edge (`brand/logo-outline-compare.png`). Helvetica Neue outlines are **not used**: the font software bundled with the Mac belongs to Linotype/Monotype·Apple (checked in the font files' copyright notices) and no public document was found allowing outline conversion and redistribution for a logo — when unsure, the rule is not to use it (unconfirmed; using it would need a Monotype logo licence enquiry). Inter Bold (OFL) was tried too, but its `e` tail is cut on a slant and it's larger, visibly different, so it wasn't adopted.
 
-### 1.5 자산 목록
-| 파일 | 상태 |
+### 1.5 Assets
+| File | Status |
 |---|---|
-| 마크 SVG(윤곽선) `mark.svg`·`mark-light.svg`·`mark-glyph.svg`, 워드마크 `wordmark-light.svg`·`wordmark-on-dark.svg` | **있음**(T-178, 윤곽선·Heros 기반) — 모노 워드마크는 아직 없음 |
-| 앱 아이콘 PNG 1024(라이트·다크·틴트), 맥 `.icns` | T-72·T-88에 있음(점 색·모양만 재렌더) |
-| 사이트 `favicon.svg/.ico`, `apple-touch-icon.png`, `og.png`, `logo.png` | 있음 — 마크 교체 필요(T-105 "바꿔야 하는 파일" 목록 그대로) |
-| 시안(이 폴더) | `logo-usage.png`, `logo-in-use.png` |
+| Mark SVG (outlined) `mark.svg`·`mark-light.svg`·`mark-glyph.svg`, wordmarks `wordmark-light.svg`·`wordmark-on-dark.svg` | **Present** (T-178, outlined·based on Heros) — no mono wordmark yet |
+| App icon PNG 1024 (light·dark·tinted), Mac `.icns` | In T-72·T-88 (only the dot's colour·shape re-rendered) |
+| Site `favicon.svg/.ico`, `apple-touch-icon.png`, `og.png`, `logo.png` | Present — the mark needs replacing (exactly T-105's "files to change" list) |
+| Drafts (this folder) | `logo-usage.png`, `logo-in-use.png` |
 
-## 브랜드 2. 색
+## Brand 2. Colour
 
-### 2.1 원칙
-1. **색은 둘뿐: 브랜드 파랑(단 하나)과 의미색.** 나머지는 따뜻한 중립(bone·void).
-2. 라이트·다크 모두 같은 **역할 이름**을 쓴다. 값만 모드별로 다르다.
-3. 글자 조합은 WCAG 2.x AA(4.5:1), 그래픽(포커스 링·점·아이콘)은 3:1 이상. 색만으로 상태를 전달하지 않는다(글자·아이콘을 함께).
-4. BRAND.md의 "둘째 강조색 금지"는 "**파란 하나**가 유일한 색(+의미색)"으로 고친다(D2 A·B 기준. C는 BRAND.md 그대로).
+### 2.1 Principles
+1. **Only two kinds of colour: the brand blue (just one) and the semantic colours.** Everything else is warm neutrals (bone·void).
+2. Light and dark use the same **role names**. Only the values differ per mode.
+3. Text pairs meet WCAG 2.x AA (4.5:1), graphics (focus ring·dot·icons) 3:1 or more. A status is never told by colour alone (words·icons with it).
+4. BRAND.md's "no second accent colour" becomes "**one blue** is the only colour (+ semantic colours)" (per D2 A·B. C keeps BRAND.md as is).
 
-### 2.2 역할 토큰 — 추천 A (Signal blue)
+### 2.2 Role tokens — recommended A (Signal blue)
 
-| 역할 | 라이트 | 다크 | 쓰임 |
+| Role | Light | Dark | Use |
 |---|---|---|---|
-| `bg` | `#F6F5F1` | `#0A0A0C` | 페이지·앱 바탕 |
-| `surface` | `#FFFFFF` | `#16171A` | 카드·시트 |
-| `sunken` | `#EAE7E0` | `#111114` | 코드·눌린 면 |
-| `text` | `#15161A` | `#EFEDE7` | 본문·제목 |
-| `muted` | `#4F5159` | `#A3A5AB` | 보조 글자 |
-| `accent` | `#1D4ED8` | `#8FB0FF` | 링크·텍스트 버튼·선택·포커스 |
-| `onAccent` | `#FFFFFF` | `#0B1226` | 채운 accent 면 위 글자 |
-| `dot` | `#3F6FF5` | `#3F6FF5` | **브랜드 점**(로고 전용 그래픽, 글자 색 아님) |
-| `focus` | `#1D4ED8` | `#8FB0FF` | 포커스 링 2px(오프셋 3px) |
-| `ok` / `work` / `wait` / `err` | `#1F6B33` / `#825600` / `#A04610` / `#AD2E27` | `#7FCB8E` / `#E2B865` / `#EC9A62` / `#EE7B74` | 완료 / 진행 중 / 내 차례·허락 대기 / 오류 |
-| `line` | `rgba(10,10,12,.14)` | `rgba(233,230,223,.14)` | 헤어라인(장식 — 글자 대비 대상 아님) |
+| `bg` | `#F6F5F1` | `#0A0A0C` | page·app background |
+| `surface` | `#FFFFFF` | `#16171A` | cards·sheets |
+| `sunken` | `#EAE7E0` | `#111114` | code·pressed surfaces |
+| `text` | `#15161A` | `#EFEDE7` | body·titles |
+| `muted` | `#4F5159` | `#A3A5AB` | secondary text |
+| `accent` | `#1D4ED8` | `#8FB0FF` | links·text buttons·selection·focus |
+| `onAccent` | `#FFFFFF` | `#0B1226` | text on a filled accent surface |
+| `dot` | `#3F6FF5` | `#3F6FF5` | **the brand dot** (a logo-only graphic, not a text colour) |
+| `focus` | `#1D4ED8` | `#8FB0FF` | focus ring 2px (offset 3px) |
+| `ok` / `work` / `wait` / `err` | `#1F6B33` / `#825600` / `#A04610` / `#AD2E27` | `#7FCB8E` / `#E2B865` / `#EC9A62` / `#EE7B74` | done / in progress / your turn·waiting for permission / error |
+| `errFill` (hover · pressed) | `#EEE0DE` (`#EBD9D7` · `#E9D2CF`) | `#352728` (`#3C2A2B` · `#442E2E`) | opaque fill behind `err` text — the soft destructive button (Deny). err on it: light 5.12 / 4.83 / 4.56, dark 5.24 / 4.95 / 4.61 :1 |
+| `line` | `rgba(10,10,12,.14)` | `rgba(233,230,223,.14)` | hairline (decoration — not subject to text contrast) |
 
-- 의미색의 라이트 값(`work` `#825600`, `wait` `#A04610`, `err` `#AD2E27`)과 다크 값(amber `#E2B865`, orange `#EC9A62`, red `#EE7B74`)은 **데스크톱 `theme.rs`의 현행 값 그대로**다. `ok`(완료)는 지금 어디에도 정의가 없어서 **새로 정한 값**(제안): 라이트 `#1F6B33`, 다크 `#7FCB8E`. 의미 구분: amber = 일하는 중, orange = 사람을 기다림(데스크톱 `theme.rs:132-134`의 의도), 둘을 프로젝트 색으로 쓰지 않는다.
-- **채운 주 버튼 (제안)**: 마케팅 웹(사이트)은 `accent` 면 + `onAccent` 글자. **제품 UI(앱·데스크톱)는 지금처럼 `text` 색 면**(검정/bone)을 쓰고, 파랑은 링크·선택·포커스·점에만. 이유: 앱 화면이 지금 단색 위주이고(audit C2) 파랑 버튼이 늘면 "승인" 같은 중요한 한 행동이 묻힌다.
-- 멤버 아바타 8색(`theme.rs:135,163`)은 브랜드 팔레트가 아니라 *멤버 식별용 별도 체계* — 이번에 건드리지 않는다(대비 재계산 안 함).
+- The semantic colours' light values (`work` `#825600`, `wait` `#A04610`, `err` `#AD2E27`) and dark values (amber `#E2B865`, orange `#EC9A62`, red `#EE7B74`) are **exactly the desktop `theme.rs`'s current values**. `ok` (done) isn't defined anywhere yet, so it's a **newly chosen value** (proposed): light `#1F6B33`, dark `#7FCB8E`. The meanings: amber = working, orange = waiting on the person (the intent of desktop `theme.rs:132-134`); neither is ever a project colour.
+- **`errFill` is opaque on purpose (T-492)**: a translucent tint (`err-bg`, 12%) over a translucent bar or sheet changes with whatever scrolls behind it, and at 8% over iOS's `.bar` the Deny label fell to 4.27:1 (T-491). The soft destructive button takes `errFill` with `err` text, and for hover·pressed its own opaque steps instead of the `hover`·`pressed` overlays (an overlay on it drops the label below 4.5:1). `err-bg` stays for badges·banners on solid surfaces.
+- **Filled primary button (proposed)**: the marketing web (the site) uses an `accent` fill + `onAccent` text. **Product UI (app·desktop) keeps a `text`-coloured fill as now** (black/bone), with blue only for links·selection·focus·the dot. Why: the app screens are mostly one colour now (audit C2), and with more blue buttons the one important action, like "approve", gets lost.
+- The 8 member avatar colours (`theme.rs:135,163`) aren't the brand palette but *a separate system for telling members apart* — not touched this time (contrast not recomputed).
 
-### 2.3 세 안 비교 (`compare-color.png`)
+### 2.3 The three options compared (`compare-color.png`)
 
-| | **A Signal blue (추천)** | B Steel chrome | C Mono ink |
+| | **A Signal blue (recommended)** | B Steel chrome | C Mono ink |
 |---|---|---|---|
-| 한 줄 | 따뜻한 중립 + 파란 한 점·링크 | 데스크톱 현행: 크롬 회색 점·강철 파랑 링크 | 색 없음, 잉크가 곧 강조 |
-| `accent` 라이트/다크 | `#1D4ED8` / `#8FB0FF` | `#2E5C8A` / `#B4CDE6` | `#0A0A0C` / `#EFEDE7` |
-| 점 | `#3F6FF5` 원 | `#7F8591`/`#8A909B` 회색(사각 가능) | `#5B5E66`/`#7C7E85` 회색 |
-| 장점 | 사이트 현행 링크·버튼 색 유지(변경 최소), 16px 파비콘에서 점이 식별, BRAND.md 한 줄 수정 | 데스크톱·BRAND.md와 가장 어울림, 차분 | 가장 절제, 앱 현행 토큰과 동일 |
-| 단점 | 앱·데스크톱의 강조색이 바뀐다(`#2E5C8A`→`#1D4ED8`) | 사이트 파란 UI 전체가 바뀐다, 점이 안 보여 로고 개성 약함 | 링크는 밑줄에만 의존, 로고 점이 회색이라 "이끄는 사람" 의미 소실, 상태색 외 위계 약함 |
-| 바꿀 곳 | 데스크톱 accent, 앱 링크·포커스, 아이콘 점 | 사이트 CSS 전체 | 사이트 CSS 전체 |
-| 대비 미달 | 없음 | 없음 | 없음 |
+| In a line | warm neutrals + one blue dot·links | the desktop today: chrome-grey dot·steel-blue links | no colour; the ink is the emphasis |
+| `accent` light/dark | `#1D4ED8` / `#8FB0FF` | `#2E5C8A` / `#B4CDE6` | `#0A0A0C` / `#EFEDE7` |
+| Dot | `#3F6FF5` circle | `#7F8591`/`#8A909B` grey (square possible) | `#5B5E66`/`#7C7E85` grey |
+| Pros | keeps the site's current link·button colours (least change), the dot reads in a 16px favicon, one line of BRAND.md changes | fits the desktop·BRAND.md best, calm | most restrained, the same as the app's current tokens |
+| Cons | the app·desktop accent changes (`#2E5C8A`→`#1D4ED8`) | the site's whole blue UI changes; the dot doesn't show, so the logo has less character | links rely on underlines alone; with a grey dot the "person who leads" meaning is lost; weak hierarchy beyond the status colours |
+| Where it changes | desktop accent, app links·focus, the icon's dot | the whole site CSS | the whole site CSS |
+| Below contrast | none | none | none |
 
-추천 A의 이유: ① 사이트 값(이미 AA 검증 문서화, `tokens.md`)을 그대로 쓰므로 사이트는 거의 안 바뀐다 ② 데스크톱·앱의 강조는 *링크·선택·포커스*라는 작은 자리라 바뀌어도 위험이 작다 ③ 파란 점이 "이끄는 사람"이라는 사이트의 의미를 로고에 남긴다. (판단은 제안 — 취향 비중이 큼.)
+Why A: ① it uses the site's values as they are (already AA-checked and documented, `tokens.md`), so the site barely changes ② the desktop·app accent sits in small places — *links·selection·focus* — so changing it is low risk ③ the blue dot keeps the site's meaning, "the person who leads", in the logo. (The judgement is a proposal — taste weighs heavily.)
 
-### 2.4 대비 수치 — 추천 A (전 조합)
-계산: `src/palettes.py`(WCAG 2.x 공식). **미달 0건**. B·C 표와 같은 계산은 `contrast.md`.
+### 2.4 Contrast — recommended A (every pair)
+Computed with `src/palettes.py` (the WCAG 2.x formula). **0 below threshold**. The same calculation for B·C is in `contrast.md`.
 
-| 모드 | 전경 | 배경 | 대비 | 기준 | 판정 | 용도 |
+| Mode | Foreground | Background | Contrast | Needed | Result | Use |
 |---|---|---|---|---|---|---|
-| light | `text` #15161A | `bg` #F6F5F1 | 16.57:1 | 4.5:1 | ✅ | 본문 글자 |
-| light | `text` #15161A | `surface` #FFFFFF | 18.08:1 | 4.5:1 | ✅ | 카드 위 글자 |
-| light | `text` #15161A | `sunken` #EAE7E0 | 14.64:1 | 4.5:1 | ✅ | 코드·눌린 면 위 글자 |
-| light | `muted` #4F5159 | `bg` #F6F5F1 | 7.25:1 | 4.5:1 | ✅ | 보조 글자 |
-| light | `muted` #4F5159 | `surface` #FFFFFF | 7.91:1 | 4.5:1 | ✅ | 카드 위 보조 글자 |
-| light | `muted` #4F5159 | `sunken` #EAE7E0 | 6.41:1 | 4.5:1 | ✅ | 눌린 면 위 보조 글자 |
-| light | `accent` #1D4ED8 | `bg` #F6F5F1 | 6.14:1 | 4.5:1 | ✅ | 링크·텍스트 버튼 |
-| light | `accent` #1D4ED8 | `surface` #FFFFFF | 6.70:1 | 4.5:1 | ✅ | 카드 위 링크 |
-| light | `onAccent` #FFFFFF | `accent` #1D4ED8 | 6.70:1 | 4.5:1 | ✅ | 채운 버튼 글자 |
-| light | `focus` #1D4ED8 | `bg` #F6F5F1 | 6.14:1 | 3.0:1 | ✅ | 포커스 링(그래픽) |
-| light | `dot` #3F6FF5 | `bg` #F6F5F1 | 4.01:1 | 3.0:1 | ✅ | 브랜드 점 on 바탕(그래픽) |
-| light | `ok` #1F6B33 | `bg` #F6F5F1 | 6.00:1 | 4.5:1 | ✅ | 완료·성공 글자 |
-| light | `work` #825600 | `bg` #F6F5F1 | 5.87:1 | 4.5:1 | ✅ | 진행 중 글자 |
-| light | `wait` #A04610 | `bg` #F6F5F1 | 5.70:1 | 4.5:1 | ✅ | 내 차례·허락 대기 글자 |
-| light | `err` #AD2E27 | `bg` #F6F5F1 | 6.02:1 | 4.5:1 | ✅ | 오류 글자 |
-| light | `ok` #1F6B33 | `surface` #FFFFFF | 6.54:1 | 4.5:1 | ✅ | 카드 위 성공 |
-| light | `err` #AD2E27 | `surface` #FFFFFF | 6.57:1 | 4.5:1 | ✅ | 카드 위 오류 |
-| light | `wait` #A04610 | `surface` #FFFFFF | 6.22:1 | 4.5:1 | ✅ | 카드 위 대기 |
-| light | `work` #825600 | `surface` #FFFFFF | 6.40:1 | 4.5:1 | ✅ | 카드 위 진행 |
-| light | `dot` #3F6FF5 | `아이콘 타일 void` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | 앱 아이콘의 점(그래픽) |
-| dark | `text` #EFEDE7 | `bg` #0A0A0C | 16.90:1 | 4.5:1 | ✅ | 본문 글자 |
-| dark | `text` #EFEDE7 | `surface` #16171A | 15.31:1 | 4.5:1 | ✅ | 카드 위 글자 |
-| dark | `text` #EFEDE7 | `sunken` #111114 | 16.10:1 | 4.5:1 | ✅ | 코드·눌린 면 위 글자 |
-| dark | `muted` #A3A5AB | `bg` #0A0A0C | 8.03:1 | 4.5:1 | ✅ | 보조 글자 |
-| dark | `muted` #A3A5AB | `surface` #16171A | 7.28:1 | 4.5:1 | ✅ | 카드 위 보조 글자 |
-| dark | `muted` #A3A5AB | `sunken` #111114 | 7.65:1 | 4.5:1 | ✅ | 눌린 면 위 보조 글자 |
-| dark | `accent` #8FB0FF | `bg` #0A0A0C | 9.25:1 | 4.5:1 | ✅ | 링크·텍스트 버튼 |
-| dark | `accent` #8FB0FF | `surface` #16171A | 8.38:1 | 4.5:1 | ✅ | 카드 위 링크 |
-| dark | `onAccent` #0B1226 | `accent` #8FB0FF | 8.70:1 | 4.5:1 | ✅ | 채운 버튼 글자 |
-| dark | `focus` #8FB0FF | `bg` #0A0A0C | 9.25:1 | 3.0:1 | ✅ | 포커스 링(그래픽) |
-| dark | `dot` #3F6FF5 | `bg` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | 브랜드 점 on 바탕(그래픽) |
-| dark | `ok` #7FCB8E | `bg` #0A0A0C | 10.21:1 | 4.5:1 | ✅ | 완료·성공 글자 |
-| dark | `work` #E2B865 | `bg` #0A0A0C | 10.62:1 | 4.5:1 | ✅ | 진행 중 글자 |
-| dark | `wait` #EC9A62 | `bg` #0A0A0C | 8.82:1 | 4.5:1 | ✅ | 내 차례·허락 대기 글자 |
-| dark | `err` #EE7B74 | `bg` #0A0A0C | 7.27:1 | 4.5:1 | ✅ | 오류 글자 |
-| dark | `ok` #7FCB8E | `surface` #16171A | 9.25:1 | 4.5:1 | ✅ | 카드 위 성공 |
-| dark | `err` #EE7B74 | `surface` #16171A | 6.59:1 | 4.5:1 | ✅ | 카드 위 오류 |
-| dark | `wait` #EC9A62 | `surface` #16171A | 7.99:1 | 4.5:1 | ✅ | 카드 위 대기 |
-| dark | `work` #E2B865 | `surface` #16171A | 9.63:1 | 4.5:1 | ✅ | 카드 위 진행 |
-| dark | `dot` #3F6FF5 | `아이콘 타일 void` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | 앱 아이콘의 점(그래픽) |
+| light | `text` #15161A | `bg` #F6F5F1 | 16.57:1 | 4.5:1 | ✅ | body text |
+| light | `text` #15161A | `surface` #FFFFFF | 18.08:1 | 4.5:1 | ✅ | text on a card |
+| light | `text` #15161A | `sunken` #EAE7E0 | 14.64:1 | 4.5:1 | ✅ | text on code·pressed surface |
+| light | `muted` #4F5159 | `bg` #F6F5F1 | 7.25:1 | 4.5:1 | ✅ | secondary text |
+| light | `muted` #4F5159 | `surface` #FFFFFF | 7.91:1 | 4.5:1 | ✅ | secondary text on a card |
+| light | `muted` #4F5159 | `sunken` #EAE7E0 | 6.41:1 | 4.5:1 | ✅ | secondary text on a pressed surface |
+| light | `accent` #1D4ED8 | `bg` #F6F5F1 | 6.14:1 | 4.5:1 | ✅ | links·text buttons |
+| light | `accent` #1D4ED8 | `surface` #FFFFFF | 6.70:1 | 4.5:1 | ✅ | links on a card |
+| light | `onAccent` #FFFFFF | `accent` #1D4ED8 | 6.70:1 | 4.5:1 | ✅ | filled button text |
+| light | `focus` #1D4ED8 | `bg` #F6F5F1 | 6.14:1 | 3.0:1 | ✅ | focus ring (graphic) |
+| light | `dot` #3F6FF5 | `bg` #F6F5F1 | 4.01:1 | 3.0:1 | ✅ | brand dot on the background (graphic) |
+| light | `ok` #1F6B33 | `bg` #F6F5F1 | 6.00:1 | 4.5:1 | ✅ | done·success text |
+| light | `work` #825600 | `bg` #F6F5F1 | 5.87:1 | 4.5:1 | ✅ | in-progress text |
+| light | `wait` #A04610 | `bg` #F6F5F1 | 5.70:1 | 4.5:1 | ✅ | your turn·waiting-for-permission text |
+| light | `err` #AD2E27 | `bg` #F6F5F1 | 6.02:1 | 4.5:1 | ✅ | error text |
+| light | `ok` #1F6B33 | `surface` #FFFFFF | 6.54:1 | 4.5:1 | ✅ | success on a card |
+| light | `err` #AD2E27 | `surface` #FFFFFF | 6.57:1 | 4.5:1 | ✅ | error on a card |
+| light | `wait` #A04610 | `surface` #FFFFFF | 6.22:1 | 4.5:1 | ✅ | waiting on a card |
+| light | `work` #825600 | `surface` #FFFFFF | 6.40:1 | 4.5:1 | ✅ | in progress on a card |
+| light | `dot` #3F6FF5 | `icon tile void` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | the app icon's dot (graphic) |
+| dark | `text` #EFEDE7 | `bg` #0A0A0C | 16.90:1 | 4.5:1 | ✅ | body text |
+| dark | `text` #EFEDE7 | `surface` #16171A | 15.31:1 | 4.5:1 | ✅ | text on a card |
+| dark | `text` #EFEDE7 | `sunken` #111114 | 16.10:1 | 4.5:1 | ✅ | text on code·pressed surface |
+| dark | `muted` #A3A5AB | `bg` #0A0A0C | 8.03:1 | 4.5:1 | ✅ | secondary text |
+| dark | `muted` #A3A5AB | `surface` #16171A | 7.28:1 | 4.5:1 | ✅ | secondary text on a card |
+| dark | `muted` #A3A5AB | `sunken` #111114 | 7.65:1 | 4.5:1 | ✅ | secondary text on a pressed surface |
+| dark | `accent` #8FB0FF | `bg` #0A0A0C | 9.25:1 | 4.5:1 | ✅ | links·text buttons |
+| dark | `accent` #8FB0FF | `surface` #16171A | 8.38:1 | 4.5:1 | ✅ | links on a card |
+| dark | `onAccent` #0B1226 | `accent` #8FB0FF | 8.70:1 | 4.5:1 | ✅ | filled button text |
+| dark | `focus` #8FB0FF | `bg` #0A0A0C | 9.25:1 | 3.0:1 | ✅ | focus ring (graphic) |
+| dark | `dot` #3F6FF5 | `bg` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | brand dot on the background (graphic) |
+| dark | `ok` #7FCB8E | `bg` #0A0A0C | 10.21:1 | 4.5:1 | ✅ | done·success text |
+| dark | `work` #E2B865 | `bg` #0A0A0C | 10.62:1 | 4.5:1 | ✅ | in-progress text |
+| dark | `wait` #EC9A62 | `bg` #0A0A0C | 8.82:1 | 4.5:1 | ✅ | your turn·waiting-for-permission text |
+| dark | `err` #EE7B74 | `bg` #0A0A0C | 7.27:1 | 4.5:1 | ✅ | error text |
+| dark | `ok` #7FCB8E | `surface` #16171A | 9.25:1 | 4.5:1 | ✅ | success on a card |
+| dark | `err` #EE7B74 | `surface` #16171A | 6.59:1 | 4.5:1 | ✅ | error on a card |
+| dark | `wait` #EC9A62 | `surface` #16171A | 7.99:1 | 4.5:1 | ✅ | waiting on a card |
+| dark | `work` #E2B865 | `surface` #16171A | 9.63:1 | 4.5:1 | ✅ | in progress on a card |
+| dark | `dot` #3F6FF5 | `icon tile void` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | the app icon's dot (graphic) |
 
 
-> 점(`dot`)의 "배경 대비 3:1"은 그래픽 기준이다. 점을 **글자 색**으로 쓰지 않는다(4.5:1 미달 가능: 라이트 bg 위 4.01:1).
+> The dot's (`dot`) "3:1 against the background" is the graphics threshold. The dot is **never a text colour** (it may fall below 4.5:1: 4.01:1 on the light bg).
 
-## 브랜드 3. 서체
+## Brand 3. Typefaces
 
-### 3.1 선택 (`compare-type.png`)
-| | **1 Inter + Pretendard (추천)** | 2 시스템 글꼴만 | 3 IBM Plex Sans |
+### 3.1 The choice (`compare-type.png`)
+| | **1 Inter + a family for each script (recommended)** | 2 system fonts only | 3 IBM Plex Sans |
 |---|---|---|---|
-| 웹·마케팅 | Inter(자체 호스팅 — 사이트 현행), ko Pretendard, ja/zh Noto Sans | `system-ui` | Plex Sans + Plex KR + Noto |
-| 앱 본문 | 플랫폼 시스템 글꼴(SF Pro·Roboto) | 같음 | 같음(번들 필요) 또는 시스템 |
-| 장점 | 사이트 변경 없음, 한글이 Inter와 비슷한 무게·톤, 모두 오픈 라이선스 | 번들 0, 플랫폼 감성 | 개성 |
-| 단점 | 한글 웹 폰트 용량(서브셋 필요), Pretendard 도입 | 웹이 OS마다 달라 보임, 브랜드 일관성 약함 | 일·중은 다른 글꼴로 대체(미확인), 번들 3개 |
-| 라이선스 | Inter·Pretendard·Noto: SIL OFL 1.1(**배포 전 라이선스 파일 확인 필요 — 이 문서에서 원문 미확인**) | OS 제공 | Plex: OFL(미확인) |
+| Web·marketing | Inter (self-hosted — the site today); per script: ko Pretendard, ja/zh Noto Sans | `system-ui` | Plex Sans + Plex KR + Noto |
+| App body | the platform's system font (SF Pro·Roboto) | same | same (needs bundling) or the system font |
+| Pros | no change to the site; each script's family sits close to Inter in weight·tone (checked for Korean with Pretendard); all open licences | nothing bundled, the platform's feel | character |
+| Cons | the size of CJK web fonts (needs subsetting), bringing in Pretendard | the web looks different on each OS, weaker brand consistency | Japanese·Chinese fall back to other fonts (unconfirmed), three bundles |
+| Licence | Inter·Pretendard·Noto: SIL OFL 1.1 (**check the licence files before shipping — the originals weren't checked for this document**) | provided by the OS | Plex: OFL (unconfirmed) |
 
-### 3.2 스택 (추천 1)
-- **웹**: `--sans: 'Inter Variable', Inter, system-ui, sans-serif` + 언어별 `:lang()` 규칙 — 사이트 `global.css:197-204`에 ko·ja·zh-CN이 이미 있다. 추가: ko에 `'Pretendard Variable'`을 Inter 뒤·`Apple SD Gothic Neo` 앞에 넣는다(제안), zh-Hant용 `:lang(zh-TW)` 규칙 신설(사이트에 아직 zh-Hant 없음).
-- **모노**: `JetBrains Mono Variable`, 폴백 `ui-monospace, Menlo`. 데스크톱 `Menlo`는 현행 유지(플랫폼).
-- **iOS**: SF Pro(시스템) — Dynamic Type 따름. **안드로이드**: Roboto/시스템. 브랜드 글꼴을 앱에 번들하지 않는다(CLAUDE.md "각 플랫폼 관례" + 콜드 스타트 1초 요건 — 글꼴 로딩 비용 회피, 제안).
-- **로고**: 글꼴과 무관하게 윤곽선 SVG(§1.4).
-- 굵기: 제목 700(자간 −0.02em, CJK는 0), 본문 400, 버튼·라벨 600. 스케일은 현행 유지: 사이트 H1 56/1.05(모바일 36), H2 32, 본문 18/1.6(모바일 17) — 출처 `tokens.md`. 데스크톱 15/25·14·13·12 — `theme.rs`. 이 둘의 통합은 디자인 시스템 티켓 범위.
+### 3.2 Stacks (recommended 1)
+- **Web**: `--sans: 'Inter Variable', Inter, system-ui, sans-serif` + per-language `:lang()` rules — the site's `global.css:197-204` already has ko·ja·zh-CN. To add: for ko, `'Pretendard Variable'` after Inter and before `Apple SD Gothic Neo` (proposed); a new `:lang(zh-TW)` rule for zh-Hant (the site has no zh-Hant yet). Every further language gets its own `:lang()` rule with a family made for its script.
+- **Mono**: `JetBrains Mono Variable`, falling back to `ui-monospace, Menlo`. The desktop's `Menlo` stays as is (platform).
+- **iOS**: SF Pro (the system) — following Dynamic Type. **Android**: Roboto/the system. No brand font is bundled in the apps (CLAUDE.md "each platform's conventions" + the 1-second cold-start requirement — avoiding font loading cost, proposed).
+- **Logo**: an outlined SVG whatever the font (§1.4).
+- Weights: titles 700 (tracking −0.02em, 0 for CJK), body 400, buttons·labels 600. The scales stay as they are: site H1 56/1.05 (mobile 36), H2 32, body 18/1.6 (mobile 17) — source `tokens.md`. Desktop 15/25·14·13·12 — `theme.rs`. Unifying the two is in the design system ticket's scope.
 
-### 3.3 8개 언어 폴백 표 (`type-8lang.png`로 렌더 확인)
-| 언어 | 웹 스택 | Apple 앱 | Android 앱 | 비고 |
+### 3.3 Fallbacks for the 8 languages (render checked in `type-8lang.png`)
+| Language | Web stack | Apple apps | Android apps | Notes |
 |---|---|---|---|---|
 | en | Inter | SF Pro | Roboto | |
-| ko | Pretendard → Inter | SF + Apple SD Gothic Neo | Roboto + Noto Sans KR | `word-break: keep-all`, 본문 1.65 행간(데스크톱 값) |
-| ja | Inter → Hiragino Sans → Noto Sans JP | SF + Hiragino Sans | Noto Sans JP | `line-break: strict`, 제목 `auto-phrase` — 사이트 현행 |
+| ko | Pretendard → Inter | SF + Apple SD Gothic Neo | Roboto + Noto Sans KR | `word-break: keep-all`, body line height 1.65 (the desktop's value) |
+| ja | Inter → Hiragino Sans → Noto Sans JP | SF + Hiragino Sans | Noto Sans JP | `line-break: strict`, titles `auto-phrase` — the site today |
 | zh-CN (zh-Hans) | Inter → PingFang SC → Noto Sans SC | SF + PingFang SC | Noto Sans SC | |
-| zh-Hant | Inter → PingFang TC → Noto Sans TC | SF + PingFang TC | Noto Sans TC | 데스크톱에만 있음; 렌더 줄은 새 번역 **미검수** |
-| es · pt-BR · de · fr | Inter | SF Pro | Roboto | 긴 단어(de) 줄바꿈: `hyphens: auto` 권장(제안, 미시험) |
-- 플랫폼 열은 각 OS 기본 글꼴 이름이며 이 시트에서 직접 렌더한 것은 아니다(웹 스택만 렌더: `type-8lang.png`, Chrome + Google Fonts). Android 열은 **미확인**(Roboto·Noto 가정).
+| zh-Hant | Inter → PingFang TC → Noto Sans TC | SF + PingFang TC | Noto Sans TC | only on the desktop; the rendered line is a new translation, **not reviewed** |
+| es · pt-BR · de · fr | Inter | SF Pro | Roboto | long-word (de) wrapping: `hyphens: auto` recommended (proposed, untested) |
+- The platform columns name each OS's default fonts and weren't rendered on this sheet (only the web stacks were rendered: `type-8lang.png`, Chrome + Google Fonts). The Android column is **unconfirmed** (Roboto·Noto assumed).
 
-## 브랜드 4. 아이콘·일러스트·스크린샷 (제안 — 규칙만, 샘플 시트는 후속)
+## Brand 4. Icons·illustration·screenshots (proposed — rules only, sample sheet to follow)
 
-**아이콘**
-- 플랫폼 세트를 따른다: 데스크톱·웹 **Lucide**(현행, `icons.rs`), iOS **SF Symbols**, 안드로이드 **Material Symbols**. 브랜드 아이콘 세트를 새로 만들지 않는다.
-- 선형(outline), 선 굵기 2px@24(16px에서 1.5px), 둥근 끝·모서리, 글자색(`text`/`muted`)을 따른다. 색을 쓰는 건 상태 아이콘(`ok/work/wait/err`)뿐. 채운 다색·그라데이션·이모지 금지.
-- 크기 둘: 16·20(데스크톱 `ICON_SM`/`ICON`), 터치 영역 44pt/48dp.
+**Icons**
+- Follow the platform's set: desktop·web **Lucide** (today, `icons.rs`), iOS **SF Symbols**, Android **Material Symbols**. No new brand icon set.
+- Outline style, stroke 2px@24 (1.5px at 16px), round caps·corners, following the text colour (`text`/`muted`). Colour is only for the status icons (`ok/work/wait/err`). No filled multicolour·gradients·emoji.
+- Two sizes: 16·20 (desktop `ICON_SM`/`ICON`), touch area 44pt/48dp.
 
-**일러스트**
-- 쓴다면 **점과 헤어라인**만: 사이트 2×2 점 모티프(꽉 찬 점 1 = 사람)를 일러스트 언어로 승계한다. 인물·마스코트·3D·그라데이션 없음. 파랑은 "이끄는 점" 하나에만.
-- BRAND.md의 크롬 오브제·그레인은 소셜 카드·아바타 같은 **브랜드 표면 한정**, 제품 화면 금지.
+**Illustration**
+- If any, **dots and hairlines** only: the site's 2×2 dot motif (one filled dot = the person) carries on as the illustration language. No people·mascots·3D·gradients. Blue only for the one "leading dot".
+- BRAND.md's chrome objects·grain are **limited to brand surfaces** like social cards·avatars, never product screens.
 
-**스크린샷**
-- **실제 화면만**(자리표시 틀·가짜 데이터 지양 — 스토어 2.3 규칙과도 맞음). 지금 T-72 스토어 스크린샷은 자리표시이므로 실화면으로 교체가 선결.
-- 라이트·다크 한 쌍, 바탕은 `bg`(라이트) / void(다크), 기기 프레임은 얇게. 캡션은 한 줄, 문장형, 해요체/영어 sentence case, **ALL CAPS 장식 문구 금지**(`APPROVE` 등).
-- 개인 정보·토큰·경로는 가린다.
+**Screenshots**
+- **Real screens only** (avoid placeholder frames·fake data — in line with the store's 2.3 rule too). The current T-72 store screenshots are placeholders, so replacing them with real screens comes first.
+- A light·dark pair, background `bg` (light) / void (dark), thin device frames. Captions are one line, a sentence, in the language's own register (Korean: haeyo-che; English: sentence case), **no ALL CAPS decoration** (`APPROVE` and the like).
+- Personal information·tokens·paths are hidden.
 
-## 브랜드 5. 목소리 요약과 문구 정본
+## Brand 5. Voice in short, and the canonical copy
 
-전체 규칙·예문·하지 말 것은 `brand.md` §3. 여기엔 구현자가 바로 쓸 것만.
+The full rules·examples·don'ts are in `brand.md` §3. Here only what implementers use directly.
 
-### 5.1 한 줄 규칙
-짧게·능동·구체. 사람이 할 일을 먼저. 과장어·느낌표·이모지·ALL CAPS 장식 금지. 이름은 `equipe`(소문자, 점 없음).
+### 5.1 The one-line rule
+Short·active·concrete. What the person does comes first. No hype words·exclamation marks·emoji·ALL CAPS decoration. The name is `equipe` (lowercase, no dot).
 
-### 5.2 한국어
-**해요체**(D4). "당신"은 소개 글에서만, 앱 UI는 주어 생략. 조사·표기는 `i18n/glossary.md`를 따른다. 합쇼체 문자열(데스크톱 235·iOS 45·안드로이드 43개 안팎, audit V3)은 번역 검수 티켓으로 전환.
+### 5.2 Each language
+Every language equipe speaks has one register throughout, chosen for that language and written in `i18n/glossary.md`, with the glossary's terms and spelling. English: plain sentence case. Korean (D4): the **polite -yo register (haeyo-che)**; "you" (dangsin) only in introductory copy, the app UI drops the subject; formal-register (hapsyo-che) strings (about 235 desktop · 45 iOS · 43 Android, audit V3) go to a translation-review ticket. A language without a decided register gets one in the glossary before it is translated.
 
-### 5.3 정본이 필요한 문구 (사람 결정 → 한 곳에 고정)
-- **메인 헤드라인**: ① "Lead a team of AI agents. You approve every merge."(라이브) ② "Your AI software squad, led by you."(copy.md). 추천 **①** — 행동(이끈다)과 보장(승인)이 한 문장에 있다(제안).
-- **한 줄 설명(스토어 부제·메타)**: `brand.md` §1의 "한 사람이 이끄는 AI 소프트웨어 스쿼드" 계열 한 문장으로 통일.
+### 5.3 Copy that needs a canonical version (the person decides → fixed in one place)
+- **Main headline**: ① "Lead a team of AI agents. You approve every merge." (live) ② "Your AI software squad, led by you." (copy.md). Recommended **①** — the action (leading) and the guarantee (approval) are in one sentence (proposed).
+- **One-line description (store subtitle·meta)**: one sentence along the lines of `brand.md` §1's "an AI software squad led by one person", used everywhere.
 
-## 브랜드 6. 디자인 시스템 티켓 인계 — 토큰 이름과 값 이동표
+## Brand 6. Hand-off to the design system ticket — token names and where values move
 
-토큰 이름은 `color.<역할>` (모드별 값). 초안 JSON: `brand-tokens.draft.json`(DTCG, 추천 A).
+Token names are `color.<role>` (values per mode). Draft JSON: `brand-tokens.draft.json` (DTCG, recommended A).
 
-| 토큰 | 사이트 현행 → 제안 | 데스크톱 현행 → 제안 | 앱(`tokens.json`) 현행 → 제안 |
+| Token | Site now → proposed | Desktop now → proposed | App (`tokens.json`) now → proposed |
 |---|---|---|---|
-| `bg` | `#FAF8F4`→`#F6F5F1` / `#121211`→`#0A0A0C` | 동일(변경 없음) | 동일 |
-| `surface` | `#F0EDE6`→`#FFFFFF` / `#1B1B19`→`#16171A` | `raised` `#FFFFFF`/`#141417`→`#16171A` | 동일 |
-| `sunken` | `--code-bg` `#EAE6DD`→`#EAE7E0` / `#262623`→`#111114` | `code_bg` `#ECEBE6`→`#EAE7E0` / `#111114` | (없음 → 신설) |
-| `text` | `#1A1A17`→`#15161A` / `#F2EFE8`→`#EFEDE7` | `#15161A` / `#EFEDE7` 동일 | `#0A0A0C`→`#15161A` / 동일 |
-| `muted` | `#57544C`→`#4F5159` / `#A9A59B`→`#A3A5AB` | `#5E6068`→`#4F5159` / `#8A8C93`→`#A3A5AB` | `textSecondary` 통합 |
-| `accent` | `#1D4ED8`/`#8FB0FF` 동일 | `#2E5C8A`→`#1D4ED8` / `#B4CDE6`→`#8FB0FF` | (신설: 링크·포커스) |
-| `dot` | (신설) | (신설) | (신설) |
-| `ok/work/wait/err` | (신설) | `err` `#AD2E27`/`#EE7B74` 동일, `work` `#825600`/`#E2B865`·`wait` `#A04610`/`#EC9A62` 동일, `ok` 신설 | `danger`→`err`; 나머지 신설 |
+| `bg` | `#FAF8F4`→`#F6F5F1` / `#121211`→`#0A0A0C` | same (no change) | same |
+| `surface` | `#F0EDE6`→`#FFFFFF` / `#1B1B19`→`#16171A` | `raised` `#FFFFFF`/`#141417`→`#16171A` | same |
+| `sunken` | `--code-bg` `#EAE6DD`→`#EAE7E0` / `#262623`→`#111114` | `code_bg` `#ECEBE6`→`#EAE7E0` / `#111114` | (none → new) |
+| `text` | `#1A1A17`→`#15161A` / `#F2EFE8`→`#EFEDE7` | `#15161A` / `#EFEDE7` same | `#0A0A0C`→`#15161A` / same |
+| `muted` | `#57544C`→`#4F5159` / `#A9A59B`→`#A3A5AB` | `#5E6068`→`#4F5159` / `#8A8C93`→`#A3A5AB` | merges `textSecondary` |
+| `accent` | `#1D4ED8`/`#8FB0FF` same | `#2E5C8A`→`#1D4ED8` / `#B4CDE6`→`#8FB0FF` | (new: links·focus) |
+| `dot` | (new) | (new) | (new) |
+| `ok/work/wait/err` | (new) | `err` `#AD2E27`/`#EE7B74` same, `work` `#825600`/`#E2B865`·`wait` `#A04610`/`#EC9A62` same, `ok` new | `danger`→`err`; the rest new |
 
-주의: 이 표는 값이 바뀌는 곳의 **목록**이다. 바꿀 때마다 화면 변경이므로 디자이너 QA 필수(squad 메모리 `design-system-and-brand`). 간격·반지름(사이트 8/14, 앱 12/16/24)의 통합은 이 티켓 범위 밖 — 디자인 시스템 티켓에서.
+Note: this table is a **list** of where values change. Each change is a screen change, so designer QA is required (squad memory `design-system-and-brand`). Unifying spacing·radii (site 8/14, app 12/16/24) is outside this ticket — it belongs to the design system ticket.
 
-## 브랜드 7. 열린 것 · 미확인
+## Brand 7. Open · unconfirmed
 
-1. **Helvetica Neue 윤곽선 로고 재배포 라이선스** 미확인 — 마스터 `mark.svg`·`wordmark.svg`를 만들기 전에 (a) Apple/Linotype 라이선스 확인, 또는 (b) 오픈 라이선스 글꼴(예: Inter Bold)로 `e`를 다시 그려 기존 모양에 맞추는 안을 정해야 한다.
-2. **Pretendard·Inter·Noto 라이선스 원문** 이 문서 작성 중 열어보지 않았다(OFL로 알고 있음 — 배포 전 확인).
-3. 대비는 팔레트 3안만 새로 계산했고 **현행 사이트·데스크톱 값은 재측정하지 않았다**. 멤버 아바타 8색 대비 미계산.
-4. iOS·Android 실제 화면에서 새 색·서체를 **렌더해 보지 않았다**(시트는 웹 렌더). 디자인 QA 단계에서 확인.
-5. 인쇄 최소 크기(8mm/폭 20mm)는 제안값이며 인쇄물로 확인하지 않았다.
-6. zh-Hant 샘플 문장은 새로 번역한 것이라 번역 검수 전이다.
-7. 언어 목록 불일치(pt-BR ↔ zh-Hant)는 제품 결정이라 PM에게 넘긴다.
-8. 사이트·앱의 한국어 말투 정리, 스토어 스크린샷 실화면 교체, iOS 홈 이름 `Equipe`→`equipe`는 **별도 티켓**으로 제안한다.
+1. **The redistribution licence for a Helvetica Neue outlined logo** is unconfirmed — before making the masters `mark.svg`·`wordmark.svg`, decide between (a) confirming the Apple/Linotype licence, or (b) redrawing the `e` from an openly licensed font (e.g. Inter Bold) to match the current shape.
+2. **The Pretendard·Inter·Noto licence texts** weren't opened while writing this (known to be OFL — check before shipping).
+3. Contrast was newly computed for the three palette options only; **the current site·desktop values weren't re-measured**. The 8 member avatar colours' contrast isn't computed.
+4. The new colours·typefaces **weren't rendered on real iOS·Android screens** (the sheets are web renders). To check at the design QA stage.
+5. The print minimum size (8mm/20mm wide) is a proposed value, not checked in print.
+6. The zh-Hant sample sentence is a new translation, not yet reviewed.
+7. The mismatch in language lists (pt-BR ↔ zh-Hant) is a product decision, handed to the PM.
+8. Tidying the register of the site·app's Korean strings, replacing the store screenshots with real screens, and the iOS home name `Equipe`→`equipe` are proposed as **separate tickets**.
+
+## Component · document focus view
+
+- A long Markdown document may move from its right panel into the full app content area. It is the same document surface and scroll handle, not a second viewer or macOS full screen.
+- The focus header is return-first: origin-specific back action plus `Esc` on the left, document tools on the right, then full filename and path on a second row. Never truncate the filename; let the header grow.
+- At 760pt or 150% text, keep back and More document actions visible and move secondary tools into More. The reading measure stays `layout.measure`; diagrams reflow vertically before they overflow horizontally.
+- Exiting by Back, `Esc`, or `⇧⌘F` restores the exact origin, split widths, selected ticket/document, scroll position, and keyboard focus. `Esc` closes an open menu before it exits focus view.
+- Full interaction, copy, accessibility and QA contract: `design/specs/document-focus/spec.md` (T-617).

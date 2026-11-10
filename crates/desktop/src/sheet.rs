@@ -6,7 +6,7 @@
 use equipe_core::protocol::Command;
 
 use crate::sidecar::Job;
-use crate::{help, usage};
+use crate::help;
 
 /// A question asked before something that is hard to take back.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +16,15 @@ pub struct Ask {
     /// The button that says yes.
     pub yes: String,
     pub then: Then,
+}
+
+impl Ask {
+    /// Whether yes takes something away — a project off the squad, a member,
+    /// a ticket, the squad itself: its button says so in red.
+    pub fn destructive(&self) -> bool {
+        use equipe_core::protocol::Command;
+        matches!(&self.then, Then::Send(commands) if commands.iter().any(|c| matches!(c, Command::RemoveProject { .. } | Command::Close { .. } | Command::Cancel { .. } | Command::ClearWordsLog { .. } | Command::DeleteSquad { .. })))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,28 +84,13 @@ impl Row {
     }
 }
 
-/// `/usage`: the plan's windows, then each member.
-pub fn usage_sheet(view: &usage::View) -> Sheet {
-    let row = |r: &usage::Row| Row { bar: r.percent, ..Row::text(r.label.clone(), r.text.clone()) };
-    let rows = std::iter::once(Row::heading("CLAUDE 플랜"))
-        .chain(view.plan.iter().map(row))
-        .chain(std::iter::once(Row::heading(equipe_core::t!("engines.codex_heading"))))
-        .chain(view.codex.iter().map(row))
-        .chain(std::iter::once(Row::heading(equipe_core::t!("engines.settings_section"))))
-        .chain(std::iter::once(row(&view.switching)))
-        .chain(std::iter::once(Row::heading("멤버")))
-        .chain(view.members.iter().map(row))
-        .collect();
-    Sheet { title: "사용량".into(), lead: None, rows, buttons: Vec::new(), foot: Some(usage::NOTE.into()) }
-}
-
 /// `/help`: this window's keys and every command.
 pub fn help_sheet() -> Sheet {
     let rows = help::sections()
         .into_iter()
         .flat_map(|s| std::iter::once(Row::heading(s.title)).chain(s.rows.into_iter().map(|(k, w)| Row::text(k, w))))
         .collect();
-    Sheet { title: "도움말".into(), lead: Some(help::INTRO.into()), rows, buttons: Vec::new(), foot: Some("⌘Q로 나가도 스쿼드는 계속 일합니다.".into()) }
+    Sheet { title: equipe_core::t!("help.title").into(), lead: Some(help::intro().into()), rows, buttons: Vec::new(), foot: Some(equipe_core::t!("help.foot").into()) }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +100,8 @@ pub enum Button {
     Run(String, String),
     /// Open a folder on this Mac.
     Open(String, std::path::PathBuf),
+    /// Put a question first; its yes does the rest.
+    Ask(String, Box<Ask>),
 }
 
 /// What `after` decided.
@@ -134,7 +130,7 @@ pub fn after(after: &After, answer: Result<Vec<String>, String>) -> Outcome {
                     None => Row::text("", line.clone()),
                 })
                 .collect();
-            Outcome::Sheet(Sheet { title: title.clone(), lead: None, rows, buttons: Vec::new(), foot: undo.then(|| "1이 가장 최근입니다. 되돌림도 변경으로 남아 다시 되돌릴 수 있습니다.".to_owned()) })
+            Outcome::Sheet(Sheet { title: title.clone(), lead: None, rows, buttons: Vec::new(), foot: undo.then(|| equipe_core::t!("sheet.changes_foot").to_owned()) })
         }
         After::Memory => {
             let mut lead = None;
@@ -143,7 +139,7 @@ pub fn after(after: &After, answer: Result<Vec<String>, String>) -> Outcome {
                 if i == 0 {
                     lead = Some(line.clone());
                 } else if let Some(recent) = line.strip_prefix("lately: ") {
-                    rows.push(Row::text("최근", recent));
+                    rows.push(Row::text(equipe_core::t!("sheet.lately"), recent));
                 } else if let Some((name, about)) = line.split_once(" — ") {
                     rows.push(Row::text(name, about));
                 } else {
@@ -151,11 +147,11 @@ pub fn after(after: &After, answer: Result<Vec<String>, String>) -> Outcome {
                 }
             }
             Outcome::Sheet(Sheet {
-                title: "스쿼드의 기억".into(),
+                title: equipe_core::t!("sheet.memory_title").into(),
                 lead,
                 rows,
                 buttons: Vec::new(),
-                foot: Some("파일을 고치거나 지우면 스쿼드가 아는 것이 바뀝니다. 바뀐 내용: /memory changes · 되돌리기: /home undo".into()),
+                foot: Some(equipe_core::t!("sheet.memory_foot").into()),
             })
         }
         After::Confirm { title, yes, then } => {
@@ -193,15 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_and_help_are_sheets_of_headed_rows() {
-        let row = |label: &str, percent| usage::Row { label: label.into(), text: String::new(), percent };
-        let u = usage_sheet(&usage::View { plan: vec![row("5-hour", Some(42))], codex: vec![row("week", Some(18))], switching: row("제안", None), members: vec![] });
-        assert_eq!(u.rows[0], Row::heading("CLAUDE 플랜"));
-        assert_eq!(u.rows[1].bar, Some(42));
-        // Both engines' plans, then how the squad moves members between them.
-        assert_eq!((u.rows[2].clone(), u.rows[3].bar), (Row::heading("CODEX 플랜"), Some(18)));
-        assert_eq!((u.rows[4].clone(), u.rows[5].head.as_str()), (Row::heading("엔진 자동 전환"), "제안"));
-        assert!(u.rows[6].heading);
+    fn help_is_a_sheet_of_headed_rows() {
         let h = help_sheet();
         assert!(h.rows.iter().filter(|r| r.heading).count() >= 5);
         assert!(h.rows.iter().any(|r| r.head.starts_with("/usage")));

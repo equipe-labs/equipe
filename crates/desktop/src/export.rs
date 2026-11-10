@@ -21,6 +21,9 @@ pub fn folder(home: &Path) -> PathBuf {
 
 /// Write the conversation; the path it is at.
 pub fn save(dir: &Path, squad: &str, member: &str, entries: &[Entry]) -> std::io::Result<PathBuf> {
+    if crate::readonly::blocked("the conversation, written out") {
+        return Err(std::io::Error::other(equipe_core::t!("readonly.kept_back")));
+    }
     std::fs::create_dir_all(dir)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let path = dir.join(file_name(squad, member, stamp));
@@ -41,7 +44,7 @@ mod tests {
     #[test]
     fn a_conversation_is_saved_as_the_consoles_markdown() {
         let dir = std::env::temp_dir().join(format!("equipe-export-{}", std::process::id()));
-        let entries = vec![Entry::User { text: "안녕".into() }, Entry::Reply { text: "네.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()), outcome: None, label: None, background: false }];
+        let entries = vec![Entry::User { text: "안녕".into(), kept: Vec::new() }, Entry::Reply { text: "네.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()), outcome: None, label: None, background: false }];
         let path = save(&dir, "acme", "pm", &entries).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text, "# pm · acme\n\n**You:** 안녕\n\n네.\n\n- read a.rs\n");

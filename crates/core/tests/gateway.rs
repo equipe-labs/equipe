@@ -59,11 +59,14 @@ fn config(home: &Path, claude: &Path) -> Config {
         retention_days: 90,
         equipe_binary: None,
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -143,7 +146,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     let session = &hello.snapshot.sessions[0];
     assert_eq!(session.session, 11);
     assert_eq!(session.state, SessionState::Working);
-    assert_eq!(session.recent, vec![Entry::User { text: "keep going without me".into() }]);
+    assert_eq!(session.recent, vec![Entry::User { text: "keep going without me".into(), kept: Vec::new() }]);
     let rest = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(rest.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "fresh")));
     drop(b);
@@ -159,7 +162,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     assert_eq!(session.state, SessionState::Ready);
     assert_eq!(
         session.recent,
-        vec![Entry::User { text: "keep going without me".into() }, Entry::Reply { text: "fresh".into() }]
+        vec![Entry::User { text: "keep going without me".into(), kept: Vec::new() }, Entry::Reply { text: "fresh".into() }]
     );
     c.send(Command::Submit { session: 11, text: "and now?".into(), about: None });
     let turn = until(&mut c, |e| matches!(e, Event::TurnEnded { .. })).await;
@@ -212,7 +215,10 @@ async fn a_screen_sees_only_its_own_squad() {
     let seen = until(&mut acme, |e| matches!(e, Event::SessionStarted { .. })).await;
     // The disk's level is every screen's, whichever squad: whatever this disk has.
     let seen: Vec<Event> = seen.into_iter().filter(|e| !matches!(e, Event::DiskLevel { .. })).collect();
-    assert!(matches!(seen.as_slice(), [Event::SessionStarted { session: 32, .. }]), "{seen:#?}");
+    // A designer joining brings its weekly review: acme's own routines, to acme's screen.
+    let (theirs, rest): (Vec<Event>, Vec<Event>) = seen.into_iter().partition(|e| matches!(e, Event::RoutinesChanged { .. }));
+    assert!(theirs.iter().all(|e| matches!(e, Event::RoutinesChanged { squad, .. } if squad == "acme")), "{theirs:#?}");
+    assert!(matches!(rest.as_slice(), [Event::SessionStarted { session: 32, .. }]), "{rest:#?}");
     gateway::shutdown(&socket).await.unwrap();
 }
 
@@ -263,7 +269,7 @@ async fn while_the_app_is_attached_a_handed_over_browser_goes_to_its_panel_not_t
     // The app attaches, saying it has a panel (closed for now).
     let app = tokio::net::UnixStream::connect(&socket).await.unwrap();
     let (reader, mut writer) = app.into_split();
-    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true };
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true, phone: false };
     writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await.unwrap() {
@@ -343,6 +349,86 @@ async fn a_screen_that_said_hello_reads_back_an_upload_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn the_look_of_the_screen_used_last_is_kept_and_outlives_it() {
+    use equipe_core::protocol::look::{PersonLook, ScreenLook, Theme};
+    use equipe_core::protocol::rpc::{self, Message};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let look = |machine: &str, lang: &str, idle: Option<u64>| ScreenLook {
+        machine: machine.into(),
+        app: "equipe-desktop".into(),
+        version: if machine == "MacBook" { "0.103.25".into() } else { "0.86.3".into() },
+        lang: lang.into(),
+        theme: Theme::Light,
+        width: 1300,
+        height: 800,
+        sidebar_width: Some(180),
+        zoom: 100,
+        idle,
+        ..ScreenLook::default()
+    };
+    // A screen of its own: the hello, then what it tells; asked back on another line.
+    let screen = async |hello: bool, told: &[ScreenLook]| -> (tokio::net::unix::OwnedWriteHalf, tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>) {
+        let (reader, mut writer) = tokio::net::UnixStream::connect(&socket).await.unwrap().into_split();
+        let mut lines = BufReader::new(reader).lines();
+        if hello {
+            writer.write_all(Message::request(1, rpc::HELLO, serde_json::json!({ "version": "app", "squad": "acme" })).to_line().as_bytes()).await.unwrap();
+            while Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap().id != Some(1) {}
+        }
+        for look in told {
+            writer.write_all(Message::notification(rpc::SCREEN_LOOK, look).to_line().as_bytes()).await.unwrap();
+        }
+        (writer, lines)
+    };
+    let asked = async || -> PersonLook {
+        let (mut writer, mut lines) = screen(false, &[]).await;
+        // What a screen tells lands off the line: asked until it is there, a moment at most.
+        writer.write_all(Message::request(9, rpc::PERSON_LOOK, serde_json::json!({})).to_line().as_bytes()).await.unwrap();
+        loop {
+            let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if message.id == Some(9) {
+                return message.result_as::<PersonLook>().expect("an answer, empty or not");
+            }
+        }
+    };
+    let settled = async |want: &str| -> PersonLook {
+        for _ in 0..100 {
+            let got = asked().await;
+            if got.look.as_ref().is_some_and(|s| s.look.machine == want) {
+                return got;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("{want}'s look never became the person's: {:?}", asked().await);
+    };
+    assert_eq!(asked().await, PersonLook::default(), "no screen ever said");
+    // Told before hello: no squad to keep it for.
+    drop(screen(false, &[look("Stranger", "fr", Some(0))]).await);
+    // The MacBook, in use; the Mac mini's app after it, with nobody at it.
+    let macbook = screen(true, &[look("MacBook", "en", Some(0))]).await;
+    let person = settled("MacBook").await.look.unwrap();
+    assert_eq!((person.look.lang.as_str(), person.look.version.as_str(), person.look.sidebar_width), ("en", "0.103.25", Some(180)));
+    let mini = screen(true, &[look("Mac mini", "ko", None)]).await;
+    for _ in 0..100 {
+        if equipe_core::looks::of(&home, "acme").screens.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(equipe_core::looks::of(&home, "acme").screens.len(), 2, "the mini's kept too");
+    assert_eq!(asked().await.look.unwrap().look.machine, "MacBook", "the screen used last, not the one heard from last");
+    // Both gone, the daemon still knows — and from the journal, the next one too.
+    drop((macbook, mini));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(asked().await.look.unwrap().look.machine, "MacBook");
+    assert_eq!(equipe_core::looks::person(&home).unwrap().look.machine, "MacBook");
+    assert!(!equipe_core::looks::of(&home, "acme").screens.iter().any(|s| s.look.machine == "Stranger"));
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
 async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
     use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
     use equipe_core::protocol::rpc::{self, ImageRead, Message, ReadImage};
@@ -363,6 +449,8 @@ async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
         ticket: None,
         questions: vec![Question { question: "Which logo?".into(), options: vec![option("A", vec![shown.clone()]), option("B", vec![])], ..Question::default() }],
         asked_at: 1,
+        review: false,
+        retro: None,
     };
     let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
     journal.set_questions(&[set]).unwrap();
@@ -419,6 +507,56 @@ async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn a_screen_watches_a_tickets_design_work_from_its_design_folder_only() {
+    use equipe_core::design::lint::record::{self, Record};
+    use equipe_core::protocol::rpc::{self, ImageRead, Message, ReadImage};
+    use equipe_core::protocol::studio::{Studio, StudioAsk};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (home, _project) = squad();
+    // A designer's ticket at work, its worktree's design folder holding a check and its picture.
+    let worktree = scratch("studio-worktree").canonicalize().unwrap();
+    let design = worktree.join("design");
+    std::fs::create_dir_all(design.join("checks/home")).unwrap();
+    image::RgbImage::new(5, 3).save(design.join("checks/home/1280.png")).unwrap();
+    record::write(&design, &Record { screen: "home".into(), at: 10, rendered: true, pictures: vec!["design/checks/home/1280.png".into()], ..Record::default() }).unwrap();
+    image::RgbImage::new(2, 2).save(worktree.join("outside.png")).unwrap();
+    let ticket: equipe_core::protocol::Ticket = serde_json::from_value(serde_json::json!({ "id": 0, "title": "Home", "body": "", "status": "in_progress", "kind": "task", "depends_on": [], "owner": "designer", "created_by": "pm" })).unwrap();
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    let id = journal.create_ticket(&ticket).unwrap();
+    journal.set_ticket_work(id, &equipe_core::journal::TicketWork { worktree: Some(worktree.clone()), ..Default::default() }).unwrap();
+    drop(journal);
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut ask = async |n: u64, method: &str, params: serde_json::Value| -> Message {
+        writer.write_all(Message::request(n, method, params).to_line().as_bytes()).await.unwrap();
+        loop {
+            let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if message.id == Some(n) {
+                return message;
+            }
+        }
+    };
+    let watch = |squad: &str, ticket: u32| serde_json::to_value(StudioAsk { squad: squad.into(), ticket }).unwrap();
+    assert!(ask(1, rpc::DESIGN_STUDIO, watch("acme", id)).await.error.is_some(), "not before hello");
+    assert!(ask(2, rpc::HELLO, serde_json::json!({ "version": "test", "squad": "acme" })).await.result.is_some());
+    let studio = ask(3, rpc::DESIGN_STUDIO, watch("acme", id)).await.result_as::<Studio>().unwrap();
+    assert_eq!(studio.checks.len(), 1);
+    let picture = studio.checks[0].pictures[0].path.clone();
+    assert_eq!(studio.checks[0].pictures[0].width, Some(1280));
+    assert!(ask(4, rpc::DESIGN_STUDIO, watch("zeta", id)).await.error.is_some(), "only the squad it follows");
+    assert!(ask(5, rpc::DESIGN_STUDIO, watch("acme", id + 40)).await.error.is_some(), "a ticket the board doesn't have");
+    // Its pictures are given; the worktree's others are not.
+    let read = |path: &str| serde_json::to_value(ReadImage { squad: "acme".into(), path: path.into(), max: None }).unwrap();
+    assert_eq!(ask(6, rpc::READ_IMAGE, read(&picture)).await.result_as::<ImageRead>().unwrap().width, Some(5));
+    assert!(ask(7, rpc::READ_IMAGE, read(&worktree.join("outside.png").to_string_lossy())).await.error.is_some());
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
 async fn the_socket_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let home = scratch("home");
@@ -426,6 +564,37 @@ async fn the_socket_is_private() {
     let (socket, _daemon) = daemon(&home, &claude).await;
     let mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_screen_reads_and_sets_the_persons_telemetry_answer() {
+    use equipe_core::protocol::rpc::{self, Message};
+    use equipe_core::protocol::telemetry::{Consent, TelemetryStatus};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut ask = async |id: u64, method: &str, params: serde_json::Value| -> Message {
+        writer.write_all(Message::request(id, method, params).to_line().as_bytes()).await.unwrap();
+        loop {
+            let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if message.id == Some(id) {
+                return message;
+            }
+        }
+    };
+    let first = ask(1, rpc::TELEMETRY, serde_json::Value::Null).await.result_as::<TelemetryStatus>().unwrap();
+    assert_eq!((first.consent, first.sending), (Consent::Unset, false), "never asked: nothing goes out");
+    let on = ask(2, rpc::TELEMETRY_SET, serde_json::json!({ "on": true })).await.result_as::<TelemetryStatus>().unwrap();
+    assert_eq!(on.consent, Consent::On);
+    let off = ask(3, rpc::TELEMETRY_SET, serde_json::json!({ "on": false })).await.result_as::<TelemetryStatus>().unwrap();
+    assert_eq!((off.consent, off.sending), (Consent::Off, false));
+    assert_eq!(equipe_core::telemetry::status(&home).consent, Consent::Off, "kept where the daemon reads it");
+    assert!(ask(4, rpc::TELEMETRY_SET, serde_json::json!({})).await.error.is_some());
     gateway::shutdown(&socket).await.unwrap();
 }
 
@@ -449,6 +618,58 @@ async fn the_daemon_says_who_is_mid_turn() {
     assert!(gateway::busy(&socket).await.unwrap().unwrap().idle(), "between turns: safe to restart");
     gateway::shutdown(&socket).await.unwrap();
     assert_eq!(gateway::busy(&socket).await.unwrap(), None, "no daemon, no answer");
+}
+
+#[tokio::test]
+async fn a_phone_screens_words_reach_the_member_as_read_on_a_phone_and_it_takes_back_a_change() {
+    let (home, project) = squad();
+    let prompts = scratch("prompts");
+    // The person's message comes in on stdin, its first line.
+    let claude = fake_claude(&format!("IFS= read -r line\nprintf '%s' \"$line\" > '{}/turn-'$(ls '{}' | wc -l | tr -d ' ')\n{}", prompts.display(), prompts.display(), slow_answer("0")));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let (mut phone, _) = Client::connect_phone(&socket, "test", "acme").await.unwrap();
+    let (mut mac, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    mac.send(Command::Start { session: 4, spec: spec(&project) });
+    until(&mut mac, |e| matches!(e, Event::SessionStarted { .. })).await;
+    // The turn that brought `said`, as the engine read it.
+    let turn = |said: &str| {
+        let read: Vec<String> = std::fs::read_dir(&prompts).unwrap().flatten().map(|f| std::fs::read_to_string(f.path()).unwrap()).collect();
+        read.into_iter().find(|t| t.contains(said)).unwrap_or_else(|| panic!("no turn with {said}"))
+    };
+
+    // From the phone: the member reads it as sent from a phone; the screens, only the words.
+    phone.send(Command::Submit { session: 4, text: "how is it going?".into(), about: None });
+    let seen = until(&mut phone, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "how is it going?")), "{seen:#?}");
+    assert!(turn("how is it going?").contains(equipe_core::roles::PHONE_MARK), "{}", turn("how is it going?"));
+    // From the Mac: no mark.
+    mac.send(Command::Submit { session: 4, text: "and now?".into(), about: None });
+    until(&mut mac, |e| matches!(e, Event::UserMessage { text, .. } if text == "and now?")).await;
+    until(&mut mac, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(!turn("and now?").contains(equipe_core::roles::PHONE_MARK), "{}", turn("and now?"));
+
+    // A member's change to the squad's folder, taken back from the phone.
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    std::fs::write(folder.join("notes/e2e.md"), "x\n").unwrap();
+    let change = equipe_core::squad_home::save(&folder, "designer", "a note").unwrap().unwrap();
+    phone.send(Command::UndoHomeChange { squad: "acme".into(), session: 4, change: change.id });
+    let seen = until(&mut phone, |e| matches!(e, Event::Notice { undo: Some(_), .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Notice { session: 4, text, .. }) if text == "Taken back: saved notes/e2e.md · you can take this back too"), "{seen:#?}");
+    assert!(!folder.join("notes/e2e.md").exists());
+}
+
+#[tokio::test]
+async fn the_daemon_says_how_it_runs_from_its_own_environment() {
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    // Served in this process: what it says is this process's own.
+    let runs = gateway::runs(&socket).await.expect("it answers `runs`");
+    assert_eq!(runs.pid, std::process::id());
+    assert_eq!(runs.ssh, equipe_core::engine_auth::ssh_bound(&|name| std::env::var(name).ok()), "bound to an SSH connection exactly when started from one");
+    assert_eq!(runs.login_session, equipe_core::engine_auth::in_login_session());
+    gateway::shutdown(&socket).await.unwrap();
+    assert_eq!(gateway::runs(&socket).await, None, "no daemon, no answer");
 }
 
 /// Write an executable script without this process ever holding it open for
@@ -536,4 +757,157 @@ async fn a_daemon_without_its_phone_link_says_so_in_the_screens_language() {
         "{seen:#?}"
     );
     gateway::shutdown(&socket).await.unwrap();
+}
+
+/// docs/METRICS.md end to end: a screen connects the fake source, refreshes
+/// and reads the numbers back; a member reads them with `metrics`; the key is
+/// in none of it, nor in a file of equipe's home.
+#[tokio::test]
+async fn a_screen_connects_metrics_and_a_member_reads_them_without_the_key() {
+    use equipe_core::metrics::{InMemory, Metrics};
+    use equipe_core::protocol::metrics::{self as m, Connection, QueryResult, Sources, Summary};
+    use equipe_core::protocol::rpc::Message;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    const KEY: &str = "fake-KEY-99887766";
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let mut metrics = Metrics::new(&home, Box::new(InMemory::default()));
+    metrics.with_fake = true;
+    let socket = gateway::socket_path(&home);
+    let _daemon = tokio::spawn({
+        let (socket, config) = (socket.clone(), config(&home, &claude));
+        async move { gateway::serve_with(config, &socket, "test", std::sync::Arc::new(metrics)).await }
+    });
+    for _ in 0..100 {
+        if gateway::is_running(&socket).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut said = String::new();
+    let mut ask = async |id: u64, method: &str, params: serde_json::Value| -> Message {
+        writer.write_all(Message::request(id, method, params).to_line().as_bytes()).await.unwrap();
+        loop {
+            let line = lines.next_line().await.unwrap().unwrap();
+            said.push_str(&line);
+            let message = Message::from_line(&line).unwrap();
+            if message.id == Some(id) {
+                return message;
+            }
+        }
+    };
+    let sources = ask(1, m::SOURCES, serde_json::json!({ "squad": "acme" })).await.result_as::<Sources>().unwrap();
+    assert!(sources.connections.is_empty() && sources.kinds.iter().any(|k| k.kind == m::SourceKind::Fake));
+    let params = serde_json::json!({ "squad": "acme", "project": "site", "kind": "fake", "settings": { "token": KEY, "seed": "5" } });
+    let connection = ask(2, m::CONNECT, params).await.result_as::<Connection>().unwrap();
+    assert_eq!(connection.keys, ["token"]);
+    let refreshed = ask(3, m::REFRESH, serde_json::json!({ "squad": "acme" })).await.result_as::<Sources>().unwrap();
+    assert!(refreshed.connections[0].last_ok.is_some(), "{refreshed:?}");
+    let read = ask(4, m::QUERY, serde_json::json!({ "squad": "acme", "project": "site", "days": 7 })).await.result_as::<QueryResult>().unwrap();
+    let visits = read.values.iter().find(|v| v.metric == "visits").unwrap();
+    assert_eq!(visits.days_known, 7);
+    assert!(visits.value.is_some_and(|v| v > 0.0));
+    let card = ask(5, m::SUMMARY, serde_json::json!({ "squad": "acme" })).await.result_as::<Summary>().unwrap();
+    assert_eq!(card.tiles.iter().map(|t| t.metric.as_str()).collect::<Vec<_>>(), ["visits", "stars"]);
+    assert_eq!(ask(6, m::QUERY, serde_json::json!({ "squad": "acme", "days": 999 })).await.error.unwrap().code, -32602);
+    assert!(!said.contains(KEY), "an answer over the socket holds the key");
+
+    // A member reads them with its `metrics` tool.
+    let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    screen.send(Command::Start { session: 41, spec: spec(&project) });
+    until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let call = ToolCall { squad: "acme".into(), member: "designer".into(), name: "metrics".into(), arguments: serde_json::json!({ "days": 7 }) };
+    let result = gateway::call_tool(&socket, &call).await.unwrap();
+    assert!(!result.is_error && result.text.contains("Visits `visits`"), "{result:?}");
+    assert!(!result.text.contains(KEY));
+
+    let mut files = vec![home.join("metrics")];
+    while let Some(dir) = files.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry.path().is_dir() {
+                files.push(entry.path());
+            } else {
+                assert!(!std::fs::read_to_string(entry.path()).unwrap().contains(KEY), "{} holds the key", entry.path().display());
+            }
+        }
+    }
+    assert!(home.join("metrics/acme").join(&connection.id).read_dir().unwrap().count() == 1, "today's snapshot");
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+/// A daemon serving `home` that leaves by `leave`.
+async fn daemon_leaving(home: &Path, claude: &Path, leave: gateway::Leave) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let config = config(home, claude);
+    let socket = gateway::socket_path(&config.home);
+    let task = tokio::spawn({
+        let socket = socket.clone();
+        async move { gateway::serve_leaving(config, &socket, "test", leave).await }
+    });
+    for _ in 0..100 {
+        if gateway::is_running(&socket).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    (socket, task)
+}
+
+/// Whether `task` ends within `wait`.
+async fn ends_within(task: &mut tokio::task::JoinHandle<std::io::Result<()>>, wait: Duration) -> bool {
+    tokio::time::timeout(wait, task).await.is_ok_and(|done| done.unwrap().is_ok())
+}
+
+const QUICK_TRIAL: gateway::Leave = gateway::Leave { home_gone: true, idle: Some(Duration::from_millis(400)), every: Duration::from_millis(50), hung: None };
+
+#[tokio::test]
+async fn a_trial_daemon_leaves_once_no_screen_has_come_for_a_while() {
+    let home = scratch("home");
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, mut trial) = daemon_leaving(&home, &claude, QUICK_TRIAL).await;
+    // The person's own daemon, beside it, never does.
+    let own_home = scratch("home");
+    let (own_socket, mut own) = daemon_leaving(&own_home, &claude, gateway::Leave::NEVER).await;
+
+    // A screen attached keeps it, however long it stays.
+    let (screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    assert!(!ends_within(&mut trial, Duration::from_millis(900)).await, "a screen is attached");
+    drop(screen);
+
+    assert!(ends_within(&mut trial, Duration::from_secs(5)).await, "no screen for a while: it leaves");
+    assert!(!socket.exists(), "and cleans up its socket");
+    assert!(!ends_within(&mut own, Duration::from_millis(200)).await, "the person's daemon stays");
+    assert!(gateway::is_running(&own_socket).await);
+    gateway::shutdown(&own_socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_trial_daemon_waits_for_a_member_mid_turn() {
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("2"));
+    let (socket, mut trial) = daemon_leaving(&home, &claude, QUICK_TRIAL).await;
+
+    let (mut a, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    a.send(Command::Start { session: 11, spec: spec(&project) });
+    until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
+    a.send(Command::Submit { session: 11, text: "keep going without me".into(), about: None });
+    until(&mut a, |e| matches!(e, Event::UserMessage { .. })).await;
+    drop(a);
+
+    // No screen, but a member is at work: it stays until the turn is done.
+    assert!(!ends_within(&mut trial, Duration::from_millis(1200)).await, "a member is mid-turn");
+    assert!(ends_within(&mut trial, Duration::from_secs(10)).await, "the turn over and no screen: it leaves");
+}
+
+#[tokio::test]
+async fn a_trial_daemon_whose_home_is_removed_leaves() {
+    let home = scratch("home");
+    let claude = fake_claude(&slow_answer("0"));
+    let leave = gateway::Leave { idle: None, ..QUICK_TRIAL };
+    let (_socket, mut trial) = daemon_leaving(&home, &claude, leave).await;
+    assert!(!ends_within(&mut trial, Duration::from_millis(600)).await, "no idle rule: it stays while its home is there");
+    std::fs::remove_dir_all(&home).unwrap();
+    assert!(ends_within(&mut trial, Duration::from_secs(5)).await, "its home gone: it leaves");
 }

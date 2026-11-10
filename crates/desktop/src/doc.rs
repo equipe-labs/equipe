@@ -23,12 +23,15 @@ pub fn width(window: f32) -> f32 {
     (window * 0.42).clamp(380., 820.)
 }
 
-/// The width the person dragged it to, kept within the window: the
-/// conversation keeps room to be read.
-pub fn kept_width(dragged: Option<f32>, window: f32) -> f32 {
-    let most = (window - 420.).max(MIN_WIDTH);
-    dragged.map_or_else(|| width(window), |w| w.clamp(MIN_WIDTH, most))
+/// The width the person dragged it to — else a share of the window — kept
+/// within what the sidebar leaves: the conversation keeps room to be read.
+pub fn kept_width(dragged: Option<f32>, window: f32, sidebar: f32) -> f32 {
+    let most = (window - sidebar - CHAT_LEAST).max(MIN_WIDTH);
+    dragged.unwrap_or_else(|| width(window)).clamp(MIN_WIDTH, most)
 }
+
+/// The conversation's narrowest beside the panel.
+pub const CHAT_LEAST: f32 = 420.;
 
 /// The panel's narrowest.
 pub const MIN_WIDTH: f32 = 320.;
@@ -47,14 +50,42 @@ pub struct Doc {
     pub read: u64,
     /// Folded to a rail at the window's edge.
     pub folded: bool,
+    /// A deck shown as a presentation over the window: the slide on show.
+    pub presenting: Option<usize>,
+    /// Opened afresh rather than read again: a deck starts as a presentation
+    /// once its words come.
+    pub fresh: bool,
+    /// Not read from the file: the words a sent message kept of it, the file
+    /// being gone (`crate::sent::Sent::kept`). There is nothing to read again.
+    pub kept: bool,
 }
 
 impl Doc {
     pub fn new(path: PathBuf, read: u64) -> Self {
-        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false }
+        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false, presenting: None, fresh: true, kept: false }
+    }
+
+    /// The words a sent message kept of `path`, shown as the file was.
+    pub fn of_kept(path: PathBuf, words: &str, read: u64) -> Self {
+        Self { text: Some(Ok(words.to_owned())), fresh: false, kept: true, ..Self::new(path, read) }
+    }
+
+    /// Its slides, when it is a deck (`deck.rs`).
+    pub fn slides(&self) -> Option<Vec<String>> {
+        let text = self.text.as_ref()?.as_ref().ok()?;
+        crate::deck::is_deck(&self.path, text).then(|| crate::deck::slides(text))
+    }
+
+    /// The slide `at` would show, kept to the deck: none past either end.
+    pub fn slide_at(&self, at: usize) -> Option<usize> {
+        self.slides().filter(|s| !s.is_empty()).map(|s| at.min(s.len() - 1))
     }
 
     pub fn name(&self) -> String {
+        if self.kept {
+            // An upload's name, as the person knows it: without its stamp.
+            return equipe_core::protocol::tags::display_name(&self.path.to_string_lossy()).to_owned();
+        }
         self.path.file_name().map_or_else(|| self.path.display().to_string(), |n| n.to_string_lossy().into_owned())
     }
 
@@ -62,7 +93,7 @@ impl Doc {
     pub fn markdown(&self) -> Option<String> {
         let text = self.text.as_ref()?.as_ref().ok()?;
         let plain = self.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("txt"));
-        Some(if plain { format!("```text\n{text}\n```") } else { text.clone() })
+        Some(if plain { format!("```text\n{text}\n```") } else { crate::deck::body(text).to_owned() })
     }
 }
 
@@ -92,6 +123,46 @@ pub fn elsewhere(path: &Path, base: &Path, tickets: &[(Option<PathBuf>, Option<S
         }
     }
     out
+}
+
+/// Where it is, said short beside its name: its folder from where the
+/// conversation works (`outputs/T-287 …`), else from home (`~/…`); nothing
+/// when it sits right there. The whole path is a hover away.
+pub fn folder_shown(path: &Path, base: &Path, home: Option<&Path>) -> String {
+    let Some(folder) = path.parent() else { return String::new() };
+    if !base.as_os_str().is_empty()
+        && let Ok(rel) = folder.strip_prefix(base)
+    {
+        return rel.to_string_lossy().into_owned();
+    }
+    match home.and_then(|h| folder.strip_prefix(h).ok()) {
+        Some(rel) => Path::new("~").join(rel).to_string_lossy().into_owned(),
+        None => folder.to_string_lossy().into_owned(),
+    }
+}
+
+/// The tickets a document may be in, as [`elsewhere`] takes them: the one its
+/// path names first (`outputs/T-287 …/x.txt`, wherever the person reads it
+/// from), then those of the member being read, then every other ticket's
+/// worktree — a file handed over before its ticket is merged is still there.
+/// Branches are looked through only for the first two: each look is a `git`.
+pub type Place = (Option<PathBuf>, Option<String>, Option<PathBuf>);
+pub fn places(path: &Path, tickets: &[(u64, bool, Place)]) -> Vec<Place> {
+    let path = path.to_string_lossy();
+    let named = |id: u64| {
+        let tag = format!("T-{id}");
+        path.match_indices(&tag).any(|(at, _)| !path[at + tag.len()..].starts_with(|c: char| c.is_ascii_digit()) && !path[..at].ends_with(|c: char| c.is_alphanumeric()))
+    };
+    let mut ordered: Vec<(u8, &Place)> = tickets
+        .iter()
+        .filter(|(_, _, (worktree, branch, _))| worktree.is_some() || branch.is_some())
+        .map(|(id, ours, place)| (if named(*id) { 0 } else if *ours { 1 } else { 2 }, place))
+        .collect();
+    ordered.sort_by_key(|(rank, _)| *rank);
+    ordered.into_iter().filter_map(|(rank, (worktree, branch, repo))| {
+        let branch = branch.clone().filter(|_| rank < 2);
+        (worktree.is_some() || branch.is_some()).then(|| (worktree.clone(), branch, repo.clone()))
+    }).collect()
 }
 
 /// Read `path` where the daemon is (blocking), else where it went
@@ -165,6 +236,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_documents_place_is_said_short_from_where_the_conversation_works() {
+        let base = Path::new("/Users/a/.equipe/squads/s/home");
+        let home = Some(Path::new("/Users/a"));
+        assert_eq!(folder_shown(Path::new("/Users/a/.equipe/squads/s/home/outputs/T-287 홍보/A.txt"), base, home), "outputs/T-287 홍보");
+        assert_eq!(folder_shown(Path::new("/Users/a/.equipe/squads/s/home/plan.md"), base, home), "");
+        assert_eq!(folder_shown(Path::new("/Users/a/.equipe/worktrees/x/notes/a.md"), base, home), "~/.equipe/worktrees/x/notes");
+        assert_eq!(folder_shown(Path::new("/opt/x/a.md"), Path::new(""), home), "/opt/x");
+    }
+
+    #[test]
+    fn a_file_handed_over_on_anyones_ticket_is_found_before_its_ticket_is_merged() {
+        let place = |w: &str, b: &str| (Some(PathBuf::from(w)), Some(b.to_owned()), None);
+        let tickets = [
+            (12, true, place("/w/t12", "t12")),
+            (287, false, place("/w/t287", "t287")),
+            (28, false, place("/w/t28", "t28")),
+            (9, false, (None, None, None)),
+        ];
+        let got = places(Path::new("/h/outputs/T-287 홍보 글 올리기/A linkedin 붙여넣기.txt"), &tickets);
+        assert_eq!(got, [place("/w/t287", "t287"), place("/w/t12", "t12"), (Some(PathBuf::from("/w/t28")), None, None)], "named first, the reader's next, the rest by worktree only");
+        let got = places(Path::new("/h/notes/plan.md"), &tickets);
+        assert_eq!(got[0], place("/w/t12", "t12"));
+        assert_eq!(places(Path::new("/h/T-2870/x.md"), &tickets)[0], place("/w/t12", "t12"), "T-2870 is not T-287");
+    }
+
+    #[test]
+    fn a_deck_read_in_the_panel_starts_presenting_from_its_first_slide_and_keeps_to_its_ends() {
+        let mut doc = Doc::new(PathBuf::from("/s/notes/reports/x/deck.md"), 1);
+        assert!(doc.fresh && doc.slides().is_none(), "nothing read yet");
+        doc.text = Some(Ok("---\nmarp: true\n---\n# One\n\n---\n\n# Two".into()));
+        assert_eq!(doc.slides().map(|s| s.len()), Some(2));
+        assert_eq!(doc.slide_at(5), Some(1));
+        assert_eq!(doc.markdown().as_deref().map(str::trim_start), Some("# One\n\n---\n\n# Two"), "the front matter isn't the reader's");
+        let report = Doc { text: Some(Ok("# Report\n\n---\n\nmore".into())), ..Doc::new(PathBuf::from("/s/report.md"), 2) };
+        assert_eq!(report.slides(), None);
+    }
+
+    #[test]
     fn markdown_and_text_open_in_the_panel() {
         assert!(is_doc("outputs/T-4 데이터 설계/design.md"));
         assert!(is_doc("/x/README.MD"));
@@ -184,10 +293,15 @@ mod tests {
 
     #[test]
     fn a_dragged_width_leaves_the_conversation_room() {
-        assert_eq!(kept_width(None, 1000.), 420.);
-        assert_eq!(kept_width(Some(600.), 1400.), 600.);
-        assert_eq!(kept_width(Some(100.), 1400.), MIN_WIDTH);
-        assert_eq!(kept_width(Some(1300.), 1400.), 980.);
+        assert_eq!(kept_width(None, 1000., 0.), 420.);
+        assert_eq!(kept_width(Some(600.), 1400., 0.), 600.);
+        assert_eq!(kept_width(Some(100.), 1400., 0.), MIN_WIDTH);
+        assert_eq!(kept_width(Some(1300.), 1400., 0.), 980.);
+        // Beside the sidebar, the conversation keeps its room: the panel gives way…
+        assert_eq!(kept_width(None, 1000., 260.), MIN_WIDTH);
+        assert_eq!(kept_width(Some(900.), 1400., 260.), 1400. - 260. - CHAT_LEAST);
+        // …down to its narrowest.
+        assert_eq!(kept_width(None, 800., 260.), MIN_WIDTH);
     }
 
     #[test]
@@ -195,6 +309,35 @@ mod tests {
         let (text, cut) = words("가".repeat(MOST).into_bytes());
         assert!(cut && text.len() <= MOST && text.chars().all(|c| c == '가'));
         assert_eq!(words(b"# hi\n".to_vec()), ("# hi\n".into(), false));
+    }
+
+    #[test]
+    fn words_a_message_kept_show_as_the_file_did_under_its_own_name() {
+        let doc = Doc::of_kept("/u/.equipe/uploads/1792073093607-memo-transcript.txt".into(), "Ship the *pricing* page.", 3);
+        assert!(doc.kept && !doc.fresh);
+        assert_eq!(doc.name(), "memo-transcript.txt");
+        assert_eq!(doc.markdown().as_deref(), Some("```text\nShip the *pricing* page.\n```"), "plain text, as written");
+    }
+
+    #[test]
+    fn a_hand_over_packet_shows_as_handed_under_its_name_with_nothing_to_read_again_or_copy() {
+        let packet = "[equipe] You are backend, carrying on on Codex what you were doing on Claude.\n\n## The ticket: T-70 Orders API pagination\n> Keep the old `offset` parameter working.";
+        let h = equipe_core::protocol::engines::HandOver {
+            member: "backend".into(),
+            from_session: 30,
+            to_session: 3,
+            from: equipe_core::protocol::Engine::Claude,
+            to: equipe_core::protocol::Engine::Codex,
+            why: equipe_core::protocol::engines::Why::Exhausted,
+            at: 1_762_300_000,
+            ticket: Some(70),
+        };
+        let name = crate::state::packet_name(&h);
+        let doc = Doc::of_kept(PathBuf::from(&name), packet, 4);
+        assert_eq!(doc.name(), name, "named for its member and where it went: {name}");
+        assert!(doc.kept && !doc.path.is_absolute(), "read-only: no file to read again, open or copy");
+        assert_eq!(doc.markdown().as_deref(), Some(packet), "the words the new session opened with, as Markdown");
+        assert_eq!(folder_shown(&doc.path, Path::new("/w"), None), "", "no folder shown");
     }
 
     #[test]

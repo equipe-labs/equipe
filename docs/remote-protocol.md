@@ -70,6 +70,7 @@ Plaintext is UTF-8 JSON:
 | `{ "id", "method": "hello", "params": { "version", "squad" } }`, `squad` set too | `result`: `{ "version", "snapshot" }`; from then on the squad's `event`s, with `squad` set. A device may follow several squads; a second `hello` for one replaces the first. Error `-32602` "no such squad"; `-32000` when the daemon couldn't follow it |
 | `{ "id", "method": "read_image", "params": { "squad", "path", "max"? } }`, `squad` set too | `result`: a member's picture — see "A member's pictures" |
 | `{ "id", "method": "list_images", "params": { "squad", "folder", "max"? } }`, `squad` set too | `result`: the pictures in a folder a reply names — see "A member's pictures" |
+| `{ "id", "method": "metrics.summary", "params": { "squad", "project"? } }`, `squad` set too | `result`: the project's numbers this week beside the last — see "The project's numbers" |
 | `{ "method": "command", "params": <Command> }` — a notification, no `id` | none: what it did shows in events. Dropped without a word when it isn't one a device may send, its squad isn't the frame's, or the frame's squad isn't followed |
 | `{ "id", "method": "upload", "params": <chunk> }` (no `squad` needed) | `result`: `{ "received" }`, and once the whole file is in, `path` and `tag` — see [Attachments](#attachments) |
 | `{ "method": "upload_cancel", "params": { "upload_id" } }` — a notification | none |
@@ -138,7 +139,7 @@ screen names. The same checks hold on the blob: an image by name and by its firs
 most 30 MB.
 
 **Pictures in the conversation.** A reply, a note or the person's own message may embed
-pictures with Markdown — `![평면도](/…/images/plan.png)`, a title after the path, a path
+pictures with Markdown — `![Floor plan](/…/images/plan.png)`, a title after the path, a path
 relative to where its member works, spaces in it as members write them — and may name a folder
 of them (an absolute path ending in `/`, or in a code span). Members are told to show pictures
 this way, never to ask the person to open a folder. `read_image` gives such a picture too, by
@@ -155,6 +156,20 @@ below it), by name, each passing the same checks, at most 12 (`max` fewer), `tot
 such a recorded line names, inside the same roots. Errors as for `read_image`. A daemon older
 than this answers `-32601`; a screen then shows no strip.
 
+### The project's numbers
+
+The board's card (T-314) reads what the daemon keeps of the services the person connected on the
+Mac (`docs/METRICS.md`): `metrics.summary` `{ "squad", "project"? }` — `squad` the frame's, one
+the phone follows — answers the daemon's `Summary` (`crates/protocol/src/metrics.rs`):
+`{ "squad", "project"?, "from", "to", "tiles": [{ "connection", "kind", "metric", "label",
+"unit", "value"?, "previous"?, "change_pct"?, "as_of"?, "error"? }], "updated_at"? }` — at most
+four tiles, `error` (`{ "code", "message" }`, `code` e.g. `auth`) when the connection's latest
+fetch failed and the number is the last one kept; `tiles` empty when nothing is connected. It is
+read from what the daemon kept: no key and no setting is in it, and nothing is fetched for it.
+Another squad than the frame's, or one not followed: `-32002`; the daemon couldn't read the
+numbers: `-32000`. The other `metrics.*` — `sources`, `connect`, `disconnect`, `refresh`,
+`query` — stay at the Mac: `-32601`.
+
 ### A change to the team
 
 The PM proposes adding members of a role, or letting one go, as a `team_change_proposed`
@@ -169,16 +184,45 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
 
+### A routine the PM proposes
+
+The PM proposes a routine as a `routine_proposed` event: `proposal` is `{ "id", "routine":
+{ "id": 0, "title", "prompt", "when": { "every": "daily" | "weekly", "weekday"? (1 Monday …
+7 Sunday), "hour", "minute" }, "on": true }, "reason"?, "by", "session", "proposed_at" }`. The
+snapshot lists the ones still waiting in `routine_proposals` (absent when none). Only the
+person turns one on: the phone sends `approve_routine` `{ "squad", "id" }` (the daemon saves it
+as `save_routine` would) or `decline_routine` `{ "squad", "id" }`. Every screen then gets
+`routine_proposal_closed` `{ "squad", "id", "approved" }`, and `routines_changed` when it was
+saved. A push for a proposal carries the event with `reason` and the prompt cut to 800
+characters, category `routine`, collapse key `routine-<id>`; its title says who proposes, not
+the routine. The snapshot's `idle_wake_hours` is how long an empty board waits before the PM is
+woken (0: never; absent from an older daemon); it changes with `idle_wake_changed` `{ "squad",
+"hours" }`. Setting it is the terminal's and the desktop's, not a device's.
+
+### Taking back a change to the squad's folder
+
+When a member saves a file in the squad's folder or a fact in its memory, its conversation gets a
+`notice` whose `undo` names that change: `{ "session", "text", "undo": "<change id>" }` — the
+line the terminal reads as "✎ pm saved notes/a.md in the squad's folder · /home undo takes it
+back". Every other notice has no `undo`. A screen may put a button on the line; it sends
+`undo_home_change` `{ "squad", "session", "change" }`, with the notice's `session` and `undo`.
+No Face ID: taking back is itself a change, and can be taken back the same way. The daemon
+takes it back as `/home undo` does and says so in that conversation: a `notice` "Taken back:
+<what> · you can take this back too", whose `undo` is the new change; or an `error` "The change
+couldn't be taken back: …" when later changes built on it, or it is not one of the folder's
+latest 200 changes (an arbitrary revision never is). A `session` not of that squad is ignored.
+The snapshot's and `conversation_back`'s `note` lines keep `undo` too.
+
 ### Accepting in words, confirmed on a card
 
-When the person says in words that they accept, merge or send back handed-in work ("전부 수락",
-"T-1이랑 T-3 수락해줘", "머지까지 해줘"), the PM — or the screen they typed it on, reading their
+When the person says in words that they accept, merge or send back handed-in work ("accept them all",
+"accept T-1 and T-3", "merge it too", in any language), the PM — or the screen they typed it on, reading their
 own words — puts it to them on a card: an `accept_proposed` event whose `proposal` is `{ "id",
 "verdict": "accept" | "merge" | "changes", "tickets": [<ticket>…], "note"? (to send back: what to
 change, in their words), "summary"?, "by" (the member that proposed it, or `"you"` when a screen
 raised it from the person's words), "session" (the conversation it shows in), "proposed_at" }`.
-The snapshot lists the ones still waiting in `accepts` (absent when none). Their words are never
-the acceptance, an agent's even less: only the person's own command is. The phone confirms with
+The snapshot lists the ones still waiting in `accepts` (absent when none). An agent's words are
+never the acceptance; the person's own are only as Deciding in words says — else their command is. The phone confirms with
 `confirm_accept` `{ "squad", "id", "tickets": [{ "ticket", "merge"?: "merge" | "push" }…] }` —
 the tickets they kept — and the daemon runs, for each, what the board's buttons send (`accept`,
 then `merge` when asked; or `reopen` with the note). From a phone `merge` is dropped: the work is
@@ -187,6 +231,59 @@ Every screen then gets `accept_closed` `{ "squad", "id", "confirmed", "tickets"?
 the ones acted on — also sent with `confirmed: false` when the card became moot (its tickets were
 decided otherwise). A phone doesn't raise cards (`propose_accept` is the screens' own). A push for
 a proposal carries the event with `summary` and `note` cut to 800 characters, category `accept`.
+
+### Deciding in words
+
+A screen that has the person's own message sends `say` instead of `submit` — when the snapshot
+carries `words` (a list, maybe empty; absent from a daemon that predates it, which takes `submit`):
+`{ "squad", "session", "text", "via": "typed" | "dictated" | "voice", "later"?, "pasted"?, "about"? }`.
+The daemon reads it for a decision in words — in the person's languages only: the screen's, the one
+the text is written in when it shows, and English; never every language at once — then sends it on to
+the member as `submit` (or, `later`, as a memo), unless it was only an answer to a decision waiting in
+words, which goes no further. `pasted: true` (some of the text was pasted) and anything quoted
+(`> …` lines, a reply's passage, a fenced block) never decide. A screen knows a paste only as far as
+it sees one (on the Mac: ⌘V into the box); text dragged in, a Services menu, an autocompletion or an
+input method's suggestion reach the daemon as typed. From a phone the daemon sets `device` to the
+device it came from, whatever the phone sent. An `all` field from any screen is ignored.
+
+What every request waiting on the person risks is set in one place (`equipe_protocol::by_words::Kind::tier`):
+`low` (accepting research and writing, keeping an idea, taking on a proposal, running a saved routine
+once, leaving code on its branch) is done after a 5-second undo window, from any screen; `high`
+(accepting code, a merge, a request for permission, turning a routine on, moving members to another
+engine) and `outward` (pushing, deploying or publishing, paying or acting in the person's name, sending
+from their apps, a kept login, a team change) keep their card — or, when "All by words" is on for the
+squad and the words come from one of the Mac's screens, are read back and wait for the person's next
+own message: a clear yes runs it (`outward`: after a 10-second cancel window); any no holds it on its
+card; a yes with more said is asked again (twice, then held); anything else goes on to the member as
+usual, the read-back still waiting until it lapses to its card after two minutes. Said aloud or
+dictated, a yes to something high-risk must be short (three words at most) and on its own. An approval
+word with nothing it names ("approve", "allow") starts a read-back only when the message is little more
+than the word. A secret's value, pairing a phone, "always allow" and settings that widen what members
+do alone never go by words, in any mode; what equipe refuses stays refused.
+
+"All by words" is the squad's, kept by the daemon: `set_words_all` `{ "squad", "on" }`, from the Mac's
+screens only — a device may not send it — answered by `words_all_changed` `{ "squad", "on" }`; the
+snapshot carries `words_all` (absent: off).
+
+What waits is `words_live` `{ "squad", "live": { "id", "session", "stage": "undo" | "which" | "read_back" |
+"countdown", "tier", "kind", "read_back" (equipe's own line: the action and its target, from the
+request's fields), "items"? (each thing it does — or, `which`, each that fits, for the person to say its
+number), "quotes"? (what members wrote about it — a reason, what it asks to do in the person's name —
+`[{ "by", "text" }]`, flat and cut to 240 characters: show them as that member's, never as equipe's),
+"until" (unix ms), "said", "via", "asked_again"?, "device"? } }`; the snapshot lists those waiting in
+`words`. It is shown on its own card, never inside a member's reply. `undo_words` `{ "squad", "id" }`
+is the Undo (or Cancel, or Leave on its card) button. Every screen then gets `words_closed`
+`{ "squad", "id", "outcome": "done" | "undone" | "cancelled" | "held" | "lapsed" | "moot" | "dropped", "text"? }`;
+the conversation gets the same line only when no member is answering in it. A decision still waiting
+when the daemon stops is logged as `dropped` at its next start; nothing of it happened.
+
+A device that makes sure of the person's words itself — a phone's call mode reading the request back
+and checking the confirming words on the phone — says so on `decide` and `confirm_accept`: `"via"`
+and `"utterance"` beside their other fields. They go into the log; they never let anything through
+that the command alone wouldn't. Every decision made in words — the person's exact words with it — is
+kept in the squad's log on the Mac for as long as the journal keeps its entries (90 days), which only
+the Mac's screens read or empty (`words_log`, answered by `words_log` `{ "squad", "entries" }`;
+`clear_words_log` `{ "squad" }`).
 
 ### The disk
 
@@ -248,6 +345,25 @@ closes the card. Either way every screen then gets `engine_proposal_closed` `{ "
 engine out of its plan with its reset hours away (`why: "exhausted"`), category `engines`, once.
 `show_engine_setup` `{ "squad" }` proposes the recommended setup for both engines again.
 
+### Where the plans went
+
+`plan_use` `{ "engine", "span": "week" | "day" }` asks where an engine's plan went — its weekly
+window so far, or the last 24 hours — and every screen gets `plan_use` `{ "report" }`: `{ "engine",
+"span", "from", "to", "week"? (the plan's weekly window), "pace"? { "runs_out_at", "before_reset",
+"per_day_bp" }, "load", "week_load", "tokens" { "input", "output", "cache_write", "cache_read" },
+"calls", "outside"? (a slice, its `children` by folder), "projects", "tickets", "members", "beats"
+(an hour each: `{ "at", "load", "outside", "calls", "parts"? }`), "spikes" (`{ "from", "to",
+"slice" }`), "reading" }`. A slice is `{ "who", "label"?, "load", "share_bp", "week_bp"?, "tokens",
+"calls", "mostly": "rereading" | "loading" | "writing" | "input", "children"? }`; `who` is tagged
+by `kind`: `outside` `{ "folder"? }`, `project` `{ "squad"?, "project" }`, `home` `{ "squad" }`,
+`ticket` `{ "squad"?, "ticket" }`, `member` `{ "squad", "member" }`, `equipe`. Shares are of
+*load* — each kind of token weighed by the model's published prices — in basis points (10 000 =
+100 %): `share_bp` of the stretch's load, `week_bp` of the plan's week (its share of the week's
+load times the week's used percent). `plan_burn` `{ "burn": { "id", "engine", "who", "label"?,
+"week_bp", "hours", "at", "calls", "mostly" } }` says one ticket, or the use outside equipe, took
+a large share of the week in the last few hours; told once, and again to a screen that attaches
+while it is recent. Both only read: a phone may ask with `plan_use`.
+
 ### The design system
 
 The squad's design system (`docs/DESIGN-SYSTEM.md`) is asked for with the command `design`
@@ -262,6 +378,20 @@ Each system is `{ "project"?, "dir", "draft"?, "modes"?: ["light", "dark"], "tok
 "component" | "other", "size" }], "stamp" }`. Token values are DTCG's JSON with every alias resolved
 (`value` in the first mode, `modes` every mode's when they differ). An asset's picture is read with
 `read_image` by its `path`. A phone may send `design`; nothing in it changes anything.
+
+### Briefs and plans
+
+The squad's briefs and plans — every project's and the squad's own, all kept in the squad's own
+folder — are asked for with `project_docs` `{ "squad" }`, answered by the event `project_docs`
+`{ "squad", "docs": [{ "kind": "brief" | "plan", "project"?, "path", "title", "date", "status",
+"ticket"?, "mode"?, "tickets"?: [<id>] }], "copies"?: [{ "kind", "title", "paths": [<path>],
+"differ" }], "in_repos"?: [{ "project", "kind", "path", "kept"? }] }` — and again whenever one
+is written. A brief's `ticket` is the one it came from; a plan's `tickets`, those it was cut into.
+`copies` are the ones saved under more than one project (newest first); `in_repos`, older copies
+equipe once committed into a project's repository that still sit there, told only. `search_docs`
+`{ "squad", "query" }` finds them by their title and words: the event `docs_found` `{ "squad",
+"query", "paths" }`. A phone may send both; keeping one
+copy (`keep_doc_copy`) stays at the person's screens.
 
 ### Attachments
 
@@ -339,7 +469,8 @@ The answer:
 | `-32000` (why) | the daemon couldn't write it | |
 
 **What the file becomes.** It is kept like a screen's upload: `~/.equipe/uploads/`, 0600 in a
-0700 folder, named by the daemon (`<ms>-<tidied name>.<ext>`), swept after 7 days. Pieces wait
+0700 folder, named by the daemon (`<ms>-<tidied name>.<ext>`). Once a sent message names it, it
+stays until the person removes it; one no message names is swept after 7 days. Pieces wait
 in `uploads/.partial/`, which nothing reads back. Then, by kind:
 
 | kind | kept | `tag` |
@@ -363,6 +494,14 @@ that as `submit`'s `text`. Tags are text: the member reads the files by their pa
 a screen's (`crates/protocol/src/tags.rs` is the grammar). Uploading gives a phone no other
 command, and doesn't send anything: a file nobody's message points at is only swept.
 
+**Kept words.** When the message is sent, the daemon reads each text file its tags name in its
+uploads (UTF-8, at most 256 KiB each and 256 KiB for the message) and keeps the words with the
+message: `user_message` and `steered` carry `"kept": [{ "path", "text" }]` — `path` as the tag
+names it — and so does the conversation's `user` line. It is absent when there is none (and
+from an older daemon). The member's prompt is the message as sent; `kept` is for what reads the
+conversation later, once the file may be gone: a screen shows a `[file: …]` attachment whose
+file is gone by its kept `text`, and finds its words when searching.
+
 ### A member's conversation
 
 Each session's events (`params` carry `session`) make its conversation. Besides `user_message`,
@@ -376,9 +515,28 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
   turn. A steer not read before the turn ends becomes a memo (`message_queued`) and is
   delivered after it.
   `memo_withdrawn` `{ "session", "text" }` takes back a memo or a steer not read yet.
+- `command_watch` `{ "session", "watch"? }` — what runs under the member's engine for its
+  command under way (a `tool_use` of `Bash`, not in the background), as the daemon looked at it
+  on the member's machine a moment ago: every five seconds or so while the command runs, and
+  once without `watch` when it no longer does. `watch` is `{ "engine", "process"?, "quiet_secs",
+  "state" }`: `process` `{ "name", "cpu_percent", "secs" }` is the program shown (its busiest,
+  else its deepest that isn't a shell around it; `cpu_percent` is the whole command's since the
+  last look, of one core — a build on six cores reads 600), absent when nothing runs for it;
+  `quiet_secs`, how long the engine has said nothing; `state` `{ "kind" }` one of `working`,
+  `busy` (a good deal of CPU: at work, however long), `nothing` (nothing runs under the engine
+  for it), `awaiting_you` (a request of the member's waits for the person), `stuck`
+  (`"idle_secs"`: next to no CPU — or nothing running — that long, and the engine silent for
+  minutes). Never `stuck` while the command uses the CPU. Not a line.
+  `stop_command` `{ "session" }` stops that command, and only it — never the engine nor
+  anything not under it: the engine hears it failed (`tool_result`) and goes on with its turn,
+  reading what the person sent meanwhile.
 - `thread` `{ "session", "project" }` — what follows is about `project` (`null`: the whole
   squad): a message sent looking at it, news of its ticket, a ticket's work. Never shown itself;
   a screen shows one project's slice.
+- `visuals_rendered` `{ "session", "visuals": [{ "kind", "key", "light", "dark" }] }` — a reply's
+  Mermaid blocks, drawn by the daemon as PNGs (light and dark, each `{ "path", "width",
+  "height" }`, read with `read_image`) for a screen that can't draw them; the snapshot's sessions
+  carry the same as `visuals`. Not a line. See [VISUALS.md](VISUALS.md).
 - `model_known` `{ "session", "model" }` — the engine named its model, or the person changed it.
 - `branch_landed` `{ "session", "branch", "base", "stat" }` — an editing session closed with
   changes committed to `branch`, made from `base`; `stat` is `git diff --stat`.
@@ -401,9 +559,13 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
   after the compaction, or a memo after the turn): nothing is lost.
 
 The snapshot's sessions carry `recent`, the latest lines oldest first, each `{ "kind", … }`:
-`user` / `reply` `{ "text" }`, `tool` `{ "tool", "target", "outcome"? }`, `note` `{ "text" }`,
+`user` / `reply` `{ "text" }`, `tool` `{ "tool", "target", "outcome"? }`, `note` `{ "text", "undo"? }`,
 `error` `{ "message", "next" }`, `landed` `{ "branch", "stat" }` and `thread` `{ "project" }`
-(lines before any `thread` are about the whole squad). Beside `queued` (memos, and `queued_in`:
+(lines before any `thread` are about the whole squad). `recent_at`, one per line in the same
+order, says when each was said in unix seconds — a message when it came, a reply when it was
+done — `null` where not known (still streaming, or kept before times were); absent from a daemon
+that predates it, when no line has a time. A screen watching live takes a line's time as it
+comes. `conversation_back` carries `lines_at` beside its `lines` the same way. Beside `queued` (memos, and `queued_in`:
 the project each was left about), `steering` lists the steers not read yet, and `steering_in`
 the project each was said about (`null`: the whole squad; absent when there are none). A
 session whose conversation is being compacted carries `compacting`
@@ -418,10 +580,10 @@ screen that watched saw:
   Events that make no line and may come mid-sentence — `steer_queued`, `message_queued`,
   `queue_sent`, `memo_withdrawn`, `thinking`, `tool_result`, `output` (a token count),
   `model_known`, `subagent_*`, `compacting`, `compacted`, `compact_failed`, `estimated`,
-  `suggestion`, `browser_frame` — leave it open: a steer sent while the member writes
+  `suggestion`, `browser_frame`, `visuals_rendered` — leave it open: a steer sent while the member writes
   doesn't cut its answer; where it is read (`steered`) the reply so far ends and the steer
   follows it.
-- Lines: `user_message` and `steered` → `user`; `notice` → `note`; `thread` → `thread`;
+- Lines: `user_message` and `steered` → `user` (with their `kept`); `notice` → `note` (with its `undo`); `thread` → `thread`;
   `tool_use` → `tool` (its `tool_result` sets `outcome` on the latest open call of the same
   `tool` and `target`); `error` → `error`; `branch_landed` → `landed`; `nothing_changed` → note
   `No files changed, so no branch was kept.`; `turn_ended` `interrupted` → note `Stopped.`,
@@ -430,6 +592,56 @@ screen that watched saw:
   language.
 - A memo is not a line until it is delivered, as a `user_message` (memos left meanwhile arrive
   together). At most 500 lines are kept.
+
+### A call (voice radio)
+
+The person talks to the squad as on a radio: the phone hears English on the device, sends each
+finished utterance, and the daemon splits it by who it is for and sends each part on to that
+member as an ordinary `submit`. Commands (phone → daemon), all inside `command`:
+
+- `call_start` `{ "squad" }` — answered by `call_started`.
+- `call_utterance` `{ "squad", "call", "text", "via": "voice" | "typed" }` — one finished utterance.
+- `call_end` `{ "squad", "call" }` — the person pressed hang up; answered by `call_summary`
+  with `ended: "hangup"`.
+
+Events (daemon → phone), each with `squad` set:
+
+- `call_started` `{ "squad", "call" }` — `call` is a string id, used by every later frame of
+  the call (the phone keeps it across a reconnect).
+- `call_say` `{ "squad", "call", "text", "kind": "reply" | "ask" | "bye" }` — what the phone
+  says aloud: `reply` after work was sent ("Sent to Designer and Backend. Anything else?"),
+  as the call's opening briefing right after `call_started` ("Since our last call, Designer
+  finished the mockups. What do you need?"), and as the answer to a question about the board
+  ("2 in progress, 1 waiting for review. Anything else?"); `ask` to ask once when it couldn't tell, `bye` as the call ends.
+- `call_route` `{ "squad", "call", "routes": [{ "to": { "kind": "member" | "squad" | "pm",
+  "session"?, "name"?, "role"? }, "text" }], "by": "llm" | "rules" | "fallback" }` — where the
+  utterance went: one route a recipient, `text` what that one was sent. `by`: a fast model read
+  it (`llm`); it timed out or failed and words matched (`rules`, shown small); nothing matched,
+  so it went to the PM (`fallback`). `kind: "squad"` is everyone (`about` null).
+- `call_summary` `{ "squad", "call", "dispatched": [{ "to", "text", "at" }], "ended":
+  "person" | "idle" | "hangup" }` — the call ended: everything sent in it (`to` as in
+  `call_route`, `at` unix ms). `person`: they said they were done ("No, that's all.");
+  `idle`: two minutes of silence brought "Anything else?" and one more minute none;
+  `hangup`: `call_end`.
+
+The daemon keeps the last 8 turns of a call and folds older ones into a running summary, so what
+the judge reads stays the same size however long the call runs. The judge is a fast model
+(`claude-haiku-5-5`, `ANTHROPIC_API_KEY` in the daemon's environment) with 2.5 seconds; past
+that, or on any failure, word rules (role names and "everyone" in every language equipe speaks,
+kept in core's `locales/` as `match.call_*`), and failing those the PM.
+
+A question about where things stand ("Where are we?", `match.call_question`) is sent to no one:
+the daemon reads the board (in progress, waiting for review, done today) and answers it in a
+`call_say` `reply`, put in a sentence or two by the same fast model, or by a template when that
+fails ("2 in progress, 1 waiting for review."). A call opens the same way with what changed on
+the board since the squad's last call ended (kept in the daemon's memory; the last 3 hours after
+a restart).
+
+A call never decides anything: what is said in it reaches members only as `submit`, never
+through decisions in words (`say`), so nothing is approved, accepted or merged by voice.
+A device may send the three call commands as it may send `submit`.
+
+`equipe call-sim` runs the same loop in a terminal, one line an utterance, printing the events.
 
 ### Conformance vectors
 
@@ -639,22 +851,35 @@ its secrets. Without them configured, a push answers `push_result` `ok: false`.
 The daemon follows a device like one more screen, with less reach than the terminal:
 
 - **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` and
-  `list_images` (a member's pictures, of a squad it follows: see A member's pictures), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
+  `list_images` (a member's pictures, of a squad it follows: see A member's pictures),
+  `metrics.summary` (the project's numbers, of a squad it follows: see The project's numbers), and the commands `submit`, `interrupt`, `send_now`, `stop_command`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
-  `decline_team_change`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
-  `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`, `focus`, `refresh`,
-  `design`, `engines` (where the engines stand; never signing one in or out).
+  `decline_team_change`, `approve_routine`, `decline_routine`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
+  `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`,
+  `undo_home_change` (see Taking back a change to the squad's folder), `focus`, `refresh`,
+  `design`, `project_docs` and `search_docs` (see Briefs and plans), `engines` (where the engines stand; never signing one in or out), `plan_use` (where
+  the plans went: see Where the plans went), `say` and
+  `undo_words` (see Deciding in words), `call_start`, `call_utterance` and `call_end` (see A call).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it
-  (`steer_queued`, with its `project`); `send_now` stops the turn and sends what waits — the
-  `texts` first, in that order — as one message (`queue_sent`, then the turn's end).
-- **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
-  `set_engine_switching`, `show_engine_setup`, `propose_accept` — nor the person's
+  (`steer_queued`, with its `project`); `send_now` has what waits read now, never stopping the
+  turn: memos become steers (`memo_withdrawn`, then `steer_queued`) — the `texts` first, in that
+  order — read at the member's next step, and a command it runs is stopped (as `stop_command`)
+  so that step comes at once. With no turn under way it sends what waits as one message
+  (`queue_sent`).
+- **may not:** any other `metrics.*` (`sources`, `connect`, `disconnect`, `refresh`, `query`:
+  keys and connections stay at the Mac), `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
+  `set_engine_switching`, `show_engine_setup`, `propose_accept`, `words_log`, `clear_words_log`, `set_words_all`, `keep_doc_copy` — nor the person's
   own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a
   screen for now).
 - `decide` with `always` counts as `allow`: from a phone a request is allowed once.
+- What the person sends from a phone (`submit`, `send_now`, `answer_questions`) reaches the
+  member marked as sent from a phone, and every member's charter says to answer such a message
+  for a small screen: the answer and what the person must do first, short lists rather than
+  wide tables, paths and commands only when needed, detail after or in a file. Nothing changes
+  on the wire; the daemon's relay link says `"phone": true` in its own `hello` to the daemon.
 
 The app asks for Face ID / fingerprint before it sends a `decide`.
 

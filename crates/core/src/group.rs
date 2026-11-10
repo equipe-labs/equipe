@@ -7,13 +7,24 @@
 /// Send `signal` to `pid`'s group when `pid` leads one (started with
 /// `process_group(0)`), else to `pid` alone. Nothing for pids 0 and 1, or a
 /// pid gone. True when something was signalled.
-pub fn end(pid: u32, signal: libc::c_int) -> bool {
+#[derive(Debug, Clone, Copy)]
+pub enum Signal {
+    Terminate,
+    Kill,
+}
+
+#[cfg(unix)]
+pub fn end(pid: u32, signal: Signal) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
     if pid <= 1 {
         return false;
     }
     // SAFETY: plain system calls on a number; a stale pid fails with ESRCH.
     unsafe {
+        let signal = match signal {
+            Signal::Terminate => libc::SIGTERM,
+            Signal::Kill => libc::SIGKILL,
+        };
         if libc::getpgid(pid) == pid {
             libc::killpg(pid, signal) == 0
         } else {
@@ -22,7 +33,18 @@ pub fn end(pid: u32, signal: libc::c_int) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(windows)]
+pub fn end(pid: u32, _signal: Signal) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+    std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt as _;
@@ -36,13 +58,13 @@ mod tests {
         // A bystander in this group: untouched.
         let mut bystander = std::process::Command::new("sleep").arg("30").spawn().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
-        assert!(end(leader.id(), libc::SIGTERM));
-        assert!(end(lone.id(), libc::SIGTERM));
+        assert!(end(leader.id(), Signal::Terminate));
+        assert!(end(lone.id(), Signal::Terminate));
         assert!(!leader.wait().unwrap().success());
         assert!(!lone.wait().unwrap().success());
         assert!(bystander.try_wait().unwrap().is_none(), "nothing else was signalled");
         let _ = bystander.kill();
         let _ = bystander.wait();
-        assert!(!end(0, libc::SIGTERM) && !end(1, libc::SIGTERM) && !end(u32::MAX, libc::SIGTERM));
+        assert!(!end(0, Signal::Terminate) && !end(1, Signal::Terminate) && !end(u32::MAX, Signal::Terminate));
     }
 }

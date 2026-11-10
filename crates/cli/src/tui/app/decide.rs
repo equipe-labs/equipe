@@ -43,7 +43,7 @@ impl Picking {
                     return Answer::skipped();
                 }
                 let other = self.others.get(n).map(|o| o.trim().to_owned()).filter(|o| !o.is_empty());
-                Answer { picked: self.picks.get(n).map(|p| p.iter().copied().collect()).unwrap_or_default(), other }
+                Answer { picked: self.picks.get(n).map(|p| p.iter().copied().collect()).unwrap_or_default(), other, ..Answer::default() }
             })
             .collect()
     }
@@ -208,6 +208,7 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,
@@ -215,6 +216,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: Vec::new(),
+            recent_at: Vec::new(),
             queued: Vec::new(),
             queued_project: None,
             queued_in: Vec::new(),
@@ -227,6 +229,7 @@ mod tests {
             effort: None,
             subagents: Vec::new(),
             compacting: None,
+            visuals: Vec::new(),
         };
         let snapshot = Snapshot { squad: "acme".into(), projects: vec!["/repo".into()], sessions: vec![info], ..Snapshot::default() };
         (App::from_snapshot("/repo".into(), snapshot, &[]).0, 1)
@@ -244,6 +247,8 @@ mod tests {
                 Question { question: "Which features first?".into(), header: String::new(), options: options(&["Auth", "Payments", "Search"]), multi_select: true, ..Question::default() },
             ],
             asked_at: 0,
+            review: false,
+            retro: None,
         }
     }
 
@@ -281,7 +286,7 @@ mod tests {
             vec![Command::AnswerQuestions {
                 squad: "acme".into(),
                 id: 7,
-                answers: vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![2], other: Some("SSO later".into()) }],
+                answers: vec![Answer { picked: vec![0], ..Default::default() }, Answer { picked: vec![2], other: Some("SSO later".into()), ..Default::default() }],
                 about: None,
             }]
         );

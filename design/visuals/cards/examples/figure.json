@@ -1,0 +1,34 @@
+{
+  "title": "Squad numbers this week",
+  "asOf": "Nov 3",
+  "source": "equipe board · merges to main",
+  "stats": [
+    {
+      "label": "Tickets merged (last 7 days)",
+      "value": "17",
+      "delta": "2 today",
+      "deltaTone": "flat",
+      "points": [
+        0,
+        0,
+        4,
+        2,
+        7,
+        2,
+        2
+      ],
+      "from": "Oct 28",
+      "to": "Nov 3"
+    },
+    {
+      "label": "Your turn",
+      "value": "5"
+    },
+    {
+      "label": "Waiting for review",
+      "value": "12",
+      "delta": "4 in progress",
+      "deltaTone": "flat"
+    }
+  ]
+}

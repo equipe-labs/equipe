@@ -34,18 +34,23 @@ fn trim_marks(word: &str) -> &str {
         .trim_end_matches([')', ']', '"', '\'', '”', '’', '」', '』', '>', ',', ';', ':', '!', '?', '、', '，', '。', '：'])
 }
 
-/// A sentence's end after a file's name (`listing.json.`), and Korean's
-/// particles on it (`listing.json을`), off.
+/// A sentence's end after a file's name (`listing.json.`), and words written
+/// onto its kind in another script, as a particle or a noun is in Korean,
+/// Japanese or Chinese (`listing.jsonを`, `listing.json文件`), off.
 fn trim_tail(word: &str) -> &str {
     let mut w = trim_marks(word);
-    while let Some(c) = w.chars().last() {
-        let hangul = ('\u{AC00}'..='\u{D7A3}').contains(&c);
-        let after_name = w[..w.len() - c.len_utf8()].rsplit_once('.').is_some_and(|(_, ext)| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()));
-        if (hangul && after_name) || (c == '.' && !w.ends_with("/.")) {
-            w = &w[..w.len() - c.len_utf8()];
-        } else {
-            break;
+    loop {
+        if w.ends_with('.') && !w.ends_with("/.") {
+            w = &w[..w.len() - 1];
+            continue;
         }
+        let name = w.trim_end_matches(|c: char| c.is_alphabetic() && !c.is_ascii());
+        let after_name = name.rsplit_once('.').is_some_and(|(_, ext)| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()));
+        if name.len() < w.len() && after_name {
+            w = name;
+            continue;
+        }
+        break;
     }
     w
 }
@@ -81,7 +86,7 @@ fn locate(written: &str, roots: &[PathBuf]) -> Option<PathBuf> {
 /// The files and folders `text` names: each code span that reads as a path,
 /// and each such word — a folder whose name has spaces taken whole when it
 /// is on this Mac under one of `roots`, or when a later word goes on with a
-/// `/` (`outputs/T-117 앱스토어 제출/shots/`).
+/// `/` (`outputs/T-117 App Store submission/shots/`).
 pub fn named(text: &str, roots: &[PathBuf]) -> Vec<Named> {
     let mut out: Vec<Named> = Vec::new();
     let mut push = |written: &str, at: Option<PathBuf>| {
@@ -150,6 +155,12 @@ pub fn named(text: &str, roots: &[PathBuf]) -> Vec<Named> {
                 i += 1;
             }
         }
+    }
+    // A name alone (`A picture first-run.png`) beside a file named with its
+    // folder: looked for in that folder too, where it was handed over.
+    let folders: Vec<PathBuf> = out.iter().filter_map(|n| n.at.as_ref()?.parent().map(Path::to_path_buf)).collect();
+    for n in out.iter_mut().filter(|n| n.at.is_none() && !n.written.contains('/')) {
+        n.at = locate(&n.written, &folders);
     }
     out
 }
@@ -266,6 +277,27 @@ pub fn mark(blocks: &mut [crate::convo::Block], looks: &HashMap<TicketId, u64>) 
 }
 
 #[cfg(test)]
+mod handed_over {
+    use super::*;
+
+    #[test]
+    fn files_handed_over_in_a_tickets_folder_open_from_its_card() {
+        let root = std::env::temp_dir().join(format!("equipe-turn-{}", std::process::id()));
+        let folder = root.join("outputs/T-287 홍보 글 올리기");
+        std::fs::create_dir_all(&folder).unwrap();
+        for f in ["A linkedin 붙여넣기.txt", "A 그림 first-run.png"] {
+            std::fs::write(folder.join(f), "x").unwrap();
+        }
+        let ask = "`outputs/T-287 홍보 글 올리기/A linkedin 붙여넣기.txt`의 글을 `A 그림 first-run.png`와 함께 LinkedIn 개인 계정에 올려 주세요.";
+        let got = named(ask, &[PathBuf::from("/nowhere"), root.clone()]);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(got.len(), 2, "{got:#?}");
+        assert_eq!(got[0].at.as_deref(), Some(folder.join("A linkedin 붙여넣기.txt").as_path()));
+        assert_eq!(got[1].at.as_deref(), Some(folder.join("A 그림 first-run.png").as_path()), "a name alone, found beside the other");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -297,6 +329,11 @@ mod tests {
         assert!(named(ASKS[0], &[]).is_empty(), "no path in it");
         assert_eq!(named("Put it in `.env.local` and `src/app.ts`.", &[]).iter().map(|n| n.written.as_str()).collect::<Vec<_>>(), [".env.local", "src/app.ts"]);
         assert_eq!(named("listing.json을 봐 주세요", &[])[0].written, "listing.json");
+        // Whatever language writes its particle onto the name.
+        for said in ["listing.jsonを見てください", "请看 listing.json文件。", "see listing.json에서 it"] {
+            assert_eq!(named(said, &[]).iter().map(|n| n.written.as_str()).collect::<Vec<_>>(), ["listing.json"], "{said}");
+        }
+        assert_eq!(named("Open café.json", &[])[0].written, "café.json", "a letter before the name's kind is the name's");
         assert!(named("T-117 and 3/4 of it, e.g. this", &[]).is_empty());
     }
 

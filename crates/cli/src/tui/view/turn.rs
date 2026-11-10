@@ -153,6 +153,7 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,
@@ -160,6 +161,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: Vec::new(),
+            recent_at: Vec::new(),
             queued: Vec::new(),
             queued_project: None,
             queued_in: Vec::new(),
@@ -172,6 +174,7 @@ mod tests {
             effort: None,
             subagents: Vec::new(),
             compacting: None,
+            visuals: Vec::new(),
         };
         let mut app = App::from_snapshot("/repo".into(), Snapshot { squad: "acme".into(), projects: vec!["/repo".into()], sessions: vec![info], ..Snapshot::default() }, &[]).0;
         let ticket: Ticket = serde_json::from_value(serde_json::json!({

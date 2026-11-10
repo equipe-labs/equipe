@@ -1,5 +1,5 @@
 //! Handed-in work the person says in words they accept, merge or send back —
-//! "전부 수락", "T-1이랑 T-3 수락해줘", "머지까지 해줘", "이건 반려" — put in
+//! "accept them all", "accept T-1 and T-3", "merge it too", "reject this one" — put in
 //! front of them as a card to confirm (`propose_accept`): the PM's tool, and
 //! what a call (or a screen reading the person's words) is checked against.
 //! Plain functions, tested without an engine. A proposal only ever waits for
@@ -8,7 +8,7 @@
 //! an agent's — and never the person's words, however plain.
 
 use equipe_protocol::accept::{AcceptProposal, Verdict};
-use equipe_protocol::{Ticket, TicketId, TicketKind, TicketStatus};
+use equipe_protocol::{Ticket, TicketEntry, TicketId, TicketKind, TicketStatus};
 use serde_json::{Value, json};
 
 use crate::board;
@@ -27,14 +27,16 @@ the hand-in, look at its diff and pictures, and make sure it does what its ticke
 Tickets are how the squad splits and runs its work — the person doesn't review each one. Put to the person instead, with \
 `propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a production deploy or \
 release, live data deleted or migrated, money or billing, security, permissions or accounts, what customers or other \
-people will see or receive — a brand or design direction, or anything they asked to see themselves. When it isn't \
-right, send it back to its member with `comment` and what to change.",
+people will see or receive — a brand or design direction, or anything they asked to see themselves. Code you changed \
+yourself, on a ticket of your own, is never yours to accept: put it to the person with `propose_accept`. When it isn't \
+right, send it back to its member with `comment`, `review: changes` and what to change. A branch only behind main isn't \
+wrong: this merges it when it merges cleanly, and sends a real conflict back to its member itself.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "tickets": { "type": "array", "items": { "type": "integer" }, "description": "The handed-in tickets you accept." },
                 "checked": { "type": "string", "description": "What you checked and found, in a line — kept on each ticket for the person." },
-                "push": { "type": "boolean", "description": "Push main once merged, so the work goes live where the project deploys from main — when the person asked for it to go live (\"배포해줘\"), or the project always ships what is on main." },
+                "push": { "type": "boolean", "description": "Push main once merged, so the work goes live where the project deploys from main — when the person asked for it to go live (\"ship it\"), or the project always ships what is on main." },
             },
             "required": ["tickets", "checked"],
         },
@@ -50,10 +52,10 @@ pub fn tool() -> Value {
         "name": PROPOSE_ACCEPT,
         "description": "Put handed-in work in front of the person to confirm on a card with one click: accepting it, \
 accepting and merging it, or sending it back with what to change. Call it right away whenever the person says in words \
-that they accept, approve, merge or reject work in review (\"accept them all\", \"전부 수락\", \"T-1이랑 T-3 수락해줘\", \
-\"머지까지 해줘\", \"이건 반려\"). Their words are not the acceptance, and neither is yours: only their click on the card \
-accepts, merges or sends back. Don't explain buttons or ask them to click anything — say in one line that the card is \
-up (\"확인 카드를 띄웠어요\" in Korean).",
+that they accept, approve, merge or reject work in review (\"accept them all\", \"accept T-1 and T-3\", \
+\"merge it too\", \"reject this one\"). Their words are not the acceptance, and neither is yours: only their click on the card \
+accepts, merges or sends back. Don't explain buttons or ask them to click anything — say in one line, in their language, that the card \
+is up (\"The card is up\").",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -124,6 +126,13 @@ pub fn unfit(t: &Ticket, verdict: Verdict) -> Option<String> {
         (TicketStatus::Proposed, _) => Some(format!("T-{id} is a proposal, not handed-in work: take it on with update_ticket (status todo)")),
         (status, _) => Some(format!("T-{id} is {}, not handed in yet", status.label())),
     }
+}
+
+/// Code the PM changed itself — a code ticket `pm` worked — is never its to
+/// accept: the person does, on a card. `None` for anyone else's work.
+pub fn own_code(t: &Ticket, pm: &str) -> Option<String> {
+    (t.kind == TicketKind::Code && t.assignee.as_deref() == Some(pm))
+        .then(|| format!("T-{} is your own code, not yours to accept: put it to the person with propose_accept", t.id))
 }
 
 /// The tickets "all" means for `verdict`: every one in review — and, to
@@ -259,7 +268,7 @@ pub fn proposed_reply(checked: &Checked, tickets: &[Ticket]) -> String {
     };
     format!(
         "Proposed — the person confirms on a card: {what}.{next}{} Tell them in one line, in their language, that the card is \
-up (\"확인 카드를 띄웠어요\"). {DON_T}",
+up (\"The card is up\"). {DON_T}",
         dropped_line(&checked.dropped)
     )
 }
@@ -268,9 +277,111 @@ up (\"확인 카드를 띄웠어요\"). {DON_T}",
 pub fn already_reply(waiting: &[TicketId], dropped: &[(TicketId, String)]) -> String {
     format!(
         "Already on a card in front of the person: {} — equipe raised it from their words. Nothing more to propose: say in \
-one line, in their language, that the card is up (\"확인 카드를 띄웠어요\").{} {DON_T}",
+one line, in their language, that the card is up (\"The card is up\").{} {DON_T}",
         ids(waiting),
         dropped_line(dropped)
+    )
+}
+
+// ── work in review the PM sends back, and work left waiting for it ──
+
+/// The note a ticket the PM sent back carries to its member: what
+/// `begin_work` reads as the reopen envelope (it starts with "Reopened").
+pub const PM_SENT_BACK: &str = "Reopened by the PM: ";
+
+/// The record kind of work in review sent back to its member by the PM, or
+/// by equipe (a task that couldn't land): who sent it is the entry's `by`.
+pub const SENT_BACK: &str = "sent back";
+
+/// How the `comment` tool takes the PM's word on a ticket in review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewWord {
+    /// Send it back to its member with this text as what to change.
+    Changes,
+    /// Only a note: it keeps waiting for review.
+    Note,
+}
+
+/// The `review` a `comment` call gives, if any; anything else is said why.
+pub fn review_word(args: &Value) -> Result<Option<ReviewWord>, String> {
+    match board::arg_str(args, "review").map(str::to_lowercase).as_deref() {
+        None => Ok(None),
+        Some("changes") | Some("change") | Some("send_back") => Ok(Some(ReviewWord::Changes)),
+        Some("note") => Ok(Some(ReviewWord::Note)),
+        Some(other) => Err(format!("`review` is `changes` (send it back) or `note` (it stays in review), not {other}.")),
+    }
+}
+
+/// What the PM hears when it comments on work in review without saying
+/// whether it sends it back.
+pub fn say_which(ticket: TicketId, member: &str) -> String {
+    format!(
+        "T-{ticket} is in review, so say `review`: `changes` sends it back to {member} with this text as what to change \
+(same branch and worktree; {member} is told now); `note` only notes it, and it keeps waiting for review. A change \
+request left as a plain note never reaches {member}. Nothing was noted."
+    )
+}
+
+/// Before the PM's `comment` asked it to say which, its change requests on
+/// work in review were plain notes its members never heard. A review
+/// ticket's record that ends in such comments, after its latest hand-in:
+/// what they asked, oldest first. `None` when it doesn't end so.
+pub fn unheard_change_request(record: &[TicketEntry], pm: &str) -> Option<String> {
+    let handed_in = record.iter().rposition(|e| e.kind == "handed in")?;
+    let after = &record[handed_in + 1..];
+    let last = after.last()?;
+    if last.kind != board::COMMENT || last.by != pm {
+        return None;
+    }
+    let asked: Vec<&str> = after.iter().filter(|e| e.kind == board::COMMENT && e.by == pm).map(|e| e.text.trim()).filter(|t| !t.is_empty()).collect();
+    (!asked.is_empty()).then(|| asked.join("\n\n"))
+}
+
+/// What a ticket sent back by that recovery adds for its member.
+pub const UNHEARD_NOTE: &str = "\n\n(equipe: the PM asked this while the ticket waited in review, and it didn't reach you \
+then. If what it asks is only to bring the branch up to date with main, merge main into your branch — no rebase \
+needed — resolve any conflicts, run the relevant tests, and hand it in again.)";
+
+/// Handed-in work waits this long for the PM before it is reminded.
+pub const REVIEW_NUDGE_AFTER: u64 = 2 * 60 * 60;
+
+/// …and is reminded of the same ticket at most this often.
+pub const REVIEW_NUDGE_EVERY: u64 = 6 * 60 * 60;
+
+/// Work ready for the PM's review that has waited past
+/// [`REVIEW_NUDGE_AFTER`] and wasn't brought up in the last
+/// [`REVIEW_NUDGE_EVERY`]: each with how long it waited, longest first. The
+/// PM's own code (the person's to accept) and work on a card in front of the
+/// person are left out.
+pub fn stale_reviews(tickets: &[Ticket], pm: &str, on_cards: &[TicketId], nudged: &std::collections::HashMap<TicketId, u64>, now: u64) -> Vec<(TicketId, u64)> {
+    let mut due: Vec<(TicketId, u64)> = tickets
+        .iter()
+        .filter(|t| t.ready_for_review() && own_code(t, pm).is_none() && !on_cards.contains(&t.id))
+        .filter(|t| nudged.get(&t.id).is_none_or(|at| now.saturating_sub(*at) >= REVIEW_NUDGE_EVERY))
+        .filter_map(|t| t.updated_at.map(|at| (t.id, now.saturating_sub(at))))
+        .filter(|(_, waited)| *waited >= REVIEW_NUDGE_AFTER)
+        .collect();
+    due.sort_by_key(|(id, waited)| (std::cmp::Reverse(*waited), *id));
+    due
+}
+
+/// How long something waited, in a few characters: `45m`, `5h`, `3d`.
+pub fn waited(secs: u64) -> String {
+    match secs {
+        s if s < 60 * 60 => format!("{}m", s / 60),
+        s if s < 48 * 60 * 60 => format!("{}h", s / (60 * 60)),
+        s => format!("{}d", s / (24 * 60 * 60)),
+    }
+}
+
+/// What the PM is handed about work left waiting for its review.
+pub fn stale_review_message(due: &[(TicketId, u64)]) -> String {
+    let list = due.iter().map(|(id, w)| format!("T-{id} ({})", waited(*w))).collect::<Vec<_>>().join(", ");
+    format!(
+        "[equipe: handed-in work still waits for your review: {list}. Review each now, longest waiting first: accept it \
+with `accept_work`, send it back with `comment` and `review: changes`, or put it to the person with `propose_accept`. A \
+branch only behind main is no reason to send it back: `accept_work` merges it when it merges cleanly and sends a real \
+conflict back itself. Then carry on with what else waits.]"
     )
 }
 
@@ -363,16 +474,31 @@ mod tests {
         let c = proposed(json!({ "verdict": "accept", "tickets": [1, 3, 2] }));
         let said = proposed_reply(&c, &board());
         assert!(said.starts_with("Proposed — the person confirms on a card: accepting T-1, T-3. Confirmed, T-4 can start."), "{said}");
-        assert!(said.contains("Left out: T-2 is in progress, not handed in yet.") && said.contains("확인 카드를 띄웠어요") && said.contains("Don't explain buttons"), "{said}");
+        assert!(said.contains("Left out: T-2 is in progress, not handed in yet.") && said.contains("The card is up") && said.contains("Don't explain buttons"), "{said}");
         assert!(said.contains("only their click on the card does it"), "{said}");
         let back = proposed(json!({ "verdict": "changes", "tickets": [3], "note": "헤더" }));
         assert!(proposed_reply(&back, &board()).contains("sending T-3 back: 헤더.") && !proposed_reply(&back, &board()).contains("can start"));
         let already = already_reply(&[1, 3], &[]);
-        assert!(already.starts_with("Already on a card in front of the person: T-1, T-3") && already.contains("확인 카드를 띄웠어요"), "{already}");
+        assert!(already.starts_with("Already on a card in front of the person: T-1, T-3") && already.contains("The card is up"), "{already}");
         assert_eq!(starts_after(&board(), &[1]), Vec::<TicketId>::new(), "T-4 still waits on T-3, T-8 on T-2");
         assert_eq!(starts_after(&board(), &[1, 3]), [4]);
         assert_eq!(tool()["name"], PROPOSE_ACCEPT);
         assert_eq!(tool()["inputSchema"]["required"], json!(["verdict"]));
+    }
+
+    /// What the PM's charter stopped saying because the tool says it (crates/core/charter-moved.txt).
+    #[test]
+    fn propose_accepts_description_says_when_to_call_it_and_to_say_only_that_the_card_is_up() {
+        let said = tool()["description"].as_str().unwrap().to_owned();
+        for part in [
+            "Call it right away whenever the person says in words that they accept, approve, merge or reject work in review",
+            "\"accept them all\", \"accept T-1 and T-3\"",
+            "\"merge it too\", \"reject this one\"",
+            "Don't explain buttons or ask them to click anything",
+            "say in one line, in their language, that the card is up (\"The card is up\")",
+        ] {
+            assert!(said.contains(part), "{part}: {said}");
+        }
     }
 
     #[test]
@@ -382,5 +508,68 @@ mod tests {
         let mut decided = board();
         decided.iter_mut().filter(|t| t.id == 1 || t.id == 3).for_each(|t| t.status = TicketStatus::Done);
         assert!(!still_open(&p, &decided));
+    }
+
+    fn entry(by: &str, kind: &str, text: &str) -> TicketEntry {
+        TicketEntry { at: 0, by: by.into(), kind: kind.into(), text: text.into() }
+    }
+
+    #[test]
+    fn the_pms_comments_after_the_last_hand_in_are_a_change_request_its_member_never_heard() {
+        let record = [
+            entry("pm", "created", "Lease"),
+            entry("backend-2", "handed in", "first"),
+            entry("pm", "comment", "old ask, answered by the second hand-in"),
+            entry("backend-2", "handed in", "second"),
+            entry("pm", "comment", "1. the note is overwritten"),
+            entry("pm", "comment", "  still there on the same commit  "),
+        ];
+        assert_eq!(unheard_change_request(&record, "pm").as_deref(), Some("1. the note is overwritten\n\nstill there on the same commit"));
+        // Ending in anything else, it isn't one: accepted, a member's word, someone else's comment, never handed in.
+        let mut moved_on = record.to_vec();
+        moved_on.push(entry("equipe", "assigned", "backend-2"));
+        assert_eq!(unheard_change_request(&moved_on, "pm"), None);
+        let mut answered = record.to_vec();
+        answered.push(entry("backend-2", "comment", "on it"));
+        assert_eq!(unheard_change_request(&answered, "pm"), None);
+        assert_eq!(unheard_change_request(&record, "lead"), None, "only the PM's own comments");
+        assert_eq!(unheard_change_request(&[entry("pm", "comment", "x")], "pm"), None);
+        assert_eq!(unheard_change_request(&record[..4], "pm"), None, "nothing after the hand-in");
+    }
+
+    #[test]
+    fn the_comment_tool_takes_changes_or_a_note_and_nothing_else() {
+        assert_eq!(review_word(&json!({})), Ok(None));
+        assert_eq!(review_word(&json!({ "review": "Changes" })), Ok(Some(ReviewWord::Changes)));
+        assert_eq!(review_word(&json!({ "review": "note" })), Ok(Some(ReviewWord::Note)));
+        assert!(review_word(&json!({ "review": "maybe" })).is_err());
+        let said = say_which(7, "frontend");
+        assert!(said.contains("`changes`") && said.contains("`note`") && said.contains("never reaches frontend"), "{said}");
+    }
+
+    #[test]
+    fn work_left_in_review_is_brought_up_after_two_hours_and_then_at_most_every_six() {
+        const H: u64 = 60 * 60;
+        let now = 100 * H;
+        let at = |id: TicketId, hours_ago: u64| {
+            let mut t = ticket(id, TicketStatus::Review);
+            t.assignee = Some("frontend".into());
+            t.updated_at = Some(now - hours_ago * H);
+            t
+        };
+        let mut own = at(4, 9);
+        own.assignee = Some("pm".into());
+        let mut in_qa = at(5, 9);
+        in_qa.design_qa = Some(50);
+        let tickets = vec![at(1, 1), at(2, 3), at(3, 30), own, in_qa, at(6, 5)];
+        let none = std::collections::HashMap::new();
+        // Past two hours, longest first; not the PM's own code, not in design QA, not on a card.
+        assert_eq!(stale_reviews(&tickets, "pm", &[6], &none, now), [(3, 30 * H), (2, 3 * H)]);
+        // Brought up a moment ago: not again until six hours have passed.
+        let nudged: std::collections::HashMap<TicketId, u64> = [(3, now - H), (2, now - 6 * H)].into();
+        assert_eq!(stale_reviews(&tickets, "pm", &[6], &nudged, now), [(2, 3 * H)]);
+        let message = stale_review_message(&[(3, 30 * H), (2, 3 * H)]);
+        assert!(message.contains("T-3 (30h), T-2 (3h)") && message.contains("`review: changes`") && message.contains("behind main"), "{message}");
+        assert_eq!((waited(59 * 60), waited(47 * H), waited(72 * H)), ("59m".to_owned(), "47h".to_owned(), "3d".to_owned()));
     }
 }

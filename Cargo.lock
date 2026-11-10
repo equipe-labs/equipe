@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.86.4"
+version = "0.103.79"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2229,15 +2229,27 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.86.4"
+version = "0.103.79"
 dependencies = [
  "base64 0.23.1",
+ "block2 0.6.2",
  "equipe-desktop-control",
  "equipe-protocol",
  "equipe-providers",
+ "flate2",
+ "fs2",
  "image",
  "libc",
+ "mermaid-rs-renderer",
+ "objc2 0.6.5",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-foundation 0.3.2",
  "reqwest",
+ "resvg 0.46.0",
+ "ring",
  "rusqlite",
  "security-framework",
  "serde",
@@ -2249,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.86.4"
+version = "0.103.79"
 dependencies = [
  "alacritty_terminal",
  "base64 0.23.1",
@@ -2258,11 +2270,11 @@ dependencies = [
  "equipe-providers",
  "gpui-kit",
  "gpui-pre-reqwest-client",
+ "icu_normalizer",
  "image",
  "latex-rust",
  "libc",
  "markdown",
- "mermaid-rs-renderer",
  "notify",
  "objc2 0.6.5",
  "objc2-av-foundation",
@@ -2281,11 +2293,13 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop-control"
-version = "0.86.4"
+version = "0.103.79"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
  "equipe-protocol",
+ "getrandom 0.4.3",
+ "image",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-graphics",
@@ -2293,11 +2307,13 @@ dependencies = [
  "objc2-screen-capture-kit",
  "serde_json",
  "tokio",
+ "windows 0.62.2",
+ "windows-capture",
 ]
 
 [[package]]
 name = "equipe-protocol"
-version = "0.86.4"
+version = "0.103.79"
 dependencies = [
  "serde",
  "serde_json",
@@ -2305,9 +2321,10 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.86.4"
+version = "0.103.79"
 dependencies = [
  "base64 0.23.1",
+ "chrono",
  "dirs 7.0.0",
  "futures-util",
  "rand 0.10.3",
@@ -2646,6 +2663,16 @@ dependencies = [
  "cc",
  "libc",
  "pkg-config",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -3018,8 +3045,6 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc8b7def8e74b0d822d3e96f6b28fb5a2c20eb7a83d30d22fa59ca8088d1159b"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -3325,8 +3350,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d756813ff1cd741a502af60fd18869e0677795936d7349642b41c49f43120c0"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -7386,7 +7409,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

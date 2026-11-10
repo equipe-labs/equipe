@@ -28,6 +28,19 @@ pub enum Job {
 }
 
 impl Job {
+    /// Whether it only reads: the real view (`readonly.rs`) runs no other.
+    pub fn reads(&self) -> bool {
+        match self {
+            Job::Home { words, .. } => words.first().is_none_or(|w| w == "changes"),
+            Job::Memory { .. } => true,
+            Job::Squad { dry_run, .. } => *dry_run,
+            Job::SendApps { words, .. } => words.is_empty(),
+            Job::BrowserMax(n) => n.is_none(),
+            // A window for signing in to sites.
+            Job::BrowserSignin => false,
+        }
+    }
+
     pub fn args(&self) -> Vec<String> {
         let words = |head: &[&str], squad: &str, words: &[String]| -> Vec<String> {
             let named = (!squad.is_empty()).then(|| ["--squad".to_owned(), squad.to_owned()]).into_iter().flatten();
@@ -103,33 +116,36 @@ fn strip_ansi(line: &str) -> String {
 /// Why it failed, as the last thing it said.
 fn reason(job: &Job, output: &str, code: i32) -> String {
     if code == 127 {
-        return "그 기계에서 equipe를 찾지 못했습니다 — 설치하거나 `equipe update` 하세요".into();
+        return equipe_core::t!("sidecar.no_equipe_there").into();
     }
     let said = lines(output);
     // An `equipe` that predates the command.
     if said.iter().any(|l| l.contains("unrecognized subcommand") || l.contains("unexpected argument")) {
-        return format!("그 기계의 equipe가 오래되어 `{}`을 모릅니다 — `equipe update` 후 `equipe daemon restart`", job.name());
+        return equipe_core::t!("sidecar.too_old", command = job.name());
     }
     said.iter()
         .rev()
         .find(|l| !l.starts_with("Usage:") && !l.starts_with("For more information") && !l.starts_with("tip:"))
         .map(|l| l.trim_start_matches('✗').trim().to_owned())
-        .unwrap_or_else(|| format!("{} 종료 코드 {code}", job.name()))
+        .unwrap_or_else(|| equipe_core::t!("sidecar.exit_code", command = job.name(), code = code))
 }
 
 /// Run `job` on the daemon's machine: its lines, or why not. Blocks — run it off the UI thread.
 pub fn run(endpoint: &Endpoint, job: &Job) -> Result<Vec<String>, String> {
+    if !job.reads() && crate::readonly::blocked(job.name()) {
+        return Err(equipe_core::t!("readonly.kept_back").to_owned());
+    }
     let args = job.args();
     let (output, code) = match endpoint {
         Endpoint::Local { .. } => {
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-            let cli = install::find_cli(&home, std::env::var_os("PATH").as_deref()).ok_or("이 맥에서 equipe를 찾지 못했습니다")?;
+            let cli = install::find_cli(&home, std::env::var_os("PATH").as_deref()).ok_or_else(|| equipe_core::t!("sidecar.no_equipe_here").to_owned())?;
             let out = std::process::Command::new(cli)
                 .args(&args)
                 .env("EQUIPE_NO_OPEN", "1")
                 .stdin(std::process::Stdio::null())
                 .output()
-                .map_err(|e| format!("{}을 실행하지 못했습니다: {e}", job.name()))?;
+                .map_err(|e| equipe_core::t!("sidecar.couldnt_run", command = job.name(), err = e))?;
             let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
             (text, out.status.code().unwrap_or(1))
         }
@@ -167,6 +183,17 @@ mod tests {
     }
 
     #[test]
+    fn the_real_view_runs_only_the_jobs_that_read() {
+        assert!(Job::Home { squad: "acme".into(), words: s(&["changes"]) }.reads());
+        assert!(!Job::Home { squad: "acme".into(), words: s(&["undo", "1"]) }.reads());
+        assert!(Job::Memory { squad: "acme".into(), words: s(&["changes"]) }.reads());
+        assert!(Job::Squad { squad: "acme".into(), words: s(&["add", "/p"]), dry_run: true }.reads());
+        assert!(!Job::Squad { squad: "acme".into(), words: s(&["add", "/p"]), dry_run: false }.reads());
+        assert!(Job::SendApps { squad: "acme".into(), words: vec![] }.reads() && !Job::SendApps { squad: "acme".into(), words: s(&["reset"]) }.reads());
+        assert!(Job::BrowserMax(None).reads() && !Job::BrowserMax(Some("3".into())).reads() && !Job::BrowserSignin.reads());
+    }
+
+    #[test]
     fn over_ssh_every_word_is_quoted_and_the_status_travels_with_the_output() {
         let script = script(&s(&["squad", "add", "it's a folder; rm -rf /", "--squad", "a b"]));
         assert!(script.contains("equipe 'squad' 'add' 'it'\\''s a folder; rm -rf /' '--squad' 'a b'"), "{script}");
@@ -182,7 +209,7 @@ mod tests {
         let job = Job::Home { squad: "a".into(), words: vec![] };
         assert_eq!(reason(&job, "  The squad's folder isn't made yet\n", 1), "The squad's folder isn't made yet");
         assert_eq!(reason(&job, "\n✗ shop doesn't work on nope\n", 1), "shop doesn't work on nope");
-        assert!(reason(&job, "", 127).contains("찾지 못했습니다"));
+        assert!(reason(&job, "", 127).contains("찾지 못했어요"));
         assert!(reason(&job, "error: unrecognized subcommand 'squad'\n\nUsage: equipe\n", 2).contains("equipe update"));
         assert_eq!(reason(&job, "", 3), "equipe home 종료 코드 3");
     }

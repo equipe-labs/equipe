@@ -1,0 +1,13 @@
+{
+  "title": "Pictures in the conversation: which way to show them",
+  "subtitle": "T-335's three contract candidates",
+  "options": [{ "name": "Mermaid only" }, { "name": "HTML card → PNG", "pick": true }, { "name": "SVG drawn directly" }],
+  "rows": [
+    { "label": "Shows on a phone", "values": ["Must become a PNG", "A PNG, shows as is", "The app must draw SVG"] },
+    { "label": "Looks like the screen", "values": ["Matched by a theme", "Uses the tokens as they are", "The member picks colours"] },
+    { "label": "What the member fills in", "values": ["A few lines of text", "Only data JSON", "Coordinates and all"] },
+    { "label": "Safety", "values": ["No scripts", "Scripts·network blocked", "No scripts"] }
+  ],
+  "why": "Mermaid can't draw tables and number summaries, and when the member fills in only data it comes out as the tokens say, never out of step with the screen.",
+  "asOf": "Nov 3"
+}

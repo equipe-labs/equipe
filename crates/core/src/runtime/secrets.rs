@@ -9,7 +9,7 @@ use super::*;
 
 impl Runtime {
     /// The person's home folder: secrets are saved under it.
-    fn person_home(&self) -> Option<PathBuf> {
+    pub(super) fn person_home(&self) -> Option<PathBuf> {
         self.config.person_home.clone().or_else(|| std::env::var_os("HOME").map(PathBuf::from))
     }
 
@@ -70,7 +70,7 @@ line what you're waiting for.",
         self.keep_secret_asks(squad);
         self.publish(Event::SecretClosed { squad: squad.to_owned(), id, saved: true });
         let keys = ask.fields.iter().map(|f| f.key.clone()).collect::<Vec<_>>().join(", ");
-        self.publish(Event::Notice { session: ask.session, text: say!(self, "notice.secret_saved", keys = keys, path = ask.save_to) });
+        self.publish(Event::Notice { undo: None, session: ask.session, text: say!(self, "notice.secret_saved", keys = keys, path = ask.save_to) });
         let prompt = format!(
             "[equipe: the person saved {keys} to {} (readable only by them). Use it from there — read the file in your code \
 or `source` it in a command — and never print, echo or copy a value into chat, tickets, commits or logs. Carry on.]",
