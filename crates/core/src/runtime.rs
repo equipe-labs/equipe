@@ -5841,7 +5841,8 @@ todo); or drop it if it's no longer wanted.]"
 
     /// Member `id` puts its ticket down. Changes are committed to the ticket's
     /// branch; the worktree stays while the work is in review, so it can be sent
-    /// back, and goes otherwise — the branch stays to merge.
+    /// back, while it waits, and when its member left, for the next one; it
+    /// goes otherwise — the branch stays to merge.
     fn end_work(&mut self, id: SessionId, how: WorkEnd) {
         self.put_down(id, how);
         // A run is its ticket's: put down, it closes.
@@ -5875,7 +5876,11 @@ todo); or drop it if it's no longer wanted.]"
                 let message = say!(self, "error.ticket_not_committed", id = ticket.id, err = err, path = sandbox.path.display());
                 self.error(Some(id), message, None);
             }
-            if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting) {
+            // Work its member left stays checked out for whoever takes it
+            // next: removing gigabytes of worktree, and checking the branch
+            // out again for the next member, held the daemon's loop for
+            // seconds per ticket.
+            if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting | WorkEnd::Left) {
                 kept_worktree = Some(sandbox.path.clone());
             } else if matches!(how, WorkEnd::Accepted | WorkEnd::Checked) && ticket.kind.in_home() {
                 if how == WorkEnd::Checked {

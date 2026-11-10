@@ -778,3 +778,32 @@ async fn nothing_moves_when_no_member_of_the_role_is_left() {
     assert_eq!([ticket(&handle, review).await, ticket(&handle, todo).await], before);
     handle.shutdown().await;
 }
+
+/// A member closed while its run works: the ticket goes on with a frontend
+/// still on the team, in the same worktree — not removed and checked out
+/// again, which held the daemon for seconds a ticket.
+#[tokio::test]
+async fn a_member_closed_at_work_leaves_its_worktree_to_the_next_member() {
+    let engine = Engine0::new();
+    engine.hang(true);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
+    add(&handle, &mut events, 3, member(&repo, "frontend", Some(Engine::Claude))).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend-2" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(3), ticket: 1, .. })).await;
+    engine.prompt_with("You're on T-1").await;
+    let first = ticket(&handle, 1).await;
+    let worktree = first.worktree.clone().expect("its own worktree");
+    std::fs::write(worktree.join("hero.txt"), "half a hero\n").unwrap();
+
+    handle.send(Command::Close { session: 3 });
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    let taken = ticket(&handle, 1).await;
+    assert_eq!((taken.owner.as_deref(), taken.assignee.as_deref()), (Some("frontend"), Some("frontend")));
+    assert_eq!((taken.branch.clone(), taken.worktree.clone()), (first.branch.clone(), first.worktree.clone()), "the same branch and worktree");
+    assert_eq!(std::fs::read_to_string(worktree.join("hero.txt")).unwrap(), "half a hero\n");
+    assert!(git(&repo, &["log", "--format=%s", first.branch.as_deref().unwrap()]).contains("T-1 Hero"), "what it did is committed on its branch");
+    handle.shutdown().await;
+}
