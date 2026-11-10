@@ -11,7 +11,7 @@ The site, desktop, iOS and Android use values from **one source** (`tokens/*.jso
 | the list of pairs in `scripts/contrast.mjs` | `docs/contrast.md` |
 | `scripts/sheets.mjs`·`reference/components.css` | `components/*-{light,dark}.png` (`npm run sheets`) |
 
-To change a value or a name, edit `tokens/` and run `npm run check`. If the generated files' format (names·units) is the problem, edit `scripts/build.mjs`. Edit only a generated file and it vanishes at the next build, leaving a value on screen that disagrees with the source. Other repositories (equipe-site·equipe-app) copy the generated files and don't edit them there either.
+To change a value or a name, edit `tokens/` and run `npm run check`. If the generated files' format (names·units) is the problem, edit `scripts/build.mjs`. Edit only a generated file and it vanishes at the next build, leaving a value on screen that disagrees with the source. Other repositories (equipe-site·equipe-app) copy the generated files and don't edit them there either. Each copy is listed in `copies.json`; `npm run check:copies` here, and one line per copy in each repository's CI (`curl … | diff`), catch a copy out of step (`docs/DESIGN-SYSTEM.md`, 'Copies').
 
 ## Folder
 
@@ -39,6 +39,7 @@ npm run contrast     # contrast check → docs/contrast.md (exit code 1 if any p
 npm run lint:css     # no raw values in reference/components.css
 npm run check        # the three above at once
 npm run sheets       # re-render components/*.png (needs Chrome; fonts over the network from Google Fonts·jsDelivr)
+npm run check:copies # the other repositories' copies listed in copies.json match the generated files (../<repo> or <repo>=<path>)
 ```
 The tests in `crates/core` (`design::tokens`) read `tokens.json` with the daemon's own parser and check it has no problems and has both light and dark.
 
