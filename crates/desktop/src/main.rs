@@ -358,6 +358,8 @@ pub struct Shell {
     pub sheet: Option<sheet::Sheet>,
     /// The sheet's Close button: keys move there when a sheet opens (`sheet_focused` once they have).
     pub sheet_focus: FocusHandle,
+    /// The window's own focus, for keys when nothing else holds it (a studio with no box): menu shortcuts like ⌘/ still reach the window.
+    pub root_focus: FocusHandle,
     sheet_focused: bool,
     /// The sidebar is away because the browser panel needed the room (`render`).
     sidebar_squeezed: bool,
@@ -536,6 +538,7 @@ impl Shell {
             sheet: None,
             sheet_focus: cx.focus_handle().tab_stop(true),
             sheet_focused: false,
+            root_focus: cx.focus_handle(),
             sidebar_squeezed: false,
             sheet_stops: Default::default(),
             confirm: None,
@@ -2281,6 +2284,9 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if window.focused(cx).is_none() {
+            self.root_focus.focus(window, cx);
+        }
         // A sheet opened: the keys go into it, once; Esc or Close sends them back to the box.
         if self.sheet.is_some() != self.sheet_focused {
             self.sheet_focused = self.sheet.is_some();
@@ -2328,6 +2334,7 @@ impl Render for Shell {
             .bg(p.bg)
             .sans()
             .text_color(p.text)
+            .track_focus(&self.root_focus)
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
                 if this.overlay_open() {

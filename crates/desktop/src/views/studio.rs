@@ -680,6 +680,11 @@ impl Shell {
         let room = self.design_talk_room(window, cx);
         let docked = if self.design_talk_open(window, cx) { crate::design_talk::width(self.remembered.design_talk_width, room) } else { 0. };
         self.studio.room = room - docked;
+        // The conversation panel is shut, so its box is not on the screen: keys held by it
+        // reach no shortcut (⌘/, ⌘K…). The window takes them.
+        if docked == 0. && self.composer.is_focused(window, cx) {
+            self.root_focus.focus(window, cx);
+        }
         if self.studio.poll.is_none() {
             let poll = cx.spawn(async move |this, cx| {
                 loop {
