@@ -3531,5 +3531,7 @@
   "recover.kept": "브랜치·작업 폴더·커밋·커밋 안 한 파일은 그대로 둬요. 새 티켓은 만들지 않아요.",
   "recover.toast_resume": "T-{id}을(를) {who}이(가) 이어서 해요",
   "recover.toast_requeue": "T-{id}을(를) {role}에게 다시 맡겼어요",
-  "recover.toast_reassign": "T-{id}을(를) {who}에게 넘겨요"
+  "recover.toast_reassign": "T-{id}을(를) {who}에게 넘겨요",
+  "sidebar.runs": "티켓 {n}개",
+  "sidebar.run_failed": "실패"
 }

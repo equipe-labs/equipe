@@ -3530,5 +3530,7 @@
   "recover.kept": "分支、工作目錄、提交和未提交的檔案都保持原樣。不會新建工單。",
   "recover.toast_resume": "T-{id} 由 {who} 繼續",
   "recover.toast_requeue": "T-{id} 已重新排隊給 {role}",
-  "recover.toast_reassign": "T-{id} 改派給 {who}"
+  "recover.toast_reassign": "T-{id} 改派給 {who}",
+  "sidebar.runs": "{n} 張工單",
+  "sidebar.run_failed": "失敗"
 }

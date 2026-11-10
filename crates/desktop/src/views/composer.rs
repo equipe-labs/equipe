@@ -530,7 +530,7 @@ fn placeholder(model: &Model) -> String {
     }
     match model.opened {
         Some(ticket) => {
-            let to = if member.ticket == Some(ticket) { member.name.as_str() } else { model.members.iter().find(|m| Model::is_pm(m)).map_or(member.name.as_str(), |m| m.name.as_str()) };
+            let to = if member.ticket == Some(ticket) || model.run_on(ticket).is_some_and(|r| r.of == member.session) { member.name.as_str() } else { model.members.iter().find(|m| Model::is_pm(m)).map_or(member.name.as_str(), |m| m.name.as_str()) };
             t!("composer.placeholder_ticket", id = ticket, name = to)
         }
         // To the PM about a project — its conversation's, or the one in focus.
@@ -2461,6 +2461,7 @@ fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
     // A ticket open whose member isn't the one in view: it goes to the PM.
     if let (Some(ticket), Some(selected)) = (model.opened, model.selected_member())
         && selected.ticket != Some(ticket)
+        && !model.run_on(ticket).is_some_and(|r| r.of == selected.session)
         && let Some(pm) = model.members.iter().find(|m| Model::is_pm(m) && m.presence != Presence::Closed)
     {
         return name_of(pm);

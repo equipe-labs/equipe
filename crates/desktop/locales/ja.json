@@ -3530,5 +3530,7 @@
   "recover.kept": "ブランチ・作業フォルダ・コミット・未コミットのファイルはそのまま残ります。新しいチケットは作りません。",
   "recover.toast_resume": "T-{id} を {who} が再開",
   "recover.toast_requeue": "T-{id} を {role} に再投入",
-  "recover.toast_reassign": "T-{id} を {who} に担当変更"
+  "recover.toast_reassign": "T-{id} を {who} に担当変更",
+  "sidebar.runs": "チケット{n}件",
+  "sidebar.run_failed": "失敗"
 }

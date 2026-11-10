@@ -548,7 +548,10 @@ fn said(model: &Model, text: &str, later: bool) -> Plan {
     // A ticket open: what is said steers its work, while its member is on it;
     // otherwise it goes to the PM, about the ticket.
     let about;
+    // A ticket its member runs beside its conversation: said into that run.
+    let run = model.opened.and_then(|t| model.run_on(t)).filter(|r| r.of == selected.session).map(|r| r.session);
     let (target, text) = match model.opened {
+        Some(_) if run.is_some() && target.session == selected.session => (target, text),
         Some(ticket) if target.session == selected.session && target.ticket != Some(ticket) => {
             match model.members.iter().find(|m| Model::is_pm(m) && m.presence != Presence::Closed) {
                 Some(pm) => {
@@ -562,8 +565,9 @@ fn said(model: &Model, text: &str, later: bool) -> Plan {
     };
     let away = target.session != selected.session;
     // Said in a conversation the person opened with the PM: to that conversation.
-    let to = match model.talk {
-        Some(talk) if !away => talk,
+    let to = match (model.talk, run) {
+        (_, Some(run)) if !away => run,
+        (Some(talk), _) if !away => talk,
         _ => target.session,
     };
     // What is said to the one in view goes to its conversation about the
@@ -1153,6 +1157,23 @@ mod tests {
 
     fn submit(session: SessionId, text: &str) -> Command {
         Command::Submit { session, text: text.into(), about: Some(None) }
+    }
+
+    #[test]
+    fn said_with_a_run_open_goes_into_that_run_and_with_none_to_the_member() {
+        let run = |id: SessionId, ticket: u32, state: SessionState| {
+            let mut s = session(id, "frontend", state);
+            s.run = Some(equipe_core::protocol::RunOf { of: 2, ticket, generation: 1 });
+            s
+        };
+        let mut model = squad(vec![session(1, "pm", SessionState::Ready), session(2, "frontend", SessionState::Ready), run(20, 7, SessionState::Working), run(21, 8, SessionState::Ready)]);
+        assert!(model.open(crate::state::Side::Ticket(8)));
+        assert_eq!(plan(&model, "use the blue one").commands, vec![submit(21, "use the blue one")], "its run, not the member's conversation nor the PM");
+        assert!(model.open(crate::state::Side::Ticket(7)));
+        assert_eq!(plan(&model, "and the footer").commands, vec![submit(20, "and the footer")], "at work: steered");
+        // The member itself: its own conversation, not any run.
+        model.open(crate::state::Side::Member(2));
+        assert_eq!(plan(&model, "how is it going?").commands, vec![submit(2, "how is it going?")]);
     }
 
     #[test]

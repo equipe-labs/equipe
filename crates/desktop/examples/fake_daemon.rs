@@ -12,6 +12,8 @@
 //! `FAKE_PHONE_QA=<file>` ends the conversation on a phone test's report kept in that file;
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
+//! `FAKE_RUNS=1` has frontend run three tickets at once (T-160 to T-162), each in a
+//! session of its own under it — one asking the person, one at rest (`FAKE_RUNS=<n>`: n of them);
 //! `FAKE_STALLED=1` adds a stalled run (T-90), a paused one (T-91) and one queued (T-92);
 //! Resume, Requeue and Reassign on T-90 queue it as the daemon does;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
@@ -292,6 +294,8 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
             .into_iter()
             // Orchestration's squad: only backend held on a permission, frontend at work.
             .filter(|a| !orchestra::on() || a.member == "backend")
+            // `FAKE_RUNS`: frontend's second run is the one asking.
+            .map(|a| if runs() > 1 && a.member == "frontend" { Approval { session: 61, ticket: Some(161), ..a } } else { a })
             .collect::<Vec<_>>()
         } else {
             vec![]
@@ -525,6 +529,7 @@ fn board() -> Vec<Ticket> {
             t.design_qa = Some(studio::TICKET);
         }
     }
+    out.extend(run_list().into_iter().map(|(_, id, title, ..)| ticket(id, "in_progress", "web", "frontend", &title, "", &[], Some(&format!("equipe/frontend-t{id}")), None)));
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
@@ -689,6 +694,32 @@ fn busy() -> bool {
 /// screen attaches (default both; `0`: nothing turns anywhere).
 fn working() -> u32 {
     std::env::var("FAKE_WORKING").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+}
+
+/// `FAKE_RUNS=<n>` (`1`: three): how many tickets frontend runs at once, each
+/// in a session of its own under it ([`equipe_core::protocol::RunOf`]).
+fn runs() -> usize {
+    match std::env::var("FAKE_RUNS").ok().and_then(|v| v.parse::<usize>().ok()) {
+        Some(1) => 3,
+        Some(n) => n,
+        None => 0,
+    }
+}
+
+/// Frontend's runs: (session, ticket, title, at work, its latest step).
+fn run_list() -> Vec<(SessionId, u32, String, bool, (&'static str, &'static str))> {
+    let titles = [
+        "Product detail page image gallery",
+        "Checkout address form validation and error messages for every field",
+        "Search results empty state",
+    ];
+    (0..runs())
+        .map(|n| {
+            let title = titles.get(n).map_or_else(|| format!("Landing section {}", n + 1), |t| (*t).to_owned());
+            let tool = if n % 2 == 0 { ("Edit", "src/gallery.tsx") } else { ("Bash", "npm test -- checkout") };
+            (60 + n as SessionId, 160 + n as u32, title, n != 2, tool)
+        })
+        .collect()
 }
 
 /// The busy squad's extra members: (ticket, session, name, title).
@@ -1540,6 +1571,19 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let mut sessions = vec![pm_info, frontend, backend, designer];
                         if std::env::var_os("FAKE_NO_DESIGNER").is_some() {
                             sessions.pop();
+                        }
+                        if runs() > 0 {
+                            // Frontend runs its tickets beside its own conversation, which rests.
+                            if let Some(frontend) = sessions.iter_mut().find(|s| s.session == 2) {
+                                frontend.work = None;
+                                frontend.state = SessionState::Ready;
+                                frontend.estimate = None;
+                            }
+                            for (session, ticket, title, working, tool) in run_list() {
+                                let mut run = on(info(session, "frontend", vec![]), ticket, "web", &title, working, tool, None);
+                                run.run = Some(equipe_core::protocol::RunOf { of: 2, ticket, generation: 1 });
+                                sessions.push(run);
+                            }
                         }
                         if busy() {
                             for (ticket, session, name, title) in BUSY {
