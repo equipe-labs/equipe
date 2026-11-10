@@ -20,7 +20,7 @@ pub mod stand_in;
 pub struct Fetch<'a> {
     /// The connection's fields that aren't secret.
     pub settings: &'a BTreeMap<String, String>,
-    /// Its secret fields, from [`super::KeyFile`]. An adapter sends them to its
+    /// Its secret fields, from the Keychain. An adapter sends them to its
     /// service and nowhere else: not in a point, an error or a log.
     pub keys: &'a BTreeMap<String, String>,
     /// Today, the daemon machine's local day, `YYYY-MM-DD`.

@@ -6,7 +6,7 @@ the desktop's Metrics screen in full, the phone as a summary card, the PM
 through its `metrics` tool for the morning report and experiment calls.
 
 There is no equipe server in it. **The daemon on the person's Mac calls each
-service's API itself**, keeps the keys in a private file on that Mac, and keeps what
+service's API itself**, keeps the keys in that Mac's Keychain, and keeps what
 it hears as daily snapshots under `~/.equipe/metrics/`. A screen on another Mac
 or the phone gets numbers from that daemon, never keys.
 
@@ -18,25 +18,16 @@ Screens: `design/specs/metrics/` (T-311).
 flowchart LR
   S[Desktop / phone] -- metrics.* JSON-RPC --> D[daemon]
   M[member: metrics tool] --> D
-  D -- keys --> K[(~/.equipe/credentials/metrics-keys.json)]
+  D -- keys --> K[(Keychain equipe.metrics)]
   D -- API with key --> P[PostHog / GitHub / App Store]
   D --> F[(~/.equipe/metrics/)]
 ```
 
 ## Rules
 
-- A key is in `~/.equipe/credentials/metrics-keys.json` and nowhere else:
-  not `connections.json`, not a
+- A key is in the Keychain and nowhere else: not `connections.json`, not a
   snapshot, not the daemon's log, not an answer, not a member's tool result.
   `metrics.connect` is the only message that carries one, inward.
-- The key file — `{ "<connection id>": { "<field>": "<key>" } }` — is 0600 in
-  a 0700 folder, and members' fences don't let them read `credentials/`.
-  Not the Keychain: a login-keychain item trusts the binary that made it by
-  its code hash, and an ad-hoc signed `equipe` (dev builds, install.sh,
-  Homebrew) has a new one each build, so a daemon on a new build couldn't
-  read its keys back (errSecAuthFailed) nor ask the person, running in the
-  background (T-356). Keys put in the Keychain before then are not read:
-  connect again.
 - An adapter's error message has every key of its connection cut out
   (`•••`) before it is kept, answered or logged — in case a service echoes it.
 - Members only read. Connecting, keys and disconnecting are the person's, on
@@ -53,7 +44,7 @@ A squad may have several connections of a kind (two GitHub repositories).
 the metrics they report. A screen builds its connect form from it — it doesn't
 hard-code fields. A kind is offered only once its adapter exists.
 
-| kind | status | fields (`*` secret, kept in the key file) | metrics |
+| kind | status | fields (`*` secret, kept in the Keychain) | metrics |
 |---|---|---|---|
 | `fake` | here (tests, screens; offered when `EQUIPE_METRICS_FAKE` is set) | `token`*, `seed`, `fail` | `visits`, `stars`, `languages` |
 | `posthog` | here (`adapters/posthog.rs`) | `api_key`* (Query: Read), `project_id`, `host` (default `https://us.posthog.com`), `filter`, `language_property`, `click_events`, `click_property`, `north_star_event`, `north_star_property`, `north_star_where` | `visits`, `languages`, `referrers`, `utm_sources`, `clicks`, `north_star` |
@@ -217,7 +208,7 @@ or `metrics.refresh` shows when it has.
 
 ### `metrics.disconnect`
 
-`{ "squad", "id", "forget"?: false }` → `{ "id" }`. Its keys leave the key file.
+`{ "squad", "id", "forget"?: false }` → `{ "id" }`. Its keys leave the Keychain.
 
 ### `metrics.refresh`
 
@@ -282,7 +273,7 @@ A request that can't be answered is a JSON-RPC error:
 | -32010 | that kind can't be connected yet (no adapter) |
 | -32011 | a required field is missing, or a field the kind doesn't have |
 | -32012 | no such connection in that squad |
-| -32013 | the key file couldn't keep or remove the keys |
+| -32013 | the Keychain refused to keep or remove the keys |
 | -32014 | `~/.equipe/metrics/` couldn't be written |
 
 A **fetch** that fails isn't a request error; it is kept on the connection as
@@ -294,7 +285,7 @@ A **fetch** that fails isn't a request error; it is kept on the connection as
 | `rate_limited` | the service said not now — tried again at `retry_at` |
 | `network` | the service couldn't be reached, or didn't answer in 90 s |
 | `bad_response` | the service answered something equipe couldn't read |
-| `keychain` | the key couldn't be read from the key file (the name is older) |
+| `keychain` | the key couldn't be read from the Keychain |
 | `other` | anything else |
 
 ## The members' tool
@@ -303,7 +294,7 @@ A **fetch** that fails isn't a request error; it is kept on the connection as
 It answers in text — each connection with its latest fetch (or its failure),
 each metric's value beside the previous period with the change, the days known,
 a breakdown's top labels and the series. It reads the snapshots only; nothing
-in it comes from the key file. With nothing connected it says the person
+in it comes from the Keychain. With nothing connected it says the person
 connects services in equipe's Metrics screen.
 
 ## Adding an adapter
@@ -318,7 +309,7 @@ pub trait Adapter: Send + Sync {
 }
 ```
 
-`Fetch` gives the settings, the keys (from the key file), today and how many
+`Fetch` gives the settings, the keys (from the Keychain), today and how many
 days back to ask for, and the daemon's HTTP client. Then, in
 `adapters/mod.rs` only, its `pub mod` and its arm in `adapter()`. An adapter
 sends its keys to its own service and nowhere else; it returns days it knows

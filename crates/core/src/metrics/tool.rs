@@ -1,7 +1,7 @@
 //! `metrics`: a member reads the squad's numbers — a period beside the one
 //! before it — from the snapshots the daemon keeps. Read only: connecting,
 //! keys and fetching are the person's, on their screens. Nothing it answers
-//! comes from the kept keys.
+//! comes from the Keychain.
 
 use std::fmt::Write as _;
 use std::path::Path;
