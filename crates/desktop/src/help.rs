@@ -43,6 +43,7 @@ pub fn sections() -> Vec<Section> {
                 ("⌘B", t!("help.nav_board")),
                 ("⌘0 · ⌘1–9", t!("help.nav_projects")),
                 ("⌘⇧O", t!("help.nav_folds")),
+                ("⇧⌘F", t!("help.nav_doc_focus")),
                 ("⌘U", t!("help.nav_usage")),
                 ("⌘/", t!("help.nav_help")),
                 ("⌘⇧K", t!("help.nav_connect")),

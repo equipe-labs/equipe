@@ -1655,16 +1655,17 @@ impl Shell {
 
     /// Where focus view was entered from, named as the person knows it.
     fn doc_origin(&self) -> doc::Origin {
-        if self.screen == Screen::Chat {
-            let title = match (&self.model.draft_talk, self.model.talking()) {
-                (Some(_), _) => t!("sidebar.new_conversation").to_string(),
-                (None, Some(lane)) => lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").to_string()),
-                _ => self.model.selected_member().map(|m| m.name.clone()).unwrap_or_default(),
-            };
-            doc::Origin::Conversation(title)
-        } else {
-            let title = self.model.focus.clone().or_else(|| self.model.hq.as_ref().map(|hq| equipe_core::board::project_name(hq))).unwrap_or_else(|| self.model.squad.clone());
-            doc::Origin::Board(title)
+        match self.screen {
+            Screen::Chat => {
+                let title = match (&self.model.draft_talk, self.model.talking()) {
+                    (Some(_), _) => t!("sidebar.new_conversation").to_string(),
+                    (None, Some(lane)) => lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").to_string()),
+                    _ => self.model.selected_member().map(|m| if m.role == equipe_core::roles::PM { "PM".to_string() } else { m.name.clone() }).unwrap_or_default(),
+                };
+                doc::Origin::Conversation(title)
+            }
+            Screen::Project => doc::Origin::Project(self.board.project_page.clone().unwrap_or_default()),
+            _ => doc::Origin::Docs,
         }
     }
 
@@ -1720,7 +1721,7 @@ impl Shell {
         let Some(doc) = self.doc.as_mut() else { return };
         doc.more = !doc.more;
         if doc.more {
-            self.doc_keys.first.focus(window, cx);
+            self.doc_keys.menu[0].focus(window, cx);
         }
         cx.notify();
     }

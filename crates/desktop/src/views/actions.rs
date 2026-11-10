@@ -217,7 +217,12 @@ impl Shell {
 
     pub fn close_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sheet = None;
-        self.composer.focus(window, cx);
+        // Focus view has no composer: the keyboard goes to its way back.
+        if self.doc_focused() {
+            self.doc_keys.back.focus(window, cx);
+        } else {
+            self.composer.focus(window, cx);
+        }
         cx.notify();
     }
 

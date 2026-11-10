@@ -150,6 +150,7 @@ state("tools/terminal/default", "chat;term;wait:3000;tkeys:ls -la~", wait=1500)
 LONG_DOC = "{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md"
 DOC = "{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md"
 state("tools/document/default", "chat;doc:" + DOC, wait=1500, label="Default panel · focus entry")
+state("tools/document/default-large", "chat;doc:" + DOC + ";wait:800;zoom:150;wait:600", wait=1200, lang="ko", label="Default panel · 150% · Korean")
 state("tools/document/default-board", "docs;wait:600;docsopen:0", wait=1500, label="Default panel · board origin")
 state("tools/document/default-board-scrolled", "docs;wait:600;docsopen:0;wait:800;scroll:6,-120", wait=1200, label="Board origin · document scrolled")
 state("tools/document/focus", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f", wait=1200, label="Focus view · conversation origin")

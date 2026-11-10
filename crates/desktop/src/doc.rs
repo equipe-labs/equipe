@@ -27,8 +27,13 @@ pub fn width(window: f32) -> f32 {
 /// within what the sidebar leaves: the conversation keeps room to be read.
 pub fn kept_width(dragged: Option<f32>, window: f32, sidebar: f32) -> f32 {
     let most = (window - sidebar - CHAT_LEAST).max(MIN_WIDTH);
-    dragged.unwrap_or_else(|| width(window)).clamp(MIN_WIDTH, most)
+    // Never wider than the window leaves: in a very narrow one (small, or
+    // zoomed) the panel gives up its narrowest rather than run off the edge.
+    dragged.unwrap_or_else(|| width(window)).clamp(MIN_WIDTH, most).min((window - sidebar).max(NARROWEST))
 }
+
+/// What the panel keeps however narrow the window.
+pub const NARROWEST: f32 = 220.;
 
 /// The conversation's narrowest beside the panel.
 pub const CHAT_LEAST: f32 = 420.;
@@ -69,7 +74,10 @@ pub struct Doc {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
     Conversation(String),
-    Board(String),
+    /// The briefs-and-plans page.
+    Docs,
+    /// A project's page.
+    Project(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -293,6 +301,13 @@ mod tests {
         doc.more = false;
         doc.folded = true;
         assert_eq!(escape(Some(&doc)), Escape::Pass, "a folded panel isn't in focus view");
+    }
+
+    #[test]
+    fn the_panel_never_runs_past_a_narrow_window() {
+        assert_eq!(kept_width(None, 506., 260.), 246.);
+        assert!((kept_width(None, 1200., 260.) - 504.).abs() < 0.01);
+        assert_eq!(kept_width(None, 300., 260.), NARROWEST);
     }
 
     #[test]

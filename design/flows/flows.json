@@ -1071,6 +1071,12 @@
               "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md`"
             },
             {
+              "id": "default-large",
+              "label": "Default panel · 150% · Korean",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600`; EQUIPE_LANG=ko"
+            },
+            {
               "id": "default-board",
               "label": "Default panel · board origin",
               "kind": "default",
