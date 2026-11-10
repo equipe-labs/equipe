@@ -136,6 +136,24 @@ pub fn shortened(title: &str, most: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
+/// Where the keyboard goes when Esc closes "more": the button that opened
+/// it — or, the window widened since and "more" folded away, the header's
+/// first stop (the way back in focus view, Focus view beside the conversation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuClosed {
+    More,
+    Back,
+    Entry,
+}
+
+pub fn menu_closed(compact: bool, focused: bool) -> MenuClosed {
+    match (compact, focused) {
+        (true, _) => MenuClosed::More,
+        (false, true) => MenuClosed::Back,
+        (false, false) => MenuClosed::Entry,
+    }
+}
+
 /// The window is narrow, or its text large: the document's tools fold into
 /// "more". Widths are the window's, in points.
 pub fn compact(window: f32, zoom_pct: u16) -> bool {
@@ -339,6 +357,25 @@ mod tests {
         assert_eq!(kept_width(None, 506., 260.), 246.);
         assert!((kept_width(None, 1200., 260.) - 504.).abs() < 0.01);
         assert_eq!(kept_width(None, 300., 260.), NARROWEST);
+    }
+
+    #[test]
+    fn esc_on_more_gives_the_keyboard_back_to_a_button_that_is_there() {
+        assert_eq!(menu_closed(true, true), MenuClosed::More, "focus view, narrow: more");
+        assert_eq!(menu_closed(true, false), MenuClosed::More, "beside the conversation, narrow: more too");
+        assert_eq!(menu_closed(false, true), MenuClosed::Back, "widened since: more is gone");
+        assert_eq!(menu_closed(false, false), MenuClosed::Entry);
+    }
+
+    #[test]
+    fn esc_walks_out_one_layer_at_a_time_then_is_the_apps_again() {
+        let mut doc = focused();
+        doc.more = true;
+        assert_eq!(escape(Some(&doc)), Escape::CloseMore);
+        doc.more = false;
+        assert_eq!(escape(Some(&doc)), Escape::LeaveFocus);
+        doc.focus = None;
+        assert_eq!(escape(Some(&doc)), Escape::Pass, "out of focus view, Esc is the app's again");
     }
 
     #[test]

@@ -1755,8 +1755,16 @@ impl Shell {
                 if let Some(doc) = self.doc.as_mut() {
                     doc.more = false;
                 }
-                // Back to the button that opened it, beside the conversation as in focus view.
-                self.doc_keys.more.focus(window, cx);
+                // Back to the button that opened it, beside the conversation as in focus
+                // view — or, the window widened since and "more" gone, to the header's first.
+                let width: f32 = window.viewport_size().width.into();
+                let keys = &self.doc_keys;
+                let to = match doc::menu_closed(doc::compact(width, self.remembered.zoom.0), self.doc_focused()) {
+                    doc::MenuClosed::More => &keys.more,
+                    doc::MenuClosed::Back => &keys.back,
+                    doc::MenuClosed::Entry => &keys.entry,
+                };
+                to.clone().focus(window, cx);
                 cx.notify();
                 true
             }
