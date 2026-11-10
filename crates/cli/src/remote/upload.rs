@@ -202,6 +202,13 @@ impl Uploads {
         }
     }
 
+    /// Everything ever sent here goes, kept files too: `equipe demo reset`'s.
+    pub fn clear(&mut self) {
+        self.partial.clear();
+        self.done.clear();
+        let _ = std::fs::remove_dir_all(gateway::uploads_dir(&self.home));
+    }
+
     /// Files no piece has reached for an hour go; so do old answers.
     pub fn sweep(&mut self, now: u64) {
         self.partial.retain(|_, p| {
