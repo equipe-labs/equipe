@@ -1882,6 +1882,8 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         lines_at: Vec<Option<u64>>,
     },
+    /// The first answered exchange received its permanent topic title.
+    ConversationTitle { session: SessionId, title: String },
     /// The conversations put away, the latest first ([`Snapshot::put_away`]).
     PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
@@ -2570,6 +2572,7 @@ impl Event {
             | Event::LaneOpened { session, .. }
             | Event::LaneMoved { session, .. }
             | Event::ConversationBack { session, .. }
+            | Event::ConversationTitle { session, .. }
             | Event::Steered { session, .. }
             | Event::CommandWatch { session, .. }
             | Event::Estimated { session, .. }

@@ -67,6 +67,9 @@ mod target;
 mod theme;
 mod routine;
 mod retro;
+// The design system's generated file, included from its source (`design/`), never copied or edited here.
+#[path = "../../../design/build/rust/tokens.rs"]
+mod tokens;
 mod team;
 mod term;
 mod tailnet;
