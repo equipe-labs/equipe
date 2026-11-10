@@ -1697,6 +1697,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         return browser::serve_stream(lines.into_inner(), writer, events.clone()).await;
                     }
+                    // What deleting the squad would give back: made-up sizes.
+                    (Some(rpc::SQUAD_FOOTPRINT), Some(id)) => {
+                        let footprint = rpc::SquadFootprint { freed: 12_400_000_000, kept: 41_000_000, complete: true };
+                        if writer.write_all(Message::response(id, footprint).to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
                     // The real consent file, in the fake home: `unset` until a screen answers.
                     (Some(rpc::TELEMETRY), Some(id)) => {
                         if writer.write_all(Message::response(id, equipe_core::telemetry::status(&equipe_home())).to_line().as_bytes()).await.is_err() {

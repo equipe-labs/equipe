@@ -233,7 +233,7 @@ pub fn entry_row(e: &Entry) -> Row {
 
 /// What deleting the log asks first.
 pub fn delete_ask(squad: &str) -> Ask {
-    Ask { title: t!("words.delete_title").to_owned(), body: vec![t!("words.delete_body").to_owned()], yes: t!("words.delete_yes").to_owned(), then: Then::Send(vec![Command::ClearWordsLog { squad: squad.to_owned() }]) }
+    Ask { title: t!("words.delete_title").to_owned(), body: vec![t!("words.delete_body").to_owned()], yes: t!("words.delete_yes").to_owned(), then: Then::Send(vec![Command::ClearWordsLog { squad: squad.to_owned() }]), option: None }
 }
 
 /// The sheet: flagged first — where to look — then the rest, newest first;

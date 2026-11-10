@@ -651,6 +651,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     body: m.ticket.map(|ticket| t!("compose.close_ticket_back", ticket = ticket)).into_iter().collect(),
                     yes: t!("compose.close_yes").into(),
                     then: Then::Send(vec![Command::Close { session: m.session }]),
+                    option: None,
                 })),
                 ..Plan::default()
             },
@@ -678,6 +679,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     body: vec![t!("compose.clear_body").into()],
                     yes: t!("compose.clear_yes").into(),
                     then: Then::Send(vec![Command::Refresh { session: m.session, summary: false }]),
+                    option: None,
                 })),
                 ..Plan::default()
             },
@@ -844,6 +846,7 @@ pub fn undo(squad: String, n: usize) -> Plan {
             body: vec![t!("compose.undo_body").into()],
             yes: t!("sheet.undo").into(),
             then: Then::Job(Job::Home { squad, words: vec!["undo".into(), n.to_string()] }, After::Flash),
+            option: None,
         })),
         ..Plan::default()
     }
@@ -959,6 +962,7 @@ fn squad_command(model: &Model, rest: &str) -> Plan {
                     body: vec![t!("compose.squad_remove_body").into()],
                     yes: t!("compose.squad_remove_yes").into(),
                     then: Then::Job(job(&["remove", name], false), After::Squads { open: None, say: t!("compose.squad_removed", squad = squad, name = name) }),
+                    option: None,
                 })),
                 ..Plan::default()
             }
@@ -1049,6 +1053,7 @@ fn decide(model: &Model, verb: &str, rest: &str) -> Plan {
                     body: vec![title, t!("compose.cancel_body").into()],
                     yes: t!("compose.cancel_yes").into(),
                     then: Then::Send(vec![Command::Cancel { squad, ticket }]),
+                    option: None,
                 })),
                 ..Plan::default()
             }

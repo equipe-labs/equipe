@@ -369,6 +369,9 @@ pub struct Shell {
     /// The squad this window asked its daemon to delete, until it answers
     /// (`views/delete_squad.rs`).
     pub deleting_squad: Option<String>,
+    /// The question before a squad is deleted, while it is on screen: whether
+    /// for good, and what it gives back once the daemon has measured it.
+    pub delete_asking: Option<views::delete_squad::Asking>,
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     /// A squad just made on another machine, and how much it does alone: set
@@ -543,6 +546,7 @@ impl Shell {
             sheet_stops: Default::default(),
             confirm: None,
             deleting_squad: None,
+            delete_asking: None,
             pending_team: None,
             pending_mode: None,
             connecting_shown: false,
@@ -1094,8 +1098,8 @@ impl Shell {
                                 continue;
                             }
                             // A squad deleted, here or from another screen: the switcher's, and the window's if it was on it.
-                            daemon::Update::Event(Event::SquadDeleted { squad, moved_to, next }) => {
-                                changed |= this.squad_deleted(&squad, &moved_to, next, window, cx);
+                            daemon::Update::Event(Event::SquadDeleted { squad, moved_to, next, freed, purged }) => {
+                                changed |= this.squad_deleted(&squad, &moved_to, next, freed, purged, window, cx);
                                 continue;
                             }
                             daemon::Update::Event(Event::SquadNotDeleted { squad, why }) => {

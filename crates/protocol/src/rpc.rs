@@ -90,6 +90,9 @@ pub const DISK: &str = "disk";
 /// Give back items of the daemon's look at the disk: [`DiskClean`] →
 /// [`crate::disk::DiskCleaned`].
 pub const DISK_CLEAN: &str = "disk_clean";
+/// What deleting a squad would give back: [`SquadFootprintAsk`] →
+/// [`SquadFootprint`]. A look, nothing changed.
+pub const SQUAD_FOOTPRINT: &str = "squad_footprint";
 /// A window for the person in the members' shared Chrome, at a page (`equipe
 /// browser`): `true` when there is such a Chrome.
 pub const BROWSER_WINDOW: &str = "browser_window";
@@ -126,6 +129,27 @@ pub struct RpcError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskClean {
     pub ids: Vec<String>,
+}
+
+/// Which squad's footprint to look at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SquadFootprintAsk {
+    pub squad: crate::SquadName,
+}
+
+/// What deleting a squad gives back, in bytes on the disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SquadFootprint {
+    /// Given back at once: what can be made again (worktrees, build caches,
+    /// build output in its folder).
+    pub freed: u64,
+    /// Kept for a week to restore from — given back at once too when deleted
+    /// for good.
+    pub kept: u64,
+    /// Every folder was measured; `false`: the look ran out of time, and the
+    /// sizes are at least these.
+    #[serde(default)]
+    pub complete: bool,
 }
 
 /// What a screen says when it attaches.

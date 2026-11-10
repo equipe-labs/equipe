@@ -206,7 +206,7 @@ impl Shell {
                             self.composer.flash = Some(equipe_core::t!("design.versions_sent").into());
                         }
                         // A squad to delete: said while its daemon works on it.
-                        if let equipe_core::protocol::Command::DeleteSquad { squad } = &command {
+                        if let equipe_core::protocol::Command::DeleteSquad { squad, .. } = &command {
                             self.deleting(squad, window, cx);
                         }
                         self.send_command(command);
