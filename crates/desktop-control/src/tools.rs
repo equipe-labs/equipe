@@ -127,7 +127,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "key",
-            "Press keys or shortcuts, one after another: \"cmd+s\", \"return\", \"cmd+a delete\". Refused if focus isn't in the app you mean.",
+            "Press keys or shortcuts, one after another: \"cmd+s\" (Ctrl+S on Windows), \"return\", \"cmd+a delete\". Refused if focus isn't in the app you mean.",
             json!({ "keys": { "type": "string", "description": "Shortcuts separated by spaces." }, "app": app(), "why": why() }),
             &["keys"],
         ),

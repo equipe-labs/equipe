@@ -45,8 +45,14 @@ are detected.
 
 ## Desktop control
 
-Desktop control is not in the first Windows backend. Calls return a clear
-“not available on Windows yet” error; browser control remains available.
-Windows UI Automation needs a follow-up implementation covering screen
-capture, element lookup, focus-safe input, window management, and the existing
-send approval gate.
+Desktop control runs in the signed-in interactive session. Windows Graphics
+Capture supplies display and individual-window JPEGs; UI Automation supplies
+the element tree, hit testing, focus, values, Invoke actions, and window
+selection. Unicode `SendInput` handles text, while every input remains behind
+the existing one-member screen lease and send approval gate. The helper link is
+a local named pipe that rejects remote clients and authenticates requests with
+the same private token used on macOS.
+
+Windows has no macOS-style Screen Recording or Accessibility consent toggles.
+UIPI can still refuse control of a window running at a higher integrity level;
+the tool reports that refusal instead of elevating equipe.

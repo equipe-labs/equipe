@@ -1,10 +1,11 @@
 # Desktop control
 
-> **Windows (first port):** desktop control is deliberately unavailable. The
-> CLI and daemon return “Desktop control isn't available on Windows yet” rather
-> than showing macOS Accessibility instructions or silently doing nothing.
-> Implementing capture, input, window targeting, and the send gate with Windows
-> UI Automation is follow-up work; browser control is available independently.
+> **Windows:** the same tools use Windows Graphics Capture for display/window
+> images and UI Automation for the element tree, focus checks, Invoke actions,
+> and window targeting. Text goes through Unicode `SendInput` (including Korean
+> and surrogate pairs). The helper uses a local, remote-rejecting named pipe;
+> calls still pass through the daemon's one-member screen lease, send gate, and
+> `_scene` recheck before input is posted.
 
 Members working desktop apps (Microsoft Teams, say) the way they work the
 browser: see the screen, click and type, open apps. This is the T-20 spike
