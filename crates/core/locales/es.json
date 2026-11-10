@@ -628,6 +628,7 @@
   "notice.qa_report": "▶ {name} probó {flow} en T-{ticket}: {passed} de {steps} pasos superados · {video}",
   "disk.kind.recordings": "grabaciones de pantalla del teléfono",
   "disk.kind.ticket_temp": "carpeta temporal de un ticket terminado",
+  "disk.kind.lane_temp": "carpeta temporal de un carril de trabajo",
   "news.stalled": "La ejecución de T-{id} se detuvo sin entrega; su rama y su worktree se conservan tal cual. Reanúdalo, ponlo en cola o reasígnalo desde su tarjeta · {title}.",
   "news.recovery_resume": "T-{id} sigue con {to} en una sesión nueva, en la misma rama y el mismo worktree · {title}.",
   "news.recovery_requeue": "T-{id} queda en cola para el próximo {to} libre, en la misma rama y el mismo worktree · {title}.",

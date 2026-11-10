@@ -4560,6 +4560,15 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = std::fs::create_dir_all(dir);
         }
         let mut env: Vec<(String, String)> = builds.iter().map(|d| ("CARGO_TARGET_DIR".to_owned(), d.to_string_lossy().into_owned())).collect();
+        // Its own temporary folder too, one per lane: ticket numbers are per squad,
+        // so a `/tmp/t84` is as likely another squad's, and nothing could tell
+        // whose it was once the ticket ended. This one is exactly the lane's, and
+        // goes with its ticket ([`disk::clear_ticket_tmp`]).
+        let scratch = squad.as_deref().zip(session.name()).map(|(squad, name)| journal::lane_tmp_dir(&self.config.home, squad, ticket, name));
+        if let Some(dir) = &scratch {
+            let _ = std::fs::create_dir_all(dir);
+            env.extend(crate::disk::lane_tmp_env(dir));
+        }
         // No incremental state: it was most of a member's build folder (up to
         // 11 GB of one), for faster rebuilds of what it changes, and the disk
         // ran out for it.
@@ -4589,7 +4598,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             debug_assert_eq!(sub.at_once, at_once);
             env.push((CLAUDE_SUBAGENTS_ENV.to_owned(), at_once.to_string()));
         }
-        let writable: Vec<String> = builds.iter().map(|d| d.to_string_lossy().into_owned()).collect();
+        let writable: Vec<String> = builds.iter().chain(scratch.iter()).map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
         // squad's home is read at all. Where the guard is asked, it keeps the
@@ -6337,6 +6346,8 @@ with what else waits.]"
             _ => "news.cancelled",
         };
         let shown = self.said(news, &[("id", ticket.id.to_string()), ("title", ticket.title.clone())]);
+        // Its lane has ended: the temporary folder it worked in goes now, not at the merge.
+        self.clear_lane_tmp_of(squad, ticket.id);
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         self.brief_pm(squad, line, Some(shown));
     }
@@ -8762,7 +8773,17 @@ check what is already done in your worktree first."
         let home = self.config.home.clone();
         // What checks that never finished left (the daemon stopped mid-run): only while none run.
         let checks_left = self.gates.is_empty().then(|| gate::checks_scratch(&home));
+        // Lanes' temporary folders: each squad's own open tickets say which stay.
+        let open: Vec<(String, Vec<TicketId>)> = self
+            .journals
+            .iter()
+            .filter_map(|(squad, j)| Some((squad.clone(), j.tickets().ok()?.into_iter().filter(|t| !t.status.is_closed()).map(|t| t.id).collect())))
+            .collect();
+        let keep: Vec<u32> = self.commands.engine_pids();
         std::thread::spawn(move || {
+            for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
+                crate::daemon_log!("equipe: {line}");
+            }
             for line in worktree::tidy(&home, &in_use, &kept) {
                 crate::daemon_log!("equipe: {line}");
             }

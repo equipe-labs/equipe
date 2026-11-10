@@ -52,6 +52,12 @@ Asked for (`disk_scan`, `equipe disk`), within a 20-second budget — never the 
   ticket's own Gradle home, screenshots. Only entries whose name ties them to a ticket that
   is done or cancelled in **every** squad that has that number (see *Temporary folders*
   below).
+- **Lanes' own temporary folders** (`~/.equipe/tmp/<squad>/t<N>` for a session working a
+  ticket, `~/.equipe/tmp/<squad>/<member>` for a member at its desk). Each session gets its
+  own as `TMPDIR`, `TMP` and `TEMP`, and its sandbox may write there. Ticket numbers are per
+  squad, so the folder is exact: when the ticket is accepted, merged or cancelled, what stands
+  in it is stopped and it is removed, whatever other squads have open. The daily tidy removes
+  a squad's folders of tickets no longer open, and desk folders untouched for 24 hours.
 - **Build output in the squads' projects**, other tools' worktrees there included
   (`.claude/worktrees/*`, `.codex/worktrees/*`): the person's, so reported with a command.
 - **The Mac's caches**, reported only, with the command that clears each: Xcode DerivedData,

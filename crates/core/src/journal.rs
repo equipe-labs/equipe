@@ -127,6 +127,18 @@ pub fn build_dir(home: &Path, squad: &str, member: &str) -> PathBuf {
     home.join("cache").join("build").join(squad).join(member)
 }
 
+/// A lane's own temporary folder (`TMPDIR`): `<home>/tmp/<squad>/t<ticket>` for
+/// the session working a ticket, `<home>/tmp/<squad>/<member>` for a member at
+/// its desk. Ticket numbers are per squad, so the squad is part of the path:
+/// what is cleared when a ticket ends is exactly that squad's.
+pub fn lane_tmp_dir(home: &Path, squad: &str, ticket: Option<TicketId>, member: &str) -> PathBuf {
+    let base = home.join("tmp").join(squad);
+    match ticket {
+        Some(id) => base.join(format!("t{id}")),
+        None => base.join(member),
+    }
+}
+
 /// Fold what members like `backend-3` learned, from when each kept its own,
 /// into their role's memory: lessons it lacks move over, a lesson of the same
 /// name but other words keeps both, and the index gains their lines. Returns

@@ -628,6 +628,7 @@
   "notice.qa_report": "▶ {name} tested {flow} on T-{ticket}: {passed} of {steps} steps passed · {video}",
   "disk.kind.recordings": "phone recordings",
   "disk.kind.ticket_temp": "finished ticket's temporary folder",
+  "disk.kind.lane_temp": "a lane's temporary folder",
   "news.stalled": "T-{id}'s run stopped without a hand-in; its branch and worktree are kept as they are. Resume, requeue or reassign it on its card · {title}.",
   "news.recovery_resume": "T-{id} goes on with {to} in a fresh session, on the same branch and worktree · {title}.",
   "news.recovery_requeue": "T-{id} is queued for the next free {to}, on the same branch and worktree · {title}.",

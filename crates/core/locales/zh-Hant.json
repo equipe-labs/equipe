@@ -624,6 +624,7 @@
   "notice.qa_report": "▶ {name} 在 T-{ticket} 上測試了 {flow}：{steps} 個步驟中通過 {passed} 個 · {video}",
   "disk.kind.recordings": "手機螢幕錄影",
   "disk.kind.ticket_temp": "已結束工單的暫存資料夾",
+  "disk.kind.lane_temp": "工作通道的暫存資料夾",
   "news.stalled": "T-{id} 的執行未提交就停止了；分支和工作目錄保持原樣。請在卡片上選擇繼續、重新排隊或改派 · {title}。",
   "news.recovery_resume": "T-{id} 由 {to} 在新工作階段中繼續，分支和工作目錄不變 · {title}。",
   "news.recovery_requeue": "T-{id} 已重新排隊，交給下一位空閒的 {to}，分支和工作目錄不變 · {title}。",
